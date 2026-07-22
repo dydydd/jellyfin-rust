@@ -7,6 +7,7 @@ mod m20260722_000004_create_user_data;
 mod m20260722_000005_create_base_items;
 mod m20260722_000006_create_item_values;
 mod m20260722_000007_create_virtual_folders;
+mod m20260722_000008_create_people;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -22,6 +23,8 @@ pub use m20260722_000005_create_base_items::Migration as CreateBaseItemsMigratio
 pub use m20260722_000006_create_item_values::Migration as CreateItemValuesMigration;
 #[doc(hidden)]
 pub use m20260722_000007_create_virtual_folders::Migration as CreateVirtualFoldersMigration;
+#[doc(hidden)]
+pub use m20260722_000008_create_people::Migration as CreatePeopleMigration;
 
 pub struct Migrator;
 
@@ -36,6 +39,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000005_create_base_items::Migration),
             Box::new(m20260722_000006_create_item_values::Migration),
             Box::new(m20260722_000007_create_virtual_folders::Migration),
+            Box::new(m20260722_000008_create_people::Migration),
         ]
     }
 }

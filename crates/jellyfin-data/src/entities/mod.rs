@@ -6,6 +6,8 @@ pub mod device;
 pub mod item_value;
 pub mod item_value_map;
 pub mod media_path;
+pub mod person;
+pub mod person_base_item_map;
 pub mod user;
 pub mod user_data;
 pub mod virtual_folder;

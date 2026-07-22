@@ -8,9 +8,9 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    MusicGenreError, MusicGenreService, PlaystateError, PlaystateService, UserError,
-    UserLibraryError, UserLibraryService, UserService, VirtualFolderService,
-    VirtualFolderServiceError,
+    MusicGenreError, MusicGenreService, PersonError, PersonService, PlaystateError,
+    PlaystateService, UserError, UserLibraryError, UserLibraryService, UserService,
+    VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
@@ -26,6 +26,7 @@ mod activity_log;
 mod authentication;
 mod branding;
 mod music_genre;
+mod persons;
 mod playstate;
 mod startup;
 mod user_library;
@@ -41,6 +42,7 @@ pub struct AppState {
     pub(crate) devices: DeviceRepository,
     pub(crate) playstate: PlaystateService,
     pub(crate) music_genres: MusicGenreService,
+    pub(crate) persons: PersonService,
     pub(crate) user_library: UserLibraryService,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) authentication: DefaultAuthenticationProvider,
@@ -58,6 +60,7 @@ impl AppState {
             devices: DeviceRepository::new(database.clone()),
             playstate: PlaystateService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
+            persons: PersonService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
@@ -178,6 +181,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
+        .route("/Persons/{name}", get(persons::get))
         .route(
             "/Library/VirtualFolders",
             get(virtual_folders::list)
@@ -258,6 +262,7 @@ pub(crate) enum ApiError {
     AuthenticationStore(AuthenticationStoreError),
     Playstate(PlaystateError),
     MusicGenre(MusicGenreError),
+    Person(PersonError),
     UserLibrary(UserLibraryError),
     VirtualFolder(VirtualFolderServiceError),
     InvalidRequest,
@@ -299,6 +304,12 @@ impl From<PlaystateError> for ApiError {
 impl From<MusicGenreError> for ApiError {
     fn from(error: MusicGenreError) -> Self {
         Self::MusicGenre(error)
+    }
+}
+
+impl From<PersonError> for ApiError {
+    fn from(error: PersonError) -> Self {
+        Self::Person(error)
     }
 }
 
@@ -381,7 +392,8 @@ impl IntoResponse for ApiError {
                 | UserLibraryError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "User, item, or lyrics not found"),
             Self::UserLibrary(UserLibraryError::Forbidden)
-            | Self::MusicGenre(MusicGenreError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
+            | Self::MusicGenre(MusicGenreError::Forbidden)
+            | Self::Person(PersonError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
             Self::MusicGenre(
                 MusicGenreError::NotFound
                 | MusicGenreError::UserNotFound
@@ -398,6 +410,15 @@ impl IntoResponse for ApiError {
             Self::MusicGenre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Music genre persistence failed",
+            ),
+            Self::Person(
+                PersonError::NotFound
+                | PersonError::UserNotFound
+                | PersonError::User(UserError::NotFound),
+            ) => (StatusCode::NOT_FOUND, "Person or user not found"),
+            Self::Person(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Person persistence failed",
             ),
             Self::VirtualFolder(error) => virtual_folder_error_response(&error),
         };

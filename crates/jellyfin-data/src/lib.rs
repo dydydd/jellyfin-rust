@@ -3,6 +3,7 @@ mod authentication_repository;
 mod base_item_repository;
 pub mod entities;
 mod item_value_repository;
+mod person_repository;
 mod user_data_repository;
 mod virtual_folder_repository;
 
@@ -18,6 +19,7 @@ pub use base_item_repository::{
     BaseItemError, BaseItemHierarchyEntry, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
 };
 pub use item_value_repository::{ItemValueError, ItemValueRepository};
+pub use person_repository::{NewPerson, PersonCredit, PersonError, PersonRepository};
 pub use user_data_repository::{
     NewUserData, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
 };

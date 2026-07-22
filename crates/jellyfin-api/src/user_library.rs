@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
 };
-use jellyfin_controller::{MusicGenre, RelatedItemKind};
+use jellyfin_controller::{MusicGenre, Person, RelatedItemKind};
 use jellyfin_data::entities::base_item;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -60,6 +60,8 @@ pub struct BaseItemDto {
     pub extra_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_lyrics: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_ids: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -336,6 +338,7 @@ fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
         season_id: item.season_id.map(|id| id.simple().to_string()),
         extra_type,
         has_lyrics,
+        provider_ids: metadata_value(item.data.as_ref(), &["ProviderIds", "provider_ids"]),
     }
 }
 
@@ -363,6 +366,35 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
         season_id: None,
         extra_type: None,
         has_lyrics: None,
+        provider_ids: None,
+    }
+}
+
+pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
+    BaseItemDto {
+        name: Some(person.model.name.clone()),
+        server_id: server_id.to_owned(),
+        id: person.model.id.simple().to_string(),
+        item_type: "Person".to_owned(),
+        etag: person.model.row_version.to_string(),
+        date_created: Some(person.model.date_created.to_rfc3339()),
+        sort_name: Some(person.model.name.clone()),
+        path: None,
+        overview: None,
+        media_type: None,
+        is_folder: false,
+        is_virtual_item: false,
+        parent_id: None,
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        run_time_ticks: None,
+        presentation_unique_key: Some(format!("Person-{}", person.model.name)),
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
+        provider_ids: Some(person.model.provider_ids.clone()),
     }
 }
 
@@ -372,4 +404,9 @@ fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
         .find_map(|key| object.get(*key))
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {
+    let object = data?.as_object()?;
+    keys.iter().find_map(|key| object.get(*key)).cloned()
 }
