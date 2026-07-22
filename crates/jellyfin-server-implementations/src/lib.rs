@@ -1,5 +1,6 @@
 mod cryptography;
 mod ignore_patterns;
+mod managed_file_system;
 mod media_stream_selector;
 mod playlists;
 mod quick_connect;
@@ -11,6 +12,7 @@ pub use cryptography::{
     DEFAULT_OUTPUT_LENGTH, DEFAULT_SALT_LENGTH,
 };
 pub use ignore_patterns::IgnorePatterns;
+pub use managed_file_system::{ManagedFileInfo, ManagedFileSystem, ManagedFileSystemError};
 pub use media_stream_selector::MediaStreamSelector;
 pub use playlists::{PlaylistIndexError, determine_adjusted_playlist_index};
 pub use quick_connect::{
