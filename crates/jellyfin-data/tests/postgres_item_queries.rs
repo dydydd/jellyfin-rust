@@ -262,7 +262,7 @@ async fn assert_postgres_catalog(database: &DatabaseConnection) {
             database.get_database_backend(),
             "SELECT indexname AS name, indexdef AS definition FROM pg_indexes \
              WHERE schemaname = 'jellyfin' \
-               AND indexname IN ('base_items_name_trgm_idx', 'user_data_resume_order_idx')"
+               AND indexname IN ('base_items_clean_name_trgm_idx', 'user_data_resume_order_idx')"
                 .to_owned(),
         ))
         .await
@@ -276,7 +276,10 @@ async fn assert_postgres_catalog(database: &DatabaseConnection) {
             )
         })
         .collect::<Vec<_>>();
-    for expected in ["base_items_name_trgm_idx", "user_data_resume_order_idx"] {
+    for expected in [
+        "base_items_clean_name_trgm_idx",
+        "user_data_resume_order_idx",
+    ] {
         assert!(
             indexes.iter().any(|(name, _)| name == expected),
             "{expected}"
@@ -358,13 +361,13 @@ async fn assert_item_query_plans(transaction: &sea_orm::DatabaseTransaction, fix
     let search_plan = explain(
         transaction,
         "EXPLAIN (FORMAT TEXT) SELECT item.* FROM jellyfin.base_items AS item \
-         WHERE item.item_type <> 'PLACEHOLDER' AND item.name ILIKE $1 \
+         WHERE item.item_type <> 'PLACEHOLDER' AND item.clean_name ILIKE $1 \
          ORDER BY item.sort_name, item.id LIMIT 25",
         [format!("%rARE nEEDLE {}%", fixture.suffix.to_uppercase()).into()],
     )
     .await;
     assert!(
-        search_plan.contains("base_items_name_trgm_idx"),
+        search_plan.contains("base_items_clean_name_trgm_idx"),
         "expected trigram index in:\n{search_plan}"
     );
 }
@@ -384,7 +387,7 @@ async fn assert_resume_query_plan(transaction: &sea_orm::DatabaseTransaction, fi
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
                                WHERE closure.parent_item_id = $2) \
-               AND item.name ILIKE $3 \
+               AND item.clean_name ILIKE $3 \
                AND item.is_virtual_item = $4 \
          ) SELECT id FROM filtered \
            ORDER BY resume_last_played_date DESC NULLS LAST, id OFFSET $5 LIMIT $6",

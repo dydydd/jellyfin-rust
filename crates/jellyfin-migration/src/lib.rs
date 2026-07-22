@@ -10,6 +10,7 @@ mod m20260722_000007_create_virtual_folders;
 mod m20260722_000008_create_people;
 mod m20260722_000009_optimize_item_queries;
 mod m20260722_000010_create_quick_connect;
+mod m20260722_000011_normalize_base_item_search;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -31,6 +32,8 @@ pub use m20260722_000008_create_people::Migration as CreatePeopleMigration;
 pub use m20260722_000009_optimize_item_queries::Migration as OptimizeItemQueriesMigration;
 #[doc(hidden)]
 pub use m20260722_000010_create_quick_connect::Migration as CreateQuickConnectMigration;
+#[doc(hidden)]
+pub use m20260722_000011_normalize_base_item_search::Migration as NormalizeBaseItemSearchMigration;
 
 pub struct Migrator;
 
@@ -48,6 +51,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000008_create_people::Migration),
             Box::new(m20260722_000009_optimize_item_queries::Migration),
             Box::new(m20260722_000010_create_quick_connect::Migration),
+            Box::new(m20260722_000011_normalize_base_item_search::Migration),
         ]
     }
 }

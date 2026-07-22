@@ -13,6 +13,7 @@ pub struct Model {
     pub parent_id: Option<Uuid>,
     pub top_parent_id: Option<Uuid>,
     pub name: Option<String>,
+    pub clean_name: Option<String>,
     pub sort_name: Option<String>,
     pub media_type: Option<String>,
     pub overview: Option<String>,

@@ -256,6 +256,7 @@ mod tests {
             parent_id: None,
             top_parent_id: None,
             name: None,
+            clean_name: None,
             sort_name: None,
             media_type: None,
             overview: None,

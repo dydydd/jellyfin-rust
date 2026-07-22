@@ -3,6 +3,7 @@ use std::{
     fmt::Write as _,
 };
 
+use jellyfin_extensions::StringExtensions;
 use sea_orm::{
     AccessMode,
     ActiveValue::Set,
@@ -279,8 +280,10 @@ impl BaseItemRepository {
             .map(str::trim)
             .filter(|term| !term.is_empty())
         {
+            let clean_search_term = search_term.clean_value();
             select = select.filter(
-                Expr::col(base_item::Column::Name).ilike(postgres_contains_pattern(search_term)),
+                Expr::col(base_item::Column::CleanName)
+                    .ilike(postgres_contains_pattern(&clean_search_term)),
             );
         }
         if !query.include_item_types.is_empty() {
@@ -585,7 +588,7 @@ impl BaseItemRepository {
 }
 
 const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \
-    sort_name, media_type, overview, index_number, parent_index_number, production_year, \
+    clean_name, sort_name, media_type, overview, index_number, parent_index_number, production_year, \
     runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, series_id, season_id, \
     series_presentation_unique_key, date_created, date_modified, row_version";
 
@@ -635,11 +638,12 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
         .map(str::trim)
         .filter(|term| !term.is_empty())
     {
+        let clean_search_term = search_term.clean_value();
         push_bind(
             &mut sql,
             &mut values,
-            postgres_contains_pattern(search_term),
-            " AND item.name ILIKE ",
+            postgres_contains_pattern(&clean_search_term),
+            " AND item.clean_name ILIKE ",
         );
     }
     append_string_list_filter(
