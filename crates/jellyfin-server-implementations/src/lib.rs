@@ -1,3 +1,4 @@
+mod audio_resolver;
 mod core_resolution_ignore;
 mod cryptography;
 mod dto_images;
@@ -14,6 +15,10 @@ mod user_manager_lock;
 mod users;
 mod websocket_json;
 
+pub use audio_resolver::{
+    AudioFileSystemEntry, AudioParentContext, AudioResolveArgs, AudioResolver,
+    MultipleAudioResolverResult, ResolvedAudioBook,
+};
 pub use core_resolution_ignore::{
     CoreResolutionIgnoreRule, ResolutionFileSystemEntry, ResolutionParentContext,
     ResolutionParentKind,
