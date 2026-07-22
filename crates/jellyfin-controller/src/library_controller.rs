@@ -6,7 +6,7 @@ use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{UserError, UserService};
+use crate::{HydratedBaseItem, ItemTypeRegistry, UserError, UserService};
 
 #[derive(Debug, Error)]
 pub enum LibraryControllerError {
@@ -29,14 +29,24 @@ pub enum LibraryControllerError {
 pub struct LibraryControllerService {
     users: UserService,
     items: BaseItemRepository,
+    item_types: ItemTypeRegistry,
 }
 
 impl LibraryControllerService {
     #[must_use]
     pub fn new(database: DatabaseConnection) -> Self {
+        Self::with_item_type_registry(database, ItemTypeRegistry::default())
+    }
+
+    #[must_use]
+    pub fn with_item_type_registry(
+        database: DatabaseConnection,
+        item_types: ItemTypeRegistry,
+    ) -> Self {
         Self {
             users: UserService::new(database.clone()),
             items: BaseItemRepository::new(database),
+            item_types,
         }
     }
 
@@ -56,6 +66,8 @@ impl LibraryControllerService {
         self.items
             .get(item_id)
             .await?
+            .and_then(|item| self.item_types.hydrate(item))
+            .map(HydratedBaseItem::into_model)
             .ok_or(LibraryControllerError::ItemNotFound)
     }
 
@@ -77,7 +89,8 @@ impl LibraryControllerService {
             .ancestors(item_id)
             .await?
             .into_iter()
-            .map(|entry| entry.item)
+            .filter_map(|entry| self.item_types.hydrate(entry.item))
+            .map(HydratedBaseItem::into_model)
             .collect())
     }
 
@@ -115,7 +128,7 @@ impl LibraryControllerService {
             .item(authenticated_user, target_user_id, item_id)
             .await?;
         let media_types = item.media_type.into_iter().collect();
-        Ok(self
+        let page = self
             .items
             .query(&BaseItemQuery {
                 exclude_ids: vec![item.id],
@@ -125,7 +138,8 @@ impl LibraryControllerService {
                 limit,
                 ..Default::default()
             })
-            .await?)
+            .await?;
+        Ok(self.hydrate_page(page))
     }
 
     /// Atomically deletes complete item subtrees for an administrator.
@@ -159,5 +173,15 @@ impl LibraryControllerService {
             return Err(LibraryControllerError::Forbidden);
         }
         Ok(())
+    }
+
+    fn hydrate_page(&self, mut page: BaseItemPage) -> BaseItemPage {
+        page.items = page
+            .items
+            .into_iter()
+            .filter_map(|item| self.item_types.hydrate(item))
+            .map(HydratedBaseItem::into_model)
+            .collect();
+        page
     }
 }

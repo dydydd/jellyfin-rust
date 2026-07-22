@@ -17,5 +17,8 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 tracing.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
 [lints]
 workspace = true

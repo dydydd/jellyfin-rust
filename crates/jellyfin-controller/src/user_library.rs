@@ -7,7 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{UserError, UserService};
+use crate::{HydratedBaseItem, ItemTypeRegistry, UserError, UserService};
 
 #[derive(Debug, Error)]
 pub enum UserLibraryError {
@@ -38,14 +38,24 @@ pub enum RelatedItemKind {
 pub struct UserLibraryService {
     users: UserService,
     items: BaseItemRepository,
+    item_types: ItemTypeRegistry,
 }
 
 impl UserLibraryService {
     #[must_use]
     pub fn new(database: DatabaseConnection) -> Self {
+        Self::with_item_type_registry(database, ItemTypeRegistry::default())
+    }
+
+    #[must_use]
+    pub fn with_item_type_registry(
+        database: DatabaseConnection,
+        item_types: ItemTypeRegistry,
+    ) -> Self {
         Self {
             users: UserService::new(database.clone()),
             items: BaseItemRepository::new(database),
+            item_types,
         }
     }
 
@@ -109,7 +119,7 @@ impl UserLibraryService {
         if query.parent_id.is_none() && query.ids.is_empty() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
-        Ok(self.items.query(&query).await?)
+        Ok(self.hydrate_page(self.items.query(&query).await?))
     }
 
     /// Queries resumable items using the target user's real `PostgreSQL`
@@ -131,7 +141,7 @@ impl UserLibraryService {
         if query.parent_id.is_none() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
-        Ok(self.items.query_resumable(target_user_id, &query).await?)
+        Ok(self.hydrate_page(self.items.query_resumable(target_user_id, &query).await?))
     }
 
     /// Loads related items from the persisted closure-table subtree.
@@ -152,7 +162,8 @@ impl UserLibraryService {
         let descendants = self.items.descendants(item.id).await?;
         Ok(descendants
             .into_iter()
-            .map(|entry| entry.item)
+            .filter_map(|entry| self.item_types.hydrate(entry.item))
+            .map(HydratedBaseItem::into_model)
             .filter(|candidate| related_item_matches(candidate, kind))
             .collect())
     }
@@ -199,7 +210,19 @@ impl UserLibraryService {
         self.items
             .get(item_id)
             .await?
+            .and_then(|item| self.item_types.hydrate(item))
+            .map(HydratedBaseItem::into_model)
             .ok_or(UserLibraryError::ItemNotFound)
+    }
+
+    fn hydrate_page(&self, mut page: BaseItemPage) -> BaseItemPage {
+        page.items = page
+            .items
+            .into_iter()
+            .filter_map(|item| self.item_types.hydrate(item))
+            .map(HydratedBaseItem::into_model)
+            .collect();
+        page
     }
 }
 
