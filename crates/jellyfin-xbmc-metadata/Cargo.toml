@@ -1,0 +1,18 @@
+[package]
+name = "jellyfin-xbmc-metadata"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Kodi/XBMC NFO metadata parsing for Jellyfin"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+chrono = "0.4"
+jellyfin-model = { path = "../jellyfin-model" }
+roxmltree = "0.21"
+
+[lints.rust]
+unsafe_code = "forbid"
+
