@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
+use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "server_configuration", schema_name = "jellyfin")]
@@ -11,6 +12,7 @@ pub struct Model {
     pub metadata_country_code: String,
     pub preferred_metadata_language: String,
     pub is_startup_wizard_completed: bool,
+    pub content_types: Value,
     pub row_version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

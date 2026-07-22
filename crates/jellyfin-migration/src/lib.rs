@@ -16,6 +16,7 @@ mod m20260722_000013_optimize_version_playback;
 mod m20260722_000014_create_tuner_hosts;
 mod m20260722_000015_add_user_policy_providers;
 mod m20260722_000016_create_server_configuration;
+mod m20260722_000017_add_content_type_overrides;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -49,6 +50,8 @@ pub use m20260722_000014_create_tuner_hosts::Migration as CreateTunerHostsMigrat
 pub use m20260722_000015_add_user_policy_providers::Migration as AddUserPolicyProvidersMigration;
 #[doc(hidden)]
 pub use m20260722_000016_create_server_configuration::Migration as CreateServerConfigurationMigration;
+#[doc(hidden)]
+pub use m20260722_000017_add_content_type_overrides::Migration as AddContentTypeOverridesMigration;
 
 pub struct Migrator;
 
@@ -72,6 +75,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000014_create_tuner_hosts::Migration),
             Box::new(m20260722_000015_add_user_policy_providers::Migration),
             Box::new(m20260722_000016_create_server_configuration::Migration),
+            Box::new(m20260722_000017_add_content_type_overrides::Migration),
         ]
     }
 }

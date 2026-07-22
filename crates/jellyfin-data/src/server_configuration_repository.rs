@@ -67,7 +67,7 @@ impl ServerConfigurationRepository {
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                row_version, created_at, updated_at
+                content_types, row_version, created_at, updated_at
             ",
             [
                 update.server_name.into(),
@@ -99,9 +99,65 @@ impl ServerConfigurationRepository {
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                row_version, created_at, updated_at
+                content_types, row_version, created_at, updated_at
             "
             .to_owned(),
+        );
+        server_configuration::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or(ServerConfigurationStoreError::MissingSingleton)
+    }
+
+    /// Atomically replaces or removes the content-type override for one path.
+    ///
+    /// Empty and whitespace-only values remove the override. `PostgreSQL`
+    /// filters malformed blank-name entries and compares paths without case
+    /// sensitivity in the same row update. Concurrent updates for different
+    /// paths therefore compose instead of replacing the complete JSON array.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-singleton or database error.
+    pub async fn update_content_type_override(
+        &self,
+        path: &str,
+        content_type: Option<&str>,
+    ) -> Result<server_configuration::Model, ServerConfigurationStoreError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.server_configuration AS configuration
+            SET content_types = (
+                SELECT
+                    COALESCE(
+                        jsonb_agg(entry.element ORDER BY entry.ordinality)
+                            FILTER (
+                                WHERE entry.element ->> 'Name' IS NOT NULL
+                                  AND entry.element ->> 'Name' !~ '^[[:space:]]*$'
+                                  AND lower(entry.element ->> 'Name') <> lower($1::text)
+                            ),
+                        '[]'::jsonb
+                    )
+                    || CASE
+                        WHEN $2::text IS NULL OR $2::text ~ '^[[:space:]]*$'
+                            THEN '[]'::jsonb
+                        ELSE jsonb_build_array(
+                            jsonb_build_object('Name', $1::text, 'Value', $2::text)
+                        )
+                    END
+                FROM jsonb_array_elements(configuration.content_types)
+                    WITH ORDINALITY AS entry(element, ordinality)
+            )
+            WHERE configuration.id = 1
+            RETURNING id, server_name, ui_culture, metadata_country_code,
+                preferred_metadata_language, is_startup_wizard_completed,
+                content_types, row_version, created_at, updated_at
+            ",
+            [
+                path.to_owned().into(),
+                content_type.map(str::to_owned).into(),
+            ],
         );
         server_configuration::Model::find_by_statement(statement)
             .one(&self.database)

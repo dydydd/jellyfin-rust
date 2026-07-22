@@ -5,6 +5,8 @@ use jellyfin_data::{
 use jellyfin_migration::CreateServerConfigurationMigration;
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const DATABASE_PREFIX: &str = "jellyfin_startup_data_";
@@ -68,6 +70,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.id, 1);
     assert_eq!(seeded.server_name, "Jellyfin");
     assert!(!seeded.is_startup_wizard_completed);
+    assert_eq!(seeded.content_types, json!([]));
     assert_eq!(seeded.row_version, 1);
 
     let updated = first
@@ -90,6 +93,8 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(concurrent.ui_culture, "nl-BE");
     assert!(concurrent.is_startup_wizard_completed);
     assert!(concurrent.row_version >= updated.row_version + 2);
+
+    assert_content_type_updates(&database, &first, &second).await;
 
     let invalid_insert = database
         .execute_unprepared(
@@ -123,11 +128,78 @@ async fn exercise_server_configuration(database_name: &str) {
         first.complete_startup().await,
         Err(ServerConfigurationStoreError::MissingSingleton)
     ));
+    assert!(matches!(
+        first
+            .update_content_type_override("/media/movies", Some("movies"))
+            .await,
+        Err(ServerConfigurationStoreError::MissingSingleton)
+    ));
 
     database
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_content_type_updates(
+    database: &sea_orm::DatabaseConnection,
+    first: &ServerConfigurationRepository,
+    second: &ServerConfigurationRepository,
+) {
+    first
+        .update_content_type_override("/Media/Movies", Some("movies"))
+        .await
+        .expect("initial content-type override");
+    let replaced = second
+        .update_content_type_override("/media/movies", Some("tvshows"))
+        .await
+        .expect("case-insensitive replacement");
+    assert_eq!(
+        content_types(&replaced.content_types),
+        BTreeMap::from([("/media/movies".to_owned(), "tvshows".to_owned())])
+    );
+
+    let removed = first
+        .update_content_type_override("/MEDIA/MOVIES", Some("  \t"))
+        .await
+        .expect("whitespace removes override");
+    assert!(content_types(&removed.content_types).is_empty());
+
+    let (movies, music) = tokio::join!(
+        first.update_content_type_override("/library/movies", Some("movies")),
+        second.update_content_type_override("/library/music", Some("music")),
+    );
+    movies.expect("concurrent movies override");
+    music.expect("concurrent music override");
+    let restarted = ServerConfigurationRepository::new(database.clone());
+    let persisted = restarted.load().await.expect("persisted content types");
+    assert_eq!(
+        content_types(&persisted.content_types),
+        BTreeMap::from([
+            ("/library/movies".to_owned(), "movies".to_owned()),
+            ("/library/music".to_owned(), "music".to_owned()),
+        ])
+    );
+}
+
+fn content_types(value: &Value) -> BTreeMap<String, String> {
+    value
+        .as_array()
+        .expect("content types must be a JSON array")
+        .iter()
+        .map(|entry| {
+            (
+                entry["Name"]
+                    .as_str()
+                    .expect("content-type name")
+                    .to_owned(),
+                entry["Value"]
+                    .as_str()
+                    .expect("content-type value")
+                    .to_owned(),
+            )
+        })
+        .collect()
 }
 
 fn configuration(server_name: &str) -> StartupConfigurationUpdate {
@@ -155,6 +227,32 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .collect::<Vec<_>>();
     assert_eq!(indexes, ["server_configuration_pkey"]);
 
+    let content_types = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name = 'content_types'"
+                .to_owned(),
+        ))
+        .await
+        .expect("content-types column catalog query")
+        .expect("content-types column");
+    assert_eq!(
+        String::try_get(&content_types, "", "data_type").unwrap(),
+        "jsonb"
+    );
+    assert_eq!(
+        String::try_get(&content_types, "", "is_nullable").unwrap(),
+        "NO"
+    );
+    assert_eq!(
+        String::try_get(&content_types, "", "column_default").unwrap(),
+        "'[]'::jsonb"
+    );
+
     let row = database
         .query_one(Statement::from_string(
             database.get_database_backend(),
@@ -167,6 +265,20 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .await
         .expect("singleton constraint catalog query")
         .expect("constraint count row");
+    assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+
+    let row = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT count(*)::bigint AS count FROM pg_constraint \
+             WHERE connamespace = 'jellyfin'::regnamespace \
+               AND conrelid = 'jellyfin.server_configuration'::regclass \
+               AND conname = 'server_configuration_content_types_array'"
+                .to_owned(),
+        ))
+        .await
+        .expect("content-types constraint catalog query")
+        .expect("content-types constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
 }
 

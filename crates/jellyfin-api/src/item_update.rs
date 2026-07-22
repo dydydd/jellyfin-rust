@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, State, rejection::JsonRejection},
+    extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_controller::ItemUpdateInput;
@@ -17,6 +17,12 @@ pub(crate) struct UpdateItemRequest {
     tags: Option<Vec<String>>,
     genres: Option<Vec<String>>,
     provider_ids: Option<BTreeMap<String, Option<String>>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UpdateItemContentTypeQuery {
+    #[serde(rename = "contentType", alias = "ContentType")]
+    content_type: Option<String>,
 }
 
 pub(crate) async fn update(
@@ -40,6 +46,23 @@ pub(crate) async fn update(
                 provider_ids: request.provider_ids,
             },
         )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn update_content_type(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<UpdateItemContentTypeQuery>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    state
+        .item_update
+        .update_content_type(item_id, query.content_type.as_deref())
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

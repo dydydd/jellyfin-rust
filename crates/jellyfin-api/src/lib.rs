@@ -411,6 +411,10 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
+        .route(
+            "/Items/{item_id}/ContentType",
+            post(item_update::update_content_type),
+        )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
         .route(
             "/Items/{item_id}/LocalTrailers",
@@ -754,7 +758,8 @@ fn system_log_error_response(error: &SystemLogError) -> (StatusCode, &'static st
 
 fn item_update_error_response(error: &ItemUpdateError) -> (StatusCode, &'static str) {
     match error {
-        ItemUpdateError::Store(ItemUpdateStoreError::NotFound) => {
+        ItemUpdateError::Store(ItemUpdateStoreError::NotFound)
+        | ItemUpdateError::BaseItem(BaseItemError::NotFound) => {
             (StatusCode::NOT_FOUND, "Item not found")
         }
         ItemUpdateError::Store(ItemUpdateStoreError::InvalidValue) => {
@@ -765,6 +770,13 @@ fn item_update_error_response(error: &ItemUpdateError) -> (StatusCode, &'static 
         ) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Item metadata persistence failed",
+        ),
+        ItemUpdateError::BaseItem(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Item persistence failed")
+        }
+        ItemUpdateError::ServerConfiguration(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Server configuration persistence failed",
         ),
     }
 }
