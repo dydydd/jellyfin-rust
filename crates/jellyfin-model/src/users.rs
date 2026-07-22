@@ -80,6 +80,13 @@ pub struct UserPolicy {
     pub sync_play_access: SyncPlayUserAccessType,
 }
 
+impl UserPolicy {
+    pub const DEFAULT_AUTHENTICATION_PROVIDER_ID: &'static str =
+        "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider";
+    pub const DEFAULT_PASSWORD_RESET_PROVIDER_ID: &'static str =
+        "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider";
+}
+
 impl Default for UserPolicy {
     fn default() -> Self {
         Self {

@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, Query, State, rejection::JsonRejection},
+    extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_data::entities::user;
-use jellyfin_model::UserDto;
+use jellyfin_model::{UserDto, UserPolicy};
 use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -186,6 +186,27 @@ pub(crate) async fn delete(
 ) -> Result<StatusCode, ApiError> {
     require_administrator(&state, &headers).await?;
     state.users.delete(target_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn update_policy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(target_id): Path<Uuid>,
+    request: Result<Json<UserPolicy>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    identity.require_administrator()?;
+    let current_token = identity.access_token().to_owned();
+    let Json(policy) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let (_, became_disabled) = state.users.update_policy(target_id, &policy).await?;
+    if became_disabled {
+        state
+            .devices
+            .revoke_user_tokens(target_id, Some(&current_token))
+            .await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -18,6 +18,8 @@ pub struct Model {
     pub enable_auto_login: bool,
     pub last_login_date: Option<DateTime<Utc>>,
     pub last_activity_date: Option<DateTime<Utc>>,
+    pub authentication_provider_id: String,
+    pub password_reset_provider_id: String,
     pub policy: Value,
     pub preferences: Value,
     pub row_version: i64,

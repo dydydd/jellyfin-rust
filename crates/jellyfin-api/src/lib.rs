@@ -167,18 +167,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
         .route("/Plugins", get(plugins::list))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
-        .route("/Users", get(users::list).post(users::update))
-        .route("/Users/Public", get(users::list_public))
-        .route("/Users/New", post(users::create))
-        .route(
-            "/Users/{id}",
-            get(users::get)
-                .post(users::update_legacy)
-                .delete(users::delete),
-        )
-        .route("/User/{id}", axum::routing::delete(users::delete))
-        .route("/Users/Password", post(users::update_password_query))
-        .route("/Users/{id}/Password", post(users::update_password))
+        .merge(user_routes())
         .route(
             "/Startup/Configuration",
             get(startup::get_configuration).post(startup::update_configuration),
@@ -251,6 +240,23 @@ pub fn router(state: AppState) -> Router {
             post(virtual_folders::update_options),
         )
         .with_state(Arc::new(state))
+}
+
+fn user_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Users", get(users::list).post(users::update))
+        .route("/Users/Public", get(users::list_public))
+        .route("/Users/New", post(users::create))
+        .route(
+            "/Users/{id}",
+            get(users::get)
+                .post(users::update_legacy)
+                .delete(users::delete),
+        )
+        .route("/User/{id}", axum::routing::delete(users::delete))
+        .route("/Users/Password", post(users::update_password_query))
+        .route("/Users/{id}/Password", post(users::update_password))
+        .route("/Users/{id}/Policy", post(users::update_policy))
 }
 
 fn item_query_routes() -> Router<Arc<AppState>> {
@@ -341,6 +347,8 @@ pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
     policy.is_administrator = user.is_administrator;
     policy.is_hidden = user.is_hidden;
     policy.is_disabled = user.is_disabled;
+    policy.authentication_provider_id = Some(user.authentication_provider_id);
+    policy.password_reset_provider_id = Some(user.password_reset_provider_id);
     let configuration: UserConfiguration =
         serde_json::from_value(user.preferences).unwrap_or_default();
 
@@ -475,30 +483,7 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Activity log persistence failed",
             ),
-            Self::User(UserError::InvalidUsername) => (StatusCode::BAD_REQUEST, "Invalid username"),
-            Self::User(UserError::DuplicateUsername(_)) => (
-                StatusCode::BAD_REQUEST,
-                "A user with that name already exists",
-            ),
-            Self::User(UserError::NotFound) => (StatusCode::NOT_FOUND, "User not found"),
-            Self::User(UserError::PasswordAlreadyConfigured) => {
-                (StatusCode::FORBIDDEN, "Password is already configured")
-            }
-            Self::User(UserError::LastUser) => {
-                (StatusCode::FORBIDDEN, "There must be at least one user")
-            }
-            Self::User(UserError::LastAdministrator) => (
-                StatusCode::FORBIDDEN,
-                "There must be at least one administrator",
-            ),
-            Self::User(UserError::AdministratorPasswordRequired) => (
-                StatusCode::FORBIDDEN,
-                "Administrator passwords must not be empty",
-            ),
-            Self::User(UserError::Database(_)) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database operation failed",
-            ),
+            Self::User(error) => user_error_response(&error),
             Self::Authentication(AuthenticationError::InvalidCredentials) => {
                 (StatusCode::UNAUTHORIZED, "Invalid username or password")
             }
@@ -559,6 +544,46 @@ impl IntoResponse for ApiError {
             Self::TunerHost(error) => tuner_host_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn user_error_response(error: &UserError) -> (StatusCode, &'static str) {
+    match error {
+        UserError::InvalidUsername => (StatusCode::BAD_REQUEST, "Invalid username"),
+        UserError::DuplicateUsername(_) => (
+            StatusCode::BAD_REQUEST,
+            "A user with that name already exists",
+        ),
+        UserError::NotFound => (StatusCode::NOT_FOUND, "User not found"),
+        UserError::PasswordAlreadyConfigured => {
+            (StatusCode::FORBIDDEN, "Password is already configured")
+        }
+        UserError::LastUser => (StatusCode::FORBIDDEN, "There must be at least one user"),
+        UserError::LastAdministrator => (
+            StatusCode::FORBIDDEN,
+            "There must be at least one administrator",
+        ),
+        UserError::AdministratorCannotBeDisabled => (
+            StatusCode::FORBIDDEN,
+            "Administrator accounts cannot be disabled",
+        ),
+        UserError::LastEnabledUser => (
+            StatusCode::FORBIDDEN,
+            "There must be at least one enabled user",
+        ),
+        UserError::InvalidPolicy => (StatusCode::BAD_REQUEST, "Invalid user policy"),
+        UserError::AdministratorPasswordRequired => (
+            StatusCode::FORBIDDEN,
+            "Administrator passwords must not be empty",
+        ),
+        UserError::PolicySerialization(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "User policy serialization failed",
+        ),
+        UserError::Database(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database operation failed",
+        ),
     }
 }
 

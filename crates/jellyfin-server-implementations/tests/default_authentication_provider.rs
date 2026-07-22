@@ -176,6 +176,10 @@ fn test_user(password_hash: Option<&str>) -> user::Model {
         enable_auto_login: false,
         last_login_date: None,
         last_activity_date: None,
+        authentication_provider_id:
+            "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_owned(),
+        password_reset_provider_id:
+            "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".to_owned(),
         policy: json!({}),
         preferences: json!({}),
         row_version: 1,

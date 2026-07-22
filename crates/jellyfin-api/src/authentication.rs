@@ -10,6 +10,7 @@ use jellyfin_data::{
     NewDevice,
     entities::{api_key, user},
 };
+use jellyfin_model::UserPolicy;
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -50,6 +51,12 @@ pub(crate) async fn authenticate_by_name(
         .ok_or(ApiError::Unauthorized)?;
     if user.is_disabled {
         return Err(ApiError::Forbidden);
+    }
+    if !user
+        .authentication_provider_id
+        .eq_ignore_ascii_case(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID)
+    {
+        return Err(ApiError::Unauthorized);
     }
     let authentication = state.authentication;
     let user = tokio::task::spawn_blocking(move || {
@@ -107,11 +114,18 @@ pub(crate) struct AuthenticatedSession {
 
 #[derive(Debug)]
 pub(crate) enum AuthenticatedIdentity {
-    Device(AuthenticatedSession),
+    Device(Box<AuthenticatedSession>),
     ApiKey(api_key::Model),
 }
 
 impl AuthenticatedIdentity {
+    pub(crate) fn access_token(&self) -> &str {
+        match self {
+            Self::Device(session) => &session.access_token,
+            Self::ApiKey(api_key) => &api_key.access_token,
+        }
+    }
+
     pub(crate) fn is_administrator_equivalent(&self) -> bool {
         match self {
             Self::Device(session) => session.user.is_administrator,
@@ -151,7 +165,7 @@ pub(crate) async fn authenticated_session(
     match identity {
         AuthenticatedIdentity::Device(session) => {
             debug_assert_eq!(target_user_id, session.user.id);
-            Ok(session)
+            Ok(*session)
         }
         AuthenticatedIdentity::ApiKey(_) => Err(ApiError::Unauthorized),
     }
@@ -175,10 +189,9 @@ pub(crate) async fn authenticated_identity(
         if user.is_disabled {
             return Err(ApiError::Forbidden);
         }
-        return Ok(AuthenticatedIdentity::Device(AuthenticatedSession {
-            user,
-            access_token,
-        }));
+        return Ok(AuthenticatedIdentity::Device(Box::new(
+            AuthenticatedSession { user, access_token },
+        )));
     }
 
     let mut api_key = state
@@ -469,6 +482,7 @@ mod tests {
         let requested = Uuid::new_v4();
 
         assert!(identity.is_administrator_equivalent());
+        assert_eq!(identity.access_token(), "key");
         assert_eq!(identity.target_user_id(None).unwrap(), Uuid::nil());
         assert_eq!(
             identity.target_user_id(Some(Uuid::nil())).unwrap(),

@@ -519,6 +519,12 @@ async fn insert_user(database: &DatabaseConnection, user_id: Uuid) {
         enable_auto_login: Set(false),
         last_login_date: Set(None),
         last_activity_date: Set(None),
+        authentication_provider_id: Set(
+            "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_owned(),
+        ),
+        password_reset_provider_id: Set(
+            "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".to_owned(),
+        ),
         policy: Set(json!({})),
         preferences: Set(json!({})),
         row_version: Set(1),

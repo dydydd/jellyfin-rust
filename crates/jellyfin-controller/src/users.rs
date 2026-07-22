@@ -1,5 +1,6 @@
 use chrono::Utc;
 use jellyfin_data::entities::user;
+use jellyfin_model::UserPolicy;
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
     PaginatorTrait, QueryFilter, QueryOrder, Set, SqlErr, Statement, TransactionTrait,
@@ -10,8 +11,6 @@ use serde_json::json;
 use thiserror::Error;
 use uuid::Uuid;
 
-const DEFAULT_AUTH_PROVIDER: &str =
-    "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider";
 const USER_MUTATION_LOCK_KEY: i64 = 0x4a45_4c4c_5955_5345;
 
 #[derive(Debug, Error)]
@@ -28,8 +27,16 @@ pub enum UserError {
     LastUser,
     #[error("there must be at least one administrator")]
     LastAdministrator,
+    #[error("administrator accounts cannot be disabled")]
+    AdministratorCannotBeDisabled,
+    #[error("there must be at least one enabled user")]
+    LastEnabledUser,
+    #[error("invalid user policy")]
+    InvalidPolicy,
     #[error("administrator passwords must not be empty")]
     AdministratorPasswordRequired,
+    #[error("failed to serialize user policy")]
+    PolicySerialization(#[source] serde_json::Error),
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -74,6 +81,16 @@ impl UserService {
         let normalized = normalize_username(name);
 
         let now = Utc::now();
+        let policy = UserPolicy {
+            is_administrator,
+            authentication_provider_id: Some(
+                UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+            ),
+            password_reset_provider_id: Some(
+                UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+            ),
+            ..UserPolicy::default()
+        };
         let result = user::Entity::insert(user::ActiveModel {
             id: Set(Uuid::new_v4()),
             username: Set(name.to_owned()),
@@ -86,10 +103,13 @@ impl UserService {
             enable_auto_login: Set(false),
             last_login_date: Set(None),
             last_activity_date: Set(None),
-            policy: Set(json!({
-                "AuthenticationProviderId": DEFAULT_AUTH_PROVIDER,
-                "EnableUserPreferenceAccess": true
-            })),
+            authentication_provider_id: Set(
+                UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()
+            ),
+            password_reset_provider_id: Set(
+                UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()
+            ),
+            policy: Set(serde_json::to_value(policy).map_err(UserError::PolicySerialization)?),
             preferences: Set(json!({
                 "RememberAudioSelections": true,
                 "RememberSubtitleSelections": true,
@@ -331,6 +351,99 @@ impl UserService {
         Ok(())
     }
 
+    /// Atomically replaces a user's policy while preserving the global
+    /// administrator and enabled-user invariants.
+    ///
+    /// Returns the updated user and whether the update disabled an account
+    /// that was previously enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::InvalidPolicy`] for missing, blank, or oversized
+    /// provider identifiers; an invariant error when the update would disable
+    /// an administrator or remove the last administrator or enabled user;
+    /// [`UserError::NotFound`] when the user does not exist; or a persistence
+    /// error.
+    pub async fn update_policy(
+        &self,
+        id: Uuid,
+        policy: &UserPolicy,
+    ) -> Result<(user::Model, bool), UserError> {
+        let authentication_provider_id =
+            validate_policy_provider_id(policy.authentication_provider_id.as_deref())?;
+        let password_reset_provider_id =
+            validate_policy_provider_id(policy.password_reset_provider_id.as_deref())?;
+        let serialized = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+
+        let transaction = self.database.begin().await?;
+        transaction
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT pg_advisory_xact_lock($1)",
+                [USER_MUTATION_LOCK_KEY.into()],
+            ))
+            .await?;
+
+        let target = user::Entity::find_by_id(id)
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+
+        if target.is_administrator && policy.is_disabled {
+            return Err(UserError::AdministratorCannotBeDisabled);
+        }
+        if target.is_administrator
+            && !policy.is_administrator
+            && user::Entity::find()
+                .filter(user::Column::IsAdministrator.eq(true))
+                .count(&transaction)
+                .await?
+                <= 1
+        {
+            return Err(UserError::LastAdministrator);
+        }
+
+        let became_disabled = !target.is_disabled && policy.is_disabled;
+        if became_disabled
+            && user::Entity::find()
+                .filter(user::Column::IsDisabled.eq(false))
+                .count(&transaction)
+                .await?
+                <= 1
+        {
+            return Err(UserError::LastEnabledUser);
+        }
+
+        let result = user::Entity::update_many()
+            .col_expr(user::Column::Policy, Expr::value(serialized))
+            .col_expr(
+                user::Column::AuthenticationProviderId,
+                Expr::value(authentication_provider_id),
+            )
+            .col_expr(
+                user::Column::PasswordResetProviderId,
+                Expr::value(password_reset_provider_id),
+            )
+            .col_expr(
+                user::Column::IsAdministrator,
+                Expr::value(policy.is_administrator),
+            )
+            .col_expr(user::Column::IsHidden, Expr::value(policy.is_hidden))
+            .col_expr(user::Column::IsDisabled, Expr::value(policy.is_disabled))
+            .filter(user::Column::Id.eq(id))
+            .exec(&transaction)
+            .await?;
+        if result.rows_affected == 0 {
+            return Err(UserError::NotFound);
+        }
+        let updated = user::Entity::find_by_id(id)
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+        transaction.commit().await?;
+        Ok((updated, became_disabled))
+    }
+
     /// Lists all users in normalized username order.
     ///
     /// # Errors
@@ -360,6 +473,14 @@ impl UserService {
 
 fn normalize_username(name: &str) -> String {
     name.to_uppercase()
+}
+
+fn validate_policy_provider_id(value: Option<&str>) -> Result<String, UserError> {
+    let value = value.ok_or(UserError::InvalidPolicy)?;
+    if value.trim().is_empty() || value.chars().count() > 255 {
+        return Err(UserError::InvalidPolicy);
+    }
+    Ok(value.to_owned())
 }
 
 /// Validates a username against Jellyfin's supported character rules.
