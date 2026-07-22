@@ -1,0 +1,15 @@
+[package]
+name = "jellyfin-networking"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Network address parsing and subnet utilities for Jellyfin"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
