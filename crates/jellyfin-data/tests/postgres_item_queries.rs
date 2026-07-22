@@ -302,7 +302,7 @@ async fn assert_postgres_query_plans(database: &DatabaseConnection, fixture: &Fi
             sea_orm::DbBackend::Postgres,
             r"INSERT INTO jellyfin.base_items
                    (id, item_type, parent_id, name, sort_name, media_type)
-               SELECT md5($1 || '-item-' || value::text)::uuid, 'Movie', $2,
+               SELECT md5($1 || '-primary-' || value::text)::uuid, 'Movie', $2,
                       CASE WHEN value <= 8
                            THEN 'Rare Needle ' || $1 || ' ' || value::text
                            ELSE 'Planner Noise ' || value::text END,
@@ -314,16 +314,44 @@ async fn assert_postgres_query_plans(database: &DatabaseConnection, fixture: &Fi
             [fixture.suffix.clone().into(), fixture.container_id.into()],
         ))
         .await
-        .expect("seed item-query planner sample");
+        .expect("seed primary item-query planner sample");
+    transaction
+        .execute(Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            r"INSERT INTO jellyfin.base_items
+                   (id, item_type, parent_id, name, sort_name, media_type, primary_version_id)
+               SELECT md5($1 || '-alternate-' || value::text)::uuid, 'Movie', $2,
+                      CASE WHEN value <= 8
+                           THEN 'Rare Needle ' || $1 || ' ' || value::text
+                           ELSE 'Planner Noise ' || value::text END,
+                      CASE WHEN value <= 8
+                           THEN 'Rare Needle ' || $1 || ' ' || value::text
+                           ELSE 'Planner Noise ' || value::text END,
+                      'Video', md5($1 || '-primary-' || value::text)::uuid
+                 FROM generate_series(1, 2048) AS value",
+            [fixture.suffix.clone().into(), fixture.container_id.into()],
+        ))
+        .await
+        .expect("seed alternate item-query planner sample");
     transaction
         .execute(Statement::from_sql_and_values(
             sea_orm::DbBackend::Postgres,
             r"INSERT INTO jellyfin.user_data
                    (item_id, user_id, custom_data_key, playback_position_ticks, last_played_date)
-               SELECT md5($1 || '-item-' || value::text)::uuid, $2,
-                      'key-' || value::text, value,
+               SELECT md5($1 || source.id_part || value::text)::uuid, $2,
+                      source.label || '-' || progress.label || '-' || value::text,
+                      value,
                       clock_timestamp() - (value || ' seconds')::interval
-                 FROM generate_series(1, 2048) AS value",
+                          - source.age - progress.age
+                 FROM generate_series(1, 2048) AS value
+                 CROSS JOIN (VALUES
+                     ('primary', '-primary-', interval '1 minute'),
+                     ('alternate', '-alternate-', interval '0 minutes')
+                 ) AS source(label, id_part, age)
+                 CROSS JOIN (VALUES
+                     ('older', interval '1 hour'),
+                     ('current', interval '0 hours')
+                 ) AS progress(label, age)",
             [fixture.suffix.clone().into(), fixture.user_id.into()],
         ))
         .await
@@ -335,9 +363,13 @@ async fn assert_postgres_query_plans(database: &DatabaseConnection, fixture: &Fi
     transaction
         .execute_unprepared("SET LOCAL enable_seqscan = off")
         .await
-        .expect("disable sequential scans");
+        .expect("stabilize item-query index plans");
 
     assert_item_query_plans(&transaction, fixture).await;
+    transaction
+        .execute_unprepared("SET LOCAL enable_bitmapscan = off")
+        .await
+        .expect("stabilize resume covering-index plan");
     assert_resume_query_plan(&transaction, fixture).await;
     transaction.rollback().await.expect("planner rollback");
 }
@@ -375,15 +407,21 @@ async fn assert_item_query_plans(transaction: &sea_orm::DatabaseTransaction, fix
 async fn assert_resume_query_plan(transaction: &sea_orm::DatabaseTransaction, fixture: &Fixture) {
     let resume_plan = explain(
         transaction,
-        "EXPLAIN (FORMAT TEXT) WITH resumable AS ( \
-             SELECT DISTINCT ON (item_id) item_id, last_played_date \
+        "EXPLAIN (FORMAT TEXT) WITH progress_by_item AS ( \
+             SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
-             ORDER BY item_id, last_played_date DESC NULLS LAST, custom_data_key \
+             GROUP BY item_id \
+         ), resume_versions AS ( \
+             SELECT DISTINCT ON (COALESCE(item.primary_version_id, item.id)) \
+                    item.*, progress.resume_last_played_date \
+             FROM progress_by_item AS progress \
+             JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+             ORDER BY COALESCE(item.primary_version_id, item.id), \
+                      progress.resume_last_played_date DESC NULLS LAST, item.id \
          ), filtered AS ( \
-             SELECT item.*, resumable.last_played_date AS resume_last_played_date \
-             FROM resumable \
-             JOIN jellyfin.base_items AS item ON item.id = resumable.item_id \
+             SELECT item.* FROM resume_versions AS item \
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
                                WHERE closure.parent_item_id = $2) \
