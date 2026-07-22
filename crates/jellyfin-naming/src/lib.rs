@@ -5,6 +5,7 @@ pub mod external_files;
 pub mod tv;
 pub mod tv_paths;
 pub mod video;
+pub mod video_list;
 
 pub use common::NamingOptions;
 pub use external_files::{
@@ -20,6 +21,7 @@ pub use tv_paths::{
     SeriesResolver,
 };
 pub use video::{
-    CleanDateTimeResult, Format3dParser, Format3dResult, Format3dRule, StubResolver, StubTypeRule,
-    VideoFileInfo, VideoResolver,
+    CleanDateTimeResult, ExtraRule, ExtraRuleType, ExtraType, Format3dParser, Format3dResult,
+    Format3dRule, MediaType, StubResolver, StubTypeRule, VideoFileInfo, VideoResolver,
 };
+pub use video_list::{CollectionType, FileStackRule, VideoInfo, VideoListResolver};

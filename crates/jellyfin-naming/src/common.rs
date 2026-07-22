@@ -2,7 +2,8 @@ use regex::{Regex, RegexBuilder};
 
 use crate::{
     tv::{EpisodeExpression, default_episode_expressions, default_multiple_episode_expressions},
-    video::{Format3dRule, StubTypeRule},
+    video::{ExtraRule, ExtraRuleType, ExtraType, Format3dRule, MediaType, StubTypeRule},
+    video_list::FileStackRule,
 };
 
 /// File extensions and flags used while parsing external media filenames.
@@ -27,6 +28,8 @@ pub struct NamingOptions {
     pub format_3d_rules: Vec<Format3dRule>,
     pub episode_expressions: Vec<EpisodeExpression>,
     pub multiple_episode_expressions: Vec<EpisodeExpression>,
+    pub video_file_stacking_rules: Vec<FileStackRule>,
+    pub video_extra_rules: Vec<ExtraRule>,
 }
 
 impl Default for NamingOptions {
@@ -101,6 +104,90 @@ impl Default for NamingOptions {
             ],
             episode_expressions: default_episode_expressions(),
             multiple_episode_expressions: default_multiple_episode_expressions(),
+            video_file_stacking_rules: vec![
+                FileStackRule::new(
+                    r"^(?P<filename>.*?)[ _.-]+[\(\[]?(?P<parttype>cd|dvd|part|pt|dis[ck])[ _.-]*(?P<number>[0-9]+)[\)\]]?(?:\.[^.]+)?$",
+                    true,
+                ),
+                FileStackRule::new(
+                    r"^(?P<filename>.*?)[ _.-]+[\(\[]?(?P<parttype>cd|dvd|part|pt|dis[ck])[ _.-]*(?P<number>[a-d])[\)\]]?(?:\.[^.]+)?$",
+                    false,
+                ),
+            ],
+            video_extra_rules: vec![
+                ExtraRule::new(
+                    ExtraType::Trailer,
+                    ExtraRuleType::DirectoryName,
+                    "trailers",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Trailer,
+                    ExtraRuleType::Filename,
+                    "trailer",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Trailer,
+                    ExtraRuleType::Suffix,
+                    "-trailer",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Trailer,
+                    ExtraRuleType::Suffix,
+                    ".trailer",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Trailer,
+                    ExtraRuleType::Suffix,
+                    "_trailer",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Trailer,
+                    ExtraRuleType::Suffix,
+                    "- trailer",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Sample,
+                    ExtraRuleType::DirectoryName,
+                    "samples",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Sample,
+                    ExtraRuleType::Filename,
+                    "sample",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Sample,
+                    ExtraRuleType::Suffix,
+                    "-sample",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Sample,
+                    ExtraRuleType::Suffix,
+                    ".sample",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Sample,
+                    ExtraRuleType::Suffix,
+                    "_sample",
+                    MediaType::Video,
+                ),
+                ExtraRule::new(
+                    ExtraType::Sample,
+                    ExtraRuleType::Suffix,
+                    "- sample",
+                    MediaType::Video,
+                ),
+            ],
         }
     }
 }

@@ -1,5 +1,59 @@
 use crate::NamingOptions;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtraType {
+    BehindTheScenes,
+    Clip,
+    DeletedScene,
+    Featurette,
+    Interview,
+    Sample,
+    Scene,
+    Short,
+    ThemeSong,
+    ThemeVideo,
+    Trailer,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtraRuleType {
+    DirectoryName,
+    Filename,
+    Suffix,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaType {
+    Audio,
+    Video,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtraRule {
+    pub extra_type: ExtraType,
+    pub rule_type: ExtraRuleType,
+    pub token: String,
+    pub media_type: MediaType,
+}
+
+impl ExtraRule {
+    #[must_use]
+    pub fn new(
+        extra_type: ExtraType,
+        rule_type: ExtraRuleType,
+        token: impl Into<String>,
+        media_type: MediaType,
+    ) -> Self {
+        Self {
+            extra_type,
+            rule_type,
+            token: token.into(),
+            media_type,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StubTypeRule {
     pub token: String,
@@ -125,6 +179,8 @@ pub struct VideoFileInfo {
     pub is_3d: bool,
     pub is_stub: bool,
     pub stub_type: Option<String>,
+    pub extra_type: Option<ExtraType>,
+    pub is_directory: bool,
 }
 
 pub struct VideoResolver;
@@ -181,32 +237,56 @@ impl VideoResolver {
 
     #[must_use]
     pub fn resolve_file(path: Option<&str>, options: &NamingOptions) -> Option<VideoFileInfo> {
+        Self::resolve(path, false, options)
+    }
+
+    #[must_use]
+    pub fn resolve(
+        path: Option<&str>,
+        is_directory: bool,
+        options: &NamingOptions,
+    ) -> Option<VideoFileInfo> {
         let path = path.filter(|path| !path.is_empty())?;
-        let extension = extension(path)?;
-        let supported = options
-            .video_file_extensions
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(extension));
-        let stub_type = if supported {
-            None
+        let (container, is_stub, stub_type) = if is_directory {
+            (None, false, None)
         } else {
-            StubResolver::try_resolve_file(path, options)?
+            let extension = extension(path)?;
+            let supported = options
+                .video_file_extensions
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension));
+            let stub_type = if supported {
+                None
+            } else {
+                StubResolver::try_resolve_file(path, options)?
+            };
+            (
+                Some(extension.trim_start_matches('.').to_owned()),
+                !supported,
+                stub_type,
+            )
         };
-        let is_stub = !supported;
         let format = Format3dParser::parse(path, options);
-        let raw_name = file_stem(path);
+        let raw_name = if is_directory {
+            file_name(path)
+        } else {
+            file_stem(path)
+        };
         let date = Self::clean_date_time(raw_name, options);
         let name = Self::try_clean_string(Some(&date.name), options).unwrap_or(date.name);
+        let extra_type = resolve_extra_type(path, raw_name, options, is_directory);
 
         Some(VideoFileInfo {
             name,
             path: path.to_owned(),
-            container: Some(extension.trim_start_matches('.').to_owned()),
+            container,
             year: date.year,
             format_3d: format.format_3d,
             is_3d: format.is_3d,
             is_stub,
             stub_type,
+            extra_type,
+            is_directory,
         })
     }
 
@@ -229,6 +309,42 @@ impl VideoResolver {
                 .any(|candidate| candidate.eq_ignore_ascii_case(extension))
         })
     }
+}
+
+fn resolve_extra_type(
+    path: &str,
+    stem: &str,
+    options: &NamingOptions,
+    is_directory: bool,
+) -> Option<ExtraType> {
+    let is_video = is_directory || VideoResolver::is_video_file(path, options);
+    let is_audio = !is_directory
+        && extension(path).is_some_and(|extension| {
+            options
+                .audio_file_extensions
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        });
+    options.video_extra_rules.iter().find_map(|rule| {
+        let media_matches = match rule.media_type {
+            MediaType::Video => is_video,
+            MediaType::Audio => is_audio,
+        };
+        let rule_matches = match rule.rule_type {
+            ExtraRuleType::Filename => stem.eq_ignore_ascii_case(&rule.token),
+            ExtraRuleType::Suffix => ends_with_ignore_ascii_case(stem, &rule.token),
+            ExtraRuleType::DirectoryName => path
+                .split(['/', '\\'])
+                .any(|part| part.eq_ignore_ascii_case(&rule.token)),
+        };
+        (media_matches && rule_matches).then_some(rule.extra_type)
+    })
+}
+
+fn ends_with_ignore_ascii_case(value: &str, suffix: &str) -> bool {
+    value
+        .get(value.len().saturating_sub(suffix.len())..)
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(suffix))
 }
 
 fn invalid_year_suffix(suffix: &[u8]) -> bool {
