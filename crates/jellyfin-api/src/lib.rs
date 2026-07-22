@@ -20,8 +20,11 @@ use uuid::Uuid;
 
 mod activity_log;
 mod authentication;
+mod branding;
 mod startup;
 mod users;
+
+pub use branding::BrandingOptions;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -29,6 +32,7 @@ pub struct AppState {
     pub(crate) activity_logs: ActivityLogRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) authentication: DefaultAuthenticationProvider,
+    pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
     pub(crate) startup: Arc<Mutex<startup::StartupState>>,
     pub(crate) database: DatabaseConnection,
@@ -41,6 +45,7 @@ impl AppState {
             activity_logs: ActivityLogRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
+            branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
                 local_address: Some(local_address),
                 server_name: Some(server_name.clone()),
@@ -69,6 +74,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the branding configuration used by the public branding API.
+    #[must_use]
+    pub fn with_branding_options(mut self, branding: BrandingOptions) -> Self {
+        self.branding = Arc::new(tokio::sync::RwLock::new(branding));
+        self
+    }
+
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
@@ -80,6 +92,9 @@ pub fn router(state: AppState) -> Router {
         .route("/System/Info/Public", get(public_system_info))
         .route("/System/Ping", get(ping).post(ping))
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
+        .route("/Branding/Configuration", get(branding::get_configuration))
+        .route("/Branding/Css", get(branding::get_css))
+        .route("/Branding/Css.css", get(branding::get_css))
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
