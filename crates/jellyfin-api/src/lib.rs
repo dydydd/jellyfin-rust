@@ -8,15 +8,15 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    DashboardError, DashboardPage, DashboardService, InstalledPlugin, LibraryControllerError,
-    LibraryControllerService, MusicGenreError, MusicGenreService, PersonError, PersonService,
-    PlaystateError, PlaystateService, PluginRegistry, UserError, UserLibraryError,
-    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError,
+    DashboardError, DashboardPage, DashboardService, InstalledPlugin, ItemUpdateError,
+    ItemUpdateService, LibraryControllerError, LibraryControllerService, MusicGenreError,
+    MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
+    PluginRegistry, UserError, UserLibraryError, UserLibraryService, UserService, VideoError,
+    VideoService, VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
-    BaseItemError, DeviceRepository, entities::user,
+    BaseItemError, DeviceRepository, ItemUpdateStoreError, entities::user,
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
@@ -29,6 +29,7 @@ mod activity_log;
 mod authentication;
 mod branding;
 mod dashboard;
+mod item_update;
 mod items;
 mod library;
 mod live_tv;
@@ -55,6 +56,7 @@ pub struct AppState {
     pub(crate) playstate: PlaystateService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
+    pub(crate) item_update: ItemUpdateService,
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) videos: VideoService,
@@ -79,6 +81,7 @@ impl AppState {
             playstate: PlaystateService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
+            item_update: ItemUpdateService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
             videos: VideoService::new(database.clone()),
@@ -289,7 +292,9 @@ fn user_library_routes() -> Router<Arc<AppState>> {
         .route("/Items/Root", get(user_library::get_root))
         .route(
             "/Items/{item_id}",
-            get(user_library::get_item).delete(library::delete_item),
+            get(user_library::get_item)
+                .post(item_update::update)
+                .delete(library::delete_item),
         )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
         .route(
@@ -381,6 +386,7 @@ pub(crate) enum ApiError {
     VirtualFolder(VirtualFolderServiceError),
     Dashboard(DashboardError),
     TunerHost(TunerHostError),
+    ItemUpdate(ItemUpdateError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -465,6 +471,12 @@ impl From<TunerHostError> for ApiError {
     }
 }
 
+impl From<ItemUpdateError> for ApiError {
+    fn from(error: ItemUpdateError) -> Self {
+        Self::ItemUpdate(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
@@ -542,8 +554,26 @@ impl IntoResponse for ApiError {
             Self::VirtualFolder(error) => virtual_folder_error_response(&error),
             Self::Dashboard(error) => dashboard_error_response(&error),
             Self::TunerHost(error) => tuner_host_error_response(&error),
+            Self::ItemUpdate(error) => item_update_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn item_update_error_response(error: &ItemUpdateError) -> (StatusCode, &'static str) {
+    match error {
+        ItemUpdateError::Store(ItemUpdateStoreError::NotFound) => {
+            (StatusCode::NOT_FOUND, "Item not found")
+        }
+        ItemUpdateError::Store(ItemUpdateStoreError::InvalidValue) => {
+            (StatusCode::BAD_REQUEST, "Invalid item metadata")
+        }
+        ItemUpdateError::Store(
+            ItemUpdateStoreError::InvalidMetadata | ItemUpdateStoreError::Database(_),
+        ) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Item metadata persistence failed",
+        ),
     }
 }
 

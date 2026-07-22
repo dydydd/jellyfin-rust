@@ -2,6 +2,7 @@ mod activity_log_repository;
 mod authentication_repository;
 mod base_item_repository;
 pub mod entities;
+mod item_update_repository;
 mod item_value_repository;
 mod person_repository;
 mod quick_connect_repository;
@@ -21,6 +22,7 @@ pub use base_item_repository::{
     BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage, BaseItemQuery,
     BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
 };
+pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{ItemValueError, ItemValueRepository};
 pub use person_repository::{NewPerson, PersonCredit, PersonError, PersonRepository};
 pub use quick_connect_repository::{
