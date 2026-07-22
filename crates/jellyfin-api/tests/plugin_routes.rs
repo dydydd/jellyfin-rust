@@ -1,10 +1,15 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
 use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{InstalledPlugin, UserService};
 use jellyfin_data::{
     ApiKeyRepository, DeviceRepository, NewDevice,
     entities::{api_key, user},
@@ -77,6 +82,78 @@ async fn authenticated_users_receive_complete_name_ordered_plugin_metadata() {
             }
         ])
     );
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn anonymous_plugin_images_match_official_file_and_path_security_contract() {
+    let PluginImageCases {
+        _temporary_directory,
+        plugin_root,
+        installed_plugins,
+        mut not_found_ids,
+        valid_id,
+        nested_id,
+        normalized_id,
+    } = plugin_image_cases();
+
+    let fixture = Fixture::new_installed(installed_plugins).await;
+
+    let response = fixture
+        .request(&format!("/Plugins/{valid_id}/1.0/Image"), &[])
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        response.headers()[header::CONTENT_DISPOSITION],
+        "attachment"
+    );
+    assert_eq!(body_bytes(response).await, b"official-plugin-image");
+
+    let nested_response = fixture
+        .request(&format!("/Plugins/{nested_id}/1.0/Image"), &[])
+        .await;
+    assert_eq!(nested_response.status(), StatusCode::OK);
+    assert_eq!(
+        nested_response.headers()[header::CONTENT_TYPE],
+        "image/jpeg"
+    );
+    assert_eq!(body_bytes(nested_response).await, b"nested-image");
+
+    let normalized_response = fixture
+        .request(&format!("/Plugins/{normalized_id}/1.0/Image"), &[])
+        .await;
+    assert_eq!(normalized_response.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(normalized_response).await,
+        b"official-plugin-image"
+    );
+
+    assert_eq!(
+        fixture
+            .request(&format!("/Plugins/{valid_id}/2.0/Image"), &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    not_found_ids.push(Uuid::from_u128(0xffff));
+    for plugin_id in not_found_ids {
+        assert_eq!(
+            fixture
+                .request(&format!("/Plugins/{plugin_id}/1.0/Image"), &[])
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "plugin image {plugin_id} should not resolve"
+        );
+    }
+
+    let listed_plugins = body_json(fixture.get(Some(&fixture.user_token)).await).await;
+    let listed_json = serde_json::to_string(&listed_plugins).unwrap();
+    assert!(listed_json.contains(&valid_id.simple().to_string()));
+    assert!(!listed_json.contains(plugin_root.to_string_lossy().as_ref()));
+    assert!(!listed_json.contains("logo.png"));
+
     fixture.cleanup().await;
 }
 
@@ -249,6 +326,145 @@ fn plugin(
     }
 }
 
+fn installed_plugin(id: Uuid, directory: &Path, image_path: Option<&str>) -> InstalledPlugin {
+    let mut info = plugin(
+        &format!("Image Plugin {id}"),
+        id,
+        None,
+        PluginStatus::Active,
+    );
+    "1.0".clone_into(&mut info.version);
+    InstalledPlugin::new(info, directory, image_path.map(str::to_owned))
+}
+
+struct PluginImageCases {
+    _temporary_directory: TempDirectory,
+    plugin_root: PathBuf,
+    installed_plugins: Vec<InstalledPlugin>,
+    not_found_ids: Vec<Uuid>,
+    valid_id: Uuid,
+    nested_id: Uuid,
+    normalized_id: Uuid,
+}
+
+fn plugin_image_cases() -> PluginImageCases {
+    let temporary_directory = TempDirectory::new();
+    let plugin_root = temporary_directory.path().join("plugin");
+    let sibling_root = temporary_directory.path().join("plugin-evil");
+    let outside_file = temporary_directory.path().join("outside.png");
+    fs::create_dir_all(plugin_root.join("nested")).unwrap();
+    fs::create_dir_all(&sibling_root).unwrap();
+    fs::write(plugin_root.join("logo.png"), b"official-plugin-image").unwrap();
+    fs::write(plugin_root.join("nested/cover.jpg"), b"nested-image").unwrap();
+    fs::write(sibling_root.join("logo.png"), b"sibling-image").unwrap();
+    fs::write(&outside_file, b"outside-image").unwrap();
+
+    let valid_id = Uuid::from_u128(0x100);
+    let nested_id = Uuid::from_u128(0x101);
+    let normalized_id = Uuid::from_u128(0x102);
+    let missing_id = Uuid::from_u128(0x103);
+    let traversal_id = Uuid::from_u128(0x104);
+    let nested_traversal_id = Uuid::from_u128(0x105);
+    let sibling_id = Uuid::from_u128(0x106);
+    let absolute_id = Uuid::from_u128(0x107);
+    let null_id = Uuid::from_u128(0x108);
+    let empty_id = Uuid::from_u128(0x109);
+    let whitespace_id = Uuid::from_u128(0x10a);
+    let mut installed_plugins = vec![
+        installed_plugin(valid_id, &plugin_root, Some("logo.png")),
+        installed_plugin(nested_id, &plugin_root, Some("nested/cover.jpg")),
+        installed_plugin(normalized_id, &plugin_root, Some("unused/../logo.png")),
+        installed_plugin(missing_id, &plugin_root, Some("does-not-exist.png")),
+        installed_plugin(traversal_id, &plugin_root, Some("../../../../etc/passwd")),
+        installed_plugin(
+            nested_traversal_id,
+            &plugin_root,
+            Some("subdir/../../../../etc/passwd"),
+        ),
+        installed_plugin(sibling_id, &plugin_root, Some("../plugin-evil/logo.png")),
+        installed_plugin(
+            absolute_id,
+            &plugin_root,
+            Some(outside_file.to_string_lossy().as_ref()),
+        ),
+        installed_plugin(null_id, &plugin_root, None),
+        installed_plugin(empty_id, &plugin_root, Some("")),
+        installed_plugin(whitespace_id, &plugin_root, Some("   ")),
+    ];
+    let mut not_found_ids = vec![
+        missing_id,
+        traversal_id,
+        nested_traversal_id,
+        sibling_id,
+        absolute_id,
+        null_id,
+        empty_id,
+        whitespace_id,
+    ];
+    add_symlink_cases(
+        &temporary_directory,
+        &plugin_root,
+        &outside_file,
+        &mut installed_plugins,
+        &mut not_found_ids,
+    );
+
+    PluginImageCases {
+        _temporary_directory: temporary_directory,
+        plugin_root,
+        installed_plugins,
+        not_found_ids,
+        valid_id,
+        nested_id,
+        normalized_id,
+    }
+}
+
+#[cfg(unix)]
+fn add_symlink_cases(
+    temporary_directory: &TempDirectory,
+    plugin_root: &Path,
+    outside_file: &Path,
+    installed_plugins: &mut Vec<InstalledPlugin>,
+    not_found_ids: &mut Vec<Uuid>,
+) {
+    use std::os::unix::fs::symlink;
+
+    let outside_directory = temporary_directory.path().join("outside-directory");
+    fs::create_dir_all(&outside_directory).unwrap();
+    fs::write(
+        outside_directory.join("logo.png"),
+        b"outside-directory-image",
+    )
+    .unwrap();
+    symlink(outside_file, plugin_root.join("linked.png")).unwrap();
+    symlink(&outside_directory, plugin_root.join("linked-directory")).unwrap();
+
+    let linked_file_id = Uuid::from_u128(0x10b);
+    let linked_directory_id = Uuid::from_u128(0x10c);
+    installed_plugins.push(installed_plugin(
+        linked_file_id,
+        plugin_root,
+        Some("linked.png"),
+    ));
+    installed_plugins.push(installed_plugin(
+        linked_directory_id,
+        plugin_root,
+        Some("linked-directory/logo.png"),
+    ));
+    not_found_ids.extend([linked_file_id, linked_directory_id]);
+}
+
+#[cfg(not(unix))]
+fn add_symlink_cases(
+    _temporary_directory: &TempDirectory,
+    _plugin_root: &Path,
+    _outside_file: &Path,
+    _installed_plugins: &mut Vec<InstalledPlugin>,
+    _not_found_ids: &mut Vec<Uuid>,
+) {
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
@@ -261,6 +477,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new(plugins: Vec<PluginInfo>) -> Self {
+        Self::configured(move |state| state.with_plugins(plugins)).await
+    }
+
+    async fn new_installed(plugins: Vec<InstalledPlugin>) -> Self {
+        Self::configured(move |state| state.with_installed_plugins(plugins)).await
+    }
+
+    async fn configured(configure: impl FnOnce(AppState) -> AppState) -> Self {
         let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
             .await
             .expect("local PostgreSQL must be available");
@@ -283,12 +507,11 @@ impl Fixture {
             .touch(&api_key.access_token, api_key_last_activity)
             .await
             .expect("API key timestamp setup");
-        let state = AppState::new(
+        let state = configure(AppState::new(
             database.clone(),
             "Plugin Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
-        )
-        .with_plugins(plugins);
+        ));
         Self {
             database,
             app: jellyfin_api::router(state),
@@ -361,4 +584,32 @@ async fn body_json(response: axum::response::Response) -> Value {
             .unwrap(),
     )
     .unwrap()
+}
+
+async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+    to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+        .await
+        .unwrap()
+        .to_vec()
+}
+
+struct TempDirectory(PathBuf);
+
+impl TempDirectory {
+    fn new() -> Self {
+        let path =
+            std::env::temp_dir().join(format!("jellyfin-plugin-api-{}", Uuid::new_v4().simple()));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }

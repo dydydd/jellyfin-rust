@@ -24,7 +24,7 @@ pub use persons::{Person, PersonError, PersonService};
 pub use playstate::{
     PlaystateError, PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
 };
-pub use plugins::PluginRegistry;
+pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry};
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};
 pub use videos::{VideoError, VideoService};

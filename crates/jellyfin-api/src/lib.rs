@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    DashboardError, DashboardPage, DashboardService, LibraryControllerError,
+    DashboardError, DashboardPage, DashboardService, InstalledPlugin, LibraryControllerError,
     LibraryControllerService, MusicGenreError, MusicGenreService, PersonError, PersonService,
     PlaystateError, PlaystateService, PluginRegistry, UserError, UserLibraryError,
     UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
@@ -137,6 +137,14 @@ impl AppState {
         self
     }
 
+    /// Replaces the installed plugins while retaining runtime installation
+    /// details used by plugin file endpoints.
+    #[must_use]
+    pub fn with_installed_plugins(mut self, plugins: Vec<InstalledPlugin>) -> Self {
+        self.plugins = PluginRegistry::from_installed(plugins);
+        self
+    }
+
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
@@ -158,6 +166,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
         .route("/Plugins", get(plugins::list))
+        .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
