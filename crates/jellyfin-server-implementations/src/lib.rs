@@ -1,6 +1,7 @@
 mod audio_resolver;
 mod core_resolution_ignore;
 mod cryptography;
+mod dot_ignore;
 mod dto_images;
 mod ignore_patterns;
 mod library_extras;
@@ -28,6 +29,7 @@ pub use cryptography::{
     CryptographyError, CryptographyProvider, DEFAULT_HASH_METHOD, DEFAULT_ITERATIONS,
     DEFAULT_OUTPUT_LENGTH, DEFAULT_SALT_LENGTH,
 };
+pub use dot_ignore::{DotIgnoreFileSystemEntry, DotIgnoreIgnoreRule};
 pub use dto_images::{
     DtoImage, DtoImageItem, DtoImageItemKind, DtoImageLibrary, DtoImageOptions, DtoImageProjection,
     DtoImageProjectionService, ImageCacheTagProvider, PersistedDtoImageProjectionError,
