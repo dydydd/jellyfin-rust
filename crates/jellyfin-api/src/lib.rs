@@ -18,6 +18,7 @@ use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, DeviceRepository, entities::user,
 };
+use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_server_implementations::{AuthenticationError, DefaultAuthenticationProvider};
 use sea_orm::DatabaseConnection;
@@ -30,6 +31,7 @@ mod branding;
 mod dashboard;
 mod items;
 mod library;
+mod live_tv;
 mod media_info;
 mod music_genre;
 mod persons;
@@ -56,6 +58,7 @@ pub struct AppState {
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) videos: VideoService,
+    pub(crate) tuner_hosts: TunerHostManager,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) dashboard: DashboardService,
     pub(crate) plugins: PluginRegistry,
@@ -79,6 +82,7 @@ impl AppState {
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
             videos: VideoService::new(database.clone()),
+            tuner_hosts: TunerHostManager::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
             dashboard: DashboardService::default(),
             plugins: PluginRegistry::default(),
@@ -212,6 +216,7 @@ pub fn router(state: AppState) -> Router {
         .merge(library_controller_routes())
         .merge(user_library_routes())
         .merge(video_routes())
+        .merge(live_tv_routes())
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))
         .route(
@@ -290,6 +295,13 @@ fn video_routes() -> Router<Arc<AppState>> {
     )
 }
 
+fn live_tv_routes() -> Router<Arc<AppState>> {
+    Router::new().route(
+        "/LiveTv/TunerHosts",
+        post(live_tv::save_tuner_host).delete(live_tv::delete_tuner_host),
+    )
+}
+
 async fn health(State(state): State<Arc<AppState>>) -> Response {
     match jellyfin_data::healthcheck(&state.database).await {
         Ok(()) => (StatusCode::OK, "Healthy").into_response(),
@@ -351,6 +363,7 @@ pub(crate) enum ApiError {
     Video(VideoError),
     VirtualFolder(VirtualFolderServiceError),
     Dashboard(DashboardError),
+    TunerHost(TunerHostError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -426,6 +439,12 @@ impl From<VirtualFolderServiceError> for ApiError {
 impl From<DashboardError> for ApiError {
     fn from(error: DashboardError) -> Self {
         Self::Dashboard(error)
+    }
+}
+
+impl From<TunerHostError> for ApiError {
+    fn from(error: TunerHostError) -> Self {
+        Self::TunerHost(error)
     }
 }
 
@@ -528,8 +547,24 @@ impl IntoResponse for ApiError {
             ),
             Self::VirtualFolder(error) => virtual_folder_error_response(&error),
             Self::Dashboard(error) => dashboard_error_response(&error),
+            Self::TunerHost(error) => tuner_host_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn tuner_host_error_response(error: &TunerHostError) -> (StatusCode, &'static str) {
+    match error {
+        TunerHostError::UnsupportedType | TunerHostError::SourceUnavailable => {
+            (StatusCode::NOT_FOUND, "Tuner host provider was not found")
+        }
+        TunerHostError::Store(jellyfin_data::TunerHostStoreError::InvalidNumericValue) => {
+            (StatusCode::BAD_REQUEST, "Invalid tuner host request")
+        }
+        TunerHostError::Store(jellyfin_data::TunerHostStoreError::Database(_)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Tuner host persistence failed",
+        ),
     }
 }
 

@@ -13,6 +13,7 @@ mod m20260722_000010_create_quick_connect;
 mod m20260722_000011_normalize_base_item_search;
 mod m20260722_000012_add_alternate_item_versions;
 mod m20260722_000013_optimize_version_playback;
+mod m20260722_000014_create_tuner_hosts;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -40,6 +41,8 @@ pub use m20260722_000011_normalize_base_item_search::Migration as NormalizeBaseI
 pub use m20260722_000012_add_alternate_item_versions::Migration as AddAlternateItemVersionsMigration;
 #[doc(hidden)]
 pub use m20260722_000013_optimize_version_playback::Migration as OptimizeVersionPlaybackMigration;
+#[doc(hidden)]
+pub use m20260722_000014_create_tuner_hosts::Migration as CreateTunerHostsMigration;
 
 pub struct Migrator;
 
@@ -60,6 +63,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000011_normalize_base_item_search::Migration),
             Box::new(m20260722_000012_add_alternate_item_versions::Migration),
             Box::new(m20260722_000013_optimize_version_playback::Migration),
+            Box::new(m20260722_000014_create_tuner_hosts::Migration),
         ]
     }
 }

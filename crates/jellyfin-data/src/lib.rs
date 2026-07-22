@@ -5,6 +5,7 @@ pub mod entities;
 mod item_value_repository;
 mod person_repository;
 mod quick_connect_repository;
+mod tuner_host_repository;
 mod user_data_repository;
 mod virtual_folder_repository;
 
@@ -25,6 +26,7 @@ pub use person_repository::{NewPerson, PersonCredit, PersonError, PersonReposito
 pub use quick_connect_repository::{
     AuthorizedQuickConnect, NewQuickConnectRequest, QuickConnectRepository, QuickConnectStoreError,
 };
+pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStoreError};
 pub use user_data_repository::{
     NewUserData, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
 };

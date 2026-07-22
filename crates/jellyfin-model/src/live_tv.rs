@@ -1,4 +1,5 @@
 use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::ProviderIdMap;
 
@@ -32,15 +33,51 @@ pub struct TimerInfo {
 }
 
 /// Configuration and discovered identity for a Live TV tuner host.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(default, rename_all = "PascalCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct TunerHostInfo {
     pub id: Option<String>,
     pub url: String,
+    #[serde(rename = "Type")]
     pub tuner_type: String,
     pub device_id: Option<String>,
     pub friendly_name: Option<String>,
     pub import_favorites_only: bool,
+    #[serde(rename = "AllowHWTranscoding")]
+    pub allow_hw_transcoding: bool,
+    pub allow_fmp4_transcoding_container: bool,
+    pub allow_stream_sharing: bool,
+    pub fallback_max_streaming_bitrate: i32,
+    pub enable_stream_looping: bool,
+    pub source: Option<String>,
     pub tuner_count: i32,
+    pub user_agent: Option<String>,
+    pub ignore_dts: bool,
+    pub read_at_native_framerate: bool,
+}
+
+impl Default for TunerHostInfo {
+    fn default() -> Self {
+        Self {
+            id: None,
+            url: String::new(),
+            tuner_type: String::new(),
+            device_id: None,
+            friendly_name: None,
+            import_favorites_only: false,
+            allow_hw_transcoding: true,
+            allow_fmp4_transcoding_container: false,
+            allow_stream_sharing: true,
+            fallback_max_streaming_bitrate: 30_000_000,
+            enable_stream_looping: false,
+            source: None,
+            tuner_count: 0,
+            user_agent: None,
+            ignore_dts: true,
+            read_at_native_framerate: false,
+        }
+    }
 }
 
 impl Default for TimerInfo {
