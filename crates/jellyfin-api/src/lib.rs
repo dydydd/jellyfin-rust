@@ -17,7 +17,8 @@ use jellyfin_controller::{
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
-    BaseItemError, DeviceRepository, ItemUpdateStoreError, entities::user,
+    BaseItemError, DeviceRepository, ItemUpdateStoreError, ServerConfigurationRepository,
+    ServerConfigurationStoreError, entities::user,
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
@@ -75,6 +76,7 @@ pub struct AppState {
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
     pub(crate) startup: Arc<Mutex<startup::StartupState>>,
+    pub(crate) startup_repository: Option<ServerConfigurationRepository>,
     pub(crate) database: DatabaseConnection,
 }
 
@@ -112,6 +114,7 @@ impl AppState {
                 ..PublicSystemInfo::default()
             },
             startup: Arc::new(Mutex::new(startup::StartupState::new(server_name))),
+            startup_repository: None,
             database,
         }
     }
@@ -127,6 +130,17 @@ impl AppState {
             .expect("startup state is uniquely owned during construction")
             .get_mut()
             .user_id = Some(user_id);
+        self
+    }
+
+    /// Uses `PostgreSQL` as the source of truth for server startup configuration.
+    ///
+    /// The repository singleton must be loaded successfully before attaching it.
+    /// [`Self::new`] intentionally retains its in-memory behavior for isolated
+    /// route tests and disconnected application states.
+    #[must_use]
+    pub fn with_persistent_startup(mut self, repository: ServerConfigurationRepository) -> Self {
+        self.startup_repository = Some(repository);
         self
     }
 
@@ -378,14 +392,16 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
-async fn public_system_info(State(state): State<Arc<AppState>>) -> Json<PublicSystemInfo> {
-    let startup = state.startup.lock().await;
+async fn public_system_info(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<PublicSystemInfo>, ApiError> {
+    let startup = startup::snapshot(&state).await?;
     let mut system_info = state.system_info.clone();
     system_info
         .server_name
         .clone_from(&startup.configuration.server_name);
     system_info.startup_wizard_completed = Some(startup.completed);
-    Json(system_info)
+    Ok(Json(system_info))
 }
 
 async fn ping() -> &'static str {
@@ -437,6 +453,7 @@ pub(crate) enum ApiError {
     TunerHost(TunerHostError),
     ItemUpdate(ItemUpdateError),
     SystemLog(SystemLogError),
+    ServerConfiguration(ServerConfigurationStoreError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -533,6 +550,12 @@ impl From<SystemLogError> for ApiError {
     }
 }
 
+impl From<ServerConfigurationStoreError> for ApiError {
+    fn from(error: ServerConfigurationStoreError) -> Self {
+        Self::ServerConfiguration(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
@@ -612,6 +635,10 @@ impl IntoResponse for ApiError {
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
             Self::SystemLog(error) => system_log_error_response(&error),
+            Self::ServerConfiguration(_error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Startup configuration persistence failed",
+            ),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
     }

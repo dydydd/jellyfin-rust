@@ -1,7 +1,7 @@
 use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{BaseItemRepository, DatabaseConfig};
+use jellyfin_data::{BaseItemRepository, DatabaseConfig, ServerConfigurationRepository};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -19,6 +19,11 @@ async fn main() -> anyhow::Result<()> {
     jellyfin_data::migrate(&database)
         .await
         .context("failed to migrate PostgreSQL")?;
+    let startup_repository = ServerConfigurationRepository::new(database.clone());
+    let persisted_configuration = startup_repository
+        .load()
+        .await
+        .context("failed to load the PostgreSQL server configuration")?;
     BaseItemRepository::new(database.clone())
         .ensure_user_root()
         .await
@@ -34,10 +39,11 @@ async fn main() -> anyhow::Result<()> {
     let app = jellyfin_api::router(
         AppState::new(
             database,
-            "Jellyfin".to_owned(),
+            persisted_configuration.server_name,
             format!("http://{bind_address}"),
         )
-        .with_startup_user(initial_user.id),
+        .with_startup_user(initial_user.id)
+        .with_persistent_startup(startup_repository),
     );
 
     info!(address = %bind_address, "Jellyfin Rust server listening");

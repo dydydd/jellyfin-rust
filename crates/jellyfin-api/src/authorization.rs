@@ -32,7 +32,7 @@ pub(crate) async fn require_first_time_setup_or_elevated(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<(), ApiError> {
-    let startup_completed = state.startup.lock().await.completed;
+    let startup_completed = crate::startup::is_completed(state).await?;
     if !startup_completed {
         return Ok(());
     }

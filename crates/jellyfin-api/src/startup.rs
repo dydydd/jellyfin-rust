@@ -5,7 +5,10 @@ use axum::{
     extract::{OriginalUri, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_data::entities::user;
+use jellyfin_data::{
+    StartupConfigurationUpdate,
+    entities::{server_configuration, user},
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -47,14 +50,48 @@ impl StartupState {
     }
 }
 
+pub(crate) struct StartupSnapshot {
+    pub(crate) configuration: StartupConfiguration,
+    pub(crate) completed: bool,
+}
+
+impl From<server_configuration::Model> for StartupSnapshot {
+    fn from(configuration: server_configuration::Model) -> Self {
+        Self {
+            configuration: StartupConfiguration {
+                server_name: Some(configuration.server_name),
+                ui_culture: Some(configuration.ui_culture),
+                metadata_country_code: Some(configuration.metadata_country_code),
+                preferred_metadata_language: Some(configuration.preferred_metadata_language),
+            },
+            completed: configuration.is_startup_wizard_completed,
+        }
+    }
+}
+
+pub(crate) async fn snapshot(state: &AppState) -> Result<StartupSnapshot, ApiError> {
+    if let Some(repository) = &state.startup_repository {
+        return Ok(repository.load().await?.into());
+    }
+
+    let startup = state.startup.lock().await;
+    Ok(StartupSnapshot {
+        configuration: startup.configuration.clone(),
+        completed: startup.completed,
+    })
+}
+
+pub(crate) async fn is_completed(state: &AppState) -> Result<bool, ApiError> {
+    Ok(snapshot(state).await?.completed)
+}
+
 pub(crate) async fn get_configuration(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<StartupConfiguration>, ApiError> {
     authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
-    let startup = state.startup.lock().await;
-    Ok(Json(startup.configuration.clone()))
+    Ok(Json(snapshot(&state).await?.configuration))
 }
 
 pub(crate) async fn update_configuration(
@@ -64,14 +101,31 @@ pub(crate) async fn update_configuration(
     request: Result<Json<StartupConfiguration>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
-    let mut startup = state.startup.lock().await;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    startup.configuration = StartupConfiguration {
+    let configuration = StartupConfiguration {
         server_name: Some(request.server_name.unwrap_or_default()),
         ui_culture: Some(request.ui_culture.unwrap_or_default()),
         metadata_country_code: Some(request.metadata_country_code.unwrap_or_default()),
         preferred_metadata_language: Some(request.preferred_metadata_language.unwrap_or_default()),
     };
+    if let Some(repository) = &state.startup_repository {
+        repository
+            .update_startup_configuration(StartupConfigurationUpdate {
+                server_name: configuration.server_name.clone().unwrap_or_default(),
+                ui_culture: configuration.ui_culture.clone().unwrap_or_default(),
+                metadata_country_code: configuration
+                    .metadata_country_code
+                    .clone()
+                    .unwrap_or_default(),
+                preferred_metadata_language: configuration
+                    .preferred_metadata_language
+                    .clone()
+                    .unwrap_or_default(),
+            })
+            .await?;
+    } else {
+        state.startup.lock().await.configuration = configuration;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -137,8 +191,11 @@ pub(crate) async fn complete(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
-    let mut startup = state.startup.lock().await;
-    startup.completed = true;
+    if let Some(repository) = &state.startup_repository {
+        repository.complete_startup().await?;
+    } else {
+        state.startup.lock().await.completed = true;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
