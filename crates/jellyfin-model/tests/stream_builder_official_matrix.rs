@@ -12,16 +12,73 @@ const OFFICIAL_TESTS: &str = include_str!(concat!(
 
 #[test]
 fn official_build_video_item_simple_matrix() {
-    let cases = build_video_item_simple_cases();
-    assert_eq!(cases.len(), 176, "the upstream matrix changed");
+    run_official_matrix("BuildVideoItemSimple", 176, |_| {}, false);
+}
+
+#[test]
+fn official_build_video_item_with_first_explicit_stream_matrix() {
+    run_official_matrix(
+        "BuildVideoItemWithFirstExplicitStream",
+        81,
+        |options| {
+            options.audio_stream_index = Some(1);
+            options.subtitle_stream_index =
+                Some(options.media_sources[0].media_streams.len() as i32 - 1);
+        },
+        true,
+    );
+}
+
+#[test]
+fn official_build_video_item_with_direct_play_explicit_streams_matrix() {
+    run_official_matrix(
+        "BuildVideoItemWithDirectPlayExplicitStreams",
+        23,
+        |options| {
+            let stream_count = options.media_sources[0].media_streams.len() as i32;
+            if stream_count > 0 {
+                options.audio_stream_index = Some(stream_count - 2);
+                options.subtitle_stream_index = Some(stream_count - 1);
+            }
+        },
+        true,
+    );
+}
+
+fn run_official_matrix(
+    theory: &str,
+    expected_count: usize,
+    configure: fn(&mut MediaOptions),
+    assert_explicit_indices: bool,
+) {
+    let cases = official_cases(theory);
+    assert_eq!(cases.len(), expected_count, "the upstream matrix changed");
 
     let mut failures = Vec::new();
     for case in cases {
-        let options = media_options(&case.device, &case.source);
+        let mut options = media_options(&case.device, &case.source);
+        configure(&mut options);
+        let expected_audio_index = options.audio_stream_index;
+        let expected_subtitle_index = options.subtitle_stream_index;
         let result = StreamBuilder::default()
             .get_optimal_video_stream(&options)
             .unwrap_or_else(|error| panic!("{} / {}: {error}", case.device, case.source))
             .unwrap_or_else(|| panic!("{} / {}: no stream", case.device, case.source));
+
+        if assert_explicit_indices
+            && (result.audio_stream_index != expected_audio_index
+                || result.subtitle_stream_index != expected_subtitle_index)
+        {
+            failures.push(format!(
+                "{} / {}: stream indices audio {:?} != {:?}, subtitle {:?} != {:?}",
+                case.device,
+                case.source,
+                result.audio_stream_index,
+                expected_audio_index,
+                result.subtitle_stream_index,
+                expected_subtitle_index
+            ));
+        }
 
         if case
             .method
@@ -116,14 +173,15 @@ struct OfficialCase {
     protocol: String,
 }
 
-fn build_video_item_simple_cases() -> Vec<OfficialCase> {
+fn official_cases(theory: &str) -> Vec<OfficialCase> {
+    let method = format!("public async Task {theory}");
     let section = OFFICIAL_TESTS
         .split("[Theory]")
-        .nth(1)
-        .expect("BuildVideoItemSimple theory")
-        .split("public async Task BuildVideoItemSimple")
+        .find(|section| section.contains(&method))
+        .unwrap_or_else(|| panic!("{theory} theory"))
+        .split(&method)
         .next()
-        .expect("BuildVideoItemSimple body");
+        .unwrap_or_else(|| panic!("{theory} body"));
 
     section
         .lines()
