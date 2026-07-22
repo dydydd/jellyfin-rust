@@ -6,6 +6,7 @@ pub mod media_encoding;
 mod music_genre;
 mod persons;
 mod playstate;
+mod plugins;
 pub mod providers;
 mod user_library;
 mod users;
@@ -18,6 +19,7 @@ pub use persons::{Person, PersonError, PersonService};
 pub use playstate::{
     PlaystateError, PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
 };
+pub use plugins::PluginRegistry;
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};
 pub use virtual_folders::{VirtualFolder, VirtualFolderService, VirtualFolderServiceError};

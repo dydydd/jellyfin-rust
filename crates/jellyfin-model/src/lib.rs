@@ -14,6 +14,7 @@ pub mod enums;
 pub mod extensions;
 pub mod live_tv;
 pub mod net;
+pub mod plugins;
 pub mod providers;
 mod serde_datetime;
 mod serde_guid;
@@ -40,6 +41,7 @@ pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, 
 pub use extensions::first_to_upper;
 pub use live_tv::TimerInfo;
 pub use net::{MimeTypeError, MimeTypes};
+pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
 pub use system::PublicSystemInfo;
 pub use users::{AccessSchedule, UserPolicy};

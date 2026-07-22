@@ -10,8 +10,8 @@ use axum::{
 use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, LibraryControllerError,
     LibraryControllerService, MusicGenreError, MusicGenreService, PersonError, PersonService,
-    PlaystateError, PlaystateService, UserError, UserLibraryError, UserLibraryService, UserService,
-    VirtualFolderService, VirtualFolderServiceError,
+    PlaystateError, PlaystateService, PluginRegistry, UserError, UserLibraryError,
+    UserLibraryService, UserService, VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
@@ -33,6 +33,7 @@ mod media_info;
 mod music_genre;
 mod persons;
 mod playstate;
+mod plugins;
 mod startup;
 mod user_library;
 mod users;
@@ -52,6 +53,7 @@ pub struct AppState {
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) dashboard: DashboardService,
+    pub(crate) plugins: PluginRegistry,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -72,6 +74,7 @@ impl AppState {
             library_controller: LibraryControllerService::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
             dashboard: DashboardService::default(),
+            plugins: PluginRegistry::default(),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -116,6 +119,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the installed plugin metadata exposed by the plugin API.
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Vec<jellyfin_model::PluginInfo>) -> Self {
+        self.plugins = PluginRegistry::new(plugins);
+        self
+    }
+
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
@@ -136,6 +146,7 @@ pub fn router(state: AppState) -> Router {
             get(dashboard::configuration_pages),
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
+        .route("/Plugins", get(plugins::list))
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
