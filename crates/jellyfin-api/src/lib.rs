@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 mod activity_log;
 mod authentication;
+mod authorization;
 mod branding;
 mod dashboard;
 mod item_update;
@@ -191,6 +192,7 @@ pub fn router(state: AppState) -> Router {
             "/Startup/User",
             get(startup::get_user).post(startup::update_user),
         )
+        .route("/Startup/FirstUser", get(startup::get_user))
         .route("/Startup/Complete", post(startup::complete))
         .route(
             "/Users/AuthenticateByName",

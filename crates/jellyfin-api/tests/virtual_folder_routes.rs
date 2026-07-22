@@ -32,6 +32,14 @@ async fn assert_library_access(fixture: &Fixture) {
             .send(Method::GET, "/Library/VirtualFolders", None, None)
             .await
             .status(),
+        StatusCode::OK
+    );
+    fixture.complete_startup().await;
+    assert_eq!(
+        fixture
+            .send(Method::GET, "/Library/VirtualFolders", None, None)
+            .await
+            .status(),
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
@@ -161,6 +169,7 @@ async fn assert_library_deletion(fixture: &Fixture, name: &str) {
 #[tokio::test]
 async fn official_media_structure_controller_contract() {
     let fixture = Fixture::new().await;
+    fixture.complete_startup().await;
     for (method, uri, body, expected) in [
         (
             Method::POST,
@@ -220,6 +229,7 @@ async fn official_media_structure_controller_contract() {
 #[tokio::test]
 async fn media_path_mutations_validate_and_persist_real_directories() {
     let fixture = Fixture::new().await;
+    fixture.complete_startup().await;
     let name = create_and_rename_folder(&fixture).await;
     assert_path_validation(&fixture, &name).await;
     assert_path_mutations(&fixture, &name).await;
@@ -551,6 +561,13 @@ impl Fixture {
             .await;
         assert_eq!(response.status(), StatusCode::OK);
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    async fn complete_startup(&self) {
+        let response = self
+            .send(Method::POST, "/Startup/Complete", None, None)
+            .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     async fn cleanup(self) {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Query, State, rejection::JsonRejection},
+    extract::{OriginalUri, Query, State, rejection::JsonRejection},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication};
+use crate::{ApiError, AppState, authorization};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct CreateQuery {
@@ -90,9 +90,10 @@ pub(crate) struct VirtualFolderInfo {
 
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<VirtualFolderInfo>>, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     Ok(Json(
         state
             .virtual_folders
@@ -106,11 +107,12 @@ pub(crate) async fn list(
 
 pub(crate) async fn create(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<CreateQuery>,
     request: Result<Option<Json<AddVirtualFolderDto>>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let name = required_query(query.name)?;
     let body = request
         .map_err(|_| ApiError::InvalidRequest)?
@@ -137,10 +139,11 @@ pub(crate) async fn create(
 
 pub(crate) async fn delete(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<DeleteQuery>,
 ) -> Result<Response, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let name = required_query(query.name)?;
     state
         .virtual_folders
@@ -151,10 +154,11 @@ pub(crate) async fn delete(
 
 pub(crate) async fn rename(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<RenameQuery>,
 ) -> Result<Response, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let name = required_query(query.name)?;
     let new_name = required_query(query.new_name)?;
     state
@@ -166,11 +170,12 @@ pub(crate) async fn rename(
 
 pub(crate) async fn add_path(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<DeleteQuery>,
     request: Result<Json<MediaPathDto>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let body = request.map_err(|_| ApiError::InvalidRequest)?.0;
     if body.name.trim().is_empty() {
         return Err(ApiError::InvalidRequest);
@@ -188,10 +193,11 @@ pub(crate) async fn add_path(
 
 pub(crate) async fn update_path(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     request: Result<Json<UpdateMediaPathDto>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let body = request.map_err(|_| ApiError::InvalidRequest)?.0;
     if body.name.trim().is_empty() {
         return Err(ApiError::InvalidRequest);
@@ -205,10 +211,11 @@ pub(crate) async fn update_path(
 
 pub(crate) async fn remove_path(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<RemovePathQuery>,
 ) -> Result<Response, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let name = required_query(query.name)?;
     let path = required_query(query.path)?;
     state
@@ -220,10 +227,11 @@ pub(crate) async fn remove_path(
 
 pub(crate) async fn update_options(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     request: Result<Json<UpdateLibraryOptionsDto>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    require_administrator(&state, &headers).await?;
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let body = request.map_err(|_| ApiError::InvalidRequest)?.0;
     state
         .virtual_folders
@@ -233,14 +241,6 @@ pub(crate) async fn update_options(
         )
         .await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
-}
-
-async fn require_administrator(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    let authenticated = authentication::authenticated_session(state, headers).await?;
-    if !authenticated.user.is_administrator {
-        return Err(ApiError::Forbidden);
-    }
-    Ok(())
 }
 
 fn required_query(value: Option<String>) -> Result<String, ApiError> {

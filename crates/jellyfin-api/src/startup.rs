@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{State, rejection::JsonRejection},
-    http::StatusCode,
+    extract::{OriginalUri, State, rejection::JsonRejection},
+    http::{HeaderMap, StatusCode},
 };
 use jellyfin_data::entities::user;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState};
+use crate::{ApiError, AppState, authorization};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
@@ -49,18 +49,22 @@ impl StartupState {
 
 pub(crate) async fn get_configuration(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
 ) -> Result<Json<StartupConfiguration>, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let startup = state.startup.lock().await;
-    require_incomplete(&startup)?;
     Ok(Json(startup.configuration.clone()))
 }
 
 pub(crate) async fn update_configuration(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
     request: Result<Json<StartupConfiguration>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let mut startup = state.startup.lock().await;
-    require_incomplete(&startup)?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     startup.configuration = StartupConfiguration {
         server_name: Some(request.server_name.unwrap_or_default()),
@@ -73,9 +77,11 @@ pub(crate) async fn update_configuration(
 
 pub(crate) async fn get_user(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
 ) -> Result<Json<StartupUser>, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let mut startup = state.startup.lock().await;
-    require_incomplete(&startup)?;
     let user = resolve_user(&state, &mut startup).await?;
     Ok(Json(StartupUser {
         name: Some(user.username),
@@ -85,10 +91,12 @@ pub(crate) async fn get_user(
 
 pub(crate) async fn update_user(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
     request: Result<Json<StartupUser>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let mut startup = state.startup.lock().await;
-    require_incomplete(&startup)?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let mut user = resolve_user(&state, &mut startup).await?;
 
@@ -123,19 +131,15 @@ pub(crate) async fn update_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(crate) async fn complete(State(state): State<Arc<AppState>>) -> Result<StatusCode, ApiError> {
+pub(crate) async fn complete(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let mut startup = state.startup.lock().await;
-    require_incomplete(&startup)?;
     startup.completed = true;
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn require_incomplete(startup: &StartupState) -> Result<(), ApiError> {
-    if startup.completed {
-        Err(ApiError::Unauthorized)
-    } else {
-        Ok(())
-    }
 }
 
 async fn resolve_user(
