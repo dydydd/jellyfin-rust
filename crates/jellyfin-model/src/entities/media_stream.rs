@@ -1,8 +1,10 @@
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 const SPECIAL_LANGUAGE_CODES: &[&str] = &["mis", "mul", "und", "zxx"];
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum MediaStreamType {
     #[default]
@@ -12,6 +14,83 @@ pub enum MediaStreamType {
     EmbeddedImage = 3,
     Data = 4,
     Lyric = 5,
+}
+
+impl Serialize for MediaStreamType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_i32(*self as i32)
+    }
+}
+
+impl<'de> Deserialize<'de> for MediaStreamType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct MediaStreamTypeVisitor;
+
+        impl de::Visitor<'_> for MediaStreamTypeVisitor {
+            type Value = MediaStreamType;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a media stream type name or integer")
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    0 => Ok(MediaStreamType::Audio),
+                    1 => Ok(MediaStreamType::Video),
+                    2 => Ok(MediaStreamType::Subtitle),
+                    3 => Ok(MediaStreamType::EmbeddedImage),
+                    4 => Ok(MediaStreamType::Data),
+                    5 => Ok(MediaStreamType::Lyric),
+                    _ => Err(E::custom(format_args!("unknown media stream type {value}"))),
+                }
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                i64::try_from(value)
+                    .map_err(E::custom)
+                    .and_then(|value| self.visit_i64(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "Audio" => Ok(MediaStreamType::Audio),
+                    "Video" => Ok(MediaStreamType::Video),
+                    "Subtitle" => Ok(MediaStreamType::Subtitle),
+                    "EmbeddedImage" => Ok(MediaStreamType::EmbeddedImage),
+                    "Data" => Ok(MediaStreamType::Data),
+                    "Lyric" => Ok(MediaStreamType::Lyric),
+                    _ => Err(E::unknown_variant(
+                        value,
+                        &[
+                            "Audio",
+                            "Video",
+                            "Subtitle",
+                            "EmbeddedImage",
+                            "Data",
+                            "Lyric",
+                        ],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(MediaStreamTypeVisitor)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

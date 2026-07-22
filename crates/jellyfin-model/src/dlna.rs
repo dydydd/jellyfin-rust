@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::SubtitleDeliveryMethod;
@@ -124,7 +125,7 @@ fn split_negative_list(profile_containers: Option<&str>) -> (Option<&str>, bool)
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum DlnaProfileType {
     #[default]
@@ -135,7 +136,7 @@ pub enum DlnaProfileType {
     Lyric = 4,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum EncodingContext {
     #[default]
@@ -143,15 +144,17 @@ pub enum EncodingContext {
     Static = 1,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum MediaStreamProtocol {
     #[default]
+    #[serde(rename = "http", alias = "")]
     Http = 0,
+    #[serde(rename = "hls")]
     Hls = 1,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum TranscodeSeekInfo {
     #[default]
@@ -168,7 +171,7 @@ impl TranscodeSeekInfo {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum PlayMethod {
     #[default]
@@ -177,7 +180,7 @@ pub enum PlayMethod {
     DirectPlay = 2,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum VideoType {
     #[default]
@@ -187,7 +190,7 @@ pub enum VideoType {
     BluRay = 3,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum ProfileConditionType {
     #[default]
@@ -198,7 +201,7 @@ pub enum ProfileConditionType {
     EqualsAny = 4,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum ProfileConditionValue {
     #[default]
@@ -230,7 +233,8 @@ pub enum ProfileConditionValue {
     VideoRotation = 26,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct ProfileCondition {
     pub condition: ProfileConditionType,
     pub property: ProfileConditionValue,
@@ -249,8 +253,10 @@ impl Default for ProfileCondition {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct ContainerProfile {
+    #[serde(rename = "Type")]
     pub profile_type: DlnaProfileType,
     pub conditions: Vec<ProfileCondition>,
     pub container: Option<String>,
@@ -276,7 +282,7 @@ impl ContainerProfile {
 }
 
 /// Media-source metadata required by stream selection and URL generation.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum MediaProtocol {
     #[default]
@@ -289,7 +295,8 @@ pub enum MediaProtocol {
     Ftp = 6,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct MediaSourceInfo {
     pub id: Option<String>,
     pub protocol: MediaProtocol,
@@ -307,6 +314,7 @@ pub struct MediaSourceInfo {
     pub default_subtitle_stream_index: Option<i32>,
     pub use_most_compatible_transcoding_profile: bool,
     pub live_stream_id: Option<String>,
+    #[serde(rename = "ETag")]
     pub etag: Option<String>,
     pub video_type: Option<VideoType>,
 }

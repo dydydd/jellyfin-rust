@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
@@ -14,11 +15,13 @@ const HLS_AUDIO_CODECS_MP4: &[&str] = &[
     "aac", "ac3", "eac3", "mp3", "alac", "flac", "opus", "dts", "truehd",
 ];
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct DirectPlayProfile {
     pub container: String,
     pub audio_codec: Option<String>,
     pub video_codec: Option<String>,
+    #[serde(rename = "Type")]
     pub profile_type: DlnaProfileType,
 }
 
@@ -43,7 +46,7 @@ impl DirectPlayProfile {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum CodecType {
     #[default]
@@ -52,8 +55,10 @@ pub enum CodecType {
     Audio = 2,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct CodecProfile {
+    #[serde(rename = "Type")]
     pub profile_type: CodecType,
     pub conditions: Vec<ProfileCondition>,
     pub apply_conditions: Vec<ProfileCondition>,
@@ -62,7 +67,8 @@ pub struct CodecProfile {
     pub sub_container: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct SubtitleProfile {
     pub format: String,
     pub method: SubtitleDeliveryMethod,
@@ -115,9 +121,11 @@ impl CodecProfile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct TranscodingProfile {
     pub container: String,
+    #[serde(rename = "Type")]
     pub profile_type: DlnaProfileType,
     pub video_codec: String,
     pub audio_codec: String,
@@ -129,10 +137,28 @@ pub struct TranscodingProfile {
     pub context: EncodingContext,
     pub enable_subtitles_in_manifest: bool,
     pub max_audio_channels: Option<String>,
+    #[serde(deserialize_with = "deserialize_i32_from_number_or_string")]
     pub min_segments: i32,
     pub segment_length: i32,
     pub conditions: Vec<ProfileCondition>,
     pub enable_audio_vbr_encoding: bool,
+}
+
+fn deserialize_i32_from_number_or_string<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumberOrString {
+        Number(i32),
+        String(String),
+    }
+
+    match NumberOrString::deserialize(deserializer)? {
+        NumberOrString::Number(value) => Ok(value),
+        NumberOrString::String(value) => value.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 impl Default for TranscodingProfile {
@@ -158,7 +184,8 @@ impl Default for TranscodingProfile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct DeviceProfile {
     pub name: Option<String>,
     pub id: Option<Uuid>,
@@ -755,8 +782,13 @@ fn video_direct_play_profile<'a>(
         .filter(|stream| stream.stream_type == MediaStreamType::Audio)
         .collect::<Vec<_>>();
     let candidates = if let Some(audio) = audio {
-        if options.audio_stream_index.is_some() || audio.is_default {
+        if options.audio_stream_index.is_some() {
             vec![audio]
+        } else if audio.is_default {
+            candidates
+                .into_iter()
+                .filter(|candidate| candidate.is_default)
+                .collect()
         } else {
             candidates
         }
@@ -1304,8 +1336,18 @@ fn build_video_targets(
         audio_codecs.retain(|codec| supported.contains(&codec.as_str()));
     }
 
-    let selected_audio =
-        audio.filter(|candidate| codec_list_contains(&audio_codecs, candidate.codec.as_deref()));
+    let selected_audio = if options.audio_stream_index.is_some() {
+        audio.filter(|candidate| codec_list_contains(&audio_codecs, candidate.codec.as_deref()))
+    } else {
+        source
+            .media_streams
+            .iter()
+            .filter(|candidate| candidate.stream_type == MediaStreamType::Audio)
+            .filter(|candidate| {
+                audio.is_none_or(|selected| !selected.is_default || candidate.is_default)
+            })
+            .find(|candidate| codec_list_contains(&audio_codecs, candidate.codec.as_deref()))
+    };
     let channels_exceed = selected_audio.is_some_and(|audio| {
         audio.channels.unwrap_or_default()
             > stream.transcoding_max_audio_channels.unwrap_or(i32::MAX)
@@ -1518,8 +1560,8 @@ fn select_subtitle_profile(
     } else {
         method != PlayMethod::Transcode || protocol != Some(MediaStreamProtocol::Hls)
     };
-    if can_embed
-        && let Some(profile) = profiles.iter().find(|profile| {
+    if can_embed {
+        let eligible = |profile: &&SubtitleProfile| {
             profile.method == SubtitleDeliveryMethod::Embed
                 && profile.supports_language(subtitle.language.as_deref())
                 && ContainerHelper::contains_container(
@@ -1527,27 +1569,59 @@ fn select_subtitle_profile(
                     output_container,
                 )
                 && (method != PlayMethod::Transcode || subtitle_embed_supported(output_container))
+        };
+        if let Some(profile) = profiles.iter().filter(eligible).find(|profile| {
+            subtitle.is_text_subtitle_stream() == MediaStream::is_text_format(Some(&profile.format))
                 && profile
                     .format
                     .eq_ignore_ascii_case(subtitle.codec.as_deref().unwrap_or_default())
-        })
-    {
-        return profile.clone();
+        }) {
+            return profile.clone();
+        }
+        if let Some(profile) = profiles
+            .iter()
+            .filter(eligible)
+            .find(|profile| subtitle.supports_subtitle_conversion_to(&profile.format))
+        {
+            return profile.clone();
+        }
     }
-    if let Some(profile) = profiles.iter().find(|profile| {
-        matches!(
-            profile.method,
-            SubtitleDeliveryMethod::External | SubtitleDeliveryMethod::Hls
-        ) && (profile.method != SubtitleDeliveryMethod::Hls || method == PlayMethod::Transcode)
-            && profile.supports_language(subtitle.language.as_deref())
-            && (subtitle.is_external
-                || method != PlayMethod::Transcode
-                || subtitle.supports_external_stream)
-            && profile
+
+    for allow_conversion in [false, true] {
+        if let Some(profile) = profiles.iter().find(|profile| {
+            if !matches!(
+                profile.method,
+                SubtitleDeliveryMethod::External | SubtitleDeliveryMethod::Hls
+            ) || (profile.method == SubtitleDeliveryMethod::Hls
+                && method != PlayMethod::Transcode)
+                || !profile.supports_language(subtitle.language.as_deref())
+                || (!subtitle.is_external
+                    && method == PlayMethod::Transcode
+                    && !subtitle.supports_external_stream)
+            {
+                return false;
+            }
+            let type_matches = match profile.method {
+                SubtitleDeliveryMethod::External => {
+                    subtitle.is_text_subtitle_stream()
+                        == MediaStream::is_text_format(Some(&profile.format))
+                }
+                SubtitleDeliveryMethod::Hls => subtitle.is_text_subtitle_stream(),
+                _ => false,
+            };
+            if !type_matches {
+                return false;
+            }
+            let requires_conversion = !profile
                 .format
-                .eq_ignore_ascii_case(subtitle.codec.as_deref().unwrap_or_default())
-    }) {
-        return profile.clone();
+                .eq_ignore_ascii_case(subtitle.codec.as_deref().unwrap_or_default());
+            !requires_conversion
+                || (allow_conversion
+                    && subtitle.supports_external_stream
+                    && subtitle.supports_subtitle_conversion_to(&profile.format))
+        }) {
+            return profile.clone();
+        }
     }
     SubtitleProfile {
         format: subtitle.codec.clone().unwrap_or_default(),
