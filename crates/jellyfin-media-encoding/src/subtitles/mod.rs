@@ -4,6 +4,15 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
+mod encoder;
+
+pub use encoder::{
+    CommandSubtitleProcessRunner, SubtitleEncoder, SubtitleEncoderError, SubtitleInfo,
+    SubtitleInput, SubtitleMediaSource, SubtitleMediaStream, SubtitleProcessOutput,
+    SubtitleProcessRequest, SubtitleProcessRunner, SubtitleProtocol, convert_subtitles,
+    filter_events,
+};
+
 const TICKS_PER_SECOND: i64 = 10_000_000;
 
 /// A normalized text subtitle event.
