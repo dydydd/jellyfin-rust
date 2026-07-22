@@ -76,7 +76,7 @@ impl MetadataEditorService {
                 .localization
                 .parental_ratings(&configuration.metadata_country_code),
             countries: self.localization.countries(),
-            cultures: self.localization.cultures(),
+            cultures: self.localization.distinct_sorted_cultures(),
             external_id_infos: jellyfin_providers::external_id::external_id_infos(&item.item_type),
             ..MetadataEditorInfo::default()
         };

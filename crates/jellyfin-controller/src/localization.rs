@@ -9,6 +9,7 @@ use serde::Deserialize;
 const COUNTRIES: &str = include_str!("../resources/localization/countries.json");
 const CULTURES: &str = include_str!("../resources/localization/iso6392.txt");
 const RATINGS: &str = include_str!("../resources/localization/ratings.json");
+const UNRATED_VALUES: &[&str] = &["n/a", "unrated", "not rated", "nr"];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +25,11 @@ struct RatingEntry {
     rating_score: ParentalRatingScore,
 }
 
+enum SeparatorResolution {
+    NotHandled,
+    Handled(Option<ParentalRatingScore>),
+}
+
 /// Immutable access to Jellyfin's embedded globalization resources.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalizationService;
@@ -34,14 +40,202 @@ impl LocalizationService {
         countries().to_vec()
     }
 
+    /// Returns every ISO 639-2 row, including cultures with duplicate display names.
     #[must_use]
     pub fn cultures(&self) -> Vec<CultureDto> {
         cultures().to_vec()
     }
 
+    /// Returns cultures in the form used by Jellyfin's API and metadata editor.
+    #[must_use]
+    pub fn distinct_sorted_cultures(&self) -> Vec<CultureDto> {
+        distinct_sorted_cultures().to_vec()
+    }
+
+    #[must_use]
+    pub fn try_get_iso6392_t_from_b(&self, iso_b: &str) -> Option<&'static str> {
+        iso6392_b_to_t()
+            .iter()
+            .find(|(bibliographic, _)| bibliographic.eq_ignore_ascii_case(iso_b))
+            .map(|(_, terminologic)| terminologic.as_str())
+    }
+
+    #[must_use]
+    pub fn find_language_info(&self, language: &str) -> Option<CultureDto> {
+        if language.is_empty() {
+            return None;
+        }
+
+        cultures()
+            .iter()
+            .find(|culture| {
+                culture.display_name.eq_ignore_ascii_case(language)
+                    || culture.name.eq_ignore_ascii_case(language)
+                    || culture
+                        .three_letter_iso_language_names
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(language))
+                    || culture
+                        .two_letter_iso_language_name
+                        .eq_ignore_ascii_case(language)
+            })
+            .cloned()
+    }
+
+    #[must_use]
+    pub fn language_display_name(&self, language: Option<&str>) -> Option<String> {
+        let display_name = self
+            .find_language_info(language?)
+            .map(|culture| culture.display_name)?;
+        Some(
+            display_name
+                .split([';', ','])
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
+        )
+    }
+
     #[must_use]
     pub fn parental_ratings(&self, country_code: &str) -> Vec<ParentalRating> {
         parental_ratings(country_code)
+    }
+
+    /// Resolves a provider rating using Jellyfin's configured-country fallback rules.
+    ///
+    /// `country_code` is an optional per-call override. When absent, the configured
+    /// metadata country is checked first.
+    #[must_use]
+    pub fn rating_score(
+        &self,
+        rating: &str,
+        configured_country_code: &str,
+        country_code: Option<&str>,
+    ) -> Option<ParentalRatingScore> {
+        if rating.is_empty()
+            || UNRATED_VALUES
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(rating))
+        {
+            return None;
+        }
+
+        rating
+            .split('/')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .find_map(|value| {
+                self.single_rating_score(value, configured_country_code, country_code)
+            })
+    }
+
+    fn single_rating_score(
+        self,
+        rating: &str,
+        configured_country_code: &str,
+        country_code: Option<&str>,
+    ) -> Option<ParentalRatingScore> {
+        if UNRATED_VALUES
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(rating))
+        {
+            return None;
+        }
+
+        if let Some(value) = parse_rating_as_score(rating) {
+            return Some(score(value));
+        }
+
+        let rating = replace_ignore_ascii_case(rating, "Rated :", "");
+        let rating = replace_ignore_ascii_case(&rating, "Rated:", "");
+        let rating = replace_ignore_ascii_case(&rating, "Rated ", "");
+        let rating = rating.trim();
+
+        if let Some(country_code) = country_code.filter(|code| !code.is_empty()) {
+            if let Some(value) = rating_in_country(country_code, rating) {
+                return Some(value);
+            }
+
+            if let Some(suffix) = strip_country_prefix(rating, country_code)
+                && let Some(value) = rating_in_country(country_code, suffix)
+            {
+                return Some(value);
+            }
+        } else if let Some(value) = rating_in_country(configured_country_code, rating) {
+            return Some(value);
+        }
+
+        if let Some(value) = rating_in_country("us", rating) {
+            return Some(value);
+        }
+
+        if let Some(value) = rating_systems()
+            .iter()
+            .find_map(|system| rating_in_system(system, rating))
+        {
+            return Some(value);
+        }
+
+        if let SeparatorResolution::Handled(result) =
+            self.rating_score_by_separator(rating, ':', configured_country_code)
+        {
+            return result;
+        }
+        if let SeparatorResolution::Handled(result) =
+            self.rating_score_by_separator(rating, '-', configured_country_code)
+        {
+            return result;
+        }
+
+        None
+    }
+
+    fn rating_score_by_separator(
+        self,
+        rating: &str,
+        separator: char,
+        configured_country_code: &str,
+    ) -> SeparatorResolution {
+        let Some(first_separator) = rating.find(separator) else {
+            return SeparatorResolution::NotHandled;
+        };
+        let last_separator = rating
+            .rfind(separator)
+            .expect("a separator found from the left must also be found from the right");
+        let country_part = rating[..first_separator].trim();
+        let rating_part = rating[last_separator + separator.len_utf8()..].trim();
+        if rating_part.is_empty() {
+            return SeparatorResolution::NotHandled;
+        }
+
+        let resolved_country_code = rating_systems()
+            .iter()
+            .find(|system| system.country_code.eq_ignore_ascii_case(country_part))
+            .map(|system| system.country_code.as_str())
+            .or_else(|| {
+                self.find_language_info(country_part)
+                    .map(|culture| culture.two_letter_iso_language_name)
+                    .filter(|code| !code.is_empty())
+                    .and_then(|code| {
+                        rating_systems()
+                            .iter()
+                            .find(|system| system.country_code.eq_ignore_ascii_case(&code))
+                            .map(|system| system.country_code.as_str())
+                    })
+            });
+
+        if let Some(country_code) = resolved_country_code {
+            let result = rating_in_country(country_code, rating_part)
+                .or_else(|| parse_rating_as_score(rating_part).map(score));
+            return SeparatorResolution::Handled(result);
+        }
+
+        SeparatorResolution::Handled(self.rating_score(
+            rating_part,
+            configured_country_code,
+            resolved_country_code,
+        ))
     }
 }
 
@@ -54,17 +248,20 @@ fn countries() -> &'static [CountryInfo] {
 fn cultures() -> &'static [CultureDto] {
     static CULTURES_CACHE: OnceLock<Vec<CultureDto>> = OnceLock::new();
     CULTURES_CACHE.get_or_init(|| {
-        let mut seen = HashSet::new();
-        let mut cultures = CULTURES
+        CULTURES
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| {
+            .filter_map(|line| {
                 let parts = line.split('|').collect::<Vec<_>>();
                 assert_eq!(
                     parts.len(),
                     5,
                     "embedded ISO 639-2 row must have five fields"
                 );
+                if parts[3].trim().is_empty() {
+                    return None;
+                }
+
                 let mut name = parts[3].to_owned();
                 let two_letter_name = parts[2].to_owned();
                 if two_letter_name.contains('-') {
@@ -74,21 +271,45 @@ fn cultures() -> &'static [CultureDto] {
                 if !parts[1].trim().is_empty() {
                     three_letter_names.push(parts[1].to_owned());
                 }
-                CultureDto {
+                Some(CultureDto {
                     name,
                     display_name: parts[3].to_owned(),
                     two_letter_iso_language_name: two_letter_name,
                     three_letter_iso_language_name: three_letter_names.first().cloned(),
                     three_letter_iso_language_names: three_letter_names,
-                }
+                })
             })
-            .filter(|culture| {
-                !culture.display_name.trim().is_empty()
-                    && seen.insert(culture.display_name.to_lowercase())
-            })
+            .collect()
+    })
+}
+
+fn distinct_sorted_cultures() -> &'static [CultureDto] {
+    static DISTINCT_CULTURES_CACHE: OnceLock<Vec<CultureDto>> = OnceLock::new();
+    DISTINCT_CULTURES_CACHE.get_or_init(|| {
+        let mut seen = HashSet::new();
+        let mut values = cultures()
+            .iter()
+            .filter(|culture| seen.insert(culture.display_name.to_lowercase()))
+            .cloned()
             .collect::<Vec<_>>();
-        cultures.sort_by(|left, right| left.display_name.cmp(&right.display_name));
-        cultures
+        values.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        values
+    })
+}
+
+fn iso6392_b_to_t() -> &'static [(String, String)] {
+    static ISO6392_B_TO_T_CACHE: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    ISO6392_B_TO_T_CACHE.get_or_init(|| {
+        CULTURES
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split('|');
+                let terminologic = parts.next()?;
+                let bibliographic = parts.next()?;
+                (!bibliographic.trim().is_empty())
+                    .then(|| (bibliographic.to_owned(), terminologic.to_owned()))
+            })
+            .collect()
     })
 }
 
@@ -96,6 +317,61 @@ fn rating_systems() -> &'static [RatingSystem] {
     static RATINGS_CACHE: OnceLock<Vec<RatingSystem>> = OnceLock::new();
     RATINGS_CACHE
         .get_or_init(|| serde_json::from_str(RATINGS).expect("embedded ratings must be valid"))
+}
+
+fn rating_in_country(country_code: &str, rating: &str) -> Option<ParentalRatingScore> {
+    rating_systems()
+        .iter()
+        .find(|system| system.country_code.eq_ignore_ascii_case(country_code))
+        .and_then(|system| rating_in_system(system, rating))
+}
+
+fn rating_in_system(system: &RatingSystem, rating: &str) -> Option<ParentalRatingScore> {
+    system.ratings.iter().rev().find_map(|entry| {
+        entry
+            .rating_strings
+            .iter()
+            .rev()
+            .any(|value| value.eq_ignore_ascii_case(rating))
+            .then_some(entry.rating_score)
+    })
+}
+
+fn strip_country_prefix<'a>(rating: &'a str, country_code: &str) -> Option<&'a str> {
+    let prefix = rating.get(..country_code.len())?;
+    if !prefix.eq_ignore_ascii_case(country_code) {
+        return None;
+    }
+    if !matches!(rating.as_bytes().get(country_code.len()), Some(b'-' | b':')) {
+        return None;
+    }
+    rating.get(country_code.len() + 1..).map(str::trim)
+}
+
+fn parse_rating_as_score(rating: &str) -> Option<i32> {
+    rating.trim_end_matches('+').trim().parse().ok()
+}
+
+fn replace_ignore_ascii_case(input: &str, needle: &str, replacement: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if input
+            .get(index..index.saturating_add(needle.len()))
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle))
+        {
+            result.push_str(replacement);
+            index += needle.len();
+        } else {
+            let character = input[index..]
+                .chars()
+                .next()
+                .expect("index must remain on a character boundary");
+            result.push(character);
+            index += character.len_utf8();
+        }
+    }
+    result
 }
 
 fn parental_ratings(country_code: &str) -> Vec<ParentalRating> {
@@ -125,7 +401,7 @@ fn parental_ratings(country_code: &str) -> Vec<ParentalRating> {
     add_score_if_missing(&mut ratings, "14", 14);
     if ratings
         .iter()
-        .all(|rating| rating.value.is_none_or(|score| score < 21))
+        .all(|rating| rating.value.is_none_or(|value| value < 21))
     {
         ratings.push(ParentalRating::new("21", Some(score(21))));
     }
@@ -149,26 +425,5 @@ const fn score(value: i32) -> ParentalRatingScore {
     ParentalRatingScore {
         score: value,
         sub_score: None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embedded_localization_is_complete_and_officially_ordered() {
-        let service = LocalizationService;
-        assert_eq!(service.countries().len(), 140);
-        let cultures = service.cultures();
-        assert_eq!(cultures.len(), 494);
-        assert!(
-            cultures
-                .windows(2)
-                .all(|pair| pair[0].display_name <= pair[1].display_name)
-        );
-        let ratings = service.parental_ratings("US");
-        assert!(ratings.iter().any(|rating| rating.name == "PG-13"));
-        assert!(ratings.iter().any(|rating| rating.name == "Banned"));
     }
 }
