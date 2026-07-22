@@ -1197,7 +1197,10 @@ dependencies = [
 name = "jellyfin-extensions"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "unicode-normalization",
+ "uuid",
 ]
 
 [[package]]

@@ -9,8 +9,12 @@ description = "Cross-platform utility extensions for Jellyfin Rust"
 path = "src/lib.rs"
 
 [dependencies]
+serde.workspace = true
 unicode-normalization = "0.1.24"
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
-

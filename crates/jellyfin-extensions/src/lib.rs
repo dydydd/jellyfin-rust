@@ -1,5 +1,6 @@
 //! Cross-platform string and filesystem path helpers.
 
+pub mod json;
 pub mod path;
 pub mod string;
 
