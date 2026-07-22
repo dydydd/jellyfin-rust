@@ -1,6 +1,6 @@
-use std::{num::ParseIntError, str::FromStr};
+use std::{fmt::Write as _, num::ParseIntError, path::Path, str::FromStr};
 
-use jellyfin_model::MediaStream;
+use jellyfin_model::{MediaSourceInfo, MediaStream, SubtitleDeliveryMethod};
 use thiserror::Error;
 
 const TICKS_PER_MILLISECOND: i64 = 10_000;
@@ -68,10 +68,17 @@ pub enum FfmpegVersionParseError {
 pub struct EncodingJobInfo {
     pub transcoding_type: TranscodingJobType,
     pub is_video_request: bool,
+    pub is_input_video: bool,
     pub output_video_codec: String,
     pub output_audio_codec: String,
+    pub output_audio_sample_rate: Option<i32>,
     pub input_container: String,
+    pub media_path: Option<String>,
+    pub media_source: MediaSourceInfo,
+    pub video_stream: Option<MediaStream>,
     pub audio_stream: Option<MediaStream>,
+    pub subtitle_stream: Option<MediaStream>,
+    pub subtitle_delivery_method: SubtitleDeliveryMethod,
     pub start_time_ticks: Option<i64>,
 }
 
@@ -132,6 +139,149 @@ impl EncodingHelper {
         }
     }
 
+    /// Builds explicit stream mappings using `FFmpeg` input and in-file indexes.
+    #[must_use]
+    pub fn get_map_args(&self, state: &EncodingJobInfo) -> String {
+        if state.video_stream.is_none() && state.audio_stream.is_none() {
+            return if state.is_input_video {
+                "-sn".to_owned()
+            } else {
+                String::new()
+            };
+        }
+
+        if state
+            .video_stream
+            .as_ref()
+            .is_some_and(|stream| stream.index == -1)
+        {
+            return "-sn".to_owned();
+        }
+        if state
+            .audio_stream
+            .as_ref()
+            .is_some_and(|stream| stream.index == -1)
+        {
+            return if state.is_input_video {
+                "-sn".to_owned()
+            } else {
+                String::new()
+            };
+        }
+
+        let mut args = match state.video_stream.as_ref() {
+            Some(stream) => format!(
+                "-map 0:{}",
+                find_stream_index(&state.media_source.media_streams, stream)
+            ),
+            None => "-vn".to_owned(),
+        };
+
+        match state.audio_stream.as_ref() {
+            Some(stream) if stream.is_external => {
+                let input_index = if needs_external_subtitle_muxing(state) {
+                    2
+                } else {
+                    1
+                };
+                let _ = write!(
+                    args,
+                    " -map {input_index}:{}",
+                    find_stream_index(&state.media_source.media_streams, stream)
+                );
+            }
+            Some(stream) => {
+                let _ = write!(
+                    args,
+                    " -map 0:{}",
+                    find_stream_index(&state.media_source.media_streams, stream)
+                );
+            }
+            None => args.push_str(" -map -0:a"),
+        }
+
+        match state.subtitle_stream.as_ref() {
+            None => args.push_str(" -map -0:s"),
+            Some(_) if state.subtitle_delivery_method == SubtitleDeliveryMethod::Hls => {
+                args.push_str(" -map -0:s");
+            }
+            Some(stream) if state.subtitle_delivery_method == SubtitleDeliveryMethod::Embed => {
+                let (input_index, stream_index) = if stream.is_external {
+                    (1, external_subtitle_stream_index(state, stream))
+                } else {
+                    (
+                        0,
+                        find_stream_index(&state.media_source.media_streams, stream),
+                    )
+                };
+                let _ = write!(args, " -map {input_index}:{stream_index}");
+            }
+            Some(stream) if stream.is_external && !stream.is_text_subtitle_stream() => {
+                let _ = write!(
+                    args,
+                    " -map 1:{} -sn",
+                    find_stream_index(&state.media_source.media_streams, stream)
+                );
+            }
+            Some(_) => {}
+        }
+
+        args
+    }
+
+    /// Builds input arguments without starting `FFmpeg`.
+    #[must_use]
+    pub fn get_input_argument(&self, state: &EncodingJobInfo) -> String {
+        let mut inputs = Vec::with_capacity(2);
+        if let Some(path) = state.media_path.as_deref() {
+            inputs.push(format!("-i {}", quote_path(path)));
+        }
+
+        if needs_external_subtitle_muxing(state)
+            && let Some(subtitle_path) = state
+                .subtitle_stream
+                .as_ref()
+                .and_then(|stream| stream.path.as_deref())
+        {
+            let selected_path = preferred_vobsub_path(subtitle_path);
+            inputs.push(format!("-i file:{}", quote_path(&selected_path)));
+        }
+
+        inputs.join(" ")
+    }
+
+    /// Builds the progressive-audio command line without invoking `FFmpeg`.
+    #[must_use]
+    pub fn get_progressive_audio_full_command_line(
+        &self,
+        state: &EncodingJobInfo,
+        output_path: &str,
+    ) -> String {
+        let mut arguments = Vec::new();
+        let input = self.get_input_argument(state);
+        if !input.is_empty() {
+            arguments.push(input);
+        }
+        arguments.push("-threads 0 -vn".to_owned());
+
+        if !state.output_audio_codec.is_empty() {
+            arguments.push(format!(
+                "-acodec {}",
+                audio_encoder(&state.output_audio_codec)
+            ));
+        }
+        if let Some(sample_rate) = state.output_audio_sample_rate {
+            arguments.push(format!(
+                "-ar {}",
+                output_sample_rate(&state.output_audio_codec, sample_rate)
+            ));
+        }
+
+        arguments.push("-id3v2_version 3 -write_id3v1 1 -y".to_owned());
+        arguments.push(quote_path(output_path));
+        arguments.join(" ")
+    }
+
     fn copied_audio_trim_filter(&self, state: &EncodingJobInfo) -> Option<String> {
         if state.transcoding_type != TranscodingJobType::Hls
             || !state.is_video_request
@@ -150,6 +300,85 @@ impl EncodingHelper {
 
         let seek_seconds = format_ticks_as_seconds(start_ticks);
         Some(format!("noise=drop='lt(pts*tb\\,{seek_seconds})'"))
+    }
+}
+
+fn find_stream_index(media_streams: &[MediaStream], stream_to_find: &MediaStream) -> i32 {
+    let mut index = 0;
+    for stream in media_streams {
+        if stream == stream_to_find {
+            return index;
+        }
+        if stream.path == stream_to_find.path {
+            index += 1;
+        }
+    }
+    -1
+}
+
+fn external_subtitle_stream_index(state: &EncodingJobInfo, selected: &MediaStream) -> i32 {
+    let mut index = 0;
+    for stream in &state.media_source.media_streams {
+        if stream.path == selected.path {
+            if stream.index == selected.index {
+                break;
+            }
+            index += 1;
+        }
+    }
+    index
+}
+
+fn needs_external_subtitle_muxing(state: &EncodingJobInfo) -> bool {
+    state.subtitle_stream.as_ref().is_some_and(|stream| {
+        stream.is_external
+            && (state.subtitle_delivery_method == SubtitleDeliveryMethod::Embed
+                || (state.subtitle_delivery_method == SubtitleDeliveryMethod::Encode
+                    && !stream.is_text_subtitle_stream()))
+    })
+}
+
+fn preferred_vobsub_path(path: &str) -> String {
+    let subtitle_path = Path::new(path);
+    if subtitle_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("sub"))
+    {
+        let index_path = subtitle_path.with_extension("idx");
+        if index_path.exists() {
+            return index_path.to_string_lossy().into_owned();
+        }
+    }
+    path.to_owned()
+}
+
+fn quote_path(path: &str) -> String {
+    format!("\"{}\"", path.replace('"', "\\\""))
+}
+
+fn audio_encoder(codec: &str) -> &str {
+    if codec.eq_ignore_ascii_case("opus") {
+        "libopus"
+    } else {
+        codec
+    }
+}
+
+fn output_sample_rate(codec: &str, requested: i32) -> i32 {
+    if !codec.eq_ignore_ascii_case("opus") {
+        return requested;
+    }
+
+    if requested <= 8_000 {
+        8_000
+    } else if requested <= 12_000 {
+        12_000
+    } else if requested <= 16_000 {
+        16_000
+    } else if requested <= 24_000 {
+        24_000
+    } else {
+        48_000
     }
 }
 

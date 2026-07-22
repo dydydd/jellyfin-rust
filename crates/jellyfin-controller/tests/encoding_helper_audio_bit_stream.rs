@@ -240,5 +240,6 @@ fn create_state(
             ..MediaStream::default()
         }),
         start_time_ticks: Some(start_time_ticks),
+        ..EncodingJobInfo::default()
     }
 }
