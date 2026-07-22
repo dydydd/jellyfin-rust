@@ -29,6 +29,7 @@ mod branding;
 mod dashboard;
 mod items;
 mod library;
+mod media_info;
 mod music_genre;
 mod persons;
 mod playstate;
@@ -134,6 +135,7 @@ pub fn router(state: AppState) -> Router {
             "/web/ConfigurationPages",
             get(dashboard::configuration_pages),
         )
+        .route("/Playback/BitrateTest", get(media_info::bitrate_test))
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))

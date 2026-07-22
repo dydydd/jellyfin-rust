@@ -15,7 +15,8 @@ percent-encoding = "2.3"
 sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tower.workspace = true
 tower-http = { version = "0.6", features = ["fs"] }
 uuid.workspace = true
