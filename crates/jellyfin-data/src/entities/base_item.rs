@@ -37,6 +37,8 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::base_item_image::Entity")]
     Images,
+    #[sea_orm(has_one = "super::keyframe_data::Entity")]
+    KeyframeData,
     #[sea_orm(
         belongs_to = "Entity",
         from = "Column::ParentId",
@@ -58,6 +60,12 @@ pub enum Relation {
 impl Related<super::base_item_image::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Images.def()
+    }
+}
+
+impl Related<super::keyframe_data::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::KeyframeData.def()
     }
 }
 

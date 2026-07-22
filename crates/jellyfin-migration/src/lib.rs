@@ -19,6 +19,7 @@ mod m20260722_000016_create_server_configuration;
 mod m20260722_000017_add_content_type_overrides;
 mod m20260722_000018_create_user_profile_images;
 mod m20260722_000019_create_base_item_images;
+mod m20260722_000020_create_keyframe_data;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -58,6 +59,8 @@ pub use m20260722_000017_add_content_type_overrides::Migration as AddContentType
 pub use m20260722_000018_create_user_profile_images::Migration as CreateUserProfileImagesMigration;
 #[doc(hidden)]
 pub use m20260722_000019_create_base_item_images::Migration as CreateBaseItemImagesMigration;
+#[doc(hidden)]
+pub use m20260722_000020_create_keyframe_data::Migration as CreateKeyframeDataMigration;
 
 pub struct Migrator;
 
@@ -84,6 +87,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000017_add_content_type_overrides::Migration),
             Box::new(m20260722_000018_create_user_profile_images::Migration),
             Box::new(m20260722_000019_create_base_item_images::Migration),
+            Box::new(m20260722_000020_create_keyframe_data::Migration),
         ]
     }
 }

@@ -6,6 +6,7 @@ pub mod base_item_image;
 pub mod device;
 pub mod item_value;
 pub mod item_value_map;
+pub mod keyframe_data;
 pub mod media_path;
 pub mod person;
 pub mod person_base_item_map;

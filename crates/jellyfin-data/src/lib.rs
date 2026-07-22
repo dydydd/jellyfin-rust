@@ -5,6 +5,7 @@ mod base_item_repository;
 pub mod entities;
 mod item_update_repository;
 mod item_value_repository;
+mod keyframe_data_repository;
 mod person_repository;
 mod quick_connect_repository;
 mod server_configuration_repository;
@@ -31,6 +32,10 @@ pub use base_item_repository::{
 };
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{ItemValueError, ItemValueRepository};
+pub use keyframe_data_repository::{
+    KeyframeDataExport, KeyframeDataRecord, KeyframeDataRepository, KeyframeDataStoreError,
+    NewKeyframeData,
+};
 pub use person_repository::{NewPerson, PersonCredit, PersonError, PersonRepository};
 pub use quick_connect_repository::{
     AuthorizedQuickConnect, NewQuickConnectRequest, QuickConnectRepository, QuickConnectStoreError,
