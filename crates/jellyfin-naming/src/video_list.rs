@@ -1,8 +1,10 @@
-use std::{cmp::Ordering, collections::HashMap, sync::LazyLock};
+use std::{cmp::Ordering, sync::LazyLock};
 
 use regex::{Regex, RegexBuilder};
 
-use crate::{EpisodePathParser, ExtraType, NamingOptions, VideoFileInfo};
+use crate::{
+    EpisodePathParser, ExtraType, NamingOptions, StackFileInfo, StackResolver, VideoFileInfo,
+};
 
 static RESOLUTION: LazyLock<Regex> = LazyLock::new(|| {
     RegexBuilder::new(r"([0-9]{3,4})[ip]")
@@ -10,34 +12,6 @@ static RESOLUTION: LazyLock<Regex> = LazyLock::new(|| {
         .build()
         .expect("resolution expression must be valid")
 });
-
-#[derive(Clone, Debug)]
-pub struct FileStackRule {
-    regex: Regex,
-    pub is_numerical: bool,
-}
-
-impl FileStackRule {
-    #[must_use]
-    pub fn new(expression: &str, is_numerical: bool) -> Self {
-        Self {
-            regex: RegexBuilder::new(expression)
-                .case_insensitive(true)
-                .build()
-                .expect("file stack expression must be valid"),
-            is_numerical,
-        }
-    }
-
-    fn parse<'a>(&self, name: &'a str) -> Option<StackPart<'a>> {
-        let captures = self.regex.captures(name)?;
-        Some(StackPart {
-            name: captures.name("filename")?.as_str(),
-            part_type: captures.name("parttype")?.as_str(),
-            number: captures.name("number")?.as_str(),
-        })
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CollectionType {
@@ -76,15 +50,30 @@ impl VideoListResolver {
         support_multi_version: bool,
         collection_type: Option<CollectionType>,
     ) -> Vec<VideoInfo> {
-        let stacks = resolve_stacks(videos, &self.options);
+        let stack_files = videos
+            .iter()
+            .filter(|video| video.extra_type.is_none())
+            .map(|video| StackFileInfo::new(&video.path, video.is_directory))
+            .collect::<Vec<_>>();
+        let stacks = StackResolver::resolve(&stack_files, &self.options);
         let mut consumed = Vec::new();
         let mut media = Vec::new();
         for stack in stacks {
-            consumed.extend(stack.files.iter().map(|file| file.path.clone()));
+            let files = stack
+                .files
+                .iter()
+                .filter_map(|path| {
+                    videos
+                        .iter()
+                        .find(|video| video.path.eq_ignore_ascii_case(path))
+                        .cloned()
+                })
+                .collect::<Vec<_>>();
+            consumed.extend(stack.files);
             media.push(VideoInfo {
                 name: stack.name,
-                year: stack.files.first().and_then(|file| file.year),
-                files: stack.files,
+                year: files.first().and_then(|file| file.year),
+                files,
                 alternate_versions: Vec::new(),
                 extra_type: None,
             });
@@ -189,82 +178,6 @@ impl VideoListResolver {
         }
         result
     }
-}
-
-#[derive(Clone, Copy)]
-struct StackPart<'a> {
-    name: &'a str,
-    part_type: &'a str,
-    number: &'a str,
-}
-
-struct Stack {
-    name: String,
-    files: Vec<VideoFileInfo>,
-}
-
-fn resolve_stacks(videos: &[VideoFileInfo], options: &NamingOptions) -> Vec<Stack> {
-    struct Candidate {
-        name: String,
-        directory: String,
-        part_type: String,
-        numerical: bool,
-        is_directory: bool,
-        parts: HashMap<String, VideoFileInfo>,
-    }
-
-    let mut candidates: Vec<Candidate> = Vec::new();
-    let mut sorted = videos
-        .iter()
-        .filter(|video| video.extra_type.is_none())
-        .collect::<Vec<_>>();
-    sorted.sort_by(|left, right| left.path.cmp(&right.path));
-    for video in sorted {
-        let stem = file_stem(video);
-        for rule in &options.video_file_stacking_rules {
-            let Some(part) = rule.parse(stem) else {
-                continue;
-            };
-            let directory = parent_path(&video.path);
-            let candidate = candidates.iter_mut().find(|candidate| {
-                candidate.name.eq_ignore_ascii_case(part.name)
-                    && candidate.directory.eq_ignore_ascii_case(directory)
-                    && candidate.part_type.eq_ignore_ascii_case(part.part_type)
-                    && candidate.numerical == rule.is_numerical
-                    && candidate.is_directory == video.is_directory
-            });
-            let candidate = if let Some(candidate) = candidate {
-                candidate
-            } else {
-                candidates.push(Candidate {
-                    name: part.name.to_owned(),
-                    directory: directory.to_owned(),
-                    part_type: part.part_type.to_owned(),
-                    numerical: rule.is_numerical,
-                    is_directory: video.is_directory,
-                    parts: HashMap::new(),
-                });
-                candidates.last_mut().expect("candidate was inserted")
-            };
-            candidate
-                .parts
-                .entry(part.number.to_ascii_lowercase())
-                .or_insert_with(|| video.clone());
-            break;
-        }
-    }
-    candidates
-        .into_iter()
-        .filter(|candidate| candidate.parts.len() > 1)
-        .map(|candidate| {
-            let mut parts = candidate.parts.into_iter().collect::<Vec<_>>();
-            parts.sort_by(|left, right| natural_cmp(&left.0, &right.0));
-            Stack {
-                name: candidate.name,
-                files: parts.into_iter().map(|(_, file)| file).collect(),
-            }
-        })
-        .collect()
 }
 
 fn have_same_year(videos: &[VideoInfo]) -> bool {

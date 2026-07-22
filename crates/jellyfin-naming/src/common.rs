@@ -1,9 +1,9 @@
 use regex::{Regex, RegexBuilder};
 
 use crate::{
+    stack::FileStackRule,
     tv::{EpisodeExpression, default_episode_expressions, default_multiple_episode_expressions},
     video::{ExtraRule, ExtraRuleType, ExtraType, Format3dRule, MediaType, StubTypeRule},
-    video_list::FileStackRule,
 };
 
 /// File extensions and flags used while parsing external media filenames.
@@ -106,11 +106,11 @@ impl Default for NamingOptions {
             multiple_episode_expressions: default_multiple_episode_expressions(),
             video_file_stacking_rules: vec![
                 FileStackRule::new(
-                    r"^(?P<filename>.*?)[ _.-]+[\(\[]?(?P<parttype>cd|dvd|part|pt|dis[ck])[ _.-]*(?P<number>[0-9]+)[\)\]]?(?:\.[^.]+)?$",
+                    r"^(?P<filename>.*?)(?P<separator>[ _.-]+|[\]\)\}])[\(\[]?(?P<parttype>cd|dvd|part|pt|dis[ck])[ _.-]*(?P<number>[0-9]+)[\)\]]?(?:\.[^.]+)?$",
                     true,
                 ),
                 FileStackRule::new(
-                    r"^(?P<filename>.*?)[ _.-]+[\(\[]?(?P<parttype>cd|dvd|part|pt|dis[ck])[ _.-]*(?P<number>[a-d])[\)\]]?(?:\.[^.]+)?$",
+                    r"^(?P<filename>.*?)(?P<separator>[ _.-]+|[\]\)\}])[\(\[]?(?P<parttype>cd|dvd|part|pt|dis[ck])[ _.-]*(?P<number>[a-d])[\)\]]?(?:\.[^.]+)?$",
                     false,
                 ),
             ],
