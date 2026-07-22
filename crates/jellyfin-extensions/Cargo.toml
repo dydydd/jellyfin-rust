@@ -10,6 +10,8 @@ path = "src/lib.rs"
 
 [dependencies]
 serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
 unicode-normalization = "0.1.24"
 uuid.workspace = true
 
