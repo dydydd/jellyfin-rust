@@ -78,6 +78,7 @@ impl VirtualFolderService {
         query_paths: Vec<String>,
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
+        validate_name(name)?;
         let object = object_options(&mut options)?;
         let path_infos = if query_paths.is_empty() {
             object
@@ -118,6 +119,8 @@ impl VirtualFolderService {
         new_name: &str,
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
+        validate_name(name)?;
+        validate_name(new_name)?;
         self.repository
             .rename(name, new_name, refresh_requested)
             .await?;
@@ -134,6 +137,7 @@ impl VirtualFolderService {
         name: &str,
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
+        validate_name(name)?;
         self.repository.delete(name, refresh_requested).await?;
         Ok(())
     }
@@ -169,6 +173,7 @@ impl VirtualFolderService {
         path_info: Value,
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
+        validate_name(name)?;
         let path = canonicalize_path_info(path_info).await?;
         self.repository
             .add_path(name, path, refresh_requested)
@@ -186,6 +191,7 @@ impl VirtualFolderService {
         name: &str,
         path_info: Value,
     ) -> Result<(), VirtualFolderServiceError> {
+        validate_name(name)?;
         let path = canonicalize_path_info(path_info).await?;
         self.repository
             .update_path(name, &path.normalized_path, path.path_info)
@@ -204,13 +210,27 @@ impl VirtualFolderService {
         path: &str,
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
-        if path.trim().is_empty() {
-            return Err(VirtualFolderServiceError::InvalidPath);
-        }
-        let canonical = canonical_directory(path).await?;
+        validate_name(name)?;
+        validate_path(path)?;
         self.repository
-            .remove_path(name, &canonical, refresh_requested)
+            .remove_path(name, path, refresh_requested)
             .await?;
+        Ok(())
+    }
+}
+
+fn validate_name(name: &str) -> Result<(), VirtualFolderServiceError> {
+    if name.trim().is_empty() {
+        Err(VirtualFolderError::InvalidName.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_path(path: &str) -> Result<(), VirtualFolderServiceError> {
+    if path.trim().is_empty() {
+        Err(VirtualFolderServiceError::InvalidPath)
+    } else {
         Ok(())
     }
 }
@@ -282,6 +302,7 @@ async fn canonicalize_path_info(
 }
 
 async fn canonical_directory(path: &str) -> Result<String, VirtualFolderServiceError> {
+    validate_path(path)?;
     let canonical = match tokio::fs::canonicalize(path).await {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -289,7 +310,14 @@ async fn canonical_directory(path: &str) -> Result<String, VirtualFolderServiceE
         }
         Err(error) => return Err(error.into()),
     };
-    if !tokio::fs::metadata(&canonical).await?.is_dir() {
+    let metadata = match tokio::fs::metadata(&canonical).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(VirtualFolderServiceError::PathNotFound);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() {
         return Err(VirtualFolderServiceError::PathNotDirectory);
     }
     canonical

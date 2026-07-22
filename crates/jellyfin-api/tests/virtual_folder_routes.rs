@@ -17,10 +17,16 @@ use uuid::Uuid;
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Virtual Folder Tests\", DeviceId=\"vf-tests\", Device=\"Test\", Version=\"1.0\"";
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn library_structure_controller_contract_and_success_paths() {
     let fixture = Fixture::new().await;
+    assert_library_access(&fixture).await;
+    let (name, id) = create_library(&fixture).await;
+    assert_library_options_and_conflicts(&fixture, &name, &id).await;
+    assert_library_deletion(&fixture, &name).await;
+    fixture.cleanup().await;
+}
 
+async fn assert_library_access(fixture: &Fixture) {
     assert_eq!(
         fixture
             .send(Method::GET, "/Library/VirtualFolders", None, None)
@@ -40,7 +46,9 @@ async fn library_structure_controller_contract_and_success_paths() {
             .status(),
         StatusCode::FORBIDDEN
     );
+}
 
+async fn create_library(fixture: &Fixture) -> (String, String) {
     let name = format!("Cinéma 東京 {}", fixture.suffix);
     let create_uri = format!(
         "/Library/VirtualFolders?name={}&collectionType=movies&refreshLibrary=true",
@@ -67,7 +75,10 @@ async fn library_structure_controller_contract_and_success_paths() {
     assert_eq!(library["LibraryOptions"]["Enabled"], false);
     assert_eq!(library["RefreshStatus"], "RefreshRequested");
     let id = library["ItemId"].as_str().expect("item id").to_owned();
+    (name, id)
+}
 
+async fn assert_library_options_and_conflicts(fixture: &Fixture, name: &str, id: &str) {
     let update = fixture
         .send(
             Method::POST,
@@ -114,7 +125,9 @@ async fn library_structure_controller_contract_and_success_paths() {
             .status(),
         StatusCode::CONFLICT
     );
+}
 
+async fn assert_library_deletion(fixture: &Fixture, name: &str) {
     assert_eq!(
         fixture
             .send(
@@ -129,7 +142,7 @@ async fn library_structure_controller_contract_and_success_paths() {
     );
     let delete_uri = format!(
         "/Library/VirtualFolders?name={}&refreshLibrary=true",
-        encoded(&name)
+        encoded(name)
     );
     assert_eq!(
         fixture
@@ -143,14 +156,77 @@ async fn library_structure_controller_contract_and_success_paths() {
             .status(),
         StatusCode::NO_CONTENT
     );
+}
 
+#[tokio::test]
+async fn official_media_structure_controller_contract() {
+    let fixture = Fixture::new().await;
+    for (method, uri, body, expected) in [
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Name?name=+&newName=test",
+            None,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Name?name=test&newName=+",
+            None,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Name?name=doesnt+exist&newName=test",
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Paths",
+            Some(json!({ "Name": "Test", "Path": "/this/path/doesnt/exist" })),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Paths/Update",
+            Some(json!({ "Name": " ", "PathInfo": { "Path": "test" } })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            Method::DELETE,
+            "/Library/VirtualFolders/Paths?name=+",
+            None,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            Method::DELETE,
+            "/Library/VirtualFolders/Paths?name=none&path=%2Fthis%2Fpath%2Fdoesnt%2Fexist",
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        assert_eq!(
+            fixture
+                .send(method, uri, Some(&fixture.admin_token), body)
+                .await
+                .status(),
+            expected,
+            "{uri}"
+        );
+    }
     fixture.cleanup().await;
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn media_structure_controller_contract_and_success_paths() {
+async fn media_path_mutations_validate_and_persist_real_directories() {
     let fixture = Fixture::new().await;
+    let name = create_and_rename_folder(&fixture).await;
+    assert_path_validation(&fixture, &name).await;
+    assert_path_mutations(&fixture, &name).await;
+    fixture.cleanup().await;
+}
+
+async fn create_and_rename_folder(fixture: &Fixture) -> String {
     let name = format!("Media {}", fixture.suffix);
     let create_uri = format!("/Library/VirtualFolders?name={}", encoded(&name));
     assert_eq!(
@@ -165,31 +241,6 @@ async fn media_structure_controller_contract_and_success_paths() {
             .status(),
         StatusCode::NO_CONTENT
     );
-
-    for uri in [
-        "/Library/VirtualFolders/Name?name=+&newName=test",
-        "/Library/VirtualFolders/Name?name=test&newName=+",
-    ] {
-        assert_eq!(
-            fixture
-                .send(Method::POST, uri, Some(&fixture.admin_token), None)
-                .await
-                .status(),
-            StatusCode::BAD_REQUEST
-        );
-    }
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                "/Library/VirtualFolders/Name?name=doesnt+exist&newName=test",
-                Some(&fixture.admin_token),
-                None,
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
     let renamed = format!("Renamed {}", fixture.suffix);
     let rename_uri = format!(
         "/Library/VirtualFolders/Name?name={}&newName={}&refreshLibrary=true",
@@ -203,118 +254,176 @@ async fn media_structure_controller_contract_and_success_paths() {
             .status(),
         StatusCode::NO_CONTENT
     );
+    renamed
+}
 
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                "/Library/VirtualFolders/Paths",
-                Some(&fixture.admin_token),
-                Some(json!({ "Name": renamed, "Path": "/this/path/doesnt/exist" })),
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                "/Library/VirtualFolders/Paths/Update",
-                Some(&fixture.admin_token),
-                Some(json!({ "Name": " ", "PathInfo": { "Path": "test" } })),
-            )
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::DELETE,
-                "/Library/VirtualFolders/Paths?name=+",
-                Some(&fixture.admin_token),
-                None,
-            )
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::DELETE,
-                "/Library/VirtualFolders/Paths?name=none&path=%2Fthis%2Fpath%2Fdoesnt%2Fexist",
-                Some(&fixture.admin_token),
-                None,
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-
+async fn assert_path_validation(fixture: &Fixture, name: &str) {
+    for (uri, body, expected) in [
+        (
+            "/Library/VirtualFolders/Paths",
+            json!({ "Name": " ", "Path": fixture.media_path }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/Library/VirtualFolders/Paths",
+            json!({ "Name": name, "Path": fixture.file_path }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/Library/VirtualFolders/Paths",
+            json!({ "Name": "missing", "Path": fixture.media_path }),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/Library/VirtualFolders/Paths/Update",
+            json!({ "Name": name, "PathInfo": { "Path": " " } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/Library/VirtualFolders/Paths/Update",
+            json!({ "Name": name, "PathInfo": { "Path": fixture.file_path } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/Library/VirtualFolders/Paths/Update",
+            json!({ "Name": name, "PathInfo": { "Path": "/this/path/doesnt/exist" } }),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/Library/VirtualFolders/Paths/Update",
+            json!({ "Name": "missing", "PathInfo": { "Path": fixture.media_path } }),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        assert_eq!(
+            fixture
+                .send(Method::POST, uri, Some(&fixture.admin_token), Some(body))
+                .await
+                .status(),
+            expected,
+            "{uri}"
+        );
+    }
     assert_eq!(
         fixture
             .send(
                 Method::POST,
                 "/Library/VirtualFolders/Paths",
                 Some(&fixture.user_token),
-                Some(json!({ "Name": renamed, "Path": fixture.media_path })),
+                Some(json!({ "Name": name, "Path": fixture.media_path })),
             )
             .await
             .status(),
         StatusCode::FORBIDDEN
     );
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                "/Library/VirtualFolders/Paths?refreshLibrary=true",
-                Some(&fixture.admin_token),
-                Some(json!({
-                    "Name": renamed,
-                    "PathInfo": { "Path": fixture.media_path, "NetworkPath": "smb://before" }
-                })),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                "/Library/VirtualFolders/Paths/Update",
-                Some(&fixture.admin_token),
-                Some(json!({
-                    "Name": renamed,
-                    "PathInfo": { "Path": fixture.media_path, "NetworkPath": "smb://after" }
-                })),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                "/Library/VirtualFolders/Paths",
-                Some(&fixture.admin_token),
-                Some(json!({ "Name": renamed, "Path": fixture.child_path })),
-            )
-            .await
-            .status(),
-        StatusCode::CONFLICT
-    );
+    for (path, expected) in [
+        (" ", StatusCode::BAD_REQUEST),
+        (fixture.media_path.as_str(), StatusCode::NOT_FOUND),
+    ] {
+        let uri = format!(
+            "/Library/VirtualFolders/Paths?name={}&path={}",
+            encoded(name),
+            encoded(path)
+        );
+        assert_eq!(
+            fixture
+                .send(Method::DELETE, &uri, Some(&fixture.admin_token), None)
+                .await
+                .status(),
+            expected,
+            "{uri}"
+        );
+    }
+}
 
+async fn assert_path_mutations(fixture: &Fixture, name: &str) {
+    assert_path_add_update_and_overlap(fixture, name).await;
+    assert_stale_path_removal(fixture, name).await;
+    assert_path_projection(fixture, name).await;
+    let remove_uri = format!(
+        "/Library/VirtualFolders/Paths?name={}&path={}&refreshLibrary=true",
+        encoded(name),
+        encoded(&fixture.media_path)
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::DELETE,
+                &remove_uri,
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        folder(&fixture.get_list().await, name)["Locations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+async fn assert_path_add_update_and_overlap(fixture: &Fixture, name: &str) {
+    for (uri, body, expected) in [
+        (
+            "/Library/VirtualFolders/Paths?refreshLibrary=true",
+            json!({
+                "Name": name,
+                "PathInfo": { "Path": fixture.media_path, "NetworkPath": "smb://before" }
+            }),
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            "/Library/VirtualFolders/Paths/Update",
+            json!({
+                "Name": name,
+                "PathInfo": { "Path": fixture.media_path, "NetworkPath": "smb://after" }
+            }),
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            "/Library/VirtualFolders/Paths",
+            json!({ "Name": name, "Path": fixture.child_path }),
+            StatusCode::CONFLICT,
+        ),
+        (
+            "/Library/VirtualFolders/Paths",
+            json!({ "Name": name, "Path": fixture.stale_path }),
+            StatusCode::NO_CONTENT,
+        ),
+    ] {
+        assert_eq!(
+            fixture
+                .send(Method::POST, uri, Some(&fixture.admin_token), Some(body))
+                .await
+                .status(),
+            expected,
+            "{uri}"
+        );
+    }
+}
+
+async fn assert_stale_path_removal(fixture: &Fixture, name: &str) {
+    std::fs::remove_dir(&fixture.stale_path).expect("remove stale media directory");
+    let uri = format!(
+        "/Library/VirtualFolders/Paths?name={}&path={}",
+        encoded(name),
+        encoded(&fixture.stale_path)
+    );
+    assert_eq!(
+        fixture
+            .send(Method::DELETE, &uri, Some(&fixture.admin_token), None)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+}
+
+async fn assert_path_projection(fixture: &Fixture, name: &str) {
     let list = fixture.get_list().await;
-    let library = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|folder| folder["Name"] == renamed)
-        .unwrap();
+    let library = folder(&list, name);
     let canonical = std::fs::canonicalize(&fixture.media_path)
         .unwrap()
         .to_string_lossy()
@@ -324,39 +433,15 @@ async fn media_structure_controller_contract_and_success_paths() {
         library["LibraryOptions"]["PathInfos"][0]["NetworkPath"],
         "smb://after"
     );
+}
 
-    let remove_uri = format!(
-        "/Library/VirtualFolders/Paths?name={}&path={}&refreshLibrary=true",
-        encoded(&renamed),
-        encoded(&fixture.media_path)
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::DELETE,
-                &remove_uri,
-                Some(&fixture.admin_token),
-                None
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert!(
-        fixture
-            .get_list()
-            .await
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|folder| folder["Name"] == renamed)
-            .unwrap()["Locations"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-
-    fixture.cleanup().await;
+fn folder(list: &Value, name: &str) -> Value {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|folder| folder["Name"] == name)
+        .unwrap()
+        .clone()
 }
 
 struct Fixture {
@@ -370,6 +455,8 @@ struct Fixture {
     temp_root: std::path::PathBuf,
     media_path: String,
     child_path: String,
+    stale_path: String,
+    file_path: String,
 }
 
 impl Fixture {
@@ -396,9 +483,15 @@ impl Fixture {
         let temp_root = std::env::temp_dir().join(format!("jellyfin-rust-vf-api-{suffix}"));
         let media = temp_root.join("media");
         let child = media.join("movies");
+        let stale = temp_root.join("stale");
+        let file = temp_root.join("not-a-directory.mkv");
         std::fs::create_dir_all(&child).expect("fixture directories");
+        std::fs::create_dir(&stale).expect("stale fixture directory");
+        std::fs::write(&file, b"not a directory").expect("fixture file");
         let media_path = media.to_string_lossy().into_owned();
         let child_path = child.to_string_lossy().into_owned();
+        let stale_path = stale.to_string_lossy().into_owned();
+        let file_path = file.to_string_lossy().into_owned();
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Virtual Folder Test Server".to_owned(),
@@ -415,6 +508,8 @@ impl Fixture {
             temp_root,
             media_path,
             child_path,
+            stale_path,
+            file_path,
         }
     }
 
