@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/jellyfin-api",
+    "crates/jellyfin-common",
+    "crates/jellyfin-controller",
+    "crates/jellyfin-data",
+    "crates/jellyfin-extensions",
+    "crates/jellyfin-media-encoding",
+    "crates/jellyfin-media-encoding-hls",
+    "crates/jellyfin-media-encoding-keyframes",
+    "crates/jellyfin-migration",
+    "crates/jellyfin-model",
+    "crates/jellyfin-naming",
+    "crates/jellyfin-networking",
+    "crates/jellyfin-server",
+    "crates/jellyfin-xbmc-metadata",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0"
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.11"
+sea-orm = { version = "1.1", features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json", "with-uuid"] }
+sea-orm-migration = { version = "1.1", features = ["runtime-tokio-rustls", "sqlx-postgres"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.17", features = ["serde", "v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
