@@ -1,5 +1,5 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository,
+    BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository,
     entities::{base_item, user},
 };
 use sea_orm::DatabaseConnection;
@@ -89,6 +89,48 @@ impl UserLibraryService {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
         self.load_item(item_id).await
+    }
+
+    /// Queries a target user's persisted library with PostgreSQL-side filters,
+    /// count, and pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn query_items(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        mut query: BaseItemQuery,
+    ) -> Result<BaseItemPage, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        if query.parent_id.is_none() && query.ids.is_empty() {
+            query.parent_id = Some(self.ensure_user_root().await?.id);
+        }
+        Ok(self.items.query(&query).await?)
+    }
+
+    /// Queries resumable items using the target user's real `PostgreSQL`
+    /// playback rows, preserving most-recent-play order after item filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn resume_items(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        mut query: BaseItemQuery,
+    ) -> Result<BaseItemPage, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        query.recursive = true;
+        query.is_virtual_item = Some(false);
+        if query.parent_id.is_none() {
+            query.parent_id = Some(self.ensure_user_root().await?.id);
+        }
+        Ok(self.items.query_resumable(target_user_id, &query).await?)
     }
 
     /// Loads related items from the persisted closure-table subtree.

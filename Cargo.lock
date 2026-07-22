@@ -1145,6 +1145,7 @@ name = "jellyfin-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "jellyfin-controller",
  "jellyfin-data",
  "jellyfin-model",

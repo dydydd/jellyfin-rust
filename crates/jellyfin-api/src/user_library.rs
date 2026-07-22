@@ -308,7 +308,7 @@ async fn get_lyrics_for(
     Ok(Json(lyrics))
 }
 
-fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
+pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
     let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"]);
     let has_lyrics = item
         .data

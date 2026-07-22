@@ -16,7 +16,8 @@ pub use authentication_repository::{
     NewDevice,
 };
 pub use base_item_repository::{
-    BaseItemError, BaseItemHierarchyEntry, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
+    BaseItemError, BaseItemHierarchyEntry, BaseItemPage, BaseItemQuery, BaseItemRepository,
+    NewBaseItem, USER_ROOT_FOLDER_ID,
 };
 pub use item_value_repository::{ItemValueError, ItemValueRepository};
 pub use person_repository::{NewPerson, PersonCredit, PersonError, PersonRepository};

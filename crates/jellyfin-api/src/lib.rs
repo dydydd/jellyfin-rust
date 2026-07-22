@@ -25,6 +25,7 @@ use uuid::Uuid;
 mod activity_log;
 mod authentication;
 mod branding;
+mod items;
 mod music_genre;
 mod persons;
 mod playstate;
@@ -168,6 +169,7 @@ pub fn router(state: AppState) -> Router {
             "/Users/{user_id}/Items/{item_id}/Lyrics",
             get(user_library::get_lyrics_legacy),
         )
+        .merge(item_query_routes())
         .route("/Items/Root", get(user_library::get_root))
         .route("/Items/{item_id}", get(user_library::get_item))
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
@@ -205,6 +207,14 @@ pub fn router(state: AppState) -> Router {
             post(virtual_folders::update_options),
         )
         .with_state(Arc::new(state))
+}
+
+fn item_query_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Items", get(items::get))
+        .route("/UserItems/Resume", get(items::resume))
+        .route("/Users/{user_id}/Items", get(items::get_legacy))
+        .route("/Users/{user_id}/Items/Resume", get(items::resume_legacy))
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {

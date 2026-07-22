@@ -1,9 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write as _};
 
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
-    DbBackend, DbErr, DeleteResult, EntityTrait, QueryFilter, QueryOrder, SqlErr, Statement,
-    TransactionTrait,
+    AccessMode,
+    ActiveValue::Set,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr,
+    DeleteResult, EntityTrait, FromQueryResult, IsolationLevel, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, SqlErr, Statement, TransactionTrait, Value as SeaValue,
+    sea_query::{Alias, Expr, Query, extension::postgres::PgExpr},
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -69,6 +72,27 @@ impl NewBaseItem {
 pub struct BaseItemHierarchyEntry {
     pub item: base_item::Model,
     pub depth: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BaseItemQuery {
+    pub ids: Vec<Uuid>,
+    pub parent_id: Option<Uuid>,
+    pub recursive: bool,
+    pub search_term: Option<String>,
+    pub include_item_types: Vec<String>,
+    pub exclude_item_types: Vec<String>,
+    pub media_types: Vec<String>,
+    pub is_virtual_item: Option<bool>,
+    pub start_index: u64,
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaseItemPage {
+    pub items: Vec<base_item::Model>,
+    pub total_record_count: u64,
+    pub start_index: u64,
 }
 
 #[derive(Debug, Error)]
@@ -213,6 +237,135 @@ impl BaseItemRepository {
             .one(&self.database)
             .await?
             .is_some())
+    }
+
+    /// Queries persisted library items with stable sorting and database-side
+    /// count, offset, and limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when hierarchy or item queries fail.
+    pub async fn query(&self, query: &BaseItemQuery) -> Result<BaseItemPage, BaseItemError> {
+        let mut select =
+            base_item::Entity::find().filter(base_item::Column::ItemType.ne("PLACEHOLDER"));
+        if !query.ids.is_empty() {
+            select = select.filter(base_item::Column::Id.is_in(query.ids.iter().copied()));
+        }
+        if let Some(parent_id) = query.parent_id {
+            if query.recursive {
+                let descendants = Query::select()
+                    .column(ancestor_id::Column::ItemId)
+                    .from((Alias::new("jellyfin"), ancestor_id::Entity))
+                    .and_where(ancestor_id::Column::ParentItemId.eq(parent_id))
+                    .to_owned();
+                select = select.filter(base_item::Column::Id.in_subquery(descendants));
+            } else {
+                select = select.filter(base_item::Column::ParentId.eq(parent_id));
+            }
+        }
+        if let Some(search_term) = query
+            .search_term
+            .as_deref()
+            .map(str::trim)
+            .filter(|term| !term.is_empty())
+        {
+            select = select.filter(
+                Expr::col(base_item::Column::Name).ilike(postgres_contains_pattern(search_term)),
+            );
+        }
+        if !query.include_item_types.is_empty() {
+            select = select.filter(
+                base_item::Column::ItemType.is_in(query.include_item_types.iter().cloned()),
+            );
+        }
+        if !query.exclude_item_types.is_empty() {
+            select = select.filter(
+                base_item::Column::ItemType.is_not_in(query.exclude_item_types.iter().cloned()),
+            );
+        }
+        if !query.media_types.is_empty() {
+            select = select
+                .filter(base_item::Column::MediaType.is_in(query.media_types.iter().cloned()));
+        }
+        if let Some(is_virtual_item) = query.is_virtual_item {
+            select = select.filter(base_item::Column::IsVirtualItem.eq(is_virtual_item));
+        }
+        let total_record_count = select.clone().count(&self.database).await?;
+        let mut select = select
+            .order_by_asc(base_item::Column::SortName)
+            .order_by_asc(base_item::Column::Id)
+            .offset(query.start_index);
+        if let Some(limit) = query.limit {
+            select = select.limit(limit);
+        }
+        Ok(BaseItemPage {
+            items: select.all(&self.database).await?,
+            total_record_count,
+            start_index: query.start_index,
+        })
+    }
+
+    /// Queries resumable items with PostgreSQL-side legacy-key deduplication,
+    /// item filtering, recency ordering, counting, and pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the count or item query fails.
+    pub async fn query_resumable(
+        &self,
+        user_id: Uuid,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let (cte, values) = resumable_filtered_cte(user_id, query);
+        let transaction = self
+            .database
+            .begin_with_config(
+                Some(IsolationLevel::RepeatableRead),
+                Some(AccessMode::ReadOnly),
+            )
+            .await?;
+        let count = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!("{cte} SELECT COUNT(*) AS total_record_count FROM filtered"),
+                values.clone(),
+            ))
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("resume count returned no row".to_owned()))?
+            .try_get::<i64>("", "total_record_count")?;
+
+        let mut item_values = values;
+        let mut item_sql = format!(
+            "{cte} SELECT {BASE_ITEM_COLUMNS} FROM filtered \
+             ORDER BY resume_last_played_date DESC NULLS LAST, id"
+        );
+        push_bind(
+            &mut item_sql,
+            &mut item_values,
+            i64::try_from(query.start_index).unwrap_or(i64::MAX),
+            " OFFSET ",
+        );
+        if let Some(limit) = query.limit {
+            push_bind(
+                &mut item_sql,
+                &mut item_values,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                " LIMIT ",
+            );
+        }
+        let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            item_sql,
+            item_values,
+        ))
+        .all(&transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(BaseItemPage {
+            items,
+            total_record_count: u64::try_from(count).unwrap_or_default(),
+            start_index: query.start_index,
+        })
     }
 
     /// Replaces mutable fields using `row_version` as an optimistic lock.
@@ -371,6 +524,154 @@ impl BaseItemRepository {
             .await?;
         hierarchy_entries(closure, true, &self.database).await
     }
+}
+
+const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \
+    sort_name, media_type, overview, index_number, parent_index_number, production_year, \
+    runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, series_id, season_id, \
+    series_presentation_unique_key, date_created, date_modified, row_version";
+
+fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = vec![user_id.into()];
+    let mut sql = String::from(
+        "WITH resumable AS (\
+             SELECT DISTINCT ON (item_id) item_id, last_played_date \
+             FROM jellyfin.user_data \
+             WHERE user_id = $1 AND playback_position_ticks > 0 \
+             ORDER BY item_id, last_played_date DESC NULLS LAST, custom_data_key\
+         ), filtered AS (\
+             SELECT item.*, resumable.last_played_date AS resume_last_played_date \
+             FROM resumable \
+             JOIN jellyfin.base_items AS item ON item.id = resumable.item_id \
+             WHERE item.item_type <> 'PLACEHOLDER'",
+    );
+    if !query.ids.is_empty() {
+        append_uuid_list_filter(&mut sql, &mut values, "item.id", &query.ids);
+    }
+    if let Some(parent_id) = query.parent_id {
+        if query.recursive {
+            push_bind(
+                &mut sql,
+                &mut values,
+                parent_id,
+                " AND item.id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
+                  WHERE closure.parent_item_id = ",
+            );
+            sql.push(')');
+        } else {
+            push_bind(&mut sql, &mut values, parent_id, " AND item.parent_id = ");
+        }
+    }
+    if let Some(search_term) = query
+        .search_term
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+    {
+        push_bind(
+            &mut sql,
+            &mut values,
+            postgres_contains_pattern(search_term),
+            " AND item.name ILIKE ",
+        );
+    }
+    append_string_list_filter(
+        &mut sql,
+        &mut values,
+        "item.item_type",
+        &query.include_item_types,
+        false,
+    );
+    append_string_list_filter(
+        &mut sql,
+        &mut values,
+        "item.item_type",
+        &query.exclude_item_types,
+        true,
+    );
+    append_string_list_filter(
+        &mut sql,
+        &mut values,
+        "item.media_type",
+        &query.media_types,
+        false,
+    );
+    if let Some(is_virtual_item) = query.is_virtual_item {
+        push_bind(
+            &mut sql,
+            &mut values,
+            is_virtual_item,
+            " AND item.is_virtual_item = ",
+        );
+    }
+    sql.push(')');
+    (sql, values)
+}
+
+fn append_uuid_list_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    column: &str,
+    items: &[Uuid],
+) {
+    let _ = write!(sql, " AND {column} IN (");
+    append_bind_list(sql, values, items.iter().copied());
+    sql.push(')');
+}
+
+fn append_string_list_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    column: &str,
+    items: &[String],
+    negated: bool,
+) {
+    if items.is_empty() {
+        return;
+    }
+    let operator = if negated { "NOT IN" } else { "IN" };
+    let _ = write!(sql, " AND {column} {operator} (");
+    append_bind_list(sql, values, items.iter().cloned());
+    sql.push(')');
+}
+
+fn append_bind_list<T>(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    items: impl IntoIterator<Item = T>,
+) where
+    T: Into<SeaValue>,
+{
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        values.push(item.into());
+        let _ = write!(sql, "${}", values.len());
+    }
+}
+
+fn push_bind<T: Into<SeaValue>>(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    value: T,
+    prefix: &str,
+) {
+    values.push(value.into());
+    let _ = write!(sql, "{prefix}${}", values.len());
+}
+
+fn postgres_contains_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('%');
+    for character in value.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('%');
+    escaped
 }
 
 async fn acquire_hierarchy_lock(transaction: &DatabaseTransaction) -> Result<(), BaseItemError> {
