@@ -11,7 +11,8 @@ use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, LibraryControllerError,
     LibraryControllerService, MusicGenreError, MusicGenreService, PersonError, PersonService,
     PlaystateError, PlaystateService, PluginRegistry, UserError, UserLibraryError,
-    UserLibraryService, UserService, VirtualFolderService, VirtualFolderServiceError,
+    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
@@ -37,6 +38,7 @@ mod plugins;
 mod startup;
 mod user_library;
 mod users;
+mod videos;
 mod virtual_folders;
 
 pub use branding::BrandingOptions;
@@ -51,6 +53,7 @@ pub struct AppState {
     pub(crate) persons: PersonService,
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
+    pub(crate) videos: VideoService,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) dashboard: DashboardService,
     pub(crate) plugins: PluginRegistry,
@@ -72,6 +75,7 @@ impl AppState {
             persons: PersonService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
+            videos: VideoService::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
             dashboard: DashboardService::default(),
             plugins: PluginRegistry::default(),
@@ -204,6 +208,7 @@ pub fn router(state: AppState) -> Router {
         .merge(item_query_routes())
         .merge(library_controller_routes())
         .merge(user_library_routes())
+        .merge(video_routes())
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))
         .route(
@@ -275,6 +280,13 @@ fn user_library_routes() -> Router<Arc<AppState>> {
         .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
 }
 
+fn video_routes() -> Router<Arc<AppState>> {
+    Router::new().route(
+        "/Videos/{item_id}/AlternateSources",
+        axum::routing::delete(videos::delete_alternate_sources),
+    )
+}
+
 async fn health(State(state): State<Arc<AppState>>) -> Response {
     match jellyfin_data::healthcheck(&state.database).await {
         Ok(()) => (StatusCode::OK, "Healthy").into_response(),
@@ -333,6 +345,7 @@ pub(crate) enum ApiError {
     Person(PersonError),
     UserLibrary(UserLibraryError),
     LibraryController(LibraryControllerError),
+    Video(VideoError),
     VirtualFolder(VirtualFolderServiceError),
     Dashboard(DashboardError),
     InvalidRequest,
@@ -392,6 +405,12 @@ impl From<UserLibraryError> for ApiError {
 impl From<LibraryControllerError> for ApiError {
     fn from(error: LibraryControllerError) -> Self {
         Self::LibraryController(error)
+    }
+}
+
+impl From<VideoError> for ApiError {
+    fn from(error: VideoError) -> Self {
+        Self::Video(error)
     }
 }
 
@@ -490,6 +509,7 @@ impl IntoResponse for ApiError {
                 "Library persistence failed",
             ),
             Self::LibraryController(error) => library_controller_error_response(&error),
+            Self::Video(error) => video_error_response(&error),
             Self::MusicGenre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Music genre persistence failed",
@@ -516,6 +536,20 @@ fn dashboard_error_response(error: &DashboardError) -> (StatusCode, &'static str
         DashboardError::Io(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Dashboard page read failed",
+        ),
+    }
+}
+
+fn video_error_response(error: &VideoError) -> (StatusCode, &'static str) {
+    match error {
+        VideoError::NotFound | VideoError::BaseItem(BaseItemError::NotFound) => {
+            (StatusCode::NOT_FOUND, "Video not found")
+        }
+        VideoError::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
+        VideoError::InvalidItemType => (StatusCode::BAD_REQUEST, "Item is not a video"),
+        VideoError::BaseItem(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Video persistence failed",
         ),
     }
 }

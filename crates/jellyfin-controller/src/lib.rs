@@ -11,6 +11,7 @@ mod plugins;
 pub mod providers;
 mod user_library;
 mod users;
+mod videos;
 mod virtual_folders;
 
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
@@ -26,4 +27,5 @@ pub use playstate::{
 pub use plugins::PluginRegistry;
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};
+pub use videos::{VideoError, VideoService};
 pub use virtual_folders::{VirtualFolder, VirtualFolderService, VirtualFolderServiceError};

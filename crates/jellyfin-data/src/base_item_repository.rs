@@ -251,6 +251,50 @@ impl BaseItemRepository {
         Ok(self.get(id).await?.is_some())
     }
 
+    /// Detaches every member of the version group containing `item_id`.
+    ///
+    /// `PostgreSQL` resolves the primary identifier and clears the complete group
+    /// in one data-modifying CTE. The statement's row locks serialize competing
+    /// clears, while the surrounding transaction makes the group transition
+    /// atomic. Rows and their media metadata are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` when `item_id` is absent, or a database error when the
+    /// transaction cannot be completed.
+    pub async fn clear_alternate_sources(&self, item_id: Uuid) -> Result<(), BaseItemError> {
+        let transaction = self.database.begin().await?;
+        let result = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "WITH requested AS MATERIALIZED (\
+                     SELECT COALESCE(primary_version_id, id) AS group_id \
+                     FROM jellyfin.base_items \
+                     WHERE id = $1\
+                 ), cleared AS (\
+                     UPDATE jellyfin.base_items AS item \
+                     SET primary_version_id = NULL \
+                     FROM requested \
+                     WHERE item.id = requested.group_id \
+                        OR item.primary_version_id = requested.group_id \
+                     RETURNING item.id\
+                 ) \
+                 SELECT EXISTS (SELECT 1 FROM requested) AS found, \
+                        COUNT(*) AS cleared_count \
+                 FROM cleared",
+                [item_id.into()],
+            ))
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("alternate-source clear returned no row".to_owned())
+            })?;
+        if !result.try_get::<bool>("", "found")? {
+            return Err(BaseItemError::NotFound);
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// Uses the `PostgreSQL` partial hash index to test an exact item path.
     ///
     /// # Errors
