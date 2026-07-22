@@ -10,11 +10,11 @@ use axum::{
 use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
     InstalledPlugin, ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService,
-    LibraryControllerError, LibraryControllerService, MetadataEditorError, MetadataEditorService,
-    MusicGenreError, MusicGenreService, PersonError, PersonService, PlaystateError,
-    PlaystateService, PluginRegistry, SystemLogError, SystemLogService, UserDataService,
-    UserDataServiceError, UserError, UserLibraryError, UserLibraryService, UserService, VideoError,
-    VideoService, VirtualFolderService, VirtualFolderServiceError,
+    LibraryControllerError, LibraryControllerService, LocalizationService, MetadataEditorError,
+    MetadataEditorService, MusicGenreError, MusicGenreService, PersonError, PersonService,
+    PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
+    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
+    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -40,6 +40,7 @@ mod item_update;
 mod items;
 mod library;
 mod live_tv;
+mod localization;
 mod media_info;
 mod music_genre;
 mod openapi;
@@ -71,6 +72,8 @@ pub struct AppState {
     pub(crate) item_lookup: ItemLookupService,
     pub(crate) item_update: ItemUpdateService,
     pub(crate) metadata_editor: MetadataEditorService,
+    pub(crate) localization: LocalizationService,
+    pub(crate) server_configuration: ServerConfigurationRepository,
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) videos: VideoService,
@@ -103,6 +106,8 @@ impl AppState {
             item_lookup: ItemLookupService::new(database.clone()),
             item_update: ItemUpdateService::new(database.clone()),
             metadata_editor: MetadataEditorService::new(database.clone()),
+            localization: LocalizationService,
+            server_configuration: ServerConfigurationRepository::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
             videos: VideoService::new(database.clone()),
@@ -233,6 +238,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Plugins", get(plugins::list))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .merge(environment_routes())
+        .merge(localization_routes())
         .merge(user_routes())
         .route(
             "/Startup/Configuration",
@@ -323,6 +329,16 @@ fn environment_routes() -> Router<Arc<AppState>> {
         .route(
             "/Environment/DefaultDirectoryBrowser",
             get(environment::default_directory_browser),
+        )
+}
+
+fn localization_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Localization/Cultures", get(localization::cultures))
+        .route("/Localization/Countries", get(localization::countries))
+        .route(
+            "/Localization/ParentalRatings",
+            get(localization::parental_ratings),
         )
 }
 
