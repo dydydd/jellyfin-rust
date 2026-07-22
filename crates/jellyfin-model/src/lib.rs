@@ -39,7 +39,7 @@ pub use entities::{
 };
 pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, UnratedItem};
 pub use extensions::first_to_upper;
-pub use live_tv::TimerInfo;
+pub use live_tv::{TimerInfo, TunerHostInfo};
 pub use net::{MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};

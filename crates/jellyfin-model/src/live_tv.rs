@@ -18,6 +18,18 @@ pub struct TimerInfo {
     pub is_program_series: bool,
 }
 
+/// Configuration and discovered identity for a Live TV tuner host.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TunerHostInfo {
+    pub id: Option<String>,
+    pub url: String,
+    pub tuner_type: String,
+    pub device_id: Option<String>,
+    pub friendly_name: Option<String>,
+    pub import_favorites_only: bool,
+    pub tuner_count: i32,
+}
+
 impl Default for TimerInfo {
     fn default() -> Self {
         Self {
