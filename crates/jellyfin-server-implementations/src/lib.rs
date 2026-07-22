@@ -5,6 +5,7 @@ mod media_stream_selector;
 mod order_mapper;
 mod playlists;
 mod quick_connect;
+mod session_manager;
 mod sorting;
 mod users;
 
@@ -20,6 +21,11 @@ pub use playlists::{PlaylistIndexError, determine_adjusted_playlist_index};
 pub use quick_connect::{
     AuthorizationInfo, QuickConnectAuthenticationResult, QuickConnectCapability, QuickConnectError,
     QuickConnectManager, QuickConnectResult, SystemQuickConnectCapability,
+};
+pub use session_manager::{
+    AuthenticationField, AuthenticationRequest, AuthorizationTokenRequest, SessionManager,
+    SessionManagerError, SessionStore, SessionStoreFuture, SessionValidationError,
+    ValidatedAuthenticationRequest,
 };
 pub use sorting::{
     AiredEpisodeOrderComparer, AiredEpisodeOrderKey, IndexNumberComparer, IndexNumberOrderKey,
