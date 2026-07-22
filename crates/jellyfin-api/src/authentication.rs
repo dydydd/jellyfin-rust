@@ -3,12 +3,17 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
-    http::{HeaderMap, header},
+    http::{HeaderMap, Uri, header},
 };
-use jellyfin_data::{NewDevice, entities::user};
+use chrono::Utc;
+use jellyfin_data::{
+    NewDevice,
+    entities::{api_key, user},
+};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::{ApiError, AppState, user_to_dto};
 
@@ -94,27 +99,99 @@ pub(crate) async fn current_user(
     Ok(Json(dto))
 }
 
+#[derive(Debug)]
 pub(crate) struct AuthenticatedSession {
     pub(crate) user: user::Model,
     pub(crate) access_token: String,
+}
+
+#[derive(Debug)]
+pub(crate) enum AuthenticatedIdentity {
+    Device(AuthenticatedSession),
+    ApiKey(api_key::Model),
+}
+
+impl AuthenticatedIdentity {
+    pub(crate) fn is_administrator_equivalent(&self) -> bool {
+        match self {
+            Self::Device(session) => session.user.is_administrator,
+            Self::ApiKey(api_key) => !api_key.access_token.is_empty(),
+        }
+    }
+
+    pub(crate) fn require_administrator(&self) -> Result<(), ApiError> {
+        if self.is_administrator_equivalent() {
+            Ok(())
+        } else {
+            Err(ApiError::Forbidden)
+        }
+    }
+
+    pub(crate) fn target_user_id(&self, requested: Option<Uuid>) -> Result<Uuid, ApiError> {
+        let requested = requested.filter(|user_id| !user_id.is_nil());
+        match self {
+            Self::Device(session) => match requested {
+                Some(user_id) if user_id != session.user.id && !session.user.is_administrator => {
+                    Err(ApiError::Forbidden)
+                }
+                Some(user_id) => Ok(user_id),
+                None => Ok(session.user.id),
+            },
+            Self::ApiKey(_) => Ok(requested.unwrap_or_else(Uuid::nil)),
+        }
+    }
 }
 
 pub(crate) async fn authenticated_session(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<AuthenticatedSession, ApiError> {
-    let access_token = access_token(headers).ok_or(ApiError::Unauthorized)?;
-    let session = state
+    let identity = authenticated_identity(state, headers, None).await?;
+    let target_user_id = identity.target_user_id(None)?;
+    match identity {
+        AuthenticatedIdentity::Device(session) => {
+            debug_assert_eq!(target_user_id, session.user.id);
+            Ok(session)
+        }
+        AuthenticatedIdentity::ApiKey(_) => Err(ApiError::Unauthorized),
+    }
+}
+
+pub(crate) async fn authenticated_identity(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: Option<&Uri>,
+) -> Result<AuthenticatedIdentity, ApiError> {
+    let access_token =
+        access_token(headers, uri.and_then(Uri::query)).ok_or(ApiError::Unauthorized)?;
+
+    if let Some(session) = state
         .devices
         .find_by_token(&access_token)
         .await?
         .filter(|session| session.is_active)
-        .ok_or(ApiError::Unauthorized)?;
-    let user = state.users.get(session.user_id).await?;
-    if user.is_disabled {
-        return Err(ApiError::Forbidden);
+    {
+        let user = state.users.get(session.user_id).await?;
+        if user.is_disabled {
+            return Err(ApiError::Forbidden);
+        }
+        return Ok(AuthenticatedIdentity::Device(AuthenticatedSession {
+            user,
+            access_token,
+        }));
     }
-    Ok(AuthenticatedSession { user, access_token })
+
+    let mut api_key = state
+        .api_keys
+        .find_by_token(&access_token)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let touched_at = Utc::now();
+    if state.api_keys.touch(&access_token, touched_at).await? != 1 {
+        return Err(ApiError::Unauthorized);
+    }
+    api_key.date_last_activity = touched_at;
+    Ok(AuthenticatedIdentity::ApiKey(api_key))
 }
 
 #[derive(Debug, Default)]
@@ -140,24 +217,47 @@ impl ClientMetadata {
     }
 }
 
-fn access_token(headers: &HeaderMap) -> Option<String> {
-    for name in ["x-emby-token", "x-mediabrowser-token"] {
-        if let Some(token) = headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.is_empty())
-        {
-            return Some(token.to_owned());
-        }
-    }
-    headers
+fn access_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
+    if let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| parse_authorization(value).token)
+    {
+        return Some(token);
+    }
+
+    for name in ["x-emby-token", "x-mediabrowser-token"] {
+        if let Some(token) = nonempty_header(headers, name) {
+            return Some(token);
+        }
+    }
+
+    let query = query?;
+    for name in ["ApiKey", "api_key"] {
+        if let Some((_, token)) = form_urlencoded::parse(query.as_bytes())
+            .find(|(key, value)| key == name && !value.is_empty())
+        {
+            return Some(token.into_owned());
+        }
+    }
+    None
+}
+
+fn nonempty_header(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn parse_authorization(value: &str) -> ClientMetadata {
-    let fields = value.split_once(' ').map_or(value, |(_, fields)| fields);
+    let Some((scheme, fields)) = value.split_once(' ') else {
+        return ClientMetadata::default();
+    };
+    if !scheme.eq_ignore_ascii_case("MediaBrowser") && !scheme.eq_ignore_ascii_case("Emby") {
+        return ClientMetadata::default();
+    }
     let mut parts = parse_authorization_parts(fields);
     ClientMetadata {
         client: parts.remove("client").unwrap_or_default(),
@@ -240,6 +340,8 @@ fn unescape_quoted_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
+    use chrono::TimeZone;
 
     #[test]
     fn parses_official_media_browser_header() {
@@ -306,5 +408,72 @@ mod tests {
         assert_eq!(metadata.client, "last");
         assert_eq!(metadata.device_id, "id");
         assert_eq!(metadata.token, None);
+    }
+
+    #[test]
+    fn token_sources_follow_official_precedence() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("MediaBrowser Token=authorization"),
+        );
+        headers.insert("x-emby-token", HeaderValue::from_static("emby"));
+        headers.insert(
+            "x-mediabrowser-token",
+            HeaderValue::from_static("mediabrowser"),
+        );
+        assert_eq!(
+            access_token(&headers, Some("ApiKey=query-modern&api_key=query-legacy")).as_deref(),
+            Some("authorization")
+        );
+
+        headers.remove(header::AUTHORIZATION);
+        assert_eq!(
+            access_token(&headers, Some("ApiKey=query-modern&api_key=query-legacy")).as_deref(),
+            Some("emby")
+        );
+        headers.remove("x-emby-token");
+        assert_eq!(
+            access_token(&headers, Some("ApiKey=query-modern&api_key=query-legacy")).as_deref(),
+            Some("mediabrowser")
+        );
+        headers.remove("x-mediabrowser-token");
+        assert_eq!(
+            access_token(&headers, Some("ApiKey=query%20modern&api_key=query-legacy")).as_deref(),
+            Some("query modern")
+        );
+        assert_eq!(
+            access_token(&headers, Some("ApiKey=&api_key=query-legacy")).as_deref(),
+            Some("query-legacy")
+        );
+
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer Token=not-a-jellyfin-token"),
+        );
+        assert_eq!(
+            access_token(&headers, Some("ApiKey=query-modern")).as_deref(),
+            Some("query-modern")
+        );
+    }
+
+    #[test]
+    fn api_keys_are_administrator_equivalent_without_an_implicit_user() {
+        let identity = AuthenticatedIdentity::ApiKey(api_key::Model {
+            id: 1,
+            date_created: Utc.timestamp_opt(1, 0).unwrap(),
+            date_last_activity: Utc.timestamp_opt(2, 0).unwrap(),
+            name: "automation".to_owned(),
+            access_token: "key".to_owned(),
+        });
+        let requested = Uuid::new_v4();
+
+        assert!(identity.is_administrator_equivalent());
+        assert_eq!(identity.target_user_id(None).unwrap(), Uuid::nil());
+        assert_eq!(
+            identity.target_user_id(Some(Uuid::nil())).unwrap(),
+            Uuid::nil()
+        );
+        assert_eq!(identity.target_user_id(Some(requested)).unwrap(), requested);
     }
 }

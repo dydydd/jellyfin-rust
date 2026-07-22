@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Query, State, rejection::QueryRejection},
+    extract::{OriginalUri, Query, State, rejection::QueryRejection},
     http::HeaderMap,
 };
 use jellyfin_data::{
@@ -64,13 +64,12 @@ struct ActivityLogEntry {
 
 pub(crate) async fn entries(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     parameters: Result<Query<ActivityLogParameters>, QueryRejection>,
 ) -> Result<Json<ActivityLogResult>, ApiError> {
-    let session = authentication::authenticated_session(&state, &headers).await?;
-    if !session.user.is_administrator {
-        return Err(ApiError::Forbidden);
-    }
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    identity.require_administrator()?;
     let Query(parameters) = parameters.map_err(|_| ApiError::InvalidRequest)?;
     let query = parameters.try_into_query()?;
     let page = state.activity_logs.query(&query).await?;

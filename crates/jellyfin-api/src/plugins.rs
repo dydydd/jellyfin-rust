@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{OriginalUri, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -13,9 +13,10 @@ const JSON_UTF8: HeaderValue = HeaderValue::from_static("application/json; chars
 
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    authentication::authenticated_session(&state, &headers).await?;
+    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let mut response = Json(state.plugins.plugins()).into_response();
     response
         .headers_mut()

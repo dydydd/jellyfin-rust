@@ -15,8 +15,8 @@ use jellyfin_controller::{
     VirtualFolderServiceError,
 };
 use jellyfin_data::{
-    ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
-    DeviceRepository, entities::user,
+    ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
+    BaseItemError, DeviceRepository, entities::user,
 };
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_server_implementations::{AuthenticationError, DefaultAuthenticationProvider};
@@ -47,6 +47,7 @@ pub use branding::BrandingOptions;
 pub struct AppState {
     pub(crate) users: UserService,
     pub(crate) activity_logs: ActivityLogRepository,
+    pub(crate) api_keys: ApiKeyRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) playstate: PlaystateService,
     pub(crate) music_genres: MusicGenreService,
@@ -69,6 +70,7 @@ impl AppState {
         Self {
             users: UserService::new(database.clone()),
             activity_logs: ActivityLogRepository::new(database.clone()),
+            api_keys: ApiKeyRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             playstate: PlaystateService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
