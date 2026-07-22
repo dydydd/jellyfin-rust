@@ -11,22 +11,19 @@ use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, user_to_dto};
+use crate::{ApiError, AppState, authentication, authorization, user_to_dto};
 
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<UserDto>>, ApiError> {
-    authentication::authenticated_session(&state, &headers).await?;
-    Ok(Json(
-        state
-            .users
-            .list()
-            .await?
-            .into_iter()
-            .map(user_to_dto)
-            .collect(),
-    ))
+    authorization::require_default(&state, &headers, &uri).await?;
+    let users = state.users.list().await?;
+    for user in &users {
+        authentication::stored_user_policy(user)?;
+    }
+    Ok(Json(users.into_iter().map(user_to_dto).collect()))
 }
 
 pub(crate) async fn list_public(
@@ -67,11 +64,14 @@ pub(crate) async fn create(
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<UserDto>, ApiError> {
-    authentication::authenticated_session(&state, &headers).await?;
-    Ok(Json(user_to_dto(state.users.get(id).await?)))
+    authorization::require_ignore_parental_control(&state, &headers, &uri).await?;
+    let user = state.users.get(id).await?;
+    authentication::stored_user_policy(&user)?;
+    Ok(Json(user_to_dto(user)))
 }
 
 #[derive(Debug, Default, Deserialize)]

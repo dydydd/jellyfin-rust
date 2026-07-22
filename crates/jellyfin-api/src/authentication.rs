@@ -5,12 +5,12 @@ use axum::{
     extract::{State, rejection::JsonRejection},
     http::{HeaderMap, Uri, header},
 };
-use chrono::Utc;
+use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike, Utc, Weekday};
 use jellyfin_data::{
     NewDevice,
     entities::{api_key, user},
 };
-use jellyfin_model::UserPolicy;
+use jellyfin_model::{DynamicDayOfWeek, UserPolicy};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,6 +65,10 @@ pub(crate) async fn authenticate_by_name(
     })
     .await
     .map_err(|_| ApiError::Internal)??;
+    let policy = stored_user_policy(&user)?;
+    if !is_parental_schedule_allowed(&policy, Local::now().fixed_offset()) {
+        return Err(ApiError::Forbidden);
+    }
     let user = state.users.record_successful_authentication(&user).await?;
     let session = state
         .devices
@@ -110,6 +114,7 @@ pub(crate) async fn current_user(
 pub(crate) struct AuthenticatedSession {
     pub(crate) user: user::Model,
     pub(crate) access_token: String,
+    policy: UserPolicy,
 }
 
 #[derive(Debug)]
@@ -138,6 +143,21 @@ impl AuthenticatedIdentity {
             Ok(())
         } else {
             Err(ApiError::Forbidden)
+        }
+    }
+
+    pub(crate) fn require_parental_schedule(
+        &self,
+        local_now: DateTime<FixedOffset>,
+    ) -> Result<(), ApiError> {
+        match self {
+            Self::Device(session)
+                if !session.user.is_administrator
+                    && !is_parental_schedule_allowed(&session.policy, local_now) =>
+            {
+                Err(ApiError::Forbidden)
+            }
+            Self::Device(_) | Self::ApiKey(_) => Ok(()),
         }
     }
 
@@ -189,8 +209,13 @@ pub(crate) async fn authenticated_identity(
         if user.is_disabled {
             return Err(ApiError::Forbidden);
         }
+        let policy = stored_user_policy(&user)?;
         return Ok(AuthenticatedIdentity::Device(Box::new(
-            AuthenticatedSession { user, access_token },
+            AuthenticatedSession {
+                user,
+                access_token,
+                policy,
+            },
         )));
     }
 
@@ -205,6 +230,44 @@ pub(crate) async fn authenticated_identity(
     }
     api_key.date_last_activity = touched_at;
     Ok(AuthenticatedIdentity::ApiKey(api_key))
+}
+
+pub(crate) fn stored_user_policy(user: &user::Model) -> Result<UserPolicy, ApiError> {
+    serde_json::from_value(user.policy.clone()).map_err(|_| ApiError::Internal)
+}
+
+fn is_parental_schedule_allowed(policy: &UserPolicy, local_now: DateTime<FixedOffset>) -> bool {
+    if policy.access_schedules.is_empty() {
+        return true;
+    }
+
+    let hour = f64::from(local_now.hour())
+        + f64::from(local_now.minute()) / 60.0
+        + f64::from(local_now.second()) / 3_600.0
+        + f64::from(local_now.nanosecond()) / 3_600_000_000_000.0;
+    policy.access_schedules.iter().any(|schedule| {
+        schedule_day_matches(schedule.day_of_week, local_now.weekday())
+            && hour >= schedule.start_hour
+            && hour <= schedule.end_hour
+    })
+}
+
+const fn schedule_day_matches(day: DynamicDayOfWeek, weekday: Weekday) -> bool {
+    match day {
+        DynamicDayOfWeek::Everyday => true,
+        DynamicDayOfWeek::Weekday => matches!(
+            weekday,
+            Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri
+        ),
+        DynamicDayOfWeek::Weekend => matches!(weekday, Weekday::Sat | Weekday::Sun),
+        DynamicDayOfWeek::Sunday => matches!(weekday, Weekday::Sun),
+        DynamicDayOfWeek::Monday => matches!(weekday, Weekday::Mon),
+        DynamicDayOfWeek::Tuesday => matches!(weekday, Weekday::Tue),
+        DynamicDayOfWeek::Wednesday => matches!(weekday, Weekday::Wed),
+        DynamicDayOfWeek::Thursday => matches!(weekday, Weekday::Thu),
+        DynamicDayOfWeek::Friday => matches!(weekday, Weekday::Fri),
+        DynamicDayOfWeek::Saturday => matches!(weekday, Weekday::Sat),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -354,7 +417,8 @@ fn unescape_quoted_value(value: &str) -> String {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Timelike};
+    use jellyfin_model::AccessSchedule;
 
     #[test]
     fn parses_official_media_browser_header() {
@@ -468,6 +532,96 @@ mod tests {
             access_token(&headers, Some("ApiKey=query-modern")).as_deref(),
             Some("query-modern")
         );
+    }
+
+    #[test]
+    fn parental_schedule_day_selectors_and_multiple_ranges_match_official_rules() {
+        let monday = local_time(2026, 7, 20, 12, 0, 0);
+        let sunday = local_time(2026, 7, 19, 12, 0, 0);
+        assert!(is_parental_schedule_allowed(&UserPolicy::default(), monday));
+
+        for (day, monday_allowed, sunday_allowed) in [
+            (DynamicDayOfWeek::Monday, true, false),
+            (DynamicDayOfWeek::Everyday, true, true),
+            (DynamicDayOfWeek::Weekday, true, false),
+            (DynamicDayOfWeek::Weekend, false, true),
+        ] {
+            let policy = policy_with_schedules(vec![schedule(day, 0.0, 24.0)]);
+            assert_eq!(
+                is_parental_schedule_allowed(&policy, monday),
+                monday_allowed
+            );
+            assert_eq!(
+                is_parental_schedule_allowed(&policy, sunday),
+                sunday_allowed
+            );
+        }
+
+        let policy = policy_with_schedules(vec![
+            schedule(DynamicDayOfWeek::Sunday, 8.0, 9.0),
+            schedule(DynamicDayOfWeek::Monday, 11.0, 13.0),
+        ]);
+        assert!(is_parental_schedule_allowed(&policy, monday));
+    }
+
+    #[test]
+    fn parental_schedule_fractional_boundaries_are_inclusive_without_overnight_wrap() {
+        let policy = policy_with_schedules(vec![schedule(DynamicDayOfWeek::Everyday, 9.5, 17.25)]);
+        assert!(is_parental_schedule_allowed(
+            &policy,
+            local_time(2026, 7, 20, 9, 30, 0)
+        ));
+        assert!(is_parental_schedule_allowed(
+            &policy,
+            local_time(2026, 7, 20, 17, 15, 0)
+        ));
+        assert!(!is_parental_schedule_allowed(
+            &policy,
+            local_time(2026, 7, 20, 9, 29, 59)
+        ));
+        assert!(!is_parental_schedule_allowed(
+            &policy,
+            local_time(2026, 7, 20, 17, 15, 0)
+                .with_nanosecond(1)
+                .unwrap()
+        ));
+
+        let inverted = policy_with_schedules(vec![schedule(DynamicDayOfWeek::Everyday, 18.0, 6.0)]);
+        for hour in [3, 12, 23] {
+            assert!(!is_parental_schedule_allowed(
+                &inverted,
+                local_time(2026, 7, 20, hour, 0, 0)
+            ));
+        }
+    }
+
+    fn local_time(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> DateTime<FixedOffset> {
+        FixedOffset::east_opt(8 * 60 * 60)
+            .unwrap()
+            .with_ymd_and_hms(year, month, day, hour, minute, second)
+            .unwrap()
+    }
+
+    fn schedule(day_of_week: DynamicDayOfWeek, start_hour: f64, end_hour: f64) -> AccessSchedule {
+        AccessSchedule {
+            day_of_week,
+            start_hour,
+            end_hour,
+        }
+    }
+
+    fn policy_with_schedules(access_schedules: Vec<AccessSchedule>) -> UserPolicy {
+        UserPolicy {
+            access_schedules,
+            ..UserPolicy::default()
+        }
     }
 
     #[test]
