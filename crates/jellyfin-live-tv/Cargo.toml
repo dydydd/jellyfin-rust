@@ -9,7 +9,7 @@ description = "Live TV guide parsing and content identity for Jellyfin"
 path = "src/lib.rs"
 
 [dependencies]
-chrono = "0.4"
+chrono.workspace = true
 jellyfin-common = { path = "../jellyfin-common" }
 jellyfin-model = { path = "../jellyfin-model" }
 md-5 = "0.10"
