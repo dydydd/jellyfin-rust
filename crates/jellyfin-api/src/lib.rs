@@ -31,6 +31,7 @@ mod authentication;
 mod authorization;
 mod branding;
 mod dashboard;
+mod hls_segment;
 mod item_update;
 mod items;
 mod library;
@@ -68,6 +69,7 @@ pub struct AppState {
     pub(crate) dashboard: DashboardService,
     pub(crate) plugins: PluginRegistry,
     pub(crate) system_logs: SystemLogService,
+    pub(crate) transcode_directory: std::path::PathBuf,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -94,6 +96,9 @@ impl AppState {
             dashboard: DashboardService::default(),
             plugins: PluginRegistry::default(),
             system_logs: SystemLogService::default(),
+            transcode_directory: std::env::temp_dir()
+                .join("jellyfin-rust")
+                .join("transcodes"),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -160,6 +165,16 @@ impl AppState {
         self
     }
 
+    /// Replaces the directory containing active transcoding output.
+    #[must_use]
+    pub fn with_transcode_directory(
+        mut self,
+        transcode_directory: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        self.transcode_directory = transcode_directory.into();
+        self
+    }
+
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
@@ -181,6 +196,14 @@ pub fn router(state: AppState) -> Router {
             get(dashboard::configuration_pages),
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
+        .route(
+            "/Audio/{item_id}/hls/{*legacy_path}",
+            get(hls_segment::audio),
+        )
+        .route(
+            "/Videos/{item_id}/hls/{*legacy_path}",
+            get(hls_segment::video),
+        )
         .route("/Plugins", get(plugins::list))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .merge(user_routes())

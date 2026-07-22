@@ -1271,6 +1271,7 @@ dependencies = [
  "form_urlencoded",
  "jellyfin-controller",
  "jellyfin-data",
+ "jellyfin-extensions",
  "jellyfin-live-tv",
  "jellyfin-model",
  "jellyfin-server-implementations",

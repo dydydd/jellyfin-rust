@@ -12,6 +12,7 @@ chrono.workspace = true
 form_urlencoded = "1.2"
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
+jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-live-tv = { path = "../jellyfin-live-tv" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }
