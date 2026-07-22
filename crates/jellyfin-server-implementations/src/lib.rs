@@ -1,4 +1,5 @@
 mod cryptography;
+mod dto_images;
 mod ignore_patterns;
 mod managed_file_system;
 mod media_stream_selector;
@@ -13,6 +14,10 @@ mod users;
 pub use cryptography::{
     CryptographyError, CryptographyProvider, DEFAULT_HASH_METHOD, DEFAULT_ITERATIONS,
     DEFAULT_OUTPUT_LENGTH, DEFAULT_SALT_LENGTH,
+};
+pub use dto_images::{
+    DtoImage, DtoImageItem, DtoImageItemKind, DtoImageLibrary, DtoImageOptions, DtoImageProjection,
+    DtoImageProjectionService, ImageCacheTagProvider,
 };
 pub use ignore_patterns::IgnorePatterns;
 pub use managed_file_system::{ManagedFileInfo, ManagedFileSystem, ManagedFileSystemError};
