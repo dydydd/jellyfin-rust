@@ -1,7 +1,8 @@
 use std::{fs, path::PathBuf};
 
 use jellyfin_model::{
-    MediaOptions, MediaSourceInfo, MediaStreamProtocol, PlayMethod, StreamBuilder, TranscodeReason,
+    MediaOptions, MediaSourceInfo, MediaStream, MediaStreamProtocol, MediaStreamType, PlayMethod,
+    StreamBuilder, SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason,
 };
 use uuid::Uuid;
 
@@ -43,6 +44,91 @@ fn official_build_video_item_with_direct_play_explicit_streams_matrix() {
         },
         true,
     );
+}
+
+#[test]
+fn official_subtitle_profile_extraction_matrix() {
+    let cases = official_arguments("GetSubtitleProfile_RespectsExtractionSetting");
+    assert_eq!(cases.len(), 11, "the upstream matrix changed");
+
+    for arguments in cases {
+        let codec = csharp_string(&arguments[0]);
+        let profile_format = csharp_string(&arguments[1]);
+        let extraction_supported = parse_bool(&arguments[2]);
+        let is_external = parse_bool(&arguments[3]);
+        let method = parse_play_method(&arguments[4]).expect("play method");
+        let expected = parse_subtitle_method(&arguments[5]);
+        let subtitle = MediaStream {
+            codec: Some(codec.clone()),
+            stream_type: MediaStreamType::Subtitle,
+            is_external,
+            path: is_external.then(|| format!("/media/sub.{codec}")),
+            supports_external_stream: MediaStream::is_text_format(Some(&codec)),
+            ..MediaStream::default()
+        };
+        let profile = SubtitleProfile {
+            format: profile_format,
+            method: SubtitleDeliveryMethod::External,
+            ..SubtitleProfile::default()
+        };
+
+        let result = StreamBuilder::default()
+            .with_subtitle_extraction_support(extraction_supported)
+            .get_subtitle_profile(&subtitle, &[profile], method, None, None);
+        assert_eq!(
+            result.method, expected,
+            "codec={codec}, extraction={extraction_supported}, external={is_external}, method={method:?}"
+        );
+    }
+}
+
+#[test]
+fn official_subtitle_profile_container_and_protocol_matrix() {
+    let cases = official_arguments("GetSubtitleProfile_ReturnsExpectedDeliveryMethod");
+    assert_eq!(cases.len(), 9, "the upstream matrix changed");
+
+    for arguments in cases {
+        let codec = csharp_string(&arguments[0]);
+        let is_external = parse_bool(&arguments[1]);
+        let method = parse_play_method(&arguments[2]).expect("play method");
+        let output_container = csharp_string(&arguments[3]);
+        let protocol = parse_protocol(&arguments[4]);
+        let expected = parse_subtitle_method(&arguments[5]);
+        let subtitle = MediaStream {
+            codec: Some(codec.clone()),
+            language: Some("eng".into()),
+            stream_type: MediaStreamType::Subtitle,
+            is_external,
+            supports_external_stream: true,
+            ..MediaStream::default()
+        };
+        let profiles = [
+            SubtitleProfile {
+                format: codec.clone(),
+                method: SubtitleDeliveryMethod::Embed,
+                ..SubtitleProfile::default()
+            },
+            SubtitleProfile {
+                format: codec.clone(),
+                method: SubtitleDeliveryMethod::External,
+                ..SubtitleProfile::default()
+            },
+        ];
+
+        let result = StreamBuilder::default()
+            .with_subtitle_extraction_support(true)
+            .get_subtitle_profile(
+                &subtitle,
+                &profiles,
+                method,
+                Some(&output_container),
+                protocol,
+            );
+        assert_eq!(
+            result.method, expected,
+            "codec={codec}, external={is_external}, method={method:?}, container={output_container}, protocol={protocol:?}"
+        );
+    }
 }
 
 fn run_official_matrix(
@@ -174,23 +260,9 @@ struct OfficialCase {
 }
 
 fn official_cases(theory: &str) -> Vec<OfficialCase> {
-    let method = format!("public async Task {theory}");
-    let section = OFFICIAL_TESTS
-        .split("[Theory]")
-        .find(|section| section.contains(&method))
-        .unwrap_or_else(|| panic!("{theory} theory"))
-        .split(&method)
-        .next()
-        .unwrap_or_else(|| panic!("{theory} body"));
-
-    section
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("[InlineData("))
-        .map(|line| {
-            let arguments = split_csharp_arguments(
-                line.split_once(")] ")
-                    .map_or_else(|| line.strip_suffix(")]").unwrap_or(line), |(args, _)| args),
-            );
+    official_arguments(theory)
+        .into_iter()
+        .map(|arguments| {
             let device = csharp_string(&arguments[0]);
             let source = csharp_string(&arguments[1]);
             let method = parse_play_method(&arguments[2]);
@@ -211,6 +283,31 @@ fn official_cases(theory: &str) -> Vec<OfficialCase> {
                 mode,
                 protocol,
             }
+        })
+        .collect()
+}
+
+fn official_arguments(theory: &str) -> Vec<Vec<String>> {
+    let method = format!("public async Task {theory}");
+    let method = if OFFICIAL_TESTS.contains(&method) {
+        method
+    } else {
+        format!("public void {theory}")
+    };
+    OFFICIAL_TESTS
+        .split("[Theory]")
+        .find(|section| section.contains(&method))
+        .unwrap_or_else(|| panic!("{theory} theory"))
+        .split(&method)
+        .next()
+        .unwrap_or_else(|| panic!("{theory} body"))
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("[InlineData("))
+        .map(|line| {
+            split_csharp_arguments(
+                line.split_once(")] ")
+                    .map_or_else(|| line.strip_suffix(")]").unwrap_or(line), |(args, _)| args),
+            )
         })
         .collect()
 }
@@ -325,6 +422,40 @@ fn parse_play_method(value: &str) -> Option<PlayMethod> {
         "Transcode" => Some(PlayMethod::Transcode),
         "null" => None,
         unexpected => panic!("unexpected play method {unexpected}"),
+    }
+}
+
+fn parse_bool(value: &str) -> bool {
+    value
+        .parse()
+        .unwrap_or_else(|_| panic!("unexpected boolean {value}"))
+}
+
+fn parse_protocol(value: &str) -> Option<MediaStreamProtocol> {
+    match value
+        .trim()
+        .strip_prefix("MediaStreamProtocol.")
+        .unwrap_or(value)
+    {
+        "http" => Some(MediaStreamProtocol::Http),
+        "hls" => Some(MediaStreamProtocol::Hls),
+        "null" => None,
+        unexpected => panic!("unexpected media stream protocol {unexpected}"),
+    }
+}
+
+fn parse_subtitle_method(value: &str) -> SubtitleDeliveryMethod {
+    match value
+        .trim()
+        .strip_prefix("SubtitleDeliveryMethod.")
+        .unwrap_or(value)
+    {
+        "Encode" => SubtitleDeliveryMethod::Encode,
+        "Embed" => SubtitleDeliveryMethod::Embed,
+        "External" => SubtitleDeliveryMethod::External,
+        "Hls" => SubtitleDeliveryMethod::Hls,
+        "Drop" => SubtitleDeliveryMethod::Drop,
+        unexpected => panic!("unexpected subtitle delivery method {unexpected}"),
     }
 }
 

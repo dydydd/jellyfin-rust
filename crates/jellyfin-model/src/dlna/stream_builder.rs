@@ -307,6 +307,7 @@ impl std::error::Error for StreamBuilderError {}
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StreamBuilder {
     encodable_audio_codecs: Option<Vec<String>>,
+    subtitle_extraction_supported: Option<bool>,
 }
 
 impl StreamBuilder {
@@ -318,7 +319,34 @@ impl StreamBuilder {
     {
         Self {
             encodable_audio_codecs: Some(codecs.into_iter().map(Into::into).collect()),
+            ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub const fn with_subtitle_extraction_support(mut self, supported: bool) -> Self {
+        self.subtitle_extraction_supported = Some(supported);
+        self
+    }
+
+    #[must_use]
+    pub fn get_subtitle_profile(
+        &self,
+        subtitle: &MediaStream,
+        profiles: &[SubtitleProfile],
+        method: PlayMethod,
+        output_container: Option<&str>,
+        protocol: Option<MediaStreamProtocol>,
+    ) -> SubtitleProfile {
+        select_subtitle_profile(
+            subtitle,
+            profiles,
+            method,
+            output_container,
+            protocol,
+            self.subtitle_extraction_supported
+                .unwrap_or(subtitle.supports_external_stream),
+        )
     }
 
     pub fn get_optimal_audio_stream(
@@ -470,13 +498,16 @@ impl StreamBuilder {
             })
         } else if direct_play_eligible || direct_stream_eligible {
             Some(video_direct_play_profile(
+                self,
                 source,
                 video,
                 audio,
                 subtitle,
                 options,
-                direct_play_eligible,
-                direct_stream_eligible,
+                DirectPlayEligibility {
+                    direct_play: direct_play_eligible,
+                    direct_stream: direct_stream_eligible,
+                },
             ))
         } else {
             None
@@ -539,7 +570,7 @@ impl StreamBuilder {
                     );
                 }
                 if let Some(subtitle) = subtitle {
-                    let profile = select_subtitle_profile(
+                    let profile = self.get_subtitle_profile(
                         subtitle,
                         &options.profile.subtitle_profiles,
                         method,
@@ -569,7 +600,7 @@ impl StreamBuilder {
             );
             stream.play_method = PlayMethod::Transcode;
             if let Some(subtitle) = subtitle {
-                let subtitle_profile = select_subtitle_profile(
+                let subtitle_profile = self.get_subtitle_profile(
                     subtitle,
                     &options.profile.subtitle_profiles,
                     PlayMethod::Transcode,
@@ -744,20 +775,20 @@ struct VideoDecision<'a> {
 }
 
 fn video_direct_play_profile<'a>(
+    builder: &StreamBuilder,
     source: &MediaSourceInfo,
     video: Option<&MediaStream>,
     audio: Option<&MediaStream>,
     subtitle: Option<&MediaStream>,
     options: &'a MediaOptions,
-    direct_play_eligible: bool,
-    direct_stream_eligible: bool,
+    eligibility: DirectPlayEligibility,
 ) -> VideoDecision<'a> {
     let container_reasons = compatibility_container(&options.profile, source, video);
     let video_profile_reasons = video.map_or(TranscodeReason::NONE, |video| {
         compatibility_video_codec(&options.profile, source, video)
     });
     let subtitle_reasons = subtitle.map_or(TranscodeReason::NONE, |subtitle| {
-        let profile = select_subtitle_profile(
+        let profile = builder.get_subtitle_profile(
             subtitle,
             &options.profile.subtitle_profiles,
             PlayMethod::DirectPlay,
@@ -844,10 +875,11 @@ fn video_direct_play_profile<'a>(
         }
 
         let direct_stream_failures = reasons.bits() & !direct_stream_reasons().bits();
-        let method = if reasons.is_empty() && direct_play_eligible && source.supports_direct_play {
+        let method = if reasons.is_empty() && eligibility.direct_play && source.supports_direct_play
+        {
             Some(PlayMethod::DirectPlay)
         } else if direct_stream_failures == 0
-            && direct_stream_eligible
+            && eligibility.direct_stream
             && source.supports_direct_stream
         {
             Some(PlayMethod::DirectStream)
@@ -900,6 +932,12 @@ fn video_direct_play_profile<'a>(
         audio_index: None,
         reasons,
     }
+}
+
+#[derive(Clone, Copy)]
+struct DirectPlayEligibility {
+    direct_play: bool,
+    direct_stream: bool,
 }
 
 struct VideoCandidate<'a> {
@@ -1552,6 +1590,7 @@ fn select_subtitle_profile(
     method: PlayMethod,
     output_container: Option<&str>,
     protocol: Option<MediaStreamProtocol>,
+    can_extract_subtitles: bool,
 ) -> SubtitleProfile {
     let can_embed = if subtitle.is_external {
         method == PlayMethod::Transcode
@@ -1597,7 +1636,7 @@ fn select_subtitle_profile(
                 || !profile.supports_language(subtitle.language.as_deref())
                 || (!subtitle.is_external
                     && method == PlayMethod::Transcode
-                    && !subtitle.supports_external_stream)
+                    && !can_extract_subtitles)
             {
                 return false;
             }
