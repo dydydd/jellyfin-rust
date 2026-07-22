@@ -1,13 +1,22 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
+use crate::ProviderIdMap;
+
 /// Internal timer data shared by Live TV recording services.
 ///
 /// This is the subset of Jellyfin's controller `TimerInfo` contract used to
-/// derive recording names. Additional timer fields can be added here as their
-/// owning Live TV features are ported.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// derive recording names and persist recording NFO metadata. Additional
+/// timer fields can be added here as their owning Live TV features are ported.
+#[derive(Clone, Debug, PartialEq)]
 pub struct TimerInfo {
     pub name: String,
+    pub program_id: Option<String>,
+    pub overview: Option<String>,
+    pub genres: Vec<String>,
+    pub community_rating: Option<f32>,
+    pub official_rating: Option<String>,
+    pub provider_ids: ProviderIdMap,
+    pub series_provider_ids: ProviderIdMap,
     pub start_date: DateTime<Utc>,
     pub season_number: Option<i32>,
     pub episode_number: Option<i32>,
@@ -16,6 +25,10 @@ pub struct TimerInfo {
     pub episode_title: Option<String>,
     pub original_air_date: Option<DateTime<Utc>>,
     pub is_program_series: bool,
+    pub is_repeat: bool,
+    pub is_sports: bool,
+    pub is_kids: bool,
+    pub is_news: bool,
 }
 
 /// Configuration and discovered identity for a Live TV tuner host.
@@ -34,6 +47,13 @@ impl Default for TimerInfo {
     fn default() -> Self {
         Self {
             name: String::new(),
+            program_id: None,
+            overview: None,
+            genres: Vec::new(),
+            community_rating: None,
+            official_rating: None,
+            provider_ids: ProviderIdMap::new(),
+            series_provider_ids: ProviderIdMap::new(),
             start_date: dotnet_min_utc(),
             season_number: None,
             episode_number: None,
@@ -42,6 +62,10 @@ impl Default for TimerInfo {
             episode_title: None,
             original_air_date: None,
             is_program_series: false,
+            is_repeat: false,
+            is_sports: false,
+            is_kids: false,
+            is_news: false,
         }
     }
 }

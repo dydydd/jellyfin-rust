@@ -1312,6 +1312,7 @@ dependencies = [
  "flate2",
  "jellyfin-common",
  "jellyfin-model",
+ "jellyfin-xbmc-metadata",
  "md-5",
  "reqwest",
  "roxmltree",
@@ -1320,6 +1321,7 @@ dependencies = [
  "sha2",
  "tokio",
  "url",
+ "xml-rs",
 ]
 
 [[package]]
@@ -3783,6 +3785,12 @@ checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
 ]
+
+[[package]]
+name = "xml-rs"
+version = "0.8.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "yansi"
