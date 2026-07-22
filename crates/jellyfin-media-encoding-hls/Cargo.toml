@@ -1,0 +1,17 @@
+[package]
+name = "jellyfin-media-encoding-hls"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Dynamic HLS playlist generation for Jellyfin"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+jellyfin-media-encoding-keyframes = { path = "../jellyfin-media-encoding-keyframes" }
+uuid = "1.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
