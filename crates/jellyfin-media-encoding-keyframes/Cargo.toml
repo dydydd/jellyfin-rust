@@ -1,0 +1,19 @@
+[package]
+name = "jellyfin-media-encoding-keyframes"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Jellyfin keyframe data and ffprobe output extraction"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
