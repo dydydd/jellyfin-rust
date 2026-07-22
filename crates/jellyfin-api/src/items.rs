@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
 };
-use jellyfin_data::{BaseItemPage, BaseItemQuery};
+use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -111,6 +111,9 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             media_types: parse_strings(query.media_types.as_deref()),
             is_virtual_item: None,
             group_versions_by_presentation_key: false,
+            user_id: query.user_id,
+            is_resumable: None,
+            order: BaseItemOrder::default(),
             start_index: query.start_index,
             limit: query.limit,
         })

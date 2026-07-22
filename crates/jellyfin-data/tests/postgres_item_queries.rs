@@ -402,8 +402,9 @@ async fn assert_resume_query_plan(transaction: &sea_orm::DatabaseTransaction, fi
     )
     .await;
     assert!(
-        resume_plan.contains("user_data_resume_order_idx"),
-        "expected resume index in:\n{resume_plan}"
+        resume_plan.contains("user_data_resume_order_idx")
+            || resume_plan.contains("user_data_resume_idx"),
+        "expected a dedicated resume partial index in:\n{resume_plan}"
     );
 }
 

@@ -80,6 +80,15 @@ pub struct BaseItemHierarchyEntry {
     pub depth: i32,
 }
 
+/// Stable database ordering for base-item queries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BaseItemOrder {
+    #[default]
+    SortName,
+    DatePlayedAscending,
+    DatePlayedDescending,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BaseItemQuery {
     pub ids: Vec<Uuid>,
@@ -92,6 +101,9 @@ pub struct BaseItemQuery {
     pub media_types: Vec<String>,
     pub is_virtual_item: Option<bool>,
     pub group_versions_by_presentation_key: bool,
+    pub user_id: Option<Uuid>,
+    pub is_resumable: Option<bool>,
+    pub order: BaseItemOrder,
     pub start_index: u64,
     pub limit: Option<u64>,
 }
@@ -117,6 +129,8 @@ pub enum BaseItemError {
     ProtectedItem,
     #[error("base item was changed by another writer")]
     StaleVersion,
+    #[error("a user is required for playback-aware item queries")]
+    UserRequired,
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -257,6 +271,18 @@ impl BaseItemRepository {
     ///
     /// Returns a database error when hierarchy or item queries fail.
     pub async fn query(&self, query: &BaseItemQuery) -> Result<BaseItemPage, BaseItemError> {
+        if let Some(is_resumable) = query.is_resumable {
+            let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
+            return if is_resumable {
+                self.query_resumable(user_id, query).await
+            } else {
+                self.query_not_resumable(user_id, query).await
+            };
+        }
+        if query.order != BaseItemOrder::SortName {
+            let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
+            return self.query_by_date_played(user_id, query).await;
+        }
         if query.group_versions_by_presentation_key {
             return self.query_grouped_versions(query).await;
         }
@@ -393,6 +419,58 @@ impl BaseItemRepository {
         query: &BaseItemQuery,
     ) -> Result<BaseItemPage, BaseItemError> {
         let (cte, values) = resumable_filtered_cte(user_id, query);
+        self.query_raw_page(
+            cte,
+            values,
+            "filtered",
+            "resume_last_played_date DESC NULLS LAST, id",
+            "resume",
+            query,
+        )
+        .await
+    }
+
+    async fn query_not_resumable(
+        &self,
+        user_id: Uuid,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let (cte, values) = not_resumable_filtered_cte(user_id, query);
+        self.query_raw_page(
+            cte,
+            values,
+            "filtered",
+            "sort_name, id",
+            "not-resumable",
+            query,
+        )
+        .await
+    }
+
+    async fn query_by_date_played(
+        &self,
+        user_id: Uuid,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let (cte, values) = date_played_filtered_cte(user_id, query);
+        let order = match query.order {
+            BaseItemOrder::DatePlayedAscending => "date_played ASC NULLS FIRST, id",
+            BaseItemOrder::DatePlayedDescending => "date_played DESC NULLS LAST, id",
+            BaseItemOrder::SortName => "sort_name, id",
+        };
+        self.query_raw_page(cte, values, "dated", order, "DatePlayed", query)
+            .await
+    }
+
+    async fn query_raw_page(
+        &self,
+        cte: String,
+        values: Vec<SeaValue>,
+        source: &str,
+        order: &str,
+        query_name: &str,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
         let transaction = self
             .database
             .begin_with_config(
@@ -403,18 +481,16 @@ impl BaseItemRepository {
         let count = transaction
             .query_one(Statement::from_sql_and_values(
                 DbBackend::Postgres,
-                format!("{cte} SELECT COUNT(*) AS total_record_count FROM filtered"),
+                format!("{cte} SELECT COUNT(*) AS total_record_count FROM {source}"),
                 values.clone(),
             ))
             .await?
-            .ok_or_else(|| DbErr::RecordNotFound("resume count returned no row".to_owned()))?
+            .ok_or_else(|| DbErr::RecordNotFound(format!("{query_name} count returned no row")))?
             .try_get::<i64>("", "total_record_count")?;
 
         let mut item_values = values;
-        let mut item_sql = format!(
-            "{cte} SELECT {BASE_ITEM_COLUMNS} FROM filtered \
-             ORDER BY resume_last_played_date DESC NULLS LAST, id"
-        );
+        let mut item_sql =
+            format!("{cte} SELECT {BASE_ITEM_COLUMNS} FROM {source} ORDER BY {order}");
         push_bind(
             &mut item_sql,
             &mut item_values,
@@ -680,19 +756,73 @@ fn grouped_versions_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
 fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = vec![user_id.into()];
     let mut sql = String::from(
-        "WITH resumable AS (\
-             SELECT DISTINCT ON (item_id) item_id, last_played_date \
+        "WITH progress_by_item AS (\
+             SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
-             ORDER BY item_id, last_played_date DESC NULLS LAST, custom_data_key\
+             GROUP BY item_id\
+         ), resume_versions AS (\
+             SELECT DISTINCT ON (COALESCE(item.primary_version_id, item.id)) \
+                    item.*, progress.resume_last_played_date \
+             FROM progress_by_item AS progress \
+             JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+             ORDER BY COALESCE(item.primary_version_id, item.id), \
+                      progress.resume_last_played_date DESC NULLS LAST, item.id\
          ), filtered AS (\
-             SELECT item.*, resumable.last_played_date AS resume_last_played_date \
-             FROM resumable \
-             JOIN jellyfin.base_items AS item ON item.id = resumable.item_id \
+             SELECT item.* FROM resume_versions AS item \
              WHERE item.item_type <> 'PLACEHOLDER'",
     );
     append_raw_item_filters(&mut sql, &mut values, query);
     sql.push(')');
+    (sql, values)
+}
+
+fn not_resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = vec![user_id.into()];
+    let mut sql = String::from(
+        "WITH resumable_groups AS (\
+             SELECT DISTINCT COALESCE(item.primary_version_id, item.id) AS primary_id \
+             FROM jellyfin.user_data AS progress \
+             JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
+             WHERE progress.user_id = $1 AND progress.playback_position_ticks > 0\
+         ), filtered AS (\
+             SELECT item.* FROM jellyfin.base_items AS item \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND item.primary_version_id IS NULL \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM resumable_groups \
+                   WHERE resumable_groups.primary_id = item.id\
+               )",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query);
+    sql.push(')');
+    (sql, values)
+}
+
+fn date_played_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = vec![user_id.into()];
+    let mut sql = String::from(
+        "WITH version_dates AS (\
+             SELECT COALESCE(item.primary_version_id, item.id) AS primary_id, \
+                    MAX(progress.last_played_date) AS date_played \
+             FROM jellyfin.user_data AS progress \
+             JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
+             WHERE progress.user_id = $1 AND progress.last_played_date IS NOT NULL \
+             GROUP BY COALESCE(item.primary_version_id, item.id)\
+         ), filtered AS (\
+             SELECT item.* FROM jellyfin.base_items AS item \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND item.primary_version_id IS NULL",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query);
+    sql.push_str(
+        "), dated AS (\
+             SELECT item.*, version_dates.date_played \
+             FROM filtered AS item \
+             LEFT JOIN version_dates ON version_dates.primary_id = item.id\
+         )",
+    );
     (sql, values)
 }
 

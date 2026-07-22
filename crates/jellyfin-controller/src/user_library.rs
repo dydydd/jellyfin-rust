@@ -105,6 +105,7 @@ impl UserLibraryService {
     ) -> Result<BaseItemPage, UserLibraryError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        query.user_id = Some(target_user_id);
         if query.parent_id.is_none() && query.ids.is_empty() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
