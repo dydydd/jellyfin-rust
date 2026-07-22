@@ -1,0 +1,20 @@
+[package]
+name = "jellyfin-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+jellyfin-api = { path = "../jellyfin-api" }
+jellyfin-controller = { path = "../jellyfin-controller" }
+jellyfin-data = { path = "../jellyfin-data" }
+sea-orm.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
