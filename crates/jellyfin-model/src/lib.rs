@@ -11,7 +11,9 @@ pub mod drawing;
 pub mod dto;
 pub mod entities;
 pub mod enums;
+pub mod extensions;
 pub mod net;
+pub mod providers;
 mod serde_datetime;
 mod serde_guid;
 pub mod system;
@@ -34,6 +36,8 @@ pub use entities::{
     VideoRangeType,
 };
 pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, UnratedItem};
+pub use extensions::first_to_upper;
 pub use net::{MimeTypeError, MimeTypes};
+pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
 pub use system::PublicSystemInfo;
 pub use users::{AccessSchedule, UserPolicy};
