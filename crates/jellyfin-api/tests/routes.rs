@@ -4,7 +4,7 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{DeviceQuery, DeviceRepository, entities::user};
+use jellyfin_data::{DeviceQuery, DeviceRepository, NewDevice, entities::user};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -67,28 +67,80 @@ async fn system_routes_follow_the_public_contract() {
 }
 
 #[tokio::test]
-async fn user_routes_create_and_filter_users_with_pascal_case_dtos() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the assertions follow the stateful official controller test order"
+)]
+async fn user_management_matches_the_official_controller_flow() {
     let database = test_database().await;
+    user::Entity::delete_many()
+        .filter(user::Column::Username.like("api-admin-%"))
+        .exec(&database)
+        .await
+        .expect("stale administrators from interrupted test runs must be removed");
+    let users = UserService::new(database.clone());
+    let devices = DeviceRepository::new(database.clone());
+    let admin_name = format!("api-admin-{}", Uuid::new_v4().simple());
+    let admin = users
+        .create_initial_administrator(&admin_name)
+        .await
+        .expect("test administrator must be created");
+    let admin_session = devices
+        .create_session(NewDevice::new(
+            admin.id,
+            "integration tests",
+            "1.0.0",
+            "test runner",
+            Uuid::new_v4().simple().to_string(),
+        ))
+        .await
+        .expect("administrator session must be created");
     let app = jellyfin_api::router(AppState::new(
         database.clone(),
         "Test Server".to_owned(),
         "http://127.0.0.1:8096".to_owned(),
     ));
-    let username = format!("api-route-{}", Uuid::new_v4().simple());
+    let username = format!("api-user-{}", Uuid::new_v4().simple());
+
+    let response = get_response(&app, "/Users").await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            "/Users",
+            &admin_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        body_json(response)
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["Id"] == admin.id.simple().to_string())
+    );
 
     let response = app
         .clone()
-        .oneshot(json_request(
+        .oneshot(authenticated_json_request(
             "POST",
             "/Users/New",
             &json!({ "Name": username }),
+            &admin_session.access_token,
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let created = body_json(response).await;
     assert_eq!(created["Name"], username);
+    assert_eq!(created["HasPassword"], false);
+    assert_eq!(created["HasConfiguredPassword"], false);
     assert_eq!(created["Policy"]["IsHidden"], true);
+    assert_eq!(created["Policy"]["IsAdministrator"], false);
     assert_eq!(
         created["Policy"]["AuthenticationProviderId"],
         "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider"
@@ -98,10 +150,11 @@ async fn user_routes_create_and_filter_users_with_pascal_case_dtos() {
 
     let response = app
         .clone()
-        .oneshot(json_request(
+        .oneshot(authenticated_json_request(
             "POST",
             "/Users/New",
             &json!({ "Name": username }),
+            &admin_session.access_token,
         ))
         .await
         .unwrap();
@@ -109,6 +162,194 @@ async fn user_routes_create_and_filter_users_with_pascal_case_dtos() {
     let body = body_json(response).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "response body: {body}");
     assert_eq!(body["Message"], "A user with that name already exists");
+
+    for invalid_name in [json!(null), json!(""), json!("   "), json!("‼️")] {
+        let response = app
+            .clone()
+            .oneshot(authenticated_json_request(
+                "POST",
+                "/Users/New",
+                &json!({ "Name": invalid_name }),
+                &admin_session.access_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let missing_id = Uuid::new_v4();
+    for (method, uri) in [
+        ("GET", format!("/Users/{missing_id}")),
+        ("DELETE", format!("/User/{missing_id}")),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(authenticated_request(
+                method,
+                &uri,
+                &admin_session.access_token,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    let initial_user_session = devices
+        .create_session(NewDevice::new(
+            id,
+            "integration tests",
+            "1.0.0",
+            "test runner",
+            Uuid::new_v4().simple().to_string(),
+        ))
+        .await
+        .expect("regular user session must be created");
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            "/Users/New",
+            &json!({ "Name": format!("forbidden-{}", Uuid::new_v4().simple()) }),
+            &initial_user_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users/{admin_id}/Password", admin_id = admin.id),
+            &json!({ "NewPw": "unauthorized replacement" }),
+            &initial_user_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let guard_name = format!("admin-guard-{}", Uuid::new_v4().simple());
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            "/Users/New",
+            &json!({ "Name": guard_name }),
+            &admin_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let guard = body_json(response).await;
+    let guard_id = guard["Id"].as_str().unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "DELETE",
+            &format!("/Users/{admin_id}", admin_id = admin.id),
+            &initial_user_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let case_renamed = username.to_uppercase();
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users?userId={id}"),
+            &json!({ "Name": case_renamed }),
+            &admin_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let self_renamed = format!("self-{}", Uuid::new_v4().simple());
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users/{id}"),
+            &json!({ "Name": self_renamed }),
+            &initial_user_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users/{id}/Password"),
+            &json!({ "NewPw": "4randomPa$$word" }),
+            &admin_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        devices
+            .find_by_token(&initial_user_session.access_token)
+            .await
+            .expect("revoked token lookup must succeed")
+            .is_none()
+    );
+
+    let response = app
+        .clone()
+        .oneshot(auth_request(
+            "/Users/AuthenticateByName",
+            &json!({ "Username": self_renamed, "Pw": "4randomPa$$word" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let authentication = body_json(response).await;
+    let user_token = authentication["AccessToken"].as_str().unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users/{id}/Password"),
+            &json!({ "CurrentPw": "wrong", "NewPw": "replacement" }),
+            user_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users/{id}/Password"),
+            &json!({ "CurrentPw": "4randomPa$$word" }),
+            user_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            "/Users/Password",
+            &json!({ "CurrentPw": "", "NewPw": "replacement" }),
+            user_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        devices
+            .find_by_token(user_token)
+            .await
+            .expect("current token lookup must succeed")
+            .is_some()
+    );
 
     let response = app
         .clone()
@@ -154,40 +395,74 @@ async fn user_routes_create_and_filter_users_with_pascal_case_dtos() {
         .iter()
         .find(|item| item["Id"] == id.simple().to_string())
         .expect("newly visible user must be returned");
-    assert_eq!(public_user["Name"], username);
+    assert_eq!(public_user["Name"], self_renamed);
     assert_eq!(public_user["Policy"]["IsHidden"], false);
     assert_eq!(public_user["Policy"]["EnableContentDeletion"], true);
     assert_eq!(public_user["Configuration"]["DisplayMissingEpisodes"], true);
 
-    user::Entity::delete_many()
-        .filter(user::Column::Id.eq(id))
-        .exec(&database)
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "DELETE",
+            &format!("/Users/{id}"),
+            &admin_session.access_token,
+            Body::empty(),
+        ))
         .await
-        .expect("created test user must be removable");
-}
-
-#[tokio::test]
-async fn create_user_maps_invalid_names_and_json_to_bad_request() {
-    let app = jellyfin_api::router(AppState::new(
-        DatabaseConnection::Disconnected,
-        "Test Server".to_owned(),
-        "http://127.0.0.1:8096".to_owned(),
-    ));
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        devices
+            .find_by_token(user_token)
+            .await
+            .expect("deleted user token lookup must succeed")
+            .is_none()
+    );
 
     let response = app
         .clone()
-        .oneshot(json_request("POST", "/Users/New", &json!({ "Name": " " })))
+        .oneshot(authenticated_request(
+            "DELETE",
+            &format!("/User/{admin_id}", admin_id = admin.id),
+            &admin_session.access_token,
+            Body::empty(),
+        ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(response).await["Message"], "Invalid username");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body_json(response).await["Message"],
+        "There must be at least one administrator"
+    );
 
     let response = app
-        .oneshot(json_request("POST", "/Users/New", &json!({ "Name": null })))
+        .clone()
+        .oneshot(authenticated_request(
+            "DELETE",
+            &format!("/Users/{guard_id}"),
+            &admin_session.access_token,
+            Body::empty(),
+        ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(response).await["Message"], "Invalid request body");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "DELETE",
+            &format!("/User/{admin_id}", admin_id = admin.id),
+            &admin_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    user::Entity::delete_by_id(admin.id)
+        .exec(&database)
+        .await
+        .expect("test administrator must be removed directly during cleanup");
 }
 
 #[tokio::test]
@@ -234,7 +509,7 @@ async fn startup_auth_fixture() -> StartupAuthFixture {
     let users = UserService::new(database.clone());
     let initial_name = format!("startup-{}", Uuid::new_v4().simple());
     let startup_user = users
-        .create(&initial_name)
+        .create_initial_administrator(&initial_name)
         .await
         .expect("startup user must be created");
     let user_id = startup_user.id;
@@ -504,6 +779,28 @@ fn json_request(method: &str, uri: &str, body: &Value) -> Request<Body> {
         .uri(uri)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap()
+}
+
+fn authenticated_json_request(method: &str, uri: &str, body: &Value, token: &str) -> Request<Body> {
+    authenticated_request(
+        method,
+        uri,
+        token,
+        Body::from(serde_json::to_vec(body).unwrap()),
+    )
+}
+
+fn authenticated_request(method: &str, uri: &str, token: &str, body: Body) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(
+            header::AUTHORIZATION,
+            format!("{CLIENT_AUTHORIZATION}, Token=\"{token}\""),
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
         .unwrap()
 }
 

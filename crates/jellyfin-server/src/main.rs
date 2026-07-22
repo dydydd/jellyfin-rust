@@ -51,7 +51,7 @@ async fn ensure_initial_user(
         return Ok(user);
     }
     let name = std::env::var("JELLYFIN_INITIAL_USER").unwrap_or_else(|_| "jellyfin".to_owned());
-    let user = users.create(&name).await?;
+    let user = users.create_initial_administrator(&name).await?;
     info!(username = %name, "created initial user");
     Ok(user)
 }

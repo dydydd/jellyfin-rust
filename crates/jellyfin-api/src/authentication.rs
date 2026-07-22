@@ -5,7 +5,7 @@ use axum::{
     extract::{State, rejection::JsonRejection},
     http::{HeaderMap, header},
 };
-use jellyfin_data::NewDevice;
+use jellyfin_data::{NewDevice, entities::user};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -88,17 +88,33 @@ pub(crate) async fn current_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<jellyfin_model::UserDto>, ApiError> {
-    let token = access_token(&headers).ok_or(ApiError::Unauthorized)?;
+    let authenticated = authenticated_session(&state, &headers).await?;
+    let mut dto = user_to_dto(authenticated.user);
+    dto.server_id = Some(state.server_id().to_owned());
+    Ok(Json(dto))
+}
+
+pub(crate) struct AuthenticatedSession {
+    pub(crate) user: user::Model,
+    pub(crate) access_token: String,
+}
+
+pub(crate) async fn authenticated_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<AuthenticatedSession, ApiError> {
+    let access_token = access_token(headers).ok_or(ApiError::Unauthorized)?;
     let session = state
         .devices
-        .find_by_token(&token)
+        .find_by_token(&access_token)
         .await?
         .filter(|session| session.is_active)
         .ok_or(ApiError::Unauthorized)?;
     let user = state.users.get(session.user_id).await?;
-    let mut dto = user_to_dto(user);
-    dto.server_id = Some(state.server_id().to_owned());
-    Ok(Json(dto))
+    if user.is_disabled {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(AuthenticatedSession { user, access_token })
 }
 
 #[derive(Debug, Default)]

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State, rejection::JsonRejection},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -12,12 +12,12 @@ use jellyfin_data::{AuthenticationStoreError, DeviceRepository, entities::user};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_server_implementations::{AuthenticationError, DefaultAuthenticationProvider};
 use sea_orm::DatabaseConnection;
-use serde::Deserialize;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 mod authentication;
 mod startup;
+mod users;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -73,10 +73,18 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/System/Info/Public", get(public_system_info))
         .route("/System/Ping", get(ping).post(ping))
-        .route("/Users", get(list_users))
-        .route("/Users/Public", get(list_public_users))
-        .route("/Users/New", post(create_user))
-        .route("/Users/{id}", get(get_user))
+        .route("/Users", get(users::list).post(users::update))
+        .route("/Users/Public", get(users::list_public))
+        .route("/Users/New", post(users::create))
+        .route(
+            "/Users/{id}",
+            get(users::get)
+                .post(users::update_legacy)
+                .delete(users::delete),
+        )
+        .route("/User/{id}", axum::routing::delete(users::delete))
+        .route("/Users/Password", post(users::update_password_query))
+        .route("/Users/{id}/Password", post(users::update_password))
         .route(
             "/Startup/Configuration",
             get(startup::get_configuration).post(startup::update_configuration),
@@ -115,54 +123,11 @@ async fn ping() -> &'static str {
     "Jellyfin Server"
 }
 
-async fn list_users(State(state): State<Arc<AppState>>) -> Result<Json<Vec<UserDto>>, ApiError> {
-    Ok(Json(
-        state
-            .users
-            .list()
-            .await?
-            .into_iter()
-            .map(user_to_dto)
-            .collect(),
-    ))
-}
-
-async fn list_public_users(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<UserDto>>, ApiError> {
-    Ok(Json(
-        state
-            .users
-            .list_public()
-            .await?
-            .into_iter()
-            .map(user_to_dto)
-            .collect(),
-    ))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct CreateUserByName {
-    name: String,
-}
-
-async fn create_user(
-    State(state): State<Arc<AppState>>,
-    request: Result<Json<CreateUserByName>, JsonRejection>,
-) -> Result<Json<UserDto>, ApiError> {
-    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    Ok(Json(user_to_dto(state.users.create(&request.name).await?)))
-}
-
-async fn get_user(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<UserDto>, ApiError> {
-    Ok(Json(user_to_dto(state.users.get(id).await?)))
-}
-
 pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
+    let has_password = user
+        .password_hash
+        .as_deref()
+        .is_some_and(|hash| !hash.is_empty());
     let mut policy: UserPolicy = serde_json::from_value(user.policy).unwrap_or_default();
     policy.is_administrator = user.is_administrator;
     policy.is_hidden = user.is_hidden;
@@ -173,6 +138,8 @@ pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
     UserDto {
         id: user.id,
         name: Some(user.username),
+        has_password: Some(has_password),
+        has_configured_password: Some(has_password),
         enable_auto_login: Some(user.enable_auto_login),
         last_login_date: user.last_login_date,
         last_activity_date: user.last_activity_date,
@@ -227,6 +194,17 @@ impl IntoResponse for ApiError {
             Self::User(UserError::PasswordAlreadyConfigured) => {
                 (StatusCode::FORBIDDEN, "Password is already configured")
             }
+            Self::User(UserError::LastUser) => {
+                (StatusCode::FORBIDDEN, "There must be at least one user")
+            }
+            Self::User(UserError::LastAdministrator) => (
+                StatusCode::FORBIDDEN,
+                "There must be at least one administrator",
+            ),
+            Self::User(UserError::AdministratorPasswordRequired) => (
+                StatusCode::FORBIDDEN,
+                "Administrator passwords must not be empty",
+            ),
             Self::User(UserError::Database(_)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Database operation failed",

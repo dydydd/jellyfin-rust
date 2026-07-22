@@ -241,6 +241,24 @@ impl DeviceRepository {
             .await?)
     }
 
+    /// Revokes all device sessions for a user except an optional current
+    /// access token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when deletion fails.
+    pub async fn revoke_user_tokens(
+        &self,
+        user_id: Uuid,
+        except_access_token: Option<&str>,
+    ) -> Result<u64, AuthenticationStoreError> {
+        let mut devices = device::Entity::delete_many().filter(device::Column::UserId.eq(user_id));
+        if let Some(token) = except_access_token {
+            devices = devices.filter(device::Column::AccessToken.ne(token));
+        }
+        Ok(devices.exec(&self.database).await?.rows_affected)
+    }
+
     /// Returns devices matching the supplied exact filters.
     ///
     /// A limit of zero matches upstream behavior and means no limit.

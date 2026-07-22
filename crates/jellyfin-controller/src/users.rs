@@ -1,8 +1,9 @@
 use chrono::Utc;
 use jellyfin_data::entities::user;
 use sea_orm::{
-    ColumnTrait, Condition, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
-    SqlErr, TryInsertResult,
+    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
+    PaginatorTrait, QueryFilter, QueryOrder, Set, SqlErr, Statement, TransactionTrait,
+    TryInsertResult,
     sea_query::{Expr, OnConflict},
 };
 use serde_json::json;
@@ -11,6 +12,7 @@ use uuid::Uuid;
 
 const DEFAULT_AUTH_PROVIDER: &str =
     "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider";
+const USER_MUTATION_LOCK_KEY: i64 = 0x4a45_4c4c_5955_5345;
 
 #[derive(Debug, Error)]
 pub enum UserError {
@@ -22,6 +24,12 @@ pub enum UserError {
     NotFound,
     #[error("the user already has a configured password")]
     PasswordAlreadyConfigured,
+    #[error("there must be at least one user")]
+    LastUser,
+    #[error("there must be at least one administrator")]
+    LastAdministrator,
+    #[error("administrator passwords must not be empty")]
+    AdministratorPasswordRequired,
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -44,6 +52,24 @@ impl UserService {
     /// [`UserError::DuplicateUsername`] when the normalized name already
     /// exists, or [`UserError::Database`] when the insert fails.
     pub async fn create(&self, name: &str) -> Result<user::Model, UserError> {
+        self.create_with_role(name, false).await
+    }
+
+    /// Creates the initial administrator account.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation, duplicate-name, and persistence errors as
+    /// [`Self::create`].
+    pub async fn create_initial_administrator(&self, name: &str) -> Result<user::Model, UserError> {
+        self.create_with_role(name, true).await
+    }
+
+    async fn create_with_role(
+        &self,
+        name: &str,
+        is_administrator: bool,
+    ) -> Result<user::Model, UserError> {
         validate_username(name)?;
         let normalized = normalize_username(name);
 
@@ -54,7 +80,7 @@ impl UserService {
             normalized_username: Set(normalized),
             password_hash: Set(None),
             must_update_password: Set(false),
-            is_administrator: Set(false),
+            is_administrator: Set(is_administrator),
             is_hidden: Set(true),
             is_disabled: Set(false),
             enable_auto_login: Set(false),
@@ -212,6 +238,97 @@ impl UserService {
             return Err(UserError::NotFound);
         }
         self.get(authenticated_user.id).await
+    }
+
+    /// Renames a user while preserving case-insensitive uniqueness.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or duplicate-name error, [`UserError::NotFound`],
+    /// or [`UserError::Database`].
+    pub async fn rename(&self, id: Uuid, name: &str) -> Result<user::Model, UserError> {
+        validate_username(name)?;
+        let update = user::Entity::update_many()
+            .col_expr(user::Column::Username, Expr::value(name))
+            .col_expr(
+                user::Column::NormalizedUsername,
+                Expr::value(normalize_username(name)),
+            )
+            .filter(user::Column::Id.eq(id))
+            .exec(&self.database)
+            .await;
+        match update {
+            Ok(result) if result.rows_affected == 1 => self.get(id).await,
+            Ok(_) => Err(UserError::NotFound),
+            Err(error) if matches!(error.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) => {
+                Err(UserError::DuplicateUsername(name.to_owned()))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Changes or clears a user's password hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::AdministratorPasswordRequired`] when clearing an
+    /// administrator password, [`UserError::NotFound`] when no row matches, or
+    /// [`UserError::Database`] when persistence fails.
+    pub async fn set_password_hash(
+        &self,
+        id: Uuid,
+        password_hash: Option<String>,
+    ) -> Result<user::Model, UserError> {
+        let existing = self.get(id).await?;
+        if existing.is_administrator && password_hash.is_none() {
+            return Err(UserError::AdministratorPasswordRequired);
+        }
+        let result = user::Entity::update_many()
+            .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
+            .filter(user::Column::Id.eq(id))
+            .exec(&self.database)
+            .await?;
+        if result.rows_affected == 0 {
+            return Err(UserError::NotFound);
+        }
+        self.get(id).await
+    }
+
+    /// Deletes a user while preserving Jellyfin's last-user and last-admin
+    /// invariants under concurrent `PostgreSQL` requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::NotFound`], [`UserError::LastUser`],
+    /// [`UserError::LastAdministrator`], or [`UserError::Database`].
+    pub async fn delete(&self, id: Uuid) -> Result<(), UserError> {
+        let transaction = self.database.begin().await?;
+        transaction
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT pg_advisory_xact_lock($1)",
+                [USER_MUTATION_LOCK_KEY.into()],
+            ))
+            .await?;
+        let target = user::Entity::find_by_id(id)
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+        if user::Entity::find().count(&transaction).await? <= 1 {
+            return Err(UserError::LastUser);
+        }
+        if target.is_administrator
+            && user::Entity::find()
+                .filter(user::Column::IsAdministrator.eq(true))
+                .count(&transaction)
+                .await?
+                <= 1
+        {
+            return Err(UserError::LastAdministrator);
+        }
+        user::Entity::delete_by_id(id).exec(&transaction).await?;
+        transaction.commit().await?;
+        Ok(())
     }
 
     /// Lists all users in normalized username order.
