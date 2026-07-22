@@ -1,6 +1,129 @@
 use std::cmp::Ordering;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
+
+/// The item field used for index-number ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexNumberOrderKey {
+    pub index_number: Option<i32>,
+}
+
+impl IndexNumberOrderKey {
+    /// Creates an index-number ordering key.
+    #[must_use]
+    pub const fn new(index_number: Option<i32>) -> Self {
+        Self { index_number }
+    }
+}
+
+/// Stateless index-number comparer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IndexNumberComparer;
+
+impl IndexNumberComparer {
+    /// Compares two index-number keys, sorting missing numbers first.
+    #[must_use]
+    pub fn compare(x: &IndexNumberOrderKey, y: &IndexNumberOrderKey) -> Ordering {
+        compare_index_number(x, y)
+    }
+}
+
+/// Compares two index-number keys, sorting missing numbers first.
+#[must_use]
+pub fn compare_index_number(x: &IndexNumberOrderKey, y: &IndexNumberOrderKey) -> Ordering {
+    x.index_number.cmp(&y.index_number)
+}
+
+/// The item field used for parent-index-number ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParentIndexNumberOrderKey {
+    pub parent_index_number: Option<i32>,
+}
+
+impl ParentIndexNumberOrderKey {
+    /// Creates a parent-index-number ordering key.
+    #[must_use]
+    pub const fn new(parent_index_number: Option<i32>) -> Self {
+        Self {
+            parent_index_number,
+        }
+    }
+}
+
+/// Stateless parent-index-number comparer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParentIndexNumberComparer;
+
+impl ParentIndexNumberComparer {
+    /// Compares two parent-index-number keys, sorting missing numbers first.
+    #[must_use]
+    pub fn compare(x: &ParentIndexNumberOrderKey, y: &ParentIndexNumberOrderKey) -> Ordering {
+        compare_parent_index_number(x, y)
+    }
+}
+
+/// Compares two parent-index-number keys, sorting missing numbers first.
+#[must_use]
+pub fn compare_parent_index_number(
+    x: &ParentIndexNumberOrderKey,
+    y: &ParentIndexNumberOrderKey,
+) -> Ordering {
+    x.parent_index_number.cmp(&y.parent_index_number)
+}
+
+/// The item fields used for premiere-date ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PremiereDateOrderKey {
+    pub premiere_date: Option<DateTime<Utc>>,
+    pub production_year: Option<i32>,
+}
+
+impl PremiereDateOrderKey {
+    /// Creates a premiere-date ordering key.
+    #[must_use]
+    pub const fn new(premiere_date: Option<DateTime<Utc>>, production_year: Option<i32>) -> Self {
+        Self {
+            premiere_date,
+            production_year,
+        }
+    }
+}
+
+/// Stateless premiere-date comparer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PremiereDateComparer;
+
+impl PremiereDateComparer {
+    /// Compares two premiere-date keys using production year as a fallback.
+    #[must_use]
+    pub fn compare(x: &PremiereDateOrderKey, y: &PremiereDateOrderKey) -> Ordering {
+        compare_premiere_date(x, y)
+    }
+}
+
+/// Compares two premiere-date keys using production year as a fallback.
+///
+/// A valid production year represents January 1 of that year. Missing and
+/// invalid years use the same minimum date as the official comparer.
+#[must_use]
+pub fn compare_premiere_date(x: &PremiereDateOrderKey, y: &PremiereDateOrderKey) -> Ordering {
+    premiere_sort_date(x).cmp(&premiere_sort_date(y))
+}
+
+fn premiere_sort_date(item: &PremiereDateOrderKey) -> DateTime<Utc> {
+    item.premiere_date.unwrap_or_else(|| {
+        item.production_year
+            .filter(|year| (1..=9999).contains(year))
+            .and_then(|year| Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).single())
+            .unwrap_or_else(minimum_jellyfin_date)
+    })
+}
+
+fn minimum_jellyfin_date() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(1, 1, 1, 0, 0, 0)
+        .single()
+        .expect("year 1 must be representable by chrono")
+}
 
 /// The item fields used to reproduce Jellyfin's aired-episode ordering.
 ///

@@ -11,5 +11,10 @@ pub use quick_connect::{
     AuthorizationInfo, QuickConnectAuthenticationResult, QuickConnectCapability, QuickConnectError,
     QuickConnectManager, QuickConnectResult, SystemQuickConnectCapability,
 };
-pub use sorting::{AiredEpisodeOrderComparer, AiredEpisodeOrderKey, compare_aired_episode_order};
+pub use sorting::{
+    AiredEpisodeOrderComparer, AiredEpisodeOrderKey, IndexNumberComparer, IndexNumberOrderKey,
+    ParentIndexNumberComparer, ParentIndexNumberOrderKey, PremiereDateComparer,
+    PremiereDateOrderKey, compare_aired_episode_order, compare_index_number,
+    compare_parent_index_number, compare_premiere_date,
+};
 pub use users::{AuthenticationError, DefaultAuthenticationProvider, ProviderAuthenticationResult};
