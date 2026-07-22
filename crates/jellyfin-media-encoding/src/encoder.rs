@@ -1,5 +1,12 @@
 use std::fmt;
 
+mod apple_platform;
+
+pub use apple_platform::{
+    ApplePlatformCapability, ApplePlatformError, CpuArchitecture, Platform, get_sysctl_value,
+    has_apple_av1_hardware_acceleration, is_apple_silicon,
+};
+
 /// Minimum supported `FFmpeg` version.
 pub const MIN_FFMPEG_VERSION: FfmpegVersion = FfmpegVersion::new(4, 4);
 
