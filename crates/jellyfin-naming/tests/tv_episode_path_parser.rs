@@ -168,10 +168,13 @@ fn resolver_accepts_a_stub_extension() {
 #[test]
 fn positional_date_expression_without_formats_remains_supported() {
     let options = NamingOptions {
-        episode_expressions: vec![EpisodeExpression::new(
-            r"(([0-9]{4})-([0-9]{2})-([0-9]{2}) [0-9]{2}:[0-9]{2}:[0-9]{2})",
-            true,
-        )],
+        episode_expressions: vec![
+            EpisodeExpression::try_new(
+                r"(([0-9]{4})-([0-9]{2})-([0-9]{2}) [0-9]{2}:[0-9]{2}:[0-9]{2})",
+                true,
+            )
+            .expect("valid custom expression"),
+        ],
         ..NamingOptions::default()
     };
     let result = EpisodePathParser::new(options).parse("ABC_2019_10_21 11:00:00", false);

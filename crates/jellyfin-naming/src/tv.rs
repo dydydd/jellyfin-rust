@@ -13,7 +13,8 @@ pub enum DateOrder {
 
 #[derive(Clone, Debug)]
 pub struct EpisodeExpression {
-    pub regex: Regex,
+    expression: String,
+    regex: Regex,
     pub is_by_date: bool,
     pub is_optimistic: bool,
     pub is_named: bool,
@@ -23,36 +24,58 @@ pub struct EpisodeExpression {
 
 impl EpisodeExpression {
     fn named(expression: &str) -> Self {
-        let mut value = Self::new(expression, false);
+        let mut value = Self::built_in(expression, false);
         value.is_named = true;
         value
     }
 
     fn positional(expression: &str) -> Self {
-        Self::new(expression, false)
+        Self::built_in(expression, false)
     }
 
-    /// Creates a configurable episode expression.
-    ///
-    /// The expression is positional by default, matching Jellyfin's
-    /// `EpisodeExpression(string, bool)` constructor.
-    #[must_use]
-    pub fn new(expression: &str, by_date: bool) -> Self {
-        Self {
-            regex: RegexBuilder::new(expression)
-                .case_insensitive(true)
-                .build()
-                .expect("built-in episode expression must be valid"),
+    /// Creates a configurable episode expression and compiles its regex.
+    pub fn try_new(expression: impl Into<String>, by_date: bool) -> Result<Self, regex::Error> {
+        let expression = expression.into();
+        let regex = compile_expression(&expression)?;
+        Ok(Self {
+            expression,
+            regex,
             is_by_date: by_date,
             is_optimistic: false,
             is_named: false,
             supports_absolute_episode_numbers: true,
             date_order: None,
-        }
+        })
+    }
+
+    #[must_use]
+    pub fn expression(&self) -> &str {
+        &self.expression
+    }
+
+    #[must_use]
+    pub fn regex(&self) -> &Regex {
+        &self.regex
+    }
+
+    /// Recompiles and installs a user-supplied expression atomically.
+    ///
+    /// If compilation fails, both the expression and compiled regex remain
+    /// unchanged.
+    pub fn set_expression(&mut self, expression: impl Into<String>) -> Result<(), regex::Error> {
+        let expression = expression.into();
+        let regex = compile_expression(&expression)?;
+        self.expression = expression;
+        self.regex = regex;
+        Ok(())
+    }
+
+    fn built_in(expression: &str, by_date: bool) -> Self {
+        Self::try_new(expression, by_date).expect("built-in episode expression must be valid")
     }
 
     fn by_date(expression: &str, order: DateOrder) -> Self {
-        let mut value = Self::new(expression, true);
+        let mut value = Self::built_in(expression, true);
         value.is_named = true;
         value.date_order = Some(order);
         value
@@ -67,6 +90,10 @@ impl EpisodeExpression {
         self.supports_absolute_episode_numbers = false;
         self
     }
+}
+
+fn compile_expression(expression: &str) -> Result<Regex, regex::Error> {
+    RegexBuilder::new(expression).case_insensitive(true).build()
 }
 
 pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
@@ -263,11 +290,14 @@ impl EpisodePathParser {
 
 fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<EpisodePathParserResult> {
     let normalized_path = expression.is_by_date.then(|| path.replace('_', "-"));
-    let (matched_path, captures) = if let Some(captures) = expression.regex.captures(path) {
+    let (matched_path, captures) = if let Some(captures) = expression.regex().captures(path) {
         (path, captures)
     } else {
         let normalized_path = normalized_path.as_deref()?;
-        (normalized_path, expression.regex.captures(normalized_path)?)
+        (
+            normalized_path,
+            expression.regex().captures(normalized_path)?,
+        )
     };
     let mut result = EpisodePathParserResult {
         season_number: capture_number(&captures, "seasonnumber"),
