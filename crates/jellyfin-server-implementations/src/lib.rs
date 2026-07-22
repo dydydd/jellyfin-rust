@@ -1,4 +1,5 @@
 mod cryptography;
+mod media_stream_selector;
 mod playlists;
 mod quick_connect;
 mod sorting;
@@ -8,6 +9,7 @@ pub use cryptography::{
     CryptographyError, CryptographyProvider, DEFAULT_HASH_METHOD, DEFAULT_ITERATIONS,
     DEFAULT_OUTPUT_LENGTH, DEFAULT_SALT_LENGTH,
 };
+pub use media_stream_selector::MediaStreamSelector;
 pub use playlists::{PlaylistIndexError, determine_adjusted_playlist_index};
 pub use quick_connect::{
     AuthorizationInfo, QuickConnectAuthenticationResult, QuickConnectCapability, QuickConnectError,
