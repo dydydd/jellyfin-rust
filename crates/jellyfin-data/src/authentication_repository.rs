@@ -207,6 +207,14 @@ impl DeviceRepository {
         new_device: NewDevice,
         is_active: bool,
     ) -> Result<device::Model, AuthenticationStoreError> {
+        Self::insert_with(&self.database, new_device, is_active).await
+    }
+
+    pub(crate) async fn insert_with<C: sea_orm::ConnectionTrait>(
+        connection: &C,
+        new_device: NewDevice,
+        is_active: bool,
+    ) -> Result<device::Model, AuthenticationStoreError> {
         validate_device(&new_device)?;
         let now = Utc::now();
         Ok(device::ActiveModel {
@@ -222,7 +230,7 @@ impl DeviceRepository {
             date_modified: Set(now),
             date_last_activity: Set(now),
         }
-        .insert(&self.database)
+        .insert(connection)
         .await?)
     }
 

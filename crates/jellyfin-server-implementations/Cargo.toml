@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+chrono.workspace = true
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-model = { path = "../jellyfin-model" }
 pbkdf2 = "0.12"
@@ -14,11 +15,12 @@ sha1 = "0.10"
 sha2 = "0.10"
 subtle = "2.6"
 thiserror.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-chrono.workspace = true
+sea-orm.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

@@ -4,6 +4,7 @@ mod base_item_repository;
 pub mod entities;
 mod item_value_repository;
 mod person_repository;
+mod quick_connect_repository;
 mod user_data_repository;
 mod virtual_folder_repository;
 
@@ -21,6 +22,9 @@ pub use base_item_repository::{
 };
 pub use item_value_repository::{ItemValueError, ItemValueRepository};
 pub use person_repository::{NewPerson, PersonCredit, PersonError, PersonRepository};
+pub use quick_connect_repository::{
+    AuthorizedQuickConnect, NewQuickConnectRequest, QuickConnectRepository, QuickConnectStoreError,
+};
 pub use user_data_repository::{
     NewUserData, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
 };
