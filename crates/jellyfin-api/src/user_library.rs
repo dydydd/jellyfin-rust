@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
 };
-use jellyfin_controller::RelatedItemKind;
+use jellyfin_controller::{MusicGenre, RelatedItemKind};
 use jellyfin_data::entities::base_item;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +28,8 @@ pub struct BaseItemDto {
     #[serde(rename = "Type")]
     pub item_type: String,
     pub etag: String,
-    pub date_created: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -318,7 +319,7 @@ fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
         id: item.id.simple().to_string(),
         item_type: item.item_type,
         etag: item.row_version.to_string(),
-        date_created: item.date_created.to_rfc3339(),
+        date_created: Some(item.date_created.to_rfc3339()),
         sort_name: item.sort_name,
         path: item.path,
         overview: item.overview,
@@ -335,6 +336,33 @@ fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
         season_id: item.season_id.map(|id| id.simple().to_string()),
         extra_type,
         has_lyrics,
+    }
+}
+
+pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseItemDto {
+    BaseItemDto {
+        name: Some(genre.name.clone()),
+        server_id: server_id.to_owned(),
+        id: genre.id.simple().to_string(),
+        item_type: "MusicGenre".to_owned(),
+        etag: genre.id.simple().to_string(),
+        date_created: None,
+        sort_name: Some(genre.name.clone()),
+        path: None,
+        overview: None,
+        media_type: None,
+        is_folder: true,
+        is_virtual_item: false,
+        parent_id: None,
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        run_time_ticks: None,
+        presentation_unique_key: Some(format!("MusicGenre-{}", genre.name)),
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
     }
 }
 

@@ -1,11 +1,13 @@
 pub mod client_event;
 pub mod library;
 pub mod media_encoding;
+mod music_genre;
 mod playstate;
 pub mod providers;
 mod user_library;
 mod users;
 
+pub use music_genre::{MusicGenre, MusicGenreError, MusicGenreService};
 pub use playstate::{
     PlaystateError, PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
 };

@@ -5,6 +5,7 @@ mod m20260722_000002_create_activity_logs;
 mod m20260722_000003_create_authentication;
 mod m20260722_000004_create_user_data;
 mod m20260722_000005_create_base_items;
+mod m20260722_000006_create_item_values;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -16,6 +17,8 @@ pub use m20260722_000003_create_authentication::Migration as CreateAuthenticatio
 pub use m20260722_000004_create_user_data::Migration as CreateUserDataMigration;
 #[doc(hidden)]
 pub use m20260722_000005_create_base_items::Migration as CreateBaseItemsMigration;
+#[doc(hidden)]
+pub use m20260722_000006_create_item_values::Migration as CreateItemValuesMigration;
 
 pub struct Migrator;
 
@@ -28,6 +31,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000003_create_authentication::Migration),
             Box::new(m20260722_000004_create_user_data::Migration),
             Box::new(m20260722_000005_create_base_items::Migration),
+            Box::new(m20260722_000006_create_item_values::Migration),
         ]
     }
 }

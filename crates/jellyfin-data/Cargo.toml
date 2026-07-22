@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 chrono.workspace = true
+jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-migration = { path = "../jellyfin-migration" }
 sea-orm.workspace = true
 sea-orm-migration.workspace = true

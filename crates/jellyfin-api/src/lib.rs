@@ -8,7 +8,8 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    PlaystateError, PlaystateService, UserError, UserLibraryError, UserLibraryService, UserService,
+    MusicGenreError, MusicGenreService, PlaystateError, PlaystateService, UserError,
+    UserLibraryError, UserLibraryService, UserService,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
@@ -23,6 +24,7 @@ use uuid::Uuid;
 mod activity_log;
 mod authentication;
 mod branding;
+mod music_genre;
 mod playstate;
 mod startup;
 mod user_library;
@@ -36,6 +38,7 @@ pub struct AppState {
     pub(crate) activity_logs: ActivityLogRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) playstate: PlaystateService,
+    pub(crate) music_genres: MusicGenreService,
     pub(crate) user_library: UserLibraryService,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
@@ -51,6 +54,7 @@ impl AppState {
             activity_logs: ActivityLogRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             playstate: PlaystateService::new(database.clone()),
+            music_genres: MusicGenreService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
@@ -169,6 +173,7 @@ pub fn router(state: AppState) -> Router {
             get(user_library::get_special_features),
         )
         .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
+        .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .with_state(Arc::new(state))
 }
 
@@ -226,6 +231,7 @@ pub(crate) enum ApiError {
     Authentication(AuthenticationError),
     AuthenticationStore(AuthenticationStoreError),
     Playstate(PlaystateError),
+    MusicGenre(MusicGenreError),
     UserLibrary(UserLibraryError),
     InvalidRequest,
     Unauthorized,
@@ -260,6 +266,12 @@ impl From<AuthenticationStoreError> for ApiError {
 impl From<PlaystateError> for ApiError {
     fn from(error: PlaystateError) -> Self {
         Self::Playstate(error)
+    }
+}
+
+impl From<MusicGenreError> for ApiError {
+    fn from(error: MusicGenreError) -> Self {
+        Self::MusicGenre(error)
     }
 }
 
@@ -335,7 +347,13 @@ impl IntoResponse for ApiError {
                 | UserLibraryError::User(UserError::NotFound)
                 | UserLibraryError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "User, item, or lyrics not found"),
-            Self::UserLibrary(UserLibraryError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
+            Self::UserLibrary(UserLibraryError::Forbidden)
+            | Self::MusicGenre(MusicGenreError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
+            Self::MusicGenre(
+                MusicGenreError::NotFound
+                | MusicGenreError::UserNotFound
+                | MusicGenreError::User(UserError::NotFound),
+            ) => (StatusCode::NOT_FOUND, "Music genre or user not found"),
             Self::Playstate(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Playstate persistence failed",
@@ -343,6 +361,10 @@ impl IntoResponse for ApiError {
             Self::UserLibrary(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Library persistence failed",
+            ),
+            Self::MusicGenre(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Music genre persistence failed",
             ),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()

@@ -2,6 +2,7 @@ mod activity_log_repository;
 mod authentication_repository;
 mod base_item_repository;
 pub mod entities;
+mod item_value_repository;
 mod user_data_repository;
 
 pub use activity_log_repository::{
@@ -15,6 +16,7 @@ pub use authentication_repository::{
 pub use base_item_repository::{
     BaseItemError, BaseItemHierarchyEntry, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
 };
+pub use item_value_repository::{ItemValueError, ItemValueRepository};
 pub use user_data_repository::{
     NewUserData, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
 };

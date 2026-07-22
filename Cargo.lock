@@ -1183,6 +1183,7 @@ name = "jellyfin-data"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "jellyfin-extensions",
  "jellyfin-migration",
  "sea-orm",
  "sea-orm-migration",
