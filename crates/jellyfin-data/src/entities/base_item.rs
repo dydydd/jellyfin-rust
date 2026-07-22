@@ -39,6 +39,8 @@ pub enum Relation {
     Images,
     #[sea_orm(has_one = "super::keyframe_data::Entity")]
     KeyframeData,
+    #[sea_orm(has_many = "super::media_stream::Entity")]
+    MediaStreams,
     #[sea_orm(
         belongs_to = "Entity",
         from = "Column::ParentId",
@@ -66,6 +68,12 @@ impl Related<super::base_item_image::Entity> for Entity {
 impl Related<super::keyframe_data::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::KeyframeData.def()
+    }
+}
+
+impl Related<super::media_stream::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::MediaStreams.def()
     }
 }
 
