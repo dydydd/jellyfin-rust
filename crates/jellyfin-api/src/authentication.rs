@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -158,26 +158,83 @@ fn access_token(headers: &HeaderMap) -> Option<String> {
 
 fn parse_authorization(value: &str) -> ClientMetadata {
     let fields = value.split_once(' ').map_or(value, |(_, fields)| fields);
-    let mut metadata = ClientMetadata::default();
-    for field in fields.split(',') {
-        let Some((key, value)) = field.trim().split_once('=') else {
+    let mut parts = parse_authorization_parts(fields);
+    ClientMetadata {
+        client: parts.remove("client").unwrap_or_default(),
+        device_id: parts.remove("deviceid").unwrap_or_default(),
+        device: parts.remove("device").unwrap_or_default(),
+        version: parts.remove("version").unwrap_or_default(),
+        token: parts.remove("token").filter(|token| !token.is_empty()),
+    }
+}
+
+fn parse_authorization_parts(value: &str) -> HashMap<String, String> {
+    let mut parts = HashMap::new();
+    for field in quoted_fields(value) {
+        let Some((key, raw_value)) = field.split_once('=') else {
             continue;
         };
-        let value = value.trim().trim_matches('"');
-        let decoded = percent_decode_str(value).decode_utf8_lossy().into_owned();
-        if key.eq_ignore_ascii_case("Client") {
-            metadata.client = decoded;
-        } else if key.eq_ignore_ascii_case("DeviceId") {
-            metadata.device_id = decoded;
-        } else if key.eq_ignore_ascii_case("Device") {
-            metadata.device = decoded;
-        } else if key.eq_ignore_ascii_case("Version") {
-            metadata.version = decoded;
-        } else if key.eq_ignore_ascii_case("Token") && !decoded.is_empty() {
-            metadata.token = Some(decoded);
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+
+        let value = decode_authorization_value(raw_value);
+        // Jellyfin field names are case-insensitive; the last duplicate wins.
+        parts.insert(key.to_ascii_lowercase(), value);
+    }
+    parts
+}
+
+fn quoted_fields(value: &str) -> Vec<&str> {
+    let mut fields = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+        } else if character == ',' && !quoted {
+            fields.push(&value[start..index]);
+            start = index + character.len_utf8();
         }
     }
-    metadata
+
+    if !quoted && !escaped {
+        fields.push(&value[start..]);
+    }
+    fields
+}
+
+fn decode_authorization_value(value: &str) -> String {
+    let value = value.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map_or_else(|| value.to_owned(), unescape_quoted_value);
+    percent_decode_str(&value).decode_utf8_lossy().into_owned()
+}
+
+fn unescape_quoted_value(value: &str) -> String {
+    let mut decoded = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\'
+            && let Some(escaped) = characters.next()
+        {
+            decoded.push(escaped);
+        } else {
+            decoded.push(character);
+        }
+    }
+    decoded
 }
 
 #[cfg(test)]
@@ -195,5 +252,59 @@ mod tests {
         assert_eq!(metadata.device, "Apple II");
         assert_eq!(metadata.version, "10.8.0");
         assert_eq!(metadata.token.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn authorization_parts_match_official_matrix() {
+        for (input, expected) in [
+            (
+                "x=\"123,123\",y=\"123\"",
+                vec![("x", "123,123"), ("y", "123")],
+            ),
+            (
+                "x=\"123,123\",         y=\"123\",z=\"'hi'\"",
+                vec![("x", "123,123"), ("y", "123"), ("z", "'hi'")],
+            ),
+            ("x=\"ab\"", vec![("x", "ab")]),
+            ("param=Hörbücher", vec![("param", "Hörbücher")]),
+            ("param=%22%Hörbücher", vec![("param", "\"%Hörbücher")]),
+        ] {
+            let actual = parse_authorization_parts(input);
+            for (key, value) in expected {
+                assert_eq!(actual.get(key).map(String::as_str), Some(value));
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_commas_and_escaped_quotes_preserve_client_metadata() {
+        let metadata = parse_authorization(
+            r#"MediaBrowser Client="Jellyfin \"Test\", Inc.", DeviceId="id,one", Device="TV, Main", Version="1.0", Token="abc""#,
+        );
+        assert_eq!(metadata.client, "Jellyfin \"Test\", Inc.");
+        assert_eq!(metadata.device_id, "id,one");
+        assert_eq!(metadata.device, "TV, Main");
+        assert_eq!(metadata.version, "1.0");
+        assert_eq!(metadata.token.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn duplicate_empty_and_malformed_fields_have_stable_rules() {
+        let parts = parse_authorization_parts(
+            "Client=first,, broken, =ignored, CLIENT=last, Token=abc, token=, literal=100%, incomplete=%2, dangling=\"ignored",
+        );
+        assert_eq!(parts.get("client").map(String::as_str), Some("last"));
+        assert_eq!(parts.get("token").map(String::as_str), Some(""));
+        assert_eq!(parts.get("literal").map(String::as_str), Some("100%"));
+        assert_eq!(parts.get("incomplete").map(String::as_str), Some("%2"));
+        assert!(!parts.contains_key(""));
+        assert!(!parts.contains_key("dangling"));
+
+        let metadata = parse_authorization(
+            "MediaBrowser Client=first,CLIENT=last,DeviceId=id,Token=abc,token=",
+        );
+        assert_eq!(metadata.client, "last");
+        assert_eq!(metadata.device_id, "id");
+        assert_eq!(metadata.token, None);
     }
 }
