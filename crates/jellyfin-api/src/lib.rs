@@ -10,10 +10,11 @@ use axum::{
 use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
     InstalledPlugin, ItemUpdateError, ItemUpdateService, LibraryControllerError,
-    LibraryControllerService, MusicGenreError, MusicGenreService, PersonError, PersonService,
-    PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
-    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
-    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
+    LibraryControllerService, MetadataEditorError, MetadataEditorService, MusicGenreError,
+    MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
+    PluginRegistry, SystemLogError, SystemLogService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -67,6 +68,7 @@ pub struct AppState {
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_update: ItemUpdateService,
+    pub(crate) metadata_editor: MetadataEditorService,
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) videos: VideoService,
@@ -97,6 +99,7 @@ impl AppState {
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
             item_update: ItemUpdateService::new(database.clone()),
+            metadata_editor: MetadataEditorService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
             videos: VideoService::new(database.clone()),
@@ -415,6 +418,10 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),
         )
+        .route(
+            "/Items/{item_id}/MetadataEditor",
+            get(item_update::metadata_editor),
+        )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
         .route(
             "/Items/{item_id}/LocalTrailers",
@@ -509,6 +516,7 @@ pub(crate) enum ApiError {
     Dashboard(DashboardError),
     TunerHost(TunerHostError),
     ItemUpdate(ItemUpdateError),
+    MetadataEditor(MetadataEditorError),
     SystemLog(SystemLogError),
     ServerConfiguration(ServerConfigurationStoreError),
     Environment(EnvironmentError),
@@ -606,6 +614,12 @@ impl From<TunerHostError> for ApiError {
 impl From<ItemUpdateError> for ApiError {
     fn from(error: ItemUpdateError) -> Self {
         Self::ItemUpdate(error)
+    }
+}
+
+impl From<MetadataEditorError> for ApiError {
+    fn from(error: MetadataEditorError) -> Self {
+        Self::MetadataEditor(error)
     }
 }
 
@@ -729,6 +743,7 @@ impl IntoResponse for ApiError {
             Self::Dashboard(error) => dashboard_error_response(&error),
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
+            Self::MetadataEditor(error) => metadata_editor_error_response(&error),
             Self::SystemLog(error) => system_log_error_response(&error),
             Self::ServerConfiguration(_error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -777,6 +792,20 @@ fn item_update_error_response(error: &ItemUpdateError) -> (StatusCode, &'static 
         ItemUpdateError::ServerConfiguration(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Server configuration persistence failed",
+        ),
+    }
+}
+
+fn metadata_editor_error_response(error: &MetadataEditorError) -> (StatusCode, &'static str) {
+    match error {
+        MetadataEditorError::NotFound | MetadataEditorError::BaseItem(BaseItemError::NotFound) => {
+            (StatusCode::NOT_FOUND, "Item not found")
+        }
+        MetadataEditorError::BaseItem(_)
+        | MetadataEditorError::ServerConfiguration(_)
+        | MetadataEditorError::VirtualFolder(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Metadata editor data could not be loaded",
         ),
     }
 }

@@ -14,6 +14,7 @@ pub mod enums;
 pub mod extensions;
 pub mod io;
 pub mod live_tv;
+mod metadata_editor;
 pub mod net;
 pub mod plugins;
 pub mod providers;
@@ -43,6 +44,11 @@ pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, 
 pub use extensions::first_to_upper;
 pub use io::{FileSystemEntryInfo, FileSystemEntryType};
 pub use live_tv::{TimerInfo, TunerHostInfo};
+pub use metadata_editor::{
+    CollectionType, CountryInfo, CultureDto, ExternalIdInfo, ExternalIdMediaType,
+    MetadataEditorInfo, NameValuePair, ParentalRating, ParentalRatingScore,
+    ParseCollectionTypeError,
+};
 pub use net::{MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};

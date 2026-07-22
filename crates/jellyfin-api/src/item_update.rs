@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_controller::ItemUpdateInput;
+use jellyfin_model::MetadataEditorInfo;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -65,4 +66,16 @@ pub(crate) async fn update_content_type(
         .update_content_type(item_id, query.content_type.as_deref())
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn metadata_editor(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<Json<MetadataEditorInfo>, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    Ok(Json(state.metadata_editor.get(item_id).await?))
 }

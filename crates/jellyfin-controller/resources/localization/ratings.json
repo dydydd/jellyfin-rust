@@ -1,0 +1,3254 @@
+[
+  {
+    "countryCode": "0-prefer",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "E",
+          "EC"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "T"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M",
+          "AO",
+          "UR",
+          "RP"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "X",
+          "XX",
+          "XXX",
+          "XXXX"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "ar",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "ATP"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "+13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "+16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "+18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "C"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "au",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "Exempt",
+          "G"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "7+"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "M"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 2
+        }
+      },
+      {
+        "ratingStrings": [
+          "MA",
+          "MA 15+",
+          "MA15+"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 3
+        }
+      },
+      {
+        "ratingStrings": [
+          "16+"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+",
+          "R",
+          "R18+",
+          "R 18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "X",
+          "X18",
+          "X 18"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "RC"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "be",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "AL",
+          "KT",
+          "TOUS"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6",
+          "MG6"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "9"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "KNT"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "bg",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "A",
+          "B"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "C"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "D"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "X"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "br",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "L",
+          "AL",
+          "Livre"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "9"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "10",
+          "A10",
+          "ER"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "A12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14",
+          "A14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16",
+          "A16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "A18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "ca",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "C",
+          "E",
+          "G",
+          "TV-Y",
+          "TV-G"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-Y7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-Y7-FV"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "C8"
+        ],
+        "ratingScore": {
+          "score": 8,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG",
+          "TV-PG"
+        ],
+        "ratingScore": {
+          "score": 8,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "14A"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "14+",
+          "TV-14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "16+"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "NC-17"
+        ],
+        "ratingScore": {
+          "score": 17,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "18A"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+",
+          "TV-MA",
+          "R"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "A"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "Prohibited"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "cl",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "TE"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "TE+7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "18V",
+          "18S"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "co",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "T"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "X"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "Prohibited"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "cz",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "U"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12+"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15+"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "de",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0",
+          "FSK 0",
+          "FSK-0",
+          "Educational",
+          "Infoprogramm"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6",
+          "FSK 6",
+          "FSK-6"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "FSK 12",
+          "FSK-12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16",
+          "FSK 16",
+          "FSK-16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "FSK 18",
+          "FSK-18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "dk",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "F",
+          "A"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "11"
+        ],
+        "ratingScore": {
+          "score": 11,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "es",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+",
+          "A",
+          "Ai",
+          "A/i",
+          "A/fig",
+          "A/i/fig",
+          "APTA",
+          "ERI",
+          "TP"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7",
+          "7i",
+          "7/i",
+          "7/fig",
+          "7/i/fig"
+        ],
+        "ratingScore": {
+          "score": 11,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "9+"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "10"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "12/fig"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16",
+          "16/fig"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "18/fig"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "X"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "Banned"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "fi",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "S",
+          "T"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7",
+          "K7",
+          "K-7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "K12",
+          "K-12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16",
+          "K16",
+          "K-16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "K18",
+          "K-18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "KK"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "fr",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+",
+          "Public Averti",
+          "Tous Publics",
+          "TP",
+          "U"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "9+"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "10"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14+"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "X"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "gb",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+",
+          "All",
+          "E",
+          "G",
+          "U"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "7+"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG"
+        ],
+        "ratingScore": {
+          "score": 8,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "9"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "12A",
+          "12PG"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "12+"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "13+",
+          "Teen"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "14+"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 3
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "Caution"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "Mature",
+          "Adult",
+          "R18"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "gr",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "K"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "K12",
+          "K-12",
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "K13",
+          "K-13",
+          "13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "K15",
+          "K-15",
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "K16",
+          "K-16",
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "K17",
+          "K-17",
+          "17"
+        ],
+        "ratingScore": {
+          "score": 17,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "K18",
+          "K-18",
+          "18",
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "hu",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "KN"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "X"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "id",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "SU"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "13+"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "17+"
+        ],
+        "ratingScore": {
+          "score": 17,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "21+"
+        ],
+        "ratingScore": {
+          "score": 21,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "ie",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "G"
+        ],
+        "ratingScore": {
+          "score": 4,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "12A",
+          "12PG",
+          "PG"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "15A",
+          "15PG"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 3
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 1
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "in",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "U"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "U/A 7+"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "UA"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "U/A 13+"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "U/A 16+"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "A"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "S"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "it",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "T"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14+"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "jp",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "A",
+          "G"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "B"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "15A",
+          "15PG"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "C",
+          "15+",
+          "R15+"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "16+"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "D"
+        ],
+        "ratingScore": {
+          "score": 17,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+",
+          "Z"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "kr",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "ALL"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "19"
+        ],
+        "ratingScore": {
+          "score": 19,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "Restricted Screening"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "kz",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "K"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "БА"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "Б14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "E16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "E18",
+          "HA"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "lt",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "V"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "N-7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "N-13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "N-16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "N-18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "mx",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "A",
+          "AA"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "B"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "B-15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "C"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "D"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "nl",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "AL"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6",
+          "MG6"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "9"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "no",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "A"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "9"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "11"
+        ],
+        "ratingScore": {
+          "score": 11,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "Not approved"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "nz",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "Exempt",
+          "G"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "RP13",
+          "PG"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "GY",
+          "R13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "R15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "RP16",
+          "M"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "R16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "RP18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "R18",
+          "GA"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "MA"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "Objectionable",
+          "R"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "ph",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "G"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "R-13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "R-16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "R-18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "X"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "pl",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "b.o.",
+          "AL"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7",
+          "od 7 lat"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "od 12 lat"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16",
+          "od 16 lat"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "od 18 lat",
+          "R"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "pt",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "Públicos"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M/3"
+        ],
+        "ratingScore": {
+          "score": 3,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M/6"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M/12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M/14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M/16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M/18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "P"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "ro",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "AG",
+          "AP"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "AP-12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15",
+          "N-15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "IM-18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+",
+          "IM-18-XXX"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "IC"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "ru",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12+"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16+"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "Refused classification"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "se",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+",
+          "Alla",
+          "Barntillåten",
+          "Btl"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7",
+          "7+",
+          "7 År",
+          "Från 7 år"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "9+"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "10+"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "11",
+          "11+",
+          "11 År",
+          "Från 11 år"
+        ],
+        "ratingScore": {
+          "score": 11,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15",
+          "15+",
+          "15 År",
+          "Från 15 år"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "18+",
+          "Barnförbjuden",
+          "Bfj"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "sg",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "G"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "NC16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "M18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "R21"
+        ],
+        "ratingScore": {
+          "score": 21,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "sk",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "U",
+          "NR"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "th",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "P",
+          "G"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "20"
+        ],
+        "ratingScore": {
+          "score": 20,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "Banned"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "tr",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "Genel İzleyici Kitlesi"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "6A"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "10A"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "10+"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "13A"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "13+"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "16+"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "tw",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12+"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "15+"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "ua",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "12+"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16+"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18+"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "gb",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "0+",
+          "All",
+          "E",
+          "G",
+          "U"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "6+"
+        ],
+        "ratingScore": {
+          "score": 6,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "7+"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG"
+        ],
+        "ratingScore": {
+          "score": 8,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "9"
+        ],
+        "ratingScore": {
+          "score": 9,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "12A",
+          "12PG"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "12",
+          "12+"
+        ],
+        "ratingScore": {
+          "score": 12,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "13+",
+          "Teen"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "14+"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "15"
+        ],
+        "ratingScore": {
+          "score": 15,
+          "subScore": 3
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "18",
+          "Caution"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "Mature",
+          "Adult",
+          "R18"
+        ],
+        "ratingScore": {
+          "score": 1000,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "us",
+    "supportsSubScores": true,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "Approved",
+          "G",
+          "TV-G",
+          "TV-Y"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-Y7"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-Y7-FV"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG",
+          "TV-PG"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-PG-D",
+          "TV-PG-L",
+          "TV-PG-S",
+          "TV-PG-V",
+          "TV-PG-DL",
+          "TV-PG-DS",
+          "TV-PG-DV",
+          "TV-PG-LS",
+          "TV-PG-LV",
+          "TV-PG-SV",
+          "TV-PG-DLS",
+          "TV-PG-DLV",
+          "TV-PG-DSV",
+          "TV-PG-LSV",
+          "TV-PG-DLSV"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG-13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-14"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-14-D",
+          "TV-14-L",
+          "TV-14-S",
+          "TV-14-V",
+          "TV-14-DL",
+          "TV-14-DS",
+          "TV-14-DV",
+          "TV-14-LS",
+          "TV-14-LV",
+          "TV-14-SV",
+          "TV-14-DLS",
+          "TV-14-DLV",
+          "TV-14-DSV",
+          "TV-14-LSV",
+          "TV-14-DLSV"
+        ],
+        "ratingScore": {
+          "score": 14,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "R"
+        ],
+        "ratingScore": {
+          "score": 17,
+          "subScore": 0
+        }
+      },
+      {
+        "ratingStrings": [
+          "NC-17",
+          "TV-MA",
+          "TV-MA-L",
+          "TV-MA-S",
+          "TV-MA-V",
+          "TV-MA-LS",
+          "TV-MA-LV",
+          "TV-MA-SV",
+          "TV-MA-LSV"
+        ],
+        "ratingScore": {
+          "score": 17,
+          "subScore": 1
+        }
+      },
+      {
+        "ratingStrings": [
+          "TV-X",
+          "TV-AO"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": 0
+        }
+      }
+    ]
+  },
+  {
+    "countryCode": "za",
+    "supportsSubScores": false,
+    "ratings": [
+      {
+        "ratingStrings": [
+          "A"
+        ],
+        "ratingScore": {
+          "score": 0,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "PG",
+          "7-9PG"
+        ],
+        "ratingScore": {
+          "score": 7,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "10-12PG"
+        ],
+        "ratingScore": {
+          "score": 10,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "13"
+        ],
+        "ratingScore": {
+          "score": 13,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "16"
+        ],
+        "ratingScore": {
+          "score": 16,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "18"
+        ],
+        "ratingScore": {
+          "score": 18,
+          "subScore": null
+        }
+      },
+      {
+        "ratingStrings": [
+          "X18",
+          "XX"
+        ],
+        "ratingScore": {
+          "score": 1001,
+          "subScore": null
+        }
+      }
+    ]
+  }
+]

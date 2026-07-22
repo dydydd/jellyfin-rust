@@ -5,7 +5,9 @@ mod item_types;
 mod item_update;
 pub mod library;
 mod library_controller;
+mod localization;
 pub mod media_encoding;
+mod metadata_editor;
 mod music_genre;
 mod persons;
 mod playstate;
@@ -25,6 +27,8 @@ pub use item_types::{
 };
 pub use item_update::{ItemUpdateError, ItemUpdateInput, ItemUpdateService};
 pub use library_controller::{LibraryControllerError, LibraryControllerService};
+pub use localization::LocalizationService;
+pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenreService};
 pub use persons::{Person, PersonError, PersonService};
 pub use playstate::{

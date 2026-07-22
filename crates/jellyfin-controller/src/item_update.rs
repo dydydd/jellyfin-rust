@@ -87,7 +87,7 @@ impl ItemUpdateService {
     }
 }
 
-fn containing_folder_path(item: &base_item::Model) -> String {
+pub(crate) fn containing_folder_path(item: &base_item::Model) -> String {
     let path = item.path.as_deref().unwrap_or_default();
     if item.is_folder {
         return path.to_owned();

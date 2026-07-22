@@ -10,7 +10,9 @@ chrono.workspace = true
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-model = { path = "../jellyfin-model" }
+jellyfin-providers = { path = "../jellyfin-providers" }
 sea-orm.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
 thiserror.workspace = true
