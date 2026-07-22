@@ -1,6 +1,9 @@
 use regex::{Regex, RegexBuilder};
 
-use crate::video::{Format3dRule, StubTypeRule};
+use crate::{
+    tv::{EpisodeExpression, default_episode_expressions, default_multiple_episode_expressions},
+    video::{Format3dRule, StubTypeRule},
+};
 
 /// File extensions and flags used while parsing external media filenames.
 ///
@@ -22,6 +25,8 @@ pub struct NamingOptions {
     pub clean_date_time_regexes: Vec<Regex>,
     pub clean_string_regexes: Vec<Regex>,
     pub format_3d_rules: Vec<Format3dRule>,
+    pub episode_expressions: Vec<EpisodeExpression>,
+    pub multiple_episode_expressions: Vec<EpisodeExpression>,
 }
 
 impl Default for NamingOptions {
@@ -94,6 +99,8 @@ impl Default for NamingOptions {
                 Format3dRule::new("sbs3d"),
                 Format3dRule::new("mvc"),
             ],
+            episode_expressions: default_episode_expressions(),
+            multiple_episode_expressions: default_multiple_episode_expressions(),
         }
     }
 }
@@ -136,5 +143,7 @@ mod tests {
         assert!(!options.clean_string_regexes.is_empty());
         assert!(options.video_file_extensions.contains(&".mkv".to_owned()));
         assert_eq!(options.stub_file_extensions, [".disc"]);
+        assert!(!options.episode_expressions.is_empty());
+        assert!(!options.multiple_episode_expressions.is_empty());
     }
 }
