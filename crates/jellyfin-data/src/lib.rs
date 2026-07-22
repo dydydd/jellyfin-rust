@@ -1,5 +1,6 @@
 mod activity_log_repository;
 mod authentication_repository;
+mod base_item_repository;
 pub mod entities;
 mod user_data_repository;
 
@@ -10,6 +11,9 @@ pub use activity_log_repository::{
 pub use authentication_repository::{
     ApiKeyRepository, AuthenticationStoreError, DevicePage, DeviceQuery, DeviceRepository,
     NewDevice,
+};
+pub use base_item_repository::{
+    BaseItemError, BaseItemHierarchyEntry, BaseItemRepository, NewBaseItem,
 };
 pub use user_data_repository::{
     NewUserData, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
