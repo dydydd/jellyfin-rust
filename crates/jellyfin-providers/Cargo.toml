@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 jellyfin-model = { path = "../jellyfin-model" }
+jellyfin-naming = { path = "../jellyfin-naming" }
 serde_json.workspace = true
 
 [lints.rust]
