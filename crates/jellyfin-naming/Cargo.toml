@@ -1,0 +1,12 @@
+[package]
+name = "jellyfin-naming"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Jellyfin-compatible media file naming parsers"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
