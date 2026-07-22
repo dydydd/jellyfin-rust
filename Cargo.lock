@@ -1514,6 +1514,7 @@ dependencies = [
  "pbkdf2",
  "rand 0.9.5",
  "sea-orm",
+ "serde",
  "serde_json",
  "sha1",
  "sha2",

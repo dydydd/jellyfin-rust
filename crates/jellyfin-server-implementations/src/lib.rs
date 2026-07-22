@@ -30,7 +30,8 @@ pub use cryptography::{
 };
 pub use dto_images::{
     DtoImage, DtoImageItem, DtoImageItemKind, DtoImageLibrary, DtoImageOptions, DtoImageProjection,
-    DtoImageProjectionService, ImageCacheTagProvider,
+    DtoImageProjectionService, ImageCacheTagProvider, PersistedDtoImageProjectionError,
+    PersistedDtoImageProjectionService,
 };
 pub use ignore_patterns::IgnorePatterns;
 pub use library_extras::{

@@ -1,5 +1,13 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
+use jellyfin_data::{
+    BaseItemError, BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError,
+    BaseItemImageType, BaseItemRepository, entities::base_item,
+};
 use jellyfin_model::{CollectionType, ImageType};
+use serde::Deserialize;
+use thiserror::Error;
 use uuid::Uuid;
 
 /// Image metadata required to build an item DTO image tag.
@@ -87,6 +95,222 @@ pub trait DtoImageLibrary {
 pub trait ImageCacheTagProvider {
     /// Returns `None` when a stable cache tag cannot be produced.
     fn get_image_cache_tag(&self, item: &DtoImageItem, image: &DtoImage) -> Option<String>;
+}
+
+/// Failure while loading and projecting persisted item images.
+#[derive(Debug, Error)]
+pub enum PersistedDtoImageProjectionError {
+    #[error(transparent)]
+    Item(#[from] BaseItemError),
+    #[error(transparent)]
+    Image(#[from] BaseItemImageStoreError),
+    #[error("invalid image-projection metadata for base item {item_id}")]
+    Metadata {
+        item_id: Uuid,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// `PostgreSQL` adapter that preloads persisted items and images before applying
+/// the synchronous Jellyfin image-inheritance rules.
+#[derive(Clone)]
+pub struct PersistedDtoImageProjectionService<C> {
+    items: BaseItemRepository,
+    images: BaseItemImageRepository,
+    cache_tags: C,
+}
+
+impl<C> PersistedDtoImageProjectionService<C> {
+    #[must_use]
+    pub const fn new(
+        items: BaseItemRepository,
+        images: BaseItemImageRepository,
+        cache_tags: C,
+    ) -> Self {
+        Self {
+            items,
+            images,
+            cache_tags,
+        }
+    }
+
+    #[must_use]
+    pub const fn cache_tags(&self) -> &C {
+        &self.cache_tags
+    }
+}
+
+impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
+    /// Loads an item and the parent candidates required by Jellyfin's primary
+    /// image inheritance behavior, then projects its DTO image fields.
+    ///
+    /// The image rows are fetched in one set-based `SeaORM` query after the
+    /// small relation set has been resolved. Missing parent rows behave like a
+    /// library cache miss; a missing requested item returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database, corrupt-image-row, or persisted metadata error.
+    pub async fn project(
+        &self,
+        item_id: Uuid,
+        options: DtoImageOptions,
+    ) -> Result<Option<DtoImageProjection>, PersistedDtoImageProjectionError> {
+        let Some(requested) = self.items.get(item_id).await? else {
+            return Ok(None);
+        };
+        let requested_metadata = persisted_metadata(&requested)?;
+        let requested_kind = persisted_item_kind(&requested, &requested_metadata);
+
+        let mut models = HashMap::from([(requested.id, requested)]);
+        for related_id in related_item_ids(requested_kind) {
+            if !models.contains_key(&related_id)
+                && let Some(related) = self.items.get(related_id).await?
+            {
+                models.insert(related.id, related);
+            }
+        }
+
+        let model_ids = models.keys().copied().collect::<Vec<_>>();
+        let mut images_by_item = HashMap::<Uuid, Vec<DtoImage>>::new();
+        for image in self.images.list_many(&model_ids).await? {
+            images_by_item
+                .entry(image.item_id)
+                .or_default()
+                .push(persisted_image(image));
+        }
+
+        let mut projected_items = HashMap::with_capacity(models.len());
+        for (id, model) in models {
+            let metadata = if id == item_id {
+                requested_metadata.clone()
+            } else {
+                persisted_metadata(&model)?
+            };
+            projected_items.insert(
+                id,
+                DtoImageItem {
+                    id,
+                    kind: persisted_item_kind(&model, &metadata),
+                    images: images_by_item.remove(&id).unwrap_or_default(),
+                    default_primary_image_aspect_ratio: metadata.default_primary_image_aspect_ratio,
+                },
+            );
+        }
+
+        let Some(requested) = projected_items.remove(&item_id) else {
+            return Ok(None);
+        };
+        let service = DtoImageProjectionService::new(
+            PreloadedDtoImageLibrary {
+                items: projected_items,
+            },
+            BorrowedCacheTags(&self.cache_tags),
+        );
+        Ok(Some(service.project(&requested, options)))
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+struct PersistedDtoImageMetadata {
+    view_type: Option<CollectionType>,
+    display_parent_id: Option<Uuid>,
+    default_primary_image_aspect_ratio: Option<f64>,
+}
+
+fn persisted_metadata(
+    item: &base_item::Model,
+) -> Result<PersistedDtoImageMetadata, PersistedDtoImageProjectionError> {
+    item.data
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()
+        .map(Option::unwrap_or_default)
+        .map_err(|source| PersistedDtoImageProjectionError::Metadata {
+            item_id: item.id,
+            source,
+        })
+}
+
+fn persisted_item_kind(
+    item: &base_item::Model,
+    metadata: &PersistedDtoImageMetadata,
+) -> DtoImageItemKind {
+    if item.item_type.eq_ignore_ascii_case("Episode") {
+        DtoImageItemKind::Episode {
+            season_id: item.season_id,
+            series_id: item.series_id,
+        }
+    } else if item.item_type.eq_ignore_ascii_case("UserView") {
+        DtoImageItemKind::UserView {
+            view_type: metadata.view_type.unwrap_or(CollectionType::Unknown),
+            display_parent_id: metadata.display_parent_id,
+        }
+    } else {
+        DtoImageItemKind::Other
+    }
+}
+
+fn related_item_ids(kind: DtoImageItemKind) -> impl Iterator<Item = Uuid> {
+    let ids = match kind {
+        DtoImageItemKind::UserView {
+            display_parent_id, ..
+        } => [display_parent_id, None],
+        DtoImageItemKind::Episode {
+            season_id,
+            series_id,
+        } => [series_id, season_id],
+        DtoImageItemKind::Other => [None, None],
+    };
+    ids.into_iter().flatten()
+}
+
+fn persisted_image(image: BaseItemImage) -> DtoImage {
+    DtoImage {
+        image_type: model_image_type(image.image_type),
+        path: image.path,
+        date_modified: image.date_modified,
+        width: image.width,
+        height: image.height,
+    }
+}
+
+const fn model_image_type(image_type: BaseItemImageType) -> ImageType {
+    match image_type {
+        BaseItemImageType::Primary => ImageType::Primary,
+        BaseItemImageType::Art => ImageType::Art,
+        BaseItemImageType::Backdrop => ImageType::Backdrop,
+        BaseItemImageType::Banner => ImageType::Banner,
+        BaseItemImageType::Logo => ImageType::Logo,
+        BaseItemImageType::Thumb => ImageType::Thumb,
+        BaseItemImageType::Disc => ImageType::Disc,
+        BaseItemImageType::Box => ImageType::Box,
+        BaseItemImageType::Screenshot => ImageType::Screenshot,
+        BaseItemImageType::Menu => ImageType::Menu,
+        BaseItemImageType::Chapter => ImageType::Chapter,
+        BaseItemImageType::BoxRear => ImageType::BoxRear,
+        BaseItemImageType::Profile => ImageType::Profile,
+    }
+}
+
+struct PreloadedDtoImageLibrary {
+    items: HashMap<Uuid, DtoImageItem>,
+}
+
+impl DtoImageLibrary for PreloadedDtoImageLibrary {
+    fn get_item_by_id(&self, item_id: Uuid) -> Option<DtoImageItem> {
+        self.items.get(&item_id).cloned()
+    }
+}
+
+struct BorrowedCacheTags<'a, C>(&'a C);
+
+impl<C: ImageCacheTagProvider> ImageCacheTagProvider for BorrowedCacheTags<'_, C> {
+    fn get_image_cache_tag(&self, item: &DtoImageItem, image: &DtoImage) -> Option<String> {
+        self.0.get_image_cache_tag(item, image)
+    }
 }
 
 /// Projects primary-image DTO fields while preserving Jellyfin inheritance rules.

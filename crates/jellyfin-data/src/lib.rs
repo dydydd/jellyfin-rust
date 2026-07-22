@@ -1,5 +1,6 @@
 mod activity_log_repository;
 mod authentication_repository;
+mod base_item_image_repository;
 mod base_item_repository;
 pub mod entities;
 mod item_update_repository;
@@ -19,6 +20,10 @@ pub use activity_log_repository::{
 pub use authentication_repository::{
     ApiKeyRepository, AuthenticationStoreError, DevicePage, DeviceQuery, DeviceRepository,
     NewDevice,
+};
+pub use base_item_image_repository::{
+    BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
+    InvalidBaseItemImageType, NewBaseItemImage,
 };
 pub use base_item_repository::{
     BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage, BaseItemQuery,
