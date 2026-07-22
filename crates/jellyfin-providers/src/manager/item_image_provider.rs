@@ -206,6 +206,9 @@ impl ImageRefreshOptions {
 /// Provider descriptor. Provider work itself is supplied by a capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ImageProvider {
+    Basic {
+        name: String,
+    },
     Local {
         name: String,
     },
@@ -220,6 +223,11 @@ pub enum ImageProvider {
 }
 
 impl ImageProvider {
+    #[must_use]
+    pub fn basic(name: impl Into<String>) -> Self {
+        Self::Basic { name: name.into() }
+    }
+
     #[must_use]
     pub fn local(name: impl Into<String>) -> Self {
         Self::Local { name: name.into() }
@@ -595,7 +603,7 @@ impl ItemImageProvider {
 
         for provider in providers {
             let provider_result = match provider {
-                ImageProvider::Local { .. } => Ok(()),
+                ImageProvider::Basic { .. } | ImageProvider::Local { .. } => Ok(()),
                 ImageProvider::Dynamic {
                     name,
                     supported_images,
