@@ -62,6 +62,22 @@ pub struct UserDataPatch {
     pub retention_date: Option<Option<DateTime<Utc>>>,
 }
 
+/// Fields supported by the generic user-data API update.
+///
+/// Unlike [`UserDataPatch`], `None` means no update for nullable fields too,
+/// matching the API contract where missing and explicit JSON null are both
+/// ignored.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GenericUserDataPatch {
+    pub rating: Option<f64>,
+    pub playback_position_ticks: Option<i64>,
+    pub play_count: Option<i32>,
+    pub is_favorite: Option<bool>,
+    pub likes: Option<bool>,
+    pub last_played_date: Option<DateTime<Utc>>,
+    pub played: Option<bool>,
+}
+
 /// Common filters used for played, favorite, resume, and recent-item queries.
 #[derive(Debug, Clone, Default)]
 pub struct UserDataQuery {
@@ -98,6 +114,194 @@ impl UserDataRepository {
     #[must_use]
     pub const fn new(database: DatabaseConnection) -> Self {
         Self { database }
+    }
+
+    /// Resolves a user-data row using current keys in priority order, then the
+    /// lexically first retained key, in one `PostgreSQL` query.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error when no current key is supplied, or a
+    /// database error when lookup fails.
+    pub async fn resolve_preferred(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        keys: &[String],
+    ) -> Result<Option<user_data::Model>, UserDataError> {
+        if keys.is_empty() {
+            return Err(UserDataError::EmptyKey);
+        }
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT value AS custom_data_key, ordinality AS priority
+                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
+            )
+            SELECT data.item_id, data.user_id, data.custom_data_key, data.rating,
+                data.playback_position_ticks, data.play_count, data.is_favorite,
+                data.last_played_date, data.played, data.audio_stream_index,
+                data.subtitle_stream_index, data.likes, data.retention_date
+            FROM jellyfin.user_data AS data
+            LEFT JOIN preferred_keys AS preferred USING (custom_data_key)
+            WHERE data.item_id = $1 AND data.user_id = $2
+            ORDER BY preferred.priority NULLS LAST, data.custom_data_key
+            LIMIT 1
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                serde_json::json!(keys).into(),
+            ],
+        );
+        Ok(user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?)
+    }
+
+    /// Atomically applies the generic API patch to a preferred current or
+    /// retained user-data key and returns the resulting row.
+    ///
+    /// Rating wins when rating and likes are both present. A rating derives
+    /// likes using Jellyfin's `6.5` threshold; a standalone likes value stores
+    /// rating `10` or `1`. Columns absent from the patch retain their values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for invalid numeric values or an empty key
+    /// list, or a database error when the upsert fails.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the PostgreSQL CTE and conflict update must remain one atomic statement"
+    )]
+    pub async fn apply_generic_patch(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        keys: &[String],
+        patch: GenericUserDataPatch,
+    ) -> Result<user_data::Model, UserDataError> {
+        let primary_key = keys.first().ok_or(UserDataError::EmptyKey)?;
+        validate_optional_values(
+            patch.rating,
+            patch.playback_position_ticks,
+            patch.play_count,
+        )?;
+
+        let rating_present = patch.rating.is_some();
+        let position_present = patch.playback_position_ticks.is_some();
+        let count_present = patch.play_count.is_some();
+        let favorite_present = patch.is_favorite.is_some();
+        let last_played_present = patch.last_played_date.is_some();
+        let played_present = patch.played.is_some();
+        let likes_present = patch.likes.is_some();
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT value AS custom_data_key, ordinality AS priority
+                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
+            ), chosen_key AS (
+                SELECT data.custom_data_key
+                FROM jellyfin.user_data AS data
+                LEFT JOIN preferred_keys AS preferred USING (custom_data_key)
+                WHERE data.item_id = $1 AND data.user_id = $2
+                ORDER BY preferred.priority NULLS LAST, data.custom_data_key
+                LIMIT 1
+            ), target_key AS (
+                SELECT COALESCE(
+                    (SELECT custom_data_key FROM chosen_key),
+                    $4::text
+                ) AS custom_data_key
+            )
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, likes
+            )
+            SELECT $1, $2, custom_data_key,
+                CASE
+                    WHEN $5::boolean THEN $6::double precision
+                    WHEN $17::boolean THEN CASE WHEN $18::boolean THEN 10.0 ELSE 1.0 END
+                    ELSE NULL
+                END,
+                CASE WHEN $7::boolean THEN $8::bigint ELSE 0 END,
+                CASE WHEN $9::boolean THEN $10::integer ELSE 0 END,
+                CASE WHEN $11::boolean THEN $12::boolean ELSE false END,
+                CASE WHEN $13::boolean THEN $14::timestamptz ELSE NULL END,
+                CASE WHEN $15::boolean THEN $16::boolean ELSE false END,
+                CASE
+                    WHEN $5::boolean THEN $6::double precision >= 6.5
+                    WHEN $17::boolean THEN $18::boolean
+                    ELSE NULL
+                END
+            FROM target_key
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET rating = CASE
+                    WHEN $5::boolean THEN $6::double precision
+                    WHEN $17::boolean THEN CASE WHEN $18::boolean THEN 10.0 ELSE 1.0 END
+                    ELSE jellyfin.user_data.rating
+                END,
+                playback_position_ticks = CASE
+                    WHEN $7::boolean THEN $8::bigint
+                    ELSE jellyfin.user_data.playback_position_ticks
+                END,
+                play_count = CASE
+                    WHEN $9::boolean THEN $10::integer
+                    ELSE jellyfin.user_data.play_count
+                END,
+                is_favorite = CASE
+                    WHEN $11::boolean THEN $12::boolean
+                    ELSE jellyfin.user_data.is_favorite
+                END,
+                last_played_date = CASE
+                    WHEN $13::boolean THEN $14::timestamptz
+                    ELSE jellyfin.user_data.last_played_date
+                END,
+                played = CASE
+                    WHEN $15::boolean THEN $16::boolean
+                    ELSE jellyfin.user_data.played
+                END,
+                likes = CASE
+                    WHEN $5::boolean THEN $6::double precision >= 6.5
+                    WHEN $17::boolean THEN $18::boolean
+                    WHEN jellyfin.user_data.rating IS NOT NULL
+                        THEN jellyfin.user_data.rating >= 6.5
+                    ELSE NULL
+                END
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                serde_json::json!(keys).into(),
+                primary_key.as_str().into(),
+                rating_present.into(),
+                patch.rating.unwrap_or_default().into(),
+                position_present.into(),
+                patch.playback_position_ticks.unwrap_or_default().into(),
+                count_present.into(),
+                patch.play_count.unwrap_or_default().into(),
+                favorite_present.into(),
+                patch.is_favorite.unwrap_or_default().into(),
+                last_played_present.into(),
+                patch.last_played_date.into(),
+                played_present.into(),
+                patch.played.unwrap_or_default().into(),
+                likes_present.into(),
+                patch.likes.unwrap_or_default().into(),
+            ],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("generic user-data upsert returned no row".to_owned()).into()
+            })
     }
 
     /// Atomically changes only the favorite flag for one user-data row.
@@ -562,6 +766,20 @@ fn validate_values(rating: Option<f64>, position: i64, count: i32) -> Result<(),
     Ok(())
 }
 
+fn validate_optional_values(
+    rating: Option<f64>,
+    position: Option<i64>,
+    count: Option<i32>,
+) -> Result<(), UserDataError> {
+    if rating.is_some_and(|rating| !(0.0..=10.0).contains(&rating)) {
+        return Err(UserDataError::InvalidRating);
+    }
+    if position.is_some_and(|position| position < 0) || count.is_some_and(|count| count < 0) {
+        return Err(UserDataError::NegativePlaybackValue);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,6 +792,14 @@ mod tests {
         ));
         assert!(matches!(
             validate_values(None, -1, 0),
+            Err(UserDataError::NegativePlaybackValue)
+        ));
+        assert!(matches!(
+            validate_optional_values(Some(f64::NAN), None, None),
+            Err(UserDataError::InvalidRating)
+        ));
+        assert!(matches!(
+            validate_optional_values(None, None, Some(-1)),
             Err(UserDataError::NegativePlaybackValue)
         ));
     }

@@ -57,7 +57,7 @@ pub struct PlaystateUpdate {
 
 impl From<PlaystateUpdate> for UserItemDataDto {
     fn from(update: PlaystateUpdate) -> Self {
-        user_data_to_dto(update.user_data)
+        user_data_to_dto(update.user_data, None)
     }
 }
 

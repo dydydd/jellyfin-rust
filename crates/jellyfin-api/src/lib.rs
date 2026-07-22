@@ -352,6 +352,14 @@ fn playstate_routes() -> Router<Arc<AppState>> {
 fn user_data_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
+            "/UserItems/{item_id}/UserData",
+            get(user_data::get_item_data_modern).post(user_data::update_item_data_modern),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/UserData",
+            get(user_data::get_item_data_legacy).post(user_data::update_item_data_legacy),
+        )
+        .route(
             "/UserFavoriteItems/{item_id}",
             post(user_data::mark_favorite_modern).delete(user_data::unmark_favorite_modern),
         )
@@ -616,6 +624,10 @@ impl From<EnvironmentError> for ApiError {
 }
 
 impl IntoResponse for ApiError {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the centralized API error table is clearer as one exhaustive match"
+    )]
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::InvalidRequest | Self::Playstate(PlaystateError::InvalidDatePlayed) => {
@@ -625,7 +637,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Unsupported media type")
             }
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
-            Self::Forbidden | Self::Playstate(PlaystateError::Forbidden) => {
+            Self::Forbidden
+            | Self::Playstate(PlaystateError::Forbidden)
+            | Self::UserData(UserDataServiceError::Forbidden) => {
                 (StatusCode::FORBIDDEN, "Forbidden")
             }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
@@ -661,6 +675,10 @@ impl IntoResponse for ApiError {
                 | UserDataServiceError::User(UserError::NotFound)
                 | UserDataServiceError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "User or item not found"),
+            Self::UserData(UserDataServiceError::UserData(
+                jellyfin_data::UserDataError::InvalidRating
+                | jellyfin_data::UserDataError::NegativePlaybackValue,
+            )) => (StatusCode::BAD_REQUEST, "Invalid user data"),
             Self::UserLibrary(
                 UserLibraryError::UserNotFound
                 | UserLibraryError::ItemNotFound

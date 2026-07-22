@@ -1,6 +1,7 @@
 use chrono::{Duration, TimeZone, Utc};
 use jellyfin_data::{
-    DatabaseConfig, NewUserData, UserDataPatch, UserDataQuery, UserDataRepository,
+    DatabaseConfig, GenericUserDataPatch, NewUserData, UserDataError, UserDataPatch, UserDataQuery,
+    UserDataRepository,
     entities::{user, user_data},
 };
 use jellyfin_migration::CreateUserDataMigration;
@@ -22,9 +23,104 @@ async fn postgres_user_data_vertical_slice() {
 
     let repository = UserDataRepository::new(database.clone());
     assert_crud_and_key_resolution(&repository, user_id, other_user_id).await;
+    assert_generic_preferred_patch(&repository, user_id).await;
     assert_query_filters(&repository, user_id).await;
     assert_concurrent_upsert(&repository, user_id).await;
     assert_cascade_cleanup(&database, user_id, other_user_id).await;
+}
+
+async fn assert_generic_preferred_patch(repository: &UserDataRepository, user_id: Uuid) {
+    let item_id = Uuid::new_v4();
+    let keys = vec!["current-key".to_owned(), item_id.to_string()];
+    assert!(
+        repository
+            .resolve_preferred(item_id, user_id, &keys)
+            .await
+            .expect("empty preferred lookup")
+            .is_none()
+    );
+
+    let mut retired = NewUserData::new(item_id, user_id, "retired-key");
+    retired.rating = Some(2.0);
+    repository.upsert(retired).await.expect("retired seed");
+    let resolved = repository
+        .resolve_preferred(item_id, user_id, &keys)
+        .await
+        .expect("retired preferred lookup")
+        .expect("retired fallback");
+    assert_eq!(resolved.custom_data_key, "retired-key");
+
+    let patched = repository
+        .apply_generic_patch(
+            item_id,
+            user_id,
+            &keys,
+            GenericUserDataPatch {
+                rating: Some(6.5),
+                playback_position_ticks: Some(123),
+                play_count: Some(4),
+                is_favorite: Some(true),
+                likes: Some(false),
+                last_played_date: Some(Utc.with_ymd_and_hms(2026, 7, 22, 12, 0, 0).unwrap()),
+                played: Some(true),
+            },
+        )
+        .await
+        .expect("generic preferred patch");
+    assert_eq!(patched.custom_data_key, "retired-key");
+    assert_eq!(patched.rating, Some(6.5));
+    assert_eq!(patched.likes, Some(true), "rating wins and derives likes");
+    assert_eq!(patched.playback_position_ticks, 123);
+    assert_eq!(patched.play_count, 4);
+    assert!(patched.is_favorite);
+    assert!(patched.played);
+    assert_eq!(
+        repository
+            .get_for_item(item_id, user_id)
+            .await
+            .expect("generic rows lookup")
+            .len(),
+        1
+    );
+
+    let default_item_id = Uuid::new_v4();
+    let default = repository
+        .apply_generic_patch(
+            default_item_id,
+            user_id,
+            &[default_item_id.to_string()],
+            GenericUserDataPatch::default(),
+        )
+        .await
+        .expect("empty generic patch insert");
+    assert_eq!(default.playback_position_ticks, 0);
+    assert_eq!(default.play_count, 0);
+    assert!(!default.is_favorite);
+    assert!(!default.played);
+    assert_eq!(default.rating, None);
+    assert_eq!(default.likes, None);
+
+    for invalid in [
+        GenericUserDataPatch {
+            rating: Some(10.1),
+            ..Default::default()
+        },
+        GenericUserDataPatch {
+            play_count: Some(-1),
+            ..Default::default()
+        },
+        GenericUserDataPatch {
+            playback_position_ticks: Some(-1),
+            ..Default::default()
+        },
+    ] {
+        assert!(matches!(
+            repository
+                .apply_generic_patch(item_id, user_id, &keys, invalid)
+                .await,
+            Err(UserDataError::InvalidRating | UserDataError::NegativePlaybackValue)
+        ));
+    }
 }
 
 async fn prepare_database() -> DatabaseConnection {

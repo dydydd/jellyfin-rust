@@ -47,5 +47,5 @@ pub use net::{MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
 pub use system::PublicSystemInfo;
-pub use user_data::UserItemDataDto;
+pub use user_data::{UpdateUserItemDataDto, UserItemDataDto};
 pub use users::{AccessSchedule, UserPolicy};

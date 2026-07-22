@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, Query, State},
+    extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
     http::HeaderMap,
 };
-use jellyfin_model::UserItemDataDto;
+use jellyfin_model::{UpdateUserItemDataDto, UserItemDataDto};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -23,6 +23,93 @@ pub struct RatingQuery {
     pub user_id: Option<Uuid>,
     #[serde(default, alias = "Likes")]
     pub likes: Option<bool>,
+}
+
+pub(crate) async fn get_item_data_modern(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<UserDataQuery>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    get_item_data(state, &uri, headers, query.user_id, item_id).await
+}
+
+pub(crate) async fn get_item_data_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    get_item_data(state, &uri, headers, Some(user_id), item_id).await
+}
+
+async fn get_item_data(
+    state: Arc<AppState>,
+    uri: &axum::http::Uri,
+    headers: HeaderMap,
+    requested_user_id: Option<Uuid>,
+    item_id: Uuid,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    let identity = authorization::require_default(&state, &headers, uri).await?;
+    let bypass_preference_gate = identity.is_administrator_equivalent();
+    let target_user_id = identity.target_user_id(requested_user_id)?;
+    let update = state
+        .user_data
+        .get_item_data_for_authorized_user(target_user_id, item_id, bypass_preference_gate)
+        .await?;
+    Ok(Json(update.into()))
+}
+
+pub(crate) async fn update_item_data_modern(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<UserDataQuery>,
+    request: Result<Json<UpdateUserItemDataDto>, JsonRejection>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    update_item_data(state, &uri, headers, query.user_id, item_id, request).await
+}
+
+pub(crate) async fn update_item_data_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    request: Result<Json<UpdateUserItemDataDto>, JsonRejection>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    update_item_data(state, &uri, headers, Some(user_id), item_id, request).await
+}
+
+async fn update_item_data(
+    state: Arc<AppState>,
+    uri: &axum::http::Uri,
+    headers: HeaderMap,
+    requested_user_id: Option<Uuid>,
+    item_id: Uuid,
+    request: Result<Json<UpdateUserItemDataDto>, JsonRejection>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    let identity = authorization::require_default(&state, &headers, uri).await?;
+    let bypass_preference_gate = identity.is_administrator_equivalent();
+    let target_user_id = identity.target_user_id(requested_user_id)?;
+    let Json(update) = request.map_err(|error| {
+        if matches!(error, JsonRejection::MissingJsonContentType(_)) {
+            ApiError::UnsupportedMediaType
+        } else {
+            ApiError::InvalidRequest
+        }
+    })?;
+    let update = state
+        .user_data
+        .update_item_data_for_authorized_user(
+            target_user_id,
+            item_id,
+            bypass_preference_gate,
+            update,
+        )
+        .await?;
+    Ok(Json(update.into()))
 }
 
 pub(crate) async fn mark_favorite_modern(
