@@ -12,6 +12,7 @@ pub mod dto;
 pub mod entities;
 pub mod enums;
 pub mod extensions;
+pub mod io;
 pub mod live_tv;
 pub mod net;
 pub mod plugins;
@@ -40,6 +41,7 @@ pub use entities::{
 };
 pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, UnratedItem};
 pub use extensions::first_to_upper;
+pub use io::{FileSystemEntryInfo, FileSystemEntryType};
 pub use live_tv::{TimerInfo, TunerHostInfo};
 pub use net::{MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};

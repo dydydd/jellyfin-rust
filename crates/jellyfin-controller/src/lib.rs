@@ -1,5 +1,6 @@
 pub mod client_event;
 mod dashboard;
+mod environment;
 mod item_types;
 mod item_update;
 pub mod library;
@@ -18,6 +19,7 @@ mod videos;
 mod virtual_folders;
 
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
+pub use environment::{EnvironmentError, EnvironmentService};
 pub use item_types::{
     HydratedBaseItem, ItemTypeRegistrationError, ItemTypeRegistry, KnownItemType,
 };

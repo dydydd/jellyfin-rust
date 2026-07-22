@@ -8,12 +8,12 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    DashboardError, DashboardPage, DashboardService, InstalledPlugin, ItemUpdateError,
-    ItemUpdateService, LibraryControllerError, LibraryControllerService, MusicGenreError,
-    MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
-    PluginRegistry, SystemLogError, SystemLogService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError,
+    DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
+    InstalledPlugin, ItemUpdateError, ItemUpdateService, LibraryControllerError,
+    LibraryControllerService, MusicGenreError, MusicGenreService, PersonError, PersonService,
+    PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
+    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
+    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -32,6 +32,7 @@ mod authentication;
 mod authorization;
 mod branding;
 mod dashboard;
+mod environment;
 mod hls_segment;
 mod item_update;
 mod items;
@@ -72,6 +73,7 @@ pub struct AppState {
     pub(crate) tuner_hosts: TunerHostManager,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) dashboard: DashboardService,
+    pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
     pub(crate) system_logs: SystemLogService,
     pub(crate) transcode_directory: std::path::PathBuf,
@@ -101,6 +103,7 @@ impl AppState {
             tuner_hosts: TunerHostManager::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
             dashboard: DashboardService::default(),
+            environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
             system_logs: SystemLogService::default(),
             transcode_directory: std::env::temp_dir()
@@ -223,6 +226,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Plugins", get(plugins::list))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
+        .merge(environment_routes())
         .merge(user_routes())
         .route(
             "/Startup/Configuration",
@@ -296,6 +300,24 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(robots::redirect_or_not_found)
         .with_state(Arc::new(state))
+}
+
+fn environment_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/Environment/DirectoryContents",
+            get(environment::directory_contents),
+        )
+        .route(
+            "/Environment/ValidatePath",
+            post(environment::validate_path),
+        )
+        .route("/Environment/Drives", get(environment::drives))
+        .route("/Environment/ParentPath", get(environment::parent_path))
+        .route(
+            "/Environment/DefaultDirectoryBrowser",
+            get(environment::default_directory_browser),
+        )
 }
 
 fn user_routes() -> Router<Arc<AppState>> {
@@ -477,7 +499,9 @@ pub(crate) enum ApiError {
     ItemUpdate(ItemUpdateError),
     SystemLog(SystemLogError),
     ServerConfiguration(ServerConfigurationStoreError),
+    Environment(EnvironmentError),
     InvalidRequest,
+    UnsupportedMediaType,
     Unauthorized,
     Forbidden,
     Internal,
@@ -585,17 +609,27 @@ impl From<ServerConfigurationStoreError> for ApiError {
     }
 }
 
+impl From<EnvironmentError> for ApiError {
+    fn from(error: EnvironmentError) -> Self {
+        Self::Environment(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::InvalidRequest | Self::Playstate(PlaystateError::InvalidDatePlayed) => {
                 (StatusCode::BAD_REQUEST, "Invalid request")
             }
+            Self::UnsupportedMediaType => {
+                (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Unsupported media type")
+            }
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             Self::Forbidden | Self::Playstate(PlaystateError::Forbidden) => {
                 (StatusCode::FORBIDDEN, "Forbidden")
             }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Self::Environment(error) => environment_error_response(&error),
             Self::ActivityLog(
                 ActivityLogError::EmptyField(_) | ActivityLogError::FieldTooLong { .. },
             ) => (StatusCode::BAD_REQUEST, "Invalid activity log entry"),
@@ -680,6 +714,16 @@ impl IntoResponse for ApiError {
             ),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn environment_error_response(error: &EnvironmentError) -> (StatusCode, &'static str) {
+    match error {
+        EnvironmentError::NotFound => (StatusCode::NOT_FOUND, "Path not found"),
+        EnvironmentError::Io(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "File-system operation failed",
+        ),
     }
 }
 
