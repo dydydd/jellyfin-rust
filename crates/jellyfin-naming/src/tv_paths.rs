@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use regex::{Regex, RegexBuilder};
 
-use crate::NamingOptions;
+use crate::{NamingOptions, ProviderIdMap, provider_ids};
 
 const SEASON_KEYWORDS: &[&str] = &[
     "시즌",
@@ -55,6 +55,7 @@ pub struct SeasonPathParserResult {
     pub season_number: Option<i32>,
     pub success: bool,
     pub is_season_folder: bool,
+    pub provider_ids: ProviderIdMap,
 }
 
 pub struct SeasonPathParser;
@@ -78,6 +79,14 @@ impl SeasonPathParser {
             season_number,
             success: season_number.is_some(),
             is_season_folder: season_number.is_some() && is_season_folder,
+            provider_ids: provider_ids::from_path(
+                file_name(path),
+                &[
+                    ("Tvdb", "tvdbid"),
+                    ("TvMaze", "tvmazeid"),
+                    ("Tmdb", "tmdbid"),
+                ],
+            ),
         }
     }
 }
@@ -260,6 +269,7 @@ pub struct SeriesInfo {
     pub path: String,
     pub name: Option<String>,
     pub year: Option<i32>,
+    pub provider_ids: ProviderIdMap,
 }
 
 pub struct SeriesResolver;
@@ -268,6 +278,18 @@ impl SeriesResolver {
     #[must_use]
     pub fn resolve(options: &NamingOptions, path: &str) -> SeriesInfo {
         let mut name = file_name(path).to_owned();
+        let provider_ids = provider_ids::from_path(
+            &name,
+            &[
+                ("Imdb", "imdbid"),
+                ("Tvdb", "tvdbid"),
+                ("TvMaze", "tvmazeid"),
+                ("Tmdb", "tmdbid"),
+                ("AniDB", "anidbid"),
+                ("AniList", "anilistid"),
+                ("AniSearch", "anisearchid"),
+            ],
+        );
         if let Some(captures) = TITLE_WITH_YEAR.captures(&name)
             && let Some(title) = captures.name("title")
         {
@@ -277,6 +299,7 @@ impl SeriesResolver {
                 year: captures
                     .name("year")
                     .and_then(|value| value.as_str().parse().ok()),
+                provider_ids,
             };
         }
 
@@ -294,6 +317,7 @@ impl SeriesResolver {
             path: path.to_owned(),
             name: Some(name),
             year: None,
+            provider_ids,
         }
     }
 }

@@ -1,7 +1,7 @@
 use regex::{Regex, RegexBuilder};
 
 use crate::{
-    NamingOptions,
+    NamingOptions, ProviderIdMap, provider_ids,
     video::{Format3dParser, StubResolver},
 };
 
@@ -443,6 +443,7 @@ pub struct EpisodeInfo {
     pub month: Option<i32>,
     pub day: Option<i32>,
     pub is_by_date: bool,
+    pub provider_ids: ProviderIdMap,
 }
 
 pub struct EpisodeResolver {
@@ -488,6 +489,20 @@ impl EpisodeResolver {
             Some(extension.trim_start_matches('.').to_owned())
         };
         let format = Format3dParser::parse(path, &self.options);
+        let provider_path = if is_directory {
+            file_name(path)
+        } else {
+            file_stem(path)
+        };
+        let provider_ids = provider_ids::from_path(
+            provider_path,
+            &[
+                ("Imdb", "imdbid"),
+                ("Tvdb", "tvdbid"),
+                ("TvMaze", "tvmazeid"),
+                ("Tmdb", "tmdbid"),
+            ],
+        );
         let parsed = EpisodePathParser::new(self.options.clone()).parse_with_options(
             path,
             is_directory,
@@ -514,12 +529,18 @@ impl EpisodeResolver {
             month: parsed.month,
             day: parsed.day,
             is_by_date: parsed.is_by_date,
+            provider_ids,
         })
     }
 }
 
 fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn file_stem(path: &str) -> &str {
+    let name = file_name(path);
+    name.rfind('.').map_or(name, |index| &name[..index])
 }
 
 fn extension(path: &str) -> Option<&str> {

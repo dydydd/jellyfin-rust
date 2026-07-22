@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{ExtraResolver, NamingOptions};
+use crate::{ExtraResolver, NamingOptions, ProviderIdMap, provider_ids};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExtraType {
@@ -185,6 +185,7 @@ pub struct VideoFileInfo {
     pub extra_type: Option<ExtraType>,
     pub extra_rule: Option<ExtraRule>,
     pub is_directory: bool,
+    pub provider_ids: ProviderIdMap,
 }
 
 impl VideoFileInfo {
@@ -294,6 +295,15 @@ impl VideoResolver {
         };
         let format = Format3dParser::parse(path, options);
         let raw_name = file_stem(path);
+        let provider_path = if is_directory {
+            file_name(path)
+        } else {
+            raw_name
+        };
+        let provider_ids = provider_ids::from_path(
+            provider_path,
+            &[("Imdb", "imdbid"), ("Tmdb", "tmdbid"), ("Tvdb", "tvdbid")],
+        );
         let date = Self::clean_date_time(raw_name, options);
         let name = Self::try_clean_string(Some(&date.name), options).unwrap_or(date.name);
         let extra = ExtraResolver::resolve(path, options);
@@ -310,6 +320,7 @@ impl VideoResolver {
             extra_type: extra.extra_type,
             extra_rule: extra.rule,
             is_directory,
+            provider_ids,
         })
     }
 

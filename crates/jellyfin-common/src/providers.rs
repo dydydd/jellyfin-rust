@@ -1,4 +1,6 @@
-//! Parsers for provider identifiers embedded in text and URLs.
+//! Parsers for provider identifiers embedded in text, paths, and URLs.
+
+use std::{error::Error, fmt};
 
 const IMDB_MIN_DIGITS: usize = 7;
 const IMDB_MAX_DIGITS: usize = 8;
@@ -11,7 +13,48 @@ const TVDB_SERIES_PATH: &str = "thetvdb.com/?tab=series&id=";
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProviderIdParsers;
 
+/// Identifies which argument to [`get_attribute_value`] was invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeValueInput {
+    Text,
+    Attribute,
+}
+
+/// Error returned when a path-attribute lookup receives an empty argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeValueError {
+    InvalidInput(AttributeValueInput),
+}
+
+impl fmt::Display for AttributeValueError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidInput(AttributeValueInput::Text) => {
+                formatter.write_str("text cannot be empty")
+            }
+            Self::InvalidInput(AttributeValueInput::Attribute) => {
+                formatter.write_str("attribute cannot be empty")
+            }
+        }
+    }
+}
+
+impl Error for AttributeValueError {}
+
 impl ProviderIdParsers {
+    /// Finds a bracketed provider attribute in a media path or name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttributeValueError::InvalidInput`] when either argument is
+    /// empty.
+    pub fn get_attribute_value<'a>(
+        text: &'a str,
+        attribute: &str,
+    ) -> Result<Option<&'a str>, AttributeValueError> {
+        get_attribute_value(text, attribute)
+    }
+
     /// Finds the first valid IMDb identifier in `text`.
     ///
     /// IMDb identifiers contain the lowercase `tt` prefix followed by seven
@@ -63,6 +106,102 @@ impl ProviderIdParsers {
     pub fn try_find_tvdb_id(text: &str) -> Option<&str> {
         find_tvdb_id(text)
     }
+}
+
+/// Finds a bracketed provider attribute in a media path or name.
+///
+/// `tmdb`, `tvdb`, and `imdb` are accepted as aliases for their corresponding
+/// `*id` attributes. Values may use `=` or `-` and must be enclosed by a
+/// matching `[]`, `{}`, or `()` pair.
+///
+/// # Errors
+///
+/// Returns [`AttributeValueError::InvalidInput`] when either argument is
+/// empty.
+pub fn get_attribute_value<'a>(
+    text: &'a str,
+    attribute: &str,
+) -> Result<Option<&'a str>, AttributeValueError> {
+    if text.is_empty() {
+        return Err(AttributeValueError::InvalidInput(AttributeValueInput::Text));
+    }
+    if attribute.is_empty() {
+        return Err(AttributeValueError::InvalidInput(
+            AttributeValueInput::Attribute,
+        ));
+    }
+
+    let short_attribute = if attribute.eq_ignore_ascii_case("tmdbid") {
+        Some("tmdb")
+    } else if attribute.eq_ignore_ascii_case("tvdbid") {
+        Some("tvdb")
+    } else if attribute.eq_ignore_ascii_case("imdbid") {
+        Some("imdb")
+    } else {
+        None
+    };
+    let search_attribute = short_attribute.unwrap_or(attribute);
+    let mut search_start = 0;
+
+    while search_start < text.len() {
+        let remainder = &text[search_start..];
+        let Some(attribute_index) = find_ignore_ascii_case(remainder, search_attribute) else {
+            break;
+        };
+        let mut attribute_end = attribute_index + search_attribute.len();
+        search_start += attribute_end;
+
+        if attribute_index == 0 {
+            continue;
+        }
+        let opener = remainder.as_bytes()[attribute_index - 1];
+        let closer = match opener {
+            b'[' => b']',
+            b'(' => b')',
+            b'{' => b'}',
+            _ => continue,
+        };
+
+        if short_attribute.is_some()
+            && remainder
+                .as_bytes()
+                .get(attribute_end..attribute_end + 2)
+                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b"id"))
+        {
+            attribute_end += 2;
+        }
+
+        let bytes = remainder.as_bytes();
+        if attribute_end + 2 >= bytes.len() || !matches!(bytes[attribute_end], b'=' | b'-') {
+            continue;
+        }
+        let value_and_closer = &bytes[attribute_end..];
+        let Some(closing_index) = value_and_closer.iter().position(|byte| *byte == closer) else {
+            continue;
+        };
+        if closing_index <= 1 {
+            continue;
+        }
+
+        let value = remainder[attribute_end + 1..attribute_end + closing_index].trim();
+        if !value.is_empty() {
+            return Ok(Some(value));
+        }
+    }
+
+    if attribute.eq_ignore_ascii_case("imdbid") {
+        return Ok(find_imdb_id(text));
+    }
+    Ok(None)
+}
+
+fn find_ignore_ascii_case(text: &str, needle: &str) -> Option<usize> {
+    if needle.len() > text.len() {
+        return None;
+    }
+    text.as_bytes()
+        .windows(needle.len())
+        .position(|candidate| candidate.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 /// Finds the first valid IMDb identifier in `text`.

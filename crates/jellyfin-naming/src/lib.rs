@@ -6,6 +6,7 @@ pub mod book;
 pub mod common;
 pub mod external_files;
 pub mod extra;
+mod provider_ids;
 pub mod stack;
 pub mod tv;
 pub mod tv_paths;
@@ -24,6 +25,7 @@ pub use external_files::{
     LocalizationManager,
 };
 pub use extra::{ExtraResolver, ExtraResult, ExtraRuleResolver};
+pub use provider_ids::ProviderIdMap;
 pub use stack::{FileStack, FileStackRule, FileStackRuleResult, StackFileInfo, StackResolver};
 pub use tv::{
     DateOrder, EpisodeExpression, EpisodeInfo, EpisodePathParser, EpisodePathParserResult,
