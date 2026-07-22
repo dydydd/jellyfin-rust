@@ -8,6 +8,7 @@ license = "GPL-2.0-only"
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 indexmap = "2"
+mime = "0.3"
 mime_guess = "2"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["serde", "v4"] }

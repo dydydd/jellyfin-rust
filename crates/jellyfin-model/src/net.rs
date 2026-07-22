@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{borrow::Cow, error::Error, fmt};
 
 const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
 
@@ -182,6 +182,27 @@ impl MimeTypes {
         Ok(mime_guess::get_mime_extensions_str(mime_type)
             .and_then(|extensions| extensions.first())
             .map(|extension| format!(".{extension}")))
+    }
+
+    /// Returns the preferred extension when `content_type` is a valid image
+    /// media type, including values with parameters such as a charset.
+    #[must_use]
+    pub fn try_get_image_extension(content_type: Option<&str>) -> Option<String> {
+        let content_type = content_type?.trim();
+        let normalized = content_type.split_once(';').map_or_else(
+            || Cow::Borrowed(content_type),
+            |(media_type, parameters)| {
+                Cow::Owned(format!("{};{parameters}", media_type.trim_end()))
+            },
+        );
+        let content_type = normalized.parse::<mime::Mime>().ok()?;
+        if content_type.type_() != mime::IMAGE {
+            return None;
+        }
+
+        Self::to_extension(content_type.essence_str())
+            .ok()
+            .flatten()
     }
 
     #[must_use]

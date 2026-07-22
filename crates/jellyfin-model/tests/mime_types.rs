@@ -231,3 +231,46 @@ fn reverse_lookup_handles_case_parameters_unknowns_and_images() {
     assert!(MimeTypes::is_image("IMAGE/JPEG"));
     assert!(!MimeTypes::is_image("video/mp4"));
 }
+
+#[test]
+fn image_extension_from_content_type_matches_official_api_matrix() {
+    for (content_type, expected) in [
+        ("image/apng", ".apng"),
+        ("image/avif", ".avif"),
+        ("image/bmp", ".bmp"),
+        ("image/gif", ".gif"),
+        ("image/x-icon", ".ico"),
+        ("image/jpeg", ".jpg"),
+        ("image/png", ".png"),
+        ("image/png; charset=utf-8", ".png"),
+        ("image/svg+xml", ".svg"),
+        ("image/tiff", ".tiff"),
+        ("image/webp", ".webp"),
+    ] {
+        assert_eq!(
+            MimeTypes::try_get_image_extension(Some(content_type)).as_deref(),
+            Some(expected),
+            "content type: {content_type}"
+        );
+    }
+
+    for content_type in [None, Some(""), Some("text/html")] {
+        assert_eq!(MimeTypes::try_get_image_extension(content_type), None);
+    }
+}
+
+#[test]
+fn image_extension_content_type_is_case_insensitive_and_accepts_http_whitespace() {
+    for content_type in [
+        "IMAGE/JPEG",
+        " image/jpeg ",
+        "image/jpeg; charset=utf-8",
+        "image/jpeg ; charset=utf-8",
+    ] {
+        assert_eq!(
+            MimeTypes::try_get_image_extension(Some(content_type)).as_deref(),
+            Some(".jpg"),
+            "content type: {content_type}"
+        );
+    }
+}

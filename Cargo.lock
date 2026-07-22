@@ -1360,6 +1360,7 @@ dependencies = [
  "chrono",
  "hex",
  "indexmap",
+ "mime",
  "mime_guess",
  "serde",
  "serde_json",
