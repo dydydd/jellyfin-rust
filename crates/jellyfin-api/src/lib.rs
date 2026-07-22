@@ -11,8 +11,9 @@ use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, InstalledPlugin, ItemUpdateError,
     ItemUpdateService, LibraryControllerError, LibraryControllerService, MusicGenreError,
     MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
-    PluginRegistry, UserError, UserLibraryError, UserLibraryService, UserService, VideoError,
-    VideoService, VirtualFolderService, VirtualFolderServiceError,
+    PluginRegistry, SystemLogError, SystemLogService, UserError, UserLibraryError,
+    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -40,6 +41,7 @@ mod playstate;
 mod plugins;
 pub mod query;
 mod startup;
+mod system;
 mod user_library;
 mod users;
 mod videos;
@@ -64,6 +66,7 @@ pub struct AppState {
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) dashboard: DashboardService,
     pub(crate) plugins: PluginRegistry,
+    pub(crate) system_logs: SystemLogService,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -89,6 +92,7 @@ impl AppState {
             virtual_folders: VirtualFolderService::new(database.clone()),
             dashboard: DashboardService::default(),
             plugins: PluginRegistry::default(),
+            system_logs: SystemLogService::default(),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -148,6 +152,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the top-level directory exposed by the server log endpoint.
+    #[must_use]
+    pub fn with_log_directory(mut self, log_directory: impl Into<std::path::PathBuf>) -> Self {
+        self.system_logs = SystemLogService::new(log_directory);
+        self
+    }
+
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
@@ -159,6 +170,7 @@ pub fn router(state: AppState) -> Router {
         .route("/System/Info/Public", get(public_system_info))
         .route("/System/Ping", get(ping).post(ping))
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
+        .route("/System/Logs/Log", get(system::get_log_file))
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
@@ -387,6 +399,7 @@ pub(crate) enum ApiError {
     Dashboard(DashboardError),
     TunerHost(TunerHostError),
     ItemUpdate(ItemUpdateError),
+    SystemLog(SystemLogError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -477,6 +490,12 @@ impl From<ItemUpdateError> for ApiError {
     }
 }
 
+impl From<SystemLogError> for ApiError {
+    fn from(error: SystemLogError) -> Self {
+        Self::SystemLog(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
@@ -555,8 +574,16 @@ impl IntoResponse for ApiError {
             Self::Dashboard(error) => dashboard_error_response(&error),
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
+            Self::SystemLog(error) => system_log_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn system_log_error_response(error: &SystemLogError) -> (StatusCode, &'static str) {
+    match error {
+        SystemLogError::NotFound => (StatusCode::NOT_FOUND, "Log file not found"),
+        SystemLogError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Server log read failed"),
     }
 }
 
