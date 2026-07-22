@@ -15,6 +15,7 @@ pub struct NamingOptions {
     pub audio_file_extensions: Vec<String>,
     pub audio_book_parts_regexes: Vec<Regex>,
     pub audio_book_name_regexes: Vec<Regex>,
+    pub album_stacking_prefixes: Vec<String>,
     pub subtitle_file_extensions: Vec<String>,
     pub lyric_file_extensions: Vec<String>,
     pub media_flag_delimiters: Vec<char>,
@@ -59,6 +60,16 @@ impl Default for NamingOptions {
             audio_book_name_regexes: regexes(&[
                 r"^(?P<name>.+?)\s*\(\s*(?P<year>[0-9]{4})\s*\)\s*$",
                 r"^\s*(?P<name>[^ ].*?)\s*$",
+            ]),
+            album_stacking_prefixes: strings(&[
+                "cd",
+                "digital media",
+                "disc",
+                "disk",
+                "vol",
+                "volume",
+                "part",
+                "act",
             ]),
             subtitle_file_extensions: strings(&[
                 ".ass", ".mks", ".sami", ".smi", ".srt", ".ssa", ".sub", ".sup", ".vtt",
@@ -230,6 +241,19 @@ mod tests {
         assert_eq!(options.media_default_flags, ["default"]);
         assert_eq!(options.media_hearing_impaired_flags, ["cc", "hi", "sdh"]);
         assert!(options.audio_file_extensions.contains(&".mp3".to_owned()));
+        assert_eq!(
+            options.album_stacking_prefixes,
+            [
+                "cd",
+                "digital media",
+                "disc",
+                "disk",
+                "vol",
+                "volume",
+                "part",
+                "act"
+            ]
+        );
         assert!(
             options
                 .subtitle_file_extensions
