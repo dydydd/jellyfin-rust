@@ -1,6 +1,4 @@
-use regex::RegexBuilder;
-
-use crate::NamingOptions;
+use crate::{ExtraResolver, NamingOptions};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExtraType {
@@ -183,6 +181,7 @@ pub struct VideoFileInfo {
     pub is_stub: bool,
     pub stub_type: Option<String>,
     pub extra_type: Option<ExtraType>,
+    pub extra_rule: Option<ExtraRule>,
     pub is_directory: bool,
 }
 
@@ -277,7 +276,7 @@ impl VideoResolver {
         };
         let date = Self::clean_date_time(raw_name, options);
         let name = Self::try_clean_string(Some(&date.name), options).unwrap_or(date.name);
-        let extra_type = resolve_extra_type(path, raw_name, options, is_directory);
+        let extra = ExtraResolver::resolve(path, options);
 
         Some(VideoFileInfo {
             name,
@@ -288,7 +287,8 @@ impl VideoResolver {
             is_3d: format.is_3d,
             is_stub,
             stub_type,
-            extra_type,
+            extra_type: extra.extra_type,
+            extra_rule: extra.rule,
             is_directory,
         })
     }
@@ -314,46 +314,6 @@ impl VideoResolver {
     }
 }
 
-fn resolve_extra_type(
-    path: &str,
-    stem: &str,
-    options: &NamingOptions,
-    is_directory: bool,
-) -> Option<ExtraType> {
-    let is_video = VideoResolver::is_video_file(path, options);
-    let is_audio = !is_directory
-        && extension(path).is_some_and(|extension| {
-            options
-                .audio_file_extensions
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
-        });
-    let suffix_stem = stem.trim_end_matches(|character: char| character.is_ascii_digit());
-    let directory_name = parent_name(path);
-    options.video_extra_rules.iter().find_map(|rule| {
-        let media_matches = match rule.media_type {
-            MediaType::Video => is_video,
-            MediaType::Audio => is_audio,
-        };
-        let rule_matches = match rule.rule_type {
-            ExtraRuleType::Filename => stem.eq_ignore_ascii_case(&rule.token),
-            ExtraRuleType::Regex => RegexBuilder::new(&rule.token)
-                .case_insensitive(true)
-                .build()
-                .is_ok_and(|regex| regex.is_match(file_name(path))),
-            ExtraRuleType::Suffix => ends_with_ignore_ascii_case(suffix_stem, &rule.token),
-            ExtraRuleType::DirectoryName => directory_name.eq_ignore_ascii_case(&rule.token),
-        };
-        (media_matches && rule_matches).then_some(rule.extra_type)
-    })
-}
-
-fn ends_with_ignore_ascii_case(value: &str, suffix: &str) -> bool {
-    value
-        .get(value.len().saturating_sub(suffix.len())..)
-        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(suffix))
-}
-
 fn invalid_year_suffix(suffix: &[u8]) -> bool {
     if suffix.first().is_some_and(u8::is_ascii_digit) {
         return true;
@@ -373,11 +333,6 @@ fn is_extension_only(value: &str) -> bool {
 
 fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
-}
-
-fn parent_name(path: &str) -> &str {
-    let parent = path.rfind(['/', '\\']).map_or("", |index| &path[..index]);
-    file_name(parent)
 }
 
 fn extension(path: &str) -> Option<&str> {

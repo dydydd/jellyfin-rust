@@ -2,6 +2,7 @@
 
 pub mod common;
 pub mod external_files;
+pub mod extra;
 pub mod stack;
 pub mod tv;
 pub mod tv_paths;
@@ -13,6 +14,7 @@ pub use external_files::{
     DlnaProfileType, ExternalPathParser, ExternalPathParserResult, LanguageInfo,
     LocalizationManager,
 };
+pub use extra::{ExtraResolver, ExtraResult, ExtraRuleResolver};
 pub use stack::{FileStack, FileStackRule, FileStackRuleResult, StackFileInfo, StackResolver};
 pub use tv::{
     DateOrder, EpisodeExpression, EpisodeInfo, EpisodePathParser, EpisodePathParserResult,
