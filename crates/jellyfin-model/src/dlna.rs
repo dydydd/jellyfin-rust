@@ -4,6 +4,13 @@ use uuid::Uuid;
 
 use crate::SubtitleDeliveryMethod;
 
+mod stream_builder;
+
+pub use stream_builder::{
+    CodecProfile, CodecType, DeviceProfile, DirectPlayProfile, MediaOptions, StreamBuilder,
+    StreamBuilderError, TranscodingProfile,
+};
+
 /// Helpers for matching comma-delimited media container lists.
 pub struct ContainerHelper;
 
@@ -268,13 +275,81 @@ impl ContainerProfile {
     }
 }
 
-/// The subset of media-source metadata needed to construct a stream URL.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Media-source metadata required by stream selection and URL generation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum MediaProtocol {
+    #[default]
+    File = 0,
+    Http = 1,
+    Rtmp = 2,
+    Rtsp = 3,
+    Udp = 4,
+    Rtp = 5,
+    Ftp = 6,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct MediaSourceInfo {
     pub id: Option<String>,
+    pub protocol: MediaProtocol,
+    pub container: Option<String>,
+    pub bitrate: Option<i32>,
+    pub is_remote: bool,
+    pub run_time_ticks: Option<i64>,
+    pub supports_transcoding: bool,
+    pub supports_direct_stream: bool,
+    pub supports_direct_play: bool,
+    pub transcoding_container: Option<String>,
+    pub transcoding_sub_protocol: MediaStreamProtocol,
+    pub media_streams: Vec<crate::MediaStream>,
     pub live_stream_id: Option<String>,
     pub etag: Option<String>,
     pub video_type: Option<VideoType>,
+}
+
+impl Default for MediaSourceInfo {
+    fn default() -> Self {
+        Self {
+            id: None,
+            protocol: MediaProtocol::default(),
+            container: None,
+            bitrate: None,
+            is_remote: false,
+            run_time_ticks: None,
+            supports_transcoding: true,
+            supports_direct_stream: true,
+            supports_direct_play: true,
+            transcoding_container: None,
+            transcoding_sub_protocol: MediaStreamProtocol::default(),
+            media_streams: Vec::new(),
+            live_stream_id: None,
+            etag: None,
+            video_type: None,
+        }
+    }
+}
+
+impl MediaSourceInfo {
+    #[must_use]
+    pub fn default_audio_stream(&self, default_index: Option<i32>) -> Option<&crate::MediaStream> {
+        if let Some(index) = default_index.filter(|index| *index != -1)
+            && let Some(stream) = self.media_streams.iter().find(|stream| {
+                stream.stream_type == crate::MediaStreamType::Audio && stream.index == index
+            })
+        {
+            return Some(stream);
+        }
+
+        self.media_streams
+            .iter()
+            .find(|stream| stream.stream_type == crate::MediaStreamType::Audio && stream.is_default)
+            .or_else(|| {
+                self.media_streams
+                    .iter()
+                    .find(|stream| stream.stream_type == crate::MediaStreamType::Audio)
+            })
+    }
 }
 
 /// Bit flags describing why a stream must be transcoded.
@@ -544,6 +619,55 @@ impl StreamInfo {
     #[must_use]
     pub fn media_source_id(&self) -> Option<&str> {
         self.media_source.as_ref()?.id.as_deref()
+    }
+
+    #[must_use]
+    pub fn target_audio_stream(&self) -> Option<&crate::MediaStream> {
+        self.media_source
+            .as_ref()?
+            .default_audio_stream(self.audio_stream_index)
+    }
+
+    #[must_use]
+    pub fn target_audio_codecs(&self) -> Vec<&str> {
+        let input_codec = self
+            .target_audio_stream()
+            .and_then(|stream| stream.codec.as_deref());
+        if self.is_direct_stream() {
+            return input_codec.into_iter().collect();
+        }
+
+        if let Some(input_codec) = input_codec
+            && let Some(codec) = self
+                .audio_codecs
+                .iter()
+                .find(|codec| codec.eq_ignore_ascii_case(input_codec))
+        {
+            return vec![codec];
+        }
+
+        self.audio_codecs.iter().map(String::as_str).collect()
+    }
+
+    #[must_use]
+    pub fn target_audio_channels(&self, codec: Option<&str>) -> Option<i32> {
+        if self.is_direct_stream() {
+            return self
+                .target_audio_stream()
+                .and_then(|stream| stream.channels);
+        }
+
+        let default_value = self
+            .global_max_audio_channels
+            .or(self.transcoding_max_audio_channels);
+        let value = self
+            .get_qualified_option(codec, "audiochannels")
+            .and_then(|value| value.parse::<i32>().ok());
+        match (value, default_value) {
+            (Some(value), Some(maximum)) => Some(value.min(maximum)),
+            (Some(value), None) => Some(value),
+            (None, default_value) => default_value,
+        }
     }
 
     #[must_use]

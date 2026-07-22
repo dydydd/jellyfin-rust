@@ -130,6 +130,13 @@ pub struct MediaStream {
     pub channel_layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bit_rate: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<i32>,
+    pub index: i32,
     pub is_default: bool,
     pub is_forced: bool,
     pub is_hearing_impaired: bool,

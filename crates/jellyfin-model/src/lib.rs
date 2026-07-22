@@ -20,9 +20,11 @@ pub mod users;
 pub use configuration::UserConfiguration;
 pub use cryptography::{PasswordHash, PasswordHashError, PasswordHashSegment};
 pub use dlna::{
-    ContainerHelper, ContainerProfile, DlnaProfileType, EncodingContext, MediaSourceInfo,
+    CodecProfile, CodecType, ContainerHelper, ContainerProfile, DeviceProfile, DirectPlayProfile,
+    DlnaProfileType, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo,
     MediaStreamProtocol, PlayMethod, ProfileCondition, ProfileConditionType, ProfileConditionValue,
-    StreamInfo, TranscodeReason, TranscodeSeekInfo, VideoType,
+    StreamBuilder, StreamBuilderError, StreamInfo, TranscodeReason, TranscodeSeekInfo,
+    TranscodingProfile, VideoType,
 };
 pub use drawing::{ImageFormat, InvalidImageFormat};
 pub use dto::UserDto;

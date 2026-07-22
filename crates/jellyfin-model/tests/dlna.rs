@@ -144,6 +144,7 @@ fn url_includes_all_supported_parameters_in_official_order() {
         live_stream_id: Some("live".to_owned()),
         etag: Some("etag".to_owned()),
         video_type: Some(VideoType::VideoFile),
+        ..MediaSourceInfo::default()
     });
     info.transcode_reasons =
         TranscodeReason::VIDEO_CODEC_NOT_SUPPORTED | TranscodeReason::AUDIO_CODEC_NOT_SUPPORTED;
