@@ -51,6 +51,13 @@ pub struct NfoImage {
     pub image_type: ImageType,
 }
 
+/// Existing local artwork referenced by an NFO file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NfoLocalImage {
+    pub path: String,
+    pub image_type: ImageType,
+}
+
 /// Video stereoscopic layout from NFO stream details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Video3dFormat {
@@ -100,6 +107,7 @@ pub struct MovieNfo {
     pub people: Vec<NfoPerson>,
     pub remote_trailers: Vec<String>,
     pub remote_images: Vec<NfoImage>,
+    pub local_images: Vec<NfoLocalImage>,
     pub user_data: NfoUserData,
 }
 
@@ -153,6 +161,22 @@ impl From<roxmltree::Error> for NfoParseError {
 /// Returns [`NfoParseError::Xml`] for malformed XML and
 /// [`NfoParseError::UnexpectedRoot`] for a non-movie XML root.
 pub fn parse_movie_nfo(input: &str) -> Result<MovieNfo, NfoParseError> {
+    parse_movie_nfo_with_file_lookup(input, |path| Path::new(path).is_file())
+}
+
+/// Parses movie metadata and resolves local artwork with `file_exists`.
+///
+/// The lookup receives the exact path stored in the NFO. This keeps Windows
+/// paths usable when parsing on another operating system.
+///
+/// # Errors
+///
+/// Returns [`NfoParseError::Xml`] for malformed XML and
+/// [`NfoParseError::UnexpectedRoot`] for a non-movie XML root.
+pub fn parse_movie_nfo_with_file_lookup(
+    input: &str,
+    mut file_exists: impl FnMut(&str) -> bool,
+) -> Result<MovieNfo, NfoParseError> {
     if !input.contains('<') {
         let mut movie = MovieNfo::default();
         parse_provider_links(input, &mut movie.provider_ids);
@@ -170,7 +194,7 @@ pub fn parse_movie_nfo(input: &str) -> Result<MovieNfo, NfoParseError> {
 
     let mut movie = MovieNfo::default();
     for node in root.children().filter(Node::is_element) {
-        parse_movie_node(node, &mut movie);
+        parse_movie_node(node, &mut movie, &mut file_exists);
     }
     Ok(movie)
 }
@@ -185,7 +209,11 @@ pub fn parse_movie_nfo_file(path: impl AsRef<Path>) -> Result<MovieNfo, NfoParse
     parse_movie_nfo(&fs::read_to_string(path)?)
 }
 
-fn parse_movie_node(node: Node<'_, '_>, movie: &mut MovieNfo) {
+fn parse_movie_node(
+    node: Node<'_, '_>,
+    movie: &mut MovieNfo,
+    file_exists: &mut impl FnMut(&str) -> bool,
+) {
     let tag = node.tag_name().name().to_ascii_lowercase();
     if parse_basic_movie_node(&tag, node, movie) {
         return;
@@ -203,10 +231,10 @@ fn parse_movie_node(node: Node<'_, '_>, movie: &mut MovieNfo) {
         "id" => parse_id_node(node, movie),
         "uniqueid" => parse_unique_id(node, movie),
         "trailer" => parse_trailer(node, movie),
-        "thumb" => parse_image(node, None, movie),
+        "thumb" => parse_image(node, None, movie, file_exists),
         "fanart" => {
             for thumb in node.children().filter(|child| child.has_tag_name("thumb")) {
-                parse_image(thumb, Some("fanart"), movie);
+                parse_image(thumb, Some("fanart"), movie, file_exists);
             }
         }
         "fileinfo" => parse_file_info(node, movie),
@@ -439,7 +467,12 @@ fn parse_trailer(node: Node<'_, '_>, movie: &mut MovieNfo) {
     }
 }
 
-fn parse_image(node: Node<'_, '_>, parent_aspect: Option<&str>, movie: &mut MovieNfo) {
+fn parse_image(
+    node: Node<'_, '_>,
+    parent_aspect: Option<&str>,
+    movie: &mut MovieNfo,
+    file_exists: &mut impl FnMut(&str) -> bool,
+) {
     let aspect = node
         .attribute("aspect")
         .or(parent_aspect)
@@ -447,7 +480,7 @@ fn parse_image(node: Node<'_, '_>, parent_aspect: Option<&str>, movie: &mut Movi
     if aspect.contains('.') {
         return;
     }
-    let Some(url) = normalized_text(node).filter(|url| is_remote_url(url)) else {
+    let Some(location) = normalized_text(node) else {
         return;
     };
     let image_type = match aspect.to_ascii_lowercase().as_str() {
@@ -459,12 +492,29 @@ fn parse_image(node: Node<'_, '_>, parent_aspect: Option<&str>, movie: &mut Movi
         "fanart" | "backdrop" => ImageType::Backdrop,
         _ => ImageType::Primary,
     };
-    if !movie
-        .remote_images
-        .iter()
-        .any(|image| image.image_type == image_type)
+
+    if is_remote_url(&location) {
+        if !movie
+            .remote_images
+            .iter()
+            .any(|image| image.image_type == image_type)
+        {
+            movie.remote_images.push(NfoImage {
+                url: location,
+                image_type,
+            });
+        }
+    } else if is_absolute_file_location(&location)
+        && !movie
+            .local_images
+            .iter()
+            .any(|image| image.image_type == image_type)
+        && file_exists(&location)
     {
-        movie.remote_images.push(NfoImage { url, image_type });
+        movie.local_images.push(NfoLocalImage {
+            path: location,
+            image_type,
+        });
     }
 }
 
@@ -637,6 +687,18 @@ fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'
 
 fn is_remote_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn is_absolute_file_location(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("\\\\")
+        || matches!(
+            value.as_bytes(),
+            [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic()
+        )
+        || value
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
 }
 
 trait DateYear {

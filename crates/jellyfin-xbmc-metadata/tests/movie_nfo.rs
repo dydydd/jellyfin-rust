@@ -2,6 +2,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use jellyfin_model::MetadataProvider;
 use jellyfin_xbmc_metadata::{
     ImageType, NfoParseError, PersonKind, Video3dFormat, parse_movie_nfo,
+    parse_movie_nfo_with_file_lookup,
 };
 
 const JUSTICE_LEAGUE: &str = include_str!("fixtures/Justice League.nfo");
@@ -167,6 +168,64 @@ fn keeps_only_first_remote_image_of_each_type() {
             .count(),
         1
     );
+}
+
+#[test]
+fn local_images_are_filtered_without_entering_remote_images() {
+    let movie = parse_movie_nfo_with_file_lookup(JUSTICE_LEAGUE, |_| false).unwrap();
+
+    assert!(movie.local_images.is_empty());
+    assert_eq!(movie.remote_images.len(), 7);
+    assert!(
+        movie
+            .remote_images
+            .iter()
+            .all(|image| image.url.starts_with("http"))
+    );
+}
+
+#[test]
+fn local_images_keep_only_the_first_existing_image_per_type() {
+    let mut lookups = 0;
+    let movie = parse_movie_nfo_with_file_lookup(JUSTICE_LEAGUE, |_| {
+        lookups += 1;
+        true
+    })
+    .unwrap();
+
+    assert_eq!(movie.local_images.len(), 1);
+    assert_eq!(lookups, 1, "later images of an accepted type are skipped");
+    assert_eq!(movie.local_images[0].image_type, ImageType::Primary);
+    assert_eq!(
+        movie.local_images[0].path,
+        r"C:\media\movies\Justice League (2017).jpg"
+    );
+    assert_eq!(movie.remote_images.len(), 7);
+}
+
+#[test]
+fn local_image_paths_are_passed_to_the_lookup_unchanged() {
+    for expected_path in [
+        r"C:\media\movies\Justice League (2017).jpg",
+        "/media/movies/Justice League (2017).jpg",
+    ] {
+        let mut looked_up = Vec::new();
+        let movie = parse_movie_nfo_with_file_lookup(JUSTICE_LEAGUE, |path| {
+            looked_up.push(path.to_owned());
+            path == expected_path
+        })
+        .unwrap();
+
+        assert!(looked_up.iter().any(|path| path == expected_path));
+        assert_eq!(movie.local_images.len(), 1);
+        assert_eq!(movie.local_images[0].path, expected_path);
+        assert!(
+            movie
+                .remote_images
+                .iter()
+                .all(|image| image.url != expected_path)
+        );
+    }
 }
 
 #[test]
