@@ -9,6 +9,7 @@ rust-version.workspace = true
 chrono.workspace = true
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-model = { path = "../jellyfin-model" }
+jellyfin-naming = { path = "../jellyfin-naming" }
 pbkdf2 = "0.12"
 rand = "0.9"
 sha1 = "0.10"

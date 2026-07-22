@@ -1510,6 +1510,7 @@ dependencies = [
  "chrono",
  "jellyfin-data",
  "jellyfin-model",
+ "jellyfin-naming",
  "pbkdf2",
  "rand 0.9.5",
  "sea-orm",

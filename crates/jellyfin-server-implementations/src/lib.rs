@@ -1,3 +1,4 @@
+mod core_resolution_ignore;
 mod cryptography;
 mod dto_images;
 mod ignore_patterns;
@@ -13,6 +14,10 @@ mod user_manager_lock;
 mod users;
 mod websocket_json;
 
+pub use core_resolution_ignore::{
+    CoreResolutionIgnoreRule, ResolutionFileSystemEntry, ResolutionParentContext,
+    ResolutionParentKind,
+};
 pub use cryptography::{
     CryptographyError, CryptographyProvider, DEFAULT_HASH_METHOD, DEFAULT_ITERATIONS,
     DEFAULT_OUTPUT_LENGTH, DEFAULT_SALT_LENGTH,
