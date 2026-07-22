@@ -13,4 +13,5 @@ pub mod server_configuration;
 pub mod tuner_host;
 pub mod user;
 pub mod user_data;
+pub mod user_profile_image;
 pub mod virtual_folder;

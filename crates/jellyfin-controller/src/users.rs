@@ -1,5 +1,8 @@
 use chrono::Utc;
-use jellyfin_data::entities::user;
+use jellyfin_data::{
+    NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
+    entities::{user, user_profile_image},
+};
 use jellyfin_model::UserPolicy;
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
@@ -151,6 +154,52 @@ impl UserService {
             .one(&self.database)
             .await?
             .ok_or(UserError::NotFound)
+    }
+
+    /// Loads the persisted profile image for a user.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn profile_image(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<user_profile_image::Model>, UserProfileImageStoreError> {
+        UserProfileImageRepository::new(self.database.clone())
+            .get(user_id)
+            .await
+    }
+
+    /// Atomically inserts or replaces a user's persisted profile image.
+    ///
+    /// # Errors
+    ///
+    /// Returns a profile-image validation or database error.
+    pub async fn set_profile_image(
+        &self,
+        image: NewUserProfileImage,
+    ) -> Result<user_profile_image::Model, UserProfileImageStoreError> {
+        UserProfileImageRepository::new(self.database.clone())
+            .upsert(image)
+            .await
+    }
+
+    /// Clears a user's persisted profile image by user ID.
+    ///
+    /// This deliberately does not accept an image key, so a detached image
+    /// carrying a temporary key cannot prevent removal of the persisted row.
+    /// A missing image is an idempotent no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when deletion fails.
+    pub async fn clear_profile_image(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<user_profile_image::Model>, UserProfileImageStoreError> {
+        UserProfileImageRepository::new(self.database.clone())
+            .clear(user_id)
+            .await
     }
 
     /// Retrieves a user by case-insensitive username.

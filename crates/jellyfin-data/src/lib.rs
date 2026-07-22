@@ -9,6 +9,7 @@ mod quick_connect_repository;
 mod server_configuration_repository;
 mod tuner_host_repository;
 mod user_data_repository;
+mod user_profile_image_repository;
 mod virtual_folder_repository;
 
 pub use activity_log_repository::{
@@ -36,6 +37,9 @@ pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStor
 pub use user_data_repository::{
     GenericUserDataPatch, NewUserData, UserDataError, UserDataPatch, UserDataQuery,
     UserDataRepository,
+};
+pub use user_profile_image_repository::{
+    NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
 };
 pub use virtual_folder_repository::{
     NewMediaPath, NewVirtualFolder, VirtualFolderError, VirtualFolderRepository,
