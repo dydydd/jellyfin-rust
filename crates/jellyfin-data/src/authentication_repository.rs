@@ -186,6 +186,27 @@ impl DeviceRepository {
         &self,
         new_device: NewDevice,
     ) -> Result<device::Model, AuthenticationStoreError> {
+        self.insert(new_device, false).await
+    }
+
+    /// Creates an active device session with a new recoverable access token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for invalid metadata, or a database error
+    /// when insertion fails.
+    pub async fn create_session(
+        &self,
+        new_device: NewDevice,
+    ) -> Result<device::Model, AuthenticationStoreError> {
+        self.insert(new_device, true).await
+    }
+
+    async fn insert(
+        &self,
+        new_device: NewDevice,
+        is_active: bool,
+    ) -> Result<device::Model, AuthenticationStoreError> {
         validate_device(&new_device)?;
         let now = Utc::now();
         Ok(device::ActiveModel {
@@ -196,13 +217,28 @@ impl DeviceRepository {
             app_version: Set(new_device.app_version),
             device_name: Set(new_device.device_name),
             device_id: Set(new_device.device_id),
-            is_active: Set(false),
+            is_active: Set(is_active),
             date_created: Set(now),
             date_modified: Set(now),
             date_last_activity: Set(now),
         }
         .insert(&self.database)
         .await?)
+    }
+
+    /// Finds a device session by its exact access token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when lookup fails.
+    pub async fn find_by_token(
+        &self,
+        access_token: &str,
+    ) -> Result<Option<device::Model>, AuthenticationStoreError> {
+        Ok(device::Entity::find()
+            .filter(device::Column::AccessToken.eq(access_token))
+            .one(&self.database)
+            .await?)
     }
 
     /// Returns devices matching the supplied exact filters.

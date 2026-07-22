@@ -20,18 +20,21 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to migrate PostgreSQL")?;
 
-    ensure_initial_user(&database).await?;
+    let initial_user = ensure_initial_user(&database).await?;
 
     let bind_address =
         std::env::var("JELLYFIN_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1:8096".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind_address)
         .await
         .with_context(|| format!("failed to bind {bind_address}"))?;
-    let app = jellyfin_api::router(AppState::new(
-        database,
-        "Jellyfin".to_owned(),
-        format!("http://{bind_address}"),
-    ));
+    let app = jellyfin_api::router(
+        AppState::new(
+            database,
+            "Jellyfin".to_owned(),
+            format!("http://{bind_address}"),
+        )
+        .with_startup_user(initial_user.id),
+    );
 
     info!(address = %bind_address, "Jellyfin Rust server listening");
     axum::serve(listener, app)
@@ -40,14 +43,17 @@ async fn main() -> anyhow::Result<()> {
         .context("server failed")
 }
 
-async fn ensure_initial_user(database: &sea_orm::DatabaseConnection) -> anyhow::Result<()> {
+async fn ensure_initial_user(
+    database: &sea_orm::DatabaseConnection,
+) -> anyhow::Result<jellyfin_data::entities::user::Model> {
     let users = UserService::new(database.clone());
-    if users.list().await?.is_empty() {
-        let name = std::env::var("JELLYFIN_INITIAL_USER").unwrap_or_else(|_| "jellyfin".to_owned());
-        users.create(&name).await?;
-        info!(username = %name, "created initial user");
+    if let Some(user) = users.first().await? {
+        return Ok(user);
     }
-    Ok(())
+    let name = std::env::var("JELLYFIN_INITIAL_USER").unwrap_or_else(|_| "jellyfin".to_owned());
+    let user = users.create(&name).await?;
+    info!(username = %name, "created initial user");
+    Ok(user)
 }
 
 async fn shutdown_signal() {

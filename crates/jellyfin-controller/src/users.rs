@@ -1,8 +1,9 @@
 use chrono::Utc;
 use jellyfin_data::entities::user;
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
-    TryInsertResult, sea_query::OnConflict,
+    ColumnTrait, Condition, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
+    SqlErr, TryInsertResult,
+    sea_query::{Expr, OnConflict},
 };
 use serde_json::json;
 use thiserror::Error;
@@ -19,6 +20,8 @@ pub enum UserError {
     DuplicateUsername(String),
     #[error("user not found")]
     NotFound,
+    #[error("the user already has a configured password")]
+    PasswordAlreadyConfigured,
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -118,6 +121,97 @@ impl UserService {
             .filter(user::Column::NormalizedUsername.eq(normalize_username(name)))
             .one(&self.database)
             .await?)
+    }
+
+    /// Retrieves the first user in stable creation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::Database`] when the query fails.
+    pub async fn first(&self) -> Result<Option<user::Model>, UserError> {
+        Ok(user::Entity::find()
+            .order_by_asc(user::Column::CreatedAt)
+            .order_by_asc(user::Column::Id)
+            .one(&self.database)
+            .await?)
+    }
+
+    /// Atomically configures the initial user's name and first password hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or duplicate-name error for an invalid name,
+    /// [`UserError::PasswordAlreadyConfigured`] if a password won the race to
+    /// configure this user, [`UserError::NotFound`] when the user disappeared,
+    /// or [`UserError::Database`] for other persistence failures.
+    pub async fn configure_startup_user(
+        &self,
+        id: Uuid,
+        name: &str,
+        password_hash: &str,
+    ) -> Result<user::Model, UserError> {
+        validate_username(name)?;
+        let update = user::Entity::update_many()
+            .col_expr(user::Column::Username, Expr::value(name))
+            .col_expr(
+                user::Column::NormalizedUsername,
+                Expr::value(normalize_username(name)),
+            )
+            .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
+            .filter(user::Column::Id.eq(id))
+            .filter(
+                Condition::any()
+                    .add(user::Column::PasswordHash.is_null())
+                    .add(user::Column::PasswordHash.eq("")),
+            )
+            .exec(&self.database)
+            .await;
+
+        match update {
+            Ok(result) if result.rows_affected == 1 => self.get(id).await,
+            Ok(_) => {
+                if user::Entity::find_by_id(id)
+                    .one(&self.database)
+                    .await?
+                    .is_some()
+                {
+                    Err(UserError::PasswordAlreadyConfigured)
+                } else {
+                    Err(UserError::NotFound)
+                }
+            }
+            Err(error) if matches!(error.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) => {
+                Err(UserError::DuplicateUsername(name.to_owned()))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Persists a successful local authentication, including a migrated hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::NotFound`] when the user disappeared, or
+    /// [`UserError::Database`] when the update fails.
+    pub async fn record_successful_authentication(
+        &self,
+        authenticated_user: &user::Model,
+    ) -> Result<user::Model, UserError> {
+        let now = Utc::now();
+        let result = user::Entity::update_many()
+            .col_expr(
+                user::Column::PasswordHash,
+                Expr::value(authenticated_user.password_hash.clone()),
+            )
+            .col_expr(user::Column::LastLoginDate, Expr::value(now))
+            .col_expr(user::Column::LastActivityDate, Expr::value(now))
+            .filter(user::Column::Id.eq(authenticated_user.id))
+            .exec(&self.database)
+            .await?;
+        if result.rows_affected == 0 {
+            return Err(UserError::NotFound);
+        }
+        self.get(authenticated_user.id).await
     }
 
     /// Lists all users in normalized username order.

@@ -3,13 +3,15 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_data::entities::user;
+use jellyfin_controller::UserService;
+use jellyfin_data::{DeviceQuery, DeviceRepository, entities::user};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
+const CLIENT_AUTHORIZATION: &str = "MediaBrowser Client=\"Jellyfin.Server%20Integration%20Tests\", DeviceId=\"69420\", Device=\"Apple%20II\", Version=\"10.8.0\"";
 
 #[tokio::test]
 async fn system_routes_follow_the_public_contract() {
@@ -207,6 +209,285 @@ async fn health_reports_service_unavailable_when_database_is_disconnected() {
     assert_eq!(body_text(response).await, "Unhealthy");
 }
 
+#[tokio::test]
+async fn startup_and_password_authentication_use_persisted_device_sessions() {
+    let fixture = startup_auth_fixture().await;
+    assert_startup_configuration(&fixture).await;
+    assert_startup_user_configuration(&fixture).await;
+    let token = assert_password_authentication(&fixture).await;
+    assert_current_user_and_complete(&fixture, &token).await;
+    cleanup_startup_auth_fixture(&fixture, &token).await;
+}
+
+struct StartupAuthFixture {
+    database: DatabaseConnection,
+    users: UserService,
+    devices: DeviceRepository,
+    app: axum::Router,
+    initial_name: String,
+    configured_name: String,
+    user_id: Uuid,
+}
+
+async fn startup_auth_fixture() -> StartupAuthFixture {
+    let database = test_database().await;
+    let users = UserService::new(database.clone());
+    let initial_name = format!("startup-{}", Uuid::new_v4().simple());
+    let startup_user = users
+        .create(&initial_name)
+        .await
+        .expect("startup user must be created");
+    let user_id = startup_user.id;
+    let configured_name = format!("configured-{}", Uuid::new_v4().simple());
+    let missing_user_app = jellyfin_api::router(
+        AppState::new(
+            database.clone(),
+            "Missing User Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )
+        .with_startup_user(Uuid::new_v4()),
+    );
+    let response = missing_user_app
+        .oneshot(json_request(
+            "POST",
+            "/Startup/User",
+            &json!({ "Name": "admin", "Password": "first password" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let app = jellyfin_api::router(
+        AppState::new(
+            database.clone(),
+            "Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )
+        .with_startup_user(user_id),
+    );
+
+    StartupAuthFixture {
+        devices: DeviceRepository::new(database.clone()),
+        database,
+        users,
+        app,
+        initial_name,
+        configured_name,
+        user_id,
+    }
+}
+
+async fn assert_startup_configuration(fixture: &StartupAuthFixture) {
+    let response = get_response(&fixture.app, "/Startup/Configuration").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["ServerName"], "Test Server");
+
+    let configuration = startup_configuration();
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/Startup/Configuration",
+            &configuration,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = get_response(&fixture.app, "/Startup/Configuration").await;
+    assert_eq!(body_json(response).await, configuration);
+}
+
+fn startup_configuration() -> Value {
+    json!({
+        "ServerName": "Configured Server",
+        "UICulture": "nl-BE",
+        "MetadataCountryCode": "be",
+        "PreferredMetadataLanguage": "nl"
+    })
+}
+
+async fn assert_startup_user_configuration(fixture: &StartupAuthFixture) {
+    let response = get_response(&fixture.app, "/Startup/User").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let first_user = body_json(response).await;
+    assert_eq!(first_user["Name"], fixture.initial_name);
+    assert_eq!(first_user["Password"], Value::Null);
+
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/Startup/User",
+            &json!({ "Name": fixture.configured_name, "Password": "correct password" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let persisted_user = fixture
+        .users
+        .get(fixture.user_id)
+        .await
+        .expect("configured user must load");
+    assert_eq!(persisted_user.username, fixture.configured_name);
+    assert!(persisted_user.password_hash.is_some());
+    let response = get_response(&fixture.app, "/Startup/User").await;
+    let configured_user = body_json(response).await;
+    assert_eq!(configured_user["Name"], fixture.configured_name);
+    assert_eq!(configured_user["Password"], Value::Null);
+
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/Startup/User",
+            &json!({ "Name": "attacker", "Password": "replacement" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        fixture
+            .users
+            .get(fixture.user_id)
+            .await
+            .expect("protected user must load")
+            .username,
+        fixture.configured_name
+    );
+}
+
+async fn assert_password_authentication(fixture: &StartupAuthFixture) -> String {
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(auth_request(
+            "/Users/AuthenticateByName",
+            &json!({ "Username": fixture.configured_name, "Pw": "wrong password" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let page = fixture
+        .devices
+        .query(&DeviceQuery {
+            user_id: Some(fixture.user_id),
+            ..DeviceQuery::default()
+        })
+        .await
+        .expect("device query must succeed");
+    assert_eq!(page.total_record_count, 0);
+
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(auth_request(
+            "/Users/AuthenticateByName",
+            &json!({ "Username": fixture.configured_name, "Pw": "correct password" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let authentication = body_json(response).await;
+    let token = authentication["AccessToken"]
+        .as_str()
+        .expect("access token must be text")
+        .to_owned();
+    assert_eq!(token.len(), 32);
+    assert_eq!(
+        authentication["User"]["Id"],
+        fixture.user_id.simple().to_string()
+    );
+    let session = fixture
+        .devices
+        .find_by_token(&token)
+        .await
+        .expect("token lookup must succeed")
+        .expect("token must have a persisted device session");
+    assert_eq!(session.user_id, fixture.user_id);
+    assert_eq!(session.app_name, "Jellyfin.Server Integration Tests");
+    assert_eq!(session.device_name, "Apple II");
+    assert_eq!(session.device_id, "69420");
+    assert!(session.is_active);
+    token
+}
+
+async fn assert_current_user_and_complete(fixture: &StartupAuthFixture, token: &str) {
+    let response = get_response(&fixture.app, "/Users/Me").await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/Users/Me")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("{CLIENT_AUTHORIZATION}, Token=\"{token}\""),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let current_user = body_json(response).await;
+    assert_eq!(current_user["Id"], fixture.user_id.simple().to_string());
+    assert_eq!(current_user["Name"], fixture.configured_name);
+
+    let response = post_empty_response(&fixture.app, "/Startup/Complete").await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    for uri in ["/Startup/User", "/Startup/Configuration"] {
+        let response = get_response(&fixture.app, uri).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/Startup/Configuration",
+            &startup_configuration(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = get_response(&fixture.app, "/System/Info/Public").await;
+    let public_info = body_json(response).await;
+    assert_eq!(public_info["ServerName"], "Configured Server");
+    assert_eq!(public_info["StartupWizardCompleted"], true);
+}
+
+async fn cleanup_startup_auth_fixture(fixture: &StartupAuthFixture, token: &str) {
+    user::Entity::delete_by_id(fixture.user_id)
+        .exec(&fixture.database)
+        .await
+        .expect("startup test user must be removed");
+    assert!(
+        fixture
+            .devices
+            .find_by_token(token)
+            .await
+            .expect("cascade token lookup must succeed")
+            .is_none()
+    );
+}
+
+async fn get_response(app: &axum::Router, uri: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn post_empty_response(app: &axum::Router, uri: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(Request::post(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
 async fn test_database() -> DatabaseConnection {
     let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
         .await
@@ -221,6 +502,14 @@ fn json_request(method: &str, uri: &str, body: &Value) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap()
+}
+
+fn auth_request(uri: &str, body: &Value) -> Request<Body> {
+    Request::post(uri)
+        .header(header::AUTHORIZATION, CLIENT_AUTHORIZATION)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap()

@@ -1148,6 +1148,8 @@ dependencies = [
  "jellyfin-controller",
  "jellyfin-data",
  "jellyfin-model",
+ "jellyfin-server-implementations",
+ "percent-encoding",
  "sea-orm",
  "serde",
  "serde_json",
