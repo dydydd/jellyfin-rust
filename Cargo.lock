@@ -1169,6 +1169,7 @@ dependencies = [
  "chrono",
  "jellyfin-data",
  "jellyfin-extensions",
+ "jellyfin-model",
  "sea-orm",
  "serde_json",
  "thiserror",
