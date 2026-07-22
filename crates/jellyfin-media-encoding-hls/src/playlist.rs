@@ -77,9 +77,10 @@ pub fn compute_segments(keyframe_data: &KeyframeData, desired_segment_length_ms:
 ///
 /// # Errors
 ///
-/// Returns [`HlsPlaylistError::InvalidSegmentParameters`] for non-positive
-/// inputs and an overflow variant when allocation dimensions cannot be safely
-/// represented.
+/// A zero runtime produces an empty segment list, matching the dynamic HLS
+/// controller contract. Negative runtimes and non-positive segment lengths
+/// return [`HlsPlaylistError::InvalidSegmentParameters`]. An overflow variant
+/// is returned when allocation dimensions cannot be safely represented.
 pub fn compute_equal_length_segments(
     desired_segment_length_ms: i32,
     total_runtime_ticks: i64,
@@ -139,7 +140,7 @@ pub fn create_main_playlist(
     let is_fmp4 = segment_extension.eq_ignore_ascii_case(".mp4");
     let hls_version = if is_fmp4 { 7 } else { 3 };
     let target_duration = segment_ticks.iter().copied().max().map_or_else(
-        || i64::from(request.desired_segment_length_ms),
+        || ceiling_milliseconds(request.desired_segment_length_ms),
         ceiling_seconds,
     );
 
@@ -213,11 +214,14 @@ fn compute_equal_length_segment_ticks(
     desired_segment_length_ms: i32,
     total_runtime_ticks: i64,
 ) -> Result<Vec<i64>, HlsPlaylistError> {
-    if desired_segment_length_ms <= 0 || total_runtime_ticks <= 0 {
+    if desired_segment_length_ms <= 0 || total_runtime_ticks < 0 {
         return Err(HlsPlaylistError::InvalidSegmentParameters {
             desired_segment_length_ms,
             total_runtime_ticks,
         });
+    }
+    if total_runtime_ticks == 0 {
+        return Ok(Vec::new());
     }
     let segment_length_ticks = i64::from(desired_segment_length_ms)
         .checked_mul(TICKS_PER_MILLISECOND)
@@ -259,6 +263,10 @@ const fn ceiling_seconds(ticks: i64) -> i64 {
     } else {
         (ticks - 1) / 10_000_000 + 1
     }
+}
+
+const fn ceiling_milliseconds(milliseconds: i32) -> i64 {
+    (milliseconds as i64 + 999) / 1_000
 }
 
 fn segment_file_extension(container: &str) -> String {

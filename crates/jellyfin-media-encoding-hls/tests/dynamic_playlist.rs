@@ -86,9 +86,26 @@ fn equal_length_segments_match_official_matrix() {
 }
 
 #[test]
+fn equal_length_segments_match_dynamic_hls_controller_matrix() {
+    for (runtime, expected) in [
+        (0, vec![]),
+        (ms_to_ticks(3_000), vec![3.0]),
+        (ms_to_ticks(6_000), vec![6.0]),
+        (33_333_333, vec![3.333_333_3]),
+        (93_333_333, vec![6.0, 3.333_333_3]),
+    ] {
+        assert_eq!(
+            compute_equal_length_segments(6_000, runtime).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn invalid_equal_length_parameters_return_error() {
-    assert!(compute_equal_length_segments(0, 1_000_000).is_err());
-    assert!(compute_equal_length_segments(1_000, 0).is_err());
+    for (desired_length, runtime) in [(0, 1_000_000), (-1, 1_000_000), (0, 0), (1_000, -1)] {
+        assert!(compute_equal_length_segments(desired_length, runtime).is_err());
+    }
 }
 
 #[test]
@@ -154,6 +171,24 @@ fn creates_transport_stream_playlist() {
             "hls/segment1.ts?api_key=test&runtimeTicks=60000000&actualSegmentLengthTicks=60000000\n",
             "#EXTINF:1.000000, nodesc\n",
             "hls/segment2.ts?api_key=test&runtimeTicks=120000000&actualSegmentLengthTicks=10000000\n",
+            "#EXT-X-ENDLIST\n",
+        )
+    );
+}
+
+#[test]
+fn zero_runtime_creates_an_empty_vod_playlist() {
+    let mut request = request("ts", false);
+    request.total_runtime_ticks = 0;
+
+    assert_eq!(
+        create_main_playlist(&request, None).unwrap(),
+        concat!(
+            "#EXTM3U\n",
+            "#EXT-X-PLAYLIST-TYPE:VOD\n",
+            "#EXT-X-VERSION:3\n",
+            "#EXT-X-TARGETDURATION:6\n",
+            "#EXT-X-MEDIA-SEQUENCE:0\n",
             "#EXT-X-ENDLIST\n",
         )
     );
