@@ -60,6 +60,10 @@ pub struct EmbeddedImageStream {
 pub struct EmbeddedImageCacheKey(String);
 
 impl EmbeddedImageCacheKey {
+    pub(crate) fn from_value(value: String) -> Self {
+        Self(value)
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -110,7 +114,7 @@ pub struct EmbeddedImageResponse {
 }
 
 impl EmbeddedImageResponse {
-    const fn no_image() -> Self {
+    pub(crate) const fn no_image() -> Self {
         Self {
             path: None,
             protocol: MediaProtocol::File,

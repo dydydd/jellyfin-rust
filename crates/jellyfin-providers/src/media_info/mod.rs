@@ -3,6 +3,7 @@ mod embedded_image_provider;
 mod ffprobe_video_info;
 mod resolver;
 mod subtitle_resolver;
+mod video_image_provider;
 
 pub use audio_resolver::{AudioResolveRequest, AudioResolver, ResolvedAudioStream};
 pub use embedded_image_provider::{
@@ -19,3 +20,7 @@ pub use ffprobe_video_info::{
 };
 pub use resolver::{ExternalMediaInfoCapability, ExternalMediaInfoRequest, MediaFileSystemEntry};
 pub use subtitle_resolver::{ResolvedSubtitleStream, SubtitleResolveRequest, SubtitleResolver};
+pub use video_image_provider::{
+    Video3DFormat, VideoFrameExtractionRequest, VideoImageCapability, VideoImageProvider,
+    VideoImageRequest,
+};
