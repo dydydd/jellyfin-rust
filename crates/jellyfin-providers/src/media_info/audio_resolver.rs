@@ -1,7 +1,10 @@
 use jellyfin_model::MediaStreamType;
 use jellyfin_naming::{DlnaProfileType, LocalizationManager, NamingOptions};
 
-use super::resolver::{ExternalStreamResolver, MediaResolveRequest, ResolvedExternalStream};
+use super::resolver::{
+    ExternalMediaInfoCapability, ExternalStreamResolver, MediaResolveRequest,
+    ResolvedExternalStream,
+};
 
 pub type AudioResolveRequest<'a> = MediaResolveRequest<'a>;
 pub type ResolvedAudioStream = ResolvedExternalStream;
@@ -27,5 +30,15 @@ impl<'a, L: LocalizationManager + ?Sized> AudioResolver<'a, L> {
     #[must_use]
     pub fn resolve(&self, request: AudioResolveRequest<'_>) -> Vec<ResolvedAudioStream> {
         self.resolver.resolve(request)
+    }
+
+    /// Resolves candidates and merges stream details supplied by a media-info capability.
+    #[must_use]
+    pub fn resolve_with_media_info<C: ExternalMediaInfoCapability + ?Sized>(
+        &self,
+        request: AudioResolveRequest<'_>,
+        capability: &C,
+    ) -> Vec<ResolvedAudioStream> {
+        self.resolver.resolve_with_media_info(request, capability)
     }
 }

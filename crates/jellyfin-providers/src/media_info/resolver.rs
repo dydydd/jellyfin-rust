@@ -46,9 +46,34 @@ pub struct ResolvedExternalStream {
     pub mime_type: String,
 }
 
+/// Request passed to a capability that inspects one external media file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExternalMediaInfoRequest<'a> {
+    pub path: &'a str,
+    pub protocol: MediaProtocol,
+    pub profile_type: DlnaProfileType,
+    pub stream_type: MediaStreamType,
+}
+
+/// Boundary for media inspection implementations such as an ffprobe adapter.
+pub trait ExternalMediaInfoCapability {
+    type Error;
+
+    /// Returns the streams inspected from one external media file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an implementation-defined error when the file cannot be inspected.
+    fn get_media_info(
+        &self,
+        request: ExternalMediaInfoRequest<'_>,
+    ) -> Result<Vec<MediaStream>, Self::Error>;
+}
+
 pub(crate) struct ExternalStreamResolver<'a, L: LocalizationManager + ?Sized> {
     naming_options: NamingOptions,
     path_parser: ExternalPathParser<'a, L>,
+    profile_type: DlnaProfileType,
     stream_type: MediaStreamType,
 }
 
@@ -64,6 +89,7 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
         Self {
             naming_options,
             path_parser,
+            profile_type,
             stream_type,
         }
     }
@@ -130,6 +156,68 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
 
         streams
     }
+
+    pub(crate) fn resolve_with_media_info<C: ExternalMediaInfoCapability + ?Sized>(
+        &self,
+        request: MediaResolveRequest<'_>,
+        capability: &C,
+    ) -> Vec<ResolvedExternalStream> {
+        let path_streams = self.resolve(request);
+        let mut next_index = request.start_index;
+        let mut resolved = Vec::new();
+
+        for path_stream in path_streams {
+            let Some(path) = path_stream.stream.path.as_deref() else {
+                continue;
+            };
+            let media_info_request = ExternalMediaInfoRequest {
+                path,
+                protocol: MediaProtocol::File,
+                profile_type: self.profile_type,
+                stream_type: self.stream_type,
+            };
+            let Ok(media_streams) = capability.get_media_info(media_info_request) else {
+                continue;
+            };
+            let is_single_stream = media_streams.len() == 1;
+
+            for mut media_stream in media_streams {
+                if media_stream.stream_type != self.stream_type {
+                    continue;
+                }
+
+                media_stream.index = next_index;
+                next_index = next_index.saturating_add(1);
+                if is_single_stream {
+                    media_stream.is_default = path_stream.stream.is_default;
+                    media_stream.is_forced |= path_stream.stream.is_forced;
+                    media_stream.is_hearing_impaired |= path_stream.stream.is_hearing_impaired;
+                }
+                merge_path_metadata(&mut media_stream, &path_stream.stream);
+                resolved.push(ResolvedExternalStream {
+                    stream: media_stream,
+                    mime_type: path_stream.mime_type.clone(),
+                });
+            }
+        }
+
+        resolved
+    }
+}
+
+fn merge_path_metadata(media_stream: &mut MediaStream, path_stream: &MediaStream) {
+    media_stream.path.clone_from(&path_stream.path);
+    media_stream.is_external = true;
+    if media_stream.title.as_deref().is_none_or(str::is_empty) {
+        media_stream.title = non_empty(path_stream.title.as_deref()).map(ToOwned::to_owned);
+    }
+    if media_stream.language.as_deref().is_none_or(str::is_empty) {
+        media_stream.language = non_empty(path_stream.language.as_deref()).map(ToOwned::to_owned);
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
 }
 
 fn file_name(path: &str) -> Option<&str> {

@@ -1,7 +1,10 @@
 use jellyfin_model::MediaStreamType;
 use jellyfin_naming::{DlnaProfileType, LocalizationManager, NamingOptions};
 
-use super::resolver::{ExternalStreamResolver, MediaResolveRequest, ResolvedExternalStream};
+use super::resolver::{
+    ExternalMediaInfoCapability, ExternalStreamResolver, MediaResolveRequest,
+    ResolvedExternalStream,
+};
 
 pub type SubtitleResolveRequest<'a> = MediaResolveRequest<'a>;
 pub type ResolvedSubtitleStream = ResolvedExternalStream;
@@ -27,5 +30,15 @@ impl<'a, L: LocalizationManager + ?Sized> SubtitleResolver<'a, L> {
     #[must_use]
     pub fn resolve(&self, request: SubtitleResolveRequest<'_>) -> Vec<ResolvedSubtitleStream> {
         self.resolver.resolve(request)
+    }
+
+    /// Resolves candidates and merges stream details supplied by a media-info capability.
+    #[must_use]
+    pub fn resolve_with_media_info<C: ExternalMediaInfoCapability + ?Sized>(
+        &self,
+        request: SubtitleResolveRequest<'_>,
+        capability: &C,
+    ) -> Vec<ResolvedSubtitleStream> {
+        self.resolver.resolve_with_media_info(request, capability)
     }
 }
