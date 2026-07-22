@@ -1,0 +1,16 @@
+[package]
+name = "jellyfin-extensions"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Cross-platform utility extensions for Jellyfin Rust"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+unicode-normalization = "0.1.24"
+
+[lints.rust]
+unsafe_code = "forbid"
+
