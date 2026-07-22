@@ -39,6 +39,7 @@ mod library;
 mod live_tv;
 mod media_info;
 mod music_genre;
+mod openapi;
 mod persons;
 mod playstate;
 mod plugins;
@@ -196,10 +197,7 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/System/Info/Public", get(public_system_info))
-        .route("/System/Ping", get(ping).post(ping))
+    openapi::documented_routes()
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))

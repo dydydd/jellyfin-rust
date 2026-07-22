@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Public, unauthenticated server information returned by `/System/Info/Public`.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PublicSystemInfo {
     #[serde(skip_serializing_if = "Option::is_none")]

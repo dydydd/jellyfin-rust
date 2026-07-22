@@ -6,18 +6,21 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+aide.workspace = true
 axum.workspace = true
 axum-extra = { version = "0.10", features = ["query"] }
 chrono.workspace = true
 form_urlencoded = "1.2"
+indexmap.workspace = true
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-live-tv = { path = "../jellyfin-live-tv" }
-jellyfin-model = { path = "../jellyfin-model" }
+jellyfin-model = { path = "../jellyfin-model", features = ["openapi"] }
 jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }
 percent-encoding = "2.3"
 sea-orm.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
@@ -25,6 +28,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 tower.workspace = true
 tower-http = { version = "0.6", features = ["fs"] }
 uuid.workspace = true
+
+[dev-dependencies]
+oas3 = "0.22"
 
 [lints]
 workspace = true
