@@ -8,9 +8,9 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    MusicGenreError, MusicGenreService, PersonError, PersonService, PlaystateError,
-    PlaystateService, UserError, UserLibraryError, UserLibraryService, UserService,
-    VirtualFolderService, VirtualFolderServiceError,
+    LibraryControllerError, LibraryControllerService, MusicGenreError, MusicGenreService,
+    PersonError, PersonService, PlaystateError, PlaystateService, UserError, UserLibraryError,
+    UserLibraryService, UserService, VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
@@ -26,6 +26,7 @@ mod activity_log;
 mod authentication;
 mod branding;
 mod items;
+mod library;
 mod music_genre;
 mod persons;
 mod playstate;
@@ -45,6 +46,7 @@ pub struct AppState {
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) user_library: UserLibraryService,
+    pub(crate) library_controller: LibraryControllerService,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
@@ -63,6 +65,7 @@ impl AppState {
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
+            library_controller: LibraryControllerService::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
@@ -170,18 +173,8 @@ pub fn router(state: AppState) -> Router {
             get(user_library::get_lyrics_legacy),
         )
         .merge(item_query_routes())
-        .route("/Items/Root", get(user_library::get_root))
-        .route("/Items/{item_id}", get(user_library::get_item))
-        .route("/Items/{item_id}/Intros", get(user_library::get_intros))
-        .route(
-            "/Items/{item_id}/LocalTrailers",
-            get(user_library::get_local_trailers),
-        )
-        .route(
-            "/Items/{item_id}/SpecialFeatures",
-            get(user_library::get_special_features),
-        )
-        .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
+        .merge(library_controller_routes())
+        .merge(user_library_routes())
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))
         .route(
@@ -211,10 +204,46 @@ pub fn router(state: AppState) -> Router {
 
 fn item_query_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/Items", get(items::get))
+        .route("/Items", get(items::get).delete(library::delete_items))
         .route("/UserItems/Resume", get(items::resume))
         .route("/Users/{user_id}/Items", get(items::get_legacy))
         .route("/Users/{user_id}/Items/Resume", get(items::resume_legacy))
+}
+
+fn library_controller_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Items/{item_id}/File", get(library::file))
+        .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
+        .route("/Items/{item_id}/ThemeVideos", get(library::theme_videos))
+        .route("/Items/{item_id}/ThemeMedia", get(library::theme_media))
+        .route("/Items/{item_id}/Ancestors", get(library::ancestors))
+        .route("/Items/{item_id}/Download", get(library::download))
+        .route("/Items/{item_id}/Collections", get(library::collections))
+        .route("/Artists/{item_id}/Similar", get(library::similar))
+        .route("/Items/{item_id}/Similar", get(library::similar))
+        .route("/Albums/{item_id}/Similar", get(library::similar))
+        .route("/Shows/{item_id}/Similar", get(library::similar))
+        .route("/Movies/{item_id}/Similar", get(library::similar))
+        .route("/Trailers/{item_id}/Similar", get(library::similar))
+}
+
+fn user_library_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Items/Root", get(user_library::get_root))
+        .route(
+            "/Items/{item_id}",
+            get(user_library::get_item).delete(library::delete_item),
+        )
+        .route("/Items/{item_id}/Intros", get(user_library::get_intros))
+        .route(
+            "/Items/{item_id}/LocalTrailers",
+            get(user_library::get_local_trailers),
+        )
+        .route(
+            "/Items/{item_id}/SpecialFeatures",
+            get(user_library::get_special_features),
+        )
+        .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
@@ -274,6 +303,7 @@ pub(crate) enum ApiError {
     MusicGenre(MusicGenreError),
     Person(PersonError),
     UserLibrary(UserLibraryError),
+    LibraryController(LibraryControllerError),
     VirtualFolder(VirtualFolderServiceError),
     InvalidRequest,
     Unauthorized,
@@ -326,6 +356,12 @@ impl From<PersonError> for ApiError {
 impl From<UserLibraryError> for ApiError {
     fn from(error: UserLibraryError) -> Self {
         Self::UserLibrary(error)
+    }
+}
+
+impl From<LibraryControllerError> for ApiError {
+    fn from(error: LibraryControllerError) -> Self {
+        Self::LibraryController(error)
     }
 }
 
@@ -417,6 +453,7 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Library persistence failed",
             ),
+            Self::LibraryController(error) => library_controller_error_response(&error),
             Self::MusicGenre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Music genre persistence failed",
@@ -433,6 +470,26 @@ impl IntoResponse for ApiError {
             Self::VirtualFolder(error) => virtual_folder_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn library_controller_error_response(error: &LibraryControllerError) -> (StatusCode, &'static str) {
+    match error {
+        LibraryControllerError::UserNotFound
+        | LibraryControllerError::ItemNotFound
+        | LibraryControllerError::FileNotFound
+        | LibraryControllerError::User(UserError::NotFound)
+        | LibraryControllerError::BaseItem(BaseItemError::NotFound) => {
+            (StatusCode::NOT_FOUND, "User, item, or file not found")
+        }
+        LibraryControllerError::Forbidden
+        | LibraryControllerError::BaseItem(BaseItemError::ProtectedItem) => {
+            (StatusCode::FORBIDDEN, "Forbidden")
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Library persistence failed",
+        ),
     }
 }
 

@@ -102,6 +102,7 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
     fn try_from(query: ItemsQuery) -> Result<Self, Self::Error> {
         Ok(Self {
             ids: parse_uuids(query.ids.as_deref())?,
+            exclude_ids: Vec::new(),
             parent_id: query.parent_id,
             recursive: query.recursive.unwrap_or(false),
             search_term: query.search_term,

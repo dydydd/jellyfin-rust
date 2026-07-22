@@ -1,0 +1,282 @@
+use std::{path::Path as FilePath, sync::Arc};
+
+use axum::{
+    Json,
+    body::Body,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
+    response::Response,
+};
+use jellyfin_data::BaseItemPage;
+use serde::{Deserialize, Serialize};
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
+use uuid::Uuid;
+
+use crate::{ApiError, AppState, authentication, user_library};
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct LibraryQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DeleteItemsQuery {
+    ids: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ThemeMediaResult {
+    items: Vec<user_library::BaseItemDto>,
+    total_record_count: usize,
+    owner_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AllThemeMediaResult {
+    #[serde(rename = "ThemeSongsResult")]
+    theme_songs: ThemeMediaResult,
+    #[serde(rename = "ThemeVideosResult")]
+    theme_videos: ThemeMediaResult,
+    #[serde(rename = "SoundtrackSongsResult")]
+    soundtrack_songs: ThemeMediaResult,
+}
+
+pub(crate) async fn file(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    file_response(state, headers, item_id, false).await
+}
+
+pub(crate) async fn download(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    file_response(state, headers, item_id, true).await
+}
+
+pub(crate) async fn theme_songs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<ThemeMediaResult>, ApiError> {
+    Ok(Json(
+        empty_theme_result(state, headers, item_id, query).await?,
+    ))
+}
+
+pub(crate) async fn theme_videos(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<ThemeMediaResult>, ApiError> {
+    Ok(Json(
+        empty_theme_result(state, headers, item_id, query).await?,
+    ))
+}
+
+pub(crate) async fn theme_media(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<AllThemeMediaResult>, ApiError> {
+    let result = empty_theme_result(state, headers, item_id, query).await?;
+    Ok(Json(AllThemeMediaResult {
+        theme_songs: result.clone(),
+        theme_videos: result.clone(),
+        soundtrack_songs: result,
+    }))
+}
+
+pub(crate) async fn ancestors(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let items = state
+        .library_controller
+        .ancestors(&authenticated.user, target_user_id, item_id)
+        .await?;
+    Ok(Json(
+        items
+            .into_iter()
+            .map(|item| user_library::item_to_dto(item, state.server_id()))
+            .collect(),
+    ))
+}
+
+pub(crate) async fn collections(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    state
+        .library_controller
+        .item(&authenticated.user, target_user_id, item_id)
+        .await?;
+    Ok(Json(user_library::BaseItemQueryResult {
+        items: Vec::new(),
+        total_record_count: 0,
+        start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
+    }))
+}
+
+pub(crate) async fn similar(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let page = state
+        .library_controller
+        .similar_items(&authenticated.user, target_user_id, item_id, query.limit)
+        .await?;
+    Ok(Json(page_to_dto(page, state.server_id())))
+}
+
+pub(crate) async fn delete_item(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    delete_for(state, headers, vec![item_id]).await
+}
+
+pub(crate) async fn delete_items(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<DeleteItemsQuery>,
+) -> Result<StatusCode, ApiError> {
+    let ids = query
+        .ids
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse().map_err(|_| ApiError::InvalidRequest))
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    delete_for(state, headers, ids).await
+}
+
+async fn empty_theme_result(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    item_id: Uuid,
+    query: LibraryQuery,
+) -> Result<ThemeMediaResult, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    state
+        .library_controller
+        .item(&authenticated.user, target_user_id, item_id)
+        .await?;
+    Ok(ThemeMediaResult {
+        items: Vec::new(),
+        total_record_count: 0,
+        owner_id: item_id,
+    })
+}
+
+async fn file_response(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    item_id: Uuid,
+    attachment: bool,
+) -> Result<Response, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let path = state
+        .library_controller
+        .download_path(&authenticated.user, authenticated.user.id, item_id)
+        .await?;
+    let mut file_request = Request::builder()
+        .method("GET")
+        .body(Body::empty())
+        .map_err(|_| ApiError::Internal)?;
+    for name in [header::RANGE, header::IF_RANGE] {
+        if let Some(value) = headers.get(&name) {
+            file_request.headers_mut().insert(name, value.clone());
+        }
+    }
+    let response = match ServeFile::new(&path)
+        .with_buf_chunk_size(64 * 1024)
+        .oneshot(file_request)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    let mut response = response.map(Body::new);
+    if attachment && response.status().is_success() {
+        let filename = safe_filename(&path);
+        let value = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+            .map_err(|_| ApiError::Internal)?;
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
+}
+
+async fn delete_for(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    ids: Vec<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    state
+        .library_controller
+        .delete_items(&authenticated.user, &ids)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQueryResult {
+    user_library::BaseItemQueryResult {
+        items: page
+            .items
+            .into_iter()
+            .map(|item| user_library::item_to_dto(item, server_id))
+            .collect(),
+        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+    }
+}
+
+fn safe_filename(path: &str) -> String {
+    FilePath::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download")
+        .chars()
+        .filter_map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                Some(character)
+            } else if character.is_ascii_whitespace() {
+                Some('_')
+            } else {
+                None
+            }
+        })
+        .collect()
+}

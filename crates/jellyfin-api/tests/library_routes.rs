@@ -1,0 +1,488 @@
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode, header},
+};
+use jellyfin_api::AppState;
+use jellyfin_controller::UserService;
+use jellyfin_data::{
+    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
+    entities::{user, user_data},
+};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
+use serde_json::Value;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+const AUTHORIZATION: &str = "MediaBrowser Client=\"Library Tests\", DeviceId=\"library-tests\", Device=\"Test\", Version=\"1.0\"";
+static LIBRARY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn official_library_controller_missing_item_contract() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let missing = Uuid::new_v4();
+    for route in [
+        format!("/Items/{missing}/File"),
+        format!("/Items/{missing}/ThemeSongs"),
+        format!("/Items/{missing}/ThemeVideos"),
+        format!("/Items/{missing}/ThemeMedia"),
+        format!("/Items/{missing}/Ancestors"),
+        format!("/Items/{missing}/Download"),
+        format!("/Items/{missing}/Collections"),
+        format!("/Artists/{missing}/Similar"),
+        format!("/Items/{missing}/Similar"),
+        format!("/Albums/{missing}/Similar"),
+        format!("/Shows/{missing}/Similar"),
+        format!("/Movies/{missing}/Similar"),
+        format!("/Trailers/{missing}/Similar"),
+    ] {
+        assert_eq!(
+            fixture
+                .request("GET", &route, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{route}"
+        );
+    }
+    for route in [format!("/Items/{missing}"), format!("/Items?ids={missing}")] {
+        assert_eq!(
+            fixture.request("DELETE", &route, None).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{route}"
+        );
+        assert_eq!(
+            fixture
+                .request("DELETE", &route, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{route}"
+        );
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn ancestors_download_similar_and_empty_relationships_have_real_success_semantics() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    assert_ancestors(&fixture).await;
+    assert_streamed_downloads(&fixture).await;
+    assert_similar_items(&fixture).await;
+    assert_empty_relationships(&fixture).await;
+    fixture.cleanup().await;
+}
+
+async fn assert_ancestors(fixture: &Fixture) {
+    let ancestors = fixture
+        .json(
+            "GET",
+            &format!("/Items/{}/Ancestors", fixture.child_id),
+            &fixture.user_token,
+        )
+        .await;
+    let ancestor_ids = ancestors
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ancestor_ids,
+        vec![
+            fixture.parent_id.simple().to_string(),
+            jellyfin_data::USER_ROOT_FOLDER_ID.simple().to_string()
+        ]
+    );
+}
+
+async fn assert_streamed_downloads(fixture: &Fixture) {
+    let media_bytes = Fixture::media_bytes();
+    for (route, attachment) in [
+        (format!("/Items/{}/File", fixture.child_id), false),
+        (format!("/Items/{}/Download", fixture.child_id), true),
+    ] {
+        let response = fixture
+            .request("GET", &route, Some(&fixture.user_token))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            media_bytes.len().to_string()
+        );
+        assert_eq!(
+            response.headers().contains_key(header::CONTENT_DISPOSITION),
+            attachment
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), media_bytes);
+    }
+    let range_start = 65_530;
+    let range_end = 65_550;
+    let response = fixture
+        .range_request(
+            &format!("/Items/{}/Download", fixture.child_id),
+            &format!("bytes={range_start}-{range_end}"),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers()[header::CONTENT_RANGE],
+        format!("bytes {range_start}-{range_end}/{}", media_bytes.len())
+    );
+    let range_body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(range_body.as_ref(), &media_bytes[range_start..=range_end]);
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Items/{}/Download", fixture.missing_file_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Items/{}/Download", fixture.io_error_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+async fn assert_similar_items(fixture: &Fixture) {
+    let similar = fixture
+        .json(
+            "GET",
+            &format!("/Movies/{}/Similar", fixture.child_id),
+            &fixture.user_token,
+        )
+        .await;
+    let similar_items = similar["Items"].as_array().unwrap();
+    assert!(similar["TotalRecordCount"].as_u64().unwrap() >= 1);
+    assert!(
+        similar_items
+            .iter()
+            .any(|item| item["Id"] == fixture.similar_id.simple().to_string())
+    );
+    assert!(
+        similar_items
+            .iter()
+            .all(|item| item["Id"] != fixture.child_id.simple().to_string())
+    );
+    assert!(similar_items.iter().all(|item| item["Type"] == "Movie"));
+    assert!(
+        similar_items
+            .iter()
+            .all(|item| item.get("item_type").is_none())
+    );
+}
+
+async fn assert_empty_relationships(fixture: &Fixture) {
+    for route in [
+        format!("/Items/{}/ThemeSongs", fixture.child_id),
+        format!("/Items/{}/ThemeVideos", fixture.child_id),
+    ] {
+        let body = fixture.json("GET", &route, &fixture.user_token).await;
+        assert_eq!(body["OwnerId"], fixture.child_id.to_string());
+        assert_eq!(body["TotalRecordCount"], 0);
+        assert!(body["Items"].as_array().unwrap().is_empty());
+    }
+    let collections = fixture
+        .json(
+            "GET",
+            &format!("/Items/{}/Collections?startIndex=3", fixture.child_id),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(collections["TotalRecordCount"], 0);
+    assert_eq!(collections["StartIndex"], 3);
+}
+
+#[tokio::test]
+async fn administrator_single_and_batch_deletion_are_atomic_and_database_only() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", fixture.parent_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let missing = Uuid::new_v4();
+    let atomic_route = format!("/Items?ids={},{}", fixture.parent_id, missing);
+    assert_eq!(
+        fixture
+            .request("DELETE", &atomic_route, Some(&fixture.admin_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(fixture.items().exists(fixture.parent_id).await.unwrap());
+
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", fixture.single_delete_id),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let batch_route = format!("/Items?ids={},{}", fixture.parent_id, fixture.similar_id);
+    assert_eq!(
+        fixture
+            .request("DELETE", &batch_route, Some(&fixture.admin_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    for id in [
+        fixture.parent_id,
+        fixture.child_id,
+        fixture.grandchild_id,
+        fixture.similar_id,
+        fixture.single_delete_id,
+    ] {
+        assert!(!fixture.items().exists(id).await.unwrap());
+    }
+    assert_eq!(
+        user_data::Entity::find()
+            .filter(user_data::Column::UserId.eq(fixture.user_id))
+            .count(&fixture.database)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(tokio::fs::try_exists(&fixture.media_path).await.unwrap());
+    fixture.cleanup().await;
+}
+
+struct Fixture {
+    database: DatabaseConnection,
+    app: axum::Router,
+    admin_id: Uuid,
+    admin_token: String,
+    user_id: Uuid,
+    user_token: String,
+    parent_id: Uuid,
+    child_id: Uuid,
+    grandchild_id: Uuid,
+    similar_id: Uuid,
+    single_delete_id: Uuid,
+    missing_file_id: Uuid,
+    io_error_id: Uuid,
+    media_path: String,
+}
+
+impl Fixture {
+    const MEDIA_SIZE: usize = 192 * 1024 + 17;
+
+    fn media_bytes() -> Vec<u8> {
+        (0..Self::MEDIA_SIZE)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect()
+    }
+
+    async fn new() -> Self {
+        let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
+            .await
+            .expect("local PostgreSQL must be available");
+        jellyfin_data::migrate(&database).await.expect("migrations");
+        for pattern in ["library-admin-%", "library-user-%"] {
+            user::Entity::delete_many()
+                .filter(user::Column::Username.like(pattern))
+                .exec(&database)
+                .await
+                .expect("stale library test users");
+        }
+        let suffix = Uuid::new_v4().simple().to_string();
+        let users = UserService::new(database.clone());
+        let admin = users
+            .create_initial_administrator(&format!("library-admin-{suffix}"))
+            .await
+            .expect("library admin");
+        let user = users
+            .create(&format!("library-user-{suffix}"))
+            .await
+            .expect("library user");
+        let devices = DeviceRepository::new(database.clone());
+        let admin_token = session(&devices, admin.id, &format!("library-admin-{suffix}")).await;
+        let user_token = session(&devices, user.id, &format!("library-user-{suffix}")).await;
+
+        let media_path = format!("/tmp/jellyfin-rust-library-{suffix}.mkv");
+        tokio::fs::write(&media_path, Self::media_bytes())
+            .await
+            .expect("library media fixture");
+        let items = BaseItemRepository::new(database.clone());
+        let root = items.ensure_user_root().await.expect("user root");
+        let parent = create_item(&items, "Folder", "Library Parent", root.id, None).await;
+        let child = create_item(
+            &items,
+            "Movie",
+            "Library Movie",
+            parent.id,
+            Some(&media_path),
+        )
+        .await;
+        let grandchild = create_item(&items, "Episode", "Library Episode", child.id, None).await;
+        let similar = create_item(&items, "Movie", "Similar Movie", root.id, None).await;
+        let single_delete = create_item(&items, "Video", "Single Delete", root.id, None).await;
+        let missing_file = create_item(
+            &items,
+            "Video",
+            "Missing File",
+            root.id,
+            Some(&format!("/tmp/jellyfin-rust-missing-{suffix}.mkv")),
+        )
+        .await;
+        let oversized_component = "x".repeat(5_000);
+        let io_error = create_item(
+            &items,
+            "Video",
+            "I/O Error",
+            root.id,
+            Some(&format!("/tmp/{oversized_component}")),
+        )
+        .await;
+        let mut resume = NewUserData::new(grandchild.id, user.id, "library");
+        resume.playback_position_ticks = 100;
+        UserDataRepository::new(database.clone())
+            .upsert(resume)
+            .await
+            .expect("library user data");
+        let app = jellyfin_api::router(AppState::new(
+            database.clone(),
+            "Library Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        ));
+        Self {
+            database,
+            app,
+            admin_id: admin.id,
+            admin_token,
+            user_id: user.id,
+            user_token,
+            parent_id: parent.id,
+            child_id: child.id,
+            grandchild_id: grandchild.id,
+            similar_id: similar.id,
+            single_delete_id: single_delete.id,
+            missing_file_id: missing_file.id,
+            io_error_id: io_error.id,
+            media_path,
+        }
+    }
+
+    fn items(&self) -> BaseItemRepository {
+        BaseItemRepository::new(self.database.clone())
+    }
+
+    async fn request(
+        &self,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+    ) -> axum::response::Response {
+        let mut request = Request::builder().method(method).uri(uri);
+        if let Some(token) = token {
+            request = request.header(
+                header::AUTHORIZATION,
+                format!("{AUTHORIZATION}, Token=\"{token}\""),
+            );
+        }
+        self.app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn json(&self, method: &str, uri: &str, token: &str) -> Value {
+        let response = self.request(method, uri, Some(token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    async fn range_request(&self, uri: &str, range: &str) -> axum::response::Response {
+        self.app
+            .clone()
+            .oneshot(
+                Request::get(uri)
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("{AUTHORIZATION}, Token=\"{}\"", self.user_token),
+                    )
+                    .header(header::RANGE, range)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn cleanup(self) {
+        let items = self.items();
+        for id in [
+            self.parent_id,
+            self.similar_id,
+            self.single_delete_id,
+            self.missing_file_id,
+            self.io_error_id,
+        ] {
+            items.delete(id).await.expect("library item cleanup");
+        }
+        user::Entity::delete_many()
+            .filter(user::Column::Id.is_in([self.admin_id, self.user_id]))
+            .exec(&self.database)
+            .await
+            .expect("library users cleanup");
+        let _ = tokio::fs::remove_file(self.media_path).await;
+    }
+}
+
+async fn create_item(
+    repository: &BaseItemRepository,
+    item_type: &str,
+    name: &str,
+    parent_id: Uuid,
+    path: Option<&str>,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.parent_id = Some(parent_id);
+    item.path = path.map(ToOwned::to_owned);
+    item.media_type = Some("Video".to_owned());
+    item.is_folder = item_type == "Folder";
+    repository.create(item).await.expect("library item")
+}
+
+async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) -> String {
+    repository
+        .create_session(NewDevice::new(
+            user_id,
+            "Library Tests",
+            "1.0",
+            "Test",
+            device_id,
+        ))
+        .await
+        .expect("library session")
+        .access_token
+}

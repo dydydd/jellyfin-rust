@@ -1,5 +1,6 @@
 pub mod client_event;
 pub mod library;
+mod library_controller;
 pub mod media_encoding;
 mod music_genre;
 mod persons;
@@ -9,6 +10,7 @@ mod user_library;
 mod users;
 mod virtual_folders;
 
+pub use library_controller::{LibraryControllerError, LibraryControllerService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenreService};
 pub use persons::{Person, PersonError, PersonService};
 pub use playstate::{

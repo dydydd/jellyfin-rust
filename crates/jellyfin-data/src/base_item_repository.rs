@@ -1,4 +1,7 @@
-use std::{collections::HashMap, fmt::Write as _};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+};
 
 use sea_orm::{
     AccessMode,
@@ -12,7 +15,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::entities::{ancestor_id, base_item};
+use crate::entities::{ancestor_id, base_item, user_data};
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
 pub const USER_ROOT_FOLDER_ID: Uuid = Uuid::from_u128(2);
@@ -77,6 +80,7 @@ pub struct BaseItemHierarchyEntry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BaseItemQuery {
     pub ids: Vec<Uuid>,
+    pub exclude_ids: Vec<Uuid>,
     pub parent_id: Option<Uuid>,
     pub recursive: bool,
     pub search_term: Option<String>,
@@ -105,6 +109,8 @@ pub enum BaseItemError {
     ParentNotFound,
     #[error("base item hierarchy cannot contain a cycle")]
     HierarchyCycle,
+    #[error("protected base items cannot be deleted")]
+    ProtectedItem,
     #[error("base item was changed by another writer")]
     StaleVersion,
     #[error(transparent)]
@@ -250,6 +256,10 @@ impl BaseItemRepository {
             base_item::Entity::find().filter(base_item::Column::ItemType.ne("PLACEHOLDER"));
         if !query.ids.is_empty() {
             select = select.filter(base_item::Column::Id.is_in(query.ids.iter().copied()));
+        }
+        if !query.exclude_ids.is_empty() {
+            select =
+                select.filter(base_item::Column::Id.is_not_in(query.exclude_ids.iter().copied()));
         }
         if let Some(parent_id) = query.parent_id {
             if query.recursive {
@@ -450,20 +460,68 @@ impl BaseItemRepository {
     ///
     /// Returns a database error when deletion fails.
     pub async fn delete(&self, id: Uuid) -> Result<bool, BaseItemError> {
+        match self.delete_many(&[id]).await {
+            Ok(()) => Ok(true),
+            Err(BaseItemError::NotFound) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Atomically deletes complete item subtrees and their detached user data.
+    ///
+    /// `PostgreSQL` foreign keys cascade through hierarchy and item mapping
+    /// tables. `user_data` intentionally accepts detached item identifiers, so
+    /// it is locked and cleaned explicitly in the same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` without deleting anything when any requested item is
+    /// absent, `ProtectedItem` for the placeholder or user root, or a database
+    /// error when deletion fails.
+    pub async fn delete_many(&self, ids: &[Uuid]) -> Result<(), BaseItemError> {
+        let ids = ids.iter().copied().collect::<HashSet<_>>();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        if ids.contains(&Uuid::from_u128(1)) || ids.contains(&USER_ROOT_FOLDER_ID) {
+            return Err(BaseItemError::ProtectedItem);
+        }
         let transaction = self.database.begin().await?;
         acquire_hierarchy_lock(&transaction).await?;
-        if base_item::Entity::find_by_id(id)
-            .one(&transaction)
-            .await?
-            .is_none()
-        {
-            return Ok(false);
+        transaction
+            .execute_unprepared("LOCK TABLE jellyfin.user_data IN SHARE ROW EXCLUSIVE MODE")
+            .await?;
+        let ids = ids.into_iter().collect::<Vec<_>>();
+        let existing = base_item::Entity::find()
+            .filter(base_item::Column::Id.is_in(ids.iter().copied()))
+            .all(&transaction)
+            .await?;
+        if existing.len() != ids.len() {
+            return Err(BaseItemError::NotFound);
         }
-        let DeleteResult { rows_affected } = base_item::Entity::delete_by_id(id)
+
+        let descendants = ancestor_id::Entity::find()
+            .filter(ancestor_id::Column::ParentItemId.is_in(ids.iter().copied()))
+            .all(&transaction)
+            .await?;
+        let affected_ids = ids
+            .iter()
+            .copied()
+            .chain(descendants.into_iter().map(|row| row.item_id))
+            .collect::<HashSet<_>>();
+        user_data::Entity::delete_many()
+            .filter(user_data::Column::ItemId.is_in(affected_ids))
             .exec(&transaction)
             .await?;
+        let DeleteResult { rows_affected } = base_item::Entity::delete_many()
+            .filter(base_item::Column::Id.is_in(ids.iter().copied()))
+            .exec(&transaction)
+            .await?;
+        if usize::try_from(rows_affected).unwrap_or(usize::MAX) != ids.len() {
+            return Err(BaseItemError::NotFound);
+        }
         transaction.commit().await?;
-        Ok(rows_affected == 1)
+        Ok(())
     }
 
     /// Loads the direct parent of an item.
@@ -548,6 +606,15 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
     if !query.ids.is_empty() {
         append_uuid_list_filter(&mut sql, &mut values, "item.id", &query.ids);
     }
+    if !query.exclude_ids.is_empty() {
+        append_uuid_list_filter_with_operator(
+            &mut sql,
+            &mut values,
+            "item.id",
+            &query.exclude_ids,
+            "NOT IN",
+        );
+    }
     if let Some(parent_id) = query.parent_id {
         if query.recursive {
             push_bind(
@@ -614,7 +681,17 @@ fn append_uuid_list_filter(
     column: &str,
     items: &[Uuid],
 ) {
-    let _ = write!(sql, " AND {column} IN (");
+    append_uuid_list_filter_with_operator(sql, values, column, items, "IN");
+}
+
+fn append_uuid_list_filter_with_operator(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    column: &str,
+    items: &[Uuid],
+    operator: &str,
+) {
+    let _ = write!(sql, " AND {column} {operator} (");
     append_bind_list(sql, values, items.iter().copied());
     sql.push(')');
 }
