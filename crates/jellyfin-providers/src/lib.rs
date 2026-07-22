@@ -2,6 +2,7 @@
 
 pub mod external_url;
 pub mod lyrics;
+pub mod manager;
 pub mod media_info;
 pub mod omdb;
 pub mod tmdb;
