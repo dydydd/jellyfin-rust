@@ -248,3 +248,107 @@ fn multiple_provider_ratings_use_the_first_resolvable_value() {
         Some(score(18, Some(1)))
     );
 }
+
+#[test]
+fn localized_strings_match_embedded_official_resources_and_fallbacks() {
+    let service = LocalizationService;
+    for (key, expected) in [("Default", "Default"), ("HeaderLiveTV", "Live TV")] {
+        assert_eq!(
+            service.localized_string(key, Some("en-US"), "en-US"),
+            expected
+        );
+    }
+
+    let invalid = "SuperInvalidTranslationKeyThatWillNeverBeAdded";
+    assert_eq!(
+        service.localized_string(invalid, Some("en-US"), "en-US"),
+        invalid
+    );
+    assert_eq!(
+        service.localized_string("Artists", Some("de"), "en-US"),
+        "Interpreten"
+    );
+    assert_eq!(
+        service.localized_string("Artists", Some("zz"), "en-US"),
+        "Artists"
+    );
+}
+
+#[test]
+fn bcp47_codes_map_to_case_sensitive_underscore_resources() {
+    let service = LocalizationService;
+    assert_ne!(
+        service.localized_string("Default", Some("es-419"), "en-US"),
+        "Default"
+    );
+    assert_eq!(
+        service.localized_string("Books", Some("he-IL"), "en-US"),
+        "ספרים"
+    );
+    assert_eq!(
+        service.localized_string("Books", Some("HE-il"), "en-US"),
+        "ספרים"
+    );
+}
+
+#[test]
+fn server_and_current_ui_cultures_are_resolved_independently() {
+    let service = LocalizationService;
+    assert_eq!(
+        service.server_localized_string("Artists", "de"),
+        "Interpreten"
+    );
+    assert_eq!(
+        service.localized_string("Artists", Some("de"), "en-US"),
+        "Interpreten"
+    );
+    assert_eq!(
+        service.localized_string("Artists", None, "de"),
+        "Interpreten"
+    );
+    assert_eq!(service.localized_string("Artists", Some(""), ""), "Artists");
+}
+
+#[test]
+fn ui_options_and_supported_cultures_are_complete_and_stable() {
+    let service = LocalizationService;
+    let options = service.localization_options();
+    assert_eq!(options.len(), 105);
+    assert!(
+        options
+            .windows(2)
+            .all(|pair| { pair[0].name.to_lowercase() <= pair[1].name.to_lowercase() })
+    );
+    assert_eq!(
+        options
+            .iter()
+            .find(|option| option.value == "en-US")
+            .map(|option| option.name.as_str()),
+        Some("English")
+    );
+    assert!(
+        options.iter().any(|option| {
+            option.value == "es_419" && option.name == "español latinoamericano"
+        })
+    );
+    for novelty in ["jbo", "pr"] {
+        assert!(
+            options
+                .iter()
+                .any(|option| option.value == novelty && option.name == novelty)
+        );
+    }
+
+    let supported = service.supported_ui_cultures();
+    for culture in ["de", "en-US", "fr", "es-419"] {
+        assert!(
+            supported
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(culture)),
+            "missing supported UI culture {culture}"
+        );
+    }
+    assert!(!supported.iter().any(|culture| culture == "es_419"));
+    assert!(!supported.iter().any(|culture| culture == "jbo"));
+    assert!(!supported.iter().any(|culture| culture == "pr"));
+}

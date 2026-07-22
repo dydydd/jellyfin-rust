@@ -18,10 +18,11 @@ use uuid::Uuid;
 
 const DATABASE_PREFIX: &str = "jellyfin_localization_routes_";
 const MAX_RESPONSE_SIZE: usize = 2 * 1024 * 1024;
-const ROUTES: [&str; 3] = [
+const ROUTES: [&str; 4] = [
     "/Localization/Cultures",
     "/Localization/Countries",
     "/Localization/ParentalRatings",
+    "/Localization/Options",
 ];
 
 #[tokio::test]
@@ -107,6 +108,16 @@ async fn exercise_localization_routes(database_name: &str) {
     )
     .await;
     assert_us_ratings(&before_restart);
+    let options_before_restart = body_json(
+        get(
+            &route_app,
+            "/Localization/Options",
+            Some(&administrator_token),
+        )
+        .await,
+    )
+    .await;
+    assert_options(&options_before_restart);
 
     let restarted = app(database.clone());
     assert_completed_authorization(&restarted, &administrator_token, &user_token, &api_key).await;
@@ -121,6 +132,10 @@ async fn exercise_localization_routes(database_name: &str) {
     .await;
     assert_eq!(after_restart, before_restart);
     assert_us_ratings(&after_restart);
+    let options_after_restart =
+        body_json(get(&restarted, "/Localization/Options", Some(&api_key)).await).await;
+    assert_eq!(options_after_restart, options_before_restart);
+    assert_options(&options_after_restart);
     assert_cultures(
         &body_json(get(&restarted, "/Localization/Cultures", Some(&api_key)).await).await,
     );
@@ -149,6 +164,10 @@ async fn assert_anonymous_de_contract(app: &Router) {
     let ratings = get(app, "/Localization/ParentalRatings", None).await;
     assert_eq!(ratings.status(), StatusCode::OK);
     assert_de_ratings(&body_json(ratings).await);
+
+    let options = get(app, "/Localization/Options", None).await;
+    assert_eq!(options.status(), StatusCode::OK);
+    assert_options(&body_json(options).await);
 }
 
 async fn assert_completed_authorization(
@@ -245,6 +264,39 @@ fn assert_us_ratings(body: &Value) {
             })
     }));
     assert!(ratings.iter().any(|rating| rating["Name"] == "Banned"));
+}
+
+fn assert_options(body: &Value) {
+    let options = body.as_array().expect("localization options array");
+    assert_eq!(options.len(), 105);
+    assert!(options.windows(2).all(|pair| {
+        pair[0]["Name"].as_str().unwrap().to_lowercase()
+            <= pair[1]["Name"].as_str().unwrap().to_lowercase()
+    }));
+    assert!(options.iter().all(|option| {
+        option.as_object().is_some_and(|fields| {
+            fields.len() == 2 && fields.contains_key("Name") && fields.contains_key("Value")
+        })
+    }));
+    assert!(
+        options
+            .iter()
+            .any(|option| { option == &json!({ "Name": "English", "Value": "en-US" }) })
+    );
+    assert!(options.iter().any(|option| {
+        option
+            == &json!({
+                "Name": "español latinoamericano",
+                "Value": "es_419"
+            })
+    }));
+    for novelty in ["jbo", "pr"] {
+        assert!(
+            options
+                .iter()
+                .any(|option| { option["Name"] == novelty && option["Value"] == novelty })
+        );
+    }
 }
 
 async fn update_country(repository: &ServerConfigurationRepository, country_code: &str) {

@@ -3,13 +3,20 @@ use std::{
     sync::OnceLock,
 };
 
-use jellyfin_model::{CountryInfo, CultureDto, ParentalRating, ParentalRatingScore};
+use jellyfin_model::{
+    CountryInfo, CultureDto, LocalizationOption, ParentalRating, ParentalRatingScore,
+};
 use serde::Deserialize;
 
 const COUNTRIES: &str = include_str!("../resources/localization/countries.json");
 const CULTURES: &str = include_str!("../resources/localization/iso6392.txt");
 const RATINGS: &str = include_str!("../resources/localization/ratings.json");
+const UI_CULTURES: &str = include_str!("../resources/localization/ui_cultures.json");
+const UI_STRINGS: &str = include_str!("../resources/localization/ui_strings.json");
+const DEFAULT_UI_CULTURE: &str = "en-US";
 const UNRATED_VALUES: &[&str] = &["n/a", "unrated", "not rated", "nr"];
+
+type UiResources = HashMap<String, HashMap<String, String>>;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +30,19 @@ struct RatingSystem {
 struct RatingEntry {
     rating_strings: Vec<String>,
     rating_score: ParentalRatingScore,
+}
+
+#[derive(Debug, Deserialize)]
+struct UiCulture {
+    name: String,
+    value: String,
+    supported: bool,
+}
+
+struct UiLocalizationData {
+    options: Vec<LocalizationOption>,
+    supported_cultures: Vec<String>,
+    bcp47_to_resource: Vec<(String, String)>,
 }
 
 enum SeparatorResolution {
@@ -100,6 +120,52 @@ impl LocalizationService {
     #[must_use]
     pub fn parental_ratings(&self, country_code: &str) -> Vec<ParentalRating> {
         parental_ratings(country_code)
+    }
+
+    /// Returns every embedded server UI culture ordered by native display name.
+    #[must_use]
+    pub fn localization_options(&self) -> Vec<LocalizationOption> {
+        ui_localization_data().options.clone()
+    }
+
+    /// Returns embedded UI cultures that can be represented as BCP-47 codes.
+    #[must_use]
+    pub fn supported_ui_cultures(&self) -> Vec<String> {
+        ui_localization_data().supported_cultures.clone()
+    }
+
+    /// Looks up a UI phrase for a current culture. An absent culture selects
+    /// the configured server culture; a missing translation falls back to `en-US`.
+    #[must_use]
+    pub fn localized_string(
+        &self,
+        phrase: &str,
+        culture: Option<&str>,
+        server_culture: &str,
+    ) -> String {
+        let culture = culture
+            .filter(|culture| !culture.is_empty())
+            .unwrap_or(server_culture);
+        let culture = if culture.is_empty() {
+            DEFAULT_UI_CULTURE
+        } else {
+            culture
+        };
+        if let Some(value) = find_ui_string(culture, phrase) {
+            return value.to_owned();
+        }
+        if !culture.eq_ignore_ascii_case(DEFAULT_UI_CULTURE)
+            && let Some(value) = find_ui_string(DEFAULT_UI_CULTURE, phrase)
+        {
+            return value.to_owned();
+        }
+        phrase.to_owned()
+    }
+
+    /// Looks up a UI phrase using the configured server culture.
+    #[must_use]
+    pub fn server_localized_string(&self, phrase: &str, server_culture: &str) -> String {
+        self.localized_string(phrase, None, server_culture)
     }
 
     /// Resolves a provider rating using Jellyfin's configured-country fallback rules.
@@ -317,6 +383,100 @@ fn rating_systems() -> &'static [RatingSystem] {
     static RATINGS_CACHE: OnceLock<Vec<RatingSystem>> = OnceLock::new();
     RATINGS_CACHE
         .get_or_init(|| serde_json::from_str(RATINGS).expect("embedded ratings must be valid"))
+}
+
+fn ui_resources() -> &'static UiResources {
+    static UI_RESOURCES_CACHE: OnceLock<UiResources> = OnceLock::new();
+    UI_RESOURCES_CACHE.get_or_init(|| {
+        let resources: UiResources =
+            serde_json::from_str(UI_STRINGS).expect("embedded UI strings must be valid");
+        resources
+            .into_iter()
+            .map(|(culture, dictionary)| {
+                let dictionary = dictionary
+                    .into_iter()
+                    .map(|(key, value)| (key.to_lowercase(), value))
+                    .collect();
+                (culture, dictionary)
+            })
+            .collect()
+    })
+}
+
+fn ui_localization_data() -> &'static UiLocalizationData {
+    static UI_LOCALIZATION_DATA_CACHE: OnceLock<UiLocalizationData> = OnceLock::new();
+    UI_LOCALIZATION_DATA_CACHE.get_or_init(|| {
+        let cultures: Vec<UiCulture> =
+            serde_json::from_str(UI_CULTURES).expect("embedded UI cultures must be valid");
+        let resources = ui_resources();
+        assert_eq!(
+            cultures.len(),
+            resources.len(),
+            "UI culture manifest and string resources must have the same size"
+        );
+        assert!(
+            cultures
+                .iter()
+                .all(|culture| resources.contains_key(&culture.value)),
+            "every UI culture must have a string dictionary"
+        );
+
+        let mut options = cultures
+            .iter()
+            .map(|culture| LocalizationOption {
+                name: culture.name.clone(),
+                value: culture.value.clone(),
+            })
+            .collect::<Vec<_>>();
+        options.sort_by_cached_key(|option| option.name.to_lowercase());
+        let supported_values = cultures
+            .iter()
+            .filter(|culture| culture.supported)
+            .map(|culture| culture.value.as_str())
+            .collect::<HashSet<_>>();
+        let supported_cultures = options
+            .iter()
+            .filter(|option| supported_values.contains(option.value.as_str()))
+            .map(|option| option.value.replace('_', "-"))
+            .collect();
+        let bcp47_to_resource = cultures
+            .iter()
+            .filter(|culture| culture.value.contains('_'))
+            .map(|culture| (culture.value.replace('_', "-"), culture.value.clone()))
+            .collect();
+        UiLocalizationData {
+            options,
+            supported_cultures,
+            bcp47_to_resource,
+        }
+    })
+}
+
+fn find_ui_string(culture: &str, phrase: &str) -> Option<&'static str> {
+    let normalized = normalize_ui_culture(culture);
+    ui_resources()
+        .get(&normalized)
+        .and_then(|dictionary| dictionary.get(&phrase.to_lowercase()))
+        .map(String::as_str)
+}
+
+fn normalize_ui_culture(culture: &str) -> String {
+    if let Some((_, resource)) = ui_localization_data()
+        .bcp47_to_resource
+        .iter()
+        .find(|(bcp47, _)| bcp47.eq_ignore_ascii_case(culture))
+    {
+        return resource.clone();
+    }
+
+    if let Some(index) = culture.find(['-', '_']) {
+        let language = culture[..index].to_lowercase();
+        let region = culture[index + 1..].to_uppercase();
+        let separator = char::from(culture.as_bytes()[index]);
+        format!("{language}{separator}{region}")
+    } else {
+        culture.to_lowercase()
+    }
 }
 
 fn rating_in_country(country_code: &str, rating: &str) -> Option<ParentalRatingScore> {

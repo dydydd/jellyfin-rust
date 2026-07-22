@@ -340,6 +340,7 @@ fn localization_routes() -> Router<Arc<AppState>> {
             "/Localization/ParentalRatings",
             get(localization::parental_ratings),
         )
+        .route("/Localization/Options", get(localization::options))
 }
 
 fn user_routes() -> Router<Arc<AppState>> {

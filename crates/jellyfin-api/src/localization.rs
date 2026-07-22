@@ -5,7 +5,7 @@ use axum::{
     extract::{OriginalUri, State},
     http::HeaderMap,
 };
-use jellyfin_model::{CountryInfo, CultureDto, ParentalRating};
+use jellyfin_model::{CountryInfo, CultureDto, LocalizationOption, ParentalRating};
 
 use crate::{ApiError, AppState, authorization};
 
@@ -39,4 +39,13 @@ pub(crate) async fn parental_ratings(
             .localization
             .parental_ratings(&configuration.metadata_country_code),
     ))
+}
+
+pub(crate) async fn options(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<LocalizationOption>>, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    Ok(Json(state.localization.localization_options()))
 }

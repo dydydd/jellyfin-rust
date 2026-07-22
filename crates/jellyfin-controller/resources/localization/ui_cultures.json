@@ -1,0 +1,527 @@
+[
+  {
+    "name": "Abkhazian",
+    "value": "ab",
+    "supported": true
+  },
+  {
+    "name": "Afrikaans",
+    "value": "af",
+    "supported": true
+  },
+  {
+    "name": "العربية",
+    "value": "ar",
+    "supported": true
+  },
+  {
+    "name": "العربية (المملكة العربية السعودية)",
+    "value": "ar_SA",
+    "supported": true
+  },
+  {
+    "name": "অসমীয়া",
+    "value": "as",
+    "supported": true
+  },
+  {
+    "name": "azərbaycan",
+    "value": "az",
+    "supported": true
+  },
+  {
+    "name": "беларуская",
+    "value": "be",
+    "supported": true
+  },
+  {
+    "name": "български (България)",
+    "value": "bg-BG",
+    "supported": true
+  },
+  {
+    "name": "বাংলা",
+    "value": "bn",
+    "supported": true
+  },
+  {
+    "name": "brezhoneg",
+    "value": "br",
+    "supported": true
+  },
+  {
+    "name": "bosanski",
+    "value": "bs",
+    "supported": true
+  },
+  {
+    "name": "català",
+    "value": "ca",
+    "supported": true
+  },
+  {
+    "name": "ᏣᎳᎩ",
+    "value": "chr",
+    "supported": true
+  },
+  {
+    "name": "čeština",
+    "value": "cs",
+    "supported": true
+  },
+  {
+    "name": "Cymraeg",
+    "value": "cy",
+    "supported": true
+  },
+  {
+    "name": "dansk",
+    "value": "da",
+    "supported": true
+  },
+  {
+    "name": "Deutsch",
+    "value": "de",
+    "supported": true
+  },
+  {
+    "name": "Ελληνικά",
+    "value": "el",
+    "supported": true
+  },
+  {
+    "name": "British English",
+    "value": "en-GB",
+    "supported": true
+  },
+  {
+    "name": "English",
+    "value": "en-US",
+    "supported": true
+  },
+  {
+    "name": "Esperanto",
+    "value": "eo",
+    "supported": true
+  },
+  {
+    "name": "español (Argentina)",
+    "value": "es-AR",
+    "supported": true
+  },
+  {
+    "name": "español de México",
+    "value": "es-MX",
+    "supported": true
+  },
+  {
+    "name": "español",
+    "value": "es",
+    "supported": true
+  },
+  {
+    "name": "español latinoamericano",
+    "value": "es_419",
+    "supported": true
+  },
+  {
+    "name": "español (República Dominicana)",
+    "value": "es_DO",
+    "supported": true
+  },
+  {
+    "name": "eesti",
+    "value": "et",
+    "supported": true
+  },
+  {
+    "name": "euskara",
+    "value": "eu",
+    "supported": true
+  },
+  {
+    "name": "فارسی",
+    "value": "fa",
+    "supported": true
+  },
+  {
+    "name": "suomi",
+    "value": "fi",
+    "supported": true
+  },
+  {
+    "name": "Filipino",
+    "value": "fil",
+    "supported": true
+  },
+  {
+    "name": "føroyskt",
+    "value": "fo",
+    "supported": true
+  },
+  {
+    "name": "français canadien",
+    "value": "fr-CA",
+    "supported": true
+  },
+  {
+    "name": "français",
+    "value": "fr",
+    "supported": true
+  },
+  {
+    "name": "Gaeilge",
+    "value": "ga",
+    "supported": true
+  },
+  {
+    "name": "galego",
+    "value": "gl",
+    "supported": true
+  },
+  {
+    "name": "Schwiizertüütsch",
+    "value": "gsw",
+    "supported": true
+  },
+  {
+    "name": "עברית",
+    "value": "he",
+    "supported": true
+  },
+  {
+    "name": "עברית (ישראל)",
+    "value": "he_IL",
+    "supported": true
+  },
+  {
+    "name": "हिन्दी",
+    "value": "hi",
+    "supported": true
+  },
+  {
+    "name": "hrvatski",
+    "value": "hr",
+    "supported": true
+  },
+  {
+    "name": "Haitian Creole",
+    "value": "ht",
+    "supported": true
+  },
+  {
+    "name": "magyar",
+    "value": "hu",
+    "supported": true
+  },
+  {
+    "name": "հայերեն",
+    "value": "hy",
+    "supported": true
+  },
+  {
+    "name": "Indonesia",
+    "value": "id",
+    "supported": true
+  },
+  {
+    "name": "íslenska",
+    "value": "is",
+    "supported": true
+  },
+  {
+    "name": "italiano",
+    "value": "it",
+    "supported": true
+  },
+  {
+    "name": "日本語",
+    "value": "ja",
+    "supported": true
+  },
+  {
+    "name": "jbo",
+    "value": "jbo",
+    "supported": false
+  },
+  {
+    "name": "ქართული",
+    "value": "ka",
+    "supported": true
+  },
+  {
+    "name": "Taqbaylit",
+    "value": "kab",
+    "supported": true
+  },
+  {
+    "name": "қазақ тілі",
+    "value": "kk",
+    "supported": true
+  },
+  {
+    "name": "ខ្មែរ",
+    "value": "km",
+    "supported": true
+  },
+  {
+    "name": "ಕನ್ನಡ",
+    "value": "kn",
+    "supported": true
+  },
+  {
+    "name": "한국어",
+    "value": "ko",
+    "supported": true
+  },
+  {
+    "name": "kernewek",
+    "value": "kw",
+    "supported": true
+  },
+  {
+    "name": "кыргызча",
+    "value": "ky",
+    "supported": true
+  },
+  {
+    "name": "Lëtzebuergesch",
+    "value": "lb",
+    "supported": true
+  },
+  {
+    "name": "lietuvių (Lietuva)",
+    "value": "lt-LT",
+    "supported": true
+  },
+  {
+    "name": "latviešu",
+    "value": "lv",
+    "supported": true
+  },
+  {
+    "name": "Literary Chinese",
+    "value": "lzh",
+    "supported": true
+  },
+  {
+    "name": "Māori",
+    "value": "mi",
+    "supported": true
+  },
+  {
+    "name": "македонски",
+    "value": "mk",
+    "supported": true
+  },
+  {
+    "name": "മലയാളം",
+    "value": "ml",
+    "supported": true
+  },
+  {
+    "name": "монгол",
+    "value": "mn",
+    "supported": true
+  },
+  {
+    "name": "मराठी",
+    "value": "mr",
+    "supported": true
+  },
+  {
+    "name": "Melayu",
+    "value": "ms",
+    "supported": true
+  },
+  {
+    "name": "Malti",
+    "value": "mt",
+    "supported": true
+  },
+  {
+    "name": "မြန်မာ",
+    "value": "my",
+    "supported": true
+  },
+  {
+    "name": "norsk bokmål",
+    "value": "nb",
+    "supported": true
+  },
+  {
+    "name": "नेपाली",
+    "value": "ne",
+    "supported": true
+  },
+  {
+    "name": "Nederlands",
+    "value": "nl",
+    "supported": true
+  },
+  {
+    "name": "norsk nynorsk",
+    "value": "nn",
+    "supported": true
+  },
+  {
+    "name": "occitan",
+    "value": "oc",
+    "supported": true
+  },
+  {
+    "name": "ଓଡ଼ିଆ",
+    "value": "or",
+    "supported": true
+  },
+  {
+    "name": "ਪੰਜਾਬੀ",
+    "value": "pa",
+    "supported": true
+  },
+  {
+    "name": "polski",
+    "value": "pl",
+    "supported": true
+  },
+  {
+    "name": "pr",
+    "value": "pr",
+    "supported": false
+  },
+  {
+    "name": "português (Brasil)",
+    "value": "pt-BR",
+    "supported": true
+  },
+  {
+    "name": "português europeu",
+    "value": "pt-PT",
+    "supported": true
+  },
+  {
+    "name": "português",
+    "value": "pt",
+    "supported": true
+  },
+  {
+    "name": "română",
+    "value": "ro",
+    "supported": true
+  },
+  {
+    "name": "русский",
+    "value": "ru",
+    "supported": true
+  },
+  {
+    "name": "සිංහල",
+    "value": "si",
+    "supported": true
+  },
+  {
+    "name": "slovenčina",
+    "value": "sk",
+    "supported": true
+  },
+  {
+    "name": "slovenščina (Slovenija)",
+    "value": "sl-SI",
+    "supported": true
+  },
+  {
+    "name": "chiShona",
+    "value": "sn",
+    "supported": true
+  },
+  {
+    "name": "shqip",
+    "value": "sq",
+    "supported": true
+  },
+  {
+    "name": "српски",
+    "value": "sr",
+    "supported": true
+  },
+  {
+    "name": "svenska",
+    "value": "sv",
+    "supported": true
+  },
+  {
+    "name": "Kiswahili",
+    "value": "sw",
+    "supported": true
+  },
+  {
+    "name": "தமிழ்",
+    "value": "ta",
+    "supported": true
+  },
+  {
+    "name": "తెలుగు",
+    "value": "te",
+    "supported": true
+  },
+  {
+    "name": "ไทย",
+    "value": "th",
+    "supported": true
+  },
+  {
+    "name": "Türkçe",
+    "value": "tr",
+    "supported": true
+  },
+  {
+    "name": "ئۇيغۇرچە",
+    "value": "ug",
+    "supported": true
+  },
+  {
+    "name": "українська",
+    "value": "uk",
+    "supported": true
+  },
+  {
+    "name": "اردو",
+    "value": "ur",
+    "supported": true
+  },
+  {
+    "name": "اردو (پاکستان)",
+    "value": "ur_PK",
+    "supported": true
+  },
+  {
+    "name": "o‘zbek",
+    "value": "uz",
+    "supported": true
+  },
+  {
+    "name": "Tiếng Việt",
+    "value": "vi",
+    "supported": true
+  },
+  {
+    "name": "中文（中国）",
+    "value": "zh-CN",
+    "supported": true
+  },
+  {
+    "name": "中文（中國香港特別行政區）",
+    "value": "zh-HK",
+    "supported": true
+  },
+  {
+    "name": "中文（台灣）",
+    "value": "zh-TW",
+    "supported": true
+  },
+  {
+    "name": "isiZulu",
+    "value": "zu",
+    "supported": true
+  }
+]
