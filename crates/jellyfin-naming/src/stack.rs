@@ -83,6 +83,15 @@ pub struct FileStack {
 
 impl FileStack {
     #[must_use]
+    pub fn new(name: impl Into<String>, is_directory_stack: bool, files: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            files,
+            is_directory_stack,
+        }
+    }
+
+    #[must_use]
     pub fn contains_file(&self, path: &str, is_directory: bool) -> bool {
         !path.is_empty()
             && self.is_directory_stack == is_directory

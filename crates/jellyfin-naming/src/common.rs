@@ -114,86 +114,82 @@ impl Default for NamingOptions {
                     false,
                 ),
             ],
-            video_extra_rules: vec![
-                ExtraRule::new(
-                    ExtraType::Trailer,
-                    ExtraRuleType::DirectoryName,
-                    "trailers",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Trailer,
-                    ExtraRuleType::Filename,
-                    "trailer",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Trailer,
-                    ExtraRuleType::Suffix,
-                    "-trailer",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Trailer,
-                    ExtraRuleType::Suffix,
-                    ".trailer",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Trailer,
-                    ExtraRuleType::Suffix,
-                    "_trailer",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Trailer,
-                    ExtraRuleType::Suffix,
-                    "- trailer",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Sample,
-                    ExtraRuleType::DirectoryName,
-                    "samples",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Sample,
-                    ExtraRuleType::Filename,
-                    "sample",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Sample,
-                    ExtraRuleType::Suffix,
-                    "-sample",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Sample,
-                    ExtraRuleType::Suffix,
-                    ".sample",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Sample,
-                    ExtraRuleType::Suffix,
-                    "_sample",
-                    MediaType::Video,
-                ),
-                ExtraRule::new(
-                    ExtraType::Sample,
-                    ExtraRuleType::Suffix,
-                    "- sample",
-                    MediaType::Video,
-                ),
-            ],
+            video_extra_rules: default_video_extra_rules(),
         }
     }
 }
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn default_video_extra_rules() -> Vec<ExtraRule> {
+    use ExtraRuleType::{DirectoryName, Filename, Suffix};
+    use ExtraType::{
+        BehindTheScenes, Clip, DeletedScene, Featurette, Interview, Sample, Scene, Short,
+        ThemeSong, ThemeVideo, Trailer, Unknown,
+    };
+
+    let directories = [
+        (Trailer, "trailers", MediaType::Video),
+        (ThemeVideo, "backdrops", MediaType::Video),
+        (ThemeSong, "theme-music", MediaType::Audio),
+        (BehindTheScenes, "behind the scenes", MediaType::Video),
+        (DeletedScene, "deleted scenes", MediaType::Video),
+        (Interview, "interviews", MediaType::Video),
+        (Scene, "scenes", MediaType::Video),
+        (Sample, "samples", MediaType::Video),
+        (Short, "shorts", MediaType::Video),
+        (Featurette, "featurettes", MediaType::Video),
+        (Unknown, "extras", MediaType::Video),
+        (Unknown, "extra", MediaType::Video),
+        (Unknown, "other", MediaType::Video),
+        (Clip, "clips", MediaType::Video),
+    ];
+    let filenames = [
+        (Trailer, "trailer", MediaType::Video),
+        (Sample, "sample", MediaType::Video),
+        (ThemeSong, "theme", MediaType::Audio),
+    ];
+    let suffixes = [
+        (Trailer, "-trailer"),
+        (Trailer, ".trailer"),
+        (Trailer, "_trailer"),
+        (Trailer, "- trailer"),
+        (Sample, "-sample"),
+        (Sample, ".sample"),
+        (Sample, "_sample"),
+        (Sample, "- sample"),
+        (Scene, "-scene"),
+        (Clip, "-clip"),
+        (Interview, "-interview"),
+        (BehindTheScenes, "-behindthescenes"),
+        (DeletedScene, "-deleted"),
+        (DeletedScene, "-deletedscene"),
+        (Featurette, "-featurette"),
+        (Short, "-short"),
+        (Unknown, "-extra"),
+        (Unknown, "-other"),
+    ];
+
+    directories
+        .into_iter()
+        .map(|(extra_type, token, media_type)| {
+            ExtraRule::new(extra_type, DirectoryName, token, media_type)
+        })
+        .chain(
+            filenames
+                .into_iter()
+                .map(|(extra_type, token, media_type)| {
+                    ExtraRule::new(extra_type, Filename, token, media_type)
+                }),
+        )
+        .chain(
+            suffixes.into_iter().map(|(extra_type, token)| {
+                ExtraRule::new(extra_type, Suffix, token, MediaType::Video)
+            }),
+        )
+        .collect()
 }
 
 fn regexes(values: &[&str]) -> Vec<Regex> {

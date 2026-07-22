@@ -1,3 +1,5 @@
+use regex::RegexBuilder;
+
 use crate::NamingOptions;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +22,7 @@ pub enum ExtraType {
 pub enum ExtraRuleType {
     DirectoryName,
     Filename,
+    Regex,
     Suffix,
 }
 
@@ -317,7 +320,7 @@ fn resolve_extra_type(
     options: &NamingOptions,
     is_directory: bool,
 ) -> Option<ExtraType> {
-    let is_video = is_directory || VideoResolver::is_video_file(path, options);
+    let is_video = VideoResolver::is_video_file(path, options);
     let is_audio = !is_directory
         && extension(path).is_some_and(|extension| {
             options
@@ -325,6 +328,8 @@ fn resolve_extra_type(
                 .iter()
                 .any(|candidate| candidate.eq_ignore_ascii_case(extension))
         });
+    let suffix_stem = stem.trim_end_matches(|character: char| character.is_ascii_digit());
+    let directory_name = parent_name(path);
     options.video_extra_rules.iter().find_map(|rule| {
         let media_matches = match rule.media_type {
             MediaType::Video => is_video,
@@ -332,10 +337,12 @@ fn resolve_extra_type(
         };
         let rule_matches = match rule.rule_type {
             ExtraRuleType::Filename => stem.eq_ignore_ascii_case(&rule.token),
-            ExtraRuleType::Suffix => ends_with_ignore_ascii_case(stem, &rule.token),
-            ExtraRuleType::DirectoryName => path
-                .split(['/', '\\'])
-                .any(|part| part.eq_ignore_ascii_case(&rule.token)),
+            ExtraRuleType::Regex => RegexBuilder::new(&rule.token)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|regex| regex.is_match(file_name(path))),
+            ExtraRuleType::Suffix => ends_with_ignore_ascii_case(suffix_stem, &rule.token),
+            ExtraRuleType::DirectoryName => directory_name.eq_ignore_ascii_case(&rule.token),
         };
         (media_matches && rule_matches).then_some(rule.extra_type)
     })
@@ -366,6 +373,11 @@ fn is_extension_only(value: &str) -> bool {
 
 fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn parent_name(path: &str) -> &str {
+    let parent = path.rfind(['/', '\\']).map_or("", |index| &path[..index]);
+    file_name(parent)
 }
 
 fn extension(path: &str) -> Option<&str> {
