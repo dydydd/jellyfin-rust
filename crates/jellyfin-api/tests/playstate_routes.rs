@@ -363,7 +363,8 @@ async fn assert_played_and_unplayed(fixture: &PlaystateFixture) {
     assert_eq!(played["IsFavorite"], true);
     assert_eq!(played["Rating"], 8.5);
     assert!(played["LastPlayedDate"].is_string());
-    assert!(played["PlayedPercentage"].is_null());
+    assert!(played.get("PlayedPercentage").is_none());
+    assert!(played.get("UnplayedItemCount").is_none());
 
     let dated_route = format!(
         "{modern_route}?userId={}&datePlayed=2026-07-22T10%3A00%3A00Z",
@@ -398,7 +399,7 @@ async fn assert_played_and_unplayed(fixture: &PlaystateFixture) {
     assert_eq!(unplayed["Played"], false);
     assert_eq!(unplayed["PlayCount"], 0);
     assert_eq!(unplayed["PlaybackPositionTicks"], 0);
-    assert!(unplayed["LastPlayedDate"].is_null());
+    assert!(unplayed.get("LastPlayedDate").is_none());
     assert_eq!(unplayed["IsFavorite"], true);
     assert_eq!(unplayed["Rating"], 8.5);
 }

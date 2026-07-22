@@ -11,6 +11,7 @@ mod playstate;
 mod plugins;
 pub mod providers;
 mod system_logs;
+mod user_data;
 mod user_library;
 mod users;
 mod videos;
@@ -29,6 +30,7 @@ pub use playstate::{
 };
 pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
+pub use user_data::{UserDataService, UserDataServiceError, UserDataUpdate};
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};
 pub use videos::{VideoError, VideoService};

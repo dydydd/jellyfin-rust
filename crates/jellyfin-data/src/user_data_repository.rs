@@ -78,6 +78,8 @@ pub struct UserDataQuery {
 
 #[derive(Debug, Error)]
 pub enum UserDataError {
+    #[error("at least one user-data key is required")]
+    EmptyKey,
     #[error("rating must be between 0 and 10")]
     InvalidRating,
     #[error("playback position and play count cannot be negative")]
@@ -96,6 +98,70 @@ impl UserDataRepository {
     #[must_use]
     pub const fn new(database: DatabaseConnection) -> Self {
         Self { database }
+    }
+
+    /// Atomically changes only the favorite flag for one user-data row.
+    ///
+    /// `PostgreSQL`'s conflict update deliberately names no other columns, so a
+    /// concurrent playstate, rating, or stream-selection write is preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the upsert fails.
+    pub async fn set_favorite(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        keys: &[String],
+        is_favorite: bool,
+    ) -> Result<user_data::Model, UserDataError> {
+        let primary_key = keys.first().ok_or(UserDataError::EmptyKey)?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT value AS custom_data_key, ordinality AS priority
+                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
+            ), chosen_key AS (
+                SELECT data.custom_data_key
+                FROM jellyfin.user_data AS data
+                LEFT JOIN preferred_keys AS preferred
+                    USING (custom_data_key)
+                WHERE data.item_id = $1 AND data.user_id = $2
+                ORDER BY preferred.priority NULLS LAST, data.custom_data_key
+                LIMIT 1
+            ), target_key AS (
+                SELECT COALESCE(
+                    (SELECT custom_data_key FROM chosen_key),
+                    $4::text
+                ) AS custom_data_key
+            )
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key, is_favorite
+            )
+            SELECT $1, $2, custom_data_key, $5
+            FROM target_key
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET is_favorite = EXCLUDED.is_favorite
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                serde_json::json!(keys).into(),
+                primary_key.as_str().into(),
+                is_favorite.into(),
+            ],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("favorite upsert returned no row".to_owned()).into()
+            })
     }
 
     /// Atomically marks an item played and resets its resume position.

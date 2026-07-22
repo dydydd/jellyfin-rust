@@ -7,7 +7,9 @@ use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{UserError, UserService};
+use jellyfin_model::UserItemDataDto;
+
+use crate::{UserError, UserService, user_data::user_data_to_dto};
 
 #[derive(Debug, Error)]
 pub enum PlaystateError {
@@ -51,6 +53,12 @@ pub fn format_date_played(value: DateTime<Utc>) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaystateUpdate {
     pub user_data: user_data::Model,
+}
+
+impl From<PlaystateUpdate> for UserItemDataDto {
+    fn from(update: PlaystateUpdate) -> Self {
+        user_data_to_dto(update.user_data)
+    }
 }
 
 /// Coordinates authorization, item validation, and atomic playstate writes.

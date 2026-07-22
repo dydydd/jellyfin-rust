@@ -11,9 +11,9 @@ use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, InstalledPlugin, ItemUpdateError,
     ItemUpdateService, LibraryControllerError, LibraryControllerService, MusicGenreError,
     MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
-    PluginRegistry, SystemLogError, SystemLogService, UserError, UserLibraryError,
-    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError,
+    PluginRegistry, SystemLogError, SystemLogService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -47,6 +47,7 @@ pub mod query;
 mod robots;
 mod startup;
 mod system;
+mod user_data;
 mod user_library;
 mod users;
 mod videos;
@@ -61,6 +62,7 @@ pub struct AppState {
     pub(crate) api_keys: ApiKeyRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) playstate: PlaystateService,
+    pub(crate) user_data: UserDataService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_update: ItemUpdateService,
@@ -89,6 +91,7 @@ impl AppState {
             api_keys: ApiKeyRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             playstate: PlaystateService::new(database.clone()),
+            user_data: UserDataService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
             item_update: ItemUpdateService::new(database.clone()),
@@ -237,6 +240,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Users/Me", get(authentication::current_user))
         .merge(playstate_routes())
+        .merge(user_data_routes())
         .route(
             "/Users/{user_id}/Items/Root",
             get(user_library::get_root_legacy),
@@ -320,6 +324,18 @@ fn playstate_routes() -> Router<Arc<AppState>> {
         .route(
             "/Users/{user_id}/PlayedItems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
+        )
+}
+
+fn user_data_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/UserFavoriteItems/{item_id}",
+            post(user_data::mark_favorite_modern).delete(user_data::unmark_favorite_modern),
+        )
+        .route(
+            "/Users/{user_id}/FavoriteItems/{item_id}",
+            post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
         )
 }
 
@@ -441,6 +457,7 @@ pub(crate) enum ApiError {
     Authentication(AuthenticationError),
     AuthenticationStore(AuthenticationStoreError),
     Playstate(PlaystateError),
+    UserData(UserDataServiceError),
     MusicGenre(MusicGenreError),
     Person(PersonError),
     UserLibrary(UserLibraryError),
@@ -485,6 +502,12 @@ impl From<AuthenticationStoreError> for ApiError {
 impl From<PlaystateError> for ApiError {
     fn from(error: PlaystateError) -> Self {
         Self::Playstate(error)
+    }
+}
+
+impl From<UserDataServiceError> for ApiError {
+    fn from(error: UserDataServiceError) -> Self {
+        Self::UserData(error)
     }
 }
 
@@ -589,6 +612,12 @@ impl IntoResponse for ApiError {
                 | PlaystateError::ItemNotFound
                 | PlaystateError::User(UserError::NotFound)
                 | PlaystateError::BaseItem(BaseItemError::NotFound),
+            )
+            | Self::UserData(
+                UserDataServiceError::UserNotFound
+                | UserDataServiceError::ItemNotFound
+                | UserDataServiceError::User(UserError::NotFound)
+                | UserDataServiceError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "User or item not found"),
             Self::UserLibrary(
                 UserLibraryError::UserNotFound
@@ -608,6 +637,10 @@ impl IntoResponse for ApiError {
             Self::Playstate(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Playstate persistence failed",
+            ),
+            Self::UserData(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "User data persistence failed",
             ),
             Self::UserLibrary(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
