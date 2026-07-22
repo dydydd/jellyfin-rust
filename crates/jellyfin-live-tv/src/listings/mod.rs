@@ -1,9 +1,15 @@
+mod manager;
 mod program;
 mod program_etag;
 mod schedules_direct;
 mod xmltv;
 mod xmltv_provider;
 
+pub use manager::{
+    ChannelMapping, JsonListingsConfigurationStore, ListingProviderConfiguration,
+    ListingsConfigurationError, ListingsConfigurationStore, ListingsManager, LiveTvConfiguration,
+    MemoryListingsConfigurationStore,
+};
 pub use program::{ProgramAudio, ProgramFlag, ProgramFlags, ProgramInfo};
 pub use program_etag::{
     ProgramEtagError, XMLTV_ETAG_PREFIX, create_xmltv_program_etag, is_xmltv_etag,
