@@ -2,3 +2,4 @@
 
 pub mod external_url;
 pub mod lyrics;
+pub mod omdb;

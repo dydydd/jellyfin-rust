@@ -1260,6 +1260,7 @@ name = "jellyfin-providers"
 version = "0.1.0"
 dependencies = [
  "jellyfin-model",
+ "serde_json",
 ]
 
 [[package]]
