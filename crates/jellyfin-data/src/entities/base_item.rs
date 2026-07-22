@@ -24,6 +24,7 @@ pub struct Model {
     pub is_folder: bool,
     pub is_virtual_item: bool,
     pub presentation_unique_key: Option<String>,
+    pub primary_version_id: Option<Uuid>,
     pub series_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
     pub series_presentation_unique_key: Option<String>,
@@ -42,6 +43,14 @@ pub enum Relation {
         on_delete = "Cascade"
     )]
     Parent,
+    #[sea_orm(
+        belongs_to = "Entity",
+        from = "Column::PrimaryVersionId",
+        to = "Column::Id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    PrimaryVersion,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

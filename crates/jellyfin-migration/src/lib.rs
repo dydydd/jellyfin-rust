@@ -11,6 +11,7 @@ mod m20260722_000008_create_people;
 mod m20260722_000009_optimize_item_queries;
 mod m20260722_000010_create_quick_connect;
 mod m20260722_000011_normalize_base_item_search;
+mod m20260722_000012_add_alternate_item_versions;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -34,6 +35,8 @@ pub use m20260722_000009_optimize_item_queries::Migration as OptimizeItemQueries
 pub use m20260722_000010_create_quick_connect::Migration as CreateQuickConnectMigration;
 #[doc(hidden)]
 pub use m20260722_000011_normalize_base_item_search::Migration as NormalizeBaseItemSearchMigration;
+#[doc(hidden)]
+pub use m20260722_000012_add_alternate_item_versions::Migration as AddAlternateItemVersionsMigration;
 
 pub struct Migrator;
 
@@ -52,6 +55,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000009_optimize_item_queries::Migration),
             Box::new(m20260722_000010_create_quick_connect::Migration),
             Box::new(m20260722_000011_normalize_base_item_search::Migration),
+            Box::new(m20260722_000012_add_alternate_item_versions::Migration),
         ]
     }
 }

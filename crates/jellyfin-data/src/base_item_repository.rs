@@ -40,6 +40,7 @@ pub struct NewBaseItem {
     pub is_folder: bool,
     pub is_virtual_item: bool,
     pub presentation_unique_key: Option<String>,
+    pub primary_version_id: Option<Uuid>,
     pub series_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
     pub series_presentation_unique_key: Option<String>,
@@ -65,6 +66,7 @@ impl NewBaseItem {
             is_folder: false,
             is_virtual_item: false,
             presentation_unique_key: None,
+            primary_version_id: None,
             series_id: None,
             season_id: None,
             series_presentation_unique_key: None,
@@ -89,6 +91,7 @@ pub struct BaseItemQuery {
     pub exclude_item_types: Vec<String>,
     pub media_types: Vec<String>,
     pub is_virtual_item: Option<bool>,
+    pub group_versions_by_presentation_key: bool,
     pub start_index: u64,
     pub limit: Option<u64>,
 }
@@ -200,6 +203,7 @@ impl BaseItemRepository {
             is_folder: Set(item.is_folder),
             is_virtual_item: Set(item.is_virtual_item),
             presentation_unique_key: Set(item.presentation_unique_key),
+            primary_version_id: Set(item.primary_version_id),
             series_id: Set(item.series_id),
             season_id: Set(item.season_id),
             series_presentation_unique_key: Set(item.series_presentation_unique_key),
@@ -253,6 +257,9 @@ impl BaseItemRepository {
     ///
     /// Returns a database error when hierarchy or item queries fail.
     pub async fn query(&self, query: &BaseItemQuery) -> Result<BaseItemPage, BaseItemError> {
+        if query.group_versions_by_presentation_key {
+            return self.query_grouped_versions(query).await;
+        }
         let mut select =
             base_item::Entity::find().filter(base_item::Column::ItemType.ne("PLACEHOLDER"));
         if !query.ids.is_empty() {
@@ -314,6 +321,62 @@ impl BaseItemRepository {
         Ok(BaseItemPage {
             items: select.all(&self.database).await?,
             total_record_count,
+            start_index: query.start_index,
+        })
+    }
+
+    async fn query_grouped_versions(
+        &self,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let (cte, values) = grouped_versions_cte(query);
+        let transaction = self
+            .database
+            .begin_with_config(
+                Some(IsolationLevel::RepeatableRead),
+                Some(AccessMode::ReadOnly),
+            )
+            .await?;
+        let count = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!("{cte} SELECT COUNT(*) AS total_record_count FROM version_groups"),
+                values.clone(),
+            ))
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("grouped item count returned no row".to_owned()))?
+            .try_get::<i64>("", "total_record_count")?;
+
+        let mut item_values = values;
+        let mut item_sql = format!(
+            "{cte} SELECT {BASE_ITEM_COLUMNS} FROM version_groups \
+             ORDER BY sort_name, id"
+        );
+        push_bind(
+            &mut item_sql,
+            &mut item_values,
+            i64::try_from(query.start_index).unwrap_or(i64::MAX),
+            " OFFSET ",
+        );
+        if let Some(limit) = query.limit {
+            push_bind(
+                &mut item_sql,
+                &mut item_values,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                " LIMIT ",
+            );
+        }
+        let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            item_sql,
+            item_values,
+        ))
+        .all(&transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(BaseItemPage {
+            items,
+            total_record_count: u64::try_from(count).unwrap_or_default(),
             start_index: query.start_index,
         })
     }
@@ -415,6 +478,7 @@ impl BaseItemRepository {
             is_folder: Set(item.is_folder),
             is_virtual_item: Set(item.is_virtual_item),
             presentation_unique_key: Set(item.presentation_unique_key),
+            primary_version_id: Set(item.primary_version_id),
             series_id: Set(item.series_id),
             season_id: Set(item.season_id),
             series_presentation_unique_key: Set(item.series_presentation_unique_key),
@@ -589,8 +653,29 @@ impl BaseItemRepository {
 
 const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \
     clean_name, sort_name, media_type, overview, index_number, parent_index_number, production_year, \
-    runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, series_id, season_id, \
+    runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, primary_version_id, series_id, season_id, \
     series_presentation_unique_key, date_created, date_modified, row_version";
+
+fn grouped_versions_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = Vec::new();
+    let mut sql = String::from(
+        "WITH filtered AS (\
+             SELECT item.* FROM jellyfin.base_items AS item \
+             WHERE item.item_type <> 'PLACEHOLDER'",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query);
+    sql.push_str(
+        "), version_groups AS (\
+             (SELECT DISTINCT ON (presentation_unique_key) filtered.* \
+              FROM filtered \
+              WHERE presentation_unique_key IS NOT NULL \
+              ORDER BY presentation_unique_key, (primary_version_id IS NULL) DESC, id) \
+             UNION ALL \
+             SELECT filtered.* FROM filtered WHERE presentation_unique_key IS NULL\
+         )",
+    );
+    (sql, values)
+}
 
 fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = vec![user_id.into()];
@@ -606,30 +691,30 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
              JOIN jellyfin.base_items AS item ON item.id = resumable.item_id \
              WHERE item.item_type <> 'PLACEHOLDER'",
     );
+    append_raw_item_filters(&mut sql, &mut values, query);
+    sql.push(')');
+    (sql, values)
+}
+
+fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &BaseItemQuery) {
     if !query.ids.is_empty() {
-        append_uuid_list_filter(&mut sql, &mut values, "item.id", &query.ids);
+        append_uuid_list_filter(sql, values, "item.id", &query.ids);
     }
     if !query.exclude_ids.is_empty() {
-        append_uuid_list_filter_with_operator(
-            &mut sql,
-            &mut values,
-            "item.id",
-            &query.exclude_ids,
-            "NOT IN",
-        );
+        append_uuid_list_filter_with_operator(sql, values, "item.id", &query.exclude_ids, "NOT IN");
     }
     if let Some(parent_id) = query.parent_id {
         if query.recursive {
             push_bind(
-                &mut sql,
-                &mut values,
+                sql,
+                values,
                 parent_id,
                 " AND item.id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
                   WHERE closure.parent_item_id = ",
             );
             sql.push(')');
         } else {
-            push_bind(&mut sql, &mut values, parent_id, " AND item.parent_id = ");
+            push_bind(sql, values, parent_id, " AND item.parent_id = ");
         }
     }
     if let Some(search_term) = query
@@ -640,43 +725,30 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
     {
         let clean_search_term = search_term.clean_value();
         push_bind(
-            &mut sql,
-            &mut values,
+            sql,
+            values,
             postgres_contains_pattern(&clean_search_term),
             " AND item.clean_name ILIKE ",
         );
     }
     append_string_list_filter(
-        &mut sql,
-        &mut values,
+        sql,
+        values,
         "item.item_type",
         &query.include_item_types,
         false,
     );
     append_string_list_filter(
-        &mut sql,
-        &mut values,
+        sql,
+        values,
         "item.item_type",
         &query.exclude_item_types,
         true,
     );
-    append_string_list_filter(
-        &mut sql,
-        &mut values,
-        "item.media_type",
-        &query.media_types,
-        false,
-    );
+    append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     if let Some(is_virtual_item) = query.is_virtual_item {
-        push_bind(
-            &mut sql,
-            &mut values,
-            is_virtual_item,
-            " AND item.is_virtual_item = ",
-        );
+        push_bind(sql, values, is_virtual_item, " AND item.is_virtual_item = ");
     }
-    sql.push(')');
-    (sql, values)
 }
 
 fn append_uuid_list_filter(

@@ -267,6 +267,7 @@ mod tests {
             is_folder: false,
             is_virtual_item: false,
             presentation_unique_key: None,
+            primary_version_id: None,
             series_id: None,
             season_id: None,
             series_presentation_unique_key: None,

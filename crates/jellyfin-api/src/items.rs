@@ -110,6 +110,7 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             exclude_item_types: parse_strings(query.exclude_item_types.as_deref()),
             media_types: parse_strings(query.media_types.as_deref()),
             is_virtual_item: None,
+            group_versions_by_presentation_key: false,
             start_index: query.start_index,
             limit: query.limit,
         })
