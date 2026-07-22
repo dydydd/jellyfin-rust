@@ -1,0 +1,19 @@
+[package]
+name = "jellyfin-live-tv"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Live TV guide parsing and content identity for Jellyfin"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+chrono = "0.4"
+md-5 = "0.10"
+jellyfin-model = { path = "../jellyfin-model" }
+roxmltree = "0.21"
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"

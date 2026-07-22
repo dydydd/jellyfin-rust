@@ -1195,6 +1195,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "jellyfin-live-tv"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jellyfin-model",
+ "md-5",
+ "roxmltree",
+ "sha2",
+]
+
+[[package]]
 name = "jellyfin-media-encoding"
 version = "0.1.0"
 

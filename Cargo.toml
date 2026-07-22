@@ -6,6 +6,7 @@ members = [
     "crates/jellyfin-controller",
     "crates/jellyfin-data",
     "crates/jellyfin-extensions",
+    "crates/jellyfin-live-tv",
     "crates/jellyfin-media-encoding",
     "crates/jellyfin-media-encoding-hls",
     "crates/jellyfin-media-encoding-keyframes",
