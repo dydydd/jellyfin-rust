@@ -15,12 +15,13 @@ sha1 = "0.10"
 sha2 = "0.10"
 subtle = "2.6"
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 uuid.workspace = true
 
 [dev-dependencies]
 sea-orm.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 
 [lints]
 workspace = true

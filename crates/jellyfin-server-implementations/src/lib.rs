@@ -9,6 +9,7 @@ mod quick_connect;
 mod session_manager;
 mod sorting;
 mod sync_play;
+mod user_manager_lock;
 mod users;
 
 pub use cryptography::{
@@ -40,4 +41,7 @@ pub use sorting::{
     compare_parent_index_number, compare_premiere_date,
 };
 pub use sync_play::{GroupLibrary, PlayQueue, PlayQueueItem, SyncPlayGroup};
+pub use user_manager_lock::{
+    UserManagerLockContext, UserManagerLockError, UserManagerLockHandle, UserManagerLockHelper,
+};
 pub use users::{AuthenticationError, DefaultAuthenticationProvider, ProviderAuthenticationResult};
