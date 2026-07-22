@@ -9,12 +9,12 @@ use axum::{
 };
 use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
-    InstalledPlugin, ItemUpdateError, ItemUpdateService, LibraryControllerError,
-    LibraryControllerService, MetadataEditorError, MetadataEditorService, MusicGenreError,
-    MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
-    PluginRegistry, SystemLogError, SystemLogService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError,
+    InstalledPlugin, ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService,
+    LibraryControllerError, LibraryControllerService, MetadataEditorError, MetadataEditorService,
+    MusicGenreError, MusicGenreService, PersonError, PersonService, PlaystateError,
+    PlaystateService, PluginRegistry, SystemLogError, SystemLogService, UserDataService,
+    UserDataServiceError, UserError, UserLibraryError, UserLibraryService, UserService, VideoError,
+    VideoService, VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -35,6 +35,7 @@ mod branding;
 mod dashboard;
 mod environment;
 mod hls_segment;
+mod item_lookup;
 mod item_update;
 mod items;
 mod library;
@@ -67,6 +68,7 @@ pub struct AppState {
     pub(crate) user_data: UserDataService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
+    pub(crate) item_lookup: ItemLookupService,
     pub(crate) item_update: ItemUpdateService,
     pub(crate) metadata_editor: MetadataEditorService,
     pub(crate) user_library: UserLibraryService,
@@ -98,6 +100,7 @@ impl AppState {
             user_data: UserDataService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
+            item_lookup: ItemLookupService::new(database.clone()),
             item_update: ItemUpdateService::new(database.clone()),
             metadata_editor: MetadataEditorService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
@@ -422,6 +425,10 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Items/{item_id}/MetadataEditor",
             get(item_update::metadata_editor),
         )
+        .route(
+            "/Items/{item_id}/ExternalIdInfos",
+            get(item_lookup::external_id_infos),
+        )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
         .route(
             "/Items/{item_id}/LocalTrailers",
@@ -515,6 +522,7 @@ pub(crate) enum ApiError {
     VirtualFolder(VirtualFolderServiceError),
     Dashboard(DashboardError),
     TunerHost(TunerHostError),
+    ItemLookup(ItemLookupError),
     ItemUpdate(ItemUpdateError),
     MetadataEditor(MetadataEditorError),
     SystemLog(SystemLogError),
@@ -614,6 +622,12 @@ impl From<TunerHostError> for ApiError {
 impl From<ItemUpdateError> for ApiError {
     fn from(error: ItemUpdateError) -> Self {
         Self::ItemUpdate(error)
+    }
+}
+
+impl From<ItemLookupError> for ApiError {
+    fn from(error: ItemLookupError) -> Self {
+        Self::ItemLookup(error)
     }
 }
 
@@ -742,6 +756,7 @@ impl IntoResponse for ApiError {
             Self::VirtualFolder(error) => virtual_folder_error_response(&error),
             Self::Dashboard(error) => dashboard_error_response(&error),
             Self::TunerHost(error) => tuner_host_error_response(&error),
+            Self::ItemLookup(error) => item_lookup_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
             Self::MetadataEditor(error) => metadata_editor_error_response(&error),
             Self::SystemLog(error) => system_log_error_response(&error),
@@ -792,6 +807,18 @@ fn item_update_error_response(error: &ItemUpdateError) -> (StatusCode, &'static 
         ItemUpdateError::ServerConfiguration(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Server configuration persistence failed",
+        ),
+    }
+}
+
+fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static str) {
+    match error {
+        ItemLookupError::NotFound | ItemLookupError::BaseItem(BaseItemError::NotFound) => {
+            (StatusCode::NOT_FOUND, "Item not found")
+        }
+        ItemLookupError::BaseItem(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Item lookup data could not be loaded",
         ),
     }
 }
