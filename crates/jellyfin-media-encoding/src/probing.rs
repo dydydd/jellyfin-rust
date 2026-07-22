@@ -1,4 +1,11 @@
+mod external;
 mod media_info;
+
+pub use external::{
+    CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeError, ExternalProbeOptions,
+    ExternalSourceProber, MediaProtocol, ProbeProcessOutput, ProbeProcessRequest,
+    ProbeProcessRunner, external_probe_extra_arguments,
+};
 
 pub use media_info::{
     AudioSpatialFormat, MediaAttachment, MediaChapter, MediaInfo, MediaPerson, MediaPersonKind,
