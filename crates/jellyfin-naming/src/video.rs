@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::{ExtraResolver, NamingOptions};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,6 +187,23 @@ pub struct VideoFileInfo {
     pub is_directory: bool,
 }
 
+impl VideoFileInfo {
+    #[must_use]
+    pub fn file_name_without_extension(&self) -> &str {
+        if self.is_directory {
+            file_name(&self.path)
+        } else {
+            file_stem(&self.path)
+        }
+    }
+}
+
+impl fmt::Display for VideoFileInfo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "VideoFileInfo(Name: '{}')", self.name)
+    }
+}
+
 pub struct VideoResolver;
 
 impl VideoResolver {
@@ -243,6 +262,11 @@ impl VideoResolver {
     }
 
     #[must_use]
+    pub fn resolve_directory(path: Option<&str>, options: &NamingOptions) -> Option<VideoFileInfo> {
+        Self::resolve(path, true, options)
+    }
+
+    #[must_use]
     pub fn resolve(
         path: Option<&str>,
         is_directory: bool,
@@ -269,11 +293,7 @@ impl VideoResolver {
             )
         };
         let format = Format3dParser::parse(path, options);
-        let raw_name = if is_directory {
-            file_name(path)
-        } else {
-            file_stem(path)
-        };
+        let raw_name = file_stem(path);
         let date = Self::clean_date_time(raw_name, options);
         let name = Self::try_clean_string(Some(&date.name), options).unwrap_or(date.name);
         let extra = ExtraResolver::resolve(path, options);
