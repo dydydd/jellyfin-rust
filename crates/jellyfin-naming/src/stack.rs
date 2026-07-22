@@ -1,6 +1,6 @@
 use regex::{Regex, RegexBuilder};
 
-use crate::{NamingOptions, VideoResolver};
+use crate::{NamingOptions, VideoResolver, audiobook::AudioBookFileInfo};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileStackRuleResult {
@@ -105,6 +105,37 @@ impl FileStack {
 pub struct StackResolver;
 
 impl StackResolver {
+    #[must_use]
+    pub fn resolve_audio_books(files: &[AudioBookFileInfo]) -> Vec<FileStack> {
+        let mut stacks: Vec<(String, FileStack)> = Vec::new();
+        for file in files {
+            let directory = parent_path(&file.path);
+            if directory.is_empty() {
+                stacks.push((
+                    file.path.clone(),
+                    FileStack::new(
+                        file_stem(file_name(&file.path)),
+                        false,
+                        vec![file.path.clone()],
+                    ),
+                ));
+                continue;
+            }
+            if let Some((_, stack)) = stacks
+                .iter_mut()
+                .find(|(candidate, _)| candidate == directory)
+            {
+                stack.files.push(file.path.clone());
+            } else {
+                stacks.push((
+                    directory.to_owned(),
+                    FileStack::new(file_name(directory), false, vec![file.path.clone()]),
+                ));
+            }
+        }
+        stacks.into_iter().map(|(_, stack)| stack).collect()
+    }
+
     #[must_use]
     pub fn resolve_files<S: AsRef<str>>(files: &[S], options: &NamingOptions) -> Vec<FileStack> {
         let entries = files
@@ -216,4 +247,8 @@ fn file_name(path: &str) -> &str {
 
 fn parent_path(path: &str) -> &str {
     path.rfind(['/', '\\']).map_or("", |index| &path[..index])
+}
+
+fn file_stem(path: &str) -> &str {
+    path.rfind('.').map_or(path, |index| &path[..index])
 }

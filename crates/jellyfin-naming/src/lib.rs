@@ -1,5 +1,6 @@
 //! Parsers for Jellyfin media naming conventions.
 
+pub mod audiobook;
 pub mod common;
 pub mod external_files;
 pub mod extra;
@@ -9,6 +10,10 @@ pub mod tv_paths;
 pub mod video;
 pub mod video_list;
 
+pub use audiobook::{
+    AudioBookFileInfo, AudioBookFilePathParser, AudioBookFilePathParserResult, AudioBookInfo,
+    AudioBookListResolver, AudioBookNameParser, AudioBookNameParserResult, AudioBookResolver,
+};
 pub use common::NamingOptions;
 pub use external_files::{
     DlnaProfileType, ExternalPathParser, ExternalPathParserResult, LanguageInfo,

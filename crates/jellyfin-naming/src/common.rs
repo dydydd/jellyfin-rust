@@ -13,6 +13,8 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct NamingOptions {
     pub audio_file_extensions: Vec<String>,
+    pub audio_book_parts_regexes: Vec<Regex>,
+    pub audio_book_name_regexes: Vec<Regex>,
     pub subtitle_file_extensions: Vec<String>,
     pub lyric_file_extensions: Vec<String>,
     pub media_flag_delimiters: Vec<char>,
@@ -45,6 +47,18 @@ impl Default for NamingOptions {
                 ".okt", ".opus", ".pls", ".ra", ".rf64", ".rm", ".s3m", ".sfx", ".shn", ".sid",
                 ".stm", ".strm", ".ult", ".uni", ".vox", ".wav", ".wma", ".wv", ".xm", ".xsp",
                 ".ymf",
+            ]),
+            audio_book_parts_regexes: regexes(&[
+                r"ch(?:apter)?[\s_-]?(?P<chapter>[0-9]+)",
+                r"p(?:ar)?t[\s_-]?(?P<part>[0-9]+)",
+                r"^(?P<chapter>[0-9]+)",
+                r"(?P<part>[0-9]+)$",
+                r"(?P<chapter>[0-9]+)_(?P<part>[0-9]+)",
+                r"dis(?:c|k)[\s_-]?(?P<chapter>[0-9]+)",
+            ]),
+            audio_book_name_regexes: regexes(&[
+                r"^(?P<name>.+?)\s*\(\s*(?P<year>[0-9]{4})\s*\)\s*$",
+                r"^\s*(?P<name>[^ ].*?)\s*$",
             ]),
             subtitle_file_extensions: strings(&[
                 ".ass", ".mks", ".sami", ".smi", ".srt", ".ssa", ".sub", ".sup", ".vtt",
