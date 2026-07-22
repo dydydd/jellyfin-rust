@@ -3,6 +3,7 @@ mod core_resolution_ignore;
 mod cryptography;
 mod dto_images;
 mod ignore_patterns;
+mod library_extras;
 mod managed_file_system;
 mod media_stream_selector;
 mod order_mapper;
@@ -32,6 +33,10 @@ pub use dto_images::{
     DtoImageProjectionService, ImageCacheTagProvider,
 };
 pub use ignore_patterns::IgnorePatterns;
+pub use library_extras::{
+    ExtraDirectoryReader, ExtraFileSystemEntry, ExtraMediaKind, ExtraOwner, ExtraOwnerKind,
+    LibraryExtrasResolver, ResolvedLibraryExtra,
+};
 pub use managed_file_system::{ManagedFileInfo, ManagedFileSystem, ManagedFileSystemError};
 pub use media_stream_selector::MediaStreamSelector;
 pub use order_mapper::{OrderMapper, OrderMappingError};
