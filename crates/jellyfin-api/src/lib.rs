@@ -7,10 +7,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use jellyfin_controller::{UserError, UserService};
+use jellyfin_controller::{PlaystateError, PlaystateService, UserError, UserService};
 use jellyfin_data::{
-    ActivityLogError, ActivityLogRepository, AuthenticationStoreError, DeviceRepository,
-    entities::user,
+    ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
+    DeviceRepository, entities::user,
 };
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_server_implementations::{AuthenticationError, DefaultAuthenticationProvider};
@@ -21,6 +21,7 @@ use uuid::Uuid;
 mod activity_log;
 mod authentication;
 mod branding;
+mod playstate;
 mod startup;
 mod users;
 
@@ -31,6 +32,7 @@ pub struct AppState {
     pub(crate) users: UserService,
     pub(crate) activity_logs: ActivityLogRepository,
     pub(crate) devices: DeviceRepository,
+    pub(crate) playstate: PlaystateService,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -44,6 +46,7 @@ impl AppState {
             users: UserService::new(database.clone()),
             activity_logs: ActivityLogRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
+            playstate: PlaystateService::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -121,6 +124,10 @@ pub fn router(state: AppState) -> Router {
             post(authentication::authenticate_by_name),
         )
         .route("/Users/Me", get(authentication::current_user))
+        .route(
+            "/Users/{user_id}/PlayedItems/{item_id}",
+            post(playstate::mark_played).delete(playstate::mark_unplayed),
+        )
         .with_state(Arc::new(state))
 }
 
@@ -177,6 +184,7 @@ pub(crate) enum ApiError {
     User(UserError),
     Authentication(AuthenticationError),
     AuthenticationStore(AuthenticationStoreError),
+    Playstate(PlaystateError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -207,12 +215,22 @@ impl From<AuthenticationStoreError> for ApiError {
     }
 }
 
+impl From<PlaystateError> for ApiError {
+    fn from(error: PlaystateError) -> Self {
+        Self::Playstate(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Self::InvalidRequest => (StatusCode::BAD_REQUEST, "Invalid request body"),
+            Self::InvalidRequest | Self::Playstate(PlaystateError::InvalidDatePlayed) => {
+                (StatusCode::BAD_REQUEST, "Invalid request")
+            }
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
+            Self::Forbidden | Self::Playstate(PlaystateError::Forbidden) => {
+                (StatusCode::FORBIDDEN, "Forbidden")
+            }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
             Self::ActivityLog(
                 ActivityLogError::EmptyField(_) | ActivityLogError::FieldTooLong { .. },
@@ -255,6 +273,16 @@ impl IntoResponse for ApiError {
             Self::AuthenticationStore(_error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Authentication persistence failed",
+            ),
+            Self::Playstate(
+                PlaystateError::UserNotFound
+                | PlaystateError::ItemNotFound
+                | PlaystateError::User(UserError::NotFound)
+                | PlaystateError::BaseItem(BaseItemError::NotFound),
+            ) => (StatusCode::NOT_FOUND, "User or item not found"),
+            Self::Playstate(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Playstate persistence failed",
             ),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()

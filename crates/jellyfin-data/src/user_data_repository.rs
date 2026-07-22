@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, DbErr, EntityTrait, Order, QueryFilter, QueryOrder,
-    QuerySelect, Set, sea_query::OnConflict,
+    ColumnTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Order,
+    QueryFilter, QueryOrder, QuerySelect, Set, Statement, sea_query::OnConflict,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -96,6 +96,99 @@ impl UserDataRepository {
     #[must_use]
     pub const fn new(database: DatabaseConnection) -> Self {
         Self { database }
+    }
+
+    /// Atomically marks an item played and resets its resume position.
+    ///
+    /// Without an explicit date, repeated and concurrent manual toggles keep
+    /// the play count at least one. An explicit date represents a new play and
+    /// increments the existing count, matching Jellyfin's `MarkPlayed` logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the upsert fails.
+    pub async fn mark_played(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        key: &str,
+        date_played: Option<DateTime<Utc>>,
+    ) -> Result<user_data::Model, UserDataError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key, playback_position_ticks,
+                play_count, last_played_date, played
+            )
+            VALUES ($1, $2, $3, 0, 1, COALESCE($4::timestamptz, clock_timestamp()), true)
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET playback_position_ticks = 0,
+                play_count = CASE
+                    WHEN $4::timestamptz IS NULL
+                        THEN GREATEST(jellyfin.user_data.play_count, 1)
+                    ELSE jellyfin.user_data.play_count + 1
+                END,
+                last_played_date = COALESCE(
+                    $4::timestamptz,
+                    jellyfin.user_data.last_played_date,
+                    clock_timestamp()
+                ),
+                played = true
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                key.into(),
+                date_played.into(),
+            ],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("mark played returned no row".to_owned()).into())
+    }
+
+    /// Atomically clears played state, play count, last-played date, and resume
+    /// position while preserving ratings, favorites, and stream selections.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the upsert fails.
+    pub async fn mark_unplayed(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        key: &str,
+    ) -> Result<user_data::Model, UserDataError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key, playback_position_ticks,
+                play_count, last_played_date, played
+            )
+            VALUES ($1, $2, $3, 0, 0, NULL, false)
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET playback_position_ticks = 0,
+                play_count = 0,
+                last_played_date = NULL,
+                played = false
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [item_id.into(), user_id.into(), key.into()],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("mark unplayed returned no row".to_owned()).into())
     }
 
     /// Atomically inserts or replaces one `(item, user, key)` row.
