@@ -9,6 +9,7 @@ description = "Cross-platform utility extensions for Jellyfin Rust"
 path = "src/lib.rs"
 
 [dependencies]
+rand = "0.9"
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
