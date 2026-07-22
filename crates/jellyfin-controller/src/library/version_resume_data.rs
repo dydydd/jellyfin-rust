@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub struct UserItemData {
     pub key: String,
     pub playback_position_ticks: i64,
+    pub play_count: i32,
     pub last_played_date: Option<DateTime<Utc>>,
     pub played: bool,
 }
@@ -16,9 +17,18 @@ impl UserItemData {
         Self {
             key: key.into(),
             playback_position_ticks: 0,
+            play_count: 0,
             last_played_date: None,
             played: false,
         }
+    }
+
+    /// Clears all watched and resume state while retaining unrelated fields.
+    pub fn reset_played_state(&mut self) {
+        self.playback_position_ticks = 0;
+        self.play_count = 0;
+        self.last_played_date = None;
+        self.played = false;
     }
 }
 
