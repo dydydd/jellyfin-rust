@@ -1,3 +1,4 @@
-//! Live TV guide primitives and provider-independent listings parsing.
+//! Live TV guide, listings, and recording primitives.
 
 pub mod listings;
+pub mod recordings;

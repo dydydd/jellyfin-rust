@@ -12,6 +12,7 @@ pub mod dto;
 pub mod entities;
 pub mod enums;
 pub mod extensions;
+pub mod live_tv;
 pub mod net;
 pub mod providers;
 mod serde_datetime;
@@ -37,6 +38,7 @@ pub use entities::{
 };
 pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, UnratedItem};
 pub use extensions::first_to_upper;
+pub use live_tv::TimerInfo;
 pub use net::{MimeTypeError, MimeTypes};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
 pub use system::PublicSystemInfo;
