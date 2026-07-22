@@ -8,13 +8,17 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{UserError, UserService};
-use jellyfin_data::{AuthenticationStoreError, DeviceRepository, entities::user};
+use jellyfin_data::{
+    ActivityLogError, ActivityLogRepository, AuthenticationStoreError, DeviceRepository,
+    entities::user,
+};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_server_implementations::{AuthenticationError, DefaultAuthenticationProvider};
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+mod activity_log;
 mod authentication;
 mod startup;
 mod users;
@@ -22,6 +26,7 @@ mod users;
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) users: UserService,
+    pub(crate) activity_logs: ActivityLogRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) system_info: PublicSystemInfo,
@@ -33,6 +38,7 @@ impl AppState {
     pub fn new(database: DatabaseConnection, server_name: String, local_address: String) -> Self {
         Self {
             users: UserService::new(database.clone()),
+            activity_logs: ActivityLogRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
             system_info: PublicSystemInfo {
@@ -73,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/System/Info/Public", get(public_system_info))
         .route("/System/Ping", get(ping).post(ping))
+        .route("/System/ActivityLog/Entries", get(activity_log::entries))
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
@@ -151,6 +158,7 @@ pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
 
 #[derive(Debug)]
 pub(crate) enum ApiError {
+    ActivityLog(ActivityLogError),
     User(UserError),
     Authentication(AuthenticationError),
     AuthenticationStore(AuthenticationStoreError),
@@ -158,6 +166,12 @@ pub(crate) enum ApiError {
     Unauthorized,
     Forbidden,
     Internal,
+}
+
+impl From<ActivityLogError> for ApiError {
+    fn from(error: ActivityLogError) -> Self {
+        Self::ActivityLog(error)
+    }
 }
 
 impl From<UserError> for ApiError {
@@ -185,6 +199,13 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Self::ActivityLog(
+                ActivityLogError::EmptyField(_) | ActivityLogError::FieldTooLong { .. },
+            ) => (StatusCode::BAD_REQUEST, "Invalid activity log entry"),
+            Self::ActivityLog(ActivityLogError::Database(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Activity log persistence failed",
+            ),
             Self::User(UserError::InvalidUsername) => (StatusCode::BAD_REQUEST, "Invalid username"),
             Self::User(UserError::DuplicateUsername(_)) => (
                 StatusCode::BAD_REQUEST,

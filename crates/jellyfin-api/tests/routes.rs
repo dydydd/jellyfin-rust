@@ -4,14 +4,24 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{DeviceQuery, DeviceRepository, NewDevice, entities::user};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr};
+use jellyfin_data::{
+    ActivityLogRepository, DeviceQuery, DeviceRepository, NewActivityLog, NewDevice,
+    entities::{
+        activity_log::{self, LogSeverity},
+        user,
+    },
+};
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, prelude::DateTimeUtc,
+    sea_query::Expr,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 const CLIENT_AUTHORIZATION: &str = "MediaBrowser Client=\"Jellyfin.Server%20Integration%20Tests\", DeviceId=\"69420\", Device=\"Apple%20II\", Version=\"10.8.0\"";
+static ADMIN_API_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn system_routes_follow_the_public_contract() {
@@ -69,9 +79,277 @@ async fn system_routes_follow_the_public_contract() {
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
+    reason = "the assertions cover the stateful official query matrix"
+)]
+async fn activity_log_routes_match_the_official_controller_contract() {
+    let _test_guard = ADMIN_API_TEST_LOCK.lock().await;
+    let database = test_database().await;
+    user::Entity::delete_many()
+        .filter(user::Column::Username.like("api-admin-activity-%"))
+        .exec(&database)
+        .await
+        .expect("stale activity test administrators must be removed");
+    let suffix = Uuid::new_v4().simple().to_string();
+    let marker = format!("ActivityApi{suffix}");
+    let users = UserService::new(database.clone());
+    let devices = DeviceRepository::new(database.clone());
+    let administrator = users
+        .create_initial_administrator(&format!("api-admin-activity-{suffix}"))
+        .await
+        .expect("activity test administrator must be created");
+    let regular_name = format!("activity-api-user-{suffix}");
+    let regular_user = users
+        .create(&regular_name)
+        .await
+        .expect("activity test user must be created");
+    let administrator_session = devices
+        .create_session(NewDevice::new(
+            administrator.id,
+            "integration tests",
+            "1.0.0",
+            "test runner",
+            format!("activity-admin-{suffix}"),
+        ))
+        .await
+        .expect("administrator session must be created");
+    let regular_session = devices
+        .create_session(NewDevice::new(
+            regular_user.id,
+            "integration tests",
+            "1.0.0",
+            "test runner",
+            format!("activity-user-{suffix}"),
+        ))
+        .await
+        .expect("regular session must be created");
+    let repository = ActivityLogRepository::new(database.clone());
+    let base_date = DateTimeUtc::from_timestamp(978_307_200, 0).unwrap();
+    let middle_date = DateTimeUtc::from_timestamp(978_310_800, 0).unwrap();
+    let newest_date = DateTimeUtc::from_timestamp(978_314_400, 0).unwrap();
+    let item_id = Uuid::new_v4();
+
+    let mut oldest = NewActivityLog::new(
+        format!("Zulu-{marker}"),
+        format!("PrimaryType-{marker}"),
+        regular_user.id,
+    );
+    oldest.overview = Some(format!("Overview-{marker}"));
+    oldest.short_overview = Some(format!("Short-{marker}"));
+    oldest.item_id = Some(item_id.simple().to_string());
+    oldest.date_created = Some(base_date);
+    oldest.log_severity = LogSeverity::Warning;
+    let oldest = repository.create(oldest).await.unwrap();
+
+    let mut middle = NewActivityLog::new(format!("Middle-{marker}"), "PlaybackStart", Uuid::nil());
+    middle.date_created = Some(middle_date);
+    middle.log_severity = LogSeverity::Debug;
+    let middle = repository.create(middle).await.unwrap();
+
+    let mut newest =
+        NewActivityLog::new(format!("Alpha-{marker}"), "SessionEnded", regular_user.id);
+    newest.date_created = Some(newest_date);
+    newest.log_severity = LogSeverity::Information;
+    let newest = repository.create(newest).await.unwrap();
+
+    let app = jellyfin_api::router(AppState::new(
+        database.clone(),
+        "Test Server".to_owned(),
+        "http://127.0.0.1:8096".to_owned(),
+    ));
+    let route = "/System/ActivityLog/Entries";
+    let response = get_response(&app, route).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            route,
+            &regular_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            route,
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    let all_entries = body_json(response).await;
+    assert_eq!(all_entries["StartIndex"], 0);
+    assert!(all_entries["TotalRecordCount"].as_u64().unwrap() >= 3);
+    assert!(all_entries.get("items").is_none());
+
+    let filtered_uri = format!(
+        "{route}?startIndex=0&limit=10&minDate=2001-01-01T00%3A00%3A00Z\
+         &maxDate=2001-01-01T00%3A00%3A00Z&hasUserId=true&name={marker}\
+         &overview={marker}&shortOverview={marker}&type=PrimaryType-{marker}\
+         &itemId={item_id}&username={regular_name}&severity=Warning"
+    )
+    .replace(' ', "");
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            &filtered_uri,
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let filtered = body_json(response).await;
+    assert_eq!(filtered["StartIndex"], 0);
+    assert_eq!(filtered["TotalRecordCount"], 1);
+    let entry = &filtered["Items"][0];
+    assert_eq!(entry["Id"], oldest.id);
+    assert_eq!(entry["Name"], format!("Zulu-{marker}"));
+    assert_eq!(entry["Overview"], format!("Overview-{marker}"));
+    assert_eq!(entry["ShortOverview"], format!("Short-{marker}"));
+    assert_eq!(entry["Type"], format!("PrimaryType-{marker}"));
+    assert_eq!(entry["ItemId"], item_id.simple().to_string());
+    assert_eq!(entry["Date"], "2001-01-01T00:00:00.0000000Z");
+    assert_eq!(entry["UserId"], regular_user.id.simple().to_string());
+    assert_eq!(entry["Severity"], "Warning");
+    assert!(entry.get("UserPrimaryImageTag").is_none());
+    assert!(entry.get("user_id").is_none());
+
+    let pagination_uri = format!(
+        "{route}?name={marker}&startIndex=1&limit=1\
+         &sortBy=Name%2CDateCreated&sortOrder=Descending"
+    )
+    .replace(' ', "");
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            &pagination_uri,
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = body_json(response).await;
+    assert_eq!(page["StartIndex"], 1);
+    assert_eq!(page["TotalRecordCount"], 3);
+    assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["Items"][0]["Id"], middle.id);
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            &format!("{route}?name={marker}&hasUserId=false&severity=1"),
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let without_user = body_json(response).await;
+    assert_eq!(without_user["TotalRecordCount"], 1);
+    assert_eq!(without_user["Items"][0]["Id"], middle.id);
+    assert_eq!(
+        without_user["Items"][0]["UserId"],
+        Uuid::nil().simple().to_string()
+    );
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            &format!("{route}?name={marker}&limit=0&sortBy=Overiew&sortOrder=0"),
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let empty_page = body_json(response).await;
+    assert_eq!(empty_page["TotalRecordCount"], 3);
+    assert!(empty_page["Items"].as_array().unwrap().is_empty());
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            &format!(
+                "{route}?name={marker}&limit=1&sortBy=Username%2CDateCreated&sortOrder=Ascending"
+            ),
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["Items"][0]["Id"], oldest.id);
+
+    let response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            &format!("{route}?name={marker}&limit=1&sortBy=LogSeverity&sortOrder=Descending"),
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["Items"][0]["Id"], oldest.id);
+
+    for invalid_query in [
+        "severity=Verbose",
+        "sortBy=Item",
+        "sortBy=Name&sortOrder=Ascending%2CDescending",
+        "minDate=not-a-date",
+        "startIndex=-1",
+        "limit=2147483648",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(authenticated_request(
+                "GET",
+                &format!("{route}?{invalid_query}"),
+                &administrator_session.access_token,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{invalid_query}"
+        );
+    }
+
+    activity_log::Entity::delete_many()
+        .filter(activity_log::Column::Id.is_in([oldest.id, middle.id, newest.id]))
+        .exec(&database)
+        .await
+        .expect("activity route fixtures must be deleted");
+    user::Entity::delete_many()
+        .filter(user::Column::Id.is_in([administrator.id, regular_user.id]))
+        .exec(&database)
+        .await
+        .expect("activity route users must be deleted");
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
     reason = "the assertions follow the stateful official controller test order"
 )]
 async fn user_management_matches_the_official_controller_flow() {
+    let _test_guard = ADMIN_API_TEST_LOCK.lock().await;
     let database = test_database().await;
     user::Entity::delete_many()
         .filter(user::Column::Username.like("api-admin-%"))
