@@ -1256,6 +1256,13 @@ name = "jellyfin-networking"
 version = "0.1.0"
 
 [[package]]
+name = "jellyfin-providers"
+version = "0.1.0"
+dependencies = [
+ "jellyfin-model",
+]
+
+[[package]]
 name = "jellyfin-server"
 version = "0.1.0"
 dependencies = [

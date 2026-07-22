@@ -14,6 +14,7 @@ members = [
     "crates/jellyfin-model",
     "crates/jellyfin-naming",
     "crates/jellyfin-networking",
+    "crates/jellyfin-providers",
     "crates/jellyfin-server",
     "crates/jellyfin-server-implementations",
     "crates/jellyfin-xbmc-metadata",
