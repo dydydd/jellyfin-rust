@@ -1168,10 +1168,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "jellyfin-data",
+ "jellyfin-extensions",
  "sea-orm",
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
