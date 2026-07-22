@@ -5,3 +5,4 @@ pub mod lyrics;
 pub mod media_info;
 pub mod omdb;
 pub mod tmdb;
+pub mod tv;
