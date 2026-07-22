@@ -42,6 +42,7 @@ mod persons;
 mod playstate;
 mod plugins;
 pub mod query;
+mod robots;
 mod startup;
 mod system;
 mod user_library;
@@ -277,6 +278,7 @@ pub fn router(state: AppState) -> Router {
             "/Library/VirtualFolders/LibraryOptions",
             post(virtual_folders::update_options),
         )
+        .fallback(robots::redirect_or_not_found)
         .with_state(Arc::new(state))
 }
 
