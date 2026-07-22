@@ -1,0 +1,13 @@
+[package]
+name = "jellyfin-common"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Common utilities shared by the Jellyfin Rust crates"
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
