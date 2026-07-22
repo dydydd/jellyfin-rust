@@ -7,6 +7,7 @@ mod playlists;
 mod quick_connect;
 mod session_manager;
 mod sorting;
+mod sync_play;
 mod users;
 
 pub use cryptography::{
@@ -33,4 +34,5 @@ pub use sorting::{
     PremiereDateOrderKey, compare_aired_episode_order, compare_index_number,
     compare_parent_index_number, compare_premiere_date,
 };
+pub use sync_play::{GroupLibrary, PlayQueue, PlayQueueItem, SyncPlayGroup};
 pub use users::{AuthenticationError, DefaultAuthenticationProvider, ProviderAuthenticationResult};
