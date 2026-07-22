@@ -93,6 +93,30 @@ impl PlaystateService {
         Ok(PlaystateUpdate { user_data })
     }
 
+    /// Marks an item played after the API layer has authorized the target user.
+    ///
+    /// This entry point exists for API-key authentication, which has
+    /// administrator-equivalent access but no user model of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or persistence errors after checking the target user
+    /// and item in official controller order.
+    pub async fn mark_played_for_authorized_user(
+        &self,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        date_played: Option<DateTime<Utc>>,
+    ) -> Result<PlaystateUpdate, PlaystateError> {
+        self.validate_authorized_request(target_user_id, item_id)
+            .await?;
+        let user_data = self
+            .user_data
+            .mark_played(item_id, target_user_id, &item_id.to_string(), date_played)
+            .await?;
+        Ok(PlaystateUpdate { user_data })
+    }
+
     /// Marks an item unplayed for the target user.
     ///
     /// # Errors
@@ -114,20 +138,60 @@ impl PlaystateService {
         Ok(PlaystateUpdate { user_data })
     }
 
+    /// Marks an item unplayed after the API layer has authorized the target user.
+    ///
+    /// This entry point exists for API-key authentication, which has
+    /// administrator-equivalent access but no user model of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or persistence errors after checking the target user
+    /// and item in official controller order.
+    pub async fn mark_unplayed_for_authorized_user(
+        &self,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<PlaystateUpdate, PlaystateError> {
+        self.validate_authorized_request(target_user_id, item_id)
+            .await?;
+        let user_data = self
+            .user_data
+            .mark_unplayed(item_id, target_user_id, &item_id.to_string())
+            .await?;
+        Ok(PlaystateUpdate { user_data })
+    }
+
     async fn validate_request(
         &self,
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<(), PlaystateError> {
-        match self.users.get(target_user_id).await {
-            Ok(_) => {}
-            Err(UserError::NotFound) => return Err(PlaystateError::UserNotFound),
-            Err(error) => return Err(error.into()),
-        }
+        self.validate_target_user(target_user_id).await?;
         if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
             return Err(PlaystateError::Forbidden);
         }
+        self.validate_item(item_id).await
+    }
+
+    async fn validate_authorized_request(
+        &self,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<(), PlaystateError> {
+        self.validate_target_user(target_user_id).await?;
+        self.validate_item(item_id).await
+    }
+
+    async fn validate_target_user(&self, target_user_id: Uuid) -> Result<(), PlaystateError> {
+        match self.users.get(target_user_id).await {
+            Ok(_) => Ok(()),
+            Err(UserError::NotFound) => Err(PlaystateError::UserNotFound),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn validate_item(&self, item_id: Uuid) -> Result<(), PlaystateError> {
         self.items
             .get(item_id)
             .await?

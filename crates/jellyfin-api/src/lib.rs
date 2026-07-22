@@ -223,10 +223,7 @@ pub fn router(state: AppState) -> Router {
             post(authentication::authenticate_by_name),
         )
         .route("/Users/Me", get(authentication::current_user))
-        .route(
-            "/Users/{user_id}/PlayedItems/{item_id}",
-            post(playstate::mark_played).delete(playstate::mark_unplayed),
-        )
+        .merge(playstate_routes())
         .route(
             "/Users/{user_id}/Items/Root",
             get(user_library::get_root_legacy),
@@ -298,6 +295,18 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/Password", post(users::update_password_query))
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/Users/{id}/Policy", post(users::update_policy))
+}
+
+fn playstate_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/UserPlayedItems/{item_id}",
+            post(playstate::mark_played_modern).delete(playstate::mark_unplayed_modern),
+        )
+        .route(
+            "/Users/{user_id}/PlayedItems/{item_id}",
+            post(playstate::mark_played).delete(playstate::mark_unplayed),
+        )
 }
 
 fn item_query_routes() -> Router<Arc<AppState>> {
