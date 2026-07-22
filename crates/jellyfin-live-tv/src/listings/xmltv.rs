@@ -18,6 +18,52 @@ pub struct XmlTvOptions {
     pub sports_categories: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct XmlTvChannel {
+    pub id: String,
+    pub display_name: String,
+    pub number: String,
+    pub image_url: Option<String>,
+}
+
+pub fn parse_xmltv_channels(xml: &str) -> Result<Vec<XmlTvChannel>, XmlTvParseError> {
+    let document = Document::parse(xml)?;
+    Ok(document
+        .descendants()
+        .filter(|node| node.has_tag_name("channel"))
+        .filter_map(|node| {
+            let id = node.attribute("id")?.to_owned();
+            let names: Vec<_> = node
+                .children()
+                .filter(|child| child.has_tag_name("display-name"))
+                .filter_map(|child| child.text())
+                .collect();
+            let display_name = names.first().copied().unwrap_or(&id).to_owned();
+            let number = names
+                .iter()
+                .find(|name| {
+                    name.chars()
+                        .all(|character| character.is_ascii_digit() || character == '.')
+                })
+                .copied()
+                .unwrap_or(&id)
+                .to_owned();
+            let image_url = node
+                .children()
+                .find(|child| child.has_tag_name("icon"))
+                .and_then(|icon| icon.attribute("src"))
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            Some(XmlTvChannel {
+                id,
+                display_name,
+                number,
+                image_url,
+            })
+        })
+        .collect())
+}
+
 impl Default for XmlTvOptions {
     fn default() -> Self {
         Self {

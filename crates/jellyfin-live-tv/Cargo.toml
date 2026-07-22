@@ -13,15 +13,17 @@ chrono = "0.4"
 jellyfin-common = { path = "../jellyfin-common" }
 jellyfin-model = { path = "../jellyfin-model" }
 md-5 = "0.10"
+flate2 = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 roxmltree = "0.21"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+tokio = { workspace = true, features = ["fs"] }
 url = "2.5"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
 
 [lints.rust]
 unsafe_code = "forbid"
