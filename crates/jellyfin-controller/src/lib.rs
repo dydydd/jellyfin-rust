@@ -6,6 +6,7 @@ mod playstate;
 pub mod providers;
 mod user_library;
 mod users;
+mod virtual_folders;
 
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenreService};
 pub use playstate::{
@@ -13,3 +14,4 @@ pub use playstate::{
 };
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};
+pub use virtual_folders::{VirtualFolder, VirtualFolderService, VirtualFolderServiceError};

@@ -9,7 +9,8 @@ use axum::{
 };
 use jellyfin_controller::{
     MusicGenreError, MusicGenreService, PlaystateError, PlaystateService, UserError,
-    UserLibraryError, UserLibraryService, UserService,
+    UserLibraryError, UserLibraryService, UserService, VirtualFolderService,
+    VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
@@ -29,6 +30,7 @@ mod playstate;
 mod startup;
 mod user_library;
 mod users;
+mod virtual_folders;
 
 pub use branding::BrandingOptions;
 
@@ -40,6 +42,7 @@ pub struct AppState {
     pub(crate) playstate: PlaystateService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) user_library: UserLibraryService,
+    pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -56,6 +59,7 @@ impl AppState {
             playstate: PlaystateService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
+            virtual_folders: VirtualFolderService::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -174,6 +178,28 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
+        .route(
+            "/Library/VirtualFolders",
+            get(virtual_folders::list)
+                .post(virtual_folders::create)
+                .delete(virtual_folders::delete),
+        )
+        .route(
+            "/Library/VirtualFolders/Name",
+            post(virtual_folders::rename),
+        )
+        .route(
+            "/Library/VirtualFolders/Paths",
+            post(virtual_folders::add_path).delete(virtual_folders::remove_path),
+        )
+        .route(
+            "/Library/VirtualFolders/Paths/Update",
+            post(virtual_folders::update_path),
+        )
+        .route(
+            "/Library/VirtualFolders/LibraryOptions",
+            post(virtual_folders::update_options),
+        )
         .with_state(Arc::new(state))
 }
 
@@ -233,6 +259,7 @@ pub(crate) enum ApiError {
     Playstate(PlaystateError),
     MusicGenre(MusicGenreError),
     UserLibrary(UserLibraryError),
+    VirtualFolder(VirtualFolderServiceError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -278,6 +305,12 @@ impl From<MusicGenreError> for ApiError {
 impl From<UserLibraryError> for ApiError {
     fn from(error: UserLibraryError) -> Self {
         Self::UserLibrary(error)
+    }
+}
+
+impl From<VirtualFolderServiceError> for ApiError {
+    fn from(error: VirtualFolderServiceError) -> Self {
+        Self::VirtualFolder(error)
     }
 }
 
@@ -366,7 +399,39 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Music genre persistence failed",
             ),
+            Self::VirtualFolder(error) => virtual_folder_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn virtual_folder_error_response(error: &VirtualFolderServiceError) -> (StatusCode, &'static str) {
+    match error {
+        VirtualFolderServiceError::InvalidOptions
+        | VirtualFolderServiceError::InvalidPath
+        | VirtualFolderServiceError::PathNotDirectory
+        | VirtualFolderServiceError::NonUtf8Path
+        | VirtualFolderServiceError::Repository(jellyfin_data::VirtualFolderError::InvalidName) => {
+            (StatusCode::BAD_REQUEST, "Invalid virtual folder request")
+        }
+        VirtualFolderServiceError::PathNotFound
+        | VirtualFolderServiceError::Repository(
+            jellyfin_data::VirtualFolderError::NotFound
+            | jellyfin_data::VirtualFolderError::PathNotFound,
+        ) => (
+            StatusCode::NOT_FOUND,
+            "Virtual folder or media path not found",
+        ),
+        VirtualFolderServiceError::Repository(
+            jellyfin_data::VirtualFolderError::DuplicateName
+            | jellyfin_data::VirtualFolderError::PathOverlap,
+        ) => (
+            StatusCode::CONFLICT,
+            "Virtual folder or media path already exists",
+        ),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Virtual folder persistence failed",
+        ),
     }
 }

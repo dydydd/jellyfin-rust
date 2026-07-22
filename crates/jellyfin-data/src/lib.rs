@@ -4,6 +4,7 @@ mod base_item_repository;
 pub mod entities;
 mod item_value_repository;
 mod user_data_repository;
+mod virtual_folder_repository;
 
 pub use activity_log_repository::{
     ActivityLogError, ActivityLogPage, ActivityLogQuery, ActivityLogRepository, ActivityLogSortBy,
@@ -19,6 +20,10 @@ pub use base_item_repository::{
 pub use item_value_repository::{ItemValueError, ItemValueRepository};
 pub use user_data_repository::{
     NewUserData, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
+};
+pub use virtual_folder_repository::{
+    NewMediaPath, NewVirtualFolder, VirtualFolderError, VirtualFolderRepository,
+    VirtualFolderWithPaths,
 };
 
 use std::time::Duration;

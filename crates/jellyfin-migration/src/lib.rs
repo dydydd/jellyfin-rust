@@ -6,6 +6,7 @@ mod m20260722_000003_create_authentication;
 mod m20260722_000004_create_user_data;
 mod m20260722_000005_create_base_items;
 mod m20260722_000006_create_item_values;
+mod m20260722_000007_create_virtual_folders;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -19,6 +20,8 @@ pub use m20260722_000004_create_user_data::Migration as CreateUserDataMigration;
 pub use m20260722_000005_create_base_items::Migration as CreateBaseItemsMigration;
 #[doc(hidden)]
 pub use m20260722_000006_create_item_values::Migration as CreateItemValuesMigration;
+#[doc(hidden)]
+pub use m20260722_000007_create_virtual_folders::Migration as CreateVirtualFoldersMigration;
 
 pub struct Migrator;
 
@@ -32,6 +35,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000004_create_user_data::Migration),
             Box::new(m20260722_000005_create_base_items::Migration),
             Box::new(m20260722_000006_create_item_values::Migration),
+            Box::new(m20260722_000007_create_virtual_folders::Migration),
         ]
     }
 }
