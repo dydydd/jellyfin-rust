@@ -11,6 +11,7 @@ mod sorting;
 mod sync_play;
 mod user_manager_lock;
 mod users;
+mod websocket_json;
 
 pub use cryptography::{
     CryptographyError, CryptographyProvider, DEFAULT_HASH_METHOD, DEFAULT_ITERATIONS,
@@ -45,3 +46,7 @@ pub use user_manager_lock::{
     UserManagerLockContext, UserManagerLockError, UserManagerLockHandle, UserManagerLockHelper,
 };
 pub use users::{AuthenticationError, DefaultAuthenticationProvider, ProviderAuthenticationResult};
+pub use websocket_json::{
+    InboundWebSocketMessage, ParsedWebSocketMessage, WebSocketJsonError, WebSocketMessageType,
+    deserialize_websocket_message,
+};
