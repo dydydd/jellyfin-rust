@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 axum.workspace = true
+axum-extra = { version = "0.10", features = ["query"] }
 chrono.workspace = true
 form_urlencoded = "1.2"
 jellyfin-controller = { path = "../jellyfin-controller" }

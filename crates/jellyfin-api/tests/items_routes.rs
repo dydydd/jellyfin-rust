@@ -100,6 +100,70 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
 }
 
 #[tokio::test]
+async fn delimited_and_repeated_item_filters_reach_postgres_queries() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+
+    let included = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?recursive=true&searchTerm={}&includeItemTypes=Movie&includeItemTypes=Episode",
+                    fixture.suffix
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(included["TotalRecordCount"], 3);
+
+    let excluded = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?recursive=true&searchTerm={}&excludeItemTypes=Episode,,Video",
+                    fixture.suffix
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(excluded["TotalRecordCount"], 2);
+
+    let selected = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?recursive=true&searchTerm={}&ids={},not-a-uuid,,{}",
+                    fixture.suffix, fixture.item_ids[0], fixture.item_ids[2]
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(selected["TotalRecordCount"], 2);
+
+    let media_types = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?recursive=true&searchTerm={}&mediaTypes=Video&mediaTypes=Audio",
+                    fixture.suffix
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(media_types["TotalRecordCount"], 0);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn resume_is_deduplicated_recent_first_paginated_and_user_scoped() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

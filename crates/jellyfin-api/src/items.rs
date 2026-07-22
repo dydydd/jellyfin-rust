@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::HeaderMap,
 };
+use axum_extra::extract::Query;
 use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -23,13 +24,29 @@ pub(crate) struct ItemsQuery {
     search_term: Option<String>,
     #[serde(rename = "parentId", alias = "ParentId")]
     parent_id: Option<Uuid>,
-    ids: Option<String>,
-    #[serde(rename = "includeItemTypes", alias = "IncludeItemTypes")]
-    include_item_types: Option<String>,
-    #[serde(rename = "excludeItemTypes", alias = "ExcludeItemTypes")]
-    exclude_item_types: Option<String>,
-    #[serde(rename = "mediaTypes", alias = "MediaTypes")]
-    media_types: Option<String>,
+    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    ids: Vec<Uuid>,
+    #[serde(
+        default,
+        rename = "includeItemTypes",
+        alias = "IncludeItemTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    include_item_types: Vec<String>,
+    #[serde(
+        default,
+        rename = "excludeItemTypes",
+        alias = "ExcludeItemTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    exclude_item_types: Vec<String>,
+    #[serde(
+        default,
+        rename = "mediaTypes",
+        alias = "MediaTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    media_types: Vec<String>,
 }
 
 pub(crate) async fn get(
@@ -101,14 +118,14 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
 
     fn try_from(query: ItemsQuery) -> Result<Self, Self::Error> {
         Ok(Self {
-            ids: parse_uuids(query.ids.as_deref())?,
+            ids: query.ids,
             exclude_ids: Vec::new(),
             parent_id: query.parent_id,
             recursive: query.recursive.unwrap_or(false),
             search_term: query.search_term,
-            include_item_types: parse_strings(query.include_item_types.as_deref()),
-            exclude_item_types: parse_strings(query.exclude_item_types.as_deref()),
-            media_types: parse_strings(query.media_types.as_deref()),
+            include_item_types: query.include_item_types,
+            exclude_item_types: query.exclude_item_types,
+            media_types: query.media_types,
             is_virtual_item: None,
             group_versions_by_presentation_key: false,
             user_id: query.user_id,
@@ -118,23 +135,6 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             limit: query.limit,
         })
     }
-}
-
-fn parse_strings(value: Option<&str>) -> Vec<String> {
-    value
-        .into_iter()
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn parse_uuids(value: Option<&str>) -> Result<Vec<Uuid>, ApiError> {
-    parse_strings(value)
-        .into_iter()
-        .map(|value| value.parse().map_err(|_| ApiError::InvalidRequest))
-        .collect()
 }
 
 fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQueryResult {

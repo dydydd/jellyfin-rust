@@ -35,6 +35,7 @@ mod music_genre;
 mod persons;
 mod playstate;
 mod plugins;
+pub mod query;
 mod startup;
 mod user_library;
 mod users;
