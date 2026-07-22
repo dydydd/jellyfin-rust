@@ -23,30 +23,37 @@ pub struct EpisodeExpression {
 
 impl EpisodeExpression {
     fn named(expression: &str) -> Self {
-        Self::new(expression, true)
+        let mut value = Self::new(expression, false);
+        value.is_named = true;
+        value
     }
 
     fn positional(expression: &str) -> Self {
         Self::new(expression, false)
     }
 
-    fn new(expression: &str, is_named: bool) -> Self {
+    /// Creates a configurable episode expression.
+    ///
+    /// The expression is positional by default, matching Jellyfin's
+    /// `EpisodeExpression(string, bool)` constructor.
+    #[must_use]
+    pub fn new(expression: &str, by_date: bool) -> Self {
         Self {
             regex: RegexBuilder::new(expression)
                 .case_insensitive(true)
                 .build()
                 .expect("built-in episode expression must be valid"),
-            is_by_date: false,
+            is_by_date: by_date,
             is_optimistic: false,
-            is_named,
+            is_named: false,
             supports_absolute_episode_numbers: true,
             date_order: None,
         }
     }
 
     fn by_date(expression: &str, order: DateOrder) -> Self {
-        let mut value = Self::named(expression);
-        value.is_by_date = true;
+        let mut value = Self::new(expression, true);
+        value.is_named = true;
         value.date_order = Some(order);
         value
     }
@@ -119,6 +126,12 @@ pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
         ),
         EpisodeExpression::named(
             r"(?:\[[^\]]+\]\s*)?(?P<seriesname>\[[^\]]+\]|[^\[\]/\\]+?)\s*\[(?P<epnumber>[0-9]+)\]",
+        ),
+        EpisodeExpression::named(
+            r"(?:^|[/\\])(?P<seriesname>[^/\\]+)[/\\][s](?:eason)?[. _-]*(?P<seasonnumber>[0-9]+)(?:[^0-9]|$)",
+        ),
+        EpisodeExpression::named(
+            r"(?:^|[/\\])(?P<seriesname>[^/\\]+?)[. _-]+[s](?:eason)?[. _-]*(?P<seasonnumber>[0-9]+)(?:[^0-9]|$)",
         ),
         EpisodeExpression::positional(r"(?:^|[/\\])([0-9]+)-([0-9]+)"),
     ]
@@ -249,7 +262,13 @@ impl EpisodePathParser {
 }
 
 fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<EpisodePathParserResult> {
-    let captures = expression.regex.captures(path)?;
+    let normalized_path = expression.is_by_date.then(|| path.replace('_', "-"));
+    let (matched_path, captures) = if let Some(captures) = expression.regex.captures(path) {
+        (path, captures)
+    } else {
+        let normalized_path = normalized_path.as_deref()?;
+        (normalized_path, expression.regex.captures(normalized_path)?)
+    };
     let mut result = EpisodePathParserResult {
         season_number: capture_number(&captures, "seasonnumber"),
         episode_number: capture_number(&captures, "epnumber"),
@@ -263,9 +282,9 @@ fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<Episod
     };
 
     if expression.is_by_date {
-        result.year = capture_number(&captures, "year");
-        result.month = capture_number(&captures, "month");
-        result.day = capture_number(&captures, "day");
+        result.year = capture_number(&captures, "year").or_else(|| capture_at(&captures, 2));
+        result.month = capture_number(&captures, "month").or_else(|| capture_at(&captures, 3));
+        result.day = capture_number(&captures, "day").or_else(|| capture_at(&captures, 4));
         result.success = valid_date(result.year, result.month, result.day);
         return Some(result);
     }
@@ -280,7 +299,7 @@ fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<Episod
     }
 
     if let Some(ending) = captures.name("endingepnumber") {
-        let next = path.as_bytes().get(ending.end()).copied();
+        let next = matched_path.as_bytes().get(ending.end()).copied();
         if !next.is_some_and(|value| value.is_ascii_digit() || b"iIpP".contains(&value)) {
             result.ending_episode_number = ending.as_str().parse().ok();
         }
@@ -299,6 +318,10 @@ fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<Episod
 
 fn capture_number(captures: &regex::Captures<'_>, name: &str) -> Option<i32> {
     captures.name(name)?.as_str().parse().ok()
+}
+
+fn capture_at(captures: &regex::Captures<'_>, index: usize) -> Option<i32> {
+    captures.get(index)?.as_str().parse().ok()
 }
 
 fn valid_date(year: Option<i32>, month: Option<i32>, day: Option<i32>) -> bool {
