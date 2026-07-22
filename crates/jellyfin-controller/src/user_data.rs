@@ -36,7 +36,7 @@ impl From<UserDataUpdate> for UserItemDataDto {
     }
 }
 
-/// Coordinates item visibility and atomic per-user favorite writes.
+/// Coordinates item visibility and atomic per-user data writes.
 #[derive(Clone)]
 pub struct UserDataService {
     users: UserService,
@@ -69,6 +69,45 @@ impl UserDataService {
         item_id: Uuid,
         is_favorite: bool,
     ) -> Result<UserDataUpdate, UserDataServiceError> {
+        let item = self.resolve_target_item(target_user_id, item_id).await?;
+        let keys = current_user_data_keys(&item);
+        let user_data = self
+            .user_data
+            .set_favorite(item.id, target_user_id, &keys, is_favorite)
+            .await?;
+        Ok(UserDataUpdate { user_data })
+    }
+
+    /// Sets or clears an item's boolean rating after target-user authorization.
+    ///
+    /// A nil item identifier addresses the persisted user root. `Some(true)`
+    /// stores a like, `Some(false)` stores a dislike, and `None` clears both the
+    /// numeric rating and boolean like value.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found for a missing user, item, or item hidden by the target
+    /// user's folder policy, and returns persistence errors unchanged.
+    pub async fn set_rating_for_authorized_user(
+        &self,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        likes: Option<bool>,
+    ) -> Result<UserDataUpdate, UserDataServiceError> {
+        let item = self.resolve_target_item(target_user_id, item_id).await?;
+        let keys = current_user_data_keys(&item);
+        let user_data = self
+            .user_data
+            .set_rating(item.id, target_user_id, &keys, likes)
+            .await?;
+        Ok(UserDataUpdate { user_data })
+    }
+
+    async fn resolve_target_item(
+        &self,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<base_item::Model, UserDataServiceError> {
         let user = match self.users.get(target_user_id).await {
             Ok(user) => user,
             Err(UserError::NotFound) => return Err(UserDataServiceError::UserNotFound),
@@ -85,12 +124,7 @@ impl UserDataService {
         if !self.is_visible(&item, &user.policy).await? {
             return Err(UserDataServiceError::ItemNotFound);
         }
-        let keys = current_user_data_keys(&item);
-        let user_data = self
-            .user_data
-            .set_favorite(item.id, target_user_id, &keys, is_favorite)
-            .await?;
-        Ok(UserDataUpdate { user_data })
+        Ok(item)
     }
 
     async fn is_visible(

@@ -337,6 +337,14 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             "/Users/{user_id}/FavoriteItems/{item_id}",
             post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
         )
+        .route(
+            "/UserItems/{item_id}/Rating",
+            post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/Rating",
+            post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
+        )
 }
 
 fn item_query_routes() -> Router<Arc<AppState>> {

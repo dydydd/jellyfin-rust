@@ -164,6 +164,77 @@ impl UserDataRepository {
             })
     }
 
+    /// Atomically changes only the boolean rating columns for one user-data row.
+    ///
+    /// `true` stores Jellyfin's like rating `(10, true)`, `false` stores its
+    /// dislike rating `(1, false)`, and `None` clears both columns. Concurrent
+    /// favorite, playstate, and stream-selection writes are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error when no current key is supplied, or a
+    /// database error when the upsert fails.
+    pub async fn set_rating(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        keys: &[String],
+        likes: Option<bool>,
+    ) -> Result<user_data::Model, UserDataError> {
+        let primary_key = keys.first().ok_or(UserDataError::EmptyKey)?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT value AS custom_data_key, ordinality AS priority
+                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
+            ), chosen_key AS (
+                SELECT data.custom_data_key
+                FROM jellyfin.user_data AS data
+                LEFT JOIN preferred_keys AS preferred
+                    USING (custom_data_key)
+                WHERE data.item_id = $1 AND data.user_id = $2
+                ORDER BY preferred.priority NULLS LAST, data.custom_data_key
+                LIMIT 1
+            ), target_key AS (
+                SELECT COALESCE(
+                    (SELECT custom_data_key FROM chosen_key),
+                    $4::text
+                ) AS custom_data_key
+            )
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key, rating, likes
+            )
+            SELECT $1, $2, custom_data_key,
+                CASE $5::boolean
+                    WHEN true THEN 10.0
+                    WHEN false THEN 1.0
+                    ELSE NULL
+                END,
+                $5::boolean
+            FROM target_key
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET rating = EXCLUDED.rating,
+                likes = EXCLUDED.likes
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                serde_json::json!(keys).into(),
+                primary_key.as_str().into(),
+                likes.into(),
+            ],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("rating upsert returned no row".to_owned()).into())
+    }
+
     /// Atomically marks an item played and resets its resume position.
     ///
     /// Without an explicit date, repeated and concurrent manual toggles keep

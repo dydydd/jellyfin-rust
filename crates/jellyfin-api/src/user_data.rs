@@ -17,6 +17,14 @@ pub struct UserDataQuery {
     pub user_id: Option<Uuid>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct RatingQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    pub user_id: Option<Uuid>,
+    #[serde(default, alias = "Likes")]
+    pub likes: Option<bool>,
+}
+
 pub(crate) async fn mark_favorite_modern(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -68,6 +76,62 @@ async fn set_favorite(
     let update = state
         .user_data
         .set_favorite_for_authorized_user(target_user_id, item_id, is_favorite)
+        .await?;
+    Ok(Json(update.into()))
+}
+
+pub(crate) async fn set_rating_modern(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<RatingQuery>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    set_rating(state, &uri, headers, query.user_id, item_id, query.likes).await
+}
+
+pub(crate) async fn delete_rating_modern(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<UserDataQuery>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    set_rating(state, &uri, headers, query.user_id, item_id, None).await
+}
+
+pub(crate) async fn set_rating_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<RatingQuery>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    set_rating(state, &uri, headers, Some(user_id), item_id, query.likes).await
+}
+
+pub(crate) async fn delete_rating_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    set_rating(state, &uri, headers, Some(user_id), item_id, None).await
+}
+
+async fn set_rating(
+    state: Arc<AppState>,
+    uri: &axum::http::Uri,
+    headers: HeaderMap,
+    requested_user_id: Option<Uuid>,
+    item_id: Uuid,
+    likes: Option<bool>,
+) -> Result<Json<UserItemDataDto>, ApiError> {
+    let identity = authorization::require_default(&state, &headers, uri).await?;
+    let target_user_id = identity.target_user_id(requested_user_id)?;
+    let update = state
+        .user_data
+        .set_rating_for_authorized_user(target_user_id, item_id, likes)
         .await?;
     Ok(Json(update.into()))
 }
