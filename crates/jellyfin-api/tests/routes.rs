@@ -12,14 +12,15 @@ use jellyfin_data::{
     },
 };
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, prelude::DateTimeUtc,
-    sea_query::Expr,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
+    prelude::DateTimeUtc, sea_query::Expr,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
+const USER_MANAGEMENT_DATABASE_PREFIX: &str = "jellyfin_user_management_routes_";
 const CLIENT_AUTHORIZATION: &str = "MediaBrowser Client=\"Jellyfin.Server%20Integration%20Tests\", DeviceId=\"69420\", Device=\"Apple%20II\", Version=\"10.8.0\"";
 static ADMIN_API_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -344,13 +345,59 @@ async fn activity_log_routes_match_the_official_controller_contract() {
 }
 
 #[tokio::test]
+async fn user_management_matches_the_official_controller_flow() {
+    let administrator = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!(
+        "{USER_MANAGEMENT_DATABASE_PREFIX}{}",
+        Uuid::new_v4().simple()
+    );
+    assert!(
+        database_name.starts_with(USER_MANAGEMENT_DATABASE_PREFIX)
+            && database_name[USER_MANAGEMENT_DATABASE_PREFIX.len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit()),
+        "temporary database name must be generated locally"
+    );
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_user_management_flow(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the assertions follow the stateful official controller test order"
 )]
-async fn user_management_matches_the_official_controller_flow() {
-    let _test_guard = ADMIN_API_TEST_LOCK.lock().await;
-    let database = test_database().await;
+async fn exercise_user_management_flow(database_name: &str) {
+    let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig {
+        url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
+        max_connections: 8,
+        min_connections: 1,
+    })
+    .await
+    .expect("temporary PostgreSQL database must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
     user::Entity::delete_many()
         .filter(user::Column::Username.like("api-admin-%"))
         .exec(&database)
