@@ -1217,6 +1217,10 @@ dependencies = [
 [[package]]
 name = "jellyfin-media-encoding"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+]
 
 [[package]]
 name = "jellyfin-media-encoding-hls"

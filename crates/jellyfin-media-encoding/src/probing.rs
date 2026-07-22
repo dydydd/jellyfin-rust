@@ -1,3 +1,11 @@
+mod media_info;
+
+pub use media_info::{
+    AudioSpatialFormat, MediaAttachment, MediaChapter, MediaInfo, MediaPerson, MediaPersonKind,
+    MediaStream, MediaStreamFlags, MediaStreamType, ProbeContext, ProbeError, normalize_probe_file,
+    normalize_probe_json,
+};
+
 /// Parses an `FFprobe` rational frame rate such as `2997/125`.
 ///
 /// Invalid values and zero divisors return `None`.
