@@ -151,9 +151,23 @@ pub struct MediaStream {
     pub real_frame_rate: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ref_frames: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packet_length: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_anamorphic: Option<bool>,
+    pub video_range_type: VideoRangeType,
     #[serde(rename = "Type")]
     pub stream_type: MediaStreamType,
     pub is_external: bool,
+    pub supports_external_stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery_method: Option<SubtitleDeliveryMethod>,
 }

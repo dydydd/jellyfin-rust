@@ -8,7 +8,7 @@ mod stream_builder;
 
 pub use stream_builder::{
     CodecProfile, CodecType, DeviceProfile, DirectPlayProfile, MediaOptions, StreamBuilder,
-    StreamBuilderError, TranscodingProfile,
+    StreamBuilderError, SubtitleProfile, TranscodingProfile,
 };
 
 /// Helpers for matching comma-delimited media container lists.
@@ -303,6 +303,9 @@ pub struct MediaSourceInfo {
     pub transcoding_container: Option<String>,
     pub transcoding_sub_protocol: MediaStreamProtocol,
     pub media_streams: Vec<crate::MediaStream>,
+    pub default_audio_stream_index: Option<i32>,
+    pub default_subtitle_stream_index: Option<i32>,
+    pub use_most_compatible_transcoding_profile: bool,
     pub live_stream_id: Option<String>,
     pub etag: Option<String>,
     pub video_type: Option<VideoType>,
@@ -323,6 +326,9 @@ impl Default for MediaSourceInfo {
             transcoding_container: None,
             transcoding_sub_protocol: MediaStreamProtocol::default(),
             media_streams: Vec::new(),
+            default_audio_stream_index: None,
+            default_subtitle_stream_index: None,
+            use_most_compatible_transcoding_profile: false,
             live_stream_id: None,
             etag: None,
             video_type: None,
@@ -349,6 +355,24 @@ impl MediaSourceInfo {
                     .iter()
                     .find(|stream| stream.stream_type == crate::MediaStreamType::Audio)
             })
+    }
+
+    #[must_use]
+    pub fn video_stream(&self) -> Option<&crate::MediaStream> {
+        self.media_streams
+            .iter()
+            .find(|stream| stream.stream_type == crate::MediaStreamType::Video)
+    }
+
+    #[must_use]
+    pub fn media_stream(
+        &self,
+        stream_type: crate::MediaStreamType,
+        index: i32,
+    ) -> Option<&crate::MediaStream> {
+        self.media_streams
+            .iter()
+            .find(|stream| stream.stream_type == stream_type && stream.index == index)
     }
 }
 
@@ -626,6 +650,11 @@ impl StreamInfo {
         self.media_source
             .as_ref()?
             .default_audio_stream(self.audio_stream_index)
+    }
+
+    #[must_use]
+    pub fn target_video_stream(&self) -> Option<&crate::MediaStream> {
+        self.media_source.as_ref()?.video_stream()
     }
 
     #[must_use]
