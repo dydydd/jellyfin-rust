@@ -1226,6 +1226,7 @@ name = "jellyfin-live-tv"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "jellyfin-common",
  "jellyfin-model",
  "md-5",
  "roxmltree",

@@ -10,8 +10,9 @@ path = "src/lib.rs"
 
 [dependencies]
 chrono = "0.4"
-md-5 = "0.10"
+jellyfin-common = { path = "../jellyfin-common" }
 jellyfin-model = { path = "../jellyfin-model" }
+md-5 = "0.10"
 roxmltree = "0.21"
 sha2 = "0.10"
 

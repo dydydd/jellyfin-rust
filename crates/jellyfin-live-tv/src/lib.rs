@@ -2,3 +2,4 @@
 
 pub mod listings;
 pub mod recordings;
+pub mod tuner_hosts;
