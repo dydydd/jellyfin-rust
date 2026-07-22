@@ -8,9 +8,10 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    LibraryControllerError, LibraryControllerService, MusicGenreError, MusicGenreService,
-    PersonError, PersonService, PlaystateError, PlaystateService, UserError, UserLibraryError,
-    UserLibraryService, UserService, VirtualFolderService, VirtualFolderServiceError,
+    DashboardError, DashboardPage, DashboardService, LibraryControllerError,
+    LibraryControllerService, MusicGenreError, MusicGenreService, PersonError, PersonService,
+    PlaystateError, PlaystateService, UserError, UserLibraryError, UserLibraryService, UserService,
+    VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
@@ -25,6 +26,7 @@ use uuid::Uuid;
 mod activity_log;
 mod authentication;
 mod branding;
+mod dashboard;
 mod items;
 mod library;
 mod music_genre;
@@ -48,6 +50,7 @@ pub struct AppState {
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) virtual_folders: VirtualFolderService,
+    pub(crate) dashboard: DashboardService,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -67,6 +70,7 @@ impl AppState {
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
+            dashboard: DashboardService::default(),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -104,6 +108,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the plugin dashboard pages exposed by the web configuration API.
+    #[must_use]
+    pub fn with_dashboard_pages(mut self, pages: Vec<DashboardPage>) -> Self {
+        self.dashboard = DashboardService::new(pages);
+        self
+    }
+
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
@@ -118,6 +129,11 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
+        .route("/web/ConfigurationPage", get(dashboard::configuration_page))
+        .route(
+            "/web/ConfigurationPages",
+            get(dashboard::configuration_pages),
+        )
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
@@ -305,6 +321,7 @@ pub(crate) enum ApiError {
     UserLibrary(UserLibraryError),
     LibraryController(LibraryControllerError),
     VirtualFolder(VirtualFolderServiceError),
+    Dashboard(DashboardError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -368,6 +385,12 @@ impl From<LibraryControllerError> for ApiError {
 impl From<VirtualFolderServiceError> for ApiError {
     fn from(error: VirtualFolderServiceError) -> Self {
         Self::VirtualFolder(error)
+    }
+}
+
+impl From<DashboardError> for ApiError {
+    fn from(error: DashboardError) -> Self {
+        Self::Dashboard(error)
     }
 }
 
@@ -468,8 +491,19 @@ impl IntoResponse for ApiError {
                 "Person persistence failed",
             ),
             Self::VirtualFolder(error) => virtual_folder_error_response(&error),
+            Self::Dashboard(error) => dashboard_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn dashboard_error_response(error: &DashboardError) -> (StatusCode, &'static str) {
+    match error {
+        DashboardError::NotFound => (StatusCode::NOT_FOUND, "Dashboard page not found"),
+        DashboardError::Io(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Dashboard page read failed",
+        ),
     }
 }
 

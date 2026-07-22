@@ -1,4 +1,5 @@
 pub mod client_event;
+mod dashboard;
 pub mod library;
 mod library_controller;
 pub mod media_encoding;
@@ -10,6 +11,7 @@ mod user_library;
 mod users;
 mod virtual_folders;
 
+pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use library_controller::{LibraryControllerError, LibraryControllerService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenreService};
 pub use persons::{Person, PersonError, PersonService};
