@@ -7,7 +7,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use jellyfin_controller::{PlaystateError, PlaystateService, UserError, UserService};
+use jellyfin_controller::{
+    PlaystateError, PlaystateService, UserError, UserLibraryError, UserLibraryService, UserService,
+};
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, AuthenticationStoreError, BaseItemError,
     DeviceRepository, entities::user,
@@ -23,6 +25,7 @@ mod authentication;
 mod branding;
 mod playstate;
 mod startup;
+mod user_library;
 mod users;
 
 pub use branding::BrandingOptions;
@@ -33,6 +36,7 @@ pub struct AppState {
     pub(crate) activity_logs: ActivityLogRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) playstate: PlaystateService,
+    pub(crate) user_library: UserLibraryService,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -47,6 +51,7 @@ impl AppState {
             activity_logs: ActivityLogRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             playstate: PlaystateService::new(database.clone()),
+            user_library: UserLibraryService::new(database.clone()),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -128,6 +133,42 @@ pub fn router(state: AppState) -> Router {
             "/Users/{user_id}/PlayedItems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
         )
+        .route(
+            "/Users/{user_id}/Items/Root",
+            get(user_library::get_root_legacy),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}",
+            get(user_library::get_item_legacy),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/Intros",
+            get(user_library::get_intros_legacy),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/LocalTrailers",
+            get(user_library::get_local_trailers_legacy),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/SpecialFeatures",
+            get(user_library::get_special_features_legacy),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/Lyrics",
+            get(user_library::get_lyrics_legacy),
+        )
+        .route("/Items/Root", get(user_library::get_root))
+        .route("/Items/{item_id}", get(user_library::get_item))
+        .route("/Items/{item_id}/Intros", get(user_library::get_intros))
+        .route(
+            "/Items/{item_id}/LocalTrailers",
+            get(user_library::get_local_trailers),
+        )
+        .route(
+            "/Items/{item_id}/SpecialFeatures",
+            get(user_library::get_special_features),
+        )
+        .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
         .with_state(Arc::new(state))
 }
 
@@ -185,6 +226,7 @@ pub(crate) enum ApiError {
     Authentication(AuthenticationError),
     AuthenticationStore(AuthenticationStoreError),
     Playstate(PlaystateError),
+    UserLibrary(UserLibraryError),
     InvalidRequest,
     Unauthorized,
     Forbidden,
@@ -218,6 +260,12 @@ impl From<AuthenticationStoreError> for ApiError {
 impl From<PlaystateError> for ApiError {
     fn from(error: PlaystateError) -> Self {
         Self::Playstate(error)
+    }
+}
+
+impl From<UserLibraryError> for ApiError {
+    fn from(error: UserLibraryError) -> Self {
+        Self::UserLibrary(error)
     }
 }
 
@@ -280,9 +328,21 @@ impl IntoResponse for ApiError {
                 | PlaystateError::User(UserError::NotFound)
                 | PlaystateError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "User or item not found"),
+            Self::UserLibrary(
+                UserLibraryError::UserNotFound
+                | UserLibraryError::ItemNotFound
+                | UserLibraryError::LyricsNotFound
+                | UserLibraryError::User(UserError::NotFound)
+                | UserLibraryError::BaseItem(BaseItemError::NotFound),
+            ) => (StatusCode::NOT_FOUND, "User, item, or lyrics not found"),
+            Self::UserLibrary(UserLibraryError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
             Self::Playstate(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Playstate persistence failed",
+            ),
+            Self::UserLibrary(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Library persistence failed",
             ),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()

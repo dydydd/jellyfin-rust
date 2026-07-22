@@ -1,7 +1,7 @@
 use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::DatabaseConfig;
+use jellyfin_data::{BaseItemRepository, DatabaseConfig};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -19,6 +19,10 @@ async fn main() -> anyhow::Result<()> {
     jellyfin_data::migrate(&database)
         .await
         .context("failed to migrate PostgreSQL")?;
+    BaseItemRepository::new(database.clone())
+        .ensure_user_root()
+        .await
+        .context("failed to initialize the user library root")?;
 
     let initial_user = ensure_initial_user(&database).await?;
 

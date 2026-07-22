@@ -13,7 +13,7 @@ pub use authentication_repository::{
     NewDevice,
 };
 pub use base_item_repository::{
-    BaseItemError, BaseItemHierarchyEntry, BaseItemRepository, NewBaseItem,
+    BaseItemError, BaseItemHierarchyEntry, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
 };
 pub use user_data_repository::{
     NewUserData, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,

@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::entities::{ancestor_id, base_item};
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
+pub const USER_ROOT_FOLDER_ID: Uuid = Uuid::from_u128(2);
 
 /// Values accepted when creating a persisted Jellyfin base item.
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +97,48 @@ impl BaseItemRepository {
     #[must_use]
     pub const fn new(database: DatabaseConnection) -> Self {
         Self { database }
+    }
+
+    /// Returns the single persisted user-library root, creating it when the
+    /// database has not been initialized yet.
+    ///
+    /// The hierarchy advisory lock makes concurrent server startups converge
+    /// on one row. The reserved identifier also makes initialization
+    /// idempotent across restarts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the root cannot be loaded or created.
+    pub async fn ensure_user_root(&self) -> Result<base_item::Model, BaseItemError> {
+        let transaction = self.database.begin().await?;
+        acquire_hierarchy_lock(&transaction).await?;
+
+        if let Some(root) = base_item::Entity::find()
+            .filter(base_item::Column::ItemType.eq("UserRootFolder"))
+            .filter(base_item::Column::ParentId.is_null())
+            .order_by_asc(base_item::Column::DateCreated)
+            .order_by_asc(base_item::Column::Id)
+            .one(&transaction)
+            .await?
+        {
+            transaction.commit().await?;
+            return Ok(root);
+        }
+
+        let root = base_item::ActiveModel {
+            id: Set(USER_ROOT_FOLDER_ID),
+            item_type: Set("UserRootFolder".to_owned()),
+            name: Set(Some("Root".to_owned())),
+            sort_name: Set(Some("Root".to_owned())),
+            is_folder: Set(true),
+            ..Default::default()
+        };
+        let root = base_item::Entity::insert(root)
+            .exec_with_returning(&transaction)
+            .await
+            .map_err(map_database_error)?;
+        transaction.commit().await?;
+        Ok(root)
     }
 
     /// Inserts an item and atomically maintains its closure-table rows.
