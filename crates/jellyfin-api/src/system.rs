@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     body::Body,
     extract::{OriginalUri, Query, State, rejection::QueryRejection},
     http::{HeaderMap, HeaderValue, Response, header},
 };
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use jellyfin_controller::SystemLogFile;
+use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 
 use crate::{ApiError, AppState, authentication};
@@ -19,14 +22,39 @@ pub(crate) struct LogFileQuery {
     name: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct LogFileDto {
+    date_created: DateTime<Utc>,
+    date_modified: DateTime<Utc>,
+    size: i64,
+    name: String,
+}
+
+pub(crate) async fn get_logs(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<LogFileDto>>, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    Ok(Json(
+        state
+            .system_logs
+            .list()
+            .await
+            .into_iter()
+            .map(LogFileDto::from)
+            .collect(),
+    ))
+}
+
 pub(crate) async fn get_log_file(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     query: Result<Query<LogFileQuery>, QueryRejection>,
 ) -> Result<Response<Body>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    identity.require_administrator()?;
+    require_elevated(&state, &headers, &uri).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let name = query
         .name
@@ -39,4 +67,25 @@ pub(crate) async fn get_log_file(
         .header(header::CONTENT_TYPE, TEXT_UTF8)
         .body(Body::from_stream(stream))
         .map_err(|_| ApiError::Internal)
+}
+
+impl From<SystemLogFile> for LogFileDto {
+    fn from(log: SystemLogFile) -> Self {
+        Self {
+            date_created: log.date_created,
+            date_modified: log.date_modified,
+            size: log.size,
+            name: log.name,
+        }
+    }
+}
+
+async fn require_elevated(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Result<(), ApiError> {
+    authentication::authenticated_identity(state, headers, Some(uri))
+        .await?
+        .require_administrator()
 }

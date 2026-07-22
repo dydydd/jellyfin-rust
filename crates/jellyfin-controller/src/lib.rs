@@ -28,7 +28,7 @@ pub use playstate::{
     PlaystateError, PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
 };
 pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry};
-pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogService};
+pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};
 pub use videos::{VideoError, VideoService};

@@ -186,6 +186,7 @@ pub fn router(state: AppState) -> Router {
         .route("/System/Info/Public", get(public_system_info))
         .route("/System/Ping", get(ping).post(ping))
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
+        .route("/System/Logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))

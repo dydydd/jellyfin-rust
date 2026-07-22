@@ -2,10 +2,21 @@ use std::{
     io,
     path::{Component, Path, PathBuf},
     sync::Arc,
+    time::SystemTime,
 };
 
+use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokio::fs::File;
+
+/// Metadata exposed by Jellyfin's server-log listing endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemLogFile {
+    pub date_created: DateTime<Utc>,
+    pub date_modified: DateTime<Utc>,
+    pub size: i64,
+    pub name: String,
+}
 
 /// An opened server log whose path has already passed containment checks.
 pub struct OpenedSystemLog {
@@ -46,6 +57,53 @@ impl SystemLogService {
         Self {
             log_directory: Arc::new(log_directory.into()),
         }
+    }
+
+    /// Lists top-level `.txt` and `.log` files using Jellyfin's stable order.
+    ///
+    /// Filesystem enumeration failures produce an empty list, matching the
+    /// official controller's best-effort behavior for unavailable log paths.
+    pub async fn list(&self) -> Vec<SystemLogFile> {
+        let Ok(mut entries) = tokio::fs::read_dir(self.log_directory.as_ref()).await else {
+            return Vec::new();
+        };
+        let mut files = Vec::new();
+        loop {
+            let entry = match entries.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(_) => return Vec::new(),
+            };
+            let Ok(file_type) = entry.file_type().await else {
+                return Vec::new();
+            };
+            if !file_type.is_file() || !is_supported_log_path(&entry.path()) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata().await else {
+                return Vec::new();
+            };
+            let Ok(size) = i64::try_from(metadata.len()) else {
+                return Vec::new();
+            };
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let created = metadata.created().unwrap_or(modified);
+            files.push(SystemLogFile {
+                date_created: created.into(),
+                date_modified: modified.into(),
+                size,
+                name: entry.file_name().to_string_lossy().into_owned(),
+            });
+        }
+
+        files.sort_by(|left, right| {
+            right
+                .date_modified
+                .cmp(&left.date_modified)
+                .then_with(|| right.date_created.cmp(&left.date_created))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        files
     }
 
     /// Opens the unique top-level log whose basename equals `name`
@@ -109,6 +167,14 @@ impl SystemLogService {
 
         Ok(OpenedSystemLog { file })
     }
+}
+
+fn is_supported_log_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("txt") || extension.eq_ignore_ascii_case("log")
+        })
 }
 
 fn unicode_ordinal_ignore_case(left: &str, right: &str) -> bool {
