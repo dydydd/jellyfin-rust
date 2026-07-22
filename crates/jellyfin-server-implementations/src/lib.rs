@@ -2,6 +2,7 @@ mod cryptography;
 mod ignore_patterns;
 mod managed_file_system;
 mod media_stream_selector;
+mod order_mapper;
 mod playlists;
 mod quick_connect;
 mod sorting;
@@ -14,6 +15,7 @@ pub use cryptography::{
 pub use ignore_patterns::IgnorePatterns;
 pub use managed_file_system::{ManagedFileInfo, ManagedFileSystem, ManagedFileSystemError};
 pub use media_stream_selector::MediaStreamSelector;
+pub use order_mapper::{OrderMapper, OrderMappingError};
 pub use playlists::{PlaylistIndexError, determine_adjusted_playlist_index};
 pub use quick_connect::{
     AuthorizationInfo, QuickConnectAuthenticationResult, QuickConnectCapability, QuickConnectError,
