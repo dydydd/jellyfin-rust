@@ -87,6 +87,35 @@ pub(crate) struct LatestItemsQuery {
     group_items: bool,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct SuggestionsQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(
+        default,
+        rename = "mediaType",
+        alias = "MediaType",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    media_types: Vec<String>,
+    #[serde(
+        default,
+        rename = "type",
+        alias = "Type",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    item_types: Vec<String>,
+    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+    #[serde(
+        default,
+        rename = "enableTotalRecordCount",
+        alias = "EnableTotalRecordCount"
+    )]
+    enable_total_record_count: bool,
+}
+
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -138,6 +167,23 @@ pub(crate) async fn latest_legacy(
     latest_for(state, headers, Some(user_id), query).await
 }
 
+pub(crate) async fn suggestions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<SuggestionsQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    suggestions_for(state, headers, query.user_id, query).await
+}
+
+pub(crate) async fn suggestions_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+    Query(query): Query<SuggestionsQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    suggestions_for(state, headers, Some(user_id), query).await
+}
+
 async fn get_for(
     state: Arc<AppState>,
     headers: HeaderMap,
@@ -154,6 +200,41 @@ async fn get_for(
     Ok(Json(
         page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
     ))
+}
+
+async fn suggestions_for(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    requested_user_id: Option<Uuid>,
+    query: SuggestionsQuery,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = requested_user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
+    let enable_total_record_count = query.enable_total_record_count;
+    let page = state
+        .user_library
+        .query_items(
+            &authenticated.user,
+            target_user_id,
+            BaseItemQuery {
+                recursive: true,
+                include_item_types: query.item_types,
+                media_types: query.media_types,
+                is_virtual_item: Some(false),
+                order: BaseItemOrder::Random,
+                start_index: query.start_index,
+                limit: query.limit,
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+    let mut result = page_to_dto(state.as_ref(), page, Vec::new(), target_user_id).await?;
+    if !enable_total_record_count {
+        result.total_record_count = result.items.len();
+    }
+    Ok(Json(result))
 }
 
 async fn resume_for(

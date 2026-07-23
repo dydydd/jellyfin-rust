@@ -10,7 +10,7 @@ use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr,
     DeleteResult, EntityTrait, FromQueryResult, IsolationLevel, PaginatorTrait, QueryFilter,
     QueryOrder, QuerySelect, SqlErr, Statement, TransactionTrait, Value as SeaValue,
-    sea_query::{Alias, Expr, Query, extension::postgres::PgExpr},
+    sea_query::{Alias, Expr, Order, Query, extension::postgres::PgExpr},
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -88,6 +88,7 @@ pub enum BaseItemOrder {
     DateCreatedDescending,
     DatePlayedAscending,
     DatePlayedDescending,
+    Random,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -463,6 +464,7 @@ impl BaseItemRepository {
             BaseItemOrder::DateCreatedDescending => {
                 select.order_by_desc(base_item::Column::DateCreated)
             }
+            BaseItemOrder::Random => select.order_by(Expr::cust("random()"), Order::Asc),
             BaseItemOrder::DatePlayedAscending | BaseItemOrder::DatePlayedDescending => {
                 unreachable!("date-played queries are handled by query_by_date_played")
             }
@@ -657,6 +659,7 @@ impl BaseItemRepository {
             BaseItemOrder::DatePlayedDescending => "date_played DESC NULLS LAST, id",
             BaseItemOrder::DateCreatedDescending => "date_created DESC, id",
             BaseItemOrder::SortName => "sort_name, id",
+            BaseItemOrder::Random => "random(), id",
         };
         self.query_raw_page(cte, values, "dated", order, "DatePlayed", query)
             .await
