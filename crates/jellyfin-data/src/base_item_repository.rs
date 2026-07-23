@@ -33,6 +33,7 @@ pub struct NewBaseItem {
     pub sort_name: Option<String>,
     pub media_type: Option<String>,
     pub overview: Option<String>,
+    pub official_rating: Option<String>,
     pub index_number: Option<i32>,
     pub parent_index_number: Option<i32>,
     pub production_year: Option<i32>,
@@ -59,6 +60,7 @@ impl NewBaseItem {
             sort_name: None,
             media_type: None,
             overview: None,
+            official_rating: None,
             index_number: None,
             parent_index_number: None,
             production_year: None,
@@ -236,6 +238,7 @@ impl BaseItemRepository {
             sort_name: Set(item.sort_name),
             media_type: Set(item.media_type),
             overview: Set(item.overview),
+            official_rating: Set(item.official_rating),
             index_number: Set(item.index_number),
             parent_index_number: Set(item.parent_index_number),
             production_year: Set(item.production_year),
@@ -474,6 +477,33 @@ impl BaseItemRepository {
             total_record_count: u64::try_from(count).unwrap_or_default(),
             start_index: query.start_index,
         })
+    }
+
+    /// Queries distinct non-empty official ratings through PostgreSQL.
+    ///
+    /// The `base_items_official_rating_idx` partial index keeps the legacy
+    /// filter endpoint selective even on large libraries where most rows do
+    /// not carry a parental rating.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the filtered distinct-rating query fails.
+    pub async fn official_ratings(
+        &self,
+        query: &BaseItemQuery,
+    ) -> Result<Vec<String>, BaseItemError> {
+        let (cte, values) = official_ratings_cte(query);
+        Ok(self
+            .database
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!("{cte} SELECT official_rating FROM ratings ORDER BY official_rating ASC"),
+                values,
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<String>("", "official_rating"))
+            .collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Queries persisted library items with stable sorting and database-side
@@ -857,6 +887,7 @@ impl BaseItemRepository {
             sort_name: Set(item.sort_name),
             media_type: Set(item.media_type),
             overview: Set(item.overview),
+            official_rating: Set(item.official_rating),
             index_number: Set(item.index_number),
             parent_index_number: Set(item.parent_index_number),
             production_year: Set(item.production_year),
@@ -1038,7 +1069,7 @@ impl BaseItemRepository {
 }
 
 const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \
-    clean_name, sort_name, media_type, overview, index_number, parent_index_number, production_year, \
+    clean_name, sort_name, media_type, overview, official_rating, index_number, parent_index_number, production_year, \
     runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, primary_version_id, series_id, season_id, \
     series_presentation_unique_key, date_created, date_modified, row_version";
 
@@ -1149,6 +1180,25 @@ fn production_years_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     sql.push_str(
         "), years AS (\
              SELECT DISTINCT production_year FROM filtered\
+         )",
+    );
+    (sql, values)
+}
+
+fn official_ratings_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = Vec::new();
+    let mut sql = String::from(
+        "WITH filtered AS (\
+             SELECT item.official_rating \
+             FROM jellyfin.base_items AS item \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND item.official_rating IS NOT NULL \
+               AND item.official_rating <> ''",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query);
+    sql.push_str(
+        "), ratings AS (\
+             SELECT DISTINCT official_rating FROM filtered\
          )",
     );
     (sql, values)

@@ -148,6 +148,112 @@ async fn filters2_returns_official_query_filter_shape() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn filters_legacy_returns_distinct_library_filters() {
+    let fixture = Fixture::new().await;
+
+    assert_eq!(
+        fixture
+            .request("/Items/Filters", Credential::None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let movie_filters = body_json(
+        fixture
+            .request(
+                "/Items/Filters?includeItemTypes=Movie",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_string_array(
+        &movie_filters["Genres"],
+        &[&fixture.drama_genre, &fixture.nested_genre],
+    );
+    assert_string_array(
+        &movie_filters["Tags"],
+        &[&fixture.featured_tag, &fixture.root_tag],
+    );
+    assert_string_array(&movie_filters["OfficialRatings"], &["PG", "PG-13"]);
+    assert_i32_array(&movie_filters["Years"], &[1984, 1999]);
+    assert!(movie_filters.get("genres").is_none());
+
+    let audio_filters = body_json(
+        fixture
+            .request(
+                "/Items/Filters?mediaTypes=Audio",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_string_array(&audio_filters["Genres"], &[&fixture.music_genre]);
+    assert_string_array(&audio_filters["Tags"], &[&fixture.music_tag]);
+    assert_string_array(&audio_filters["OfficialRatings"], &["TV-G"]);
+    assert_i32_array(&audio_filters["Years"], &[2024]);
+
+    let parent_scoped = body_json(
+        fixture
+            .request(
+                &format!("/Items/Filters?parentId={}", fixture.parent_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_string_array(&parent_scoped["Genres"], &[&fixture.nested_genre]);
+    assert_string_array(&parent_scoped["Tags"], &[&fixture.featured_tag]);
+    assert_string_array(&parent_scoped["OfficialRatings"], &["PG"]);
+    assert_i32_array(&parent_scoped["Years"], &[1984]);
+
+    let non_folder_parent = body_json(
+        fixture
+            .request(
+                &format!("/Items/Filters?parentId={}", fixture.movie_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_string_array(&non_folder_parent["Genres"], &[]);
+    assert_string_array(&non_folder_parent["Tags"], &[]);
+    assert_string_array(&non_folder_parent["OfficialRatings"], &[]);
+    assert_i32_array(&non_folder_parent["Years"], &[]);
+
+    let trailer_special_case = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items/Filters?parentId={}&includeItemTypes=Trailer",
+                    fixture.parent_id
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_string_array(&trailer_special_case["Genres"], &[]);
+    assert_string_array(&trailer_special_case["Tags"], &[]);
+    assert_string_array(&trailer_special_case["OfficialRatings"], &[]);
+    assert_i32_array(&trailer_special_case["Years"], &[]);
+
+    assert_eq!(
+        fixture
+            .request(
+                &format!("/Items/Filters?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    fixture.cleanup().await;
+}
+
 fn assert_pairs(value: &Value, expected: &[(&str, Uuid)]) {
     let items = value.as_array().expect("name-guid pairs");
     assert_eq!(items.len(), expected.len());
@@ -163,6 +269,28 @@ fn assert_pairs(value: &Value, expected: &[(&str, Uuid)]) {
     let expected = expected
         .iter()
         .map(|(name, id)| ((*name).to_owned(), id.to_string()))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn assert_string_array(value: &Value, expected: &[&str]) {
+    let actual = value
+        .as_array()
+        .expect("string array")
+        .iter()
+        .map(|item| item.as_str().expect("string value"))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn assert_i32_array(value: &Value, expected: &[i32]) {
+    let actual = value
+        .as_array()
+        .expect("integer array")
+        .iter()
+        .map(|item| {
+            i32::try_from(item.as_i64().expect("integer value")).expect("i32 integer value")
+        })
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
 }
@@ -189,6 +317,7 @@ struct Fixture {
     app: Router,
     user_id: Uuid,
     other_user_id: Uuid,
+    movie_id: Uuid,
     parent_id: Uuid,
     user_token: String,
     admin_token: String,
@@ -200,6 +329,9 @@ struct Fixture {
     nested_genre_id: Uuid,
     trailer_genre: String,
     trailer_genre_id: Uuid,
+    root_tag: String,
+    featured_tag: String,
+    music_tag: String,
 }
 
 impl Fixture {
@@ -245,16 +377,46 @@ impl Fixture {
         let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
 
         let items = BaseItemRepository::new(database.clone());
-        let movie = create_item(&items, "Movie", "Filter Movie", None, false).await;
-        let audio = create_item(&items, "Audio", "Filter Track", None, false).await;
-        let trailer = create_item(&items, "Trailer", "Filter Trailer", None, false).await;
-        let parent = create_item(&items, "Folder", "Filter Parent", None, true).await;
-        let nested_movie = create_item(
+        let root = items.ensure_user_root().await.expect("user root creation");
+        let movie = create_media_item(
+            &items,
+            "Movie",
+            "Filter Movie",
+            Some(root.id),
+            "Video",
+            1999,
+            "PG-13",
+        )
+        .await;
+        let audio = create_media_item(
+            &items,
+            "Audio",
+            "Filter Track",
+            Some(root.id),
+            "Audio",
+            2024,
+            "TV-G",
+        )
+        .await;
+        let trailer = create_media_item(
+            &items,
+            "Trailer",
+            "Filter Trailer",
+            Some(root.id),
+            "Video",
+            2020,
+            "R",
+        )
+        .await;
+        let parent = create_item(&items, "Folder", "Filter Parent", Some(root.id), true).await;
+        let nested_movie = create_media_item(
             &items,
             "Movie",
             "Nested Filter Movie",
             Some(parent.id),
-            false,
+            "Video",
+            1984,
+            "PG",
         )
         .await;
 
@@ -283,6 +445,25 @@ impl Fixture {
             .link(trailer.id, item_value::ItemValueType::Genre, &trailer_genre)
             .await
             .expect("trailer genre");
+        let root_tag = format!("Root Tag {suffix}");
+        values
+            .link(movie.id, item_value::ItemValueType::Tags, &root_tag)
+            .await
+            .expect("movie tag");
+        let featured_tag = format!("Featured {suffix}");
+        values
+            .link(
+                nested_movie.id,
+                item_value::ItemValueType::Tags,
+                &featured_tag,
+            )
+            .await
+            .expect("nested tag");
+        let music_tag = format!("Music Tag {suffix}");
+        values
+            .link(audio.id, item_value::ItemValueType::Tags, &music_tag)
+            .await
+            .expect("audio tag");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -296,6 +477,7 @@ impl Fixture {
             app,
             user_id: user.id,
             other_user_id: other_user.id,
+            movie_id: movie.id,
             parent_id: parent.id,
             user_token,
             admin_token,
@@ -307,6 +489,9 @@ impl Fixture {
             nested_genre_id: nested.item_value_id,
             trailer_genre,
             trailer_genre_id: trailer_value.item_value_id,
+            root_tag,
+            featured_tag,
+            music_tag,
         }
     }
 
@@ -343,6 +528,25 @@ impl Fixture {
             .expect("temporary PostgreSQL database cleanup must succeed");
         administrator.close().await.unwrap();
     }
+}
+
+async fn create_media_item(
+    repository: &BaseItemRepository,
+    item_type: &str,
+    name: &str,
+    parent_id: Option<Uuid>,
+    media_type: &str,
+    production_year: i32,
+    official_rating: &str,
+) -> base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.parent_id = parent_id;
+    item.media_type = Some(media_type.to_owned());
+    item.production_year = Some(production_year);
+    item.official_rating = Some(official_rating.to_owned());
+    repository.create(item).await.expect("base item creation")
 }
 
 async fn create_item(

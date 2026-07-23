@@ -34,6 +34,7 @@ mod m20260723_000031_add_session_playback_state;
 mod m20260723_000032_create_password_resets;
 mod m20260724_000033_create_display_preferences;
 mod m20260724_000034_optimize_year_queries;
+mod m20260724_000035_add_base_item_official_rating;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -103,6 +104,8 @@ pub use m20260723_000032_create_password_resets::Migration as CreatePasswordRese
 pub use m20260724_000033_create_display_preferences::Migration as CreateDisplayPreferencesMigration;
 #[doc(hidden)]
 pub use m20260724_000034_optimize_year_queries::Migration as OptimizeYearQueriesMigration;
+#[doc(hidden)]
+pub use m20260724_000035_add_base_item_official_rating::Migration as AddBaseItemOfficialRatingMigration;
 
 pub struct Migrator;
 
@@ -144,6 +147,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260723_000032_create_password_resets::Migration),
             Box::new(m20260724_000033_create_display_preferences::Migration),
             Box::new(m20260724_000034_optimize_year_queries::Migration),
+            Box::new(m20260724_000035_add_base_item_official_rating::Migration),
         ]
     }
 }

@@ -12,6 +12,7 @@ const TABLES_AND_INDEXES_SQL: &str = r"
         sort_name text,
         media_type varchar(64),
         overview text,
+        official_rating text,
         index_number integer,
         parent_index_number integer,
         production_year integer,

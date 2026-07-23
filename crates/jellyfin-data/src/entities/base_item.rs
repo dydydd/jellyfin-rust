@@ -17,6 +17,7 @@ pub struct Model {
     pub sort_name: Option<String>,
     pub media_type: Option<String>,
     pub overview: Option<String>,
+    pub official_rating: Option<String>,
     pub index_number: Option<i32>,
     pub parent_index_number: Option<i32>,
     pub production_year: Option<i32>,

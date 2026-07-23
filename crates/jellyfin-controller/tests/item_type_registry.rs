@@ -183,6 +183,7 @@ fn item(item_type: &str) -> base_item::Model {
         sort_name: None,
         media_type: None,
         overview: None,
+        official_rating: None,
         index_number: None,
         parent_index_number: None,
         production_year: None,

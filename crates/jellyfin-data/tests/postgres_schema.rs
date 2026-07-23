@@ -1,5 +1,6 @@
 use jellyfin_migration::{
-    AddUserPolicyProvidersMigration, CreateUsersMigration, OptimizeYearQueriesMigration,
+    AddBaseItemOfficialRatingMigration, AddUserPolicyProvidersMigration, CreateUsersMigration,
+    OptimizeYearQueriesMigration,
 };
 use sea_orm::{ConnectionTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -42,6 +43,14 @@ async fn postgres_schema_installs_specialized_indexes() {
         .up(&schema)
         .await
         .expect("the year-query DDL must remain idempotent");
+    AddBaseItemOfficialRatingMigration
+        .up(&schema)
+        .await
+        .expect("reapplying the official-rating DDL must succeed");
+    AddBaseItemOfficialRatingMigration
+        .up(&schema)
+        .await
+        .expect("the official-rating DDL must remain idempotent");
 
     let rows = database
         .query_all(Statement::from_string(
@@ -83,6 +92,11 @@ async fn postgres_schema_installs_specialized_indexes() {
         base_item_index_names
             .iter()
             .any(|name| name == "base_items_production_year_idx")
+    );
+    assert!(
+        base_item_index_names
+            .iter()
+            .any(|name| name == "base_items_official_rating_idx")
     );
 
     let columns = database
