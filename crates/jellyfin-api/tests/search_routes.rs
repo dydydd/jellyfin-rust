@@ -361,7 +361,7 @@ async fn exercise_search_routes(database_name: &str) {
     let genre_hints = body_json(
         request(
             &app,
-            "/Search/Hints?searchTerm=Cyberpunk&includeMedia=false&includeGenres=true",
+            "/Search/Hints?searchTerm=Cyberpunk&includeMedia=false&includeGenres=true&includeItemTypes=Genre",
             Some(&user_token),
         )
         .await,
@@ -376,6 +376,20 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(genre_hints["SearchHints"][0]["MatchedTerm"], "Cyberpunk");
     assert_eq!(genre_hints["SearchHints"][0]["Type"], "Genre");
     assert_eq!(genre_hints["SearchHints"][0]["IsFolder"], true);
+
+    let genre_movie_type_filtered = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Cyberpunk&includeMedia=false&includeGenres=true&includeItemTypes=Movie",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        genre_movie_type_filtered,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
 
     let genre_series_filtered = body_json(
         request(
@@ -408,7 +422,7 @@ async fn exercise_search_routes(database_name: &str) {
     let people_hints = body_json(
         request(
             &app,
-            "/Search/Hints?searchTerm=Laurence&includeMedia=false&includeGenres=false&includeStudios=false&includeArtists=false&includePeople=true&includeItemTypes=Movie&mediaTypes=Video",
+            "/Search/Hints?searchTerm=Laurence&includeMedia=false&includeGenres=false&includeStudios=false&includeArtists=false&includePeople=true&includeItemTypes=Person&mediaTypes=Video",
             Some(&user_token),
         )
         .await,
@@ -423,6 +437,20 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(people_hints["SearchHints"][0]["MatchedTerm"], "Laurence");
     assert_eq!(people_hints["SearchHints"][0]["Type"], "Person");
     assert!(people_hints["SearchHints"][0].get("IsFolder").is_none());
+
+    let people_movie_type_filtered = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Laurence&includeMedia=false&includeGenres=false&includeStudios=false&includeArtists=false&includePeople=true&includeItemTypes=Movie",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        people_movie_type_filtered,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
 
     let people_filtered = body_json(
         request(

@@ -115,7 +115,10 @@ pub(crate) async fn hints(
         result.search_hints.extend(media.search_hints);
     }
 
-    if query.include_people.unwrap_or(true) {
+    if query.include_people.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Person"])
+        && !excludes_hint_type(&query.exclude_item_types, &["Person"])
+    {
         let page = state
             .persons
             .list(
@@ -125,8 +128,6 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -148,7 +149,10 @@ pub(crate) async fn hints(
         );
     }
 
-    if query.include_genres.unwrap_or(true) {
+    if query.include_genres.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Genre"])
+        && !excludes_hint_type(&query.exclude_item_types, &["Genre"])
+    {
         let page = state
             .genres
             .list(
@@ -158,8 +162,6 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -181,7 +183,10 @@ pub(crate) async fn hints(
         );
     }
 
-    if query.include_studios.unwrap_or(true) {
+    if query.include_studios.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Studio"])
+        && !excludes_hint_type(&query.exclude_item_types, &["Studio"])
+    {
         let page = state
             .studios
             .list(
@@ -191,8 +196,6 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -214,7 +217,10 @@ pub(crate) async fn hints(
         );
     }
 
-    if query.include_artists.unwrap_or(true) {
+    if query.include_artists.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["MusicArtist"])
+        && !excludes_hint_type(&query.exclude_item_types, &["MusicArtist"])
+    {
         let page = state
             .artists
             .list(
@@ -225,8 +231,6 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    include_item_types: query.include_item_types,
-                    exclude_item_types,
                     media_types: query.media_types,
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -262,6 +266,23 @@ fn search_exclude_item_types(requested: &[String]) -> Vec<String> {
         }
     }
     exclude_item_types
+}
+
+fn includes_hint_type(include_item_types: &[String], hint_types: &[&str]) -> bool {
+    include_item_types.is_empty()
+        || hint_types.iter().any(|hint_type| {
+            include_item_types
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(hint_type))
+        })
+}
+
+fn excludes_hint_type(exclude_item_types: &[String], hint_types: &[&str]) -> bool {
+    hint_types.iter().any(|hint_type| {
+        exclude_item_types
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(hint_type))
+    })
 }
 
 fn media_search_hint_result(page: BaseItemPage, matched_term: &str) -> SearchHintResult {
