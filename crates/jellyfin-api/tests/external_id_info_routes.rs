@@ -5,8 +5,11 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice};
-use sea_orm::ConnectionTrait;
+use jellyfin_data::{
+    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
+    entities::base_item,
+};
+use sea_orm::{ConnectionTrait, EntityTrait};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -102,6 +105,15 @@ async fn exercise_route(database_name: &str) {
     ]);
     assert_eq!(body_json(response).await, expected);
 
+    assert_remote_search_contract(
+        &route_app,
+        &database,
+        movie.id,
+        &ordinary_token,
+        &administrator_token,
+    )
+    .await;
+
     let restarted = app(database.clone());
     let response = get(&restarted, movie.id, Some(&administrator_token)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -111,6 +123,112 @@ async fn exercise_route(database_name: &str) {
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_remote_search_contract(
+    app: &Router,
+    database: &sea_orm::DatabaseConnection,
+    item_id: Uuid,
+    ordinary_token: &str,
+    administrator_token: &str,
+) {
+    let body = json!({
+        "SearchInfo": {
+            "Name": "Remote Candidate",
+            "ProviderIds": { "Imdb": "tt0000001" }
+        },
+        "ItemId": item_id,
+        "SearchProviderName": "Example",
+        "IncludeDisabledProviders": true
+    });
+    for route in [
+        "/Items/RemoteSearch/Movie",
+        "/Items/RemoteSearch/Trailer",
+        "/Items/RemoteSearch/MusicVideo",
+        "/Items/RemoteSearch/Series",
+        "/Items/RemoteSearch/BoxSet",
+        "/Items/RemoteSearch/MusicArtist",
+        "/Items/RemoteSearch/MusicAlbum",
+        "/Items/RemoteSearch/Book",
+    ] {
+        assert_eq!(
+            post_json(app, route, None, &body).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{route}"
+        );
+        let response = post_json(app, route, Some(ordinary_token), &body).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            body_json(response).await,
+            Value::Array(Vec::new()),
+            "{route}"
+        );
+    }
+
+    let person = post_json(
+        app,
+        "/Items/RemoteSearch/Person",
+        Some(ordinary_token),
+        &body,
+    )
+    .await;
+    assert_eq!(person.status(), StatusCode::FORBIDDEN);
+    let person = post_json(
+        app,
+        "/Items/RemoteSearch/Person",
+        Some(administrator_token),
+        &body,
+    )
+    .await;
+    assert_eq!(person.status(), StatusCode::OK);
+    assert_eq!(body_json(person).await, Value::Array(Vec::new()));
+
+    let invalid_body = post_raw_with_content_type(
+        app,
+        "/Items/RemoteSearch/Movie",
+        Some(ordinary_token),
+        b"not-json",
+    )
+    .await;
+    assert_eq!(invalid_body.status(), StatusCode::BAD_REQUEST);
+
+    let apply_body = json!({
+        "Name": "Applied Candidate",
+        "ProviderIds": {
+            "Imdb": "tt7654321",
+            "Tmdb": "98765"
+        },
+        "ProductionYear": 2026,
+        "Artists": []
+    });
+    let apply_route = format!("/Items/RemoteSearch/Apply/{item_id}?replaceAllImages=false");
+    assert_eq!(
+        post_json(app, &apply_route, Some(ordinary_token), &apply_body)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            app,
+            &format!("/Items/RemoteSearch/Apply/{}", Uuid::new_v4()),
+            Some(administrator_token),
+            &apply_body
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let applied = post_json(app, &apply_route, Some(administrator_token), &apply_body).await;
+    assert_eq!(applied.status(), StatusCode::NO_CONTENT);
+    let stored = base_item::Entity::find_by_id(item_id)
+        .one(database)
+        .await
+        .expect("item lookup")
+        .expect("item exists after apply");
+    let metadata = stored.data.expect("metadata after apply");
+    assert_eq!(metadata["ProviderIds"]["Imdb"], "tt7654321");
+    assert_eq!(metadata["ProviderIds"]["Tmdb"], "98765");
 }
 
 fn app(database: sea_orm::DatabaseConnection) -> Router {
@@ -142,6 +260,31 @@ async fn get(app: &Router, item_id: Uuid, token: Option<&str>) -> axum::response
     }
     app.clone()
         .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn post_json(
+    app: &Router,
+    uri: &str,
+    token: Option<&str>,
+    body: &Value,
+) -> axum::response::Response {
+    post_raw_with_content_type(app, uri, token, body.to_string().as_bytes()).await
+}
+
+async fn post_raw_with_content_type(
+    app: &Router,
+    uri: &str,
+    token: Option<&str>,
+    body: &[u8],
+) -> axum::response::Response {
+    let mut request = Request::post(uri).header("content-type", "application/json");
+    if let Some(token) = token {
+        request = request.header("x-emby-token", token);
+    }
+    app.clone()
+        .oneshot(request.body(Body::from(body.to_vec())).unwrap())
         .await
         .unwrap()
 }

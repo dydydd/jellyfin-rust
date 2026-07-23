@@ -1,5 +1,6 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashMap};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,28 @@ pub struct RemoteImageResult {
 pub struct ImageProviderInfo {
     pub name: String,
     pub supported_images: Vec<ImageType>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct RemoteSearchResult {
+    pub name: Option<String>,
+    pub provider_ids: HashMap<String, String>,
+    pub production_year: Option<i32>,
+    pub index_number: Option<i32>,
+    pub index_number_end: Option<i32>,
+    pub parent_index_number: Option<i32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::serde_datetime::option"
+    )]
+    pub premiere_date: Option<DateTime<Utc>>,
+    pub image_url: Option<String>,
+    pub search_provider_name: Option<String>,
+    pub overview: Option<String>,
+    pub album_artist: Option<Box<RemoteSearchResult>>,
+    pub artists: Vec<RemoteSearchResult>,
 }
 
 /// Orders remote images by Jellyfin's language, rating, and vote priorities.

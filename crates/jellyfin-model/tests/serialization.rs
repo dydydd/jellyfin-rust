@@ -5,8 +5,9 @@ use jellyfin_model::{
     ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
     MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
     PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RemoteImageResult, RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration,
-    SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    RemoteImageResult, RemoteSearchResult, RepositoryInfo, SearchHint, SearchHintResult,
+    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto,
+    UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -135,6 +136,28 @@ fn remote_images_use_official_empty_provider_contract() {
     .unwrap();
     assert_eq!(provider["Name"], "Example");
     assert_eq!(provider["SupportedImages"], json!(["Primary", "Backdrop"]));
+}
+
+#[test]
+fn remote_search_result_uses_official_provider_contract() {
+    let mut provider_ids = HashMap::new();
+    provider_ids.insert("Imdb".to_owned(), "tt7654321".to_owned());
+    let value = serde_json::to_value(RemoteSearchResult {
+        name: Some("Applied Candidate".to_owned()),
+        provider_ids,
+        production_year: Some(2026),
+        search_provider_name: Some("Example".to_owned()),
+        artists: Vec::new(),
+        ..RemoteSearchResult::default()
+    })
+    .unwrap();
+
+    assert_eq!(value["Name"], "Applied Candidate");
+    assert_eq!(value["ProviderIds"]["Imdb"], "tt7654321");
+    assert_eq!(value["ProductionYear"], 2026);
+    assert_eq!(value["SearchProviderName"], "Example");
+    assert_eq!(value["Artists"], json!([]));
+    assert!(value.get("provider_ids").is_none());
 }
 
 #[test]

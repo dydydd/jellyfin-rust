@@ -830,6 +830,43 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Items/{item_id}/ExternalIdInfos",
             get(item_lookup::external_id_infos),
         )
+        .route(
+            "/Items/RemoteSearch/Movie",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/Items/RemoteSearch/Trailer",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/Items/RemoteSearch/MusicVideo",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/Items/RemoteSearch/Series",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/Items/RemoteSearch/BoxSet",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/Items/RemoteSearch/MusicArtist",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/Items/RemoteSearch/MusicAlbum",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/Items/RemoteSearch/Person",
+            post(item_lookup::remote_search_elevated),
+        )
+        .route("/Items/RemoteSearch/Book", post(item_lookup::remote_search))
+        .route(
+            "/Items/RemoteSearch/Apply/{item_id}",
+            post(item_lookup::apply_remote_search),
+        )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
         .route(
             "/Items/{item_id}/LocalTrailers",
