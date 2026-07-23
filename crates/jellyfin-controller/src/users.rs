@@ -3,7 +3,7 @@ use jellyfin_data::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
     entities::{user, user_profile_image},
 };
-use jellyfin_model::UserPolicy;
+use jellyfin_model::{NameIdPair, UserPolicy};
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
     PaginatorTrait, QueryFilter, QueryOrder, Set, SqlErr, Statement, TransactionTrait,
@@ -15,6 +15,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const USER_MUTATION_LOCK_KEY: i64 = 0x4a45_4c4c_5955_5345;
+const DEFAULT_AUTHENTICATION_PROVIDER_NAME: &str = "Default";
+const DEFAULT_PASSWORD_RESET_PROVIDER_NAME: &str = "Default Password Reset Provider";
 
 #[derive(Debug, Error)]
 pub enum UserError {
@@ -52,6 +54,30 @@ pub struct UserService {
 impl UserService {
     pub const fn new(database: DatabaseConnection) -> Self {
         Self { database }
+    }
+
+    /// Lists enabled authentication providers in Jellyfin's official order.
+    #[allow(
+        clippy::unused_self,
+        reason = "provider registration is a UserService concern and will use instance state once plugin-backed providers are wired in"
+    )]
+    pub fn authentication_providers(&self) -> Vec<NameIdPair> {
+        vec![NameIdPair {
+            name: DEFAULT_AUTHENTICATION_PROVIDER_NAME.to_owned(),
+            id: UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+        }]
+    }
+
+    /// Lists enabled password reset providers in Jellyfin's official order.
+    #[allow(
+        clippy::unused_self,
+        reason = "provider registration is a UserService concern and will use instance state once plugin-backed providers are wired in"
+    )]
+    pub fn password_reset_providers(&self) -> Vec<NameIdPair> {
+        vec![NameIdPair {
+            name: DEFAULT_PASSWORD_RESET_PROVIDER_NAME.to_owned(),
+            id: UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+        }]
     }
 
     /// Creates a user, atomically rejecting a case-insensitive duplicate.

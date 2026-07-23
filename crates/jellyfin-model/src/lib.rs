@@ -37,7 +37,7 @@ pub use dlna::{
     Video3DFormat, VideoType,
 };
 pub use drawing::{ImageFormat, InvalidImageFormat};
-pub use dto::UserDto;
+pub use dto::{NameIdPair, UserDto};
 pub use entities::{
     AudioSpatialFormat, HasProviderIds, MediaAttachment, MediaStream, MediaStreamType,
     MetadataProvider, ProviderIdError, ProviderIdMap, ProviderIdsExtensions,

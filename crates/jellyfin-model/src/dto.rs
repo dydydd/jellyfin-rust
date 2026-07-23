@@ -4,6 +4,14 @@ use uuid::Uuid;
 
 use crate::{UserConfiguration, UserPolicy};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "PascalCase")]
+pub struct NameIdPair {
+    pub name: String,
+    pub id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct UserDto {

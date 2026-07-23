@@ -1,6 +1,7 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    EndPointInfo, PublicSystemInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    EndPointInfo, NameIdPair, PublicSystemInfo, SyncPlayUserAccessType, UserDto, UserPolicy,
+    UtcTimeResponse,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -26,6 +27,22 @@ fn public_system_info_uses_pascal_case_and_omits_nulls() {
             "ProductName": "Jellyfin Server",
             "OperatingSystem": "",
             "Id": "server-id"
+        })
+    );
+}
+
+#[test]
+fn name_id_pair_uses_official_pascal_case_contract() {
+    let pair = NameIdPair {
+        name: "Default".to_owned(),
+        id: "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_owned(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(pair).unwrap(),
+        json!({
+            "Name": "Default",
+            "Id": "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider"
         })
     );
 }

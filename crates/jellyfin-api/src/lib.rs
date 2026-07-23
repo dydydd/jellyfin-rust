@@ -53,6 +53,7 @@ mod playstate;
 mod plugins;
 pub mod query;
 mod robots;
+mod session;
 mod startup;
 mod system;
 mod time_sync;
@@ -278,6 +279,7 @@ pub fn router(state: AppState) -> Router {
             post(authentication::authenticate_by_name),
         )
         .route("/Users/Me", get(authentication::current_user))
+        .merge(session_routes())
         .merge(playstate_routes())
         .merge(user_data_routes())
         .route(
@@ -391,6 +393,15 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/Password", post(users::update_password_query))
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/Users/{id}/Policy", post(users::update_policy))
+}
+
+fn session_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Auth/Providers", get(session::authentication_providers))
+        .route(
+            "/Auth/PasswordResetProviders",
+            get(session::password_reset_providers),
+        )
 }
 
 fn playstate_routes() -> Router<Arc<AppState>> {
