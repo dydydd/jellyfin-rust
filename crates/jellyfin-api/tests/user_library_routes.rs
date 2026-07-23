@@ -165,7 +165,7 @@ async fn media_source_defaults_follow_target_user_stream_preferences() {
     set_stream_preferences(&fixture.database, fixture.user_id).await;
 
     let items = BaseItemRepository::new(fixture.database.clone());
-    let video = create_stream_defaults_video(&fixture).await;
+    let video = create_stream_defaults_video(&fixture, None).await;
 
     let route = format!(
         "/Users/{}/Items/{}?fields=MediaSources,MediaStreams",
@@ -223,6 +223,25 @@ async fn media_source_defaults_follow_target_user_stream_preferences() {
             .get("Score")
             .is_none()
     );
+
+    items.delete(video.id).await.expect("video cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn original_language_audio_preference_uses_item_metadata() {
+    let fixture = UserLibraryFixture::new().await;
+    set_original_language_preference(&fixture.database, fixture.user_id).await;
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let video = create_stream_defaults_video(&fixture, Some("French")).await;
+    let route = format!(
+        "/Users/{}/Items/{}?fields=MediaSources,MediaStreams",
+        fixture.user_id, video.id
+    );
+
+    let item = get_json(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(item["MediaSources"][0]["DefaultAudioStreamIndex"], 1);
 
     items.delete(video.id).await.expect("video cleanup");
     fixture.cleanup().await;
@@ -462,18 +481,46 @@ async fn set_stream_preferences(database: &DatabaseConnection, user_id: Uuid) {
     set_stream_preferences_with_remembering(database, user_id, true).await;
 }
 
+async fn set_original_language_preference(database: &DatabaseConnection, user_id: Uuid) {
+    set_stream_preferences_with(
+        database,
+        user_id,
+        "OriginalLanguage",
+        false,
+        "English",
+        "Always",
+        true,
+    )
+    .await;
+}
+
 async fn set_stream_preferences_with_remembering(
     database: &DatabaseConnection,
     user_id: Uuid,
     remember: bool,
 ) {
+    set_stream_preferences_with(
+        database, user_id, "English", false, "English", "Always", remember,
+    )
+    .await;
+}
+
+async fn set_stream_preferences_with(
+    database: &DatabaseConnection,
+    user_id: Uuid,
+    audio_language: &str,
+    play_default_audio_track: bool,
+    subtitle_language: &str,
+    subtitle_mode: &str,
+    remember: bool,
+) {
     user::ActiveModel {
         id: Set(user_id),
         preferences: Set(json!({
-            "AudioLanguagePreference": "English",
-            "PlayDefaultAudioTrack": false,
-            "SubtitleLanguagePreference": "English",
-            "SubtitleMode": "Always",
+            "AudioLanguagePreference": audio_language,
+            "PlayDefaultAudioTrack": play_default_audio_track,
+            "SubtitleLanguagePreference": subtitle_language,
+            "SubtitleMode": subtitle_mode,
             "RememberAudioSelections": remember,
             "RememberSubtitleSelections": remember,
             "EnableNextEpisodeAutoPlay": true
@@ -496,12 +543,16 @@ fn stream_by_index(streams: &Value, index: i64) -> &Value {
 
 async fn create_stream_defaults_video(
     fixture: &UserLibraryFixture,
+    original_language: Option<&str>,
 ) -> jellyfin_data::entities::base_item::Model {
     let path = format!("/media/Stream Defaults {}.mkv", Uuid::new_v4().simple());
     let items = BaseItemRepository::new(fixture.database.clone());
     let mut video = item("Movie", "Stream Defaults", Some(fixture.root_id), false);
     video.media_type = Some("Video".to_owned());
     video.path = Some(path.clone());
+    if let Some(original_language) = original_language {
+        video.data = Some(json!({ "OriginalLanguage": original_language }));
+    }
     let video = items.create(video).await.expect("video item");
     MediaStreamService::new(fixture.database.clone())
         .save_media_streams(
@@ -520,6 +571,7 @@ async fn create_stream_defaults_video(
                     codec: Some("ac3".to_owned()),
                     language: Some("fre".to_owned()),
                     is_default: true,
+                    is_original: true,
                     path: Some(path.clone()),
                     ..MediaStream::default()
                 },

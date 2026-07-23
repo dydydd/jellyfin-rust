@@ -190,6 +190,7 @@ async fn page_to_dto(
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
         let item_id = item.id;
+        let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
         if requested_fields.wants_media_streams() {
             let streams = media_streams.remove(&item_id).unwrap_or_default();
@@ -202,6 +203,7 @@ async fn page_to_dto(
                 attachments,
                 defaults.as_ref(),
                 remembered.as_ref(),
+                original_language.as_deref(),
             );
         }
         items.push(dto);

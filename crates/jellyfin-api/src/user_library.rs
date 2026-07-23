@@ -124,26 +124,49 @@ pub struct BaseItemQueryResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MediaStreamDefaults {
-    audio_languages: Vec<String>,
+    audio_preference: AudioLanguagePreference,
     subtitle_languages: Vec<String>,
     play_default_audio_track: bool,
     subtitle_mode: SubtitlePlaybackMode,
-    remember_audio_selections: bool,
-    remember_subtitle_selections: bool,
+    remembered_selections: RememberedStreamSelections,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AudioLanguagePreference {
+    Languages(Vec<String>),
+    OriginalLanguage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RememberedStreamSelections {
+    audio: bool,
+    subtitle: bool,
 }
 
 impl MediaStreamDefaults {
     #[must_use]
     pub(crate) fn from_user_configuration(configuration: &UserConfiguration) -> Self {
+        let prefer_original_audio = configuration
+            .audio_language_preference
+            .as_deref()
+            .is_some_and(|language| language.eq_ignore_ascii_case("OriginalLanguage"));
         Self {
-            audio_languages: normalize_language(configuration.audio_language_preference.as_deref()),
+            audio_preference: if prefer_original_audio {
+                AudioLanguagePreference::OriginalLanguage
+            } else {
+                AudioLanguagePreference::Languages(normalize_language(
+                    configuration.audio_language_preference.as_deref(),
+                ))
+            },
             subtitle_languages: normalize_language(
                 configuration.subtitle_language_preference.as_deref(),
             ),
             play_default_audio_track: configuration.play_default_audio_track,
             subtitle_mode: configuration.subtitle_mode,
-            remember_audio_selections: configuration.remember_audio_selections,
-            remember_subtitle_selections: configuration.remember_subtitle_selections,
+            remembered_selections: RememberedStreamSelections {
+                audio: configuration.remember_audio_selections,
+                subtitle: configuration.remember_subtitle_selections,
+            },
         }
     }
 }
@@ -503,6 +526,7 @@ pub(crate) async fn project_item_to_dto(
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
+    let original_language = original_language_from_item(&item);
     let mut dto = item_to_dto(item, state.server_id());
     if !fields.wants_media_streams() {
         return Ok(dto);
@@ -531,6 +555,7 @@ pub(crate) async fn project_item_to_dto(
         media_attachments,
         defaults,
         remembered_user_data,
+        original_language.as_deref(),
     );
     Ok(dto)
 }
@@ -542,9 +567,15 @@ pub(crate) fn project_item_dto_with_streams(
     media_attachments: Vec<MediaAttachment>,
     defaults: Option<&MediaStreamDefaults>,
     remembered_user_data: Option<&user_data::Model>,
+    original_language: Option<&str>,
 ) {
-    let (default_audio_stream_index, default_subtitle_stream_index) =
-        apply_media_stream_defaults(dto, &mut media_streams, defaults, remembered_user_data);
+    let (default_audio_stream_index, default_subtitle_stream_index) = apply_media_stream_defaults(
+        dto,
+        &mut media_streams,
+        defaults,
+        remembered_user_data,
+        original_language,
+    );
 
     if fields.media_sources
         && let Some(source) = media_source_from_dto(
@@ -600,6 +631,7 @@ fn apply_media_stream_defaults(
     media_streams: &mut [MediaStream],
     defaults: Option<&MediaStreamDefaults>,
     remembered_user_data: Option<&user_data::Model>,
+    original_language: Option<&str>,
 ) -> (Option<i32>, Option<i32>) {
     let Some(defaults) = defaults else {
         return (None, None);
@@ -616,18 +648,13 @@ fn apply_media_stream_defaults(
     let default_audio_stream_index = remembered_user_data
         .and_then(|data| {
             defaults
-                .remember_audio_selections
+                .remembered_selections
+                .audio
                 .then_some(data.audio_stream_index)
                 .flatten()
         })
         .filter(|index| is_valid_audio_stream_index(media_streams, *index))
-        .or_else(|| {
-            MediaStreamSelector::default_audio_stream_index(
-                media_streams,
-                &defaults.audio_languages,
-                defaults.play_default_audio_track,
-            )
-        });
+        .or_else(|| default_audio_stream_index(media_streams, defaults, original_language));
     let audio_language = default_audio_stream_index
         .and_then(|index| {
             media_streams.iter().find(|stream| {
@@ -637,7 +664,7 @@ fn apply_media_stream_defaults(
         .and_then(|stream| stream.language.clone());
     if let Some(index) = remembered_user_data
         .and_then(|data| {
-            (defaults.remember_subtitle_selections
+            (defaults.remembered_selections.subtitle
                 && defaults.subtitle_mode != SubtitlePlaybackMode::None)
                 .then_some(data.subtitle_stream_index)
                 .flatten()
@@ -661,6 +688,70 @@ fn apply_media_stream_defaults(
     );
 
     (default_audio_stream_index, default_subtitle_stream_index)
+}
+
+fn default_audio_stream_index(
+    media_streams: &[MediaStream],
+    defaults: &MediaStreamDefaults,
+    original_language: Option<&str>,
+) -> Option<i32> {
+    if defaults.audio_preference == AudioLanguagePreference::OriginalLanguage {
+        let original_audio_languages = normalize_language(original_language);
+        if defaults.play_default_audio_track {
+            return MediaStreamSelector::default_audio_stream_index(
+                media_streams,
+                &original_audio_languages,
+                true,
+            );
+        }
+
+        if let Some(stream) = original_audio_stream(media_streams, &original_audio_languages) {
+            return Some(stream.index);
+        }
+
+        if !original_audio_languages.is_empty() {
+            return MediaStreamSelector::default_audio_stream_index(
+                media_streams,
+                &original_audio_languages,
+                false,
+            );
+        }
+    }
+
+    let AudioLanguagePreference::Languages(audio_languages) = &defaults.audio_preference else {
+        return MediaStreamSelector::default_audio_stream_index(
+            media_streams,
+            &[],
+            defaults.play_default_audio_track,
+        );
+    };
+    MediaStreamSelector::default_audio_stream_index(
+        media_streams,
+        audio_languages,
+        defaults.play_default_audio_track,
+    )
+}
+
+fn original_audio_stream<'a>(
+    media_streams: &'a [MediaStream],
+    original_audio_languages: &[String],
+) -> Option<&'a MediaStream> {
+    let original_audio_streams = media_streams
+        .iter()
+        .filter(|stream| stream.stream_type == MediaStreamType::Audio && stream.is_original);
+    if original_audio_languages.is_empty() {
+        return original_audio_streams.into_iter().next();
+    }
+
+    original_audio_streams.into_iter().find(|stream| {
+        normalize_language(stream.language.as_deref())
+            .iter()
+            .any(|language| {
+                original_audio_languages
+                    .iter()
+                    .any(|original| original.eq_ignore_ascii_case(language))
+            })
+    })
 }
 
 async fn preferred_user_data_for_item(
@@ -734,6 +825,13 @@ fn normalize_language(language: Option<&str>) -> Vec<String> {
     } else {
         vec![language.to_owned()]
     }
+}
+
+pub(crate) fn original_language_from_item(item: &base_item::Model) -> Option<String> {
+    metadata_string(
+        item.data.as_ref(),
+        &["OriginalLanguage", "original_language", "originalLanguage"],
+    )
 }
 
 fn is_media_source_item(dto: &BaseItemDto) -> bool {
@@ -822,4 +920,72 @@ fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
 fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {
     let object = data?.as_object()?;
     keys.iter().find_map(|key| object.get(*key)).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn original_language_defaults() -> MediaStreamDefaults {
+        MediaStreamDefaults {
+            audio_preference: AudioLanguagePreference::OriginalLanguage,
+            subtitle_languages: Vec::new(),
+            play_default_audio_track: false,
+            subtitle_mode: SubtitlePlaybackMode::None,
+            remembered_selections: RememberedStreamSelections {
+                audio: false,
+                subtitle: false,
+            },
+        }
+    }
+
+    #[test]
+    fn original_language_audio_preference_scans_past_mismatched_original_tracks() {
+        let streams = [
+            MediaStream {
+                index: 1,
+                stream_type: MediaStreamType::Audio,
+                language: Some("eng".to_owned()),
+                is_original: true,
+                ..MediaStream::default()
+            },
+            MediaStream {
+                index: 2,
+                stream_type: MediaStreamType::Audio,
+                language: Some("fre".to_owned()),
+                is_original: true,
+                ..MediaStream::default()
+            },
+        ];
+
+        assert_eq!(
+            default_audio_stream_index(&streams, &original_language_defaults(), Some("French")),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn original_language_audio_preference_uses_first_original_track_without_item_language() {
+        let streams = [
+            MediaStream {
+                index: 1,
+                stream_type: MediaStreamType::Audio,
+                language: Some("eng".to_owned()),
+                is_original: true,
+                ..MediaStream::default()
+            },
+            MediaStream {
+                index: 2,
+                stream_type: MediaStreamType::Audio,
+                language: Some("fre".to_owned()),
+                is_original: true,
+                ..MediaStream::default()
+            },
+        ];
+
+        assert_eq!(
+            default_audio_stream_index(&streams, &original_language_defaults(), None),
+            Some(1)
+        );
+    }
 }
