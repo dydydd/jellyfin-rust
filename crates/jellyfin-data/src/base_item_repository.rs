@@ -103,6 +103,8 @@ pub struct BaseItemQuery {
     pub include_item_types: Vec<String>,
     pub exclude_item_types: Vec<String>,
     pub media_types: Vec<String>,
+    pub is_movie: Option<bool>,
+    pub is_series: Option<bool>,
     pub is_virtual_item: Option<bool>,
     pub group_versions_by_presentation_key: bool,
     pub user_id: Option<Uuid>,
@@ -577,6 +579,16 @@ impl BaseItemRepository {
         if !query.media_types.is_empty() {
             select = select
                 .filter(base_item::Column::MediaType.is_in(query.media_types.iter().cloned()));
+        }
+        if let Some(is_movie) = query.is_movie {
+            select = select.filter(media_class_condition(
+                is_movie,
+                "IsMovie",
+                &["Movie", "Trailer"],
+            ));
+        }
+        if let Some(is_series) = query.is_series {
+            select = select.filter(media_class_condition(is_series, "IsSeries", &["Series"]));
         }
         if let Some(is_virtual_item) = query.is_virtual_item {
             select = select.filter(base_item::Column::IsVirtualItem.eq(is_virtual_item));
@@ -1254,6 +1266,8 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
         true,
     );
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
+    append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
+    append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
     if let Some(is_virtual_item) = query.is_virtual_item {
         push_bind(sql, values, is_virtual_item, " AND item.is_virtual_item = ");
     }
@@ -1282,6 +1296,60 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
         }
         sql.push(')');
     }
+}
+
+fn media_class_condition(
+    expected: bool,
+    json_key: &'static str,
+    item_types: &'static [&'static str],
+) -> sea_orm::sea_query::SimpleExpr {
+    let expression = media_class_expression("", json_key, item_types);
+    if expected {
+        Expr::cust(expression)
+    } else {
+        Expr::cust(format!("NOT {expression}"))
+    }
+}
+
+fn append_media_class_filter(
+    sql: &mut String,
+    expected: Option<bool>,
+    json_key: &'static str,
+    item_types: &'static [&'static str],
+) {
+    let Some(expected) = expected else {
+        return;
+    };
+    let expression = media_class_expression("item.", json_key, item_types);
+    if expected {
+        sql.push_str(" AND ");
+        sql.push_str(&expression);
+    } else {
+        sql.push_str(" AND NOT ");
+        sql.push_str(&expression);
+    }
+}
+
+fn media_class_expression(
+    prefix: &str,
+    json_key: &'static str,
+    item_types: &'static [&'static str],
+) -> String {
+    let mut expression = String::from("(");
+    let _ = write!(expression, "{prefix}item_type IN (");
+    for (index, item_type) in item_types.iter().enumerate() {
+        if index > 0 {
+            expression.push_str(", ");
+        }
+        expression.push('\'');
+        expression.push_str(item_type);
+        expression.push('\'');
+    }
+    let _ = write!(
+        expression,
+        ") OR COALESCE(lower({prefix}data ->> '{json_key}') = 'true', false))"
+    );
+    expression
 }
 
 fn append_uuid_list_filter(

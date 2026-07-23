@@ -27,6 +27,10 @@ pub(crate) struct ItemsQuery {
     parent_id: Option<Uuid>,
     #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
     is_played: Option<bool>,
+    #[serde(default, rename = "isMovie", alias = "IsMovie")]
+    is_movie: Option<bool>,
+    #[serde(default, rename = "isSeries", alias = "IsSeries")]
+    is_series: Option<bool>,
     #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
     ids: Vec<Uuid>,
     #[serde(
@@ -314,6 +318,8 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             include_item_types: query.include_item_types,
             exclude_item_types: query.exclude_item_types,
             media_types: query.media_types,
+            is_movie: query.is_movie,
+            is_series: query.is_series,
             is_virtual_item: None,
             group_versions_by_presentation_key: false,
             user_id: query.user_id,

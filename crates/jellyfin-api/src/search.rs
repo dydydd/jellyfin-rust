@@ -42,6 +42,10 @@ pub(crate) struct SearchHintsQuery {
     media_types: Vec<String>,
     #[serde(rename = "parentId", alias = "ParentId")]
     parent_id: Option<Uuid>,
+    #[serde(rename = "isMovie", alias = "IsMovie")]
+    is_movie: Option<bool>,
+    #[serde(rename = "isSeries", alias = "IsSeries")]
+    is_series: Option<bool>,
     #[serde(rename = "includePeople", alias = "IncludePeople")]
     include_people: Option<bool>,
     #[serde(rename = "includeMedia", alias = "IncludeMedia")]
@@ -85,6 +89,8 @@ pub(crate) async fn hints(
                     include_item_types: query.include_item_types.clone(),
                     exclude_item_types: query.exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
+                    is_movie: query.is_movie,
+                    is_series: query.is_series,
                     is_virtual_item: Some(false),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -110,6 +116,8 @@ pub(crate) async fn hints(
                     include_item_types: query.include_item_types.clone(),
                     exclude_item_types: query.exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
+                    is_movie: query.is_movie,
+                    is_series: query.is_series,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -138,6 +146,8 @@ pub(crate) async fn hints(
                     include_item_types: query.include_item_types.clone(),
                     exclude_item_types: query.exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
+                    is_movie: query.is_movie,
+                    is_series: query.is_series,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -166,6 +176,8 @@ pub(crate) async fn hints(
                     include_item_types: query.include_item_types.clone(),
                     exclude_item_types: query.exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
+                    is_movie: query.is_movie,
+                    is_series: query.is_series,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -195,6 +207,8 @@ pub(crate) async fn hints(
                     include_item_types: query.include_item_types,
                     exclude_item_types: query.exclude_item_types,
                     media_types: query.media_types,
+                    is_movie: query.is_movie,
+                    is_series: query.is_series,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,

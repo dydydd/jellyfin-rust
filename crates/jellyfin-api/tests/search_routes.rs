@@ -108,6 +108,28 @@ async fn exercise_search_routes(database_name: &str) {
         None,
     )
     .await;
+    let series_id = Uuid::from_u128(0xbe33_86aa_d21c_4b76_9576_89c8_69d5_7d7a);
+    create_item(
+        &items,
+        series_id,
+        root.id,
+        "Series",
+        "Matrix Animated",
+        "Video",
+        None,
+    )
+    .await;
+    let program_id = Uuid::from_u128(0xf0ed_99db_3f4d_4631_9a4e_d46a_2286_9b11);
+    create_item(
+        &items,
+        program_id,
+        root.id,
+        "LiveTvProgram",
+        "Matrix Broadcast",
+        "Video",
+        Some(json!({ "IsMovie": true })),
+    )
+    .await;
     let audio_id = Uuid::from_u128(0x279b_76fd_c49e_4de0_8767_f1f7_dbb4_f038);
     create_item(
         &items,
@@ -233,6 +255,44 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(audio["SearchHints"][0]["Name"], "Matrix Theme");
     assert_eq!(audio["SearchHints"][0]["MediaType"], "Audio");
 
+    let movie_class = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Matrix&isMovie=true&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=false",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(movie_class["TotalRecordCount"], 3);
+    assert_eq!(movie_class["SearchHints"].as_array().unwrap().len(), 3);
+    let movie_names = movie_class["SearchHints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hint| hint["Name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(movie_names.contains(&"The Matrix"));
+    assert!(movie_names.contains(&"Matrix Reloaded"));
+    assert!(movie_names.contains(&"Matrix Broadcast"));
+
+    let series_class = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Matrix&isSeries=true&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=false",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(series_class["TotalRecordCount"], 1);
+    assert_eq!(
+        series_class["SearchHints"][0]["Id"],
+        series_id.simple().to_string()
+    );
+    assert_eq!(series_class["SearchHints"][0]["Name"], "Matrix Animated");
+    assert_eq!(series_class["SearchHints"][0]["Type"], "Series");
+
     let genre_hints = body_json(
         request(
             &app,
@@ -251,6 +311,20 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(genre_hints["SearchHints"][0]["MatchedTerm"], "Cyberpunk");
     assert_eq!(genre_hints["SearchHints"][0]["Type"], "Genre");
     assert_eq!(genre_hints["SearchHints"][0]["IsFolder"], true);
+
+    let genre_series_filtered = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Cyberpunk&includeMedia=false&includeGenres=true&isSeries=true",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        genre_series_filtered,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
 
     let people_hints = body_json(
         request(

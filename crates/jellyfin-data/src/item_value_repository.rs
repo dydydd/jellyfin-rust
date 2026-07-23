@@ -28,6 +28,8 @@ pub struct ItemValueQuery {
     pub include_item_types: Vec<String>,
     pub exclude_item_types: Vec<String>,
     pub media_types: Vec<String>,
+    pub is_movie: Option<bool>,
+    pub is_series: Option<bool>,
     pub is_favorite: Option<bool>,
     pub user_id: Option<Uuid>,
     pub name_starts_with_or_greater: Option<String>,
@@ -363,6 +365,8 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
         true,
     );
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
+    append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
+    append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
     if let Some(is_favorite) = query.is_favorite {
         let Some(user_id) = query.user_id else {
             return;
@@ -388,6 +392,41 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
         }
         sql.push(')');
     }
+}
+
+fn append_media_class_filter(
+    sql: &mut String,
+    expected: Option<bool>,
+    json_key: &'static str,
+    item_types: &'static [&'static str],
+) {
+    let Some(expected) = expected else {
+        return;
+    };
+    let expression = media_class_expression(json_key, item_types);
+    if expected {
+        sql.push_str(" AND ");
+        sql.push_str(&expression);
+    } else {
+        sql.push_str(" AND NOT ");
+        sql.push_str(&expression);
+    }
+}
+
+fn media_class_expression(json_key: &'static str, item_types: &'static [&'static str]) -> String {
+    let mut expression = String::from("(item.item_type IN (");
+    for (index, item_type) in item_types.iter().enumerate() {
+        if index > 0 {
+            expression.push_str(", ");
+        }
+        expression.push('\'');
+        expression.push_str(item_type);
+        expression.push('\'');
+    }
+    expression.push_str(") OR COALESCE(lower(item.data ->> '");
+    expression.push_str(json_key);
+    expression.push_str("') = 'true', false))");
+    expression
 }
 
 fn append_value_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &ItemValueQuery) {
