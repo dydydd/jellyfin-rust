@@ -5,7 +5,9 @@ use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_controller::{PlaybackProgressUpdate, PlaybackStartUpdate, parse_date_played};
+use jellyfin_controller::{
+    PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, parse_date_played,
+};
 use jellyfin_model::UserItemDataDto;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -46,6 +48,14 @@ pub struct PlaybackStartInfo {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlaybackStopInfo {
+    pub item_id: Uuid,
+    pub position_ticks: Option<i64>,
+    pub failed: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub struct PlaybackProgressQuery {
     #[serde(default, rename = "positionTicks", alias = "PositionTicks")]
     pub position_ticks: Option<i64>,
@@ -53,6 +63,12 @@ pub struct PlaybackProgressQuery {
     pub audio_stream_index: Option<i32>,
     #[serde(default, rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
     pub subtitle_stream_index: Option<i32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PlaybackStopQuery {
+    #[serde(default, rename = "positionTicks", alias = "PositionTicks")]
+    pub position_ticks: Option<i64>,
 }
 
 pub(crate) async fn mark_played_modern(
@@ -164,6 +180,16 @@ pub(crate) async fn report_playback_start(
     report_playback_start_for_current_session(state, &uri, headers, start.into()).await
 }
 
+pub(crate) async fn report_playback_stopped(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<PlaybackStopInfo>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Json(stop) = request.map_err(|_| ApiError::InvalidRequest)?;
+    report_playback_stop_for_current_session(state, &uri, headers, stop.into()).await
+}
+
 pub(crate) async fn report_playback_start_legacy(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -174,6 +200,26 @@ pub(crate) async fn report_playback_start_legacy(
         .await
 }
 
+pub(crate) async fn report_playback_stopped_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<PlaybackStopQuery>,
+) -> Result<StatusCode, ApiError> {
+    report_playback_stop_for_current_session(
+        state,
+        &uri,
+        headers,
+        PlaybackStopUpdate {
+            item_id,
+            position_ticks: query.position_ticks,
+            failed: false,
+        },
+    )
+    .await
+}
+
 pub(crate) async fn report_playback_start_legacy_for_user(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -182,6 +228,26 @@ pub(crate) async fn report_playback_start_legacy_for_user(
 ) -> Result<StatusCode, ApiError> {
     report_playback_start_for_current_session(state, &uri, headers, PlaybackStartUpdate { item_id })
         .await
+}
+
+pub(crate) async fn report_playback_stopped_legacy_for_user(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((_user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<PlaybackStopQuery>,
+) -> Result<StatusCode, ApiError> {
+    report_playback_stop_for_current_session(
+        state,
+        &uri,
+        headers,
+        PlaybackStopUpdate {
+            item_id,
+            position_ticks: query.position_ticks,
+            failed: false,
+        },
+    )
+    .await
 }
 
 pub(crate) async fn report_playback_progress_legacy(
@@ -252,6 +318,19 @@ async fn report_playback_start_for_current_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn report_playback_stop_for_current_session(
+    state: Arc<AppState>,
+    uri: &axum::http::Uri,
+    headers: HeaderMap,
+    update: PlaybackStopUpdate,
+) -> Result<StatusCode, ApiError> {
+    let identity = authorization::require_default(&state, &headers, uri).await?;
+    if let AuthenticatedIdentity::Device(session) = identity {
+        record_device_playback_stop(&state, &session, update).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn record_device_playback_progress(
     state: &AppState,
     session: &AuthenticatedSession,
@@ -276,6 +355,18 @@ async fn record_device_playback_start(
     Ok(())
 }
 
+async fn record_device_playback_stop(
+    state: &AppState,
+    session: &AuthenticatedSession,
+    update: PlaybackStopUpdate,
+) -> Result<(), ApiError> {
+    state
+        .playstate
+        .report_playback_stop(&session.user, update)
+        .await?;
+    Ok(())
+}
+
 impl From<PlaybackProgressInfo> for PlaybackProgressUpdate {
     fn from(info: PlaybackProgressInfo) -> Self {
         Self {
@@ -283,6 +374,16 @@ impl From<PlaybackProgressInfo> for PlaybackProgressUpdate {
             position_ticks: info.position_ticks,
             audio_stream_index: info.audio_stream_index,
             subtitle_stream_index: info.subtitle_stream_index,
+        }
+    }
+}
+
+impl From<PlaybackStopInfo> for PlaybackStopUpdate {
+    fn from(info: PlaybackStopInfo) -> Self {
+        Self {
+            item_id: info.item_id,
+            position_ticks: info.position_ticks,
+            failed: info.failed,
         }
     }
 }

@@ -373,8 +373,13 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             post(playstate::report_playback_progress),
         )
         .route(
+            "/Sessions/Playing/Stopped",
+            post(playstate::report_playback_stopped),
+        )
+        .route(
             "/PlayingItems/{item_id}",
-            post(playstate::report_playback_start_legacy),
+            post(playstate::report_playback_start_legacy)
+                .delete(playstate::report_playback_stopped_legacy),
         )
         .route(
             "/PlayingItems/{item_id}/Progress",
@@ -382,7 +387,8 @@ fn playstate_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/Users/{user_id}/PlayingItems/{item_id}",
-            post(playstate::report_playback_start_legacy_for_user),
+            post(playstate::report_playback_start_legacy_for_user)
+                .delete(playstate::report_playback_stopped_legacy_for_user),
         )
         .route(
             "/Users/{user_id}/PlayingItems/{item_id}/Progress",

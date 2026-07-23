@@ -17,6 +17,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Playstate Tests\", Device=\"Test\", DeviceId=\"playstate\", Version=\"1.0\"";
+const TICKS_PER_SECOND: i64 = 10_000_000;
 
 #[tokio::test]
 async fn delete_mark_unplayed_item_nonexistent_user_id_not_found() {
@@ -290,6 +291,231 @@ async fn playback_start_routes_increment_play_count_and_preserve_existing_state(
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn playback_stopped_no_position_failed_negative_and_missing_items() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+    let original_last_played = chrono::DateTime::parse_from_rfc3339("2026-07-22T10:00:00Z")
+        .expect("fixed date")
+        .with_timezone(&Utc);
+    let mut initial = NewUserData::new(
+        fixture.item_id,
+        fixture.user_id,
+        fixture.item_id.to_string(),
+    );
+    initial.play_count = 5;
+    initial.playback_position_ticks = ticks(123);
+    initial.is_favorite = true;
+    initial.last_played_date = Some(original_last_played);
+    initial.audio_stream_index = Some(1);
+    initial.subtitle_stream_index = Some(-1);
+    repository.upsert(initial).await.expect("stop seed");
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.item_id,
+            "PositionTicks": ticks(5),
+            "Failed": true
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        5,
+        ticks(123),
+        false,
+    )
+    .await;
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.item_id,
+            "PositionTicks": -1
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_stopped(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        5,
+        ticks(123),
+        false,
+    )
+    .await;
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({ "ItemId": Uuid::new_v4() }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        5,
+        ticks(123),
+        false,
+    )
+    .await;
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({ "ItemId": fixture.item_id }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let persisted = assert_stopped(&repository, fixture.item_id, fixture.user_id, 6, 0, true).await;
+    assert_eq!(persisted.last_played_date, Some(original_last_played));
+    assert!(persisted.is_favorite);
+    assert_eq!(persisted.audio_stream_index, Some(1));
+    assert_eq!(persisted.subtitle_stream_index, Some(-1));
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn playback_stopped_position_routes_apply_thresholds_and_legacy_user() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+    let mut initial = NewUserData::new(
+        fixture.runtime_item_id,
+        fixture.user_id,
+        fixture.runtime_item_id.to_string(),
+    );
+    initial.play_count = 2;
+    initial.is_favorite = true;
+    initial.audio_stream_index = Some(7);
+    repository
+        .upsert(initial.clone())
+        .await
+        .expect("runtime seed");
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(300)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let persisted = assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        2,
+        ticks(300),
+        false,
+    )
+    .await;
+    assert!(persisted.is_favorite);
+    assert_eq!(persisted.audio_stream_index, Some(7));
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(590)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        2,
+        0,
+        true,
+    )
+    .await;
+
+    repository
+        .upsert(initial)
+        .await
+        .expect("reset runtime seed");
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(20)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        2,
+        0,
+        false,
+    )
+    .await;
+
+    let legacy_route = format!(
+        "/Users/{}/PlayingItems/{}?positionTicks={}",
+        fixture.administrator_id,
+        fixture.runtime_item_id,
+        ticks(300)
+    );
+    let response = request(&fixture.app, "DELETE", &legacy_route, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        2,
+        ticks(300),
+        false,
+    )
+    .await;
+    assert!(
+        repository
+            .get(
+                fixture.runtime_item_id,
+                fixture.administrator_id,
+                &fixture.runtime_item_id.to_string()
+            )
+            .await
+            .expect("administrator stop lookup")
+            .is_none(),
+        "legacy stopped userId route parameter is ignored by Jellyfin"
+    );
+
+    fixture.cleanup().await;
+}
+
 async fn assert_progress(
     repository: &UserDataRepository,
     item_id: Uuid,
@@ -335,6 +561,29 @@ async fn assert_started(
     assert_eq!(persisted.subtitle_stream_index, Some(-1));
 }
 
+async fn assert_stopped(
+    repository: &UserDataRepository,
+    item_id: Uuid,
+    user_id: Uuid,
+    play_count: i32,
+    playback_position_ticks: i64,
+    played: bool,
+) -> jellyfin_data::entities::user_data::Model {
+    let persisted = repository
+        .get(item_id, user_id, &item_id.to_string())
+        .await
+        .expect("stop lookup")
+        .expect("stop row");
+    assert_eq!(persisted.play_count, play_count);
+    assert_eq!(persisted.playback_position_ticks, playback_position_ticks);
+    assert_eq!(persisted.played, played);
+    persisted
+}
+
+const fn ticks(seconds: i64) -> i64 {
+    seconds * TICKS_PER_SECOND
+}
+
 struct PlaystateFixture {
     database: DatabaseConnection,
     app: axum::Router,
@@ -347,6 +596,7 @@ struct PlaystateFixture {
     api_key_id: i64,
     api_key_token: String,
     item_id: Uuid,
+    runtime_item_id: Uuid,
 }
 
 impl PlaystateFixture {
@@ -410,6 +660,12 @@ impl PlaystateFixture {
             .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
             .await
             .expect("base item creation");
+        let mut runtime_item = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        runtime_item.runtime_ticks = Some(ticks(600));
+        let runtime_item = items
+            .create(runtime_item)
+            .await
+            .expect("runtime item creation");
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Playstate Test Server".to_owned(),
@@ -427,6 +683,7 @@ impl PlaystateFixture {
             api_key_id: api_key.id,
             api_key_token: api_key.access_token,
             item_id: item.id,
+            runtime_item_id: runtime_item.id,
         }
     }
 
@@ -436,7 +693,7 @@ impl PlaystateFixture {
             .await
             .expect("API key cleanup");
         BaseItemRepository::new(self.database.clone())
-            .delete(self.item_id)
+            .delete_many(&[self.item_id, self.runtime_item_id])
             .await
             .expect("item cleanup");
         user::Entity::delete_many()

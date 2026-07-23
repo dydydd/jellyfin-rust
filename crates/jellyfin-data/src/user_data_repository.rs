@@ -688,6 +688,94 @@ impl UserDataRepository {
             })
     }
 
+    /// Atomically records a playback stop.
+    ///
+    /// `PostgreSQL` resolves the preferred user-data key, writes the computed
+    /// resume position, optionally updates the played flag, and optionally
+    /// increments `play_count` for clients that could not report a stop
+    /// position. Unrelated rating, favorite, date, and stream-selection state
+    /// is preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error when no key is supplied or the computed
+    /// playback position is negative, or a database error when the upsert fails.
+    pub async fn record_playback_stop(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        keys: &[String],
+        playback_position_ticks: i64,
+        played: Option<bool>,
+        increment_play_count: bool,
+    ) -> Result<user_data::Model, UserDataError> {
+        let primary_key = keys.first().ok_or(UserDataError::EmptyKey)?;
+        validate_optional_values(None, Some(playback_position_ticks), None)?;
+
+        let played_present = played.is_some();
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT value AS custom_data_key, ordinality AS priority
+                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
+            ), chosen_key AS (
+                SELECT data.custom_data_key
+                FROM jellyfin.user_data AS data
+                LEFT JOIN preferred_keys AS preferred
+                    USING (custom_data_key)
+                WHERE data.item_id = $1 AND data.user_id = $2
+                ORDER BY preferred.priority NULLS LAST, data.custom_data_key
+                LIMIT 1
+            ), target_key AS (
+                SELECT COALESCE(
+                    (SELECT custom_data_key FROM chosen_key),
+                    $4::text
+                ) AS custom_data_key
+            )
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key,
+                playback_position_ticks, play_count, played
+            )
+            SELECT $1, $2, custom_data_key,
+                $5,
+                CASE WHEN $8::boolean THEN 1 ELSE 0 END,
+                CASE WHEN $6::boolean THEN $7::boolean ELSE false END
+            FROM target_key
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET playback_position_ticks = EXCLUDED.playback_position_ticks,
+                play_count = CASE
+                    WHEN $8::boolean THEN jellyfin.user_data.play_count + 1
+                    ELSE jellyfin.user_data.play_count
+                END,
+                played = CASE
+                    WHEN $6::boolean THEN $7::boolean
+                    ELSE jellyfin.user_data.played
+                END
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                serde_json::json!(keys).into(),
+                primary_key.as_str().into(),
+                playback_position_ticks.into(),
+                played_present.into(),
+                played.unwrap_or_default().into(),
+                increment_play_count.into(),
+            ],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("playback stop upsert returned no row".to_owned()).into()
+            })
+    }
+
     /// Atomically marks an item played and resets its resume position.
     ///
     /// Without an explicit date, repeated and concurrent manual toggles keep
