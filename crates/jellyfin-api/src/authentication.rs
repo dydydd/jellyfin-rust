@@ -25,6 +25,12 @@ pub struct AuthenticateUserByName {
     pub pw: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct QuickConnectDto {
+    pub secret: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticationResult {
@@ -81,9 +87,40 @@ pub(crate) async fn authenticate_by_name(
         ))
         .await?;
 
+    Ok(Json(authentication_result_from_device(
+        &state, &user, session,
+    )))
+}
+
+pub(crate) async fn authenticate_with_quick_connect(
+    State(state): State<Arc<AppState>>,
+    request: Result<Json<QuickConnectDto>, JsonRejection>,
+) -> Result<Json<AuthenticationResult>, ApiError> {
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let secret = request
+        .secret
+        .filter(|secret| !secret.is_empty())
+        .ok_or(ApiError::InvalidRequest)?;
+    let authorized = state.quick_connect.get_authorized_request(&secret).await?;
+    let session = state
+        .devices
+        .find_by_token(&authorized.access_token)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let user = state.users.get(authorized.user_id).await?;
+    Ok(Json(authentication_result_from_device(
+        &state, &user, session,
+    )))
+}
+
+fn authentication_result_from_device(
+    state: &AppState,
+    user: &user::Model,
+    session: device::Model,
+) -> AuthenticationResult {
     let mut user_dto = user_to_dto(user.clone());
     user_dto.server_id = Some(state.server_id().to_owned());
-    Ok(Json(AuthenticationResult {
+    AuthenticationResult {
         user: user_dto,
         session_info: json!({
             "Id": session.id.to_string(),
@@ -97,7 +134,7 @@ pub(crate) async fn authenticate_by_name(
         }),
         access_token: session.access_token,
         server_id: state.server_id().to_owned(),
-    }))
+    }
 }
 
 pub(crate) async fn current_user(
@@ -311,6 +348,18 @@ impl ClientMetadata {
         }
         Ok(metadata)
     }
+}
+
+pub(crate) fn authorization_info_from_headers(
+    headers: &HeaderMap,
+) -> Result<jellyfin_server_implementations::AuthorizationInfo, ApiError> {
+    let metadata = ClientMetadata::from_headers(headers)?;
+    Ok(jellyfin_server_implementations::AuthorizationInfo {
+        device_name: metadata.device,
+        device_id: metadata.device_id,
+        app_name: metadata.client,
+        app_version: metadata.version,
+    })
 }
 
 fn access_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {

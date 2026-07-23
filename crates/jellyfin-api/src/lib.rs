@@ -21,13 +21,16 @@ use jellyfin_controller::{
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, DeviceOptionsRepository, DeviceRepository, ItemUpdateStoreError,
-    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
-    SessionCommandStoreError, entities::user,
+    QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
+    SessionCommandRepository, SessionCommandStoreError, entities::user,
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
-use jellyfin_server_implementations::{AuthenticationError, DefaultAuthenticationProvider};
+use jellyfin_server_implementations::{
+    AuthenticationError, DefaultAuthenticationProvider, QuickConnectError, QuickConnectManager,
+    SystemQuickConnectCapability,
+};
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -55,6 +58,7 @@ mod persons;
 mod playstate;
 mod plugins;
 pub mod query;
+mod quick_connect;
 mod robots;
 mod session;
 mod startup;
@@ -76,6 +80,8 @@ pub struct AppState {
     pub(crate) devices: DeviceRepository,
     pub(crate) device_options: DeviceOptionsRepository,
     pub(crate) session_commands: SessionCommandRepository,
+    pub(crate) quick_connect:
+        QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
     pub(crate) playstate: PlaystateService,
     pub(crate) user_data: UserDataService,
     pub(crate) music_genres: MusicGenreService,
@@ -116,6 +122,10 @@ impl AppState {
             devices: DeviceRepository::new(database.clone()),
             device_options: DeviceOptionsRepository::new(database.clone()),
             session_commands: SessionCommandRepository::new(database.clone()),
+            quick_connect: QuickConnectManager::new(
+                QuickConnectRepository::new(database.clone()),
+                SystemQuickConnectCapability::new(true),
+            ),
             playstate: PlaystateService::new(database.clone()),
             user_data: UserDataService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
@@ -273,21 +283,9 @@ pub fn router(state: AppState) -> Router {
         .merge(api_key_routes())
         .merge(device_routes())
         .merge(user_routes())
-        .route(
-            "/Startup/Configuration",
-            get(startup::get_configuration).post(startup::update_configuration),
-        )
-        .route(
-            "/Startup/User",
-            get(startup::get_user).post(startup::update_user),
-        )
-        .route("/Startup/FirstUser", get(startup::get_user))
-        .route("/Startup/Complete", post(startup::complete))
-        .route(
-            "/Users/AuthenticateByName",
-            post(authentication::authenticate_by_name),
-        )
-        .route("/Users/Me", get(authentication::current_user))
+        .merge(startup_routes())
+        .merge(authentication_routes())
+        .merge(quick_connect_routes())
         .merge(session_routes())
         .merge(playstate_routes())
         .merge(user_data_routes())
@@ -391,6 +389,41 @@ fn api_key_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
         .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
+}
+
+fn startup_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/Startup/Configuration",
+            get(startup::get_configuration).post(startup::update_configuration),
+        )
+        .route(
+            "/Startup/User",
+            get(startup::get_user).post(startup::update_user),
+        )
+        .route("/Startup/FirstUser", get(startup::get_user))
+        .route("/Startup/Complete", post(startup::complete))
+}
+
+fn authentication_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/Users/AuthenticateByName",
+            post(authentication::authenticate_by_name),
+        )
+        .route(
+            "/Users/AuthenticateWithQuickConnect",
+            post(authentication::authenticate_with_quick_connect),
+        )
+        .route("/Users/Me", get(authentication::current_user))
+}
+
+fn quick_connect_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/QuickConnect/Enabled", get(quick_connect::enabled))
+        .route("/QuickConnect/Initiate", post(quick_connect::initiate))
+        .route("/QuickConnect/Connect", get(quick_connect::connect))
+        .route("/QuickConnect/Authorize", post(quick_connect::authorize))
 }
 
 fn device_routes() -> Router<Arc<AppState>> {
@@ -689,6 +722,7 @@ pub(crate) enum ApiError {
     SystemLog(SystemLogError),
     ServerConfiguration(ServerConfigurationStoreError),
     Environment(EnvironmentError),
+    QuickConnect(QuickConnectError),
     InvalidRequest,
     UnsupportedMediaType,
     PayloadTooLarge,
@@ -844,6 +878,12 @@ impl From<EnvironmentError> for ApiError {
     }
 }
 
+impl From<QuickConnectError> for ApiError {
+    fn from(error: QuickConnectError) -> Self {
+        Self::QuickConnect(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     #[allow(
         clippy::too_many_lines,
@@ -974,8 +1014,36 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Startup configuration persistence failed",
             ),
+            Self::QuickConnect(error) => quick_connect_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
+    }
+}
+
+fn quick_connect_error_response(error: &QuickConnectError) -> (StatusCode, &'static str) {
+    match error {
+        QuickConnectError::Disabled => (StatusCode::UNAUTHORIZED, "Quick Connect is disabled"),
+        QuickConnectError::NotFound => (StatusCode::NOT_FOUND, "Quick Connect request not found"),
+        QuickConnectError::InvalidAuthorization(_)
+        | QuickConnectError::AlreadyAuthorized
+        | QuickConnectError::Store(
+            jellyfin_data::QuickConnectStoreError::EmptyField(_)
+            | jellyfin_data::QuickConnectStoreError::FieldTooLong { .. }
+            | jellyfin_data::QuickConnectStoreError::InvalidCode
+            | jellyfin_data::QuickConnectStoreError::InvalidSecret
+            | jellyfin_data::QuickConnectStoreError::InvalidExpiration,
+        ) => (StatusCode::BAD_REQUEST, "Invalid Quick Connect request"),
+        QuickConnectError::TokenGenerationExhausted
+        | QuickConnectError::Store(
+            jellyfin_data::QuickConnectStoreError::Conflict
+            | jellyfin_data::QuickConnectStoreError::AlreadyAuthorized
+            | jellyfin_data::QuickConnectStoreError::NotFound
+            | jellyfin_data::QuickConnectStoreError::Device(_)
+            | jellyfin_data::QuickConnectStoreError::Database(_),
+        ) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Quick Connect persistence failed",
+        ),
     }
 }
 
