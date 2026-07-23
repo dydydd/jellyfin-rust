@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
-    extract::{State, rejection::JsonRejection},
+    extract::{Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, Uri, header},
 };
 use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike, Utc, Weekday};
@@ -31,6 +31,13 @@ pub struct QuickConnectDto {
     pub secret: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AuthenticateUserQuery {
+    #[serde(rename = "pw", alias = "Pw")]
+    pub pw: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticationResult {
@@ -46,8 +53,32 @@ pub(crate) async fn authenticate_by_name(
     request: Result<Json<AuthenticateUserByName>, JsonRejection>,
 ) -> Result<Json<AuthenticationResult>, ApiError> {
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    let username = request.username.unwrap_or_default();
-    let password = request.pw.unwrap_or_default();
+    authenticate_username_password(
+        &state,
+        &headers,
+        request.username.unwrap_or_default(),
+        request.pw.unwrap_or_default(),
+    )
+    .await
+}
+
+pub(crate) async fn authenticate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+    Query(query): Query<AuthenticateUserQuery>,
+) -> Result<Json<AuthenticationResult>, ApiError> {
+    let password = query.pw.ok_or(ApiError::InvalidRequest)?;
+    let user = state.users.get(user_id).await?;
+    authenticate_username_password(&state, &headers, user.username, password).await
+}
+
+async fn authenticate_username_password(
+    state: &AppState,
+    headers: &HeaderMap,
+    username: String,
+    password: String,
+) -> Result<Json<AuthenticationResult>, ApiError> {
     let client = ClientMetadata::from_headers(&headers)?;
 
     let mut user = state
@@ -65,8 +96,9 @@ pub(crate) async fn authenticate_by_name(
         return Err(ApiError::Unauthorized);
     }
     let authentication = state.authentication;
+    let username_for_authentication = username.clone();
     let user = tokio::task::spawn_blocking(move || {
-        authentication.authenticate(&username, &password, Some(&mut user))?;
+        authentication.authenticate(&username_for_authentication, &password, Some(&mut user))?;
         Ok::<_, jellyfin_server_implementations::AuthenticationError>(user)
     })
     .await
