@@ -96,6 +96,7 @@ pub(crate) async fn list(
                 limit: query.limit,
                 order,
                 descending,
+                enable_total_record_count: Some(enable_total_record_count),
                 ..ItemValueQuery::default()
             },
         )

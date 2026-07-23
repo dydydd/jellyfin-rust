@@ -123,6 +123,7 @@ async fn list_kind(
                 limit: query.limit,
                 order,
                 descending,
+                enable_total_record_count: Some(enable_total_record_count),
                 ..ItemValueQuery::default()
             },
         )

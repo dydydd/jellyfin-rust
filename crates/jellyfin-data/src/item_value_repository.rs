@@ -42,6 +42,7 @@ pub struct ItemValueQuery {
     pub limit: Option<u64>,
     pub order: ItemValueOrder,
     pub descending: bool,
+    pub enable_total_record_count: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -240,16 +241,23 @@ impl ItemValueRepository {
         query: &ItemValueQuery,
     ) -> Result<ItemValuePage, ItemValueError> {
         let (cte, values) = item_values_cte(value_type, query);
-        let count = self
-            .database
-            .query_one(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                format!("{cte} SELECT COUNT(*) AS total_record_count FROM values"),
-                values.clone(),
-            ))
-            .await?
-            .ok_or_else(|| DbErr::RecordNotFound("item value count returned no row".to_owned()))?
-            .try_get::<i64>("", "total_record_count")?;
+        let count = if total_count_enabled(query) {
+            Some(
+                self.database
+                    .query_one(Statement::from_sql_and_values(
+                        DbBackend::Postgres,
+                        format!("{cte} SELECT COUNT(*) AS total_record_count FROM values"),
+                        values.clone(),
+                    ))
+                    .await?
+                    .ok_or_else(|| {
+                        DbErr::RecordNotFound("item value count returned no row".to_owned())
+                    })?
+                    .try_get::<i64>("", "total_record_count")?,
+            )
+        } else {
+            None
+        };
 
         let mut page_values = values;
         let direction = if query.descending { "DESC" } else { "ASC" };
@@ -294,11 +302,17 @@ impl ItemValueRepository {
             })
             .collect::<Result<Vec<_>, DbErr>>()?;
         Ok(ItemValuePage {
+            total_record_count: count
+                .map(|count| u64::try_from(count).unwrap_or_default())
+                .unwrap_or_else(|| u64::try_from(values.len()).unwrap_or(u64::MAX)),
             values,
-            total_record_count: u64::try_from(count).unwrap_or_default(),
             start_index: query.start_index,
         })
     }
+}
+
+fn total_count_enabled(query: &ItemValueQuery) -> bool {
+    query.enable_total_record_count.unwrap_or(true)
 }
 
 fn item_values_cte(

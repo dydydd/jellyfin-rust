@@ -78,6 +78,7 @@ pub(crate) async fn list(
                 name_less_than: query.name_less_than,
                 start_index: query.start_index,
                 limit: query.limit,
+                enable_total_record_count: Some(enable_total_record_count),
                 ..ItemValueQuery::default()
             },
         )

@@ -155,6 +155,19 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_artists(&item_scoped, &[&fixture.alpha_artist], 1, 0);
 
+    let no_total = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists?limit=1&enableTotalRecordCount=false",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(no_total["Items"].as_array().expect("items").len(), 1);
+    assert_eq!(no_total["TotalRecordCount"], 1);
+
     assert_eq!(
         fixture
             .request(
