@@ -13,6 +13,7 @@ use jellyfin_data::{BaseItemRepository, DeviceQuery, NewSessionCommand, entities
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     NameIdPair, PlayCommand, PlayRequest, PlaystateCommand, PlaystateRequest, SessionInfoDto,
+    SessionUserInfo,
 };
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
@@ -343,6 +344,53 @@ pub(crate) async fn send_playstate_command(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn add_user_to_session(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<(String, Uuid)>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Path((session_id, user_id)) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let session = find_active_session(&state, &session_id).await?;
+    if session.user_id == user_id {
+        return Err(ApiError::InvalidRequest);
+    }
+    let user = state.users.get(user_id).await?;
+    if state
+        .devices
+        .add_additional_user(session.id, user.id, &user.username)
+        .await?
+        != 1
+    {
+        return Err(ApiError::SessionNotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn remove_user_from_session(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<(String, Uuid)>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Path((session_id, user_id)) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let session = find_active_session(&state, &session_id).await?;
+    if session.user_id == user_id {
+        return Err(ApiError::InvalidRequest);
+    }
+    if state
+        .devices
+        .remove_additional_user(session.id, user_id)
+        .await?
+        != 1
+    {
+        return Err(ApiError::SessionNotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn post_capabilities(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -493,9 +541,12 @@ async fn find_active_session(
 fn session_info(device: device::Model, user_name: String, server_id: &str) -> SessionInfoDto {
     let capabilities: ClientCapabilitiesDto =
         serde_json::from_value(device.capabilities).unwrap_or_default();
+    let additional_users: Vec<SessionUserInfo> =
+        serde_json::from_value(device.additional_users).unwrap_or_default();
     let playable_media_types = capabilities.playable_media_types.clone();
     let supported_commands = capabilities.supported_commands.clone();
     SessionInfoDto {
+        additional_users,
         id: Some(jellyfin_session_id(&device.app_name, &device.device_id)),
         user_id: device.user_id,
         user_name: Some(user_name),

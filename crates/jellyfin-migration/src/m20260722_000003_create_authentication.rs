@@ -32,6 +32,7 @@ impl MigrationTrait for Migration {
                     is_active boolean NOT NULL DEFAULT false,
                     capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,
                     now_viewing_item jsonb,
+                    additional_users jsonb NOT NULL DEFAULT '[]'::jsonb,
                     date_created timestamptz NOT NULL DEFAULT clock_timestamp(),
                     date_modified timestamptz NOT NULL DEFAULT clock_timestamp(),
                     date_last_activity timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -42,7 +43,9 @@ impl MigrationTrait for Migration {
                     CONSTRAINT devices_now_viewing_item_object CHECK (
                         now_viewing_item IS NULL
                         OR jsonb_typeof(now_viewing_item) = 'object'
-                    )
+                    ),
+                    CONSTRAINT devices_additional_users_array
+                        CHECK (jsonb_typeof(additional_users) = 'array')
                 );
                 ALTER TABLE jellyfin.devices
                     DROP CONSTRAINT IF EXISTS devices_app_name_not_empty;

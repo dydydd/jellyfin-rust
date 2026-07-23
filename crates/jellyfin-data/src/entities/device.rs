@@ -17,6 +17,7 @@ pub struct Model {
     pub is_active: bool,
     pub capabilities: Value,
     pub now_viewing_item: Option<Value>,
+    pub additional_users: Value,
     pub date_created: DateTime<Utc>,
     pub date_modified: DateTime<Utc>,
     pub date_last_activity: DateTime<Utc>,

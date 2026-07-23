@@ -451,6 +451,10 @@ fn session_routes() -> Router<Arc<AppState>> {
             "/Sessions/{session_id}/Message",
             post(session::send_message_command),
         )
+        .route(
+            "/Sessions/{session_id}/User/{user_id}",
+            post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
         .route("/Sessions/Viewing", post(session::report_viewing))
         .route("/Sessions/Capabilities", post(session::post_capabilities))
         .route(

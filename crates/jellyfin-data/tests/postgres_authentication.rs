@@ -5,9 +5,9 @@ use jellyfin_data::{
     entities::{device, device_option, session_command, user},
 };
 use jellyfin_migration::{
-    AddDeviceCapabilitiesMigration, AddSessionNowViewingMigration, CreateAuthenticationMigration,
-    CreateDeviceOptionsMigration, CreateSessionCommandOutboxMigration,
-    OptimizeDeviceSessionQueriesMigration,
+    AddDeviceCapabilitiesMigration, AddSessionAdditionalUsersMigration,
+    AddSessionNowViewingMigration, CreateAuthenticationMigration, CreateDeviceOptionsMigration,
+    CreateSessionCommandOutboxMigration, OptimizeDeviceSessionQueriesMigration,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ConnectionTrait, DatabaseConnection, EntityTrait,
@@ -75,6 +75,14 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("session now-viewing DDL must stay idempotent");
+    AddSessionAdditionalUsersMigration
+        .up(&schema)
+        .await
+        .expect("session additional-users DDL must remain idempotent");
+    AddSessionAdditionalUsersMigration
+        .up(&schema)
+        .await
+        .expect("session additional-users DDL must stay idempotent");
     assert_authentication_indexes(&database).await;
     database
 }
@@ -205,6 +213,7 @@ async fn test_devices(database: &DatabaseConnection) {
         .expect("device update must succeed");
     assert_device_query_filters(&repository, &device_id, &activated, &second).await;
     assert_now_viewing_item_update(database, &repository, activated.id).await;
+    assert_additional_users_update(database, &repository, activated.id).await;
 
     let latest = repository
         .latest_by_device_id(&device_id)
@@ -244,6 +253,61 @@ async fn test_devices(database: &DatabaseConnection) {
             .expect("cascade verification must succeed")
             .is_none()
     );
+}
+
+async fn assert_additional_users_update(
+    database: &DatabaseConnection,
+    repository: &DeviceRepository,
+    device_id: i64,
+) {
+    let additional_user_id = Uuid::new_v4();
+    assert_eq!(
+        repository
+            .add_additional_user(device_id, additional_user_id, "Additional User")
+            .await
+            .expect("additional user must be added"),
+        1
+    );
+    assert_eq!(
+        repository
+            .add_additional_user(device_id, additional_user_id, "Ignored Duplicate")
+            .await
+            .expect("duplicate additional user add must be idempotent"),
+        1
+    );
+    let updated = device::Entity::find_by_id(device_id)
+        .one(database)
+        .await
+        .expect("device with additional user must load")
+        .expect("device with additional user must exist");
+    assert_eq!(
+        updated.additional_users,
+        json!([{
+            "UserId": additional_user_id.simple().to_string(),
+            "UserName": "Additional User"
+        }])
+    );
+
+    assert_eq!(
+        repository
+            .remove_additional_user(device_id, additional_user_id)
+            .await
+            .expect("additional user must be removed"),
+        1
+    );
+    assert_eq!(
+        repository
+            .remove_additional_user(device_id, additional_user_id)
+            .await
+            .expect("missing additional user removal must be idempotent"),
+        1
+    );
+    let cleared = device::Entity::find_by_id(device_id)
+        .one(database)
+        .await
+        .expect("device with removed additional user must load")
+        .expect("device with removed additional user must exist");
+    assert_eq!(cleared.additional_users, json!([]));
 }
 
 async fn assert_now_viewing_item_update(

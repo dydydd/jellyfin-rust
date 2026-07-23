@@ -3,7 +3,7 @@ use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
     GeneralCommand, GeneralCommandType, MediaType, MessageCommand, NameIdPair, PlayCommand,
     PlayRequest, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, SessionInfoDto,
-    SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -222,6 +222,10 @@ fn session_commands_use_official_wire_names() {
 #[test]
 fn session_info_uses_official_wire_names_and_guid_format() {
     let session = SessionInfoDto {
+        additional_users: vec![SessionUserInfo {
+            user_id: Uuid::parse_str("2b8cf5ff-3f3d-4f7f-a452-6a7f8d190cce").unwrap(),
+            user_name: "bob".to_owned(),
+        }],
         capabilities: ClientCapabilitiesDto {
             playable_media_types: vec![MediaType::Video],
             supported_commands: vec![GeneralCommandType::Play],
@@ -260,6 +264,11 @@ fn session_info_uses_official_wire_names_and_guid_format() {
 
     let value = serde_json::to_value(session).unwrap();
     assert_eq!(value["Id"], "session-id");
+    assert_eq!(value["AdditionalUsers"][0]["UserName"], "bob");
+    assert_eq!(
+        value["AdditionalUsers"][0]["UserId"],
+        "2b8cf5ff3f3d4f7fa4526a7f8d190cce"
+    );
     assert_eq!(value["UserId"], "f9c1ad0c820f44df8db852fbfc0d3d93");
     assert_eq!(value["PlayableMediaTypes"], json!(["Video"]));
     assert_eq!(value["SupportedCommands"], json!(["Play"]));

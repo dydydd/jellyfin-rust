@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, DbErr, DeleteResult,
-    EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, sea_query::Expr,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    DbBackend, DbErr, DeleteResult, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set, Statement, sea_query::Expr,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -20,6 +21,8 @@ pub enum AuthenticationStoreError {
     InvalidCapabilities,
     #[error("session now viewing item must be a JSON object")]
     InvalidNowViewingItem,
+    #[error("session additional users must be a JSON array")]
+    InvalidAdditionalUsers,
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -236,6 +239,7 @@ impl DeviceRepository {
             is_active: Set(is_active),
             capabilities: Set(json!({})),
             now_viewing_item: Set(None),
+            additional_users: Set(json!([])),
             date_created: Set(now),
             date_modified: Set(now),
             date_last_activity: Set(now),
@@ -391,6 +395,7 @@ impl DeviceRepository {
             is_active: Set(model.is_active),
             capabilities: Set(model.capabilities),
             now_viewing_item: Set(model.now_viewing_item),
+            additional_users: Set(model.additional_users),
             date_created: Set(model.date_created),
             date_modified: Set(Utc::now()),
             date_last_activity: Set(model.date_last_activity),
@@ -443,6 +448,86 @@ impl DeviceRepository {
             .exec(&self.database)
             .await?
             .rows_affected)
+    }
+
+    /// Adds a user to a session's additional-user list.
+    ///
+    /// `PostgreSQL` de-duplicates by compact `UserId` inside the JSONB array, so
+    /// repeated calls remain idempotent without a read/modify/write race.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for invalid user metadata, or a database
+    /// error when updating fails.
+    pub async fn add_additional_user(
+        &self,
+        id: i64,
+        user_id: Uuid,
+        user_name: &str,
+    ) -> Result<u64, AuthenticationStoreError> {
+        validate_length("user name", user_name, 255)?;
+        let result = self
+            .database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                UPDATE jellyfin.devices
+                SET additional_users = CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM jsonb_array_elements(additional_users) AS entry(value)
+                            WHERE value->>'UserId' = $1
+                        )
+                        THEN additional_users
+                        ELSE additional_users || jsonb_build_array(
+                            jsonb_build_object('UserId', $1, 'UserName', $2)
+                        )
+                    END,
+                    date_modified = clock_timestamp(),
+                    date_last_activity = clock_timestamp()
+                WHERE id = $3
+                ",
+                [
+                    user_id.simple().to_string().into(),
+                    user_name.to_owned().into(),
+                    id.into(),
+                ],
+            ))
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Removes a user from a session's additional-user list.
+    ///
+    /// The update is idempotent: missing users leave the array unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when updating fails.
+    pub async fn remove_additional_user(
+        &self,
+        id: i64,
+        user_id: Uuid,
+    ) -> Result<u64, AuthenticationStoreError> {
+        let result = self
+            .database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                UPDATE jellyfin.devices
+                SET additional_users = (
+                        SELECT COALESCE(jsonb_agg(value), '[]'::jsonb)
+                        FROM jsonb_array_elements(additional_users) AS entry(value)
+                        WHERE value->>'UserId' <> $1
+                    ),
+                    date_modified = clock_timestamp(),
+                    date_last_activity = clock_timestamp()
+                WHERE id = $2
+                ",
+                [user_id.simple().to_string().into(), id.into()],
+            ))
+            .await?;
+        Ok(result.rows_affected())
     }
 
     /// Deletes a device authentication record.

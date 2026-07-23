@@ -228,6 +228,28 @@ pub struct PlaystateRequest {
     pub controlling_user_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct SessionUserInfo {
+    #[serde(
+        default,
+        serialize_with = "crate::serde_guid::single::serialize",
+        deserialize_with = "crate::serde_guid::single::deserialize"
+    )]
+    pub user_id: Uuid,
+    pub user_name: String,
+}
+
+impl Default for SessionUserInfo {
+    fn default() -> Self {
+        Self {
+            user_id: Uuid::nil(),
+            user_name: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
@@ -244,6 +266,7 @@ pub struct MessageCommand {
 #[serde(rename_all = "PascalCase")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SessionInfoDto {
+    pub additional_users: Vec<SessionUserInfo>,
     pub capabilities: ClientCapabilitiesDto,
     pub playable_media_types: Vec<MediaType>,
     #[serde(skip_serializing_if = "Option::is_none")]
