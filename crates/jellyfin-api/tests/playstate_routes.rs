@@ -593,6 +593,67 @@ async fn playback_completion_propagates_to_alternate_versions() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn manual_played_unplayed_routes_propagate_to_alternate_versions() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+    let original_last_played = chrono::DateTime::parse_from_rfc3339("2026-07-22T12:00:00Z")
+        .expect("fixed date")
+        .with_timezone(&Utc);
+    let mut alternate = NewUserData::new(
+        fixture.alternate_item_id,
+        fixture.user_id,
+        fixture.alternate_item_id.to_string(),
+    );
+    alternate.play_count = 7;
+    alternate.playback_position_ticks = ticks(240);
+    alternate.is_favorite = true;
+    alternate.last_played_date = Some(original_last_played);
+    repository.upsert(alternate).await.expect("alternate seed");
+
+    let response = request(
+        &fixture.app,
+        "POST",
+        &modern_playstate_route(fixture.runtime_item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let played = assert_stopped(
+        &repository,
+        fixture.alternate_item_id,
+        fixture.user_id,
+        7,
+        0,
+        true,
+    )
+    .await;
+    assert_eq!(played.last_played_date, Some(original_last_played));
+    assert!(played.is_favorite);
+
+    let response = request(
+        &fixture.app,
+        "DELETE",
+        &modern_playstate_route(fixture.runtime_item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let unplayed = assert_stopped(
+        &repository,
+        fixture.alternate_item_id,
+        fixture.user_id,
+        0,
+        0,
+        false,
+    )
+    .await;
+    assert!(unplayed.last_played_date.is_none());
+    assert!(unplayed.is_favorite);
+
+    fixture.cleanup().await;
+}
+
 async fn assert_progress(
     repository: &UserDataRepository,
     item_id: Uuid,

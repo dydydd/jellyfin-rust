@@ -123,12 +123,18 @@ impl PlaystateService {
         item_id: Uuid,
         date_played: Option<DateTime<Utc>>,
     ) -> Result<PlaystateUpdate, PlaystateError> {
-        self.validate_request(authenticated_user, target_user_id, item_id)
+        let item = self
+            .validate_request(authenticated_user, target_user_id, item_id)
             .await?;
         let user_data = self
             .user_data
             .mark_played(item_id, target_user_id, &item_id.to_string(), date_played)
             .await?;
+        if should_propagate_played_state(&item, &user_data) {
+            self.user_data
+                .mark_alternate_versions_played(item.id, target_user_id, true)
+                .await?;
+        }
         Ok(PlaystateUpdate { user_data })
     }
 
@@ -147,12 +153,18 @@ impl PlaystateService {
         item_id: Uuid,
         date_played: Option<DateTime<Utc>>,
     ) -> Result<PlaystateUpdate, PlaystateError> {
-        self.validate_authorized_request(target_user_id, item_id)
+        let item = self
+            .validate_authorized_request(target_user_id, item_id)
             .await?;
         let user_data = self
             .user_data
             .mark_played(item_id, target_user_id, &item_id.to_string(), date_played)
             .await?;
+        if should_propagate_played_state(&item, &user_data) {
+            self.user_data
+                .mark_alternate_versions_played(item.id, target_user_id, true)
+                .await?;
+        }
         Ok(PlaystateUpdate { user_data })
     }
 
@@ -168,12 +180,18 @@ impl PlaystateService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<PlaystateUpdate, PlaystateError> {
-        self.validate_request(authenticated_user, target_user_id, item_id)
+        let item = self
+            .validate_request(authenticated_user, target_user_id, item_id)
             .await?;
         let user_data = self
             .user_data
             .mark_unplayed(item_id, target_user_id, &item_id.to_string())
             .await?;
+        if is_video_item(&item) {
+            self.user_data
+                .mark_alternate_versions_unplayed(item.id, target_user_id)
+                .await?;
+        }
         Ok(PlaystateUpdate { user_data })
     }
 
@@ -191,12 +209,18 @@ impl PlaystateService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<PlaystateUpdate, PlaystateError> {
-        self.validate_authorized_request(target_user_id, item_id)
+        let item = self
+            .validate_authorized_request(target_user_id, item_id)
             .await?;
         let user_data = self
             .user_data
             .mark_unplayed(item_id, target_user_id, &item_id.to_string())
             .await?;
+        if is_video_item(&item) {
+            self.user_data
+                .mark_alternate_versions_unplayed(item.id, target_user_id)
+                .await?;
+        }
         Ok(PlaystateUpdate { user_data })
     }
 
@@ -330,7 +354,7 @@ impl PlaystateService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
-    ) -> Result<(), PlaystateError> {
+    ) -> Result<base_item::Model, PlaystateError> {
         self.validate_target_user(target_user_id).await?;
         if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
             return Err(PlaystateError::Forbidden);
@@ -342,7 +366,7 @@ impl PlaystateService {
         &self,
         target_user_id: Uuid,
         item_id: Uuid,
-    ) -> Result<(), PlaystateError> {
+    ) -> Result<base_item::Model, PlaystateError> {
         self.validate_target_user(target_user_id).await?;
         self.validate_item(item_id).await
     }
@@ -355,12 +379,11 @@ impl PlaystateService {
         }
     }
 
-    async fn validate_item(&self, item_id: Uuid) -> Result<(), PlaystateError> {
+    async fn validate_item(&self, item_id: Uuid) -> Result<base_item::Model, PlaystateError> {
         self.items
             .get(item_id)
             .await?
-            .ok_or(PlaystateError::ItemNotFound)?;
-        Ok(())
+            .ok_or(PlaystateError::ItemNotFound)
     }
 
     async fn progress_item(

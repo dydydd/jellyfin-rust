@@ -879,6 +879,91 @@ impl UserDataRepository {
             .await?)
     }
 
+    /// Clears watched and resume state from existing alternate video versions.
+    ///
+    /// Unlike marking versions played, Jellyfin does not create missing
+    /// alternate user-data rows when propagating an unplayed state. The query
+    /// therefore resolves at most one preferred existing row per alternate
+    /// version and updates only those rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the batch update fails.
+    pub async fn mark_alternate_versions_unplayed(
+        &self,
+        source_item_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Vec<user_data::Model>, UserDataError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH requested AS MATERIALIZED (
+                SELECT COALESCE(primary_version_id, id) AS group_id
+                FROM jellyfin.base_items
+                WHERE id = $1
+            ), target_items AS MATERIALIZED (
+                SELECT item.id AS item_id, item.presentation_unique_key
+                FROM jellyfin.base_items AS item
+                INNER JOIN requested
+                    ON item.id = requested.group_id
+                    OR item.primary_version_id = requested.group_id
+                WHERE item.id <> $1
+                    AND item.item_type IN (
+                        'Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer'
+                    )
+            ), primary_keys AS (
+                SELECT item_id,
+                    CASE
+                        WHEN btrim(COALESCE(presentation_unique_key, '')) <> ''
+                            AND presentation_unique_key <> item_id::text
+                            THEN presentation_unique_key
+                        ELSE item_id::text
+                    END AS custom_data_key
+                FROM target_items
+            ), preferred_keys AS (
+                SELECT item_id, custom_data_key, 1 AS priority
+                FROM primary_keys
+                UNION ALL
+                SELECT target.item_id, target.item_id::text, 2 AS priority
+                FROM target_items AS target
+                INNER JOIN primary_keys AS primary_key USING (item_id)
+                WHERE primary_key.custom_data_key <> target.item_id::text
+            ), target_keys AS (
+                SELECT DISTINCT ON (data.item_id)
+                    data.item_id, data.custom_data_key
+                FROM jellyfin.user_data AS data
+                INNER JOIN target_items AS target
+                    ON target.item_id = data.item_id
+                LEFT JOIN preferred_keys AS preferred
+                    ON preferred.item_id = data.item_id
+                    AND preferred.custom_data_key = data.custom_data_key
+                WHERE data.user_id = $2
+                ORDER BY data.item_id,
+                    preferred.priority NULLS LAST,
+                    data.custom_data_key
+            )
+            UPDATE jellyfin.user_data AS data
+            SET playback_position_ticks = 0,
+                play_count = 0,
+                last_played_date = NULL,
+                played = false
+            FROM target_keys AS target
+            WHERE data.item_id = target.item_id
+                AND data.user_id = $2
+                AND data.custom_data_key = target.custom_data_key
+            RETURNING data.item_id, data.user_id, data.custom_data_key,
+                data.rating, data.playback_position_ticks,
+                data.play_count, data.is_favorite, data.last_played_date,
+                data.played, data.audio_stream_index,
+                data.subtitle_stream_index, data.likes, data.retention_date
+            ",
+            [source_item_id.into(), user_id.into()],
+        );
+        Ok(user_data::Model::find_by_statement(statement)
+            .all(&self.database)
+            .await?)
+    }
+
     /// Atomically marks an item played and resets its resume position.
     ///
     /// Without an explicit date, repeated and concurrent manual toggles keep
