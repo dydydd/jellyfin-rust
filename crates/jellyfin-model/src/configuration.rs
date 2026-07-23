@@ -1,7 +1,26 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::enums::SubtitlePlaybackMode;
+use crate::{enums::SubtitlePlaybackMode, providers::ImageType};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ImageOption {
+    #[serde(rename = "Type")]
+    pub image_type: ImageType,
+    pub limit: i32,
+    pub min_width: i32,
+}
+
+impl Default for ImageOption {
+    fn default() -> Self {
+        Self {
+            image_type: ImageType::Primary,
+            limit: 1,
+            min_width: 0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]

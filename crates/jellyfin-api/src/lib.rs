@@ -643,6 +643,10 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Library/Movies/Added", post(library::updated_movies))
         .route("/Library/Movies/Updated", post(library::updated_movies))
         .route("/Library/Media/Updated", post(library::updated_media))
+        .route(
+            "/Libraries/AvailableOptions",
+            get(library::available_options),
+        )
         .route("/Artists/{item_id}/Similar", get(library::similar))
         .route("/Items/{item_id}/Similar", get(library::similar))
         .route("/Albums/{item_id}/Similar", get(library::similar))

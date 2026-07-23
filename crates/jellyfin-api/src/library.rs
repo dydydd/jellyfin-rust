@@ -11,13 +11,16 @@ use axum::{
     response::Response,
 };
 use jellyfin_data::{BaseItemCounts, BaseItemPage};
-use jellyfin_model::ItemCounts;
+use jellyfin_model::{
+    CollectionType, ImageOption, ImageType, ItemCounts, LibraryOptionsResultDto,
+    LibraryTypeOptionsDto,
+};
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, user_library};
+use crate::{ApiError, AppState, authentication, authorization, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct LibraryQuery {
@@ -41,6 +44,14 @@ pub(crate) struct ItemCountsQuery {
 pub(crate) struct MediaFoldersQuery {
     #[serde(rename = "isHidden", alias = "IsHidden")]
     is_hidden: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct AvailableOptionsQuery {
+    #[serde(default, rename = "libraryContentType", alias = "LibraryContentType")]
+    library_content_type: Option<CollectionType>,
+    #[serde(default, rename = "isNewLibrary", alias = "IsNewLibrary")]
+    is_new_library: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,6 +279,28 @@ pub(crate) async fn physical_paths(
     ))
 }
 
+pub(crate) async fn available_options(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<AvailableOptionsQuery>, QueryRejection>,
+) -> Result<Json<LibraryOptionsResultDto>, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let _ = query.is_new_library;
+    Ok(Json(LibraryOptionsResultDto {
+        type_options: representative_item_types(query.library_content_type)
+            .into_iter()
+            .map(|item_type| LibraryTypeOptionsDto {
+                item_type: Some(item_type.to_owned()),
+                default_image_options: default_image_options(item_type),
+                ..LibraryTypeOptionsDto::default()
+            })
+            .collect(),
+        ..LibraryOptionsResultDto::default()
+    }))
+}
+
 pub(crate) async fn refresh(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -454,6 +487,88 @@ fn is_hidden(folder: &jellyfin_controller::VirtualFolder) -> bool {
         &["IsHidden", "isHidden", "Hidden", "hidden"],
     )
     .unwrap_or(false)
+}
+
+fn representative_item_types(content_type: Option<CollectionType>) -> Vec<&'static str> {
+    match content_type {
+        Some(CollectionType::BoxSets) => vec!["BoxSet"],
+        Some(CollectionType::Playlists) => vec!["Playlist"],
+        Some(CollectionType::Movies) => vec!["Movie"],
+        Some(CollectionType::TvShows) => vec!["Series", "Season", "Episode"],
+        Some(CollectionType::Books) => vec!["Book", "AudioBook"],
+        Some(CollectionType::Music) => {
+            vec!["MusicArtist", "MusicAlbum", "Audio", "MusicVideo"]
+        }
+        Some(CollectionType::HomeVideos | CollectionType::Photos) => vec!["Video", "Photo"],
+        Some(CollectionType::MusicVideos) => vec!["MusicVideo"],
+        Some(
+            CollectionType::Unknown
+            | CollectionType::Trailers
+            | CollectionType::LiveTv
+            | CollectionType::Folders,
+        )
+        | None => vec!["Series", "Season", "Episode", "Movie"],
+    }
+}
+
+fn default_image_options(item_type: &str) -> Vec<ImageOption> {
+    match item_type {
+        "Movie" | "MusicVideo" => vec![
+            image_option(ImageType::Backdrop, 1, 1280),
+            image_option(ImageType::Art, 0, 0),
+            image_option(ImageType::Disc, 0, 0),
+            image_option(ImageType::Primary, 1, 0),
+            image_option(ImageType::Banner, 0, 0),
+            image_option(ImageType::Thumb, 1, 0),
+            image_option(ImageType::Logo, 1, 0),
+        ],
+        "Series" => vec![
+            image_option(ImageType::Backdrop, 1, 1280),
+            image_option(ImageType::Art, 0, 0),
+            image_option(ImageType::Primary, 1, 0),
+            image_option(ImageType::Banner, 1, 0),
+            image_option(ImageType::Thumb, 1, 0),
+            image_option(ImageType::Logo, 1, 0),
+        ],
+        "MusicAlbum" => vec![
+            image_option(ImageType::Backdrop, 0, 1280),
+            image_option(ImageType::Disc, 0, 0),
+        ],
+        "MusicArtist" => vec![
+            image_option(ImageType::Backdrop, 1, 1280),
+            image_option(ImageType::Banner, 0, 0),
+            image_option(ImageType::Art, 0, 0),
+            image_option(ImageType::Logo, 1, 0),
+        ],
+        "BoxSet" => vec![
+            image_option(ImageType::Backdrop, 1, 1280),
+            image_option(ImageType::Primary, 1, 0),
+            image_option(ImageType::Thumb, 1, 0),
+            image_option(ImageType::Logo, 1, 0),
+            image_option(ImageType::Art, 0, 0),
+            image_option(ImageType::Disc, 0, 0),
+            image_option(ImageType::Banner, 0, 0),
+        ],
+        "Season" => vec![
+            image_option(ImageType::Backdrop, 0, 1280),
+            image_option(ImageType::Primary, 1, 0),
+            image_option(ImageType::Banner, 0, 0),
+            image_option(ImageType::Thumb, 0, 0),
+        ],
+        "Episode" => vec![
+            image_option(ImageType::Backdrop, 0, 1280),
+            image_option(ImageType::Primary, 1, 0),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+const fn image_option(image_type: ImageType, limit: i32, min_width: i32) -> ImageOption {
+    ImageOption {
+        image_type,
+        limit,
+        min_width,
+    }
 }
 
 fn saturating_i32(value: i64) -> i32 {

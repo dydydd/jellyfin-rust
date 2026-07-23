@@ -17,6 +17,7 @@ pub mod enums;
 pub mod extensions;
 mod globalization;
 pub mod io;
+mod library_options;
 pub mod live_tv;
 mod metadata_editor;
 pub mod net;
@@ -31,7 +32,7 @@ mod user_data;
 pub mod users;
 
 pub use authentication::{AuthenticationInfo, QueryResult};
-pub use configuration::UserConfiguration;
+pub use configuration::{ImageOption, UserConfiguration};
 pub use cryptography::{PasswordHash, PasswordHashError, PasswordHashSegment};
 pub use devices::{DeviceInfoDto, DeviceOptionsDto};
 pub use display_preferences::{DisplayPreferencesDto, ScrollDirection, SortOrder};
@@ -54,6 +55,7 @@ pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, 
 pub use extensions::first_to_upper;
 pub use globalization::LocalizationOption;
 pub use io::{FileSystemEntryInfo, FileSystemEntryType};
+pub use library_options::{LibraryOptionInfoDto, LibraryOptionsResultDto, LibraryTypeOptionsDto};
 pub use live_tv::{TimerInfo, TunerHostInfo};
 pub use metadata_editor::{
     CollectionType, CountryInfo, CultureDto, ExternalIdInfo, ExternalIdMediaType,
