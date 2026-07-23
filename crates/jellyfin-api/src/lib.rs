@@ -635,6 +635,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Items/{item_id}/Ancestors", get(library::ancestors))
         .route("/Items/{item_id}/Download", get(library::download))
         .route("/Items/{item_id}/Collections", get(library::collections))
+        .route("/Library/PhysicalPaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
         .route("/Artists/{item_id}/Similar", get(library::similar))
         .route("/Items/{item_id}/Similar", get(library::similar))

@@ -10,6 +10,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+use std::path::PathBuf;
+
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Library Media Folders Tests\", DeviceId=\"library-media-folders-tests\", Device=\"Test\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_library_media_folders_routes_";
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
@@ -61,6 +63,14 @@ async fn exercise_library_media_folders(database_name: &str) {
         .expect("PostgreSQL migrations must succeed");
 
     let suffix = Uuid::new_v4().simple().to_string();
+    let temp_root = std::env::temp_dir().join(format!("jellyfin-library-media-folders-{suffix}"));
+    let movies_path = temp_root.join("movies");
+    let hidden_path = temp_root.join("hidden");
+    std::fs::create_dir_all(&movies_path).expect("movies temp directory");
+    std::fs::create_dir_all(&hidden_path).expect("hidden temp directory");
+    let movies_path = canonical_path(&movies_path);
+    let hidden_path = canonical_path(&hidden_path);
+
     let users = UserService::new(database.clone());
     let admin = users
         .create_initial_administrator(&format!("media-folders-admin-{suffix}"))
@@ -85,7 +95,7 @@ async fn exercise_library_media_folders(database_name: &str) {
             &format!("Movies {suffix}"),
             Some("movies".to_owned()),
             json!({ "Enabled": true }),
-            Vec::new(),
+            vec![movies_path.clone()],
             false,
         )
         .await
@@ -95,7 +105,7 @@ async fn exercise_library_media_folders(database_name: &str) {
             &format!("Hidden {suffix}"),
             Some("tvshows".to_owned()),
             json!({ "Enabled": true, "IsHidden": true }),
-            Vec::new(),
+            vec![hidden_path.clone()],
             false,
         )
         .await
@@ -130,6 +140,12 @@ async fn exercise_library_media_folders(database_name: &str) {
     assert_eq!(
         get(&app, "/Library/MediaFolders", None).await.status(),
         StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get(&app, "/Library/PhysicalPaths", Some(&user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         get(&app, "/Library/MediaFolders", Some(&user_token))
@@ -192,6 +208,20 @@ async fn exercise_library_media_folders(database_name: &str) {
     .await;
     assert_eq!(api_key["TotalRecordCount"], 3);
 
+    let physical_paths = get_json(&app, "/Library/PhysicalPaths", &admin_token).await;
+    assert_eq!(
+        string_array(&physical_paths),
+        vec![hidden_path.clone(), movies_path.clone()]
+    );
+    let api_key_paths = get_json(
+        &app,
+        &format!("/Library/PhysicalPaths?api_key={api_key_token}"),
+        "",
+    )
+    .await;
+    assert_eq!(string_array(&api_key_paths), vec![hidden_path, movies_path]);
+
+    std::fs::remove_dir_all(&temp_root).expect("temporary media path cleanup");
     database.close().await.expect("database pool cleanup");
 }
 
@@ -228,6 +258,23 @@ fn names(response: &Value) -> Vec<String> {
         .iter()
         .map(|item| item["Name"].as_str().expect("name").to_owned())
         .collect()
+}
+
+fn string_array(response: &Value) -> Vec<String> {
+    response
+        .as_array()
+        .expect("string array")
+        .iter()
+        .map(|value| value.as_str().expect("string").to_owned())
+        .collect()
+}
+
+fn canonical_path(path: &PathBuf) -> String {
+    path.canonicalize()
+        .expect("canonical path")
+        .to_str()
+        .expect("UTF-8 path")
+        .to_owned()
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

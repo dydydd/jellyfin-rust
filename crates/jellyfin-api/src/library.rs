@@ -220,6 +220,25 @@ pub(crate) async fn media_folders(
     }))
 }
 
+pub(crate) async fn physical_paths(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<String>>, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    Ok(Json(
+        state
+            .virtual_folders
+            .list()
+            .await?
+            .into_iter()
+            .flat_map(|folder| folder.locations)
+            .collect(),
+    ))
+}
+
 pub(crate) async fn delete_item(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
