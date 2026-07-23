@@ -1,6 +1,9 @@
 use std::{fmt, marker::PhantomData, str::FromStr};
 
+use jellyfin_data::ItemValueOrder;
 use serde::{Deserializer, de::SeqAccess};
+
+use crate::ApiError;
 
 pub mod comma {
     use serde::Deserializer;
@@ -41,6 +44,23 @@ pub mod pipe {
         T: std::str::FromStr,
     {
         super::deserialize_delimited::<D, T, '|'>(deserializer)
+    }
+}
+
+pub(crate) fn item_value_order(sort_by: &[String]) -> Result<ItemValueOrder, ApiError> {
+    let Some(order) = sort_by.first() else {
+        return Ok(ItemValueOrder::CleanValue);
+    };
+
+    if order.eq_ignore_ascii_case("Default")
+        || order.eq_ignore_ascii_case("SortName")
+        || order.eq_ignore_ascii_case("Name")
+    {
+        Ok(ItemValueOrder::CleanValue)
+    } else if order.eq_ignore_ascii_case("Random") {
+        Ok(ItemValueOrder::Random)
+    } else {
+        Err(ApiError::InvalidRequest)
     }
 }
 

@@ -159,7 +159,7 @@ async fn music_genre_list_matches_official_music_genre_contract() {
     let descending = body_json(
         request(
             &fixture.app,
-            "/MusicGenres?sortOrder=Descending&limit=1",
+            "/MusicGenres?sortBy=SortName&sortOrder=Descending&limit=1",
             Some(&fixture.user_token),
         )
         .await,
@@ -238,6 +238,16 @@ async fn music_genre_list_matches_official_music_genre_contract() {
         request(
             &fixture.app,
             "/MusicGenres?sortOrder=sideways",
+            Some(&fixture.user_token),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &fixture.app,
+            "/MusicGenres?sortBy=sideways",
             Some(&fixture.user_token),
         )
         .await

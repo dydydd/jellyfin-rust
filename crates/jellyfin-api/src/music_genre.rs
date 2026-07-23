@@ -47,6 +47,13 @@ pub(crate) struct MusicGenreQuery {
     name_less_than: Option<String>,
     #[serde(
         default,
+        rename = "sortBy",
+        alias = "SortBy",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_by: Vec<String>,
+    #[serde(
+        default,
         rename = "sortOrder",
         alias = "SortOrder",
         deserialize_with = "crate::query::comma::deserialize"
@@ -67,6 +74,7 @@ pub(crate) async fn list(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    let order = crate::query::item_value_order(&query.sort_by)?;
     let descending = descending(&query.sort_order)?;
     let enable_total_record_count = query.enable_total_record_count;
     let page = state
@@ -86,6 +94,7 @@ pub(crate) async fn list(
                 name_less_than: query.name_less_than,
                 start_index: query.start_index,
                 limit: query.limit,
+                order,
                 descending,
                 ..ItemValueQuery::default()
             },

@@ -43,7 +43,7 @@ async fn genre_routes_match_official_generic_genre_contract() {
         fixture
             .request(
                 Method::GET,
-                "/Genres?sortOrder=Descending&limit=2",
+                "/Genres?sortBy=SortName&sortOrder=Descending&limit=2",
                 Credential::Device(&fixture.user_token),
             )
             .await,
@@ -159,6 +159,17 @@ async fn genre_routes_match_official_generic_genre_contract() {
             .request(
                 Method::GET,
                 "/Genres?sortOrder=sideways",
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Genres?sortBy=sideways",
                 Credential::Device(&fixture.user_token),
             )
             .await

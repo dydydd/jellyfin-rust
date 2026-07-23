@@ -40,7 +40,15 @@ pub struct ItemValueQuery {
     pub name_less_than: Option<String>,
     pub start_index: u64,
     pub limit: Option<u64>,
+    pub order: ItemValueOrder,
     pub descending: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ItemValueOrder {
+    #[default]
+    CleanValue,
+    Random,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,10 +252,14 @@ impl ItemValueRepository {
             .try_get::<i64>("", "total_record_count")?;
 
         let mut page_values = values;
-        let order = if query.descending { "DESC" } else { "ASC" };
+        let direction = if query.descending { "DESC" } else { "ASC" };
+        let order = match query.order {
+            ItemValueOrder::CleanValue => format!("clean_value {direction}, item_value_id"),
+            ItemValueOrder::Random => "random(), item_value_id".to_owned(),
+        };
         let mut page_sql = format!(
             "{cte} SELECT item_value_id, value, item_count \
-             FROM values ORDER BY clean_value {order}, item_value_id"
+             FROM values ORDER BY {order}"
         );
         push_bind(
             &mut page_sql,

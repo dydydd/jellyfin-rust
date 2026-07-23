@@ -60,7 +60,7 @@ async fn artist_routes_match_official_artist_contract() {
         fixture
             .request(
                 Method::GET,
-                "/Artists?sortOrder=Descending&limit=2",
+                "/Artists?sortBy=SortName&sortOrder=Descending&limit=2",
                 Credential::Device(&fixture.user_token),
             )
             .await,
@@ -160,6 +160,17 @@ async fn artist_routes_match_official_artist_contract() {
             .request(
                 Method::GET,
                 "/Artists?sortOrder=sideways",
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists?sortBy=sideways",
                 Credential::Device(&fixture.user_token),
             )
             .await
