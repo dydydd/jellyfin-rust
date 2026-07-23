@@ -691,7 +691,28 @@ impl UserService {
     ///
     /// Returns [`UserError::Database`] when the query fails.
     pub async fn list(&self) -> Result<Vec<user::Model>, UserError> {
-        Ok(user::Entity::find()
+        self.list_filtered(None, None).await
+    }
+
+    /// Lists users matching optional hidden/disabled filters in normalized
+    /// username order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::Database`] when the query fails.
+    pub async fn list_filtered(
+        &self,
+        is_hidden: Option<bool>,
+        is_disabled: Option<bool>,
+    ) -> Result<Vec<user::Model>, UserError> {
+        let mut query = user::Entity::find();
+        if let Some(is_hidden) = is_hidden {
+            query = query.filter(user::Column::IsHidden.eq(is_hidden));
+        }
+        if let Some(is_disabled) = is_disabled {
+            query = query.filter(user::Column::IsDisabled.eq(is_disabled));
+        }
+        Ok(query
             .order_by_asc(user::Column::NormalizedUsername)
             .all(&self.database)
             .await?)

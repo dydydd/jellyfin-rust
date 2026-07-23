@@ -3,7 +3,10 @@ use std::{net::IpAddr, sync::Arc};
 use axum::{
     Json,
     body::to_bytes,
-    extract::{ConnectInfo, OriginalUri, Path, Query, State, rejection::JsonRejection},
+    extract::{
+        ConnectInfo, OriginalUri, Path, Query, State, rejection::JsonRejection,
+        rejection::QueryRejection,
+    },
     http::{HeaderMap, Request, StatusCode},
 };
 use jellyfin_data::entities::user;
@@ -17,13 +20,27 @@ use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, authorization, user_to_dto};
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ListUsersQuery {
+    #[serde(rename = "isHidden", alias = "IsHidden")]
+    pub is_hidden: Option<bool>,
+    #[serde(rename = "isDisabled", alias = "IsDisabled")]
+    pub is_disabled: Option<bool>,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
+    query: Result<Query<ListUsersQuery>, QueryRejection>,
 ) -> Result<Json<Vec<UserDto>>, ApiError> {
     authorization::require_default(&state, &headers, &uri).await?;
-    let users = state.users.list().await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let users = state
+        .users
+        .list_filtered(query.is_hidden, query.is_disabled)
+        .await?;
     for user in &users {
         authentication::stored_user_policy(user)?;
     }
