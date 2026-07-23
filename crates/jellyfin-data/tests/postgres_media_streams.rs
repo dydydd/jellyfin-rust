@@ -72,6 +72,7 @@ async fn exercise_media_streams(database_name: &str) {
     assert_all_types_full_and_null_roundtrip(&database, &items, &streams).await;
     assert_replace_stale_and_clear(&items, &streams).await;
     assert_filters_and_sorting(&items, &streams).await;
+    assert_batch_query_for_items(&items, &streams).await;
     assert_languages(&database, &items, &streams).await;
     assert_duplicate_and_missing_preserve_data(&items, &streams).await;
     assert_cascade(&database, &items, &streams).await;
@@ -213,6 +214,26 @@ async fn assert_filters_and_sorting(items: &BaseItemRepository, streams: &MediaS
             .unwrap()
             .is_empty()
     );
+}
+
+async fn assert_batch_query_for_items(items: &BaseItemRepository, streams: &MediaStreamRepository) {
+    let first = create_item(items, "batch-first").await;
+    let second = create_item(items, "batch-second").await;
+    let first_values = vec![
+        minimal_stream(1, PersistedMediaStreamType::Audio),
+        minimal_stream(3, PersistedMediaStreamType::Subtitle),
+    ];
+    let second_values = vec![minimal_stream(-1, PersistedMediaStreamType::Video)];
+    streams.replace(first.id, &first_values).await.unwrap();
+    streams.replace(second.id, &second_values).await.unwrap();
+
+    let batch = streams
+        .query_for_items(&[second.id, first.id, Uuid::new_v4()])
+        .await
+        .unwrap();
+    assert_eq!(batch.get(&first.id).cloned().unwrap(), first_values);
+    assert_eq!(batch.get(&second.id).cloned().unwrap(), second_values);
+    assert!(!batch.contains_key(&Uuid::new_v4()));
 }
 
 async fn assert_languages(

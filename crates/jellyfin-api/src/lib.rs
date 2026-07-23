@@ -10,11 +10,12 @@ use axum::{
 use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
     InstalledPlugin, ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService,
-    LibraryControllerError, LibraryControllerService, LocalizationService, MetadataEditorError,
-    MetadataEditorService, MusicGenreError, MusicGenreService, PersonError, PersonService,
-    PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
-    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
-    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
+    LibraryControllerError, LibraryControllerService, LocalizationService, MediaStreamService,
+    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
+    MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
+    PluginRegistry, SystemLogError, SystemLogService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -76,6 +77,7 @@ pub struct AppState {
     pub(crate) server_configuration: ServerConfigurationRepository,
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
+    pub(crate) media_streams: MediaStreamService,
     pub(crate) videos: VideoService,
     pub(crate) tuner_hosts: TunerHostManager,
     pub(crate) virtual_folders: VirtualFolderService,
@@ -110,6 +112,7 @@ impl AppState {
             server_configuration: ServerConfigurationRepository::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
+            media_streams: MediaStreamService::new(database.clone()),
             videos: VideoService::new(database.clone()),
             tuner_hosts: TunerHostManager::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
@@ -541,6 +544,7 @@ pub(crate) enum ApiError {
     TunerHost(TunerHostError),
     ItemLookup(ItemLookupError),
     ItemUpdate(ItemUpdateError),
+    MediaStream(MediaStreamServiceError),
     MetadataEditor(MetadataEditorError),
     SystemLog(SystemLogError),
     ServerConfiguration(ServerConfigurationStoreError),
@@ -639,6 +643,12 @@ impl From<TunerHostError> for ApiError {
 impl From<ItemUpdateError> for ApiError {
     fn from(error: ItemUpdateError) -> Self {
         Self::ItemUpdate(error)
+    }
+}
+
+impl From<MediaStreamServiceError> for ApiError {
+    fn from(error: MediaStreamServiceError) -> Self {
+        Self::MediaStream(error)
     }
 }
 
@@ -775,6 +785,7 @@ impl IntoResponse for ApiError {
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemLookup(error) => item_lookup_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
+            Self::MediaStream(error) => media_stream_error_response(&error),
             Self::MetadataEditor(error) => metadata_editor_error_response(&error),
             Self::SystemLog(error) => system_log_error_response(&error),
             Self::ServerConfiguration(_error) => (
@@ -836,6 +847,22 @@ fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static 
         ItemLookupError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Item lookup data could not be loaded",
+        ),
+    }
+}
+
+fn media_stream_error_response(error: &MediaStreamServiceError) -> (StatusCode, &'static str) {
+    match error {
+        MediaStreamServiceError::Store(
+            jellyfin_data::MediaStreamStoreError::BaseItemNotFound { .. },
+        ) => (StatusCode::NOT_FOUND, "Media stream item not found"),
+        MediaStreamServiceError::Store(
+            jellyfin_data::MediaStreamStoreError::DuplicateStreamIndex { .. }
+            | jellyfin_data::MediaStreamStoreError::InvalidStreamType(_),
+        ) => (StatusCode::BAD_REQUEST, "Invalid media stream"),
+        MediaStreamServiceError::Store(jellyfin_data::MediaStreamStoreError::Database(_)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Media stream persistence failed",
         ),
     }
 }

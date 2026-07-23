@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use jellyfin_data::{
     MediaStreamQuery as PersistedMediaStreamQuery, MediaStreamRepository, MediaStreamStoreError,
     PersistedMediaStream, PersistedMediaStreamType,
@@ -257,6 +259,30 @@ where
         Ok(stored
             .into_iter()
             .map(|stream| self.mapper.to_api(stream))
+            .collect())
+    }
+
+    /// Queries many items' streams in one database round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PostgreSQL` persistence errors.
+    pub async fn get_media_streams_for_items(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<MediaStream>>, MediaStreamServiceError> {
+        let stored = self.repository.query_for_items(item_ids).await?;
+        Ok(stored
+            .into_iter()
+            .map(|(item_id, streams)| {
+                (
+                    item_id,
+                    streams
+                        .into_iter()
+                        .map(|stream| self.mapper.to_api(stream))
+                        .collect(),
+                )
+            })
             .collect())
     }
 

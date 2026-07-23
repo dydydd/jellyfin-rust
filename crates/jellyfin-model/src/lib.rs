@@ -30,9 +30,9 @@ pub use cryptography::{PasswordHash, PasswordHashError, PasswordHashSegment};
 pub use dlna::{
     CodecProfile, CodecType, ContainerHelper, ContainerProfile, DeviceProfile, DirectPlayProfile,
     DlnaProfileType, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo,
-    MediaStreamProtocol, PlayMethod, ProfileCondition, ProfileConditionType, ProfileConditionValue,
-    StreamBuilder, StreamBuilderError, StreamInfo, SubtitleProfile, TranscodeReason,
-    TranscodeSeekInfo, TranscodingProfile, VideoType,
+    MediaSourceType, MediaStreamProtocol, PlayMethod, ProfileCondition, ProfileConditionType,
+    ProfileConditionValue, StreamBuilder, StreamBuilderError, StreamInfo, SubtitleProfile,
+    TranscodeReason, TranscodeSeekInfo, TranscodingProfile, VideoType,
 };
 pub use drawing::{ImageFormat, InvalidImageFormat};
 pub use dto::UserDto;

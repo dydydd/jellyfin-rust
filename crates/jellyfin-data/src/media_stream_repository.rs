@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
@@ -241,6 +241,40 @@ impl MediaStreamRepository {
         rows.into_iter()
             .map(PersistedMediaStream::try_from)
             .collect()
+    }
+
+    /// Queries many items' streams in one `PostgreSQL` round-trip.
+    ///
+    /// Streams are grouped by item id and ordered by stream index inside each
+    /// group so callers can project them without extra sorting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a corrupt-row or database error.
+    pub async fn query_for_items(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<PersistedMediaStream>>, MediaStreamStoreError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let rows = media_stream::Entity::find()
+            .filter(media_stream::Column::ItemId.is_in(item_ids.iter().copied()))
+            .order_by_asc(media_stream::Column::ItemId)
+            .order_by_asc(media_stream::Column::StreamIndex)
+            .all(&self.database)
+            .await?;
+
+        let mut grouped = HashMap::with_capacity(item_ids.len());
+        for row in rows {
+            let item_id = row.item_id;
+            grouped
+                .entry(item_id)
+                .or_insert_with(Vec::new)
+                .push(PersistedMediaStream::try_from(row)?);
+        }
+        Ok(grouped)
     }
 
     /// Returns the distinct languages stored for one stream type.

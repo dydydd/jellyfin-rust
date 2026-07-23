@@ -47,6 +47,13 @@ pub(crate) struct ItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     media_types: Vec<String>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
 }
 
 pub(crate) async fn get(
@@ -91,11 +98,12 @@ async fn get_for(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let fields = query.fields.clone();
     let page = state
         .user_library
         .query_items(&authenticated.user, target_user_id, query.try_into()?)
         .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    Ok(Json(page_to_dto(state.as_ref(), page, fields).await?))
 }
 
 async fn resume_for(
@@ -106,11 +114,12 @@ async fn resume_for(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let fields = query.fields.clone();
     let page = state
         .user_library
         .resume_items(&authenticated.user, target_user_id, query.try_into()?)
         .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    Ok(Json(page_to_dto(state.as_ref(), page, fields).await?))
 }
 
 impl TryFrom<ItemsQuery> for BaseItemQuery {
@@ -137,14 +146,36 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
     }
 }
 
-fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQueryResult {
-    user_library::BaseItemQueryResult {
-        items: page
-            .items
-            .into_iter()
-            .map(|item| user_library::item_to_dto(item, server_id))
-            .collect(),
+async fn page_to_dto(
+    state: &AppState,
+    page: BaseItemPage,
+    fields: Vec<String>,
+) -> Result<user_library::BaseItemQueryResult, ApiError> {
+    let requested_fields = user_library::BaseItemDtoFields::from_names(&fields);
+    let mut media_streams = if requested_fields.wants_media_streams() {
+        let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+        state
+            .media_streams
+            .get_media_streams_for_items(&item_ids)
+            .await?
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let mut items = Vec::with_capacity(page.items.len());
+    for item in page.items {
+        let item_id = item.id;
+        let mut dto = user_library::item_to_dto(item, state.server_id());
+        if requested_fields.wants_media_streams() {
+            let streams = media_streams.remove(&item_id).unwrap_or_default();
+            user_library::project_item_dto_with_streams(&mut dto, requested_fields, streams);
+        }
+        items.push(dto);
+    }
+
+    Ok(user_library::BaseItemQueryResult {
+        items,
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
-    }
+    })
 }

@@ -295,13 +295,28 @@ pub enum MediaProtocol {
     Ftp = 6,
 }
 
+/// The type of a media source.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum MediaSourceType {
+    #[default]
+    Default = 0,
+    Grouping = 1,
+    Placeholder = 2,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct MediaSourceInfo {
     pub id: Option<String>,
     pub protocol: MediaProtocol,
+    pub path: Option<String>,
+    pub name: Option<String>,
     pub container: Option<String>,
+    #[serde(rename = "Type")]
+    pub source_type: MediaSourceType,
     pub bitrate: Option<i32>,
+    pub size: Option<i64>,
     pub is_remote: bool,
     pub run_time_ticks: Option<i64>,
     pub supports_transcoding: bool,
@@ -324,8 +339,12 @@ impl Default for MediaSourceInfo {
         Self {
             id: None,
             protocol: MediaProtocol::default(),
+            path: None,
+            name: None,
             container: None,
+            source_type: MediaSourceType::default(),
             bitrate: None,
+            size: None,
             is_remote: false,
             run_time_ticks: None,
             supports_transcoding: true,

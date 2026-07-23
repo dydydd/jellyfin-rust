@@ -4,11 +4,13 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
+use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
     entities::user,
 };
+use jellyfin_model::{MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -55,6 +57,55 @@ async fn official_items_controller_contract() {
         assert!(body["TotalRecordCount"].is_number());
         assert!(body["StartIndex"].is_number());
     }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn media_stream_fields_are_projected_for_item_pages() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut media = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    media.name = Some(format!("Page Media {}", fixture.suffix));
+    media.sort_name = media.name.clone();
+    media.parent_id = Some(root.id);
+    media.media_type = Some("Audio".to_owned());
+    media.path = Some(format!("/media/page-{}.mkv", fixture.suffix));
+    let media = items.create(media).await.expect("media item");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            media.id,
+            &[MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Audio,
+                codec: Some("ac3".to_owned()),
+                language: Some("ger".to_owned()),
+                path: Some(format!("/media/page-{}.mkv", fixture.suffix)),
+                is_default: true,
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("media streams");
+
+    let route = format!(
+        "/Items?recursive=true&searchTerm={}&fields=MediaSources,MediaStreams",
+        fixture.suffix
+    );
+    let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+    let item = body["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == media.id.simple().to_string())
+        .expect("projected item");
+    assert_eq!(item["MediaSources"].as_array().unwrap().len(), 1);
+    assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
+    assert_eq!(item["MediaStreams"][0]["Language"], "deu");
+
+    items.delete(media.id).await.expect("media cleanup");
     fixture.cleanup().await;
 }
 

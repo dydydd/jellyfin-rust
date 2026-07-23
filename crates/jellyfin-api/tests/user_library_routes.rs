@@ -3,11 +3,13 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
+use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, USER_ROOT_FOLDER_ID,
     entities::{base_item, user},
 };
+use jellyfin_model::{MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -117,6 +119,32 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
     .await;
     assert_eq!(lyrics["Metadata"]["Artist"], "Test Artist");
     assert_eq!(lyrics["Lyrics"][0]["Text"], "First line");
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn media_stream_fields_are_projected_for_single_item_routes() {
+    let fixture = UserLibraryFixture::new().await;
+
+    let route = format!(
+        "/Users/{}/Items/{}?fields=MediaSources,MediaStreams",
+        fixture.user_id, fixture.item_id
+    );
+    let item = get_json(&fixture.app, &route, &fixture.user_token).await;
+
+    assert_eq!(item["MediaSources"].as_array().unwrap().len(), 1);
+    assert_eq!(item["MediaSources"][0]["Path"], "/media/Test Song.mkv");
+    assert_eq!(item["MediaSources"][0]["Name"], "Test Song");
+    assert_eq!(
+        item["MediaSources"][0]["MediaStreams"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
+    assert_eq!(item["MediaStreams"][0]["Language"], "deu");
 
     fixture.cleanup().await;
 }
@@ -262,6 +290,7 @@ impl UserLibraryFixture {
         let root = items.ensure_user_root().await.expect("user root");
         let mut media = item("Audio", "Test Song", Some(root.id), false);
         media.media_type = Some("Audio".to_owned());
+        media.path = Some("/media/Test Song.mkv".to_owned());
         media.data = Some(json!({
             "Lyrics": {
                 "Metadata": { "Artist": "Test Artist" },
@@ -269,6 +298,21 @@ impl UserLibraryFixture {
             }
         }));
         let media = items.create(media).await.expect("media item");
+        MediaStreamService::new(database.clone())
+            .save_media_streams(
+                media.id,
+                &[MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("ac3".to_owned()),
+                    language: Some("ger".to_owned()),
+                    path: Some("/media/Test Song.mkv".to_owned()),
+                    is_default: true,
+                    ..MediaStream::default()
+                }],
+            )
+            .await
+            .expect("media streams");
 
         let mut intro = item("Video", "Intro", Some(media.id), false);
         intro.data = Some(json!({ "IsIntro": true }));

@@ -2,11 +2,15 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::HeaderMap,
 };
-use jellyfin_controller::{MusicGenre, Person, RelatedItemKind};
+use axum_extra::extract::Query;
+use jellyfin_controller::{MusicGenre, Person, RelatedItemKind, library::get_media_source_name};
 use jellyfin_data::entities::base_item;
+use jellyfin_model::{
+    MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamProtocol,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -17,9 +21,42 @@ use crate::{ApiError, AppState, authentication};
 pub(crate) struct UserIdQuery {
     #[serde(default, rename = "userId", alias = "UserId")]
     user_id: Option<Uuid>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BaseItemDtoFields {
+    media_sources: bool,
+    media_streams: bool,
+}
+
+impl BaseItemDtoFields {
+    #[must_use]
+    pub(crate) fn from_names(fields: &[String]) -> Self {
+        let mut result = Self::default();
+        for field in fields {
+            if field.eq_ignore_ascii_case("MediaSources") {
+                result.media_sources = true;
+            } else if field.eq_ignore_ascii_case("MediaStreams") {
+                result.media_streams = true;
+            }
+        }
+        result
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_media_streams(self) -> bool {
+        self.media_sources || self.media_streams
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
     pub name: Option<String>,
@@ -62,9 +99,13 @@ pub struct BaseItemDto {
     pub has_lyrics: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_ids: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_sources: Option<Vec<jellyfin_model::MediaSourceInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_streams: Option<Vec<jellyfin_model::MediaStream>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemQueryResult {
     pub items: Vec<BaseItemDto>,
@@ -76,8 +117,15 @@ pub(crate) async fn get_root_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(user_id): Path<Uuid>,
+    Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_root_for(state, headers, Some(user_id)).await
+    get_root_for(
+        state,
+        headers,
+        Some(user_id),
+        BaseItemDtoFields::from_names(&query.fields),
+    )
+    .await
 }
 
 pub(crate) async fn get_root(
@@ -85,15 +133,29 @@ pub(crate) async fn get_root(
     headers: HeaderMap,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_root_for(state, headers, query.user_id).await
+    get_root_for(
+        state,
+        headers,
+        query.user_id,
+        BaseItemDtoFields::from_names(&query.fields),
+    )
+    .await
 }
 
 pub(crate) async fn get_item_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_item_for(state, headers, Some(user_id), item_id).await
+    get_item_for(
+        state,
+        headers,
+        Some(user_id),
+        item_id,
+        BaseItemDtoFields::from_names(&query.fields),
+    )
+    .await
 }
 
 pub(crate) async fn get_item(
@@ -102,7 +164,14 @@ pub(crate) async fn get_item(
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_item_for(state, headers, query.user_id, item_id).await
+    get_item_for(
+        state,
+        headers,
+        query.user_id,
+        item_id,
+        BaseItemDtoFields::from_names(&query.fields),
+    )
+    .await
 }
 
 pub(crate) async fn get_intros_legacy(
@@ -218,6 +287,7 @@ async fn get_root_for(
     state: Arc<AppState>,
     headers: HeaderMap,
     requested_user_id: Option<Uuid>,
+    requested_fields: BaseItemDtoFields,
 ) -> Result<Json<BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
@@ -225,7 +295,9 @@ async fn get_root_for(
         .user_library
         .root(&authenticated.user, target_user_id)
         .await?;
-    Ok(Json(item_to_dto(item, state.server_id())))
+    Ok(Json(
+        project_item_to_dto(state.as_ref(), item, requested_fields).await?,
+    ))
 }
 
 async fn get_item_for(
@@ -233,6 +305,7 @@ async fn get_item_for(
     headers: HeaderMap,
     requested_user_id: Option<Uuid>,
     item_id: Uuid,
+    requested_fields: BaseItemDtoFields,
 ) -> Result<Json<BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
@@ -240,7 +313,9 @@ async fn get_item_for(
         .user_library
         .item(&authenticated.user, target_user_id, item_id)
         .await?;
-    Ok(Json(item_to_dto(item, state.server_id())))
+    Ok(Json(
+        project_item_to_dto(state.as_ref(), item, requested_fields).await?,
+    ))
 }
 
 async fn get_related_query_for(
@@ -339,7 +414,100 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         extra_type,
         has_lyrics,
         provider_ids: metadata_value(item.data.as_ref(), &["ProviderIds", "provider_ids"]),
+        media_sources: None,
+        media_streams: None,
     }
+}
+
+pub(crate) async fn project_item_to_dto(
+    state: &AppState,
+    item: base_item::Model,
+    fields: BaseItemDtoFields,
+) -> Result<BaseItemDto, ApiError> {
+    let item_id = item.id;
+    let mut dto = item_to_dto(item, state.server_id());
+    if !fields.wants_media_streams() {
+        return Ok(dto);
+    }
+
+    let media_streams = state
+        .media_streams
+        .get_media_streams_for_items(&[item_id])
+        .await?
+        .remove(&item_id)
+        .unwrap_or_default();
+    project_item_dto_with_streams(&mut dto, fields, media_streams);
+    Ok(dto)
+}
+
+pub(crate) fn project_item_dto_with_streams(
+    dto: &mut BaseItemDto,
+    fields: BaseItemDtoFields,
+    media_streams: Vec<MediaStream>,
+) {
+    if fields.media_sources
+        && let Some(source) = media_source_from_dto(dto, &media_streams)
+    {
+        dto.media_sources = Some(vec![source]);
+    }
+    if fields.media_streams {
+        dto.media_streams = Some(media_streams);
+    }
+}
+
+fn media_source_from_dto(
+    dto: &BaseItemDto,
+    media_streams: &[MediaStream],
+) -> Option<MediaSourceInfo> {
+    if dto.is_folder || !is_media_source_item(dto) {
+        return None;
+    }
+
+    let path = dto.path.clone();
+    let name = path
+        .as_deref()
+        .map(|path| get_media_source_name(path, false, None))
+        .or_else(|| dto.name.clone());
+    let container = path.as_deref().and_then(media_container_from_path);
+    Some(MediaSourceInfo {
+        id: Some(dto.id.clone()),
+        protocol: MediaProtocol::File,
+        path,
+        name,
+        container,
+        source_type: MediaSourceType::Default,
+        bitrate: None,
+        size: None,
+        is_remote: false,
+        run_time_ticks: dto.run_time_ticks,
+        supports_transcoding: true,
+        supports_direct_stream: true,
+        supports_direct_play: true,
+        transcoding_container: None,
+        transcoding_sub_protocol: MediaStreamProtocol::default(),
+        media_streams: media_streams.to_vec(),
+        default_audio_stream_index: None,
+        default_subtitle_stream_index: None,
+        use_most_compatible_transcoding_profile: false,
+        live_stream_id: None,
+        etag: None,
+        video_type: None,
+    })
+}
+
+fn is_media_source_item(dto: &BaseItemDto) -> bool {
+    dto.path.is_some()
+        || dto.media_type.is_some()
+        || matches!(
+            dto.item_type.as_str(),
+            "Audio" | "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+        )
+}
+
+fn media_container_from_path(path: &str) -> Option<String> {
+    let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let (_, extension) = file_name.rsplit_once('.')?;
+    (!extension.is_empty()).then(|| extension.to_owned())
 }
 
 pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseItemDto {
@@ -367,6 +535,8 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
+        media_sources: None,
+        media_streams: None,
     }
 }
 
@@ -395,6 +565,8 @@ pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: Some(person.model.provider_ids.clone()),
+        media_sources: None,
+        media_streams: None,
     }
 }
 
