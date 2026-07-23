@@ -5,7 +5,9 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, entities::user,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice,
+    entities::{item_value, user},
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
 use serde_json::{Value, json};
@@ -126,6 +128,12 @@ async fn exercise_search_routes(database_name: &str) {
         None,
     )
     .await;
+    let values = ItemValueRepository::new(database.clone());
+    let genre = format!("Cyberpunk {suffix}");
+    let genre_row = values
+        .link(matrix_id, item_value::ItemValueType::Genre, &genre)
+        .await
+        .expect("genre link");
 
     let app = jellyfin_api::router(AppState::new(
         database.clone(),
@@ -208,10 +216,29 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(audio["SearchHints"][0]["Name"], "Matrix Theme");
     assert_eq!(audio["SearchHints"][0]["MediaType"], "Audio");
 
+    let genre_hints = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Cyberpunk&includeMedia=false&includeGenres=true",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    let genre_id = genre_row.item_value_id.simple().to_string();
+    assert_eq!(genre_hints["TotalRecordCount"], 1);
+    assert_eq!(genre_hints["SearchHints"].as_array().unwrap().len(), 1);
+    assert_eq!(genre_hints["SearchHints"][0]["Id"], genre_id);
+    assert_eq!(genre_hints["SearchHints"][0]["ItemId"], genre_id);
+    assert_eq!(genre_hints["SearchHints"][0]["Name"], genre);
+    assert_eq!(genre_hints["SearchHints"][0]["MatchedTerm"], "Cyberpunk");
+    assert_eq!(genre_hints["SearchHints"][0]["Type"], "Genre");
+    assert_eq!(genre_hints["SearchHints"][0]["IsFolder"], true);
+
     let disabled = body_json(
         request(
             &app,
-            "/Search/Hints?searchTerm=Matrix&includeMedia=false",
+            "/Search/Hints?searchTerm=Matrix&includeMedia=false&includeGenres=false",
             Some(&user_token),
         )
         .await,

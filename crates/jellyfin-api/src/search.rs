@@ -2,7 +2,8 @@ use std::{str::FromStr, sync::Arc};
 
 use axum::{Json, extract::State, http::HeaderMap};
 use axum_extra::extract::Query;
-use jellyfin_data::{BaseItemPage, BaseItemQuery, entities::base_item};
+use jellyfin_controller::Genre;
+use jellyfin_data::{BaseItemPage, BaseItemQuery, ItemValueQuery, entities::base_item};
 use jellyfin_model::{MediaType, SearchHint, SearchHintResult};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -41,6 +42,8 @@ pub(crate) struct SearchHintsQuery {
     parent_id: Option<Uuid>,
     #[serde(rename = "includeMedia", alias = "IncludeMedia")]
     include_media: Option<bool>,
+    #[serde(rename = "includeGenres", alias = "IncludeGenres")]
+    include_genres: Option<bool>,
 }
 
 pub(crate) async fn hints(
@@ -49,10 +52,6 @@ pub(crate) async fn hints(
     Query(query): Query<SearchHintsQuery>,
 ) -> Result<Json<SearchHintResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !query.include_media.unwrap_or(true) {
-        return Ok(Json(SearchHintResult::default()));
-    }
-
     let search_term = query
         .search_term
         .as_deref()
@@ -63,30 +62,65 @@ pub(crate) async fn hints(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
-    let page = state
-        .user_library
-        .query_items(
-            &authenticated.user,
-            target_user_id,
-            BaseItemQuery {
-                parent_id: query.parent_id,
-                recursive: true,
-                search_term: Some(search_term.to_owned()),
-                include_item_types: query.include_item_types,
-                exclude_item_types: query.exclude_item_types,
-                media_types: query.media_types,
-                is_virtual_item: Some(false),
-                start_index: query.start_index,
-                limit: query.limit,
-                ..BaseItemQuery::default()
-            },
-        )
-        .await?;
+    let mut result = SearchHintResult::default();
 
-    Ok(Json(search_hint_result(page, search_term)))
+    if query.include_media.unwrap_or(true) {
+        let page = state
+            .user_library
+            .query_items(
+                &authenticated.user,
+                target_user_id,
+                BaseItemQuery {
+                    parent_id: query.parent_id,
+                    recursive: true,
+                    search_term: Some(search_term.to_owned()),
+                    include_item_types: query.include_item_types.clone(),
+                    exclude_item_types: query.exclude_item_types.clone(),
+                    media_types: query.media_types.clone(),
+                    is_virtual_item: Some(false),
+                    start_index: query.start_index,
+                    limit: query.limit,
+                    ..BaseItemQuery::default()
+                },
+            )
+            .await?;
+        let media = media_search_hint_result(page, search_term);
+        result.total_record_count += media.total_record_count;
+        result.search_hints.extend(media.search_hints);
+    }
+
+    if query.include_genres.unwrap_or(true) {
+        let page = state
+            .genres
+            .list(
+                &authenticated.user,
+                target_user_id,
+                ItemValueQuery {
+                    parent_id: query.parent_id,
+                    recursive: true,
+                    search_term: Some(search_term.to_owned()),
+                    include_item_types: query.include_item_types,
+                    exclude_item_types: query.exclude_item_types,
+                    media_types: query.media_types,
+                    user_id: Some(target_user_id),
+                    start_index: query.start_index,
+                    limit: query.limit,
+                    ..ItemValueQuery::default()
+                },
+            )
+            .await?;
+        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+        result.search_hints.extend(
+            page.genres
+                .into_iter()
+                .map(|genre| genre_hint(genre, search_term)),
+        );
+    }
+
+    Ok(Json(result))
 }
 
-fn search_hint_result(page: BaseItemPage, matched_term: &str) -> SearchHintResult {
+fn media_search_hint_result(page: BaseItemPage, matched_term: &str) -> SearchHintResult {
     SearchHintResult {
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         search_hints: page
@@ -118,6 +152,18 @@ fn search_hint(item: base_item::Model, matched_term: &str) -> SearchHint {
         album: metadata_string(item.data.as_ref(), &["Album", "album"]),
         album_artist: metadata_string(item.data.as_ref(), &["AlbumArtist", "album_artist"]),
         series: metadata_string(item.data.as_ref(), &["Series", "SeriesName", "series"]),
+        ..SearchHint::default()
+    }
+}
+
+fn genre_hint(genre: Genre, matched_term: &str) -> SearchHint {
+    SearchHint {
+        item_id: genre.id,
+        id: genre.id,
+        name: genre.name,
+        matched_term: Some(matched_term.to_owned()),
+        item_type: "Genre".to_owned(),
+        is_folder: Some(true),
         ..SearchHint::default()
     }
 }
