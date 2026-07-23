@@ -115,6 +115,23 @@ async fn persons_list_matches_official_persons_contract() {
         0,
     );
 
+    let unlimited = body_json(
+        fixture
+            .request("/Persons?limit=0", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_people(
+        &unlimited,
+        &[
+            &fixture.director_name,
+            &fixture.nested_person_name,
+            &fixture.person_name,
+        ],
+        3,
+        0,
+    );
+
     let searched = body_json(
         fixture
             .request(

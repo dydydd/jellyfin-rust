@@ -311,7 +311,7 @@ impl PersonRepository {
             i64::try_from(query.start_index).unwrap_or(i64::MAX),
             " OFFSET ",
         );
-        if let Some(limit) = query.limit {
+        if let Some(limit) = effective_limit(query.limit) {
             push_bind(
                 &mut page_sql,
                 &mut page_values,
@@ -343,6 +343,13 @@ impl PersonRepository {
             .await?
             .rows_affected
             == 1)
+    }
+}
+
+const fn effective_limit(limit: Option<u64>) -> Option<u64> {
+    match limit {
+        Some(0) | None => None,
+        Some(limit) => Some(limit),
     }
 }
 
