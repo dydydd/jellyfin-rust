@@ -381,6 +381,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Genres/{genre_name}", get(genres::get))
         .route("/Studios", get(studios::list))
         .route("/Studios/{name}", get(studios::get))
+        .route("/MusicGenres", get(music_genre::list))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))
         .route(
@@ -1164,7 +1165,8 @@ impl IntoResponse for ApiError {
             Self::MusicGenre(
                 MusicGenreError::NotFound
                 | MusicGenreError::UserNotFound
-                | MusicGenreError::User(UserError::NotFound),
+                | MusicGenreError::User(UserError::NotFound)
+                | MusicGenreError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Music genre or user not found"),
             Self::Playstate(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

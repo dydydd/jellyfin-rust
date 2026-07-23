@@ -49,7 +49,7 @@ pub use media_streams::{
     MediaStreamService, MediaStreamServiceError,
 };
 pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
-pub use music_genre::{MusicGenre, MusicGenreError, MusicGenreService};
+pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};
 pub use persons::{Person, PersonError, PersonService};
 pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,

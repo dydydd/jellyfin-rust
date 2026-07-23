@@ -5,16 +5,17 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem, NewDevice,
-    entities::{item_value, user},
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice, NewUserData, UserDataRepository, entities::item_value,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Music Genre Tests\", Device=\"Test\", DeviceId=\"music-genre\", Version=\"1.0\"";
+const DATABASE_PREFIX: &str = "jellyfin_music_genre_routes_";
 
 #[tokio::test]
 async fn official_fake_music_genre_is_not_found() {
@@ -132,16 +133,162 @@ async fn authentication_and_target_user_permissions_are_enforced() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn music_genre_list_matches_official_music_genre_contract() {
+    let fixture = MusicGenreFixture::new().await;
+
+    let unauthenticated = request(&fixture.app, "/MusicGenres", None).await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let listed = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?limit=2",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(
+        &listed,
+        &[&fixture.nested_genre_name, &fixture.genre_name],
+        3,
+        0,
+    );
+
+    let descending = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?sortOrder=Descending&limit=1",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&descending, &[&fixture.slug_genre_name], 3, 0);
+
+    let searched = body_json(
+        request(
+            &fixture.app,
+            &format!("/MusicGenres?searchTerm={}", encoded(&fixture.genre_name)),
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&searched, &[&fixture.genre_name], 1, 0);
+
+    let favorite = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?isFavorite=true",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&favorite, &[&fixture.genre_name], 1, 0);
+
+    let parent_scoped = body_json(
+        request(
+            &fixture.app,
+            &format!("/MusicGenres?parentId={}", fixture.parent_id),
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&parent_scoped, &[&fixture.nested_genre_name], 1, 0);
+
+    let item_scoped = body_json(
+        request(
+            &fixture.app,
+            &format!("/MusicGenres?parentId={}", fixture.audio_id),
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&item_scoped, &[&fixture.genre_name], 1, 0);
+
+    let book_filtered = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?includeItemTypes=Book",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&book_filtered, &[], 0, 0);
+
+    let no_total = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?limit=1&enableTotalRecordCount=false",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(no_total["Items"].as_array().expect("items").len(), 1);
+    assert_eq!(no_total["TotalRecordCount"], 1);
+
+    assert_eq!(
+        request(
+            &fixture.app,
+            "/MusicGenres?sortOrder=sideways",
+            Some(&fixture.user_token),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let for_administrator = format!("/MusicGenres?userId={}", fixture.administrator_id);
+    let response = request(&fixture.app, &for_administrator, Some(&fixture.user_token)).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let for_user = format!("/MusicGenres?userId={}", fixture.user_id);
+    let response = request(&fixture.app, &for_user, Some(&fixture.administrator_token)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    fixture.cleanup().await;
+}
+
+fn assert_genres(
+    body: &Value,
+    expected_names: &[&str],
+    expected_total: usize,
+    expected_start: usize,
+) {
+    assert_eq!(body["TotalRecordCount"], expected_total);
+    assert_eq!(body["StartIndex"], expected_start);
+    let items = body["Items"].as_array().expect("music genre items");
+    assert_eq!(items.len(), expected_names.len());
+    let names = items
+        .iter()
+        .map(|item| item["Name"].as_str().expect("music genre name"))
+        .collect::<Vec<_>>();
+    assert_eq!(names, expected_names);
+    assert!(items.iter().all(|item| item["Type"] == "MusicGenre"));
+    assert!(items.iter().all(|item| item["IsFolder"] == true));
+    assert!(body.get("items").is_none());
+}
+
 struct MusicGenreFixture {
+    database_name: String,
     database: DatabaseConnection,
     app: axum::Router,
     administrator_id: Uuid,
     administrator_token: String,
     user_id: Uuid,
     user_token: String,
-    item_ids: Vec<Uuid>,
+    audio_id: Uuid,
+    parent_id: Uuid,
     genre_id: Uuid,
     genre_name: String,
+    nested_genre_name: String,
     slug_genre_id: Uuid,
     slug_genre_name: String,
     slug_name: String,
@@ -150,7 +297,7 @@ struct MusicGenreFixture {
 
 impl MusicGenreFixture {
     async fn new() -> Self {
-        let database = test_database().await;
+        let (database_name, database) = test_database().await;
         let suffix = Uuid::new_v4().simple().to_string();
         let users = UserService::new(database.clone());
         let administrator = users
@@ -189,6 +336,9 @@ impl MusicGenreFixture {
         let audio = create_item(&items, "Audio", "Unicode Track").await;
         let second_audio = create_item(&items, "MusicVideo", "Unicode Video").await;
         let slug_audio = create_item(&items, "MusicAlbum", "Slug Album").await;
+        let parent = create_folder(&items, "Music Genre Parent").await;
+        let nested_audio =
+            create_child_item(&items, "Audio", "Nested Genre Track", parent.id).await;
         let book = create_item(&items, "Book", "Genre Book").await;
         let values = ItemValueRepository::new(database.clone());
         let genre_name = format!("Électronique 東京 {suffix}");
@@ -224,11 +374,26 @@ impl MusicGenreFixture {
             .await
             .expect("slug genre link");
         let slug_name = format!("Left-Right{suffix}");
+        let nested_genre_name = format!("Ambient {suffix}");
+        values
+            .link(
+                nested_audio.id,
+                item_value::ItemValueType::Genre,
+                &nested_genre_name,
+            )
+            .await
+            .expect("nested genre link");
         let book_only_genre = format!("Literature {suffix}");
         values
             .link(book.id, item_value::ItemValueType::Genre, &book_only_genre)
             .await
             .expect("book-only genre link");
+        let mut favorite = NewUserData::new(audio.id, user.id, "MusicGenreFavorite");
+        favorite.is_favorite = true;
+        UserDataRepository::new(database.clone())
+            .upsert(favorite)
+            .await
+            .expect("favorite user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -236,15 +401,18 @@ impl MusicGenreFixture {
             "http://127.0.0.1:8096".to_owned(),
         ));
         Self {
+            database_name,
             database,
             app,
             administrator_id: administrator.id,
             administrator_token,
             user_id: user.id,
             user_token,
-            item_ids: vec![audio.id, second_audio.id, slug_audio.id, book.id],
+            audio_id: audio.id,
+            parent_id: parent.id,
             genre_id: genre.item_value_id,
             genre_name,
+            nested_genre_name,
             slug_genre_id: slug_genre.item_value_id,
             slug_genre_name,
             slug_name,
@@ -253,15 +421,22 @@ impl MusicGenreFixture {
     }
 
     async fn cleanup(self) {
-        let items = BaseItemRepository::new(self.database.clone());
-        for item_id in self.item_ids {
-            items.delete(item_id).await.expect("item cleanup");
-        }
-        user::Entity::delete_many()
-            .filter(user::Column::Id.is_in([self.administrator_id, self.user_id]))
-            .exec(&self.database)
+        let Self {
+            database_name,
+            database,
+            app,
+            ..
+        } = self;
+        drop(app);
+        database.close().await.unwrap();
+        let administrator = jellyfin_data::connect(&DatabaseConfig::default())
             .await
-            .expect("user cleanup");
+            .expect("local PostgreSQL must be available");
+        administrator
+            .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+            .await
+            .expect("temporary PostgreSQL database cleanup must succeed");
+        administrator.close().await.unwrap();
     }
 }
 
@@ -274,6 +449,34 @@ async fn create_item(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_child_item(
+    repository: &BaseItemRepository,
+    item_type: &str,
+    name: &str,
+    parent_id: Uuid,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.parent_id = Some(parent_id);
+    repository.create(item).await.expect("base item creation")
+}
+
+async fn create_folder(
+    repository: &BaseItemRepository,
+    name: &str,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.is_folder = true;
+    repository.create(item).await.expect("base item creation")
+}
+
+fn encoded(value: &str) -> String {
+    utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
 }
 
 fn genre_route(name: &str) -> String {
@@ -306,12 +509,35 @@ async fn body_json(response: axum::response::Response) -> Value {
     .expect("JSON response")
 }
 
-async fn test_database() -> DatabaseConnection {
-    let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
+async fn test_database() -> (String, DatabaseConnection) {
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+    administrator.close().await.unwrap();
+
+    let database = jellyfin_data::connect(&DatabaseConfig {
+        url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
+        max_connections: 4,
+        min_connections: 1,
+    })
+    .await
+    .expect("local PostgreSQL must be available");
     jellyfin_data::migrate(&database)
         .await
         .expect("PostgreSQL migrations must succeed");
-    database
+    (database_name, database)
+}
+
+fn assert_temporary_database_name(name: &str) {
+    let suffix = name
+        .strip_prefix(DATABASE_PREFIX)
+        .expect("temporary database prefix");
+    assert_eq!(suffix.len(), 32);
+    assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
 }
