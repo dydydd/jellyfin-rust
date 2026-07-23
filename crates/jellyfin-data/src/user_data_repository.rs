@@ -3,6 +3,7 @@ use sea_orm::{
     ColumnTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Order,
     QueryFilter, QueryOrder, QuerySelect, Set, Statement, sea_query::OnConflict,
 };
+use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -92,6 +93,24 @@ pub struct UserDataQuery {
     pub limit: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreferredUserDataKey {
+    pub item_id: Uuid,
+    pub custom_data_key: String,
+    pub priority: i32,
+}
+
+impl PreferredUserDataKey {
+    #[must_use]
+    pub fn new(item_id: Uuid, custom_data_key: impl Into<String>, priority: i32) -> Self {
+        Self {
+            item_id,
+            custom_data_key: custom_data_key.into(),
+            priority,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum UserDataError {
     #[error("at least one user-data key is required")]
@@ -158,6 +177,68 @@ impl UserDataRepository {
         Ok(user_data::Model::find_by_statement(statement)
             .one(&self.database)
             .await?)
+    }
+
+    /// Resolves preferred user-data rows for many items in one `PostgreSQL`
+    /// query.
+    ///
+    /// Current keys are ranked by caller-provided priority. When none match,
+    /// the lexically first retained key for that item is returned, matching
+    /// [`Self::resolve_preferred`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when lookup fails.
+    pub async fn resolve_preferred_for_items(
+        &self,
+        user_id: Uuid,
+        keys: &[PreferredUserDataKey],
+    ) -> Result<HashMap<Uuid, user_data::Model>, UserDataError> {
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let keys = keys
+            .iter()
+            .map(|key| {
+                serde_json::json!({
+                    "item_id": key.item_id.to_string(),
+                    "custom_data_key": key.custom_data_key,
+                    "priority": key.priority,
+                })
+            })
+            .collect::<Vec<_>>();
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT item_id, custom_data_key, priority
+                FROM jsonb_to_recordset($2::jsonb)
+                    AS keys(item_id uuid, custom_data_key text, priority integer)
+            ), requested_items AS (
+                SELECT DISTINCT item_id
+                FROM preferred_keys
+            )
+            SELECT DISTINCT ON (data.item_id)
+                data.item_id, data.user_id, data.custom_data_key, data.rating,
+                data.playback_position_ticks, data.play_count, data.is_favorite,
+                data.last_played_date, data.played, data.audio_stream_index,
+                data.subtitle_stream_index, data.likes, data.retention_date
+            FROM jellyfin.user_data AS data
+            INNER JOIN requested_items AS requested
+                ON requested.item_id = data.item_id
+            LEFT JOIN preferred_keys AS preferred
+                ON preferred.item_id = data.item_id
+                AND preferred.custom_data_key = data.custom_data_key
+            WHERE data.user_id = $1
+            ORDER BY data.item_id, preferred.priority NULLS LAST, data.custom_data_key
+            ",
+            [user_id.into(), serde_json::json!(keys).into()],
+        );
+        let rows = user_data::Model::find_by_statement(statement)
+            .all(&self.database)
+            .await?;
+        Ok(rows.into_iter().map(|row| (row.item_id, row)).collect())
     }
 
     /// Atomically applies the generic API patch to a preferred current or

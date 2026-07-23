@@ -68,28 +68,61 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     let items = BaseItemRepository::new(fixture.database.clone());
     let root = items.ensure_user_root().await.expect("user root");
 
-    let mut media = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    let path = format!("/media/page-{}.mkv", fixture.suffix);
+    let mut media = NewBaseItem::new(Uuid::new_v4(), "Movie");
     media.name = Some(format!("Page Media {}", fixture.suffix));
     media.sort_name = media.name.clone();
     media.parent_id = Some(root.id);
-    media.media_type = Some("Audio".to_owned());
-    media.path = Some(format!("/media/page-{}.mkv", fixture.suffix));
+    media.media_type = Some("Video".to_owned());
+    media.path = Some(path.clone());
     let media = items.create(media).await.expect("media item");
     MediaStreamService::new(fixture.database.clone())
         .save_media_streams(
             media.id,
-            &[MediaStream {
-                index: 0,
-                stream_type: MediaStreamType::Audio,
-                codec: Some("ac3".to_owned()),
-                language: Some("ger".to_owned()),
-                path: Some(format!("/media/page-{}.mkv", fixture.suffix)),
-                is_default: true,
-                ..MediaStream::default()
-            }],
+            &[
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    path: Some(path.clone()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("ac3".to_owned()),
+                    language: Some("ger".to_owned()),
+                    path: Some(path.clone()),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 2,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    language: Some("eng".to_owned()),
+                    path: Some(path.clone()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 3,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("srt".to_owned()),
+                    language: Some("eng".to_owned()),
+                    path: Some(path),
+                    ..MediaStream::default()
+                },
+            ],
         )
         .await
         .expect("media streams");
+    let mut remembered = NewUserData::new(media.id, fixture.user_id, media.id.to_string());
+    remembered.audio_stream_index = Some(2);
+    remembered.subtitle_stream_index = Some(-1);
+    UserDataRepository::new(fixture.database.clone())
+        .upsert(remembered)
+        .await
+        .expect("remembered streams");
     MediaAttachmentService::new(fixture.database.clone())
         .save_media_attachments(
             media.id,
@@ -121,8 +154,10 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         "poster.jpg"
     );
     assert_eq!(item["MediaSources"][0]["MediaAttachments"][0]["Index"], 4);
-    assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
-    assert_eq!(item["MediaStreams"][0]["Language"], "deu");
+    assert_eq!(item["MediaSources"][0]["DefaultAudioStreamIndex"], 2);
+    assert_eq!(item["MediaSources"][0]["DefaultSubtitleStreamIndex"], -1);
+    assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 4);
+    assert_eq!(item["MediaStreams"][1]["Language"], "deu");
 
     items.delete(media.id).await.expect("media cleanup");
     fixture.cleanup().await;

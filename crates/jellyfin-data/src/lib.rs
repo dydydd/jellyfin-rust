@@ -55,8 +55,8 @@ pub use server_configuration_repository::{
 };
 pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStoreError};
 pub use user_data_repository::{
-    GenericUserDataPatch, NewUserData, UserDataError, UserDataPatch, UserDataQuery,
-    UserDataRepository,
+    GenericUserDataPatch, NewUserData, PreferredUserDataKey, UserDataError, UserDataPatch,
+    UserDataQuery, UserDataRepository,
 };
 pub use user_profile_image_repository::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,

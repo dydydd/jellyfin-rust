@@ -1,7 +1,7 @@
 use chrono::{Duration, TimeZone, Utc};
 use jellyfin_data::{
-    DatabaseConfig, GenericUserDataPatch, NewUserData, UserDataError, UserDataPatch, UserDataQuery,
-    UserDataRepository,
+    DatabaseConfig, GenericUserDataPatch, NewUserData, PreferredUserDataKey, UserDataError,
+    UserDataPatch, UserDataQuery, UserDataRepository,
     entities::{user, user_data},
 };
 use jellyfin_migration::CreateUserDataMigration;
@@ -24,9 +24,69 @@ async fn postgres_user_data_vertical_slice() {
     let repository = UserDataRepository::new(database.clone());
     assert_crud_and_key_resolution(&repository, user_id, other_user_id).await;
     assert_generic_preferred_patch(&repository, user_id).await;
+    assert_batch_preferred_resolution(&repository, user_id, other_user_id).await;
     assert_query_filters(&repository, user_id).await;
     assert_concurrent_upsert(&repository, user_id).await;
     assert_cascade_cleanup(&database, user_id, other_user_id).await;
+}
+
+async fn assert_batch_preferred_resolution(
+    repository: &UserDataRepository,
+    user_id: Uuid,
+    other_user_id: Uuid,
+) {
+    let current_item_id = Uuid::new_v4();
+    let current_key = "batch-current-key";
+    let current_id_key = current_item_id.to_string();
+    let mut id_row = NewUserData::new(current_item_id, user_id, &current_id_key);
+    id_row.audio_stream_index = Some(1);
+    repository.upsert(id_row).await.expect("id-key row seed");
+    let mut current_row = NewUserData::new(current_item_id, user_id, current_key);
+    current_row.audio_stream_index = Some(2);
+    repository
+        .upsert(current_row)
+        .await
+        .expect("current-key row seed");
+    let mut other_user_row = NewUserData::new(current_item_id, other_user_id, current_key);
+    other_user_row.audio_stream_index = Some(99);
+    repository
+        .upsert(other_user_row)
+        .await
+        .expect("other user row seed");
+
+    let retained_item_id = Uuid::new_v4();
+    let mut retained_row = NewUserData::new(retained_item_id, user_id, "retained-key");
+    retained_row.subtitle_stream_index = Some(4);
+    repository
+        .upsert(retained_row)
+        .await
+        .expect("retained row seed");
+
+    let missing_item_id = Uuid::new_v4();
+    let resolved = repository
+        .resolve_preferred_for_items(
+            user_id,
+            &[
+                PreferredUserDataKey::new(current_item_id, current_key, 1),
+                PreferredUserDataKey::new(current_item_id, current_id_key, 2),
+                PreferredUserDataKey::new(retained_item_id, "missing-current-key", 1),
+                PreferredUserDataKey::new(retained_item_id, retained_item_id.to_string(), 2),
+                PreferredUserDataKey::new(missing_item_id, missing_item_id.to_string(), 1),
+            ],
+        )
+        .await
+        .expect("batch preferred lookup");
+
+    let current = resolved.get(&current_item_id).expect("current item result");
+    assert_eq!(current.custom_data_key, current_key);
+    assert_eq!(current.audio_stream_index, Some(2));
+
+    let retained = resolved
+        .get(&retained_item_id)
+        .expect("retained item result");
+    assert_eq!(retained.custom_data_key, "retained-key");
+    assert_eq!(retained.subtitle_stream_index, Some(4));
+    assert!(!resolved.contains_key(&missing_item_id));
 }
 
 async fn assert_generic_preferred_patch(repository: &UserDataRepository, user_id: Uuid) {

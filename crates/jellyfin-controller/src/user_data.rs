@@ -1,9 +1,11 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, GenericUserDataPatch, UserDataError, UserDataRepository,
+    BaseItemError, BaseItemRepository, GenericUserDataPatch, PreferredUserDataKey, UserDataError,
+    UserDataRepository,
     entities::{base_item, user_data},
 };
 use jellyfin_model::{UpdateUserItemDataDto, UserItemDataDto, UserPolicy};
 use sea_orm::DatabaseConnection;
+use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -183,6 +185,40 @@ impl UserDataService {
             user_data,
             runtime_ticks: item.runtime_ticks,
         })
+    }
+
+    /// Resolves preferred user-data rows for already-authorized items.
+    ///
+    /// This method deliberately does not repeat visibility checks; callers use
+    /// it after obtaining an item page from a user-scoped library query.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence errors unchanged.
+    pub async fn get_preferred_for_items(
+        &self,
+        target_user_id: Uuid,
+        items: &[base_item::Model],
+    ) -> Result<HashMap<Uuid, user_data::Model>, UserDataServiceError> {
+        let keys = items
+            .iter()
+            .flat_map(|item| {
+                current_user_data_keys(item)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, key)| {
+                        PreferredUserDataKey::new(
+                            item.id,
+                            key,
+                            i32::try_from(index + 1).unwrap_or(i32::MAX),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        Ok(self
+            .user_data
+            .resolve_preferred_for_items(target_user_id, &keys)
+            .await?)
     }
 
     async fn resolve_generic_target_item(

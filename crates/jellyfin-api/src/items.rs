@@ -160,6 +160,14 @@ async fn page_to_dto(
     let defaults =
         user_library::media_stream_defaults_for_user(state, target_user_id, requested_fields)
             .await?;
+    let mut remembered_user_data = if requested_fields.wants_media_streams() {
+        state
+            .user_data
+            .get_preferred_for_items(target_user_id, &page.items)
+            .await?
+    } else {
+        std::collections::HashMap::new()
+    };
     let mut media_streams = if requested_fields.wants_media_streams() {
         let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
         state
@@ -186,12 +194,14 @@ async fn page_to_dto(
         if requested_fields.wants_media_streams() {
             let streams = media_streams.remove(&item_id).unwrap_or_default();
             let attachments = media_attachments.remove(&item_id).unwrap_or_default();
+            let remembered = remembered_user_data.remove(&item_id);
             user_library::project_item_dto_with_streams(
                 &mut dto,
                 requested_fields,
                 streams,
                 attachments,
                 defaults.as_ref(),
+                remembered.as_ref(),
             );
         }
         items.push(dto);
