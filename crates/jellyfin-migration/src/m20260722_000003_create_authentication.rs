@@ -31,13 +31,18 @@ impl MigrationTrait for Migration {
                     device_id varchar(256) NOT NULL,
                     is_active boolean NOT NULL DEFAULT false,
                     capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,
+                    now_viewing_item jsonb,
                     date_created timestamptz NOT NULL DEFAULT clock_timestamp(),
                     date_modified timestamptz NOT NULL DEFAULT clock_timestamp(),
                     date_last_activity timestamptz NOT NULL DEFAULT clock_timestamp(),
                     CONSTRAINT devices_user_id_fkey
                         FOREIGN KEY (user_id) REFERENCES jellyfin.users (id) ON DELETE CASCADE,
                     CONSTRAINT devices_device_id_not_empty CHECK (device_id <> ''),
-                    CONSTRAINT devices_capabilities_object CHECK (jsonb_typeof(capabilities) = 'object')
+                    CONSTRAINT devices_capabilities_object CHECK (jsonb_typeof(capabilities) = 'object'),
+                    CONSTRAINT devices_now_viewing_item_object CHECK (
+                        now_viewing_item IS NULL
+                        OR jsonb_typeof(now_viewing_item) = 'object'
+                    )
                 );
                 ALTER TABLE jellyfin.devices
                     DROP CONSTRAINT IF EXISTS devices_app_name_not_empty;

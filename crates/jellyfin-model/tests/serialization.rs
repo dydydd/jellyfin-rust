@@ -250,6 +250,11 @@ fn session_info_uses_official_wire_names_and_guid_format() {
         playlist_item_id: None,
         server_id: Some("server-id".to_owned()),
         user_primary_image_tag: None,
+        now_viewing_item: Some(json!({
+            "Name": "The Matrix",
+            "Id": "2b8cf5ff3f3d4f7fa4526a7f8d190cce",
+            "Type": "Movie"
+        })),
         supported_commands: vec![GeneralCommandType::Play],
     };
 
@@ -267,6 +272,7 @@ fn session_info_uses_official_wire_names_and_guid_format() {
         value["Capabilities"]["DeviceProfile"]["Name"],
         "Browser profile"
     );
+    assert_eq!(value["NowViewingItem"]["Name"], "The Matrix");
     assert_eq!(value["LastActivityDate"], "2026-07-23T09:15:00.0000000Z");
     assert!(value.get("LastPausedDate").is_none());
     assert!(value.get("DeviceType").is_none());

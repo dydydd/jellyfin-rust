@@ -18,6 +18,8 @@ pub enum AuthenticationStoreError {
     FieldTooLong { field: &'static str, max: usize },
     #[error("device capabilities must be a JSON object")]
     InvalidCapabilities,
+    #[error("session now viewing item must be a JSON object")]
+    InvalidNowViewingItem,
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -233,6 +235,7 @@ impl DeviceRepository {
             device_id: Set(new_device.device_id),
             is_active: Set(is_active),
             capabilities: Set(json!({})),
+            now_viewing_item: Set(None),
             date_created: Set(now),
             date_modified: Set(now),
             date_last_activity: Set(now),
@@ -387,6 +390,7 @@ impl DeviceRepository {
             device_id: Set(model.device_id),
             is_active: Set(model.is_active),
             capabilities: Set(model.capabilities),
+            now_viewing_item: Set(model.now_viewing_item),
             date_created: Set(model.date_created),
             date_modified: Set(Utc::now()),
             date_last_activity: Set(model.date_last_activity),
@@ -412,6 +416,30 @@ impl DeviceRepository {
             .col_expr(device::Column::Capabilities, Expr::value(capabilities))
             .col_expr(device::Column::DateModified, Expr::value(Utc::now()))
             .filter(device::Column::AccessToken.eq(access_token))
+            .exec(&self.database)
+            .await?
+            .rows_affected)
+    }
+
+    /// Persists the item currently viewed by an active device session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for non-object JSON, or a database error when
+    /// updating fails.
+    pub async fn update_now_viewing_item(
+        &self,
+        id: i64,
+        item: Option<Value>,
+    ) -> Result<u64, AuthenticationStoreError> {
+        if item.as_ref().is_some_and(|value| !value.is_object()) {
+            return Err(AuthenticationStoreError::InvalidNowViewingItem);
+        }
+        Ok(device::Entity::update_many()
+            .col_expr(device::Column::NowViewingItem, Expr::value(item))
+            .col_expr(device::Column::DateModified, Expr::value(Utc::now()))
+            .col_expr(device::Column::DateLastActivity, Expr::value(Utc::now()))
+            .filter(device::Column::Id.eq(id))
             .exec(&self.database)
             .await?
             .rows_affected)

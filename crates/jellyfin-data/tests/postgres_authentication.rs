@@ -5,8 +5,9 @@ use jellyfin_data::{
     entities::{device, device_option, session_command, user},
 };
 use jellyfin_migration::{
-    AddDeviceCapabilitiesMigration, CreateAuthenticationMigration, CreateDeviceOptionsMigration,
-    CreateSessionCommandOutboxMigration, OptimizeDeviceSessionQueriesMigration,
+    AddDeviceCapabilitiesMigration, AddSessionNowViewingMigration, CreateAuthenticationMigration,
+    CreateDeviceOptionsMigration, CreateSessionCommandOutboxMigration,
+    OptimizeDeviceSessionQueriesMigration,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ConnectionTrait, DatabaseConnection, EntityTrait,
@@ -66,6 +67,14 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("session command outbox DDL must stay idempotent");
+    AddSessionNowViewingMigration
+        .up(&schema)
+        .await
+        .expect("session now-viewing DDL must remain idempotent");
+    AddSessionNowViewingMigration
+        .up(&schema)
+        .await
+        .expect("session now-viewing DDL must stay idempotent");
     assert_authentication_indexes(&database).await;
     database
 }
@@ -195,6 +204,7 @@ async fn test_devices(database: &DatabaseConnection) {
         .await
         .expect("device update must succeed");
     assert_device_query_filters(&repository, &device_id, &activated, &second).await;
+    assert_now_viewing_item_update(database, &repository, activated.id).await;
 
     let latest = repository
         .latest_by_device_id(&device_id)
@@ -234,6 +244,45 @@ async fn test_devices(database: &DatabaseConnection) {
             .expect("cascade verification must succeed")
             .is_none()
     );
+}
+
+async fn assert_now_viewing_item_update(
+    database: &DatabaseConnection,
+    repository: &DeviceRepository,
+    device_id: i64,
+) {
+    assert_eq!(
+        repository
+            .update_now_viewing_item(
+                device_id,
+                Some(json!({
+                    "Name": "The Matrix",
+                    "Id": Uuid::new_v4().simple().to_string(),
+                    "Type": "Movie"
+                })),
+            )
+            .await
+            .expect("now-viewing update must succeed"),
+        1
+    );
+    let updated = device::Entity::find_by_id(device_id)
+        .one(database)
+        .await
+        .expect("updated device must load")
+        .expect("updated device must exist");
+    assert_eq!(
+        updated.now_viewing_item.as_ref().unwrap()["Name"],
+        "The Matrix"
+    );
+
+    let error = repository
+        .update_now_viewing_item(device_id, Some(Value::Null))
+        .await
+        .expect_err("non-object now-viewing payload must be rejected");
+    assert!(matches!(
+        error,
+        jellyfin_data::AuthenticationStoreError::InvalidNowViewingItem
+    ));
 }
 
 async fn assert_device_query_filters(

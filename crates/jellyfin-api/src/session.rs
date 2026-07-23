@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use chrono::{Duration, Utc};
-use jellyfin_data::{DeviceQuery, NewSessionCommand, entities::device};
+use jellyfin_data::{BaseItemRepository, DeviceQuery, NewSessionCommand, entities::device};
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     NameIdPair, PlayCommand, PlayRequest, PlaystateCommand, PlaystateRequest, SessionInfoDto,
@@ -18,7 +18,7 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication};
+use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -49,6 +49,13 @@ pub(crate) struct ViewingQuery {
     id: Option<String>,
     #[serde(rename = "itemName")]
     name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct ReportViewingQuery {
+    session_id: Option<String>,
+    item_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -177,6 +184,42 @@ pub(crate) async fn display_content(
         },
     )
     .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn report_viewing(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<ReportViewingQuery>, QueryRejection>,
+) -> Result<StatusCode, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let session_id = if let Some(session_id) = query.session_id.filter(|value| !value.is_empty()) {
+        session_id
+    } else {
+        let authentication::AuthenticatedIdentity::Device(session) = identity else {
+            return Err(ApiError::Unauthorized);
+        };
+        jellyfin_session_id(&session.device.app_name, &session.device.device_id)
+    };
+    let item_id = required_query_value(query.item_id)?;
+    let item_id = Uuid::parse_str(&item_id).map_err(|_| ApiError::InvalidRequest)?;
+    let item = BaseItemRepository::new(state.database.clone())
+        .get(item_id)
+        .await?
+        .ok_or(jellyfin_data::BaseItemError::NotFound)?;
+    let item = user_library::item_to_dto(item, state.server_id());
+    let payload = serde_json::to_value(item).map_err(|_| ApiError::Internal)?;
+    let device = find_active_session(&state, &session_id).await?;
+    if state
+        .devices
+        .update_now_viewing_item(device.id, Some(payload))
+        .await?
+        != 1
+    {
+        return Err(ApiError::SessionNotFound);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -410,7 +453,7 @@ async fn enqueue_session_command<T>(
 where
     T: Serialize,
 {
-    ensure_active_session(state, target_session_id).await?;
+    find_active_session(state, target_session_id).await?;
     state
         .session_commands
         .enqueue(NewSessionCommand {
@@ -426,7 +469,10 @@ where
     Ok(())
 }
 
-async fn ensure_active_session(state: &AppState, session_id: &str) -> Result<(), ApiError> {
+async fn find_active_session(
+    state: &AppState,
+    session_id: &str,
+) -> Result<device::Model, ApiError> {
     if session_id.is_empty() {
         return Err(ApiError::InvalidRequest);
     }
@@ -437,15 +483,11 @@ async fn ensure_active_session(state: &AppState, session_id: &str) -> Result<(),
             ..DeviceQuery::default()
         })
         .await?;
-    if sessions
+    sessions
         .items
-        .iter()
-        .any(|device| jellyfin_session_id(&device.app_name, &device.device_id) == session_id)
-    {
-        Ok(())
-    } else {
-        Err(ApiError::SessionNotFound)
-    }
+        .into_iter()
+        .find(|device| jellyfin_session_id(&device.app_name, &device.device_id) == session_id)
+        .ok_or(ApiError::SessionNotFound)
 }
 
 fn session_info(device: device::Model, user_name: String, server_id: &str) -> SessionInfoDto {
@@ -472,6 +514,7 @@ fn session_info(device: device::Model, user_name: String, server_id: &str) -> Se
         playlist_item_id: None,
         server_id: Some(server_id.to_owned()),
         user_primary_image_tag: None,
+        now_viewing_item: device.now_viewing_item,
         capabilities,
         playable_media_types,
         supported_commands,

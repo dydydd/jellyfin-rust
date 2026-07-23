@@ -451,6 +451,7 @@ fn session_routes() -> Router<Arc<AppState>> {
             "/Sessions/{session_id}/Message",
             post(session::send_message_command),
         )
+        .route("/Sessions/Viewing", post(session::report_viewing))
         .route("/Sessions/Capabilities", post(session::post_capabilities))
         .route(
             "/Sessions/Capabilities/Full",
@@ -664,6 +665,7 @@ pub(crate) enum ApiError {
     User(UserError),
     Authentication(AuthenticationError),
     AuthenticationStore(AuthenticationStoreError),
+    BaseItem(BaseItemError),
     SessionCommandStore(SessionCommandStoreError),
     Playstate(PlaystateError),
     UserData(UserDataServiceError),
@@ -715,6 +717,12 @@ impl From<AuthenticationError> for ApiError {
 impl From<AuthenticationStoreError> for ApiError {
     fn from(error: AuthenticationStoreError) -> Self {
         Self::AuthenticationStore(error)
+    }
+}
+
+impl From<BaseItemError> for ApiError {
+    fn from(error: BaseItemError) -> Self {
+        Self::BaseItem(error)
     }
 }
 
@@ -876,6 +884,8 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Authentication persistence failed",
             ),
+            Self::BaseItem(BaseItemError::NotFound) => (StatusCode::NOT_FOUND, "Item not found"),
+            Self::BaseItem(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Item persistence failed"),
             Self::SessionCommandStore(
                 SessionCommandStoreError::EmptyField(_)
                 | SessionCommandStoreError::FieldTooLong { .. }

@@ -16,6 +16,7 @@ pub struct Model {
     pub device_id: String,
     pub is_active: bool,
     pub capabilities: Value,
+    pub now_viewing_item: Option<Value>,
     pub date_created: DateTime<Utc>,
     pub date_modified: DateTime<Utc>,
     pub date_last_activity: DateTime<Utc>,

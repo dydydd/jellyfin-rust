@@ -28,6 +28,7 @@ mod m20260722_000025_optimize_device_session_queries;
 mod m20260723_000026_add_device_capabilities;
 mod m20260723_000027_create_device_options;
 mod m20260723_000028_create_session_command_outbox;
+mod m20260723_000029_add_session_now_viewing;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -85,6 +86,8 @@ pub use m20260723_000026_add_device_capabilities::Migration as AddDeviceCapabili
 pub use m20260723_000027_create_device_options::Migration as CreateDeviceOptionsMigration;
 #[doc(hidden)]
 pub use m20260723_000028_create_session_command_outbox::Migration as CreateSessionCommandOutboxMigration;
+#[doc(hidden)]
+pub use m20260723_000029_add_session_now_viewing::Migration as AddSessionNowViewingMigration;
 
 pub struct Migrator;
 
@@ -120,6 +123,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260723_000026_add_device_capabilities::Migration),
             Box::new(m20260723_000027_create_device_options::Migration),
             Box::new(m20260723_000028_create_session_command_outbox::Migration),
+            Box::new(m20260723_000029_add_session_now_viewing::Migration),
         ]
     }
 }

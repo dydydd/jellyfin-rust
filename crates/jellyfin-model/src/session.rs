@@ -282,6 +282,8 @@ pub struct SessionInfoDto {
     pub server_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_primary_image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub now_viewing_item: Option<Value>,
     pub supported_commands: Vec<GeneralCommandType>,
 }
 
