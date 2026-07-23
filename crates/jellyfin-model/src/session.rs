@@ -133,6 +133,67 @@ impl Default for GeneralCommand {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+pub enum PlayCommand {
+    PlayNow,
+    PlayNext,
+    PlayLast,
+    PlayInstantMix,
+    PlayShuffle,
+}
+
+impl std::str::FromStr for PlayCommand {
+    type Err = serde_json::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        deserialize_enum_name(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlayRequest {
+    #[serde(
+        serialize_with = "crate::serde_guid::vec::serialize",
+        deserialize_with = "crate::serde_guid::vec::deserialize"
+    )]
+    pub item_ids: Vec<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_position_ticks: Option<i64>,
+    pub play_command: PlayCommand,
+    #[serde(
+        default,
+        serialize_with = "crate::serde_guid::single::serialize",
+        deserialize_with = "crate::serde_guid::single::deserialize"
+    )]
+    pub controlling_user_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle_stream_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_stream_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_index: Option<i32>,
+}
+
+impl Default for PlayRequest {
+    fn default() -> Self {
+        Self {
+            item_ids: Vec::new(),
+            start_position_ticks: None,
+            play_command: PlayCommand::PlayNow,
+            controlling_user_id: Uuid::nil(),
+            subtitle_stream_index: None,
+            audio_stream_index: None,
+            media_source_id: None,
+            start_index: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]

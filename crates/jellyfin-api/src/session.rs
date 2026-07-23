@@ -12,10 +12,10 @@ use chrono::{Duration, Utc};
 use jellyfin_data::{DeviceQuery, NewSessionCommand, entities::device};
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
-    NameIdPair, SessionInfoDto,
+    NameIdPair, PlayCommand, PlayRequest, SessionInfoDto,
 };
 use md5::{Digest, Md5};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication};
@@ -49,6 +49,19 @@ pub(crate) struct ViewingQuery {
     id: Option<String>,
     #[serde(rename = "itemName")]
     name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct PlayCommandQuery {
+    play_command: Option<PlayCommand>,
+    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    item_ids: Vec<Uuid>,
+    start_position_ticks: Option<i64>,
+    media_source_id: Option<String>,
+    audio_stream_index: Option<i32>,
+    subtitle_stream_index: Option<i32>,
+    start_index: Option<i32>,
 }
 
 impl Default for CapabilitiesQuery {
@@ -221,6 +234,41 @@ pub(crate) async fn send_message_command(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn send_play_command(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+    query: Result<Query<PlayCommandQuery>, QueryRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let play_command = query.play_command.ok_or(ApiError::InvalidRequest)?;
+    if query.item_ids.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+
+    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enqueue_session_command(
+        &state,
+        &session_id,
+        &controller,
+        "Play",
+        PlayRequest {
+            item_ids: query.item_ids,
+            start_position_ticks: query.start_position_ticks,
+            play_command,
+            controlling_user_id: controller.user.id,
+            subtitle_stream_index: query.subtitle_stream_index,
+            audio_stream_index: query.audio_stream_index,
+            media_source_id: query.media_source_id,
+            start_index: query.start_index,
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn post_capabilities(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -311,6 +359,26 @@ async fn enqueue_general_command(
     controller: &authentication::AuthenticatedSession,
     command: GeneralCommand,
 ) -> Result<(), ApiError> {
+    enqueue_session_command(
+        state,
+        target_session_id,
+        controller,
+        "GeneralCommand",
+        command,
+    )
+    .await
+}
+
+async fn enqueue_session_command<T>(
+    state: &AppState,
+    target_session_id: &str,
+    controller: &authentication::AuthenticatedSession,
+    message_type: &str,
+    payload: T,
+) -> Result<(), ApiError>
+where
+    T: Serialize,
+{
     ensure_active_session(state, target_session_id).await?;
     state
         .session_commands
@@ -320,8 +388,8 @@ async fn enqueue_general_command(
                 &controller.device.app_name,
                 &controller.device.device_id,
             )),
-            message_type: "GeneralCommand".to_owned(),
-            payload: serde_json::to_value(command).map_err(|_| ApiError::Internal)?,
+            message_type: message_type.to_owned(),
+            payload: serde_json::to_value(payload).map_err(|_| ApiError::Internal)?,
         })
         .await?;
     Ok(())

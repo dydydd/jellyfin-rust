@@ -23,6 +23,7 @@ async fn session_command_routes_queue_official_general_commands_in_postgres() {
     let fixture = Fixture::new().await;
 
     assert_command_access_and_validation(&fixture).await;
+    assert_play_command_validation(&fixture).await;
     enqueue_official_session_commands(&fixture).await;
     assert_queued_commands(&fixture).await;
 
@@ -90,6 +91,52 @@ async fn assert_command_access_and_validation(fixture: &Fixture) {
     );
 }
 
+async fn assert_play_command_validation(fixture: &Fixture) {
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &format!("/Sessions/{}/Playing?itemIds=", fixture.target_session_id),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &format!(
+                    "/Sessions/{}/Playing?playCommand=PlayNow",
+                    fixture.target_session_id
+                ),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &format!(
+                    "/Sessions/{}/Playing?playCommand=TotallyInvalid&itemIds={}",
+                    fixture.target_session_id,
+                    Uuid::new_v4().simple()
+                ),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
 async fn enqueue_official_session_commands(fixture: &Fixture) {
     fixture.post_command("Command/GoHome", Body::empty()).await;
     fixture.post_command("System/Mute", Body::empty()).await;
@@ -98,6 +145,16 @@ async fn enqueue_official_session_commands(fixture: &Fixture) {
             &format!(
                 "Viewing?itemType=Movie&itemId={}&itemName=The%20Matrix",
                 Uuid::new_v4()
+            ),
+            Body::empty(),
+        )
+        .await;
+    fixture
+        .post_command(
+            &format!(
+                "Playing?playCommand=PlayNow&itemIds={},{}&startPositionTicks=123&mediaSourceId=source-1&audioStreamIndex=2&subtitleStreamIndex=3&startIndex=1",
+                play_item_ids()[0].simple(),
+                play_item_ids()[1].simple()
             ),
             Body::empty(),
         )
@@ -131,34 +188,69 @@ async fn assert_queued_commands(fixture: &Fixture) {
         .list_for_session(&fixture.target_session_id)
         .await
         .expect("queued commands must load");
-    assert_eq!(queued.len(), 5);
+    assert_eq!(queued.len(), 6);
     assert!(queued.iter().all(|command| {
-        command.message_type == "GeneralCommand"
-            && command.target_session_id == fixture.target_session_id
+        command.target_session_id == fixture.target_session_id
             && command.controlling_session_id.as_deref() == Some(&fixture.controller_session_id)
     }));
+    assert_eq!(
+        queued
+            .iter()
+            .map(|command| command.message_type.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "GeneralCommand",
+            "GeneralCommand",
+            "GeneralCommand",
+            "Play",
+            "GeneralCommand",
+            "GeneralCommand"
+        ]
+    );
     assert_eq!(queued[0].payload["Name"], "GoHome");
     assert_eq!(queued[1].payload["Name"], "Mute");
     assert_eq!(queued[2].payload["Name"], "DisplayContent");
     assert_eq!(queued[2].payload["Arguments"]["ItemType"], "Movie");
     assert_eq!(queued[2].payload["Arguments"]["ItemName"], "The Matrix");
     assert!(queued[2].payload["Arguments"]["ItemId"].as_str().is_some());
-    assert_eq!(queued[3].payload["Name"], "SetVolume");
-    assert_eq!(queued[3].payload["Arguments"]["Volume"], "50");
+    assert_queued_play_command(&queued[3], fixture.user_id);
+    assert_eq!(queued[4].payload["Name"], "SetVolume");
+    assert_eq!(queued[4].payload["Arguments"]["Volume"], "50");
     assert_eq!(
-        queued[3].payload["ControllingUserId"],
+        queued[4].payload["ControllingUserId"],
         fixture.user_id.simple().to_string()
     );
-    assert_eq!(queued[4].payload["Name"], "DisplayMessage");
+    assert_eq!(queued[5].payload["Name"], "DisplayMessage");
     assert_eq!(
-        queued[4].payload["Arguments"]["Header"],
+        queued[5].payload["Arguments"]["Header"],
         "Message from Server"
     );
     assert_eq!(
-        queued[4].payload["Arguments"]["Text"],
+        queued[5].payload["Arguments"]["Text"],
         "Hello remote client"
     );
-    assert_eq!(queued[4].payload["Arguments"]["TimeoutMs"], "1500");
+    assert_eq!(queued[5].payload["Arguments"]["TimeoutMs"], "1500");
+}
+
+fn assert_queued_play_command(command: &session_command::Model, controlling_user_id: Uuid) {
+    let item_ids = play_item_ids();
+    assert_eq!(command.payload["PlayCommand"], "PlayNow");
+    assert_eq!(
+        command.payload["ItemIds"],
+        json!([
+            item_ids[0].simple().to_string(),
+            item_ids[1].simple().to_string()
+        ])
+    );
+    assert_eq!(
+        command.payload["ControllingUserId"],
+        controlling_user_id.simple().to_string()
+    );
+    assert_eq!(command.payload["StartPositionTicks"], 123);
+    assert_eq!(command.payload["MediaSourceId"], "source-1");
+    assert_eq!(command.payload["AudioStreamIndex"], 2);
+    assert_eq!(command.payload["SubtitleStreamIndex"], 3);
+    assert_eq!(command.payload["StartIndex"], 1);
 }
 
 struct Fixture {
@@ -300,6 +392,13 @@ impl Fixture {
 
 fn json_body(value: &Value) -> Body {
     Body::from(serde_json::to_vec(value).unwrap())
+}
+
+fn play_item_ids() -> [Uuid; 2] {
+    [
+        Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+        Uuid::parse_str("2b8cf5ff-3f3d-4f7f-a452-6a7f8d190cce").unwrap(),
+    ]
 }
 
 fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {

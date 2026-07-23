@@ -1,8 +1,9 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    GeneralCommand, GeneralCommandType, MediaType, MessageCommand, NameIdPair, PublicSystemInfo,
-    QueryResult, SessionInfoDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    GeneralCommand, GeneralCommandType, MediaType, MessageCommand, NameIdPair, PlayCommand,
+    PlayRequest, PublicSystemInfo, QueryResult, SessionInfoDto, SyncPlayUserAccessType, UserDto,
+    UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -170,6 +171,36 @@ fn session_commands_use_official_wire_names() {
             "Header": "Header",
             "Text": "Text",
             "TimeoutMs": 1000
+        })
+    );
+
+    let play_request = PlayRequest {
+        item_ids: vec![
+            Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+            Uuid::parse_str("2b8cf5ff-3f3d-4f7f-a452-6a7f8d190cce").unwrap(),
+        ],
+        start_position_ticks: Some(123),
+        play_command: PlayCommand::PlayNow,
+        controlling_user_id: Uuid::parse_str("aaaaaaaa-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+        subtitle_stream_index: Some(3),
+        audio_stream_index: Some(2),
+        media_source_id: Some("source-1".to_owned()),
+        start_index: Some(1),
+    };
+    assert_eq!(
+        serde_json::to_value(play_request).unwrap(),
+        json!({
+            "ItemIds": [
+                "f9c1ad0c820f44df8db852fbfc0d3d93",
+                "2b8cf5ff3f3d4f7fa4526a7f8d190cce"
+            ],
+            "StartPositionTicks": 123,
+            "PlayCommand": "PlayNow",
+            "ControllingUserId": "aaaaaaaa820f44df8db852fbfc0d3d93",
+            "SubtitleStreamIndex": 3,
+            "AudioStreamIndex": 2,
+            "MediaSourceId": "source-1",
+            "StartIndex": 1
         })
     );
 }
