@@ -784,6 +784,101 @@ impl UserDataRepository {
             })
     }
 
+    /// Marks every alternate video version played for a user.
+    ///
+    /// `PostgreSQL` resolves the version group from either the primary or an
+    /// alternate item, chooses each target version's preferred user-data key,
+    /// and upserts all affected rows in one statement. Play count, last played
+    /// date, ratings, favorites, and stream selections are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the batch update fails.
+    pub async fn mark_alternate_versions_played(
+        &self,
+        source_item_id: Uuid,
+        user_id: Uuid,
+        reset_position: bool,
+    ) -> Result<Vec<user_data::Model>, UserDataError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH requested AS MATERIALIZED (
+                SELECT COALESCE(primary_version_id, id) AS group_id
+                FROM jellyfin.base_items
+                WHERE id = $1
+            ), target_items AS MATERIALIZED (
+                SELECT item.id AS item_id, item.presentation_unique_key
+                FROM jellyfin.base_items AS item
+                INNER JOIN requested
+                    ON item.id = requested.group_id
+                    OR item.primary_version_id = requested.group_id
+                WHERE item.id <> $1
+                    AND item.item_type IN (
+                        'Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer'
+                    )
+            ), primary_keys AS (
+                SELECT item_id,
+                    CASE
+                        WHEN btrim(COALESCE(presentation_unique_key, '')) <> ''
+                            AND presentation_unique_key <> item_id::text
+                            THEN presentation_unique_key
+                        ELSE item_id::text
+                    END AS custom_data_key
+                FROM target_items
+            ), preferred_keys AS (
+                SELECT item_id, custom_data_key, 1 AS priority
+                FROM primary_keys
+                UNION ALL
+                SELECT target.item_id, target.item_id::text, 2 AS priority
+                FROM target_items AS target
+                INNER JOIN primary_keys AS primary_key USING (item_id)
+                WHERE primary_key.custom_data_key <> target.item_id::text
+            ), existing_keys AS (
+                SELECT DISTINCT ON (data.item_id)
+                    data.item_id, data.custom_data_key
+                FROM jellyfin.user_data AS data
+                INNER JOIN target_items AS target
+                    ON target.item_id = data.item_id
+                LEFT JOIN preferred_keys AS preferred
+                    ON preferred.item_id = data.item_id
+                    AND preferred.custom_data_key = data.custom_data_key
+                WHERE data.user_id = $2
+                ORDER BY data.item_id,
+                    preferred.priority NULLS LAST,
+                    data.custom_data_key
+            ), target_keys AS (
+                SELECT target.item_id,
+                    COALESCE(existing.custom_data_key, primary_key.custom_data_key)
+                        AS custom_data_key
+                FROM target_items AS target
+                INNER JOIN primary_keys AS primary_key USING (item_id)
+                LEFT JOIN existing_keys AS existing USING (item_id)
+            )
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key,
+                playback_position_ticks, played
+            )
+            SELECT item_id, $2, custom_data_key, 0, true
+            FROM target_keys
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET playback_position_ticks = CASE
+                    WHEN $3::boolean THEN 0
+                    ELSE jellyfin.user_data.playback_position_ticks
+                END,
+                played = true
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [source_item_id.into(), user_id.into(), reset_position.into()],
+        );
+        Ok(user_data::Model::find_by_statement(statement)
+            .all(&self.database)
+            .await?)
+    }
+
     /// Atomically marks an item played and resets its resume position.
     ///
     /// Without an explicit date, repeated and concurrent manual toggles keep

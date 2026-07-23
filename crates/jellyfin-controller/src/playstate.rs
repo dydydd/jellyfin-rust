@@ -237,6 +237,11 @@ impl PlaystateService {
             .user_data
             .apply_playback_progress_patch(item.id, user.id, &keys, patch)
             .await?;
+        if should_propagate_played_state(&item, &user_data) {
+            self.user_data
+                .mark_alternate_versions_played(item.id, user.id, true)
+                .await?;
+        }
         Ok(Some(PlaystateUpdate { user_data }))
     }
 
@@ -312,6 +317,11 @@ impl PlaystateService {
                 effect.increment_play_count,
             )
             .await?;
+        if should_propagate_played_state(&item, &user_data) {
+            self.user_data
+                .mark_alternate_versions_played(item.id, user.id, true)
+                .await?;
+        }
         Ok(Some(PlaystateUpdate { user_data }))
     }
 
@@ -474,6 +484,10 @@ fn should_mark_played_on_start(item: &base_item::Model) -> bool {
     supports_played_status(item) && !supports_position_ticks_resume(item)
 }
 
+fn should_propagate_played_state(item: &base_item::Model, data: &user_data::Model) -> bool {
+    data.played && is_video_item(item)
+}
+
 fn supports_played_status(item: &base_item::Model) -> bool {
     if item.item_type == "Playlist" {
         return item
@@ -499,10 +513,7 @@ fn supports_played_status(item: &base_item::Model) -> bool {
 }
 
 fn supports_position_ticks_resume(item: &base_item::Model) -> bool {
-    matches!(
-        item.item_type.as_str(),
-        "AudioBook" | "Book" | "Episode" | "Movie" | "MusicVideo" | "Trailer" | "Video"
-    )
+    matches!(item.item_type.as_str(), "AudioBook" | "Book") || is_video_item(item)
 }
 
 const TICKS_PER_SECOND: i64 = 10_000_000;
@@ -519,6 +530,13 @@ fn is_audio_book(item: &base_item::Model) -> bool {
 
 fn is_book(item: &base_item::Model) -> bool {
     item.item_type == "Book"
+}
+
+fn is_video_item(item: &base_item::Model) -> bool {
+    matches!(
+        item.item_type.as_str(),
+        "Episode" | "Movie" | "MusicVideo" | "Trailer" | "Video"
+    )
 }
 
 fn playback_percentage_less_than(position_ticks: i64, runtime_ticks: i64, percent: i32) -> bool {

@@ -544,6 +544,55 @@ async fn playback_stopped_position_routes_apply_thresholds_and_legacy_user() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn playback_completion_propagates_to_alternate_versions() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+    let mut primary = NewUserData::new(
+        fixture.runtime_item_id,
+        fixture.user_id,
+        fixture.runtime_item_id.to_string(),
+    );
+    primary.play_count = 4;
+    primary.playback_position_ticks = ticks(120);
+    primary.is_favorite = true;
+    repository.upsert(primary).await.expect("primary seed");
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.alternate_item_id,
+            "PositionTicks": ticks(590)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.alternate_item_id,
+        fixture.user_id,
+        0,
+        0,
+        true,
+    )
+    .await;
+    let propagated = assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        4,
+        0,
+        true,
+    )
+    .await;
+    assert!(propagated.is_favorite);
+
+    fixture.cleanup().await;
+}
+
 async fn assert_progress(
     repository: &UserDataRepository,
     item_id: Uuid,
@@ -627,6 +676,7 @@ struct PlaystateFixture {
     api_key_token: String,
     item_id: Uuid,
     runtime_item_id: Uuid,
+    alternate_item_id: Uuid,
 }
 
 impl PlaystateFixture {
@@ -696,6 +746,13 @@ impl PlaystateFixture {
             .create(runtime_item)
             .await
             .expect("runtime item creation");
+        let mut alternate_item = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        alternate_item.runtime_ticks = Some(ticks(600));
+        alternate_item.primary_version_id = Some(runtime_item.id);
+        let alternate_item = items
+            .create(alternate_item)
+            .await
+            .expect("alternate item creation");
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Playstate Test Server".to_owned(),
@@ -714,6 +771,7 @@ impl PlaystateFixture {
             api_key_token: api_key.access_token,
             item_id: item.id,
             runtime_item_id: runtime_item.id,
+            alternate_item_id: alternate_item.id,
         }
     }
 
@@ -723,7 +781,7 @@ impl PlaystateFixture {
             .await
             .expect("API key cleanup");
         BaseItemRepository::new(self.database.clone())
-            .delete_many(&[self.item_id, self.runtime_item_id])
+            .delete_many(&[self.item_id, self.runtime_item_id, self.alternate_item_id])
             .await
             .expect("item cleanup");
         user::Entity::delete_many()
