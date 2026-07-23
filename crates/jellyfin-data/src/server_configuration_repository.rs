@@ -67,7 +67,9 @@ impl ServerConfigurationRepository {
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                content_types, row_version, created_at, updated_at
+                content_types, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, row_version, created_at, updated_at
             ",
             [
                 update.server_name.into(),
@@ -99,7 +101,9 @@ impl ServerConfigurationRepository {
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                content_types, row_version, created_at, updated_at
+                content_types, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, row_version, created_at, updated_at
             "
             .to_owned(),
         );
@@ -152,7 +156,9 @@ impl ServerConfigurationRepository {
             WHERE configuration.id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                content_types, row_version, created_at, updated_at
+                content_types, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, row_version, created_at, updated_at
             ",
             [
                 path.to_owned().into(),

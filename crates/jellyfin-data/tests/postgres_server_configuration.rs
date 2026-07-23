@@ -2,7 +2,9 @@ use jellyfin_data::{
     DatabaseConfig, ServerConfigurationRepository, ServerConfigurationStoreError,
     StartupConfigurationUpdate,
 };
-use jellyfin_migration::CreateServerConfigurationMigration;
+use jellyfin_migration::{
+    AddPlaystateResumeConfigurationMigration, CreateServerConfigurationMigration,
+};
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
 use serde_json::{Value, json};
@@ -54,14 +56,7 @@ async fn exercise_server_configuration(database_name: &str) {
         .expect("PostgreSQL migrations must succeed");
 
     let schema = SchemaManager::new(&database);
-    CreateServerConfigurationMigration
-        .up(&schema)
-        .await
-        .expect("reapplying server-configuration DDL must succeed");
-    CreateServerConfigurationMigration
-        .up(&schema)
-        .await
-        .expect("server-configuration DDL must remain idempotent");
+    assert_configuration_migrations_are_idempotent(&schema).await;
     assert_singleton_schema(&database).await;
 
     let first = ServerConfigurationRepository::new(database.clone());
@@ -71,6 +66,11 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.server_name, "Jellyfin");
     assert!(!seeded.is_startup_wizard_completed);
     assert_eq!(seeded.content_types, json!([]));
+    assert_eq!(seeded.min_resume_pct, 5);
+    assert_eq!(seeded.max_resume_pct, 90);
+    assert_eq!(seeded.min_resume_duration_seconds, 300);
+    assert_eq!(seeded.min_audiobook_resume, 5);
+    assert_eq!(seeded.max_audiobook_resume, 5);
     assert_eq!(seeded.row_version, 1);
 
     let updated = first
@@ -139,6 +139,25 @@ async fn exercise_server_configuration(database_name: &str) {
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_configuration_migrations_are_idempotent(schema: &SchemaManager<'_>) {
+    CreateServerConfigurationMigration
+        .up(schema)
+        .await
+        .expect("reapplying server-configuration DDL must succeed");
+    CreateServerConfigurationMigration
+        .up(schema)
+        .await
+        .expect("server-configuration DDL must remain idempotent");
+    AddPlaystateResumeConfigurationMigration
+        .up(schema)
+        .await
+        .expect("reapplying playstate configuration DDL must succeed");
+    AddPlaystateResumeConfigurationMigration
+        .up(schema)
+        .await
+        .expect("playstate configuration DDL must remain idempotent");
 }
 
 async fn assert_content_type_updates(
@@ -253,6 +272,8 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         "'[]'::jsonb"
     );
 
+    assert_playstate_resume_schema(database).await;
+
     let row = database
         .query_one(Statement::from_string(
             database.get_database_backend(),
@@ -280,6 +301,51 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("content-types constraint catalog query")
         .expect("content-types constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_playstate_resume_schema(database: &sea_orm::DatabaseConnection) {
+    let resume_columns = database
+        .query_all(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT column_name, data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name IN (\
+                   'min_resume_pct', 'max_resume_pct', \
+                   'min_resume_duration_seconds', \
+                   'min_audiobook_resume', 'max_audiobook_resume'\
+               )"
+            .to_owned(),
+        ))
+        .await
+        .expect("playstate resume column catalog query")
+        .into_iter()
+        .map(|row| {
+            (
+                String::try_get(&row, "", "column_name").unwrap(),
+                (
+                    String::try_get(&row, "", "data_type").unwrap(),
+                    String::try_get(&row, "", "is_nullable").unwrap(),
+                    String::try_get(&row, "", "column_default").unwrap(),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for (name, default_value) in [
+        ("min_resume_pct", "5"),
+        ("max_resume_pct", "90"),
+        ("min_resume_duration_seconds", "300"),
+        ("min_audiobook_resume", "5"),
+        ("max_audiobook_resume", "5"),
+    ] {
+        let (data_type, is_nullable, column_default) = resume_columns
+            .get(name)
+            .unwrap_or_else(|| panic!("missing resume configuration column {name}"));
+        assert_eq!(data_type, "integer");
+        assert_eq!(is_nullable, "NO");
+        assert_eq!(column_default, default_value);
+    }
 }
 
 fn assert_temporary_database_name(name: &str) {

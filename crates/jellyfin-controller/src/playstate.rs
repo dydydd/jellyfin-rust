@@ -1,7 +1,8 @@
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, UserDataError, UserDataPatch, UserDataRepository,
-    entities::{base_item, user, user_data},
+    BaseItemError, BaseItemRepository, ServerConfigurationRepository,
+    ServerConfigurationStoreError, UserDataError, UserDataPatch, UserDataRepository,
+    entities::{base_item, server_configuration, user, user_data},
 };
 use jellyfin_model::UserConfiguration;
 use sea_orm::DatabaseConnection;
@@ -31,6 +32,8 @@ pub enum PlaystateError {
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     UserData(#[from] UserDataError),
+    #[error(transparent)]
+    ServerConfiguration(#[from] ServerConfigurationStoreError),
 }
 
 /// Parses the current ISO-8601 query format and Jellyfin's legacy compact UTC
@@ -89,6 +92,27 @@ struct PlaybackStopEffect {
     increment_play_count: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaystateConfiguration {
+    min_resume_pct: i32,
+    max_resume_pct: i32,
+    min_resume_duration_seconds: i64,
+    min_audiobook_resume_minutes: i32,
+    max_audiobook_resume_minutes: i32,
+}
+
+impl From<&server_configuration::Model> for PlaystateConfiguration {
+    fn from(configuration: &server_configuration::Model) -> Self {
+        Self {
+            min_resume_pct: configuration.min_resume_pct,
+            max_resume_pct: configuration.max_resume_pct,
+            min_resume_duration_seconds: i64::from(configuration.min_resume_duration_seconds),
+            min_audiobook_resume_minutes: configuration.min_audiobook_resume,
+            max_audiobook_resume_minutes: configuration.max_audiobook_resume,
+        }
+    }
+}
+
 impl From<PlaystateUpdate> for UserItemDataDto {
     fn from(update: PlaystateUpdate) -> Self {
         user_data_to_dto(update.user_data, None)
@@ -101,6 +125,7 @@ pub struct PlaystateService {
     users: UserService,
     items: BaseItemRepository,
     user_data: UserDataRepository,
+    server_configuration: ServerConfigurationRepository,
 }
 
 impl PlaystateService {
@@ -109,7 +134,8 @@ impl PlaystateService {
         Self {
             users: UserService::new(database.clone()),
             items: BaseItemRepository::new(database.clone()),
-            user_data: UserDataRepository::new(database),
+            user_data: UserDataRepository::new(database.clone()),
+            server_configuration: ServerConfigurationRepository::new(database),
         }
     }
 
@@ -257,7 +283,9 @@ impl PlaystateService {
         };
         let configuration: UserConfiguration =
             serde_json::from_value(user.preferences.clone()).unwrap_or_default();
-        let patch = playback_progress_patch(&configuration, &update, &item);
+        let playstate_configuration = self.playstate_configuration().await?;
+        let patch =
+            playback_progress_patch(&configuration, &update, &item, &playstate_configuration);
         if !has_playback_progress_changes(&patch) {
             return Ok(None);
         }
@@ -340,7 +368,8 @@ impl PlaystateService {
         else {
             return Ok(None);
         };
-        let effect = playback_stop_effect(&item, update.position_ticks);
+        let playstate_configuration = self.playstate_configuration().await?;
+        let effect = playback_stop_effect(&item, update.position_ticks, &playstate_configuration);
         let keys = current_user_data_keys(&item);
         let user_data = self
             .user_data
@@ -421,6 +450,11 @@ impl PlaystateService {
         }
         Ok(Some(item))
     }
+
+    async fn playstate_configuration(&self) -> Result<PlaystateConfiguration, PlaystateError> {
+        let configuration = self.server_configuration.load().await?;
+        Ok(PlaystateConfiguration::from(&configuration))
+    }
 }
 
 fn parse_media_source_item_id(media_source_id: Option<&str>) -> Option<Uuid> {
@@ -434,9 +468,11 @@ fn playback_progress_patch(
     configuration: &UserConfiguration,
     update: &PlaybackProgressUpdate,
     item: &base_item::Model,
+    playstate_configuration: &PlaystateConfiguration,
 ) -> UserDataPatch {
     let (playback_position_ticks, played) = if let Some(position_ticks) = update.position_ticks {
-        let (playback_position_ticks, played) = update_play_state_effect(item, position_ticks);
+        let (playback_position_ticks, played) =
+            update_play_state_effect(item, position_ticks, playstate_configuration);
         (Some(playback_position_ticks), played)
     } else {
         (None, None)
@@ -468,6 +504,7 @@ const fn has_playback_progress_changes(patch: &UserDataPatch) -> bool {
 fn playback_stop_effect(
     item: &base_item::Model,
     reported_position_ticks: Option<i64>,
+    playstate_configuration: &PlaystateConfiguration,
 ) -> PlaybackStopEffect {
     let Some(reported_position_ticks) = reported_position_ticks else {
         return PlaybackStopEffect {
@@ -477,7 +514,8 @@ fn playback_stop_effect(
         };
     };
 
-    let (playback_position_ticks, played) = update_play_state_effect(item, reported_position_ticks);
+    let (playback_position_ticks, played) =
+        update_play_state_effect(item, reported_position_ticks, playstate_configuration);
     PlaybackStopEffect {
         playback_position_ticks,
         played,
@@ -488,6 +526,7 @@ fn playback_stop_effect(
 fn update_play_state_effect(
     item: &base_item::Model,
     reported_position_ticks: i64,
+    configuration: &PlaystateConfiguration,
 ) -> (i64, Option<bool>) {
     let runtime_ticks = item.runtime_ticks.unwrap_or_default();
     let mut position_ticks = reported_position_ticks;
@@ -495,23 +534,28 @@ fn update_play_state_effect(
     let mut played = None;
 
     if position_ticks > 0 && has_runtime && !is_audio_book(item) && !is_book(item) {
-        if playback_percentage_less_than(position_ticks, runtime_ticks, MIN_RESUME_PERCENT) {
+        if playback_percentage_less_than(
+            position_ticks,
+            runtime_ticks,
+            configuration.min_resume_pct,
+        ) {
             position_ticks = 0;
         } else if playback_percentage_greater_than(
             position_ticks,
             runtime_ticks,
-            MAX_RESUME_PERCENT,
+            configuration.max_resume_pct,
         ) || position_ticks >= runtime_ticks - TICKS_PER_SECOND
-            || runtime_ticks < MIN_RESUME_DURATION_SECONDS * TICKS_PER_SECOND
+            || runtime_ticks < configuration.min_resume_duration_seconds * TICKS_PER_SECOND
         {
             position_ticks = 0;
             played = Some(true);
         }
     } else if position_ticks > 0 && has_runtime && is_audio_book(item) {
-        if position_ticks < i64::from(MIN_AUDIOBOOK_RESUME_MINUTES) * TICKS_PER_MINUTE {
+        if position_ticks < i64::from(configuration.min_audiobook_resume_minutes) * TICKS_PER_MINUTE
+        {
             position_ticks = 0;
         } else if runtime_ticks - position_ticks
-            < i64::from(MAX_AUDIOBOOK_RESUME_MINUTES) * TICKS_PER_MINUTE
+            < i64::from(configuration.max_audiobook_resume_minutes) * TICKS_PER_MINUTE
             || position_ticks >= runtime_ticks
         {
             position_ticks = 0;
@@ -571,11 +615,6 @@ fn supports_position_ticks_resume(item: &base_item::Model) -> bool {
 
 const TICKS_PER_SECOND: i64 = 10_000_000;
 const TICKS_PER_MINUTE: i64 = 60 * TICKS_PER_SECOND;
-const MIN_RESUME_PERCENT: i32 = 5;
-const MAX_RESUME_PERCENT: i32 = 90;
-const MIN_RESUME_DURATION_SECONDS: i64 = 300;
-const MIN_AUDIOBOOK_RESUME_MINUTES: i32 = 5;
-const MAX_AUDIOBOOK_RESUME_MINUTES: i32 = 5;
 
 fn is_audio_book(item: &base_item::Model) -> bool {
     item.item_type == "AudioBook"

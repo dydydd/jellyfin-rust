@@ -8,7 +8,7 @@ use jellyfin_controller::UserService;
 use jellyfin_data::{
     ApiKeyRepository, BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
     UserDataRepository,
-    entities::{api_key, user},
+    entities::{api_key, server_configuration, user},
 };
 use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, UserPolicy};
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -231,6 +231,84 @@ async fn playback_progress_legacy_route_uses_authenticated_user_and_missing_item
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn playback_progress_and_stop_use_persisted_resume_configuration() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+
+    set_resume_configuration(&fixture.database, 60, 99, 300, 5, 5).await;
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(300)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_progress(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        0,
+        None,
+        None,
+        false,
+    )
+    .await;
+
+    set_resume_configuration(&fixture.database, 5, 99, 300, 5, 5).await;
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(590)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        0,
+        ticks(590),
+        false,
+    )
+    .await;
+
+    set_resume_configuration(&fixture.database, 5, 90, 300, 5, 5).await;
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(590)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        0,
+        0,
+        true,
+    )
+    .await;
 
     fixture.cleanup().await;
 }
@@ -1230,6 +1308,28 @@ async fn set_stream_remembering(database: &DatabaseConnection, user_id: Uuid, re
     .update(database)
     .await
     .expect("stream remembering preference update");
+}
+
+async fn set_resume_configuration(
+    database: &DatabaseConnection,
+    min_resume_pct: i32,
+    max_resume_pct: i32,
+    min_resume_duration_seconds: i32,
+    min_audiobook_resume: i32,
+    max_audiobook_resume: i32,
+) {
+    server_configuration::ActiveModel {
+        id: Set(1),
+        min_resume_pct: Set(min_resume_pct),
+        max_resume_pct: Set(max_resume_pct),
+        min_resume_duration_seconds: Set(min_resume_duration_seconds),
+        min_audiobook_resume: Set(min_audiobook_resume),
+        max_audiobook_resume: Set(max_audiobook_resume),
+        ..Default::default()
+    }
+    .update(database)
+    .await
+    .expect("resume configuration update");
 }
 
 async fn request(
