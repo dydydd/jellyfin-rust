@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +107,42 @@ impl Default for ClientCapabilitiesDto {
             icon_url: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct GeneralCommand {
+    pub name: GeneralCommandType,
+    #[serde(
+        default,
+        serialize_with = "crate::serde_guid::single::serialize",
+        deserialize_with = "crate::serde_guid::single::deserialize"
+    )]
+    pub controlling_user_id: Uuid,
+    pub arguments: HashMap<String, String>,
+}
+
+impl Default for GeneralCommand {
+    fn default() -> Self {
+        Self {
+            name: GeneralCommandType::MoveUp,
+            controlling_user_id: Uuid::nil(),
+            arguments: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct MessageCommand {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -1,19 +1,19 @@
 use chrono::{Duration, Utc};
 use jellyfin_data::{
     ApiKeyRepository, DatabaseConfig, DeviceOptionsRepository, DeviceQuery, DeviceRepository,
-    NewDevice,
-    entities::{device, device_option, user},
+    NewDevice, NewSessionCommand, SessionCommandRepository,
+    entities::{device, device_option, session_command, user},
 };
 use jellyfin_migration::{
     AddDeviceCapabilitiesMigration, CreateAuthenticationMigration, CreateDeviceOptionsMigration,
-    OptimizeDeviceSessionQueriesMigration,
+    CreateSessionCommandOutboxMigration, OptimizeDeviceSessionQueriesMigration,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ConnectionTrait, DatabaseConnection, EntityTrait,
     IntoActiveModel, Set, SqlErr, Statement, TransactionTrait, TryGetable,
 };
 use sea_orm_migration::{MigrationTrait, SchemaManager};
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -22,6 +22,7 @@ async fn postgres_authentication_vertical_slice() {
     test_api_keys(&database).await;
     test_devices(&database).await;
     test_device_options(&database).await;
+    test_session_command_outbox(&database).await;
 }
 
 async fn prepare_database() -> DatabaseConnection {
@@ -57,6 +58,14 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("device options DDL must stay idempotent");
+    CreateSessionCommandOutboxMigration
+        .up(&schema)
+        .await
+        .expect("session command outbox DDL must remain idempotent");
+    CreateSessionCommandOutboxMigration
+        .up(&schema)
+        .await
+        .expect("session command outbox DDL must stay idempotent");
     assert_authentication_indexes(&database).await;
     database
 }
@@ -325,6 +334,55 @@ async fn test_device_options(database: &DatabaseConnection) {
         .expect("device options cleanup must succeed");
 }
 
+async fn test_session_command_outbox(database: &DatabaseConnection) {
+    let repository = SessionCommandRepository::new(database.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let target_session_id = format!("target-session-{suffix}");
+    let command = repository
+        .enqueue(NewSessionCommand {
+            target_session_id: target_session_id.clone(),
+            controlling_session_id: Some(format!("controller-{suffix}")),
+            message_type: "GeneralCommand".to_owned(),
+            payload: json!({
+                "Name": "DisplayMessage",
+                "Arguments": {
+                    "Header": "Message from Server",
+                    "Text": "Hello"
+                }
+            }),
+        })
+        .await
+        .expect("session command must be queued");
+    assert_eq!(command.target_session_id, target_session_id);
+    assert_eq!(command.message_type, "GeneralCommand");
+    assert_eq!(command.payload["Arguments"]["Text"], "Hello");
+
+    let commands = repository
+        .list_for_session(&command.target_session_id)
+        .await
+        .expect("session command lookup must succeed");
+    assert_eq!(commands, vec![command.clone()]);
+
+    let error = repository
+        .enqueue(NewSessionCommand {
+            target_session_id: format!("invalid-{suffix}"),
+            controlling_session_id: None,
+            message_type: "GeneralCommand".to_owned(),
+            payload: Value::Null,
+        })
+        .await
+        .expect_err("non-object payload must be rejected before insertion");
+    assert!(matches!(
+        error,
+        jellyfin_data::SessionCommandStoreError::InvalidPayload
+    ));
+
+    session_command::Entity::delete_by_id(command.id)
+        .exec(database)
+        .await
+        .expect("session command cleanup must succeed");
+}
+
 async fn assert_device_session_index_plan(database: &DatabaseConnection, device_id: &str) {
     let transaction = database.begin().await.expect("EXPLAIN transaction");
     transaction
@@ -371,7 +429,8 @@ async fn assert_authentication_indexes(database: &DatabaseConnection) {
         .query_all(Statement::from_string(
             database.get_database_backend(),
             "SELECT tablename, indexname, indexdef FROM pg_indexes \
-             WHERE schemaname = 'jellyfin' AND tablename IN ('api_keys', 'devices', 'device_options')"
+             WHERE schemaname = 'jellyfin' \
+               AND tablename IN ('api_keys', 'devices', 'device_options', 'session_command_outbox')"
                 .to_owned(),
         ))
         .await
@@ -393,6 +452,13 @@ async fn assert_authentication_indexes(database: &DatabaseConnection) {
         table == "device_options"
             && name == "device_options_device_id_key"
             && definition.contains("INCLUDE (custom_name)")
+    }));
+    assert!(indexes.iter().any(|(table, name, definition)| {
+        table == "session_command_outbox"
+            && name == "session_command_target_created_idx"
+            && definition.contains("target_session_id")
+            && definition.contains("date_created")
+            && definition.contains("INCLUDE (message_type)")
     }));
     assert_unique_index(&indexes, "devices", "devices_access_token_key");
     assert!(indexes.iter().any(|(table, name, definition)| {

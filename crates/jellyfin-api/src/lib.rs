@@ -21,7 +21,8 @@ use jellyfin_controller::{
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, DeviceOptionsRepository, DeviceRepository, ItemUpdateStoreError,
-    ServerConfigurationRepository, ServerConfigurationStoreError, entities::user,
+    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
+    SessionCommandStoreError, entities::user,
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
@@ -74,6 +75,7 @@ pub struct AppState {
     pub(crate) api_keys: ApiKeyRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) device_options: DeviceOptionsRepository,
+    pub(crate) session_commands: SessionCommandRepository,
     pub(crate) playstate: PlaystateService,
     pub(crate) user_data: UserDataService,
     pub(crate) music_genres: MusicGenreService,
@@ -113,6 +115,7 @@ impl AppState {
             api_keys: ApiKeyRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             device_options: DeviceOptionsRepository::new(database.clone()),
+            session_commands: SessionCommandRepository::new(database.clone()),
             playstate: PlaystateService::new(database.clone()),
             user_data: UserDataService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
@@ -420,6 +423,22 @@ fn user_routes() -> Router<Arc<AppState>> {
 fn session_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Sessions", get(session::list))
+        .route(
+            "/Sessions/{session_id}/System/{command}",
+            post(session::send_system_command),
+        )
+        .route(
+            "/Sessions/{session_id}/Command/{command}",
+            post(session::send_general_command),
+        )
+        .route(
+            "/Sessions/{session_id}/Command",
+            post(session::send_full_general_command),
+        )
+        .route(
+            "/Sessions/{session_id}/Message",
+            post(session::send_message_command),
+        )
         .route("/Sessions/Capabilities", post(session::post_capabilities))
         .route(
             "/Sessions/Capabilities/Full",
@@ -633,6 +652,7 @@ pub(crate) enum ApiError {
     User(UserError),
     Authentication(AuthenticationError),
     AuthenticationStore(AuthenticationStoreError),
+    SessionCommandStore(SessionCommandStoreError),
     Playstate(PlaystateError),
     UserData(UserDataServiceError),
     MusicGenre(MusicGenreError),
@@ -659,6 +679,7 @@ pub(crate) enum ApiError {
     Internal,
     DeviceNotFound,
     DeviceOptionsNotFound,
+    SessionNotFound,
 }
 
 impl From<ActivityLogError> for ApiError {
@@ -682,6 +703,12 @@ impl From<AuthenticationError> for ApiError {
 impl From<AuthenticationStoreError> for ApiError {
     fn from(error: AuthenticationStoreError) -> Self {
         Self::AuthenticationStore(error)
+    }
+}
+
+impl From<SessionCommandStoreError> for ApiError {
+    fn from(error: SessionCommandStoreError) -> Self {
+        Self::SessionCommandStore(error)
     }
 }
 
@@ -816,6 +843,7 @@ impl IntoResponse for ApiError {
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
             Self::DeviceNotFound => (StatusCode::NOT_FOUND, "Device not found"),
             Self::DeviceOptionsNotFound => (StatusCode::NOT_FOUND, "Device options not found"),
+            Self::SessionNotFound => (StatusCode::NOT_FOUND, "Session not found"),
             Self::Environment(error) => environment_error_response(&error),
             Self::ActivityLog(
                 ActivityLogError::EmptyField(_) | ActivityLogError::FieldTooLong { .. },
@@ -835,6 +863,15 @@ impl IntoResponse for ApiError {
             Self::AuthenticationStore(_error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Authentication persistence failed",
+            ),
+            Self::SessionCommandStore(
+                SessionCommandStoreError::EmptyField(_)
+                | SessionCommandStoreError::FieldTooLong { .. }
+                | SessionCommandStoreError::InvalidPayload,
+            ) => (StatusCode::BAD_REQUEST, "Invalid session command"),
+            Self::SessionCommandStore(SessionCommandStoreError::Database(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Session command persistence failed",
             ),
             Self::Playstate(
                 PlaystateError::UserNotFound

@@ -1,10 +1,11 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    GeneralCommandType, MediaType, NameIdPair, PublicSystemInfo, QueryResult, SessionInfoDto,
-    SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    GeneralCommand, GeneralCommandType, MediaType, MessageCommand, NameIdPair, PublicSystemInfo,
+    QueryResult, SessionInfoDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[test]
@@ -137,6 +138,40 @@ fn device_options_uses_official_wire_names() {
     assert_eq!(decoded.id, 0);
     assert_eq!(decoded.device_id, None);
     assert_eq!(decoded.custom_name.as_deref(), Some("Bedroom"));
+}
+
+#[test]
+fn session_commands_use_official_wire_names() {
+    let command = GeneralCommand {
+        name: GeneralCommandType::DisplayMessage,
+        controlling_user_id: Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+        arguments: HashMap::from([
+            ("Header".to_owned(), "Message from Server".to_owned()),
+            ("Text".to_owned(), "Hello".to_owned()),
+            ("TimeoutMs".to_owned(), "1500".to_owned()),
+        ]),
+    };
+    let value = serde_json::to_value(command).unwrap();
+    assert_eq!(value["Name"], "DisplayMessage");
+    assert_eq!(
+        value["ControllingUserId"],
+        "f9c1ad0c820f44df8db852fbfc0d3d93"
+    );
+    assert_eq!(value["Arguments"]["Text"], "Hello");
+
+    let message = MessageCommand {
+        header: Some("Header".to_owned()),
+        text: Some("Text".to_owned()),
+        timeout_ms: Some(1000),
+    };
+    assert_eq!(
+        serde_json::to_value(message).unwrap(),
+        json!({
+            "Header": "Header",
+            "Text": "Text",
+            "TimeoutMs": 1000
+        })
+    );
 }
 
 #[test]

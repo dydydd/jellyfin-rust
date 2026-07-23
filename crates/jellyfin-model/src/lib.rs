@@ -61,7 +61,10 @@ pub use metadata_editor::{
 pub use net::{EndPointInfo, MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
-pub use session::{ClientCapabilitiesDto, GeneralCommandType, MediaType, SessionInfoDto};
+pub use session::{
+    ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
+    SessionInfoDto,
+};
 pub use sync_play::UtcTimeResponse;
 pub use system::PublicSystemInfo;
 pub use user_data::{UpdateUserItemDataDto, UserItemDataDto};

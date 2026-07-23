@@ -15,6 +15,7 @@ pub mod person;
 pub mod person_base_item_map;
 pub mod quick_connect;
 pub mod server_configuration;
+pub mod session_command;
 pub mod tuner_host;
 pub mod user;
 pub mod user_data;

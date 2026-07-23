@@ -1,14 +1,18 @@
-use std::{fmt::Write as _, sync::Arc};
+use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use axum::{
     Json,
-    extract::{OriginalUri, Query, State, rejection::JsonRejection, rejection::QueryRejection},
+    extract::{
+        OriginalUri, Path, Query, State, rejection::JsonRejection, rejection::PathRejection,
+        rejection::QueryRejection,
+    },
     http::{HeaderMap, StatusCode},
 };
 use chrono::{Duration, Utc};
-use jellyfin_data::{DeviceQuery, entities::device};
+use jellyfin_data::{DeviceQuery, NewSessionCommand, entities::device};
 use jellyfin_model::{
-    ClientCapabilitiesDto, GeneralCommandType, MediaType, NameIdPair, SessionInfoDto,
+    ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
+    NameIdPair, SessionInfoDto,
 };
 use md5::{Digest, Md5};
 use serde::Deserialize;
@@ -93,6 +97,88 @@ pub(crate) async fn authentication_providers(
     Ok(Json(state.users.authentication_providers()))
 }
 
+pub(crate) async fn send_system_command(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<(String, GeneralCommandType)>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enqueue_general_command(
+        &state,
+        &session_id,
+        &controller,
+        GeneralCommand {
+            name: command,
+            controlling_user_id: controller.user.id,
+            arguments: HashMap::new(),
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn send_general_command(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<(String, GeneralCommandType)>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    send_system_command(State(state), OriginalUri(uri), headers, path).await
+}
+
+pub(crate) async fn send_full_general_command(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+    request: Result<Json<GeneralCommand>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let Json(mut command) = request.map_err(|_| ApiError::InvalidRequest)?;
+    command.controlling_user_id = controller.user.id;
+    enqueue_general_command(&state, &session_id, &controller, command).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn send_message_command(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+    request: Result<Json<MessageCommand>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let Json(command) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let text = command
+        .text
+        .filter(|text| !text.is_empty())
+        .ok_or(ApiError::InvalidRequest)?;
+    let header = command
+        .header
+        .filter(|header| !header.trim().is_empty())
+        .unwrap_or_else(|| "Message from Server".to_owned());
+    let mut arguments = HashMap::from([("Header".to_owned(), header), ("Text".to_owned(), text)]);
+    if let Some(timeout_ms) = command.timeout_ms {
+        arguments.insert("TimeoutMs".to_owned(), timeout_ms.to_string());
+    }
+    enqueue_general_command(
+        &state,
+        &session_id,
+        &controller,
+        GeneralCommand {
+            name: GeneralCommandType::DisplayMessage,
+            controlling_user_id: controller.user.id,
+            arguments,
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn post_capabilities(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -158,6 +244,61 @@ async fn require_elevated(
     authentication::authenticated_identity(state, headers, Some(uri))
         .await?
         .require_administrator()
+}
+
+async fn authenticated_device_session(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Result<Box<authentication::AuthenticatedSession>, ApiError> {
+    match authentication::authenticated_identity(state, headers, Some(uri)).await? {
+        authentication::AuthenticatedIdentity::Device(session) => Ok(session),
+        authentication::AuthenticatedIdentity::ApiKey(_) => Err(ApiError::Unauthorized),
+    }
+}
+
+async fn enqueue_general_command(
+    state: &AppState,
+    target_session_id: &str,
+    controller: &authentication::AuthenticatedSession,
+    command: GeneralCommand,
+) -> Result<(), ApiError> {
+    ensure_active_session(state, target_session_id).await?;
+    state
+        .session_commands
+        .enqueue(NewSessionCommand {
+            target_session_id: target_session_id.to_owned(),
+            controlling_session_id: Some(jellyfin_session_id(
+                &controller.device.app_name,
+                &controller.device.device_id,
+            )),
+            message_type: "GeneralCommand".to_owned(),
+            payload: serde_json::to_value(command).map_err(|_| ApiError::Internal)?,
+        })
+        .await?;
+    Ok(())
+}
+
+async fn ensure_active_session(state: &AppState, session_id: &str) -> Result<(), ApiError> {
+    if session_id.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let sessions = state
+        .devices
+        .query(&DeviceQuery {
+            is_active: Some(true),
+            ..DeviceQuery::default()
+        })
+        .await?;
+    if sessions
+        .items
+        .iter()
+        .any(|device| jellyfin_session_id(&device.app_name, &device.device_id) == session_id)
+    {
+        Ok(())
+    } else {
+        Err(ApiError::SessionNotFound)
+    }
 }
 
 fn session_info(device: device::Model, user_name: String, server_id: &str) -> SessionInfoDto {
