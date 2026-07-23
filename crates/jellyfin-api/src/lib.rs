@@ -32,6 +32,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 mod activity_log;
+mod api_keys;
 mod authentication;
 mod authorization;
 mod branding;
@@ -263,6 +264,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .merge(environment_routes())
         .merge(localization_routes())
+        .merge(api_key_routes())
         .merge(user_routes())
         .route(
             "/Startup/Configuration",
@@ -376,6 +378,12 @@ fn localization_routes() -> Router<Arc<AppState>> {
             get(localization::parental_ratings),
         )
         .route("/Localization/Options", get(localization::options))
+}
+
+fn api_key_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
+        .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
 }
 
 fn user_routes() -> Router<Arc<AppState>> {

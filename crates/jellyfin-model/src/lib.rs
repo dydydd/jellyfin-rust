@@ -4,6 +4,7 @@
 //! enums and UUIDs in the compact `N` format. The DTOs in this crate encode
 //! those rules at the type boundary.
 
+mod authentication;
 pub mod configuration;
 pub mod cryptography;
 pub mod dlna;
@@ -27,6 +28,7 @@ pub mod system;
 mod user_data;
 pub mod users;
 
+pub use authentication::{AuthenticationInfo, QueryResult};
 pub use configuration::UserConfiguration;
 pub use cryptography::{PasswordHash, PasswordHashError, PasswordHashSegment};
 pub use dlna::{

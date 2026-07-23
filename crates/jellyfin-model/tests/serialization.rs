@@ -1,7 +1,8 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    ClientCapabilitiesDto, EndPointInfo, GeneralCommandType, MediaType, NameIdPair,
-    PublicSystemInfo, SessionInfoDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    AuthenticationInfo, ClientCapabilitiesDto, EndPointInfo, GeneralCommandType, MediaType,
+    NameIdPair, PublicSystemInfo, QueryResult, SessionInfoDto, SyncPlayUserAccessType, UserDto,
+    UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -45,6 +46,42 @@ fn name_id_pair_uses_official_pascal_case_contract() {
             "Id": "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider"
         })
     );
+}
+
+#[test]
+fn api_key_query_result_uses_official_authentication_info_contract() {
+    let key = AuthenticationInfo {
+        id: 42,
+        access_token: "token".to_owned(),
+        device_id: None,
+        app_name: "Automation".to_owned(),
+        app_version: None,
+        device_name: None,
+        user_id: Uuid::nil(),
+        is_active: true,
+        date_created: Utc.with_ymd_and_hms(2026, 7, 23, 10, 0, 0).unwrap(),
+        date_revoked: None,
+        date_last_activity: Utc.with_ymd_and_hms(2026, 7, 23, 10, 5, 0).unwrap(),
+        user_name: None,
+    };
+
+    let value = serde_json::to_value(QueryResult::from_items(vec![key])).unwrap();
+    assert_eq!(value["StartIndex"], 0);
+    assert_eq!(value["TotalRecordCount"], 1);
+    assert_eq!(value["Items"][0]["Id"], 42);
+    assert_eq!(value["Items"][0]["AccessToken"], "token");
+    assert_eq!(value["Items"][0]["AppName"], "Automation");
+    assert_eq!(
+        value["Items"][0]["UserId"],
+        Uuid::nil().simple().to_string()
+    );
+    assert_eq!(value["Items"][0]["IsActive"], true);
+    assert_eq!(
+        value["Items"][0]["DateCreated"],
+        "2026-07-23T10:00:00.0000000Z"
+    );
+    assert!(value["Items"][0].get("DateRevoked").is_none());
+    assert!(value["Items"][0].get("DeviceId").is_none());
 }
 
 #[test]
