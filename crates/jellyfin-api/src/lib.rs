@@ -24,9 +24,10 @@ use jellyfin_controller::{
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
-    DisplayPreferenceStoreError, ItemUpdateStoreError, QuickConnectRepository,
-    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
-    SessionCommandStoreError, entities::user,
+    DisplayPreferenceStoreError, ItemUpdateStoreError, NamedConfigurationRepository,
+    NamedConfigurationStoreError, QuickConnectRepository, ServerConfigurationRepository,
+    ServerConfigurationStoreError, SessionCommandRepository, SessionCommandStoreError,
+    entities::user,
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
@@ -125,6 +126,7 @@ pub struct AppState {
     pub(crate) system_logs: SystemLogService,
     pub(crate) system_storage: SystemStorageService,
     pub(crate) client_event_logger: ClientEventLogger,
+    pub(crate) named_configurations: Option<NamedConfigurationRepository>,
     pub(crate) program_data_directory: PathBuf,
     pub(crate) web_directory: PathBuf,
     pub(crate) image_cache_directory: PathBuf,
@@ -182,6 +184,11 @@ impl AppState {
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
             client_event_logger: ClientEventLogger::new("logs"),
+            named_configurations: if matches!(database, DatabaseConnection::Disconnected) {
+                None
+            } else {
+                Some(NamedConfigurationRepository::new(database.clone()))
+            },
             program_data_directory: PathBuf::from("programdata"),
             web_directory: PathBuf::from("web"),
             image_cache_directory: PathBuf::from("cache").join("images"),
@@ -240,6 +247,7 @@ impl AppState {
     #[must_use]
     pub fn with_branding_options(mut self, branding: BrandingOptions) -> Self {
         self.branding = Arc::new(tokio::sync::RwLock::new(branding));
+        self.named_configurations = None;
         self
     }
 
@@ -334,6 +342,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/System/Configuration/MetadataOptions/Default",
             get(configuration::default_metadata_options),
+        )
+        .route(
+            "/System/Configuration/Branding",
+            post(branding::update_configuration),
         )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
         .route(
@@ -904,6 +916,7 @@ pub(crate) enum ApiError {
     SystemLog(SystemLogError),
     DisplayPreferenceStore(DisplayPreferenceStoreError),
     ServerConfiguration(ServerConfigurationStoreError),
+    NamedConfiguration(NamedConfigurationStoreError),
     Environment(EnvironmentError),
     QuickConnect(QuickConnectError),
     ScheduledTask(ScheduledTaskError),
@@ -1084,6 +1097,12 @@ impl From<DisplayPreferenceStoreError> for ApiError {
 impl From<ServerConfigurationStoreError> for ApiError {
     fn from(error: ServerConfigurationStoreError) -> Self {
         Self::ServerConfiguration(error)
+    }
+}
+
+impl From<NamedConfigurationStoreError> for ApiError {
+    fn from(error: NamedConfigurationStoreError) -> Self {
+        Self::NamedConfiguration(error)
     }
 }
 
@@ -1277,6 +1296,7 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Startup configuration persistence failed",
             ),
+            Self::NamedConfiguration(error) => named_configuration_error_response(&error),
             Self::QuickConnect(error) => quick_connect_error_response(&error),
             Self::ScheduledTask(ScheduledTaskError::NotFound) => {
                 (StatusCode::NOT_FOUND, "Scheduled task not found")
@@ -1310,6 +1330,24 @@ fn quick_connect_error_response(error: &QuickConnectError) -> (StatusCode, &'sta
         ) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Quick Connect persistence failed",
+        ),
+    }
+}
+
+fn named_configuration_error_response(
+    error: &NamedConfigurationStoreError,
+) -> (StatusCode, &'static str) {
+    match error {
+        NamedConfigurationStoreError::BlankKey => (
+            StatusCode::BAD_REQUEST,
+            "Named configuration key must not be blank",
+        ),
+        NamedConfigurationStoreError::NotFound(_) => {
+            (StatusCode::NOT_FOUND, "Named configuration not found")
+        }
+        NamedConfigurationStoreError::Database(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Named configuration persistence failed",
         ),
     }
 }

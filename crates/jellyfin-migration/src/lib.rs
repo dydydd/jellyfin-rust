@@ -36,6 +36,7 @@ mod m20260724_000033_create_display_preferences;
 mod m20260724_000034_optimize_year_queries;
 mod m20260724_000035_add_base_item_official_rating;
 mod m20260724_000036_add_plugin_repositories;
+mod m20260724_000037_create_named_configurations;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -109,6 +110,8 @@ pub use m20260724_000034_optimize_year_queries::Migration as OptimizeYearQueries
 pub use m20260724_000035_add_base_item_official_rating::Migration as AddBaseItemOfficialRatingMigration;
 #[doc(hidden)]
 pub use m20260724_000036_add_plugin_repositories::Migration as AddPluginRepositoriesMigration;
+#[doc(hidden)]
+pub use m20260724_000037_create_named_configurations::Migration as CreateNamedConfigurationsMigration;
 
 pub struct Migrator;
 
@@ -152,6 +155,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260724_000034_optimize_year_queries::Migration),
             Box::new(m20260724_000035_add_base_item_official_rating::Migration),
             Box::new(m20260724_000036_add_plugin_repositories::Migration),
+            Box::new(m20260724_000037_create_named_configurations::Migration),
         ]
     }
 }

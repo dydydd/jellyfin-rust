@@ -6,8 +6,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    DatabaseConfig, DeviceRepository, NewDevice, ServerConfigurationRepository,
-    StartupConfigurationUpdate, entities::user,
+    DatabaseConfig, DeviceRepository, NamedConfigurationRepository, NewDevice,
+    ServerConfigurationRepository, StartupConfigurationUpdate, entities::user,
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
 use serde_json::{Value, json};
@@ -116,6 +116,19 @@ async fn exercise_configuration_routes(database_name: &str) {
     let devices = DeviceRepository::new(database.clone());
     let admin_token = session(&devices, administrator.id, &format!("admin-{suffix}")).await;
     let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
+    let named_configurations = NamedConfigurationRepository::new(database.clone());
+    named_configurations
+        .save(
+            "Branding",
+            json!({
+                "LoginDisclaimer": "旧免责声明",
+                "CustomCss": "body { color: oldlace; }\n",
+                "SplashscreenEnabled": false,
+                "SplashscreenLocation": "/srv/jellyfin/private/splash.png"
+            }),
+        )
+        .await
+        .expect("seed branding configuration");
 
     assert_eq!(
         request(&app, "/System/Configuration", None).await.status(),
@@ -188,6 +201,88 @@ async fn exercise_configuration_routes(database_name: &str) {
     );
     assert!(configuration.get("server_name").is_none());
     assert!(configuration.get("UiCulture").is_none());
+
+    let branding = body_json(request(&app, "/Branding/Configuration", None).await).await;
+    assert_eq!(branding["LoginDisclaimer"], "旧免责声明");
+    assert_eq!(branding["CustomCss"], "body { color: oldlace; }\n");
+    assert_eq!(branding["SplashscreenEnabled"], false);
+    assert!(branding.get("SplashscreenLocation").is_none());
+    assert_eq!(
+        body_text(request(&app, "/Branding/Css", None).await).await,
+        "body { color: oldlace; }\n"
+    );
+
+    let branding_update = json!({
+        "LoginDisclaimer": "新的免责声明",
+        "CustomCss": "body { color: #00a4dc; }\n",
+        "SplashscreenEnabled": true
+    });
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Branding",
+            None,
+            &branding_update,
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Branding",
+            Some(&user_token),
+            &branding_update,
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Branding",
+            Some(&admin_token),
+            &json!({ "SplashscreenEnabled": [] }),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Branding",
+            Some(&admin_token),
+            &branding_update,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let branding = body_json(request(&app, "/Branding/Configuration", None).await).await;
+    assert_eq!(branding["LoginDisclaimer"], "新的免责声明");
+    assert_eq!(branding["CustomCss"], "body { color: #00a4dc; }\n");
+    assert_eq!(branding["SplashscreenEnabled"], true);
+    assert!(branding.get("SplashscreenLocation").is_none());
+    assert_eq!(
+        body_text(request(&app, "/Branding/Css.css", None).await).await,
+        "body { color: #00a4dc; }\n"
+    );
+    let persisted_branding = named_configurations
+        .load("branding")
+        .await
+        .expect("branding configuration load");
+    assert_eq!(
+        persisted_branding.configuration["SplashscreenLocation"],
+        "/srv/jellyfin/private/splash.png"
+    );
+    assert_eq!(
+        persisted_branding.configuration["LoginDisclaimer"],
+        "新的免责声明"
+    );
 
     let updated = configuration
         .as_object_mut()
@@ -359,6 +454,17 @@ async fn body_json(response: axum::response::Response) -> Value {
         &to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
             .await
             .unwrap(),
+    )
+    .unwrap()
+}
+
+async fn body_text(response: axum::response::Response) -> String {
+    assert_eq!(response.status(), StatusCode::OK);
+    String::from_utf8(
+        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .to_vec(),
     )
     .unwrap()
 }

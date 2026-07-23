@@ -9,6 +9,7 @@ mod item_value_repository;
 mod keyframe_data_repository;
 mod media_attachment_repository;
 mod media_stream_repository;
+mod named_configuration_repository;
 mod person_repository;
 mod quick_connect_repository;
 mod server_configuration_repository;
@@ -50,6 +51,9 @@ pub use media_attachment_repository::{
 pub use media_stream_repository::{
     InvalidPersistedMediaStreamType, MediaStreamQuery, MediaStreamRepository,
     MediaStreamStoreError, PersistedMediaStream, PersistedMediaStreamType,
+};
+pub use named_configuration_repository::{
+    NamedConfigurationRepository, NamedConfigurationStoreError,
 };
 pub use person_repository::{
     NewPerson, PersonCredit, PersonError, PersonPage, PersonQuery, PersonRepository,
