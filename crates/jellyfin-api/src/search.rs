@@ -83,6 +83,7 @@ pub(crate) async fn hints(
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
     let exclude_item_types = search_exclude_item_types(&query.exclude_item_types);
+    let (source_start_index, source_limit) = source_page_bounds(&query);
     let mut result = SearchHintResult::default();
 
     if query.include_media.unwrap_or(true) {
@@ -104,8 +105,8 @@ pub(crate) async fn hints(
                     is_kids: query.is_kids,
                     is_sports: query.is_sports,
                     is_virtual_item: Some(false),
-                    start_index: query.start_index,
-                    limit: query.limit,
+                    start_index: source_start_index,
+                    limit: source_limit,
                     ..BaseItemQuery::default()
                 },
             )
@@ -135,8 +136,8 @@ pub(crate) async fn hints(
                     is_kids: query.is_kids,
                     is_sports: query.is_sports,
                     user_id: Some(target_user_id),
-                    start_index: query.start_index,
-                    limit: query.limit,
+                    start_index: source_start_index,
+                    limit: source_limit,
                     ..PersonQuery::default()
                 },
             )
@@ -169,8 +170,8 @@ pub(crate) async fn hints(
                     is_kids: query.is_kids,
                     is_sports: query.is_sports,
                     user_id: Some(target_user_id),
-                    start_index: query.start_index,
-                    limit: query.limit,
+                    start_index: source_start_index,
+                    limit: source_limit,
                     ..ItemValueQuery::default()
                 },
             )
@@ -203,8 +204,8 @@ pub(crate) async fn hints(
                     is_kids: query.is_kids,
                     is_sports: query.is_sports,
                     user_id: Some(target_user_id),
-                    start_index: query.start_index,
-                    limit: query.limit,
+                    start_index: source_start_index,
+                    limit: source_limit,
                     ..ItemValueQuery::default()
                 },
             )
@@ -237,8 +238,8 @@ pub(crate) async fn hints(
                     is_kids: query.is_kids,
                     is_sports: query.is_sports,
                     user_id: Some(target_user_id),
-                    start_index: query.start_index,
-                    limit: query.limit,
+                    start_index: source_start_index,
+                    limit: source_limit,
                     ..ItemValueQuery::default()
                 },
             )
@@ -272,8 +273,8 @@ pub(crate) async fn hints(
                     is_kids: query.is_kids,
                     is_sports: query.is_sports,
                     user_id: Some(target_user_id),
-                    start_index: query.start_index,
-                    limit: query.limit,
+                    start_index: source_start_index,
+                    limit: source_limit,
                     ..ItemValueQuery::default()
                 },
             )
@@ -286,7 +287,32 @@ pub(crate) async fn hints(
         );
     }
 
+    paginate_search_hints(&mut result, query.start_index, query.limit);
+
     Ok(Json(result))
+}
+
+fn source_page_bounds(query: &SearchHintsQuery) -> (u64, Option<u64>) {
+    (
+        0,
+        query
+            .limit
+            .map(|limit| query.start_index.saturating_add(limit)),
+    )
+}
+
+fn paginate_search_hints(result: &mut SearchHintResult, start_index: u64, limit: Option<u64>) {
+    let start = usize::try_from(start_index).unwrap_or(usize::MAX);
+    let limit = limit
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
+        .unwrap_or(usize::MAX);
+
+    result.search_hints = result
+        .search_hints
+        .drain(..)
+        .skip(start)
+        .take(limit)
+        .collect();
 }
 
 fn search_exclude_item_types(requested: &[String]) -> Vec<String> {

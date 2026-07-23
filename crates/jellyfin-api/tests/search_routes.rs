@@ -261,6 +261,31 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(limited["TotalRecordCount"], 2);
     assert_eq!(limited["SearchHints"].as_array().unwrap().len(), 1);
 
+    let merged_limited = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Search&includeMedia=false&limit=1",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(merged_limited["TotalRecordCount"], 3);
+    assert_eq!(merged_limited["SearchHints"].as_array().unwrap().len(), 1);
+    assert_eq!(merged_limited["SearchHints"][0]["Name"], person);
+
+    let merged_second = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Search&includeMedia=false&startIndex=1&limit=1",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(merged_second["TotalRecordCount"], 3);
+    assert_eq!(merged_second["SearchHints"].as_array().unwrap().len(), 1);
+
     let audio = body_json(
         request(
             &app,
