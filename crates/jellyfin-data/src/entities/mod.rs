@@ -4,6 +4,7 @@ pub mod api_key;
 pub mod base_item;
 pub mod base_item_image;
 pub mod device;
+pub mod device_option;
 pub mod item_value;
 pub mod item_value_map;
 pub mod keyframe_data;

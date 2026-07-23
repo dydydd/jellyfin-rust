@@ -21,8 +21,8 @@ pub use activity_log_repository::{
     NewActivityLog, SortDirection,
 };
 pub use authentication_repository::{
-    ApiKeyRepository, AuthenticationStoreError, DevicePage, DeviceQuery, DeviceRepository,
-    NewDevice,
+    ApiKeyRepository, AuthenticationStoreError, DeviceOptionsRepository, DevicePage, DeviceQuery,
+    DeviceRepository, NewDevice,
 };
 pub use base_item_image_repository::{
     BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,

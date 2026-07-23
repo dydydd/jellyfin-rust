@@ -26,6 +26,7 @@ mod m20260722_000023_add_playstate_resume_configuration;
 mod m20260722_000024_add_client_log_upload_configuration;
 mod m20260722_000025_optimize_device_session_queries;
 mod m20260723_000026_add_device_capabilities;
+mod m20260723_000027_create_device_options;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -79,6 +80,8 @@ pub use m20260722_000024_add_client_log_upload_configuration::Migration as AddCl
 pub use m20260722_000025_optimize_device_session_queries::Migration as OptimizeDeviceSessionQueriesMigration;
 #[doc(hidden)]
 pub use m20260723_000026_add_device_capabilities::Migration as AddDeviceCapabilitiesMigration;
+#[doc(hidden)]
+pub use m20260723_000027_create_device_options::Migration as CreateDeviceOptionsMigration;
 
 pub struct Migrator;
 
@@ -112,6 +115,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000024_add_client_log_upload_configuration::Migration),
             Box::new(m20260722_000025_optimize_device_session_queries::Migration),
             Box::new(m20260723_000026_add_device_capabilities::Migration),
+            Box::new(m20260723_000027_create_device_options::Migration),
         ]
     }
 }

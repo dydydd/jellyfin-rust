@@ -20,8 +20,8 @@ use jellyfin_controller::{
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
-    BaseItemError, DeviceRepository, ItemUpdateStoreError, ServerConfigurationRepository,
-    ServerConfigurationStoreError, entities::user,
+    BaseItemError, DeviceOptionsRepository, DeviceRepository, ItemUpdateStoreError,
+    ServerConfigurationRepository, ServerConfigurationStoreError, entities::user,
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
@@ -73,6 +73,7 @@ pub struct AppState {
     pub(crate) activity_logs: ActivityLogRepository,
     pub(crate) api_keys: ApiKeyRepository,
     pub(crate) devices: DeviceRepository,
+    pub(crate) device_options: DeviceOptionsRepository,
     pub(crate) playstate: PlaystateService,
     pub(crate) user_data: UserDataService,
     pub(crate) music_genres: MusicGenreService,
@@ -111,6 +112,7 @@ impl AppState {
             activity_logs: ActivityLogRepository::new(database.clone()),
             api_keys: ApiKeyRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
+            device_options: DeviceOptionsRepository::new(database.clone()),
             playstate: PlaystateService::new(database.clone()),
             user_data: UserDataService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
@@ -392,6 +394,10 @@ fn device_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Devices", get(devices::list).delete(devices::delete))
         .route("/Devices/Info", get(devices::info))
+        .route(
+            "/Devices/Options",
+            get(devices::options).post(devices::update_options),
+        )
 }
 
 fn user_routes() -> Router<Arc<AppState>> {
@@ -652,6 +658,7 @@ pub(crate) enum ApiError {
     Forbidden,
     Internal,
     DeviceNotFound,
+    DeviceOptionsNotFound,
 }
 
 impl From<ActivityLogError> for ApiError {
@@ -808,6 +815,7 @@ impl IntoResponse for ApiError {
             }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
             Self::DeviceNotFound => (StatusCode::NOT_FOUND, "Device not found"),
+            Self::DeviceOptionsNotFound => (StatusCode::NOT_FOUND, "Device options not found"),
             Self::Environment(error) => environment_error_response(&error),
             Self::ActivityLog(
                 ActivityLogError::EmptyField(_) | ActivityLogError::FieldTooLong { .. },

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, DbErr, DeleteResult,
     EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, sea_query::Expr,
@@ -7,7 +8,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::entities::{api_key, device};
+use crate::entities::{api_key, device, device_option};
 
 #[derive(Debug, Error)]
 pub enum AuthenticationStoreError {
@@ -426,6 +427,81 @@ impl DeviceRepository {
             .exec(&self.database)
             .await?
             .rows_affected)
+    }
+}
+
+/// Persistence operations for custom device options.
+#[derive(Clone)]
+pub struct DeviceOptionsRepository {
+    database: DatabaseConnection,
+}
+
+impl DeviceOptionsRepository {
+    #[must_use]
+    pub const fn new(database: DatabaseConnection) -> Self {
+        Self { database }
+    }
+
+    /// Finds custom options for an exact device identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when lookup fails.
+    pub async fn get(
+        &self,
+        device_id: &str,
+    ) -> Result<Option<device_option::Model>, AuthenticationStoreError> {
+        Ok(device_option::Entity::find()
+            .filter(device_option::Column::DeviceId.eq(device_id))
+            .one(&self.database)
+            .await?)
+    }
+
+    /// Finds custom options for exact device identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when lookup fails.
+    pub async fn find_by_device_ids(
+        &self,
+        device_ids: &[String],
+    ) -> Result<Vec<device_option::Model>, AuthenticationStoreError> {
+        if device_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(device_option::Entity::find()
+            .filter(device_option::Column::DeviceId.is_in(device_ids.iter().cloned()))
+            .all(&self.database)
+            .await?)
+    }
+
+    /// Inserts or updates custom options for a device identifier.
+    ///
+    /// This uses `PostgreSQL`'s unique `device_id` index as the conflict target
+    /// so repeated writes are atomic and keep the stable options row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for an invalid device id, or a database error
+    /// when the upsert fails.
+    pub async fn upsert_custom_name(
+        &self,
+        device_id: &str,
+        custom_name: Option<String>,
+    ) -> Result<device_option::Model, AuthenticationStoreError> {
+        validate_required("device id", device_id, 256)?;
+        Ok(device_option::Entity::insert(device_option::ActiveModel {
+            id: NotSet,
+            device_id: Set(device_id.to_owned()),
+            custom_name: Set(custom_name),
+        })
+        .on_conflict(
+            OnConflict::column(device_option::Column::DeviceId)
+                .update_column(device_option::Column::CustomName)
+                .to_owned(),
+        )
+        .exec_with_returning(&self.database)
+        .await?)
     }
 }
 

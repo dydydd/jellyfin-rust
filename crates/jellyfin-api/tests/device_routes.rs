@@ -7,8 +7,8 @@ use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    ApiKeyRepository, DeviceQuery, DeviceRepository, NewDevice,
-    entities::{api_key, user},
+    ApiKeyRepository, DeviceOptionsRepository, DeviceQuery, DeviceRepository, NewDevice,
+    entities::{api_key, device_option, user},
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
@@ -37,6 +37,7 @@ async fn device_routes_match_official_elevated_scope_and_postgres_lifecycle() {
     assert_admin_default_scope(&fixture).await;
     assert_admin_target_user_scope(&fixture).await;
     assert_api_key_global_scope(&fixture).await;
+    assert_device_options(&fixture).await;
     assert_device_info_latest_projection(&fixture).await;
     assert_delete_device(&fixture).await;
 
@@ -56,6 +57,7 @@ struct Fixture {
     admin_device_id: String,
     user_device_id: String,
     other_device_id: String,
+    option_only_device_id: String,
 }
 
 impl Fixture {
@@ -133,6 +135,7 @@ impl Fixture {
             .create(&format!("device-key-{suffix}"))
             .await
             .expect("API key creation");
+        let option_only_device_id = format!("option-only-device-{suffix}");
 
         Self {
             database: database.clone(),
@@ -151,6 +154,7 @@ impl Fixture {
             admin_device_id,
             user_device_id,
             other_device_id,
+            option_only_device_id,
         }
     }
 
@@ -174,7 +178,45 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn request_json(
+        &self,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(
+                header::AUTHORIZATION,
+                format!("{AUTHORIZATION}, Token=\"{token}\""),
+            );
+        }
+        self.app
+            .clone()
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     async fn cleanup(self) {
+        device_option::Entity::delete_many()
+            .filter(device_option::Column::DeviceId.is_in([
+                self.admin_device_id.clone(),
+                self.user_device_id.clone(),
+                self.other_device_id.clone(),
+                self.option_only_device_id.clone(),
+            ]))
+            .exec(&self.database)
+            .await
+            .expect("test device options cleanup");
         api_key::Entity::delete_by_id(self.api_key_id)
             .exec(&self.database)
             .await
@@ -232,6 +274,125 @@ async fn assert_api_key_global_scope(fixture: &Fixture) {
     );
 }
 
+async fn assert_device_options(fixture: &Fixture) {
+    assert_device_options_access(fixture).await;
+    let ghost_options = assert_option_only_device_options_upsert(fixture).await;
+    assert_session_device_options_projection(fixture, &ghost_options).await;
+}
+
+async fn assert_device_options_access(fixture: &Fixture) {
+    assert_eq!(
+        fixture
+            .request("GET", "/Devices/Options?id=missing-device", None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request_json(
+                "POST",
+                &format!("/Devices/Options?id={}", fixture.user_device_id),
+                Some(&fixture.user_token),
+                json!({ "CustomName": "Denied" }),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Devices/Options?id={}", fixture.user_device_id),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request_json(
+                "POST",
+                "/Devices/Options",
+                Some(&fixture.admin_token),
+                json!({ "CustomName": "Missing Id" }),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+async fn assert_option_only_device_options_upsert(fixture: &Fixture) -> Value {
+    assert_eq!(
+        fixture
+            .request_json(
+                "POST",
+                &format!("/Devices/Options?id={}", fixture.option_only_device_id),
+                Some(&fixture.admin_token),
+                json!({ "CustomName": "Ghost Console" }),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let ghost_options = body_json(
+        fixture
+            .request(
+                "GET",
+                &format!("/Devices/Options?id={}", fixture.option_only_device_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(ghost_options["DeviceId"], fixture.option_only_device_id);
+    assert_eq!(ghost_options["CustomName"], "Ghost Console");
+    ghost_options
+}
+
+async fn assert_session_device_options_projection(fixture: &Fixture, ghost_options: &Value) {
+    assert_eq!(
+        fixture
+            .request_json(
+                "POST",
+                &format!("/Devices/Options?id={}", fixture.user_device_id),
+                Some(&fixture.admin_token),
+                json!({
+                    "Id": ghost_options["Id"],
+                    "DeviceId": fixture.option_only_device_id,
+                    "CustomName": "Family TV"
+                }),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let persisted = DeviceOptionsRepository::new(fixture.database.clone())
+        .get(&fixture.user_device_id)
+        .await
+        .expect("persisted device options lookup")
+        .expect("persisted device options");
+    assert_eq!(persisted.device_id, fixture.user_device_id);
+    assert_eq!(persisted.custom_name.as_deref(), Some("Family TV"));
+
+    let devices = body_json(
+        fixture
+            .request(
+                "GET",
+                &format!("/Devices?userId={}", fixture.user_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    for device in devices["Items"].as_array().expect("Items array") {
+        assert_eq!(device["CustomName"], "Family TV");
+    }
+}
+
 async fn assert_device_info_latest_projection(fixture: &Fixture) {
     let info = body_json(
         fixture
@@ -247,6 +408,7 @@ async fn assert_device_info_latest_projection(fixture: &Fixture) {
     assert_eq!(info["Name"], "Latest Browser");
     assert_eq!(info["AppName"], "Latest Client");
     assert_eq!(info["AppVersion"], "2.0");
+    assert_eq!(info["CustomName"], "Family TV");
     assert_eq!(info["LastUserId"], fixture.user_id.simple().to_string());
     assert!(info["LastUserName"].as_str().is_some());
     assert_eq!(info["Capabilities"]["PlayableMediaTypes"], json!(["Video"]));

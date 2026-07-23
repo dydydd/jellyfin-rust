@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::ClientCapabilitiesDto;
@@ -36,4 +36,14 @@ pub struct DeviceInfoDto {
     pub capabilities: ClientCapabilitiesDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct DeviceOptionsDto {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
 }

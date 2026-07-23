@@ -1,8 +1,8 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, EndPointInfo, GeneralCommandType,
-    MediaType, NameIdPair, PublicSystemInfo, QueryResult, SessionInfoDto, SyncPlayUserAccessType,
-    UserDto, UserPolicy, UtcTimeResponse,
+    AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
+    GeneralCommandType, MediaType, NameIdPair, PublicSystemInfo, QueryResult, SessionInfoDto,
+    SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -112,6 +112,31 @@ fn device_info_uses_official_wire_names_and_guid_format() {
     assert_eq!(value["IconUrl"], "https://example.test/icon.png");
     assert!(value.get("AccessToken").is_none());
     assert!(value.get("CustomName").is_none());
+}
+
+#[test]
+fn device_options_uses_official_wire_names() {
+    let options = DeviceOptionsDto {
+        id: 42,
+        device_id: Some("device-id".to_owned()),
+        custom_name: Some("Living Room".to_owned()),
+    };
+
+    let value = serde_json::to_value(options).unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "Id": 42,
+            "DeviceId": "device-id",
+            "CustomName": "Living Room"
+        })
+    );
+
+    let decoded: DeviceOptionsDto =
+        serde_json::from_value(json!({ "CustomName": "Bedroom" })).unwrap();
+    assert_eq!(decoded.id, 0);
+    assert_eq!(decoded.device_id, None);
+    assert_eq!(decoded.custom_name.as_deref(), Some("Bedroom"));
 }
 
 #[test]

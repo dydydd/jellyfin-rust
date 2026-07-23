@@ -1,10 +1,11 @@
 use chrono::{Duration, Utc};
 use jellyfin_data::{
-    ApiKeyRepository, DatabaseConfig, DeviceQuery, DeviceRepository, NewDevice,
-    entities::{device, user},
+    ApiKeyRepository, DatabaseConfig, DeviceOptionsRepository, DeviceQuery, DeviceRepository,
+    NewDevice,
+    entities::{device, device_option, user},
 };
 use jellyfin_migration::{
-    AddDeviceCapabilitiesMigration, CreateAuthenticationMigration,
+    AddDeviceCapabilitiesMigration, CreateAuthenticationMigration, CreateDeviceOptionsMigration,
     OptimizeDeviceSessionQueriesMigration,
 };
 use sea_orm::{
@@ -20,6 +21,7 @@ async fn postgres_authentication_vertical_slice() {
     let database = prepare_database().await;
     test_api_keys(&database).await;
     test_devices(&database).await;
+    test_device_options(&database).await;
 }
 
 async fn prepare_database() -> DatabaseConnection {
@@ -47,6 +49,14 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("device capabilities DDL must remain idempotent");
+    CreateDeviceOptionsMigration
+        .up(&schema)
+        .await
+        .expect("device options DDL must remain idempotent");
+    CreateDeviceOptionsMigration
+        .up(&schema)
+        .await
+        .expect("device options DDL must stay idempotent");
     assert_authentication_indexes(&database).await;
     database
 }
@@ -258,6 +268,63 @@ async fn assert_device_query_filters(
     assert_eq!(inactive_page.items[0].id, inactive.id);
 }
 
+async fn test_device_options(database: &DatabaseConnection) {
+    let repository = DeviceOptionsRepository::new(database.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let device_id = format!("option-device-{suffix}");
+    assert!(
+        repository
+            .get(&device_id)
+            .await
+            .expect("missing device options lookup must succeed")
+            .is_none()
+    );
+
+    let created = repository
+        .upsert_custom_name(&device_id, Some("Living Room".to_owned()))
+        .await
+        .expect("device options must be created");
+    assert_eq!(created.device_id, device_id);
+    assert_eq!(created.custom_name.as_deref(), Some("Living Room"));
+
+    let updated = repository
+        .upsert_custom_name(&device_id, Some("Bedroom".to_owned()))
+        .await
+        .expect("device options must be updated");
+    assert_eq!(updated.id, created.id);
+    assert_eq!(updated.custom_name.as_deref(), Some("Bedroom"));
+
+    let cleared = repository
+        .upsert_custom_name(&device_id, None)
+        .await
+        .expect("device options custom name must be nullable");
+    assert_eq!(cleared.id, created.id);
+    assert_eq!(cleared.custom_name, None);
+
+    let found = repository
+        .find_by_device_ids(&[device_id.clone(), format!("missing-{suffix}")])
+        .await
+        .expect("device options batch lookup must succeed");
+    assert_eq!(found, vec![cleared.clone()]);
+
+    let mut duplicate = cleared.into_active_model();
+    duplicate.id = NotSet;
+    duplicate.custom_name = Set(Some("Duplicate".to_owned()));
+    let error = duplicate
+        .insert(database)
+        .await
+        .expect_err("duplicate device options device id must be rejected");
+    assert!(matches!(
+        error.sql_err(),
+        Some(SqlErr::UniqueConstraintViolation(_))
+    ));
+
+    device_option::Entity::delete_by_id(created.id)
+        .exec(database)
+        .await
+        .expect("device options cleanup must succeed");
+}
+
 async fn assert_device_session_index_plan(database: &DatabaseConnection, device_id: &str) {
     let transaction = database.begin().await.expect("EXPLAIN transaction");
     transaction
@@ -304,7 +371,7 @@ async fn assert_authentication_indexes(database: &DatabaseConnection) {
         .query_all(Statement::from_string(
             database.get_database_backend(),
             "SELECT tablename, indexname, indexdef FROM pg_indexes \
-             WHERE schemaname = 'jellyfin' AND tablename IN ('api_keys', 'devices')"
+             WHERE schemaname = 'jellyfin' AND tablename IN ('api_keys', 'devices', 'device_options')"
                 .to_owned(),
         ))
         .await
@@ -321,6 +388,12 @@ async fn assert_authentication_indexes(database: &DatabaseConnection) {
         .collect();
 
     assert_unique_index(&indexes, "api_keys", "api_keys_access_token_key");
+    assert_unique_index(&indexes, "device_options", "device_options_device_id_key");
+    assert!(indexes.iter().any(|(table, name, definition)| {
+        table == "device_options"
+            && name == "device_options_device_id_key"
+            && definition.contains("INCLUDE (custom_name)")
+    }));
     assert_unique_index(&indexes, "devices", "devices_access_token_key");
     assert!(indexes.iter().any(|(table, name, definition)| {
         table == "devices"

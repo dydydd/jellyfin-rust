@@ -1,13 +1,17 @@
-use std::{cmp::Reverse, sync::Arc};
+use std::{cmp::Reverse, collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
+    extract::rejection::JsonRejection,
     extract::{OriginalUri, State},
     http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::Query;
-use jellyfin_data::{DeviceQuery, entities::device};
-use jellyfin_model::{ClientCapabilitiesDto, DeviceInfoDto, QueryResult};
+use jellyfin_data::{
+    DeviceQuery,
+    entities::{device, device_option},
+};
+use jellyfin_model::{ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, QueryResult};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -45,10 +49,12 @@ pub(crate) async fn list(
     };
     let mut devices = state.devices.query(&device_query).await?.items;
     devices.sort_by_key(|device| (Reverse(device.date_last_activity), device.device_id.clone()));
+    let options = device_options_by_id(&state, &devices).await?;
 
     let mut items = Vec::with_capacity(devices.len());
     for device in devices {
-        items.push(device_info(&state, device).await?);
+        let custom_name = options.get(&device.device_id).cloned().flatten();
+        items.push(device_info(&state, device, custom_name).await?);
     }
     Ok(Json(QueryResult::from_items(items)))
 }
@@ -70,7 +76,56 @@ pub(crate) async fn info(
         .latest_by_device_id(id)
         .await?
         .ok_or(ApiError::DeviceNotFound)?;
-    Ok(Json(device_info(&state, device).await?))
+    let options = state.device_options.get(&device.device_id).await?;
+    Ok(Json(
+        device_info(
+            &state,
+            device,
+            options.and_then(|options| options.custom_name),
+        )
+        .await?,
+    ))
+}
+
+pub(crate) async fn options(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<DeviceIdQuery>,
+) -> Result<Json<DeviceOptionsDto>, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    let id = query
+        .id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .ok_or(ApiError::InvalidRequest)?;
+    let options = state
+        .device_options
+        .get(id)
+        .await?
+        .ok_or(ApiError::DeviceOptionsNotFound)?;
+    Ok(Json(device_options_dto(options)))
+}
+
+pub(crate) async fn update_options(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<DeviceIdQuery>,
+    request: Result<Json<DeviceOptionsDto>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    let id = query
+        .id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .ok_or(ApiError::InvalidRequest)?;
+    let Json(options) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .device_options
+        .upsert_custom_name(id, options.custom_name)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn delete(
@@ -132,14 +187,18 @@ async fn require_elevated(
         .require_administrator()
 }
 
-async fn device_info(state: &AppState, device: device::Model) -> Result<DeviceInfoDto, ApiError> {
+async fn device_info(
+    state: &AppState,
+    device: device::Model,
+    custom_name: Option<String>,
+) -> Result<DeviceInfoDto, ApiError> {
     let user = state.users.get(device.user_id).await?;
     let capabilities: ClientCapabilitiesDto =
         serde_json::from_value(device.capabilities).unwrap_or_default();
     let icon_url = capabilities.icon_url.clone();
     Ok(DeviceInfoDto {
         name: Some(device.device_name),
-        custom_name: None,
+        custom_name,
         access_token: None,
         id: Some(device.device_id),
         last_user_name: Some(user.username),
@@ -150,4 +209,29 @@ async fn device_info(state: &AppState, device: device::Model) -> Result<DeviceIn
         capabilities,
         icon_url,
     })
+}
+
+async fn device_options_by_id(
+    state: &AppState,
+    devices: &[device::Model],
+) -> Result<HashMap<String, Option<String>>, ApiError> {
+    let mut device_ids = devices
+        .iter()
+        .map(|device| device.device_id.clone())
+        .collect::<Vec<_>>();
+    device_ids.sort();
+    device_ids.dedup();
+    let options = state.device_options.find_by_device_ids(&device_ids).await?;
+    Ok(options
+        .into_iter()
+        .map(|options| (options.device_id, options.custom_name))
+        .collect())
+}
+
+fn device_options_dto(options: device_option::Model) -> DeviceOptionsDto {
+    DeviceOptionsDto {
+        id: options.id,
+        device_id: Some(options.device_id),
+        custom_name: options.custom_name,
+    }
 }
