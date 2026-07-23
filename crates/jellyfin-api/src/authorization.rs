@@ -41,3 +41,23 @@ pub(crate) async fn require_first_time_setup_or_elevated(
         .await?
         .require_administrator()
 }
+
+/// Applies Jellyfin's first-time-setup-or-ignore-parental-control policy.
+///
+/// Anonymous requests are allowed until the startup wizard completes. After
+/// that point the request must authenticate, but parental schedules are
+/// intentionally bypassed just like Jellyfin's
+/// `FirstTimeSetupOrIgnoreParentalControl` policy.
+pub(crate) async fn require_first_time_setup_or_ignore_parental_control(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Result<(), ApiError> {
+    let startup_completed = crate::startup::is_completed(state).await?;
+    if !startup_completed {
+        return Ok(());
+    }
+
+    authentication::authenticated_identity(state, headers, Some(uri)).await?;
+    Ok(())
+}

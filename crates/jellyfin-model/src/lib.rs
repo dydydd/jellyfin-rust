@@ -72,7 +72,10 @@ pub use session::{
     RepeatMode, SessionInfoDto, SessionUserInfo,
 };
 pub use sync_play::UtcTimeResponse;
-pub use system::{FolderStorageDto, LibraryStorageDto, PublicSystemInfo, SystemStorageDto};
+pub use system::{
+    CastReceiverApplication, FolderStorageDto, InstallationInfo, LibraryStorageDto, PackageInfo,
+    PublicSystemInfo, SystemInfo, SystemStorageDto,
+};
 pub use tasks::{
     DayOfWeek, TaskCompletionStatus, TaskInfo, TaskResult, TaskState, TaskTriggerInfo,
     TaskTriggerInfoType,

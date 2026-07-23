@@ -391,6 +391,7 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
+        .route("/System/Info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
         .route("/Document", post(client_log::document))

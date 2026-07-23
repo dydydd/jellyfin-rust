@@ -11,11 +11,13 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use jellyfin_controller::SystemLogFile;
-use jellyfin_model::{EndPointInfo, LibraryStorageDto, SystemStorageDto};
+use jellyfin_model::{
+    EndPointInfo, LibraryStorageDto, PublicSystemInfo, SystemInfo, SystemStorageDto,
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 
-use crate::{ApiError, AppState, authentication, authorization};
+use crate::{ApiError, AppState, authentication, authorization, startup};
 
 const STREAM_BUFFER_SIZE: usize = 64 * 1024;
 const TEXT_UTF8: HeaderValue = HeaderValue::from_static("text/plain; charset=utf-8");
@@ -108,6 +110,41 @@ pub(crate) async fn storage(
     }))
 }
 
+pub(crate) async fn info(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<SystemInfo>, ApiError> {
+    authorization::require_first_time_setup_or_ignore_parental_control(&state, &headers, &uri)
+        .await?;
+    let startup = startup::snapshot(&state).await?;
+    let mut public_info = state.system_info.clone();
+    public_info
+        .server_name
+        .clone_from(&startup.configuration.server_name);
+    public_info.startup_wizard_completed = Some(startup.completed);
+
+    Ok(Json(SystemInfo {
+        web_socket_port_number: web_socket_port_number(&public_info),
+        supports_library_monitor: true,
+        completed_installations: Vec::new(),
+        can_self_restart: true,
+        can_launch_web_browser: false,
+        program_data_path: path_string(&state.program_data_directory),
+        web_path: path_string(&state.web_directory),
+        items_by_name_path: path_string(&state.internal_metadata_directory),
+        cache_path: path_string(&state.cache_directory),
+        log_path: path_string(state.system_logs.directory()),
+        internal_metadata_path: path_string(&state.internal_metadata_directory),
+        transcoding_temp_path: path_string(&state.transcode_directory),
+        cast_receiver_applications: Vec::new(),
+        encoder_location: "System".to_owned(),
+        system_architecture: "X64".to_owned(),
+        public_info,
+        ..SystemInfo::default()
+    }))
+}
+
 pub(crate) async fn endpoint_info(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -150,6 +187,20 @@ fn normalize_ip(address: IpAddr) -> IpAddr {
             .map_or(IpAddr::V6(address), IpAddr::V4),
         address @ IpAddr::V4(_) => address,
     }
+}
+
+fn path_string(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn web_socket_port_number(system_info: &PublicSystemInfo) -> i32 {
+    system_info
+        .local_address
+        .as_deref()
+        .and_then(|address| address.parse::<axum::http::Uri>().ok())
+        .and_then(|uri| uri.port_u16())
+        .map(i32::from)
+        .unwrap_or(8096)
 }
 
 async fn require_elevated(

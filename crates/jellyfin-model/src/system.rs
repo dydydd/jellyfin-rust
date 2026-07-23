@@ -39,6 +39,47 @@ pub struct SystemStorageDto {
     pub libraries: Vec<LibraryStorageDto>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "camelCase")]
+pub struct PackageInfo {
+    pub name: String,
+    pub description: String,
+    pub overview: String,
+    pub owner: String,
+    pub category: String,
+    #[cfg_attr(feature = "openapi", schemars(with = "String"))]
+    #[serde(rename = "guid", with = "crate::serde_guid::single")]
+    pub id: Uuid,
+    pub versions: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct InstallationInfo {
+    #[cfg_attr(feature = "openapi", schemars(with = "String"))]
+    #[serde(rename = "Guid", with = "crate::serde_guid::single")]
+    pub id: Uuid,
+    pub name: String,
+    pub version: String,
+    pub changelog: String,
+    pub source_url: String,
+    pub checksum: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_info: Option<PackageInfo>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct CastReceiverApplication {
+    pub id: String,
+    pub name: String,
+}
+
 /// Public, unauthenticated server information returned by `/System/Info/Public`.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
@@ -58,4 +99,34 @@ pub struct PublicSystemInfo {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub startup_wizard_completed: Option<bool>,
+}
+
+/// Authenticated server information returned by `/System/Info`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct SystemInfo {
+    #[serde(flatten)]
+    pub public_info: PublicSystemInfo,
+    /// Retained for wire compatibility; current Jellyfin servers return an empty string.
+    pub operating_system_display_name: String,
+    pub package_name: Option<String>,
+    pub has_pending_restart: bool,
+    pub is_shutting_down: bool,
+    pub supports_library_monitor: bool,
+    pub web_socket_port_number: i32,
+    pub completed_installations: Vec<InstallationInfo>,
+    pub can_self_restart: bool,
+    pub can_launch_web_browser: bool,
+    pub program_data_path: String,
+    pub web_path: String,
+    pub items_by_name_path: String,
+    pub cache_path: String,
+    pub log_path: String,
+    pub internal_metadata_path: String,
+    pub transcoding_temp_path: String,
+    pub cast_receiver_applications: Vec<CastReceiverApplication>,
+    pub has_update_available: bool,
+    pub encoder_location: String,
+    pub system_architecture: String,
 }
