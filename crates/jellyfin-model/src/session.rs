@@ -194,6 +194,40 @@ impl Default for PlayRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+pub enum PlaystateCommand {
+    #[default]
+    Stop,
+    Pause,
+    Unpause,
+    NextTrack,
+    PreviousTrack,
+    Seek,
+    Rewind,
+    FastForward,
+    PlayPause,
+}
+
+impl std::str::FromStr for PlaystateCommand {
+    type Err = serde_json::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        deserialize_enum_name(value)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlaystateRequest {
+    pub command: PlaystateCommand,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seek_position_ticks: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controlling_user_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]

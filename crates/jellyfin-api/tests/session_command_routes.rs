@@ -19,11 +19,12 @@ use uuid::Uuid;
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Session Command Tests\", DeviceId=\"session-command-tests\", Device=\"Test\", Version=\"1.0\"";
 
 #[tokio::test]
-async fn session_command_routes_queue_official_general_commands_in_postgres() {
+async fn session_command_routes_queue_official_commands_in_postgres() {
     let fixture = Fixture::new().await;
 
     assert_command_access_and_validation(&fixture).await;
     assert_play_command_validation(&fixture).await;
+    assert_playstate_command_validation(&fixture).await;
     enqueue_official_session_commands(&fixture).await;
     assert_queued_commands(&fixture).await;
 
@@ -137,6 +138,36 @@ async fn assert_play_command_validation(fixture: &Fixture) {
     );
 }
 
+async fn assert_playstate_command_validation(fixture: &Fixture) {
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &format!(
+                    "/Sessions/{}/Playing/TotallyInvalid",
+                    fixture.target_session_id
+                ),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                "/Sessions/missing-session/Playing/Pause",
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
 async fn enqueue_official_session_commands(fixture: &Fixture) {
     fixture.post_command("Command/GoHome", Body::empty()).await;
     fixture.post_command("System/Mute", Body::empty()).await;
@@ -156,6 +187,12 @@ async fn enqueue_official_session_commands(fixture: &Fixture) {
                 play_item_ids()[0].simple(),
                 play_item_ids()[1].simple()
             ),
+            Body::empty(),
+        )
+        .await;
+    fixture
+        .post_command(
+            "Playing/Seek?seekPositionTicks=987&controllingUserId=ignored",
             Body::empty(),
         )
         .await;
@@ -188,7 +225,7 @@ async fn assert_queued_commands(fixture: &Fixture) {
         .list_for_session(&fixture.target_session_id)
         .await
         .expect("queued commands must load");
-    assert_eq!(queued.len(), 6);
+    assert_eq!(queued.len(), 7);
     assert!(queued.iter().all(|command| {
         command.target_session_id == fixture.target_session_id
             && command.controlling_session_id.as_deref() == Some(&fixture.controller_session_id)
@@ -203,6 +240,7 @@ async fn assert_queued_commands(fixture: &Fixture) {
             "GeneralCommand",
             "GeneralCommand",
             "Play",
+            "Playstate",
             "GeneralCommand",
             "GeneralCommand"
         ]
@@ -214,22 +252,23 @@ async fn assert_queued_commands(fixture: &Fixture) {
     assert_eq!(queued[2].payload["Arguments"]["ItemName"], "The Matrix");
     assert!(queued[2].payload["Arguments"]["ItemId"].as_str().is_some());
     assert_queued_play_command(&queued[3], fixture.user_id);
-    assert_eq!(queued[4].payload["Name"], "SetVolume");
-    assert_eq!(queued[4].payload["Arguments"]["Volume"], "50");
+    assert_queued_playstate_command(&queued[4], fixture.user_id);
+    assert_eq!(queued[5].payload["Name"], "SetVolume");
+    assert_eq!(queued[5].payload["Arguments"]["Volume"], "50");
     assert_eq!(
-        queued[4].payload["ControllingUserId"],
+        queued[5].payload["ControllingUserId"],
         fixture.user_id.simple().to_string()
     );
-    assert_eq!(queued[5].payload["Name"], "DisplayMessage");
+    assert_eq!(queued[6].payload["Name"], "DisplayMessage");
     assert_eq!(
-        queued[5].payload["Arguments"]["Header"],
+        queued[6].payload["Arguments"]["Header"],
         "Message from Server"
     );
     assert_eq!(
-        queued[5].payload["Arguments"]["Text"],
+        queued[6].payload["Arguments"]["Text"],
         "Hello remote client"
     );
-    assert_eq!(queued[5].payload["Arguments"]["TimeoutMs"], "1500");
+    assert_eq!(queued[6].payload["Arguments"]["TimeoutMs"], "1500");
 }
 
 fn assert_queued_play_command(command: &session_command::Model, controlling_user_id: Uuid) {
@@ -251,6 +290,15 @@ fn assert_queued_play_command(command: &session_command::Model, controlling_user
     assert_eq!(command.payload["AudioStreamIndex"], 2);
     assert_eq!(command.payload["SubtitleStreamIndex"], 3);
     assert_eq!(command.payload["StartIndex"], 1);
+}
+
+fn assert_queued_playstate_command(command: &session_command::Model, controlling_user_id: Uuid) {
+    assert_eq!(command.payload["Command"], "Seek");
+    assert_eq!(command.payload["SeekPositionTicks"], 987);
+    assert_eq!(
+        command.payload["ControllingUserId"],
+        controlling_user_id.simple().to_string()
+    );
 }
 
 struct Fixture {

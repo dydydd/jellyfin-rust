@@ -436,6 +436,10 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_play_command),
         )
         .route(
+            "/Sessions/{session_id}/Playing/{command}",
+            post(session::send_playstate_command),
+        )
+        .route(
             "/Sessions/{session_id}/Command/{command}",
             post(session::send_general_command),
         )

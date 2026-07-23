@@ -2,8 +2,8 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
     GeneralCommand, GeneralCommandType, MediaType, MessageCommand, NameIdPair, PlayCommand,
-    PlayRequest, PublicSystemInfo, QueryResult, SessionInfoDto, SyncPlayUserAccessType, UserDto,
-    UserPolicy, UtcTimeResponse,
+    PlayRequest, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, SessionInfoDto,
+    SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -201,6 +201,20 @@ fn session_commands_use_official_wire_names() {
             "AudioStreamIndex": 2,
             "MediaSourceId": "source-1",
             "StartIndex": 1
+        })
+    );
+
+    let playstate_request = PlaystateRequest {
+        command: PlaystateCommand::Seek,
+        seek_position_ticks: Some(987),
+        controlling_user_id: Some("f9c1ad0c820f44df8db852fbfc0d3d93".to_owned()),
+    };
+    assert_eq!(
+        serde_json::to_value(playstate_request).unwrap(),
+        json!({
+            "Command": "Seek",
+            "SeekPositionTicks": 987,
+            "ControllingUserId": "f9c1ad0c820f44df8db852fbfc0d3d93"
         })
     );
 }

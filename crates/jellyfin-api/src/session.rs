@@ -12,7 +12,7 @@ use chrono::{Duration, Utc};
 use jellyfin_data::{DeviceQuery, NewSessionCommand, entities::device};
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
-    NameIdPair, PlayCommand, PlayRequest, SessionInfoDto,
+    NameIdPair, PlayCommand, PlayRequest, PlaystateCommand, PlaystateRequest, SessionInfoDto,
 };
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,12 @@ pub(crate) struct PlayCommandQuery {
     audio_stream_index: Option<i32>,
     subtitle_stream_index: Option<i32>,
     start_index: Option<i32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct PlaystateCommandQuery {
+    seek_position_ticks: Option<i64>,
 }
 
 impl Default for CapabilitiesQuery {
@@ -263,6 +269,31 @@ pub(crate) async fn send_play_command(
             audio_stream_index: query.audio_stream_index,
             media_source_id: query.media_source_id,
             start_index: query.start_index,
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn send_playstate_command(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<(String, PlaystateCommand)>, PathRejection>,
+    query: Result<Query<PlaystateCommandQuery>, QueryRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enqueue_session_command(
+        &state,
+        &session_id,
+        &controller,
+        "Playstate",
+        PlaystateRequest {
+            command,
+            seek_position_ticks: query.seek_position_ticks,
+            controlling_user_id: Some(controller.user.id.simple().to_string()),
         },
     )
     .await?;
