@@ -14,12 +14,12 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use jellyfin_data::NamedConfigurationStoreError;
-use jellyfin_model::{FontFile, MimeTypes};
+use jellyfin_model::{FontFile, MediaStreamType, MimeTypes};
 use serde::Deserialize;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use crate::{ApiError, AppState, authentication};
+use crate::{ApiError, AppState, authentication, authorization};
 
 const SUPPORTED_FONT_EXTENSIONS: &[&str] = &["woff", "woff2", "ttf", "otf"];
 const MAX_FONT_LIST_BYTES: i64 = 20_971_520;
@@ -28,6 +28,22 @@ const MAX_FONT_LIST_BYTES: i64 = 20_971_520;
 #[serde(default, rename_all = "PascalCase")]
 struct EncodingOptionsSubset {
     fallback_font_path: String,
+}
+
+pub(crate) async fn delete_subtitle(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    AxumPath((item_id, index)): AxumPath<(uuid::Uuid, i32)>,
+) -> Result<StatusCode, ApiError> {
+    authorization::require_default(&state, &headers, &uri)
+        .await?
+        .require_administrator()?;
+    state
+        .media_streams
+        .delete_media_stream(item_id, index, MediaStreamType::Subtitle)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn fallback_fonts(

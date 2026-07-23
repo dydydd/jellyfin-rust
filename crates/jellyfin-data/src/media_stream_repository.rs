@@ -243,6 +243,42 @@ impl MediaStreamRepository {
             .collect()
     }
 
+    /// Deletes one stream from an item after locking the owning item.
+    ///
+    /// Missing streams are treated as a successful no-op so API deletes remain
+    /// idempotent; a missing owning item still returns not-found.
+    ///
+    /// # Errors
+    ///
+    /// Returns missing-item or database errors.
+    pub async fn delete_stream(
+        &self,
+        item_id: Uuid,
+        stream_index: i32,
+        stream_type: PersistedMediaStreamType,
+    ) -> Result<bool, MediaStreamStoreError> {
+        let transaction = self.database.begin().await?;
+        let owner = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT id FROM jellyfin.base_items WHERE id = $1 FOR UPDATE",
+                [item_id.into()],
+            ))
+            .await?;
+        if owner.is_none() {
+            return Err(MediaStreamStoreError::BaseItemNotFound { item_id });
+        }
+
+        let result = media_stream::Entity::delete_many()
+            .filter(media_stream::Column::ItemId.eq(item_id))
+            .filter(media_stream::Column::StreamIndex.eq(stream_index))
+            .filter(media_stream::Column::StreamType.eq(stream_type.as_i16()))
+            .exec(&transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(result.rows_affected > 0)
+    }
+
     /// Queries many items' streams in one `PostgreSQL` round-trip.
     ///
     /// Streams are grouped by item id and ordered by stream index inside each

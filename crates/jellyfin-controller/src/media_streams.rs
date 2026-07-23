@@ -262,6 +262,23 @@ where
             .collect())
     }
 
+    /// Deletes one item-scoped media stream by index and type.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PostgreSQL` persistence errors.
+    pub async fn delete_media_stream(
+        &self,
+        item_id: Uuid,
+        index: i32,
+        stream_type: MediaStreamType,
+    ) -> Result<bool, MediaStreamServiceError> {
+        Ok(self
+            .repository
+            .delete_stream(item_id, index, model_type_to_persisted(stream_type))
+            .await?)
+    }
+
     /// Queries many items' streams in one database round-trip.
     ///
     /// # Errors

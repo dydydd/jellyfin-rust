@@ -900,10 +900,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
 }
 
 fn video_routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/Videos/{item_id}/AlternateSources",
-        axum::routing::delete(videos::delete_alternate_sources),
-    )
+    Router::new()
+        .route(
+            "/Videos/{item_id}/AlternateSources",
+            axum::routing::delete(videos::delete_alternate_sources),
+        )
+        .route(
+            "/Videos/{item_id}/Subtitles/{index}",
+            axum::routing::delete(subtitles::delete_subtitle),
+        )
 }
 
 fn live_tv_routes() -> Router<Arc<AppState>> {
