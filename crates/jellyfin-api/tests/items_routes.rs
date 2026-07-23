@@ -202,6 +202,24 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
             .all(|item| item["Type"] == "Movie")
     );
 
+    let without_total = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?recursive=true&searchTerm={}&limit=1&enableTotalRecordCount=false",
+                    fixture.suffix
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(without_total["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        without_total["TotalRecordCount"], 1,
+        "official QueryResult uses the returned item count when total counts are disabled"
+    );
+
     let descending_route = format!(
         "/Items?recursive=true&searchTerm={}&sortBy=SortName&sortOrder=Descending",
         fixture.suffix
@@ -333,6 +351,16 @@ async fn resume_is_deduplicated_recent_first_paginated_and_user_scoped() {
         page["Items"][0]["Id"],
         fixture.item_ids[1].simple().to_string()
     );
+
+    let no_total_route = format!("{route}&limit=1&enableTotalRecordCount=false");
+    let no_total = body_json(
+        fixture
+            .request(&no_total_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(no_total["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(no_total["TotalRecordCount"], 1);
     fixture.cleanup().await;
 }
 

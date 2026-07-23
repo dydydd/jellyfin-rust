@@ -118,6 +118,7 @@ pub struct BaseItemQuery {
     pub order: BaseItemOrder,
     pub start_index: u64,
     pub limit: Option<u64>,
+    pub enable_total_record_count: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -621,7 +622,11 @@ impl BaseItemRepository {
                 select.filter(base_item::Column::Id.not_in_subquery(played_items))
             };
         }
-        let total_record_count = select.clone().count(&self.database).await?;
+        let total_record_count = if total_count_enabled(query) {
+            Some(select.clone().count(&self.database).await?)
+        } else {
+            None
+        };
         let mut select = match query.order {
             BaseItemOrder::SortName => select.order_by_asc(base_item::Column::SortName),
             BaseItemOrder::SortNameDescending => select.order_by_desc(base_item::Column::SortName),
@@ -641,9 +646,10 @@ impl BaseItemRepository {
         if let Some(limit) = query.limit {
             select = select.limit(limit);
         }
+        let items = select.all(&self.database).await?;
         Ok(BaseItemPage {
-            items: select.all(&self.database).await?,
-            total_record_count,
+            total_record_count: page_total_record_count(total_record_count, items.len()),
+            items,
             start_index: query.start_index,
         })
     }
@@ -731,15 +737,23 @@ impl BaseItemRepository {
                 Some(AccessMode::ReadOnly),
             )
             .await?;
-        let count = transaction
-            .query_one(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                format!("{cte} SELECT COUNT(*) AS total_record_count FROM version_groups"),
-                values.clone(),
-            ))
-            .await?
-            .ok_or_else(|| DbErr::RecordNotFound("grouped item count returned no row".to_owned()))?
-            .try_get::<i64>("", "total_record_count")?;
+        let count = if total_count_enabled(query) {
+            Some(
+                transaction
+                    .query_one(Statement::from_sql_and_values(
+                        DbBackend::Postgres,
+                        format!("{cte} SELECT COUNT(*) AS total_record_count FROM version_groups"),
+                        values.clone(),
+                    ))
+                    .await?
+                    .ok_or_else(|| {
+                        DbErr::RecordNotFound("grouped item count returned no row".to_owned())
+                    })?
+                    .try_get::<i64>("", "total_record_count")?,
+            )
+        } else {
+            None
+        };
 
         let mut item_values = values;
         let mut item_sql = format!(
@@ -769,8 +783,10 @@ impl BaseItemRepository {
         .await?;
         transaction.commit().await?;
         Ok(BaseItemPage {
+            total_record_count: count
+                .map(|count| u64::try_from(count).unwrap_or_default())
+                .unwrap_or_else(|| u64::try_from(items.len()).unwrap_or(u64::MAX)),
             items,
-            total_record_count: u64::try_from(count).unwrap_or_default(),
             start_index: query.start_index,
         })
     }
@@ -850,15 +866,23 @@ impl BaseItemRepository {
                 Some(AccessMode::ReadOnly),
             )
             .await?;
-        let count = transaction
-            .query_one(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                format!("{cte} SELECT COUNT(*) AS total_record_count FROM {source}"),
-                values.clone(),
-            ))
-            .await?
-            .ok_or_else(|| DbErr::RecordNotFound(format!("{query_name} count returned no row")))?
-            .try_get::<i64>("", "total_record_count")?;
+        let count = if total_count_enabled(query) {
+            Some(
+                transaction
+                    .query_one(Statement::from_sql_and_values(
+                        DbBackend::Postgres,
+                        format!("{cte} SELECT COUNT(*) AS total_record_count FROM {source}"),
+                        values.clone(),
+                    ))
+                    .await?
+                    .ok_or_else(|| {
+                        DbErr::RecordNotFound(format!("{query_name} count returned no row"))
+                    })?
+                    .try_get::<i64>("", "total_record_count")?,
+            )
+        } else {
+            None
+        };
 
         let mut item_values = values;
         let mut item_sql =
@@ -886,8 +910,10 @@ impl BaseItemRepository {
         .await?;
         transaction.commit().await?;
         Ok(BaseItemPage {
+            total_record_count: count
+                .map(|count| u64::try_from(count).unwrap_or_default())
+                .unwrap_or_else(|| u64::try_from(items.len()).unwrap_or(u64::MAX)),
             items,
-            total_record_count: u64::try_from(count).unwrap_or_default(),
             start_index: query.start_index,
         })
     }
@@ -1462,6 +1488,14 @@ fn append_bind_list<T>(
         values.push(item.into());
         let _ = write!(sql, "${}", values.len());
     }
+}
+
+fn total_count_enabled(query: &BaseItemQuery) -> bool {
+    query.enable_total_record_count.unwrap_or(true)
+}
+
+fn page_total_record_count(total_record_count: Option<u64>, item_count: usize) -> u64 {
+    total_record_count.unwrap_or_else(|| u64::try_from(item_count).unwrap_or(u64::MAX))
 }
 
 fn push_bind<T: Into<SeaValue>>(

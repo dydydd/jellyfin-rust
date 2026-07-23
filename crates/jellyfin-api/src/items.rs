@@ -81,6 +81,12 @@ pub(crate) struct ItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,
+    #[serde(
+        default = "default_total_record_count",
+        rename = "enableTotalRecordCount",
+        alias = "EnableTotalRecordCount"
+    )]
+    enable_total_record_count: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -250,15 +256,14 @@ async fn suggestions_for(
                 order: BaseItemOrder::Random,
                 start_index: query.start_index,
                 limit: query.limit,
+                enable_total_record_count: Some(enable_total_record_count),
                 ..BaseItemQuery::default()
             },
         )
         .await?;
-    let mut result = page_to_dto(state.as_ref(), page, Vec::new(), target_user_id).await?;
-    if !enable_total_record_count {
-        result.total_record_count = result.items.len();
-    }
-    Ok(Json(result))
+    Ok(Json(
+        page_to_dto(state.as_ref(), page, Vec::new(), target_user_id).await?,
+    ))
 }
 
 async fn resume_for(
@@ -314,6 +319,7 @@ async fn latest_for(
                 order: BaseItemOrder::DateCreatedDescending,
                 start_index: 0,
                 limit: Some(query.limit),
+                enable_total_record_count: Some(false),
                 ..BaseItemQuery::default()
             },
         )
@@ -351,6 +357,7 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             order: item_order(&query.sort_by, &query.sort_order),
             start_index: query.start_index,
             limit: query.limit,
+            enable_total_record_count: Some(query.enable_total_record_count),
         })
     }
 }
@@ -391,6 +398,10 @@ fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemOrder {
 
 const fn default_latest_limit() -> u64 {
     20
+}
+
+const fn default_total_record_count() -> bool {
+    true
 }
 
 async fn page_to_dto(
