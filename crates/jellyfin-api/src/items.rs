@@ -67,6 +67,20 @@ pub(crate) struct ItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+    #[serde(
+        default,
+        rename = "sortBy",
+        alias = "SortBy",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_by: Vec<String>,
+    #[serde(
+        default,
+        rename = "sortOrder",
+        alias = "SortOrder",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_order: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -334,10 +348,44 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             user_id: query.user_id,
             is_resumable: None,
             is_played: query.is_played,
-            order: BaseItemOrder::default(),
+            order: item_order(&query.sort_by, &query.sort_order),
             start_index: query.start_index,
             limit: query.limit,
         })
+    }
+}
+
+fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemOrder {
+    let descending = sort_order
+        .first()
+        .is_some_and(|order| order.eq_ignore_ascii_case("Descending"));
+
+    match sort_by.first().map(String::as_str) {
+        Some(sort) if sort.eq_ignore_ascii_case("DateCreated") => {
+            if descending {
+                BaseItemOrder::DateCreatedDescending
+            } else {
+                BaseItemOrder::DateCreatedAscending
+            }
+        }
+        Some(sort) if sort.eq_ignore_ascii_case("DatePlayed") => {
+            if descending {
+                BaseItemOrder::DatePlayedDescending
+            } else {
+                BaseItemOrder::DatePlayedAscending
+            }
+        }
+        Some(sort) if sort.eq_ignore_ascii_case("Random") => BaseItemOrder::Random,
+        Some(sort)
+            if sort.eq_ignore_ascii_case("SortName") || sort.eq_ignore_ascii_case("Name") =>
+        {
+            if descending {
+                BaseItemOrder::SortNameDescending
+            } else {
+                BaseItemOrder::SortName
+            }
+        }
+        _ => BaseItemOrder::default(),
     }
 }
 

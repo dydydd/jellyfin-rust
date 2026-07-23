@@ -201,6 +201,32 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
             .iter()
             .all(|item| item["Type"] == "Movie")
     );
+
+    let descending_route = format!(
+        "/Items?recursive=true&searchTerm={}&sortBy=SortName&sortOrder=Descending",
+        fixture.suffix
+    );
+    let descending = body_json(
+        fixture
+            .request(&descending_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    let names = descending["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            format!("D {}", fixture.suffix),
+            format!("C {}", fixture.suffix),
+            format!("B {}", fixture.suffix),
+            format!("A {}", fixture.suffix)
+        ]
+    );
     fixture.cleanup().await;
 }
 

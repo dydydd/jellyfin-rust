@@ -87,6 +87,8 @@ pub struct BaseItemHierarchyEntry {
 pub enum BaseItemOrder {
     #[default]
     SortName,
+    SortNameDescending,
+    DateCreatedAscending,
     DateCreatedDescending,
     DatePlayedAscending,
     DatePlayedDescending,
@@ -622,6 +624,10 @@ impl BaseItemRepository {
         let total_record_count = select.clone().count(&self.database).await?;
         let mut select = match query.order {
             BaseItemOrder::SortName => select.order_by_asc(base_item::Column::SortName),
+            BaseItemOrder::SortNameDescending => select.order_by_desc(base_item::Column::SortName),
+            BaseItemOrder::DateCreatedAscending => {
+                select.order_by_asc(base_item::Column::DateCreated)
+            }
             BaseItemOrder::DateCreatedDescending => {
                 select.order_by_desc(base_item::Column::DateCreated)
             }
@@ -818,8 +824,10 @@ impl BaseItemRepository {
         let order = match query.order {
             BaseItemOrder::DatePlayedAscending => "date_played ASC NULLS FIRST, id",
             BaseItemOrder::DatePlayedDescending => "date_played DESC NULLS LAST, id",
+            BaseItemOrder::DateCreatedAscending => "date_created ASC, id",
             BaseItemOrder::DateCreatedDescending => "date_created DESC, id",
             BaseItemOrder::SortName => "sort_name, id",
+            BaseItemOrder::SortNameDescending => "sort_name DESC, id",
             BaseItemOrder::Random => "random(), id",
         };
         self.query_raw_page(cte, values, "dated", order, "DatePlayed", query)
