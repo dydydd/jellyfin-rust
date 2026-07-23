@@ -21,6 +21,7 @@ pub enum ItemValueError {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ItemValueQuery {
+    pub ids: Vec<Uuid>,
     pub parent_id: Option<Uuid>,
     pub recursive: bool,
     pub search_term: Option<String>,
@@ -320,6 +321,18 @@ const fn item_value_type_code(value_type: item_value::ItemValueType) -> i16 {
 }
 
 fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &ItemValueQuery) {
+    if !query.ids.is_empty() {
+        sql.push_str(" AND item.id IN (");
+        for (index, item_id) in query.ids.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push((*item_id).into());
+            sql.push('$');
+            sql.push_str(&values.len().to_string());
+        }
+        sql.push(')');
+    }
     if let Some(parent_id) = query.parent_id {
         if query.recursive {
             push_bind(

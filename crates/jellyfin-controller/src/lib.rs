@@ -18,6 +18,7 @@ mod playstate;
 mod plugins;
 pub mod providers;
 mod scheduled_tasks;
+mod studios;
 mod system_logs;
 mod system_storage;
 mod user_data;
@@ -54,6 +55,7 @@ pub use playstate::{
 };
 pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry};
 pub use scheduled_tasks::{ScheduledTaskError, ScheduledTaskService};
+pub use studios::{Studio, StudioError, StudioPage, StudioService};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
 pub use system_storage::SystemStorageService;
 pub use user_data::{UserDataService, UserDataServiceError, UserDataUpdate};

@@ -14,10 +14,11 @@ use jellyfin_controller::{
     MediaAttachmentService, MediaAttachmentServiceError, MediaStreamService,
     MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
     MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
-    PluginRegistry, ScheduledTaskError, ScheduledTaskService, SystemLogError, SystemLogService,
-    SystemStorageService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
-    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
+    PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
+    SystemLogError, SystemLogService, SystemStorageService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -67,6 +68,7 @@ mod robots;
 mod scheduled_tasks;
 mod session;
 mod startup;
+mod studios;
 mod system;
 mod time_sync;
 mod user_data;
@@ -93,6 +95,7 @@ pub struct AppState {
     pub(crate) playstate: PlaystateService,
     pub(crate) user_data: UserDataService,
     pub(crate) genres: GenreService,
+    pub(crate) studios: StudioService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_lookup: ItemLookupService,
@@ -147,6 +150,7 @@ impl AppState {
             playstate: PlaystateService::new(database.clone()),
             user_data: UserDataService::new(database.clone()),
             genres: GenreService::new(database.clone()),
+            studios: StudioService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
             item_lookup: ItemLookupService::new(database.clone()),
@@ -369,6 +373,8 @@ pub fn router(state: AppState) -> Router {
         .route("/Years/{year}", get(years::get))
         .route("/Genres", get(genres::list))
         .route("/Genres/{genre_name}", get(genres::get))
+        .route("/Studios", get(studios::list))
+        .route("/Studios/{name}", get(studios::get))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))
         .route(
@@ -825,6 +831,7 @@ pub(crate) enum ApiError {
     Playstate(PlaystateError),
     UserData(UserDataServiceError),
     Genre(GenreError),
+    Studio(StudioError),
     MusicGenre(MusicGenreError),
     Person(PersonError),
     UserLibrary(UserLibraryError),
@@ -907,6 +914,12 @@ impl From<UserDataServiceError> for ApiError {
 impl From<GenreError> for ApiError {
     fn from(error: GenreError) -> Self {
         Self::Genre(error)
+    }
+}
+
+impl From<StudioError> for ApiError {
+    fn from(error: StudioError) -> Self {
+        Self::Studio(error)
     }
 }
 
@@ -1114,6 +1127,7 @@ impl IntoResponse for ApiError {
             ) => (StatusCode::NOT_FOUND, "User, item, or lyrics not found"),
             Self::UserLibrary(UserLibraryError::Forbidden)
             | Self::Genre(GenreError::Forbidden)
+            | Self::Studio(StudioError::Forbidden)
             | Self::MusicGenre(MusicGenreError::Forbidden)
             | Self::Person(PersonError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
             Self::Genre(
@@ -1121,6 +1135,12 @@ impl IntoResponse for ApiError {
                 | GenreError::UserNotFound
                 | GenreError::User(UserError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Genre or user not found"),
+            Self::Studio(
+                StudioError::NotFound
+                | StudioError::UserNotFound
+                | StudioError::User(UserError::NotFound)
+                | StudioError::BaseItem(BaseItemError::NotFound),
+            ) => (StatusCode::NOT_FOUND, "Studio or user not found"),
             Self::MusicGenre(
                 MusicGenreError::NotFound
                 | MusicGenreError::UserNotFound
@@ -1144,6 +1164,10 @@ impl IntoResponse for ApiError {
             Self::Genre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Genre persistence failed",
+            ),
+            Self::Studio(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Studio persistence failed",
             ),
             Self::MusicGenre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

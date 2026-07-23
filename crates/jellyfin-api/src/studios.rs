@@ -12,11 +12,12 @@ use uuid::Uuid;
 use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct GenresQuery {
+pub(crate) struct StudiosQuery {
     #[serde(default, rename = "userId", alias = "UserId")]
     user_id: Option<Uuid>,
     #[serde(default, rename = "startIndex", alias = "StartIndex")]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
     #[serde(rename = "searchTerm", alias = "SearchTerm")]
     search_term: Option<String>,
@@ -44,13 +45,6 @@ pub(crate) struct GenresQuery {
     name_starts_with: Option<String>,
     #[serde(rename = "nameLessThan", alias = "NameLessThan")]
     name_less_than: Option<String>,
-    #[serde(
-        default,
-        rename = "sortOrder",
-        alias = "SortOrder",
-        deserialize_with = "crate::query::comma::deserialize"
-    )]
-    sort_order: Vec<String>,
     #[serde(default = "default_total_record_count")]
     #[serde(rename = "enableTotalRecordCount", alias = "EnableTotalRecordCount")]
     enable_total_record_count: bool,
@@ -59,23 +53,21 @@ pub(crate) struct GenresQuery {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<GenresQuery>,
+    Query(query): Query<StudiosQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
-    let descending = descending(&query.sort_order)?;
     let enable_total_record_count = query.enable_total_record_count;
     let page = state
-        .genres
+        .studios
         .list(
             &authenticated.user,
             target_user_id,
             ItemValueQuery {
                 parent_id: query.parent_id,
-                recursive: true,
                 search_term: query.search_term,
                 include_item_types: query.include_item_types,
                 exclude_item_types: query.exclude_item_types,
@@ -86,15 +78,14 @@ pub(crate) async fn list(
                 name_less_than: query.name_less_than,
                 start_index: query.start_index,
                 limit: query.limit,
-                descending,
                 ..ItemValueQuery::default()
             },
         )
         .await?;
     let items = page
-        .genres
+        .studios
         .iter()
-        .map(|genre| user_library::genre_to_dto(genre, state.server_id()))
+        .map(|studio| user_library::studio_to_dto(studio, state.server_id()))
         .collect::<Vec<_>>();
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
@@ -111,32 +102,22 @@ pub(crate) async fn list(
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(genre_name): Path<String>,
-    Query(query): Query<GenresQuery>,
+    Path(name): Path<String>,
+    Query(query): Query<StudiosQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
-    let genre = state
-        .genres
-        .get(&authenticated.user, target_user_id, &genre_name)
+    let studio = state
+        .studios
+        .get(&authenticated.user, target_user_id, &name)
         .await?;
-    Ok(Json(user_library::genre_to_dto(&genre, state.server_id())))
-}
-
-fn descending(sort_order: &[String]) -> Result<bool, ApiError> {
-    let Some(order) = sort_order.first() else {
-        return Ok(false);
-    };
-    if order.eq_ignore_ascii_case("Descending") {
-        Ok(true)
-    } else if order.eq_ignore_ascii_case("Ascending") {
-        Ok(false)
-    } else {
-        Err(ApiError::InvalidRequest)
-    }
+    Ok(Json(user_library::studio_to_dto(
+        &studio,
+        state.server_id(),
+    )))
 }
 
 const fn default_total_record_count() -> bool {
