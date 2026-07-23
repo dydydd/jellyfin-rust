@@ -129,7 +129,7 @@ async fn artist_routes_match_official_artist_contract() {
             .await,
     )
     .await;
-    assert_artists(&favorite, &[&fixture.alpha_artist], 1, 0);
+    assert_artists(&favorite, &[&fixture.beta_artist], 1, 0);
 
     let folder_scoped = body_json(
         fixture
@@ -411,12 +411,20 @@ impl Fixture {
             .await
             .expect("second album artist");
 
-        let mut favorite = NewUserData::new(audio.id, user.id, "ArtistFavorite");
-        favorite.is_favorite = true;
-        UserDataRepository::new(database.clone())
-            .upsert(favorite)
+        let artist_item = create_item(&items, "MusicArtist", &beta_artist, None, true, "").await;
+        let user_data = UserDataRepository::new(database.clone());
+        let mut linked_item_favorite = NewUserData::new(audio.id, user.id, "LinkedArtistFavorite");
+        linked_item_favorite.is_favorite = true;
+        user_data
+            .upsert(linked_item_favorite)
             .await
-            .expect("favorite user data");
+            .expect("linked item favorite user data");
+        let mut artist_favorite = NewUserData::new(artist_item.id, user.id, "ArtistFavorite");
+        artist_favorite.is_favorite = true;
+        user_data
+            .upsert(artist_favorite)
+            .await
+            .expect("artist favorite user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),

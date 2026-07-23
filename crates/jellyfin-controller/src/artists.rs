@@ -119,7 +119,8 @@ impl ArtistService {
     ) -> Result<ArtistPage, ArtistError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let query = self.scope_parent(query).await?;
+        let mut query = self.scope_parent(query).await?;
+        query.by_name_item_type = Some("MusicArtist".to_owned());
         let page = self
             .item_values
             .query_values(kind.value_type(), &query)

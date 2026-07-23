@@ -187,7 +187,7 @@ async fn music_genre_list_matches_official_music_genre_contract() {
         .await,
     )
     .await;
-    assert_genres(&favorite, &[&fixture.genre_name], 1, 0);
+    assert_genres(&favorite, &[&fixture.slug_genre_name], 1, 0);
 
     let parent_scoped = body_json(
         request(
@@ -398,12 +398,22 @@ impl MusicGenreFixture {
             .link(book.id, item_value::ItemValueType::Genre, &book_only_genre)
             .await
             .expect("book-only genre link");
-        let mut favorite = NewUserData::new(audio.id, user.id, "MusicGenreFavorite");
-        favorite.is_favorite = true;
-        UserDataRepository::new(database.clone())
-            .upsert(favorite)
+        let music_genre_item = create_item(&items, "MusicGenre", &slug_genre_name).await;
+        let user_data = UserDataRepository::new(database.clone());
+        let mut linked_item_favorite =
+            NewUserData::new(audio.id, user.id, "LinkedMusicGenreFavorite");
+        linked_item_favorite.is_favorite = true;
+        user_data
+            .upsert(linked_item_favorite)
             .await
-            .expect("favorite user data");
+            .expect("linked item favorite user data");
+        let mut music_genre_favorite =
+            NewUserData::new(music_genre_item.id, user.id, "MusicGenreFavorite");
+        music_genre_favorite.is_favorite = true;
+        user_data
+            .upsert(music_genre_favorite)
+            .await
+            .expect("music genre favorite user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),

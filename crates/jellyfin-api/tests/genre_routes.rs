@@ -110,7 +110,7 @@ async fn genre_routes_match_official_generic_genre_contract() {
             .await,
     )
     .await;
-    assert_genres(&favorite, &[&fixture.comedy_genre], 1, 0);
+    assert_genres(&favorite, &[&fixture.drama_genre], 1, 0);
 
     let parent_scoped = body_json(
         fixture
@@ -477,12 +477,20 @@ impl Fixture {
             .expect("slug genre");
         let slug_route_name = slug_genre_name.replace('/', "-");
 
-        let mut favorite = NewUserData::new(trailer.id, user.id, "GenreFavorite");
-        favorite.is_favorite = true;
-        UserDataRepository::new(database.clone())
-            .upsert(favorite)
+        let genre_item = create_item(&items, "Genre", &drama_genre, None, true).await;
+        let user_data = UserDataRepository::new(database.clone());
+        let mut linked_item_favorite = NewUserData::new(trailer.id, user.id, "LinkedGenreFavorite");
+        linked_item_favorite.is_favorite = true;
+        user_data
+            .upsert(linked_item_favorite)
             .await
-            .expect("favorite user data");
+            .expect("linked item favorite user data");
+        let mut genre_favorite = NewUserData::new(genre_item.id, user.id, "GenreFavorite");
+        genre_favorite.is_favorite = true;
+        user_data
+            .upsert(genre_favorite)
+            .await
+            .expect("genre favorite user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),

@@ -105,7 +105,7 @@ async fn studio_routes_match_official_studio_contract() {
             .await,
     )
     .await;
-    assert_studios(&favorite, &[&fixture.beta_studio], 1, 0);
+    assert_studios(&favorite, &[&fixture.alpha_studio], 1, 0);
 
     let folder_scoped = body_json(
         fixture
@@ -365,12 +365,21 @@ impl Fixture {
             .await
             .expect("duplicate studio link");
 
-        let mut favorite = NewUserData::new(trailer.id, user.id, "StudioFavorite");
-        favorite.is_favorite = true;
-        UserDataRepository::new(database.clone())
-            .upsert(favorite)
+        let studio_item = create_item(&items, "Studio", &alpha_studio, None, true).await;
+        let user_data = UserDataRepository::new(database.clone());
+        let mut linked_item_favorite =
+            NewUserData::new(trailer.id, user.id, "LinkedStudioFavorite");
+        linked_item_favorite.is_favorite = true;
+        user_data
+            .upsert(linked_item_favorite)
             .await
-            .expect("favorite user data");
+            .expect("linked item favorite user data");
+        let mut studio_favorite = NewUserData::new(studio_item.id, user.id, "StudioFavorite");
+        studio_favorite.is_favorite = true;
+        user_data
+            .upsert(studio_favorite)
+            .await
+            .expect("studio favorite user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),

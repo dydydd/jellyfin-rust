@@ -35,6 +35,7 @@ pub struct ItemValueQuery {
     pub is_sports: Option<bool>,
     pub is_favorite: Option<bool>,
     pub user_id: Option<Uuid>,
+    pub by_name_item_type: Option<String>,
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
     pub name_less_than: Option<String>,
@@ -399,7 +400,9 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
     append_tag_class_filter(sql, query.is_sports, "sports");
     append_tag_class_filter(sql, query.is_news, "news");
     append_tag_class_filter(sql, query.is_kids, "kids");
-    if let Some(is_favorite) = query.is_favorite {
+    if let Some(is_favorite) = query.is_favorite
+        && query.by_name_item_type.is_none()
+    {
         let Some(user_id) = query.user_id else {
             return;
         };
@@ -489,6 +492,29 @@ fn media_class_expression(json_key: &'static str, item_types: &'static [&'static
 }
 
 fn append_value_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &ItemValueQuery) {
+    if let Some(is_favorite) = query.is_favorite
+        && let Some(item_type) = query.by_name_item_type.as_deref()
+    {
+        let Some(user_id) = query.user_id else {
+            return;
+        };
+        push_bind(
+            sql,
+            values,
+            item_type.to_owned(),
+            " AND (EXISTS (
+                SELECT 1 FROM jellyfin.base_items AS by_name
+                JOIN jellyfin.user_data AS data ON data.item_id = by_name.id
+                WHERE by_name.item_type = ",
+        );
+        sql.push_str(" AND by_name.clean_name = value.clean_value");
+        push_bind(sql, values, user_id, " AND data.user_id = ");
+        sql.push_str(" AND data.is_favorite = true) = ");
+        values.push(is_favorite.into());
+        sql.push('$');
+        sql.push_str(&values.len().to_string());
+        sql.push(')');
+    }
     if let Some(search_term) = query
         .search_term
         .as_deref()

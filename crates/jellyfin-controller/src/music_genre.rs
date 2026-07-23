@@ -106,7 +106,8 @@ impl MusicGenreService {
     ) -> Result<MusicGenrePage, MusicGenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let query = self.scope_music_query(query).await?;
+        let mut query = self.scope_music_query(query).await?;
+        query.by_name_item_type = Some("MusicGenre".to_owned());
         let page = self
             .item_values
             .query_values(item_value::ItemValueType::Genre, &query)

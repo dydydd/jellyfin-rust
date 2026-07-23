@@ -129,7 +129,14 @@ impl GenreService {
     ) -> Result<GenrePage, GenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let (query, kind) = self.scope_parent(query).await?;
+        let (mut query, kind) = self.scope_parent(query).await?;
+        query.by_name_item_type = Some(
+            match kind {
+                GenreKind::Genre => "Genre",
+                GenreKind::MusicGenre => "MusicGenre",
+            }
+            .to_owned(),
+        );
         let query = match kind {
             GenreKind::Genre => generic_genre_query(query),
             GenreKind::MusicGenre => music_genre_query(query),
