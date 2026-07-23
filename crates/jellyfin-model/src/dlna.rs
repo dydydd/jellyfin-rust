@@ -1,9 +1,9 @@
-use std::fmt::Write;
+use std::{collections::HashMap, fmt::Write};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::SubtitleDeliveryMethod;
+use crate::{MediaAttachment, SubtitleDeliveryMethod};
 
 mod stream_builder;
 
@@ -192,6 +192,34 @@ pub enum VideoType {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
+pub enum IsoType {
+    #[default]
+    Dvd = 0,
+    BluRay = 1,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum Video3DFormat {
+    #[default]
+    HalfSideBySide = 0,
+    FullSideBySide = 1,
+    FullTopAndBottom = 2,
+    HalfTopAndBottom = 3,
+    MVC = 4,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum TransportStreamTimestamp {
+    #[default]
+    None = 0,
+    Zero = 1,
+    Valid = 2,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
 pub enum ProfileConditionType {
     #[default]
     Equals = 0,
@@ -308,30 +336,75 @@ pub enum MediaSourceType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct MediaSourceInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub protocol: MediaProtocol,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder_protocol: Option<MediaProtocol>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
     #[serde(rename = "Type")]
     pub source_type: MediaSourceType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bitrate: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
     pub is_remote: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run_time_ticks: Option<i64>,
+    pub read_at_native_framerate: bool,
+    pub ignore_dts: bool,
+    pub ignore_index: bool,
+    pub gen_pts_input: bool,
     pub supports_transcoding: bool,
     pub supports_direct_stream: bool,
     pub supports_direct_play: bool,
+    pub is_infinite_stream: bool,
+    pub use_most_compatible_transcoding_profile: bool,
+    pub requires_opening: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_token: Option<String>,
+    pub requires_closing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_stream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_ms: Option<i32>,
+    pub requires_looping: bool,
+    pub supports_probing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_type: Option<VideoType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iso_type: Option<IsoType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_3d_format: Option<Video3DFormat>,
+    pub media_streams: Vec<crate::MediaStream>,
+    pub media_attachments: Vec<MediaAttachment>,
+    pub formats: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_max_streaming_bitrate: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<TransportStreamTimestamp>,
+    pub required_http_headers: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcoding_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transcoding_container: Option<String>,
     pub transcoding_sub_protocol: MediaStreamProtocol,
-    pub media_streams: Vec<crate::MediaStream>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analyze_duration_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_audio_stream_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_subtitle_stream_index: Option<i32>,
-    pub use_most_compatible_transcoding_profile: bool,
-    pub live_stream_id: Option<String>,
-    #[serde(rename = "ETag")]
+    pub has_segments: bool,
+    #[serde(rename = "ETag", skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
-    pub video_type: Option<VideoType>,
 }
 
 impl Default for MediaSourceInfo {
@@ -340,6 +413,8 @@ impl Default for MediaSourceInfo {
             id: None,
             protocol: MediaProtocol::default(),
             path: None,
+            encoder_path: None,
+            encoder_protocol: None,
             name: None,
             container: None,
             source_type: MediaSourceType::default(),
@@ -347,18 +422,39 @@ impl Default for MediaSourceInfo {
             size: None,
             is_remote: false,
             run_time_ticks: None,
+            read_at_native_framerate: false,
+            ignore_dts: false,
+            ignore_index: false,
+            gen_pts_input: false,
             supports_transcoding: true,
             supports_direct_stream: true,
             supports_direct_play: true,
+            is_infinite_stream: false,
+            use_most_compatible_transcoding_profile: false,
+            requires_opening: false,
+            open_token: None,
+            requires_closing: false,
+            live_stream_id: None,
+            buffer_ms: None,
+            requires_looping: false,
+            supports_probing: true,
+            video_type: None,
+            iso_type: None,
+            video_3d_format: None,
+            media_streams: Vec::new(),
+            media_attachments: Vec::new(),
+            formats: Vec::new(),
+            fallback_max_streaming_bitrate: None,
+            timestamp: None,
+            required_http_headers: HashMap::new(),
+            transcoding_url: None,
             transcoding_container: None,
             transcoding_sub_protocol: MediaStreamProtocol::default(),
-            media_streams: Vec::new(),
+            analyze_duration_ms: None,
             default_audio_stream_index: None,
             default_subtitle_stream_index: None,
-            use_most_compatible_transcoding_profile: false,
-            live_stream_id: None,
+            has_segments: false,
             etag: None,
-            video_type: None,
         }
     }
 }

@@ -1,7 +1,9 @@
 use std::{collections::HashMap, error::Error, fmt};
 
+mod media_attachment;
 mod media_stream;
 
+pub use media_attachment::MediaAttachment;
 pub use media_stream::{
     AudioSpatialFormat, MediaStream, MediaStreamType, SubtitleDeliveryMethod, VideoRange,
     VideoRangeType,

@@ -29,17 +29,18 @@ pub use configuration::UserConfiguration;
 pub use cryptography::{PasswordHash, PasswordHashError, PasswordHashSegment};
 pub use dlna::{
     CodecProfile, CodecType, ContainerHelper, ContainerProfile, DeviceProfile, DirectPlayProfile,
-    DlnaProfileType, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo,
+    DlnaProfileType, EncodingContext, IsoType, MediaOptions, MediaProtocol, MediaSourceInfo,
     MediaSourceType, MediaStreamProtocol, PlayMethod, ProfileCondition, ProfileConditionType,
     ProfileConditionValue, StreamBuilder, StreamBuilderError, StreamInfo, SubtitleProfile,
-    TranscodeReason, TranscodeSeekInfo, TranscodingProfile, VideoType,
+    TranscodeReason, TranscodeSeekInfo, TranscodingProfile, TransportStreamTimestamp,
+    Video3DFormat, VideoType,
 };
 pub use drawing::{ImageFormat, InvalidImageFormat};
 pub use dto::UserDto;
 pub use entities::{
-    AudioSpatialFormat, HasProviderIds, MediaStream, MediaStreamType, MetadataProvider,
-    ProviderIdError, ProviderIdMap, ProviderIdsExtensions, SubtitleDeliveryMethod, VideoRange,
-    VideoRangeType,
+    AudioSpatialFormat, HasProviderIds, MediaAttachment, MediaStream, MediaStreamType,
+    MetadataProvider, ProviderIdError, ProviderIdMap, ProviderIdsExtensions,
+    SubtitleDeliveryMethod, VideoRange, VideoRangeType,
 };
 pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, UnratedItem};
 pub use extensions::first_to_upper;

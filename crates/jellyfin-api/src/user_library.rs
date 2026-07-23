@@ -8,9 +8,7 @@ use axum::{
 use axum_extra::extract::Query;
 use jellyfin_controller::{MusicGenre, Person, RelatedItemKind, library::get_media_source_name};
 use jellyfin_data::entities::base_item;
-use jellyfin_model::{
-    MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamProtocol,
-};
+use jellyfin_model::{MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -476,22 +474,9 @@ fn media_source_from_dto(
         name,
         container,
         source_type: MediaSourceType::Default,
-        bitrate: None,
-        size: None,
-        is_remote: false,
         run_time_ticks: dto.run_time_ticks,
-        supports_transcoding: true,
-        supports_direct_stream: true,
-        supports_direct_play: true,
-        transcoding_container: None,
-        transcoding_sub_protocol: MediaStreamProtocol::default(),
         media_streams: media_streams.to_vec(),
-        default_audio_stream_index: None,
-        default_subtitle_stream_index: None,
-        use_most_compatible_transcoding_profile: false,
-        live_stream_id: None,
-        etag: None,
-        video_type: None,
+        ..MediaSourceInfo::default()
     })
 }
 

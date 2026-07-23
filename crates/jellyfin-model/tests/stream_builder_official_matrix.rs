@@ -1,8 +1,9 @@
 use std::{fs, path::PathBuf};
 
 use jellyfin_model::{
-    MediaOptions, MediaSourceInfo, MediaStream, MediaStreamProtocol, MediaStreamType, PlayMethod,
-    StreamBuilder, SubtitleDeliveryMethod, SubtitleProfile, TranscodeReason,
+    MediaOptions, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream,
+    MediaStreamProtocol, MediaStreamType, PlayMethod, StreamBuilder, SubtitleDeliveryMethod,
+    SubtitleProfile, TranscodeReason, VideoType,
 };
 use uuid::Uuid;
 
@@ -129,6 +130,37 @@ fn official_subtitle_profile_container_and_protocol_matrix() {
             "codec={codec}, external={is_external}, method={method:?}, container={output_container}, protocol={protocol:?}"
         );
     }
+}
+
+#[test]
+fn official_media_source_fixtures_preserve_probe_and_attachment_metadata() {
+    let raw: MediaSourceInfo = read_fixture("MediaSourceInfo", "raw");
+    assert_eq!(raw.protocol, MediaProtocol::File);
+    assert_eq!(raw.source_type, MediaSourceType::Default);
+    assert!(raw.supports_probing);
+    assert!(raw.media_attachments.is_empty());
+    assert!(raw.formats.is_empty());
+    assert!(raw.required_http_headers.is_empty());
+    assert_eq!(raw.default_audio_stream_index, None);
+    assert_eq!(raw.default_subtitle_stream_index, Some(1));
+    assert!(!raw.has_segments);
+
+    let no_streams: MediaSourceInfo = read_fixture("MediaSourceInfo", "no-streams");
+    assert!(no_streams.supports_probing);
+    assert!(no_streams.media_streams.is_empty());
+    assert!(no_streams.media_attachments.is_empty());
+    assert!(no_streams.formats.is_empty());
+    assert!(no_streams.required_http_headers.is_empty());
+    assert_eq!(no_streams.default_audio_stream_index, None);
+    assert_eq!(no_streams.default_subtitle_stream_index, None);
+    assert!(!no_streams.has_segments);
+
+    let dvhe: MediaSourceInfo = read_fixture("MediaSourceInfo", "mp4-dvhe.08-eac3-15200k");
+    assert_eq!(dvhe.video_type, Some(VideoType::VideoFile));
+    assert_eq!(dvhe.default_audio_stream_index, Some(1));
+    assert!(dvhe.media_attachments.is_empty());
+    assert!(dvhe.formats.is_empty());
+    assert!(!dvhe.has_segments);
 }
 
 fn run_official_matrix(
