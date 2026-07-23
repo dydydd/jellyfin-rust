@@ -16,7 +16,8 @@ use jellyfin_controller::{
     PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError, ScheduledTaskService,
     SystemLogError, SystemLogService, SystemStorageService, UserDataService, UserDataServiceError,
     UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError, client_event::ClientEventLogger,
+    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -73,6 +74,7 @@ mod user_views;
 mod users;
 mod videos;
 mod virtual_folders;
+mod years;
 
 pub use branding::BrandingOptions;
 
@@ -101,6 +103,7 @@ pub struct AppState {
     pub(crate) media_attachments: MediaAttachmentService,
     pub(crate) media_streams: MediaStreamService,
     pub(crate) videos: VideoService,
+    pub(crate) years: YearService,
     pub(crate) tuner_hosts: TunerHostManager,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) dashboard: DashboardService,
@@ -153,6 +156,7 @@ impl AppState {
             media_attachments: MediaAttachmentService::new(database.clone()),
             media_streams: MediaStreamService::new(database.clone()),
             videos: VideoService::new(database.clone()),
+            years: YearService::new(database.clone()),
             tuner_hosts: TunerHostManager::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
             dashboard: DashboardService::default(),
@@ -358,6 +362,7 @@ pub fn router(state: AppState) -> Router {
         .merge(user_library_routes())
         .merge(video_routes())
         .merge(live_tv_routes())
+        .route("/Years/{year}", get(years::get))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))
         .route(
@@ -818,6 +823,7 @@ pub(crate) enum ApiError {
     UserLibrary(UserLibraryError),
     LibraryController(LibraryControllerError),
     Video(VideoError),
+    Year(YearError),
     VirtualFolder(VirtualFolderServiceError),
     Dashboard(DashboardError),
     TunerHost(TunerHostError),
@@ -918,6 +924,12 @@ impl From<LibraryControllerError> for ApiError {
 impl From<VideoError> for ApiError {
     fn from(error: VideoError) -> Self {
         Self::Video(error)
+    }
+}
+
+impl From<YearError> for ApiError {
+    fn from(error: YearError) -> Self {
+        Self::Year(error)
     }
 }
 
@@ -1109,6 +1121,7 @@ impl IntoResponse for ApiError {
             ),
             Self::LibraryController(error) => library_controller_error_response(&error),
             Self::Video(error) => video_error_response(&error),
+            Self::Year(error) => year_error_response(&error),
             Self::MusicGenre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Music genre persistence failed",
@@ -1374,6 +1387,21 @@ fn video_error_response(error: &VideoError) -> (StatusCode, &'static str) {
             StatusCode::INTERNAL_SERVER_ERROR,
             "Video persistence failed",
         ),
+    }
+}
+
+fn year_error_response(error: &YearError) -> (StatusCode, &'static str) {
+    match error {
+        YearError::NotFound
+        | YearError::UserNotFound
+        | YearError::User(UserError::NotFound)
+        | YearError::BaseItem(BaseItemError::NotFound) => {
+            (StatusCode::NOT_FOUND, "Year or user not found")
+        }
+        YearError::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
+        YearError::BaseItem(_) | YearError::User(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Year persistence failed")
+        }
     }
 }
 

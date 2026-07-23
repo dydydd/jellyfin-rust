@@ -369,6 +369,42 @@ impl BaseItemRepository {
             .is_some())
     }
 
+    /// Loads a persisted Jellyfin `Year` item by its display name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn year_item(&self, year: i32) -> Result<Option<base_item::Model>, BaseItemError> {
+        Ok(base_item::Entity::find()
+            .filter(base_item::Column::ItemType.eq("Year"))
+            .filter(base_item::Column::Name.eq(year.to_string()))
+            .order_by_asc(base_item::Column::SortName)
+            .order_by_asc(base_item::Column::Id)
+            .one(&self.database)
+            .await?)
+    }
+
+    /// Returns true when at least one persisted item advertises the production year.
+    ///
+    /// This intentionally uses a selective `LIMIT 1` lookup so PostgreSQL can
+    /// satisfy year endpoints from the partial production-year index.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn has_production_year(&self, year: i32) -> Result<bool, BaseItemError> {
+        Ok(base_item::Entity::find()
+            .select_only()
+            .column(base_item::Column::Id)
+            .filter(base_item::Column::ProductionYear.eq(year))
+            .filter(base_item::Column::ItemType.ne("PLACEHOLDER"))
+            .limit(1)
+            .into_tuple::<Uuid>()
+            .one(&self.database)
+            .await?
+            .is_some())
+    }
+
     /// Queries persisted library items with stable sorting and database-side
     /// count, offset, and limit.
     ///

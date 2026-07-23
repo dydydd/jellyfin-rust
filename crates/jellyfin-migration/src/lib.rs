@@ -33,6 +33,7 @@ mod m20260723_000030_add_session_additional_users;
 mod m20260723_000031_add_session_playback_state;
 mod m20260723_000032_create_password_resets;
 mod m20260724_000033_create_display_preferences;
+mod m20260724_000034_optimize_year_queries;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -100,6 +101,8 @@ pub use m20260723_000031_add_session_playback_state::Migration as AddSessionPlay
 pub use m20260723_000032_create_password_resets::Migration as CreatePasswordResetsMigration;
 #[doc(hidden)]
 pub use m20260724_000033_create_display_preferences::Migration as CreateDisplayPreferencesMigration;
+#[doc(hidden)]
+pub use m20260724_000034_optimize_year_queries::Migration as OptimizeYearQueriesMigration;
 
 pub struct Migrator;
 
@@ -140,6 +143,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260723_000031_add_session_playback_state::Migration),
             Box::new(m20260723_000032_create_password_resets::Migration),
             Box::new(m20260724_000033_create_display_preferences::Migration),
+            Box::new(m20260724_000034_optimize_year_queries::Migration),
         ]
     }
 }

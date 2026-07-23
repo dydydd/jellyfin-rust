@@ -1,0 +1,117 @@
+use jellyfin_data::{BaseItemError, BaseItemRepository, entities::base_item, entities::user};
+use md5::{Digest, Md5};
+use sea_orm::DatabaseConnection;
+use thiserror::Error;
+use uuid::Uuid;
+
+use crate::{UserError, UserService};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum YearItem {
+    Persisted(base_item::Model),
+    Virtual(Year),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Year {
+    pub id: Uuid,
+    pub name: String,
+}
+
+#[derive(Debug, Error)]
+pub enum YearError {
+    #[error("year was not found")]
+    NotFound,
+    #[error("target user was not found")]
+    UserNotFound,
+    #[error("year query is forbidden")]
+    Forbidden,
+    #[error(transparent)]
+    User(#[from] UserError),
+    #[error(transparent)]
+    BaseItem(#[from] BaseItemError),
+}
+
+#[derive(Clone)]
+pub struct YearService {
+    users: UserService,
+    items: BaseItemRepository,
+}
+
+impl YearService {
+    #[must_use]
+    pub fn new(database: DatabaseConnection) -> Self {
+        Self {
+            users: UserService::new(database.clone()),
+            items: BaseItemRepository::new(database),
+        }
+    }
+
+    /// Resolves a Jellyfin year item for a positive production year.
+    ///
+    /// Persisted `Year` items win. If none exists but PostgreSQL finds at
+    /// least one item tagged with the requested production year, the service
+    /// returns the virtual item-by-name shape used by Jellyfin.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, validation, or persistence errors.
+    pub async fn get(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        year: i32,
+    ) -> Result<YearItem, YearError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        if year <= 0 {
+            return Err(YearError::NotFound);
+        }
+        if let Some(item) = self.items.year_item(year).await? {
+            return Ok(YearItem::Persisted(item));
+        }
+        if !self.items.has_production_year(year).await? {
+            return Err(YearError::NotFound);
+        }
+        let name = year.to_string();
+        Ok(YearItem::Virtual(Year {
+            id: jellyfin_year_id(&name),
+            name,
+        }))
+    }
+
+    async fn validate_user(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+    ) -> Result<(), YearError> {
+        match self.users.get(target_user_id).await {
+            Ok(_) => {}
+            Err(UserError::NotFound) => return Err(YearError::UserNotFound),
+            Err(error) => return Err(error.into()),
+        }
+        if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
+            return Err(YearError::Forbidden);
+        }
+        Ok(())
+    }
+}
+
+fn jellyfin_year_id(name: &str) -> Uuid {
+    let mut hasher = Md5::new();
+    hasher.update(format!("Year-{name}").as_bytes());
+    Uuid::from_bytes_le(hasher.finalize().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jellyfin_year_id;
+
+    #[test]
+    fn virtual_year_ids_are_stable_jellyfin_style_md5_guids() {
+        assert_eq!(
+            jellyfin_year_id("2024").simple().to_string(),
+            "e76befe12d5e74b5e1f9b9e239a6c8fa"
+        );
+    }
+}

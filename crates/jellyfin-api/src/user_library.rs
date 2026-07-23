@@ -7,7 +7,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_controller::{
-    LocalizationService, MusicGenre, Person, RelatedItemKind, library::get_media_source_name,
+    LocalizationService, MusicGenre, Person, RelatedItemKind, Year, library::get_media_source_name,
 };
 use jellyfin_data::entities::{base_item, user_data};
 use jellyfin_model::{
@@ -909,6 +909,37 @@ pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: Some(person.model.provider_ids.clone()),
+        media_sources: None,
+        media_streams: None,
+    }
+}
+
+pub(crate) fn year_to_dto(year: &Year, server_id: &str) -> BaseItemDto {
+    BaseItemDto {
+        name: Some(year.name.clone()),
+        server_id: server_id.to_owned(),
+        id: year.id.simple().to_string(),
+        item_type: "Year".to_owned(),
+        etag: year.id.simple().to_string(),
+        date_created: None,
+        sort_name: Some(year.name.clone()),
+        path: None,
+        overview: None,
+        media_type: None,
+        collection_type: None,
+        is_folder: true,
+        is_virtual_item: false,
+        parent_id: None,
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        run_time_ticks: None,
+        presentation_unique_key: Some(format!("Year-{}", year.name)),
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
+        provider_ids: None,
         media_sources: None,
         media_streams: None,
     }

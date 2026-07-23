@@ -1,4 +1,6 @@
-use jellyfin_migration::{AddUserPolicyProvidersMigration, CreateUsersMigration};
+use jellyfin_migration::{
+    AddUserPolicyProvidersMigration, CreateUsersMigration, OptimizeYearQueriesMigration,
+};
 use sea_orm::{ConnectionTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
 use uuid::Uuid;
@@ -32,6 +34,14 @@ async fn postgres_schema_installs_specialized_indexes() {
         .up(&schema)
         .await
         .expect("the provider-column DDL must remain idempotent");
+    OptimizeYearQueriesMigration
+        .up(&schema)
+        .await
+        .expect("reapplying the year-query DDL must succeed");
+    OptimizeYearQueriesMigration
+        .up(&schema)
+        .await
+        .expect("the year-query DDL must remain idempotent");
 
     let rows = database
         .query_all(Statement::from_string(
@@ -54,6 +64,25 @@ async fn postgres_schema_installs_specialized_indexes() {
         names
             .iter()
             .any(|name| name == "users_normalized_username_key")
+    );
+
+    let rows = database
+        .query_all(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT indexname FROM pg_indexes \
+             WHERE schemaname = 'jellyfin' AND tablename = 'base_items'"
+                .to_owned(),
+        ))
+        .await
+        .expect("PostgreSQL base item catalog query must succeed");
+    let base_item_index_names: Vec<String> = rows
+        .into_iter()
+        .map(|row| String::try_get(&row, "", "indexname").expect("index name must be text"))
+        .collect();
+    assert!(
+        base_item_index_names
+            .iter()
+            .any(|name| name == "base_items_production_year_idx")
     );
 
     let columns = database
