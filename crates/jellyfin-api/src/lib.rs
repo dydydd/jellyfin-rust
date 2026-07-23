@@ -9,15 +9,15 @@ use axum::{
 };
 use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
-    InstalledPlugin, ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService,
-    LibraryControllerError, LibraryControllerService, LocalizationService, MediaAttachmentService,
-    MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
-    MetadataEditorService, MusicGenreError, MusicGenreService, PersonError, PersonService,
-    PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError, ScheduledTaskService,
-    SystemLogError, SystemLogService, SystemStorageService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
-    client_event::ClientEventLogger,
+    GenreError, GenreService, InstalledPlugin, ItemLookupError, ItemLookupService, ItemUpdateError,
+    ItemUpdateService, LibraryControllerError, LibraryControllerService, LocalizationService,
+    MediaAttachmentService, MediaAttachmentServiceError, MediaStreamService,
+    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
+    MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
+    PluginRegistry, ScheduledTaskError, ScheduledTaskService, SystemLogError, SystemLogService,
+    SystemStorageService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
+    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -47,6 +47,7 @@ mod dashboard;
 mod devices;
 mod display_preferences;
 mod environment;
+mod genres;
 mod hls_segment;
 mod item_lookup;
 mod item_update;
@@ -91,6 +92,7 @@ pub struct AppState {
         QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
     pub(crate) playstate: PlaystateService,
     pub(crate) user_data: UserDataService,
+    pub(crate) genres: GenreService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_lookup: ItemLookupService,
@@ -144,6 +146,7 @@ impl AppState {
             ),
             playstate: PlaystateService::new(database.clone()),
             user_data: UserDataService::new(database.clone()),
+            genres: GenreService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
             item_lookup: ItemLookupService::new(database.clone()),
@@ -364,6 +367,8 @@ pub fn router(state: AppState) -> Router {
         .merge(live_tv_routes())
         .route("/Years", get(years::list))
         .route("/Years/{year}", get(years::get))
+        .route("/Genres", get(genres::list))
+        .route("/Genres/{genre_name}", get(genres::get))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))
         .route(
@@ -819,6 +824,7 @@ pub(crate) enum ApiError {
     SessionCommandStore(SessionCommandStoreError),
     Playstate(PlaystateError),
     UserData(UserDataServiceError),
+    Genre(GenreError),
     MusicGenre(MusicGenreError),
     Person(PersonError),
     UserLibrary(UserLibraryError),
@@ -895,6 +901,12 @@ impl From<PlaystateError> for ApiError {
 impl From<UserDataServiceError> for ApiError {
     fn from(error: UserDataServiceError) -> Self {
         Self::UserData(error)
+    }
+}
+
+impl From<GenreError> for ApiError {
+    fn from(error: GenreError) -> Self {
+        Self::Genre(error)
     }
 }
 
@@ -1101,8 +1113,14 @@ impl IntoResponse for ApiError {
                 | UserLibraryError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "User, item, or lyrics not found"),
             Self::UserLibrary(UserLibraryError::Forbidden)
+            | Self::Genre(GenreError::Forbidden)
             | Self::MusicGenre(MusicGenreError::Forbidden)
             | Self::Person(PersonError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
+            Self::Genre(
+                GenreError::NotFound
+                | GenreError::UserNotFound
+                | GenreError::User(UserError::NotFound),
+            ) => (StatusCode::NOT_FOUND, "Genre or user not found"),
             Self::MusicGenre(
                 MusicGenreError::NotFound
                 | MusicGenreError::UserNotFound
@@ -1123,6 +1141,10 @@ impl IntoResponse for ApiError {
             Self::LibraryController(error) => library_controller_error_response(&error),
             Self::Video(error) => video_error_response(&error),
             Self::Year(error) => year_error_response(&error),
+            Self::Genre(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Genre persistence failed",
+            ),
             Self::MusicGenre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Music genre persistence failed",

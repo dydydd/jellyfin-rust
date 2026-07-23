@@ -1,6 +1,7 @@
 pub mod client_event;
 mod dashboard;
 mod environment;
+mod genres;
 mod item_lookup;
 mod item_types;
 mod item_update;
@@ -28,6 +29,7 @@ mod years;
 
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
+pub use genres::{Genre, GenreError, GenrePage, GenreService};
 pub use item_lookup::{ItemLookupError, ItemLookupService};
 pub use item_types::{
     HydratedBaseItem, ItemTypeRegistrationError, ItemTypeRegistry, KnownItemType,
