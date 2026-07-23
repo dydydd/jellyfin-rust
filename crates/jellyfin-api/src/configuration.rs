@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, State, rejection::JsonRejection},
+    extract::{OriginalUri, Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_data::{ServerConfigurationUpdate, entities::server_configuration};
 use jellyfin_model::{MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration};
+use serde_json::Value;
 
 use crate::{ApiError, AppState, authentication, authorization};
 
@@ -46,6 +47,43 @@ pub(crate) async fn default_metadata_options(
         .await?
         .require_administrator()?;
     Ok(Json(MetadataOptions::default()))
+}
+
+pub(crate) async fn get_named(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    authorization::require_default(&state, &headers, &uri).await?;
+    let repository = state
+        .named_configurations
+        .as_ref()
+        .ok_or(ApiError::Internal)?;
+    let configuration = repository.load(&key).await?;
+    Ok(Json(configuration.configuration))
+}
+
+pub(crate) async fn update_named(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    request: Result<Json<Value>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
+    if !configuration.is_object() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let repository = state
+        .named_configurations
+        .as_ref()
+        .ok_or(ApiError::Internal)?;
+    repository.save(&key, configuration).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn server_configuration(

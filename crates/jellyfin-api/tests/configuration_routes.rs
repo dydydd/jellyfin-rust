@@ -211,6 +211,88 @@ async fn exercise_configuration_routes(database_name: &str) {
         body_text(request(&app, "/Branding/Css", None).await).await,
         "body { color: oldlace; }\n"
     );
+    assert_eq!(
+        request(&app, "/System/Configuration/branding", None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let named_branding =
+        body_json(request(&app, "/System/Configuration/branding", Some(&user_token)).await).await;
+    assert_eq!(named_branding["LoginDisclaimer"], "旧免责声明");
+    assert_eq!(
+        named_branding["SplashscreenLocation"],
+        "/srv/jellyfin/private/splash.png"
+    );
+    assert_eq!(
+        request(
+            &app,
+            "/System/Configuration/does-not-exist",
+            Some(&user_token)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let named_configuration = json!({
+        "TranscodingTempPath": "/tmp/jellyfin-transcodes",
+        "EnableThrottling": true,
+        "SegmentKeepSeconds": 360
+    });
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Encoding",
+            None,
+            &named_configuration,
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Encoding",
+            Some(&user_token),
+            &named_configuration,
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Encoding",
+            Some(&admin_token),
+            &json!(["invalid"]),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration/Encoding",
+            Some(&admin_token),
+            &named_configuration,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        body_json(request(&app, "/System/Configuration/encoding", Some(&user_token)).await).await,
+        named_configuration
+    );
+    let persisted_encoding = named_configurations
+        .load("encoding")
+        .await
+        .expect("encoding configuration load");
+    assert_eq!(persisted_encoding.configuration, named_configuration);
 
     let branding_update = json!({
         "LoginDisclaimer": "新的免责声明",

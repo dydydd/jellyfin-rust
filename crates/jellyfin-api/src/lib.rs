@@ -347,6 +347,10 @@ pub fn router(state: AppState) -> Router {
             "/System/Configuration/Branding",
             post(branding::update_configuration),
         )
+        .route(
+            "/System/Configuration/{key}",
+            get(configuration::get_named).post(configuration::update_named),
+        )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
         .route(
             "/web/ConfigurationPages",
