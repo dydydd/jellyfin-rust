@@ -1379,6 +1379,7 @@ dependencies = [
  "aide",
  "axum",
  "axum-extra",
+ "base64",
  "chrono",
  "form_urlencoded",
  "indexmap",

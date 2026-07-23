@@ -529,6 +529,10 @@ fn display_preference_routes() -> Router<Arc<AppState>> {
 
 fn user_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route(
+            "/UserImage",
+            post(users::post_user_image).delete(users::delete_user_image),
+        )
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
@@ -549,6 +553,14 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route(
             "/Users/{id}/Configuration",
             post(users::update_configuration_legacy),
+        )
+        .route(
+            "/Users/{id}/Images/{image_type}",
+            post(users::post_user_image_legacy).delete(users::delete_user_image_legacy),
+        )
+        .route(
+            "/Users/{id}/Images/{image_type}/{index}",
+            post(users::post_user_image_index_legacy).delete(users::delete_user_image_index_legacy),
         )
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/Users/{id}/Policy", post(users::update_policy))

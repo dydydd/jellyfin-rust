@@ -1,4 +1,4 @@
-use std::{net::IpAddr, sync::Arc};
+use std::{net::IpAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json,
@@ -7,12 +7,14 @@ use axum::{
         ConnectInfo, OriginalUri, Path, Query, State, rejection::JsonRejection,
         rejection::QueryRejection,
     },
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode, header},
 };
-use jellyfin_data::entities::user;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use chrono::Utc;
+use jellyfin_data::{NewUserProfileImage, entities::user};
 use jellyfin_model::{
-    ForgotPasswordDto, ForgotPasswordPinDto, PinRedeemResult, UserConfiguration, UserDto,
-    UserPolicy,
+    ForgotPasswordDto, ForgotPasswordPinDto, MimeTypes, PinRedeemResult, UserConfiguration,
+    UserDto, UserPolicy,
 };
 use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
@@ -144,6 +146,158 @@ pub(crate) async fn get(
 pub struct UpdateUserQuery {
     #[serde(rename = "userId", alias = "UserId")]
     pub user_id: Option<Uuid>,
+}
+
+pub(crate) async fn post_user_image(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<UpdateUserQuery>,
+    request: Request<axum::body::Body>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
+}
+
+pub(crate) async fn post_user_image_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target_id, _image_type)): Path<(Uuid, String)>,
+    request: Request<axum::body::Body>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
+}
+
+pub(crate) async fn post_user_image_index_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target_id, _image_type, _index)): Path<(Uuid, String, u32)>,
+    request: Request<axum::body::Body>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
+}
+
+async fn post_user_image_for(
+    state: &AppState,
+    headers: &HeaderMap,
+    authenticated_user: user::Model,
+    target_id: Uuid,
+    request: Request<axum::body::Body>,
+) -> Result<StatusCode, ApiError> {
+    let target = state.users.get(target_id).await?;
+    if !authenticated_user.is_administrator && authenticated_user.id != target.id {
+        return Err(ApiError::Forbidden);
+    }
+    let extension = MimeTypes::try_get_image_extension(
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+    )
+    .ok_or(ApiError::InvalidRequest)?;
+    let encoded = to_bytes(request.into_body(), 16 * 1024 * 1024)
+        .await
+        .map_err(|_| ApiError::PayloadTooLarge)?;
+    let image = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| ApiError::InvalidRequest)?;
+    if image.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+
+    let user_directory = profile_image_directory(state, target.id);
+    tokio::fs::create_dir_all(&user_directory)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    let path = user_directory.join(format!("profile{extension}"));
+    let temporary_path = user_directory.join(format!("profile-{}.tmp", Uuid::new_v4().simple()));
+    tokio::fs::write(&temporary_path, image)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    tokio::fs::rename(&temporary_path, &path)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+
+    let previous = state
+        .users
+        .profile_image(target.id)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    state
+        .users
+        .set_profile_image(NewUserProfileImage {
+            user_id: target.id,
+            path: path_string(&path),
+            last_modified: Utc::now(),
+        })
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    if let Some(previous) = previous
+        && previous.path != path_string(&path)
+    {
+        let _ = tokio::fs::remove_file(previous.path).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn delete_user_image(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<UpdateUserQuery>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    delete_user_image_for(&state, authenticated.user, target_id).await
+}
+
+pub(crate) async fn delete_user_image_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target_id, _image_type)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    delete_user_image_for(&state, authenticated.user, target_id).await
+}
+
+pub(crate) async fn delete_user_image_index_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((target_id, _image_type, _index)): Path<(Uuid, String, u32)>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    delete_user_image_for(&state, authenticated.user, target_id).await
+}
+
+async fn delete_user_image_for(
+    state: &AppState,
+    authenticated_user: user::Model,
+    target_id: Uuid,
+) -> Result<StatusCode, ApiError> {
+    let target = state.users.get(target_id).await?;
+    if !authenticated_user.is_administrator && authenticated_user.id != target.id {
+        return Err(ApiError::Forbidden);
+    }
+    let removed = state
+        .users
+        .clear_profile_image(target.id)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    if let Some(image) = removed {
+        let _ = tokio::fs::remove_file(image.path).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn profile_image_directory(state: &AppState, user_id: Uuid) -> PathBuf {
+    state
+        .program_data_directory
+        .join("users")
+        .join(user_id.simple().to_string())
+}
+
+fn path_string(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 pub(crate) async fn update(

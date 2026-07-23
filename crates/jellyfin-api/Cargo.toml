@@ -9,6 +9,7 @@ rust-version.workspace = true
 aide.workspace = true
 axum.workspace = true
 axum-extra = { version = "0.10", features = ["query"] }
+base64 = "0.22"
 chrono.workspace = true
 form_urlencoded = "1.2"
 indexmap.workspace = true
