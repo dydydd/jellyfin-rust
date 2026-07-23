@@ -428,6 +428,10 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_system_command),
         )
         .route(
+            "/Sessions/{session_id}/Viewing",
+            post(session::display_content),
+        )
+        .route(
             "/Sessions/{session_id}/Command/{command}",
             post(session::send_general_command),
         )

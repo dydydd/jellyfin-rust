@@ -22,6 +22,14 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Session Command Tests\", Devi
 async fn session_command_routes_queue_official_general_commands_in_postgres() {
     let fixture = Fixture::new().await;
 
+    assert_command_access_and_validation(&fixture).await;
+    enqueue_official_session_commands(&fixture).await;
+    assert_queued_commands(&fixture).await;
+
+    fixture.cleanup().await;
+}
+
+async fn assert_command_access_and_validation(fixture: &Fixture) {
     assert_eq!(
         fixture
             .request("POST", &fixture.command_uri("GoHome"), None, Body::empty())
@@ -65,9 +73,35 @@ async fn session_command_routes_queue_official_general_commands_in_postgres() {
             .status(),
         StatusCode::BAD_REQUEST
     );
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &format!(
+                    "/Sessions/{}/Viewing?itemType=Movie",
+                    fixture.target_session_id
+                ),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
 
+async fn enqueue_official_session_commands(fixture: &Fixture) {
     fixture.post_command("Command/GoHome", Body::empty()).await;
     fixture.post_command("System/Mute", Body::empty()).await;
+    fixture
+        .post_command(
+            &format!(
+                "Viewing?itemType=Movie&itemId={}&itemName=The%20Matrix",
+                Uuid::new_v4()
+            ),
+            Body::empty(),
+        )
+        .await;
     fixture
         .post_command(
             "Command",
@@ -90,12 +124,14 @@ async fn session_command_routes_queue_official_general_commands_in_postgres() {
             })),
         )
         .await;
+}
 
+async fn assert_queued_commands(fixture: &Fixture) {
     let queued = SessionCommandRepository::new(fixture.database.clone())
         .list_for_session(&fixture.target_session_id)
         .await
         .expect("queued commands must load");
-    assert_eq!(queued.len(), 4);
+    assert_eq!(queued.len(), 5);
     assert!(queued.iter().all(|command| {
         command.message_type == "GeneralCommand"
             && command.target_session_id == fixture.target_session_id
@@ -103,24 +139,26 @@ async fn session_command_routes_queue_official_general_commands_in_postgres() {
     }));
     assert_eq!(queued[0].payload["Name"], "GoHome");
     assert_eq!(queued[1].payload["Name"], "Mute");
-    assert_eq!(queued[2].payload["Name"], "SetVolume");
-    assert_eq!(queued[2].payload["Arguments"]["Volume"], "50");
+    assert_eq!(queued[2].payload["Name"], "DisplayContent");
+    assert_eq!(queued[2].payload["Arguments"]["ItemType"], "Movie");
+    assert_eq!(queued[2].payload["Arguments"]["ItemName"], "The Matrix");
+    assert!(queued[2].payload["Arguments"]["ItemId"].as_str().is_some());
+    assert_eq!(queued[3].payload["Name"], "SetVolume");
+    assert_eq!(queued[3].payload["Arguments"]["Volume"], "50");
     assert_eq!(
-        queued[2].payload["ControllingUserId"],
+        queued[3].payload["ControllingUserId"],
         fixture.user_id.simple().to_string()
     );
-    assert_eq!(queued[3].payload["Name"], "DisplayMessage");
+    assert_eq!(queued[4].payload["Name"], "DisplayMessage");
     assert_eq!(
-        queued[3].payload["Arguments"]["Header"],
+        queued[4].payload["Arguments"]["Header"],
         "Message from Server"
     );
     assert_eq!(
-        queued[3].payload["Arguments"]["Text"],
+        queued[4].payload["Arguments"]["Text"],
         "Hello remote client"
     );
-    assert_eq!(queued[3].payload["Arguments"]["TimeoutMs"], "1500");
-
-    fixture.cleanup().await;
+    assert_eq!(queued[4].payload["Arguments"]["TimeoutMs"], "1500");
 }
 
 struct Fixture {

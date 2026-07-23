@@ -40,6 +40,17 @@ pub(crate) struct CapabilitiesQuery {
     supports_persistent_identifier: bool,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct ViewingQuery {
+    #[serde(rename = "itemType")]
+    ty: Option<String>,
+    #[serde(rename = "itemId")]
+    id: Option<String>,
+    #[serde(rename = "itemName")]
+    name: Option<String>,
+}
+
 impl Default for CapabilitiesQuery {
     fn default() -> Self {
         Self {
@@ -113,6 +124,37 @@ pub(crate) async fn send_system_command(
             name: command,
             controlling_user_id: controller.user.id,
             arguments: HashMap::new(),
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn display_content(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+    query: Result<Query<ViewingQuery>, QueryRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let item_type = required_query_value(query.ty)?;
+    let item_id = required_query_value(query.id)?;
+    let item_name = required_query_value(query.name)?;
+    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enqueue_general_command(
+        &state,
+        &session_id,
+        &controller,
+        GeneralCommand {
+            name: GeneralCommandType::DisplayContent,
+            controlling_user_id: controller.user.id,
+            arguments: HashMap::from([
+                ("ItemId".to_owned(), item_id),
+                ("ItemName".to_owned(), item_name),
+                ("ItemType".to_owned(), item_type),
+            ]),
         },
     )
     .await?;
@@ -255,6 +297,12 @@ async fn authenticated_device_session(
         authentication::AuthenticatedIdentity::Device(session) => Ok(session),
         authentication::AuthenticatedIdentity::ApiKey(_) => Err(ApiError::Unauthorized),
     }
+}
+
+fn required_query_value(value: Option<String>) -> Result<String, ApiError> {
+    value
+        .filter(|value| !value.is_empty())
+        .ok_or(ApiError::InvalidRequest)
 }
 
 async fn enqueue_general_command(
