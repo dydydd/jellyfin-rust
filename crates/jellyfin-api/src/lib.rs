@@ -66,6 +66,7 @@ mod system;
 mod time_sync;
 mod user_data;
 mod user_library;
+mod user_views;
 mod users;
 mod videos;
 mod virtual_folders;
@@ -283,6 +284,7 @@ pub fn router(state: AppState) -> Router {
         .merge(api_key_routes())
         .merge(device_routes())
         .merge(user_routes())
+        .merge(user_view_routes())
         .merge(startup_routes())
         .merge(authentication_routes())
         .merge(quick_connect_routes())
@@ -456,6 +458,20 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/Password", post(users::update_password_query))
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/Users/{id}/Policy", post(users::update_policy))
+}
+
+fn user_view_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/UserViews", get(user_views::get))
+        .route(
+            "/UserViews/GroupingOptions",
+            get(user_views::grouping_options),
+        )
+        .route("/Users/{user_id}/Views", get(user_views::get_legacy))
+        .route(
+            "/Users/{user_id}/GroupingOptions",
+            get(user_views::grouping_options_legacy),
+        )
 }
 
 fn session_routes() -> Router<Arc<AppState>> {

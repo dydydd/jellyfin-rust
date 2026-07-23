@@ -84,6 +84,8 @@ pub struct BaseItemDto {
     pub overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection_type: Option<String>,
     pub is_folder: bool,
     pub is_virtual_item: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -500,6 +502,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         path: item.path,
         overview: item.overview,
         media_type: item.media_type,
+        collection_type: None,
         is_folder: item.is_folder,
         is_virtual_item: item.is_virtual_item,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),
@@ -861,6 +864,7 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
         path: None,
         overview: None,
         media_type: None,
+        collection_type: None,
         is_folder: true,
         is_virtual_item: false,
         parent_id: None,
@@ -891,6 +895,7 @@ pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
         path: None,
         overview: None,
         media_type: None,
+        collection_type: None,
         is_folder: false,
         is_virtual_item: false,
         parent_id: None,
