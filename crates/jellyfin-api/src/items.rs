@@ -7,6 +7,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery};
+use jellyfin_model::UserConfiguration;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -24,6 +25,8 @@ pub(crate) struct ItemsQuery {
     search_term: Option<String>,
     #[serde(rename = "parentId", alias = "ParentId")]
     parent_id: Option<Uuid>,
+    #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
+    is_played: Option<bool>,
     #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
     ids: Vec<Uuid>,
     #[serde(
@@ -54,6 +57,34 @@ pub(crate) struct ItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct LatestItemsQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(rename = "parentId", alias = "ParentId")]
+    parent_id: Option<Uuid>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(
+        default,
+        rename = "includeItemTypes",
+        alias = "IncludeItemTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    include_item_types: Vec<String>,
+    #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
+    is_played: Option<bool>,
+    #[serde(default = "default_latest_limit")]
+    limit: u64,
+    #[serde(default, rename = "groupItems", alias = "GroupItems")]
+    group_items: bool,
 }
 
 pub(crate) async fn get(
@@ -88,6 +119,23 @@ pub(crate) async fn resume_legacy(
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     resume_for(state, headers, Some(user_id), query).await
+}
+
+pub(crate) async fn latest(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<LatestItemsQuery>,
+) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
+    latest_for(state, headers, query.user_id, query).await
+}
+
+pub(crate) async fn latest_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+    Query(query): Query<LatestItemsQuery>,
+) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
+    latest_for(state, headers, Some(user_id), query).await
 }
 
 async fn get_for(
@@ -126,6 +174,52 @@ async fn resume_for(
     ))
 }
 
+async fn latest_for(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    requested_user_id: Option<Uuid>,
+    query: LatestItemsQuery,
+) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let target = state.users.get(target_user_id).await?;
+    let configuration: UserConfiguration =
+        serde_json::from_value(target.preferences).unwrap_or_default();
+    let is_played = query.is_played.or_else(|| {
+        if configuration.hide_played_in_latest {
+            Some(false)
+        } else {
+            None
+        }
+    });
+    let fields = query.fields.clone();
+    let _ = query.group_items;
+    let page = state
+        .user_library
+        .query_items(
+            &authenticated.user,
+            target_user_id,
+            BaseItemQuery {
+                parent_id: query.parent_id,
+                recursive: true,
+                include_item_types: query.include_item_types,
+                is_virtual_item: Some(false),
+                user_id: Some(target_user_id),
+                is_played,
+                order: BaseItemOrder::DateCreatedDescending,
+                start_index: 0,
+                limit: Some(query.limit),
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+    Ok(Json(
+        page_to_dto(state.as_ref(), page, fields, target_user_id)
+            .await?
+            .items,
+    ))
+}
+
 impl TryFrom<ItemsQuery> for BaseItemQuery {
     type Error = ApiError;
 
@@ -143,11 +237,16 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             group_versions_by_presentation_key: false,
             user_id: query.user_id,
             is_resumable: None,
+            is_played: query.is_played,
             order: BaseItemOrder::default(),
             start_index: query.start_index,
             limit: query.limit,
         })
     }
+}
+
+const fn default_latest_limit() -> u64 {
+    20
 }
 
 async fn page_to_dto(

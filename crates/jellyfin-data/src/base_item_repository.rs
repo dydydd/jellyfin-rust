@@ -85,6 +85,7 @@ pub struct BaseItemHierarchyEntry {
 pub enum BaseItemOrder {
     #[default]
     SortName,
+    DateCreatedDescending,
     DatePlayedAscending,
     DatePlayedDescending,
 }
@@ -103,6 +104,7 @@ pub struct BaseItemQuery {
     pub group_versions_by_presentation_key: bool,
     pub user_id: Option<Uuid>,
     pub is_resumable: Option<bool>,
+    pub is_played: Option<bool>,
     pub order: BaseItemOrder,
     pub start_index: u64,
     pub limit: Option<u64>,
@@ -381,7 +383,10 @@ impl BaseItemRepository {
                 self.query_not_resumable(user_id, query).await
             };
         }
-        if query.order != BaseItemOrder::SortName {
+        if matches!(
+            query.order,
+            BaseItemOrder::DatePlayedAscending | BaseItemOrder::DatePlayedDescending
+        ) {
             let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
             return self.query_by_date_played(user_id, query).await;
         }
@@ -438,11 +443,32 @@ impl BaseItemRepository {
         if let Some(is_virtual_item) = query.is_virtual_item {
             select = select.filter(base_item::Column::IsVirtualItem.eq(is_virtual_item));
         }
+        if let Some(is_played) = query.is_played {
+            let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
+            let played_items = Query::select()
+                .column(user_data::Column::ItemId)
+                .from((Alias::new("jellyfin"), user_data::Entity))
+                .and_where(user_data::Column::UserId.eq(user_id))
+                .and_where(user_data::Column::Played.eq(true))
+                .to_owned();
+            select = if is_played {
+                select.filter(base_item::Column::Id.in_subquery(played_items))
+            } else {
+                select.filter(base_item::Column::Id.not_in_subquery(played_items))
+            };
+        }
         let total_record_count = select.clone().count(&self.database).await?;
-        let mut select = select
-            .order_by_asc(base_item::Column::SortName)
-            .order_by_asc(base_item::Column::Id)
-            .offset(query.start_index);
+        let mut select = match query.order {
+            BaseItemOrder::SortName => select.order_by_asc(base_item::Column::SortName),
+            BaseItemOrder::DateCreatedDescending => {
+                select.order_by_desc(base_item::Column::DateCreated)
+            }
+            BaseItemOrder::DatePlayedAscending | BaseItemOrder::DatePlayedDescending => {
+                unreachable!("date-played queries are handled by query_by_date_played")
+            }
+        }
+        .order_by_asc(base_item::Column::Id)
+        .offset(query.start_index);
         if let Some(limit) = query.limit {
             select = select.limit(limit);
         }
@@ -629,6 +655,7 @@ impl BaseItemRepository {
         let order = match query.order {
             BaseItemOrder::DatePlayedAscending => "date_played ASC NULLS FIRST, id",
             BaseItemOrder::DatePlayedDescending => "date_played DESC NULLS LAST, id",
+            BaseItemOrder::DateCreatedDescending => "date_created DESC, id",
             BaseItemOrder::SortName => "sort_name, id",
         };
         self.query_raw_page(cte, values, "dated", order, "DatePlayed", query)
@@ -1051,6 +1078,31 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     if let Some(is_virtual_item) = query.is_virtual_item {
         push_bind(sql, values, is_virtual_item, " AND item.is_virtual_item = ");
+    }
+    if let Some(is_played) = query.is_played {
+        let Some(user_id) = query.user_id else {
+            return;
+        };
+        if is_played {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.played = true AND data.user_id = ",
+            );
+        } else {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id NOT IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.played = true AND data.user_id = ",
+            );
+        }
+        sql.push(')');
     }
 }
 
