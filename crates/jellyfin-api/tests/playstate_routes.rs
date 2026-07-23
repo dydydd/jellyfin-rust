@@ -98,8 +98,8 @@ async fn playback_progress_json_route_updates_resume_and_stream_choices() {
         "/Sessions/Playing/Progress",
         &fixture.user_token,
         json!({
-            "ItemId": fixture.item_id,
-            "PositionTicks": 654_321,
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(300),
             "AudioStreamIndex": 2,
             "SubtitleStreamIndex": 3
         }),
@@ -108,11 +108,12 @@ async fn playback_progress_json_route_updates_resume_and_stream_choices() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_progress(
         &repository,
-        fixture.item_id,
+        fixture.runtime_item_id,
         fixture.user_id,
-        654_321,
+        ticks(300),
         Some(2),
         Some(3),
+        false,
     )
     .await;
 
@@ -123,8 +124,8 @@ async fn playback_progress_json_route_updates_resume_and_stream_choices() {
         "/Sessions/Playing/Progress",
         &fixture.user_token,
         json!({
-            "ItemId": fixture.item_id,
-            "PositionTicks": 700_000,
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(301),
             "AudioStreamIndex": 4,
             "SubtitleStreamIndex": 5
         }),
@@ -133,11 +134,12 @@ async fn playback_progress_json_route_updates_resume_and_stream_choices() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_progress(
         &repository,
-        fixture.item_id,
+        fixture.runtime_item_id,
         fixture.user_id,
-        700_000,
+        ticks(301),
         None,
         None,
+        false,
     )
     .await;
 
@@ -148,6 +150,29 @@ async fn playback_progress_json_route_updates_resume_and_stream_choices() {
         &fixture.user_token,
         json!({
             "ItemId": fixture.item_id,
+            "PositionTicks": 1
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_progress(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        0,
+        None,
+        None,
+        true,
+    )
+    .await;
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
             "PositionTicks": -1
         }),
     )
@@ -164,26 +189,29 @@ async fn playback_progress_legacy_route_uses_authenticated_user_and_missing_item
 
     set_stream_remembering(&fixture.database, fixture.user_id, true).await;
     let legacy_route = format!(
-        "/Users/{}/PlayingItems/{}/Progress?positionTicks=800000&audioStreamIndex=6&subtitleStreamIndex=-1",
-        fixture.administrator_id, fixture.item_id
+        "/Users/{}/PlayingItems/{}/Progress?positionTicks={}&audioStreamIndex=6&subtitleStreamIndex=-1",
+        fixture.administrator_id,
+        fixture.runtime_item_id,
+        ticks(300)
     );
     let response = request(&fixture.app, "POST", &legacy_route, &fixture.user_token).await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_progress(
         &repository,
-        fixture.item_id,
+        fixture.runtime_item_id,
         fixture.user_id,
-        800_000,
+        ticks(300),
         Some(6),
         Some(-1),
+        false,
     )
     .await;
     assert!(
         repository
             .get(
-                fixture.item_id,
+                fixture.runtime_item_id,
                 fixture.administrator_id,
-                &fixture.item_id.to_string()
+                &fixture.runtime_item_id.to_string()
             )
             .await
             .expect("administrator progress lookup")
@@ -523,6 +551,7 @@ async fn assert_progress(
     position_ticks: i64,
     audio_stream_index: Option<i32>,
     subtitle_stream_index: Option<i32>,
+    played: bool,
 ) {
     let persisted = repository
         .get(item_id, user_id, &item_id.to_string())
@@ -532,6 +561,7 @@ async fn assert_progress(
     assert_eq!(persisted.playback_position_ticks, position_ticks);
     assert_eq!(persisted.audio_stream_index, audio_stream_index);
     assert_eq!(persisted.subtitle_stream_index, subtitle_stream_index);
+    assert_eq!(persisted.played, played);
 }
 
 async fn assert_started(

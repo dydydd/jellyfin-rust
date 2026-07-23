@@ -543,6 +543,7 @@ impl UserDataRepository {
         let position_present = patch.playback_position_ticks.is_some();
         let audio_present = patch.audio_stream_index.is_some();
         let subtitle_present = patch.subtitle_stream_index.is_some();
+        let played_present = patch.played.is_some();
         let audio_stream_index = patch.audio_stream_index.flatten();
         let subtitle_stream_index = patch.subtitle_stream_index.flatten();
         let statement = Statement::from_sql_and_values(
@@ -568,12 +569,13 @@ impl UserDataRepository {
             INSERT INTO jellyfin.user_data (
                 item_id, user_id, custom_data_key,
                 playback_position_ticks, audio_stream_index,
-                subtitle_stream_index
+                subtitle_stream_index, played
             )
             SELECT $1, $2, custom_data_key,
                 CASE WHEN $5::boolean THEN $6::bigint ELSE 0 END,
                 CASE WHEN $7::boolean THEN $8::integer ELSE NULL END,
-                CASE WHEN $9::boolean THEN $10::integer ELSE NULL END
+                CASE WHEN $9::boolean THEN $10::integer ELSE NULL END,
+                CASE WHEN $11::boolean THEN $12::boolean ELSE false END
             FROM target_key
             ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
             SET playback_position_ticks = CASE
@@ -587,6 +589,10 @@ impl UserDataRepository {
                 subtitle_stream_index = CASE
                     WHEN $9::boolean THEN $10::integer
                     ELSE jellyfin.user_data.subtitle_stream_index
+                END,
+                played = CASE
+                    WHEN $11::boolean THEN $12::boolean
+                    ELSE jellyfin.user_data.played
                 END
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
@@ -604,6 +610,8 @@ impl UserDataRepository {
                 audio_stream_index.into(),
                 subtitle_present.into(),
                 subtitle_stream_index.into(),
+                played_present.into(),
+                patch.played.unwrap_or_default().into(),
             ],
         );
         user_data::Model::find_by_statement(statement)

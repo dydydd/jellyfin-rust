@@ -216,12 +216,18 @@ impl PlaystateService {
         user: &user::Model,
         update: PlaybackProgressUpdate,
     ) -> Result<Option<PlaystateUpdate>, PlaystateError> {
+        if update
+            .position_ticks
+            .is_some_and(|position_ticks| position_ticks < 0)
+        {
+            return Err(UserDataError::NegativePlaybackValue.into());
+        }
         let Some(item) = self.progress_item(update.item_id).await? else {
             return Ok(None);
         };
         let configuration: UserConfiguration =
             serde_json::from_value(user.preferences.clone()).unwrap_or_default();
-        let patch = playback_progress_patch(&configuration, &update);
+        let patch = playback_progress_patch(&configuration, &update, &item);
         if !has_playback_progress_changes(&patch) {
             return Ok(None);
         }
@@ -364,9 +370,17 @@ impl PlaystateService {
 fn playback_progress_patch(
     configuration: &UserConfiguration,
     update: &PlaybackProgressUpdate,
+    item: &base_item::Model,
 ) -> UserDataPatch {
+    let (playback_position_ticks, played) = if let Some(position_ticks) = update.position_ticks {
+        let (playback_position_ticks, played) = update_play_state_effect(item, position_ticks);
+        (Some(playback_position_ticks), played)
+    } else {
+        (None, None)
+    };
     UserDataPatch {
-        playback_position_ticks: update.position_ticks,
+        playback_position_ticks,
+        played,
         audio_stream_index: if configuration.remember_audio_selections {
             update.audio_stream_index.map(Some)
         } else {
@@ -383,6 +397,7 @@ fn playback_progress_patch(
 
 const fn has_playback_progress_changes(patch: &UserDataPatch) -> bool {
     patch.playback_position_ticks.is_some()
+        || patch.played.is_some()
         || patch.audio_stream_index.is_some()
         || patch.subtitle_stream_index.is_some()
 }
