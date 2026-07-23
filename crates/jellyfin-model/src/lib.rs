@@ -21,6 +21,7 @@ pub mod plugins;
 pub mod providers;
 mod serde_datetime;
 mod serde_guid;
+mod sync_play;
 pub mod system;
 mod user_data;
 pub mod users;
@@ -55,6 +56,7 @@ pub use metadata_editor::{
 pub use net::{MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
+pub use sync_play::UtcTimeResponse;
 pub use system::PublicSystemInfo;
 pub use user_data::{UpdateUserItemDataDto, UserItemDataDto};
 pub use users::{AccessSchedule, UserPolicy};

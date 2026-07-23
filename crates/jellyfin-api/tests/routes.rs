@@ -2,6 +2,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
@@ -75,6 +76,29 @@ async fn system_routes_follow_the_public_contract() {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_text(response).await, "Jellyfin Server");
     }
+
+    let before_time_sync = Utc::now();
+    let response = app
+        .clone()
+        .oneshot(Request::get("/GetUtcTime").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let after_time_sync = Utc::now();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    let body = body_json(response).await;
+    assert!(body.get("request_reception_time").is_none());
+    let request_reception_time =
+        chrono::DateTime::parse_from_rfc3339(body["RequestReceptionTime"].as_str().unwrap())
+            .unwrap()
+            .with_timezone(&Utc);
+    let response_transmission_time =
+        chrono::DateTime::parse_from_rfc3339(body["ResponseTransmissionTime"].as_str().unwrap())
+            .unwrap()
+            .with_timezone(&Utc);
+    assert!(request_reception_time >= before_time_sync);
+    assert!(response_transmission_time >= request_reception_time);
+    assert!(response_transmission_time <= after_time_sync);
 }
 
 #[tokio::test]

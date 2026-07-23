@@ -3,6 +3,17 @@ use serde::{Deserialize, Deserializer, Serializer};
 
 /// Matches Jellyfin's legacy `JsonDateTimeConverter`, including its seven
 /// fractional digits for timestamps that fall on a whole millisecond.
+pub(crate) mod required {
+    use super::*;
+
+    pub fn serialize<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_datetime(*value, serializer)
+    }
+}
+
 pub(crate) mod option {
     use super::*;
 
@@ -11,20 +22,7 @@ pub(crate) mod option {
         S: Serializer,
     {
         match value {
-            Some(value) => {
-                let ticks = value.nanosecond() / 100;
-                let mut output = format!("{}.{ticks:07}Z", value.format("%Y-%m-%dT%H:%M:%S"));
-
-                if value.timestamp_subsec_millis() != 0 {
-                    let z = output.pop().expect("timestamp always ends in Z");
-                    while output.ends_with('0') {
-                        output.pop();
-                    }
-                    output.push(z);
-                }
-
-                serializer.serialize_str(&output)
-            }
+            Some(value) => serialize_datetime(*value, serializer),
             None => serializer.serialize_none(),
         }
     }
@@ -41,4 +39,22 @@ pub(crate) mod option {
             })
             .transpose()
     }
+}
+
+fn serialize_datetime<S>(value: DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let ticks = value.nanosecond() / 100;
+    let mut output = format!("{}.{ticks:07}Z", value.format("%Y-%m-%dT%H:%M:%S"));
+
+    if value.timestamp_subsec_millis() != 0 {
+        let z = output.pop().expect("timestamp always ends in Z");
+        while output.ends_with('0') {
+            output.pop();
+        }
+        output.push(z);
+    }
+
+    serializer.serialize_str(&output)
 }

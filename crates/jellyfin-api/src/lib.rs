@@ -52,6 +52,7 @@ pub mod query;
 mod robots;
 mod startup;
 mod system;
+mod time_sync;
 mod user_data;
 mod user_library;
 mod users;
@@ -223,6 +224,7 @@ pub fn router(state: AppState) -> Router {
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
+        .route("/GetUtcTime", get(time_sync::get_utc_time))
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))

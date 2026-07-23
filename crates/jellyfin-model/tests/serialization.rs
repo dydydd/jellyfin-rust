@@ -1,5 +1,7 @@
-use chrono::{TimeZone, Utc};
-use jellyfin_model::{PublicSystemInfo, SyncPlayUserAccessType, UserDto, UserPolicy};
+use chrono::{TimeZone, Timelike, Utc};
+use jellyfin_model::{
+    PublicSystemInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -45,6 +47,25 @@ fn user_dto_matches_jellyfin_wire_names_and_guid_format() {
     assert_eq!(value["Policy"]["SyncPlayAccess"], "CreateAndJoinGroups");
     assert!(value.get("ServerName").is_none());
     assert!(value.get("last_login_date").is_none());
+}
+
+#[test]
+fn utc_time_response_matches_syncplay_wire_contract() {
+    let response = UtcTimeResponse::new(
+        Utc.with_ymd_and_hms(2026, 7, 22, 8, 30, 0)
+            .unwrap()
+            .with_nanosecond(123_456_700)
+            .unwrap(),
+        Utc.with_ymd_and_hms(2026, 7, 22, 8, 30, 1).unwrap(),
+    );
+
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        json!({
+            "RequestReceptionTime": "2026-07-22T08:30:00.1234567Z",
+            "ResponseTransmissionTime": "2026-07-22T08:30:01.0000000Z"
+        })
+    );
 }
 
 #[test]
