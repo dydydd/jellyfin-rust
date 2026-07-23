@@ -397,6 +397,7 @@ fn user_routes() -> Router<Arc<AppState>> {
 
 fn session_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/Sessions/Logout", post(session::logout))
         .route("/Auth/Providers", get(session::authentication_providers))
         .route(
             "/Auth/PasswordResetProviders",

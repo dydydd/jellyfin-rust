@@ -267,6 +267,22 @@ impl DeviceRepository {
         Ok(devices.exec(&self.database).await?.rows_affected)
     }
 
+    /// Deletes a device authentication record by exact access token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when deletion fails.
+    pub async fn delete_by_token(
+        &self,
+        access_token: &str,
+    ) -> Result<u64, AuthenticationStoreError> {
+        Ok(device::Entity::delete_many()
+            .filter(device::Column::AccessToken.eq(access_token))
+            .exec(&self.database)
+            .await?
+            .rows_affected)
+    }
+
     /// Returns devices matching the supplied exact filters.
     ///
     /// A limit of zero matches upstream behavior and means no limit.

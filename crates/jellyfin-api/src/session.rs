@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{OriginalUri, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
 };
 use jellyfin_model::NameIdPair;
 
@@ -25,6 +25,19 @@ pub(crate) async fn password_reset_providers(
 ) -> Result<Json<Vec<NameIdPair>>, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
     Ok(Json(state.users.password_reset_providers()))
+}
+
+pub(crate) async fn logout(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    state
+        .devices
+        .delete_by_token(identity.access_token())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn require_elevated(
