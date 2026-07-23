@@ -1389,6 +1389,7 @@ dependencies = [
  "jellyfin-model",
  "jellyfin-networking",
  "jellyfin-server-implementations",
+ "md-5",
  "oas3",
  "percent-encoding",
  "schemars",

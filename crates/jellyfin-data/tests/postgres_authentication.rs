@@ -3,12 +3,13 @@ use jellyfin_data::{
     ApiKeyRepository, DatabaseConfig, DeviceQuery, DeviceRepository, NewDevice,
     entities::{device, user},
 };
-use jellyfin_migration::CreateAuthenticationMigration;
+use jellyfin_migration::{CreateAuthenticationMigration, OptimizeDeviceSessionQueriesMigration};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ConnectionTrait, DatabaseConnection, EntityTrait,
-    IntoActiveModel, Set, SqlErr, Statement, TryGetable,
+    IntoActiveModel, Set, SqlErr, Statement, TransactionTrait, TryGetable,
 };
 use sea_orm_migration::{MigrationTrait, SchemaManager};
+use serde_json::Value;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -35,6 +36,10 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("authentication DDL must remain idempotent");
+    OptimizeDeviceSessionQueriesMigration
+        .up(&schema)
+        .await
+        .expect("device session optimization DDL must remain idempotent");
     assert_authentication_indexes(&database).await;
     database
 }
@@ -163,12 +168,15 @@ async fn test_devices(database: &DatabaseConnection) {
         .update(activated)
         .await
         .expect("device update must succeed");
+    assert_device_query_filters(&repository, &device_id, &activated, &second).await;
+
     let latest = repository
         .latest_by_device_id(&device_id)
         .await
         .expect("latest device lookup must succeed")
         .expect("latest device must exist");
     assert_eq!(latest.id, activated.id);
+    assert_device_session_index_plan(database, &device_id).await;
 
     let mut duplicate = second.clone().into_active_model();
     duplicate.id = NotSet;
@@ -184,7 +192,7 @@ async fn test_devices(database: &DatabaseConnection) {
 
     assert_eq!(
         repository
-            .delete(second.id)
+            .delete_by_token(&second.access_token)
             .await
             .expect("device deletion must succeed"),
         1
@@ -200,6 +208,73 @@ async fn test_devices(database: &DatabaseConnection) {
             .expect("cascade verification must succeed")
             .is_none()
     );
+}
+
+async fn assert_device_query_filters(
+    repository: &DeviceRepository,
+    device_id: &str,
+    active: &device::Model,
+    inactive: &device::Model,
+) {
+    let active_page = repository
+        .query(&DeviceQuery {
+            device_id: Some(device_id.to_uppercase()),
+            is_active: Some(true),
+            active_since: Some(active.date_last_activity - Duration::seconds(1)),
+            ..Default::default()
+        })
+        .await
+        .expect("active device query must succeed");
+    assert_eq!(active_page.total_record_count, 1);
+    assert_eq!(active_page.items[0].id, active.id);
+
+    let stale_page = repository
+        .query(&DeviceQuery {
+            device_id: Some(device_id.to_uppercase()),
+            is_active: Some(true),
+            active_since: Some(active.date_last_activity + Duration::seconds(1)),
+            ..Default::default()
+        })
+        .await
+        .expect("stale device query must succeed");
+    assert_eq!(stale_page.total_record_count, 0);
+
+    let inactive_page = repository
+        .query(&DeviceQuery {
+            device_id: Some(device_id.to_uppercase()),
+            is_active: Some(false),
+            ..Default::default()
+        })
+        .await
+        .expect("inactive device query must succeed");
+    assert_eq!(inactive_page.total_record_count, 1);
+    assert_eq!(inactive_page.items[0].id, inactive.id);
+}
+
+async fn assert_device_session_index_plan(database: &DatabaseConnection, device_id: &str) {
+    let transaction = database.begin().await.expect("EXPLAIN transaction");
+    transaction
+        .execute_unprepared("ANALYZE jellyfin.devices; SET LOCAL enable_seqscan = off")
+        .await
+        .expect("device session planner statistics must refresh");
+    let row = transaction
+        .query_one(Statement::from_sql_and_values(
+            transaction.get_database_backend(),
+            "EXPLAIN (FORMAT JSON) SELECT id FROM jellyfin.devices \
+             WHERE is_active AND lower(device_id) = lower($1::text) \
+             ORDER BY date_last_activity DESC",
+            [device_id.to_uppercase().into()],
+        ))
+        .await
+        .expect("device session EXPLAIN must succeed")
+        .expect("device session EXPLAIN must return a row");
+    let plan = Value::try_get(&row, "", "QUERY PLAN").expect("EXPLAIN JSON plan must decode");
+    let serialized = plan.to_string();
+    assert!(
+        serialized.contains("devices_lower_device_activity_idx"),
+        "case-insensitive active session lookup must use its expression index: {serialized}"
+    );
+    transaction.rollback().await.expect("EXPLAIN rollback");
 }
 
 async fn insert_user(database: &DatabaseConnection, user_id: Uuid, username: &str) {
@@ -250,6 +325,13 @@ async fn assert_authentication_indexes(database: &DatabaseConnection) {
             .iter()
             .any(|(table, name, _)| { table == "devices" && name == "devices_user_device_idx" })
     );
+    assert!(indexes.iter().any(|(table, name, definition)| {
+        table == "devices"
+            && name == "devices_lower_device_activity_idx"
+            && definition.contains("lower((device_id)::text)")
+            && definition.contains("date_last_activity DESC")
+            && definition.contains("WHERE is_active")
+    }));
 }
 
 fn assert_unique_index(indexes: &[(String, String, String)], table: &str, name: &str) {

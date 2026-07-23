@@ -150,6 +150,8 @@ pub struct DeviceQuery {
     pub user_id: Option<Uuid>,
     pub device_id: Option<String>,
     pub access_token: Option<String>,
+    pub is_active: Option<bool>,
+    pub active_since: Option<DateTime<Utc>>,
 }
 
 /// A page of devices and the unpaged match count.
@@ -296,10 +298,19 @@ impl DeviceRepository {
             devices = devices.filter(device::Column::UserId.eq(user_id));
         }
         if let Some(device_id) = query.device_id.as_deref() {
-            devices = devices.filter(device::Column::DeviceId.eq(device_id));
+            devices = devices.filter(Expr::cust_with_values(
+                "lower(device_id) = lower($1::text)",
+                [device_id.to_owned()],
+            ));
         }
         if let Some(access_token) = query.access_token.as_deref() {
             devices = devices.filter(device::Column::AccessToken.eq(access_token));
+        }
+        if let Some(is_active) = query.is_active {
+            devices = devices.filter(device::Column::IsActive.eq(is_active));
+        }
+        if let Some(active_since) = query.active_since {
+            devices = devices.filter(device::Column::DateLastActivity.gte(active_since));
         }
 
         let total_record_count = devices.clone().count(&self.database).await?;

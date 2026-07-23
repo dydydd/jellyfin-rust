@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    EndPointInfo, NameIdPair, PublicSystemInfo, SyncPlayUserAccessType, UserDto, UserPolicy,
-    UtcTimeResponse,
+    ClientCapabilitiesDto, EndPointInfo, GeneralCommandType, MediaType, NameIdPair,
+    PublicSystemInfo, SessionInfoDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -45,6 +45,52 @@ fn name_id_pair_uses_official_pascal_case_contract() {
             "Id": "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider"
         })
     );
+}
+
+#[test]
+fn session_info_uses_official_wire_names_and_guid_format() {
+    let session = SessionInfoDto {
+        capabilities: ClientCapabilitiesDto {
+            playable_media_types: vec![MediaType::Video],
+            supported_commands: vec![GeneralCommandType::Play],
+            supports_media_control: true,
+            ..ClientCapabilitiesDto::default()
+        },
+        playable_media_types: vec![MediaType::Video],
+        id: Some("session-id".to_owned()),
+        user_id: Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+        user_name: Some("alice".to_owned()),
+        client: Some("Jellyfin Web".to_owned()),
+        last_activity_date: Utc.with_ymd_and_hms(2026, 7, 23, 9, 15, 0).unwrap(),
+        last_playback_check_in: Utc.with_ymd_and_hms(2026, 7, 23, 9, 15, 0).unwrap(),
+        last_paused_date: None,
+        device_name: Some("Browser".to_owned()),
+        device_type: None,
+        device_id: Some("device-id".to_owned()),
+        application_version: Some("1.0".to_owned()),
+        is_active: true,
+        supports_media_control: true,
+        supports_remote_control: true,
+        has_custom_device_name: false,
+        playlist_item_id: None,
+        server_id: Some("server-id".to_owned()),
+        user_primary_image_tag: None,
+        supported_commands: vec![GeneralCommandType::Play],
+    };
+
+    let value = serde_json::to_value(session).unwrap();
+    assert_eq!(value["Id"], "session-id");
+    assert_eq!(value["UserId"], "f9c1ad0c820f44df8db852fbfc0d3d93");
+    assert_eq!(value["PlayableMediaTypes"], json!(["Video"]));
+    assert_eq!(value["SupportedCommands"], json!(["Play"]));
+    assert_eq!(value["Capabilities"]["SupportsPersistentIdentifier"], true);
+    assert_eq!(
+        value["Capabilities"]["PlayableMediaTypes"],
+        json!(["Video"])
+    );
+    assert_eq!(value["LastActivityDate"], "2026-07-23T09:15:00.0000000Z");
+    assert!(value.get("LastPausedDate").is_none());
+    assert!(value.get("DeviceType").is_none());
 }
 
 #[test]

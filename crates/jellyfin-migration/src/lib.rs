@@ -24,6 +24,7 @@ mod m20260722_000021_create_media_streams;
 mod m20260722_000022_create_media_attachments;
 mod m20260722_000023_add_playstate_resume_configuration;
 mod m20260722_000024_add_client_log_upload_configuration;
+mod m20260722_000025_optimize_device_session_queries;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -73,6 +74,8 @@ pub use m20260722_000022_create_media_attachments::Migration as CreateMediaAttac
 pub use m20260722_000023_add_playstate_resume_configuration::Migration as AddPlaystateResumeConfigurationMigration;
 #[doc(hidden)]
 pub use m20260722_000024_add_client_log_upload_configuration::Migration as AddClientLogUploadConfigurationMigration;
+#[doc(hidden)]
+pub use m20260722_000025_optimize_device_session_queries::Migration as OptimizeDeviceSessionQueriesMigration;
 
 pub struct Migrator;
 
@@ -104,6 +107,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000022_create_media_attachments::Migration),
             Box::new(m20260722_000023_add_playstate_resume_configuration::Migration),
             Box::new(m20260722_000024_add_client_log_upload_configuration::Migration),
+            Box::new(m20260722_000025_optimize_device_session_queries::Migration),
         ]
     }
 }
