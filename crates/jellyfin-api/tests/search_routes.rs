@@ -130,6 +130,16 @@ async fn exercise_search_routes(database_name: &str) {
         Some(json!({ "IsMovie": true })),
     )
     .await;
+    create_item(
+        &items,
+        Uuid::from_u128(0x255e_c608_7e15_4abc_aace_9338_3f7f_0854),
+        root.id,
+        "Folder",
+        "Matrix Folder",
+        "Video",
+        None,
+    )
+    .await;
     let audio_id = Uuid::from_u128(0x279b_76fd_c49e_4de0_8767_f1f7_dbb4_f038);
     create_item(
         &items,
@@ -258,6 +268,20 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(audio["TotalRecordCount"], 1);
     assert_eq!(audio["SearchHints"][0]["Name"], "Matrix Theme");
     assert_eq!(audio["SearchHints"][0]["MediaType"], "Audio");
+
+    let folder_request = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Matrix&includeItemTypes=Folder",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        folder_request,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
 
     let movie_class = body_json(
         request(
@@ -504,6 +528,7 @@ async fn create_item(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     item.media_type = Some(media_type.to_owned());
+    item.is_folder = item_type == "Folder" || item_type == "CollectionFolder";
     item.data = data;
     repository.create(item).await.expect("item creation");
 }

@@ -12,6 +12,8 @@ use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication};
 
+const DEFAULT_EXCLUDE_ITEM_TYPES: [&str; 3] = ["Year", "Folder", "CollectionFolder"];
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct SearchHintsQuery {
@@ -80,6 +82,7 @@ pub(crate) async fn hints(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    let exclude_item_types = search_exclude_item_types(&query.exclude_item_types);
     let mut result = SearchHintResult::default();
 
     if query.include_media.unwrap_or(true) {
@@ -93,7 +96,7 @@ pub(crate) async fn hints(
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
                     include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: query.exclude_item_types.clone(),
+                    exclude_item_types: exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -123,7 +126,7 @@ pub(crate) async fn hints(
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
                     include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: query.exclude_item_types.clone(),
+                    exclude_item_types: exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -156,7 +159,7 @@ pub(crate) async fn hints(
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
                     include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: query.exclude_item_types.clone(),
+                    exclude_item_types: exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -189,7 +192,7 @@ pub(crate) async fn hints(
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
                     include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: query.exclude_item_types.clone(),
+                    exclude_item_types: exclude_item_types.clone(),
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -223,7 +226,7 @@ pub(crate) async fn hints(
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
                     include_item_types: query.include_item_types,
-                    exclude_item_types: query.exclude_item_types,
+                    exclude_item_types,
                     media_types: query.media_types,
                     is_movie: query.is_movie,
                     is_series: query.is_series,
@@ -246,6 +249,19 @@ pub(crate) async fn hints(
     }
 
     Ok(Json(result))
+}
+
+fn search_exclude_item_types(requested: &[String]) -> Vec<String> {
+    let mut exclude_item_types = requested.to_vec();
+    for item_type in DEFAULT_EXCLUDE_ITEM_TYPES {
+        if !exclude_item_types
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(item_type))
+        {
+            exclude_item_types.push(item_type.to_owned());
+        }
+    }
+    exclude_item_types
 }
 
 fn media_search_hint_result(page: BaseItemPage, matched_term: &str) -> SearchHintResult {
