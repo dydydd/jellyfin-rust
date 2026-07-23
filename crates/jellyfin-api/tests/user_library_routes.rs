@@ -232,6 +232,61 @@ async fn remote_lyric_search_matches_management_policy_and_empty_provider_contra
 }
 
 #[tokio::test]
+async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata() {
+    let fixture = UserLibraryFixture::new().await;
+    let route = format!("/Audio/{}/Lyrics", fixture.item_id);
+
+    let before = get_json(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(before["Lyrics"][0]["Text"], "First line");
+
+    let unauthenticated = fixture
+        .app
+        .clone()
+        .oneshot(Request::delete(&route).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let regular_user = request_delete(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(regular_user.status(), StatusCode::FORBIDDEN);
+
+    let missing = request_delete(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics", Uuid::new_v4()),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let non_audio = request_delete(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics", fixture.root_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(non_audio.status(), StatusCode::NOT_FOUND);
+
+    let deleted = request_delete(&fixture.app, &route, &fixture.administrator_token).await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    let deleted_again = request_delete(&fixture.app, &route, &fixture.administrator_token).await;
+    assert_eq!(deleted_again.status(), StatusCode::NO_CONTENT);
+
+    let after = request(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(after.status(), StatusCode::NOT_FOUND);
+
+    let item = get_json(
+        &fixture.app,
+        &format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(item["HasLyrics"], false);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn media_source_defaults_follow_target_user_stream_preferences() {
     let fixture = UserLibraryFixture::new().await;
     set_stream_preferences(&fixture.database, fixture.user_id).await;
@@ -725,6 +780,21 @@ async fn request_post(app: &axum::Router, uri: &str, token: &str) -> axum::respo
     app.clone()
         .oneshot(
             Request::post(uri)
+                .header(
+                    header::AUTHORIZATION,
+                    format!("{AUTHORIZATION}, Token=\"{token}\""),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn request_delete(app: &axum::Router, uri: &str, token: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::delete(uri)
                 .header(
                     header::AUTHORIZATION,
                     format!("{AUTHORIZATION}, Token=\"{token}\""),

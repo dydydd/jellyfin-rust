@@ -235,6 +235,32 @@ impl UserLibraryService {
         Err(UserLibraryError::LyricsNotFound)
     }
 
+    /// Deletes embedded lyric metadata from an audio item.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found when the item is missing or is not an audio item.
+    pub async fn delete_lyrics(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<(), UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        let mut item = self.load_item(item_id).await?;
+        if !item.item_type.eq_ignore_ascii_case("Audio") {
+            return Err(UserLibraryError::ItemNotFound);
+        }
+        let Some(data) = item.data.as_mut().and_then(Value::as_object_mut) else {
+            return Ok(());
+        };
+        data.remove("Lyrics");
+        data.remove("lyrics");
+        self.items.update(item).await?;
+        Ok(())
+    }
+
     async fn validate_user(
         &self,
         authenticated_user: &user::Model,

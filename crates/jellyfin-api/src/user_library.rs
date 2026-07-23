@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{Path, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::Query;
 use jellyfin_controller::{
@@ -359,6 +359,22 @@ pub(crate) async fn get_lyrics(
     Path(item_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     get_lyrics_for(state, headers, None, item_id).await
+}
+
+pub(crate) async fn delete_lyrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    state
+        .user_library
+        .delete_lyrics(&authenticated.user, authenticated.user.id, item_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn search_remote_lyrics(

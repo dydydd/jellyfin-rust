@@ -832,7 +832,10 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Audio/{item_id}/RemoteSearch/Lyrics/{lyric_id}",
             post(user_library::download_remote_lyrics),
         )
-        .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
+        .route(
+            "/Audio/{item_id}/Lyrics",
+            get(user_library::get_lyrics).delete(user_library::delete_lyrics),
+        )
         .route(
             "/Providers/Lyrics/{lyric_id}",
             get(user_library::get_remote_lyrics),
