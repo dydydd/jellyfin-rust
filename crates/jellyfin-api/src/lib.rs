@@ -331,6 +331,10 @@ pub fn router(state: AppState) -> Router {
             "/System/Configuration",
             get(configuration::get).post(configuration::update),
         )
+        .route(
+            "/System/Configuration/MetadataOptions/Default",
+            get(configuration::default_metadata_options),
+        )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
         .route(
             "/web/ConfigurationPages",

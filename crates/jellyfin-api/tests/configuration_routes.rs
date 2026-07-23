@@ -121,6 +121,44 @@ async fn exercise_configuration_routes(database_name: &str) {
         request(&app, "/System/Configuration", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
+    assert_eq!(
+        request(&app, "/System/Configuration/MetadataOptions/Default", None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(
+            &app,
+            "/System/Configuration/MetadataOptions/Default",
+            Some(&user_token),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let metadata_options = body_json(
+        request(
+            &app,
+            "/System/Configuration/MetadataOptions/Default",
+            Some(&admin_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        metadata_options,
+        json!({
+            "ItemType": "",
+            "DisabledMetadataSavers": [],
+            "LocalMetadataReaderOrder": [],
+            "DisabledMetadataFetchers": [],
+            "MetadataFetcherOrder": [],
+            "DisabledImageFetchers": [],
+            "ImageFetcherOrder": []
+        })
+    );
 
     let mut configuration =
         body_json(request(&app, "/System/Configuration", Some(&user_token)).await).await;

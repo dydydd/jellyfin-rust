@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_data::{ServerConfigurationUpdate, entities::server_configuration};
-use jellyfin_model::{NameValuePair, RepositoryInfo, ServerConfiguration};
+use jellyfin_model::{MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration};
 
 use crate::{ApiError, AppState, authentication, authorization};
 
@@ -35,6 +35,17 @@ pub(crate) async fn update(
         .update_server_configuration(server_configuration_update(configuration)?)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn default_metadata_options(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<MetadataOptions>, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    Ok(Json(MetadataOptions::default()))
 }
 
 fn server_configuration(
