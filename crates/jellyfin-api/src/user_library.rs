@@ -7,7 +7,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_controller::{
-    Genre, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio, Year,
+    Artist, Genre, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio, Year,
     library::get_media_source_name,
 };
 use jellyfin_data::entities::{base_item, user_data};
@@ -936,6 +936,37 @@ pub(crate) fn studio_to_dto(studio: &Studio, server_id: &str) -> BaseItemDto {
         production_year: None,
         run_time_ticks: None,
         presentation_unique_key: Some(format!("Studio-{}", studio.name)),
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
+        provider_ids: None,
+        media_sources: None,
+        media_streams: None,
+    }
+}
+
+pub(crate) fn artist_to_dto(artist: &Artist, server_id: &str) -> BaseItemDto {
+    BaseItemDto {
+        name: Some(artist.name.clone()),
+        server_id: server_id.to_owned(),
+        id: artist.id.simple().to_string(),
+        item_type: "MusicArtist".to_owned(),
+        etag: artist.id.simple().to_string(),
+        date_created: None,
+        sort_name: Some(artist.name.clone()),
+        path: None,
+        overview: None,
+        media_type: None,
+        collection_type: None,
+        is_folder: true,
+        is_virtual_item: false,
+        parent_id: None,
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        run_time_ticks: None,
+        presentation_unique_key: Some(format!("Artist-{}", artist.name)),
         series_id: None,
         season_id: None,
         extra_type: None,

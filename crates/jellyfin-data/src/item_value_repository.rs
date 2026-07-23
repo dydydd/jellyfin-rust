@@ -27,6 +27,7 @@ pub struct ItemValueQuery {
     pub search_term: Option<String>,
     pub include_item_types: Vec<String>,
     pub exclude_item_types: Vec<String>,
+    pub media_types: Vec<String>,
     pub is_favorite: Option<bool>,
     pub user_id: Option<Uuid>,
     pub name_starts_with_or_greater: Option<String>,
@@ -361,6 +362,7 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
         &query.exclude_item_types,
         true,
     );
+    append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     if let Some(is_favorite) = query.is_favorite {
         let Some(user_id) = query.user_id else {
             return;

@@ -1,3 +1,4 @@
+mod artists;
 pub mod client_event;
 mod dashboard;
 mod environment;
@@ -28,6 +29,7 @@ mod videos;
 mod virtual_folders;
 mod years;
 
+pub use artists::{Artist, ArtistError, ArtistPage, ArtistService, ArtistValueKind};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
 pub use genres::{Genre, GenreError, GenrePage, GenreService};
