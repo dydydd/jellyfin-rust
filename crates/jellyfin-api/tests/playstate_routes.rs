@@ -6,18 +6,22 @@ use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    ApiKeyRepository, BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
-    UserDataRepository,
+    ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
+    NewUserData, UserDataRepository,
     entities::{api_key, server_configuration, user},
 };
 use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, UserPolicy};
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
+    Set,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Playstate Tests\", Device=\"Test\", DeviceId=\"playstate\", Version=\"1.0\"";
 const TICKS_PER_SECOND: i64 = 10_000_000;
+const ISOLATED_DATABASE_PREFIX: &str = "jellyfin_playstate_config_";
 
 #[tokio::test]
 async fn delete_mark_unplayed_item_nonexistent_user_id_not_found() {
@@ -237,7 +241,47 @@ async fn playback_progress_legacy_route_uses_authenticated_user_and_missing_item
 
 #[tokio::test]
 async fn playback_progress_and_stop_use_persisted_resume_configuration() {
-    let fixture = PlaystateFixture::new().await;
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{ISOLATED_DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_isolated_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("isolated PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_persisted_resume_configuration(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("isolated PostgreSQL database cleanup must succeed");
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("isolated playstate test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_persisted_resume_configuration(database_name: &str) {
+    let database = jellyfin_data::connect(&DatabaseConfig {
+        url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
+        max_connections: 4,
+        min_connections: 1,
+    })
+    .await
+    .expect("isolated PostgreSQL database must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
+
+    let fixture = PlaystateFixture::with_database(database.clone()).await;
     let repository = UserDataRepository::new(fixture.database.clone());
 
     set_resume_configuration(&fixture.database, 60, 99, 300, 5, 5).await;
@@ -309,6 +353,50 @@ async fn playback_progress_and_stop_use_persisted_resume_configuration() {
         true,
     )
     .await;
+
+    fixture.cleanup().await;
+    database
+        .close()
+        .await
+        .expect("isolated PostgreSQL connection must close");
+}
+
+#[tokio::test]
+async fn playback_ping_route_matches_authorization_and_required_query_contract() {
+    let fixture = PlaystateFixture::new().await;
+
+    let response = request_without_header(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Ping?playSessionId=abc",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = request(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Ping",
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = request(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Ping?playSessionId=abc",
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let api_key_route = format!(
+        "/Sessions/Playing/Ping?PlaySessionId=abc&api_key={}",
+        fixture.api_key_token
+    );
+    let response = request_without_header(&fixture.app, "POST", &api_key_route).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     fixture.cleanup().await;
 }
@@ -932,6 +1020,10 @@ struct PlaystateFixture {
 impl PlaystateFixture {
     async fn new() -> Self {
         let database = test_database().await;
+        Self::with_database(database).await
+    }
+
+    async fn with_database(database: DatabaseConnection) -> Self {
         let users = UserService::new(database.clone());
         let suffix = Uuid::new_v4().simple().to_string();
         let administrator = users
@@ -1412,4 +1504,12 @@ async fn test_database() -> DatabaseConnection {
         .await
         .expect("PostgreSQL migrations must succeed");
     database
+}
+
+fn assert_isolated_database_name(name: &str) {
+    let suffix = name
+        .strip_prefix(ISOLATED_DATABASE_PREFIX)
+        .expect("isolated database prefix");
+    assert_eq!(suffix.len(), 32);
+    assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
 }

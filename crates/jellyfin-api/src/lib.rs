@@ -373,6 +373,10 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             post(playstate::report_playback_progress),
         )
         .route(
+            "/Sessions/Playing/Ping",
+            post(playstate::ping_playback_session),
+        )
+        .route(
             "/Sessions/Playing/Stopped",
             post(playstate::report_playback_stopped),
         )

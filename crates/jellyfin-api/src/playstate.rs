@@ -84,6 +84,12 @@ pub struct PlaybackStopQuery {
     pub position_ticks: Option<i64>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct PlaybackPingQuery {
+    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    pub play_session_id: Option<String>,
+}
+
 pub(crate) async fn mark_played_modern(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -201,6 +207,19 @@ pub(crate) async fn report_playback_stopped(
 ) -> Result<StatusCode, ApiError> {
     let Json(stop) = request.map_err(|_| ApiError::InvalidRequest)?;
     report_playback_stop_for_current_session(state, &uri, headers, stop.into()).await
+}
+
+pub(crate) async fn ping_playback_session(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<PlaybackPingQuery>,
+) -> Result<StatusCode, ApiError> {
+    if query.play_session_id.as_deref().is_none_or(str::is_empty) {
+        return Err(ApiError::InvalidRequest);
+    }
+    authorization::require_default(&state, &headers, &uri).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn report_playback_start_legacy(
