@@ -71,6 +71,7 @@ mod playstate;
 mod plugins;
 pub mod query;
 mod quick_connect;
+mod remote_images;
 mod robots;
 mod scheduled_tasks;
 mod search;
@@ -338,6 +339,15 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
         .route("/Search/Hints", get(search::hints))
+        .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
+        .route(
+            "/Items/{item_id}/RemoteImages/Providers",
+            get(remote_images::providers),
+        )
+        .route(
+            "/Items/{item_id}/RemoteImages/Download",
+            post(remote_images::download),
+        )
         .route(
             "/System/Configuration",
             get(configuration::get).post(configuration::update),

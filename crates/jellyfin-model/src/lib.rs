@@ -71,7 +71,10 @@ pub use metadata_editor::{
 };
 pub use net::{EndPointInfo, MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
-pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
+pub use providers::{
+    ImageProviderInfo, ImageType, RatingType, RemoteImageInfo, RemoteImageResult,
+    order_by_language_descending,
+};
 pub use search::{SearchHint, SearchHintResult};
 pub use session::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,

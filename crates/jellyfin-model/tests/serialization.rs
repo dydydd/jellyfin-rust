@@ -1,12 +1,12 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, ItemCounts,
-    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
-    PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    PublicSystemInfo, QueryResult, RepositoryInfo, SearchHint, SearchHintResult,
-    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto,
-    UserPolicy, UtcTimeResponse,
+    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType,
+    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
+    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
+    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
+    RemoteImageResult, RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration,
+    SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -109,6 +109,32 @@ fn media_segments_use_official_query_result_contract() {
     assert_eq!(value["Items"][0]["Type"], "Intro");
     assert_eq!(value["Items"][0]["StartTicks"], 12_000_000);
     assert_eq!(value["Items"][0]["EndTicks"], 45_000_000);
+}
+
+#[test]
+fn remote_images_use_official_empty_provider_contract() {
+    let result = serde_json::to_value(RemoteImageResult {
+        images: Vec::new(),
+        total_record_count: 0,
+        providers: Vec::new(),
+    })
+    .unwrap();
+    assert_eq!(
+        result,
+        json!({
+            "Images": [],
+            "TotalRecordCount": 0,
+            "Providers": []
+        })
+    );
+
+    let provider = serde_json::to_value(ImageProviderInfo {
+        name: "Example".to_owned(),
+        supported_images: vec![ImageType::Primary, ImageType::Backdrop],
+    })
+    .unwrap();
+    assert_eq!(provider["Name"], "Example");
+    assert_eq!(provider["SupportedImages"], json!(["Primary", "Backdrop"]));
 }
 
 #[test]

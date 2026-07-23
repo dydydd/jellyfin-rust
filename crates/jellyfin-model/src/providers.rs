@@ -45,6 +45,21 @@ pub struct RemoteImageInfo {
     pub rating_type: RatingType,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct RemoteImageResult {
+    pub images: Vec<RemoteImageInfo>,
+    pub total_record_count: i32,
+    pub providers: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ImageProviderInfo {
+    pub name: String,
+    pub supported_images: Vec<ImageType>,
+}
+
 /// Orders remote images by Jellyfin's language, rating, and vote priorities.
 #[must_use]
 pub fn order_by_language_descending<I>(
