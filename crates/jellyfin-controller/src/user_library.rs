@@ -210,6 +210,31 @@ impl UserLibraryService {
         Ok(Vec::new())
     }
 
+    /// Downloads a lyric from a configured remote provider.
+    ///
+    /// No remote lyric providers are wired yet, so validated requests return
+    /// [`UserLibraryError::LyricsNotFound`].
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found when the item is missing, is not audio, or no remote
+    /// provider can resolve the lyric id.
+    pub async fn download_remote_lyrics(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        _lyric_id: &str,
+    ) -> Result<Value, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        let item = self.load_item(item_id).await?;
+        if !item.item_type.eq_ignore_ascii_case("Audio") {
+            return Err(UserLibraryError::ItemNotFound);
+        }
+        Err(UserLibraryError::LyricsNotFound)
+    }
+
     async fn validate_user(
         &self,
         authenticated_user: &user::Model,

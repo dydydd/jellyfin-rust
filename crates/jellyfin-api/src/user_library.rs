@@ -8,7 +8,7 @@ use axum::{
 use axum_extra::extract::Query;
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio,
-    Year, library::get_media_source_name,
+    UserLibraryError, Year, library::get_media_source_name,
 };
 use jellyfin_data::entities::{base_item, user_data};
 use jellyfin_model::{
@@ -375,6 +375,39 @@ pub(crate) async fn search_remote_lyrics(
         .remote_lyrics(&authenticated.user, authenticated.user.id, item_id)
         .await?;
     Ok(Json(lyrics))
+}
+
+pub(crate) async fn download_remote_lyrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((item_id, lyric_id)): Path<(Uuid, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    let lyrics = state
+        .user_library
+        .download_remote_lyrics(
+            &authenticated.user,
+            authenticated.user.id,
+            item_id,
+            &lyric_id,
+        )
+        .await?;
+    Ok(Json(lyrics))
+}
+
+pub(crate) async fn get_remote_lyrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(_lyric_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    Err(UserLibraryError::LyricsNotFound.into())
 }
 
 async fn get_root_for(

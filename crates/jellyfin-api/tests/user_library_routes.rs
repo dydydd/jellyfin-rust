@@ -194,6 +194,40 @@ async fn remote_lyric_search_matches_management_policy_and_empty_provider_contra
     .await;
     assert_eq!(non_audio.status(), StatusCode::NOT_FOUND);
 
+    let download_route = format!(
+        "/Audio/{}/RemoteSearch/Lyrics/remote-provider-id",
+        fixture.item_id
+    );
+    let download_unauthenticated = fixture
+        .app
+        .clone()
+        .oneshot(Request::post(&download_route).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(download_unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    let download_regular = request_post(&fixture.app, &download_route, &fixture.user_token).await;
+    assert_eq!(download_regular.status(), StatusCode::FORBIDDEN);
+    let download_admin =
+        request_post(&fixture.app, &download_route, &fixture.administrator_token).await;
+    assert_eq!(download_admin.status(), StatusCode::NOT_FOUND);
+
+    let download_missing = request_post(
+        &fixture.app,
+        &format!(
+            "/Audio/{}/RemoteSearch/Lyrics/remote-provider-id",
+            Uuid::new_v4()
+        ),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(download_missing.status(), StatusCode::NOT_FOUND);
+
+    let provider_route = "/Providers/Lyrics/remote-provider-id";
+    let provider_regular = request(&fixture.app, provider_route, &fixture.user_token).await;
+    assert_eq!(provider_regular.status(), StatusCode::FORBIDDEN);
+    let provider_admin = request(&fixture.app, provider_route, &fixture.administrator_token).await;
+    assert_eq!(provider_admin.status(), StatusCode::NOT_FOUND);
+
     fixture.cleanup().await;
 }
 
@@ -676,6 +710,21 @@ async fn request(app: &axum::Router, uri: &str, token: &str) -> axum::response::
     app.clone()
         .oneshot(
             Request::get(uri)
+                .header(
+                    header::AUTHORIZATION,
+                    format!("{AUTHORIZATION}, Token=\"{token}\""),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn request_post(app: &axum::Router, uri: &str, token: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::post(uri)
                 .header(
                     header::AUTHORIZATION,
                     format!("{AUTHORIZATION}, Token=\"{token}\""),
