@@ -361,6 +361,22 @@ pub(crate) async fn get_lyrics(
     get_lyrics_for(state, headers, None, item_id).await
 }
 
+pub(crate) async fn search_remote_lyrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<Json<Vec<Value>>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    let lyrics = state
+        .user_library
+        .remote_lyrics(&authenticated.user, authenticated.user.id, item_id)
+        .await?;
+    Ok(Json(lyrics))
+}
+
 async fn get_root_for(
     state: Arc<AppState>,
     headers: HeaderMap,

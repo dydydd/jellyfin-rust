@@ -193,6 +193,12 @@ pub(crate) enum AuthenticatedIdentity {
     ApiKey(api_key::Model),
 }
 
+impl AuthenticatedSession {
+    pub(crate) fn can_manage_lyrics(&self) -> bool {
+        self.user.is_administrator || self.policy.enable_lyric_management
+    }
+}
+
 impl AuthenticatedIdentity {
     pub(crate) fn access_token(&self) -> &str {
         match self {

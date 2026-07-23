@@ -160,6 +160,44 @@ async fn media_stream_fields_are_projected_for_single_item_routes() {
 }
 
 #[tokio::test]
+async fn remote_lyric_search_matches_management_policy_and_empty_provider_contract() {
+    let fixture = UserLibraryFixture::new().await;
+    let route = format!("/Audio/{}/RemoteSearch/Lyrics", fixture.item_id);
+
+    let unauthenticated = fixture
+        .app
+        .clone()
+        .oneshot(Request::get(&route).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let regular_user = request(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(regular_user.status(), StatusCode::FORBIDDEN);
+
+    let remote = get_json(&fixture.app, &route, &fixture.administrator_token).await;
+    assert_eq!(remote.as_array().expect("remote lyric results").len(), 0);
+
+    let missing = request(
+        &fixture.app,
+        &format!("/Audio/{}/RemoteSearch/Lyrics", Uuid::new_v4()),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let non_audio = request(
+        &fixture.app,
+        &format!("/Audio/{}/RemoteSearch/Lyrics", fixture.root_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(non_audio.status(), StatusCode::NOT_FOUND);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn media_source_defaults_follow_target_user_stream_preferences() {
     let fixture = UserLibraryFixture::new().await;
     set_stream_preferences(&fixture.database, fixture.user_id).await;

@@ -824,6 +824,10 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Items/{item_id}/SpecialFeatures",
             get(user_library::get_special_features),
         )
+        .route(
+            "/Audio/{item_id}/RemoteSearch/Lyrics",
+            get(user_library::search_remote_lyrics),
+        )
         .route("/Audio/{item_id}/Lyrics", get(user_library::get_lyrics))
 }
 
