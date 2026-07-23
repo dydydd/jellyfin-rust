@@ -1,5 +1,6 @@
 use jellyfin_data::{
-    PersonError as PersonRepositoryError, PersonRepository,
+    BaseItemError, BaseItemRepository, PersonError as PersonRepositoryError, PersonQuery,
+    PersonRepository,
     entities::{person, user},
 };
 use sea_orm::DatabaseConnection;
@@ -13,6 +14,13 @@ pub struct Person {
     pub model: person::Model,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersonPage {
+    pub people: Vec<Person>,
+    pub total_record_count: u64,
+    pub start_index: u64,
+}
+
 #[derive(Debug, Error)]
 pub enum PersonError {
     #[error("person was not found")]
@@ -24,12 +32,15 @@ pub enum PersonError {
     #[error(transparent)]
     User(#[from] UserError),
     #[error(transparent)]
+    BaseItem(#[from] BaseItemError),
+    #[error(transparent)]
     Repository(#[from] PersonRepositoryError),
 }
 
 #[derive(Clone)]
 pub struct PersonService {
     users: UserService,
+    items: BaseItemRepository,
     people: PersonRepository,
 }
 
@@ -38,6 +49,7 @@ impl PersonService {
     pub fn new(database: DatabaseConnection) -> Self {
         Self {
             users: UserService::new(database.clone()),
+            items: BaseItemRepository::new(database.clone()),
             people: PersonRepository::new(database),
         }
     }
@@ -70,6 +82,32 @@ impl PersonService {
         Ok(Person { model: person })
     }
 
+    /// Lists people credited to filtered library items.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, validation, or persistence errors.
+    pub async fn list(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        query: PersonQuery,
+    ) -> Result<PersonPage, PersonError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        let query = self.scope_parent(query).await?;
+        let page = self.people.query(&query).await?;
+        Ok(PersonPage {
+            people: page
+                .people
+                .into_iter()
+                .map(|person| Person { model: person })
+                .collect(),
+            total_record_count: page.total_record_count,
+            start_index: page.start_index,
+        })
+    }
+
     async fn validate_user(
         &self,
         authenticated_user: &user::Model,
@@ -84,5 +122,24 @@ impl PersonService {
             return Err(PersonError::Forbidden);
         }
         Ok(())
+    }
+
+    async fn scope_parent(&self, mut query: PersonQuery) -> Result<PersonQuery, PersonError> {
+        let Some(parent_id) = query.parent_id else {
+            return Ok(query);
+        };
+        let parent = self
+            .items
+            .get(parent_id)
+            .await?
+            .ok_or(PersonError::NotFound)?;
+        if parent.is_folder {
+            query.recursive = true;
+        } else {
+            query.parent_id = None;
+            query.recursive = false;
+            query.ids = vec![parent_id];
+        }
+        Ok(query)
     }
 }

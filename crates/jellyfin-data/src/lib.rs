@@ -51,7 +51,9 @@ pub use media_stream_repository::{
     InvalidPersistedMediaStreamType, MediaStreamQuery, MediaStreamRepository,
     MediaStreamStoreError, PersistedMediaStream, PersistedMediaStreamType,
 };
-pub use person_repository::{NewPerson, PersonCredit, PersonError, PersonRepository};
+pub use person_repository::{
+    NewPerson, PersonCredit, PersonError, PersonPage, PersonQuery, PersonRepository,
+};
 pub use quick_connect_repository::{
     AuthorizedQuickConnect, NewQuickConnectRequest, QuickConnectRepository, QuickConnectStoreError,
 };

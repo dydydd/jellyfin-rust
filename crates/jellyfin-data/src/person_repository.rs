@@ -4,7 +4,7 @@ use jellyfin_extensions::StringExtensions;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
     FromQueryResult, QueryFilter, QueryOrder, SqlErr, Statement, TransactionTrait,
-    sea_query::OnConflict,
+    Value as SeaValue, sea_query::OnConflict,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -35,6 +35,31 @@ pub struct PersonCredit {
     pub role: String,
     pub sort_order: Option<i32>,
     pub list_order: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PersonQuery {
+    pub ids: Vec<Uuid>,
+    pub parent_id: Option<Uuid>,
+    pub recursive: bool,
+    pub appears_in_item_id: Option<Uuid>,
+    pub search_term: Option<String>,
+    pub person_types: Vec<String>,
+    pub exclude_person_types: Vec<String>,
+    pub is_favorite: Option<bool>,
+    pub user_id: Option<Uuid>,
+    pub name_starts_with_or_greater: Option<String>,
+    pub name_starts_with: Option<String>,
+    pub name_less_than: Option<String>,
+    pub start_index: u64,
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersonPage {
+    pub people: Vec<person::Model>,
+    pub total_record_count: u64,
+    pub start_index: u64,
 }
 
 #[derive(Debug, Error)]
@@ -249,6 +274,56 @@ impl PersonRepository {
             .await?)
     }
 
+    /// Lists distinct people credited to filtered base items.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the distinct-people query fails.
+    pub async fn query(&self, query: &PersonQuery) -> Result<PersonPage, PersonError> {
+        let (cte, values) = people_cte(query);
+        let count = self
+            .database
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!("{cte} SELECT COUNT(*) AS total_record_count FROM matched"),
+                values.clone(),
+            ))
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("person count returned no row".to_owned()))?
+            .try_get::<i64>("", "total_record_count")?;
+
+        let mut page_values = values;
+        let mut page_sql = format!(
+            "{cte} SELECT id, name, clean_name, provider_ids, date_created, date_modified, row_version \
+             FROM matched ORDER BY clean_name, id"
+        );
+        push_bind(
+            &mut page_sql,
+            &mut page_values,
+            i64::try_from(query.start_index).unwrap_or(i64::MAX),
+            " OFFSET ",
+        );
+        if let Some(limit) = query.limit {
+            push_bind(
+                &mut page_sql,
+                &mut page_values,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                " LIMIT ",
+            );
+        }
+        Ok(PersonPage {
+            people: person::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                page_sql,
+                page_values,
+            ))
+            .all(&self.database)
+            .await?,
+            total_record_count: u64::try_from(count).unwrap_or_default(),
+            start_index: query.start_index,
+        })
+    }
+
     /// Deletes one person and cascades every credit.
     ///
     /// # Errors
@@ -261,6 +336,202 @@ impl PersonRepository {
             .rows_affected
             == 1)
     }
+}
+
+fn people_cte(query: &PersonQuery) -> (String, Vec<SeaValue>) {
+    let mut values = Vec::new();
+    let mut sql = String::from(
+        "WITH linked AS (\
+             SELECT person.id, person.name, person.clean_name, person.provider_ids, \
+                    person.date_created, person.date_modified, person.row_version \
+             FROM jellyfin.people AS person \
+             JOIN jellyfin.people_base_item_map AS map ON map.person_id = person.id \
+             JOIN jellyfin.base_items AS item ON item.id = map.item_id \
+             WHERE item.item_type <> 'PLACEHOLDER'",
+    );
+    append_people_item_filters(&mut sql, &mut values, query);
+    append_person_filters(&mut sql, &mut values, query);
+    sql.push_str(
+        "), matched AS (\
+             SELECT id, name, clean_name, provider_ids, date_created, date_modified, row_version \
+             FROM linked \
+             GROUP BY id, name, clean_name, provider_ids, date_created, date_modified, row_version\
+         )",
+    );
+    (sql, values)
+}
+
+fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &PersonQuery) {
+    if !query.ids.is_empty() {
+        sql.push_str(" AND item.id IN (");
+        for (index, item_id) in query.ids.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push((*item_id).into());
+            sql.push('$');
+            sql.push_str(&values.len().to_string());
+        }
+        sql.push(')');
+    }
+    if let Some(parent_id) = query.parent_id {
+        if query.recursive {
+            push_bind(
+                sql,
+                values,
+                parent_id,
+                " AND item.id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
+                  WHERE closure.parent_item_id = ",
+            );
+            sql.push(')');
+        } else {
+            push_bind(sql, values, parent_id, " AND item.parent_id = ");
+        }
+    }
+    if let Some(item_id) = query.appears_in_item_id {
+        push_bind(sql, values, item_id, " AND item.id = ");
+    }
+    append_string_list_filter(sql, values, "map.person_type", &query.person_types, false);
+    append_string_list_filter(
+        sql,
+        values,
+        "map.person_type",
+        &query.exclude_person_types,
+        true,
+    );
+    if let Some(is_favorite) = query.is_favorite {
+        let Some(user_id) = query.user_id else {
+            return;
+        };
+        if is_favorite {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.is_favorite = true AND data.user_id = ",
+            );
+        } else {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id NOT IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.is_favorite = true AND data.user_id = ",
+            );
+        }
+        sql.push(')');
+    }
+}
+
+fn append_person_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &PersonQuery) {
+    if let Some(search_term) = query
+        .search_term
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+    {
+        push_bind(
+            sql,
+            values,
+            postgres_contains_pattern(&search_term.clean_value()),
+            " AND person.clean_name ILIKE ",
+        );
+    }
+    if let Some(name) = query
+        .name_starts_with
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+    {
+        push_bind(
+            sql,
+            values,
+            format!("{}%", escape_like(&name.clean_value())),
+            " AND person.clean_name ILIKE ",
+        );
+    }
+    if let Some(name) = query
+        .name_starts_with_or_greater
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+    {
+        push_bind(
+            sql,
+            values,
+            name.clean_value(),
+            " AND person.clean_name >= ",
+        );
+    }
+    if let Some(name) = query
+        .name_less_than
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+    {
+        push_bind(sql, values, name.clean_value(), " AND person.clean_name < ");
+    }
+}
+
+fn append_string_list_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    column: &str,
+    items: &[String],
+    negated: bool,
+) {
+    if items.is_empty() {
+        return;
+    }
+    let operator = if negated { "NOT IN" } else { "IN" };
+    sql.push_str(" AND ");
+    sql.push_str(column);
+    sql.push(' ');
+    sql.push_str(operator);
+    sql.push_str(" (");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        values.push(item.clone().into());
+        sql.push('$');
+        sql.push_str(&values.len().to_string());
+    }
+    sql.push(')');
+}
+
+fn push_bind<T: Into<SeaValue>>(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    value: T,
+    prefix: &str,
+) {
+    values.push(value.into());
+    sql.push_str(prefix);
+    sql.push('$');
+    sql.push_str(&values.len().to_string());
+}
+
+fn postgres_contains_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('%');
+    escaped.push_str(&escape_like(value));
+    escaped.push('%');
+    escaped
+}
+
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 async fn upsert_on<C>(connection: &C, input: NewPerson) -> Result<person::Model, PersonError>

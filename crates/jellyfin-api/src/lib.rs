@@ -383,6 +383,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Studios/{name}", get(studios::get))
         .route("/MusicGenres", get(music_genre::list))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
+        .route("/Persons", get(persons::list))
         .route("/Persons/{name}", get(persons::get))
         .route(
             "/Library/VirtualFolders",
@@ -1202,7 +1203,8 @@ impl IntoResponse for ApiError {
             Self::Person(
                 PersonError::NotFound
                 | PersonError::UserNotFound
-                | PersonError::User(UserError::NotFound),
+                | PersonError::User(UserError::NotFound)
+                | PersonError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Person or user not found"),
             Self::Person(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

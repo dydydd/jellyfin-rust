@@ -50,7 +50,7 @@ pub use media_streams::{
 };
 pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};
-pub use persons::{Person, PersonError, PersonService};
+pub use persons::{Person, PersonError, PersonPage, PersonService};
 pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,
     PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
