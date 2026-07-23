@@ -105,6 +105,9 @@ pub struct BaseItemQuery {
     pub media_types: Vec<String>,
     pub is_movie: Option<bool>,
     pub is_series: Option<bool>,
+    pub is_news: Option<bool>,
+    pub is_kids: Option<bool>,
+    pub is_sports: Option<bool>,
     pub is_virtual_item: Option<bool>,
     pub group_versions_by_presentation_key: bool,
     pub user_id: Option<Uuid>,
@@ -589,6 +592,15 @@ impl BaseItemRepository {
         }
         if let Some(is_series) = query.is_series {
             select = select.filter(media_class_condition(is_series, "IsSeries", &["Series"]));
+        }
+        if let Some(is_sports) = query.is_sports {
+            select = select.filter(tag_class_condition(is_sports, "sports"));
+        }
+        if let Some(is_news) = query.is_news {
+            select = select.filter(tag_class_condition(is_news, "news"));
+        }
+        if let Some(is_kids) = query.is_kids {
+            select = select.filter(tag_class_condition(is_kids, "kids"));
         }
         if let Some(is_virtual_item) = query.is_virtual_item {
             select = select.filter(base_item::Column::IsVirtualItem.eq(is_virtual_item));
@@ -1268,6 +1280,9 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
     append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
+    append_tag_class_filter(sql, query.is_sports, "sports");
+    append_tag_class_filter(sql, query.is_news, "news");
+    append_tag_class_filter(sql, query.is_kids, "kids");
     if let Some(is_virtual_item) = query.is_virtual_item {
         push_bind(sql, values, is_virtual_item, " AND item.is_virtual_item = ");
     }
@@ -1295,6 +1310,15 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
             );
         }
         sql.push(')');
+    }
+}
+
+fn tag_class_condition(expected: bool, clean_tag: &'static str) -> sea_orm::sea_query::SimpleExpr {
+    let expression = tag_class_expression("\"base_items\".\"id\"", clean_tag);
+    if expected {
+        Expr::cust(expression)
+    } else {
+        Expr::cust(format!("NOT {expression}"))
     }
 }
 
@@ -1350,6 +1374,33 @@ fn media_class_expression(
         ") OR COALESCE(lower({prefix}data ->> '{json_key}') = 'true', false))"
     );
     expression
+}
+
+fn append_tag_class_filter(sql: &mut String, expected: Option<bool>, clean_tag: &'static str) {
+    let Some(expected) = expected else {
+        return;
+    };
+    let expression = tag_class_expression("item.id", clean_tag);
+    if expected {
+        sql.push_str(" AND ");
+        sql.push_str(&expression);
+    } else {
+        sql.push_str(" AND NOT ");
+        sql.push_str(&expression);
+    }
+}
+
+fn tag_class_expression(item_id_expression: &'static str, clean_tag: &'static str) -> String {
+    format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.item_value_map AS tag_map \
+            JOIN jellyfin.item_values AS tag_value \
+              ON tag_value.item_value_id = tag_map.item_value_id \
+            WHERE tag_map.item_id = {item_id_expression} \
+              AND tag_value.type = 4 \
+              AND tag_value.clean_value = '{clean_tag}'\
+        )"
+    )
 }
 
 fn append_uuid_list_filter(

@@ -152,6 +152,10 @@ async fn exercise_search_routes(database_name: &str) {
     )
     .await;
     let values = ItemValueRepository::new(database.clone());
+    values
+        .link(program_id, item_value::ItemValueType::Tags, "Sports")
+        .await
+        .expect("sports tag link");
     let genre = format!("Cyberpunk {suffix}");
     let genre_row = values
         .link(matrix_id, item_value::ItemValueType::Genre, &genre)
@@ -293,6 +297,43 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(series_class["SearchHints"][0]["Name"], "Matrix Animated");
     assert_eq!(series_class["SearchHints"][0]["Type"], "Series");
 
+    let sports_class = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Matrix&isSports=true&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=false",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(sports_class["TotalRecordCount"], 1);
+    assert_eq!(
+        sports_class["SearchHints"][0]["Id"],
+        program_id.simple().to_string()
+    );
+    assert_eq!(sports_class["SearchHints"][0]["Name"], "Matrix Broadcast");
+    assert_eq!(sports_class["SearchHints"][0]["Type"], "LiveTvProgram");
+
+    let sports_excluded = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Matrix&isSports=false&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=false",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    let non_sports_names = sports_excluded["SearchHints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hint| hint["Name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(sports_excluded["TotalRecordCount"], 4);
+    assert!(!non_sports_names.contains(&"Matrix Broadcast"));
+    assert!(non_sports_names.contains(&"The Matrix"));
+    assert!(non_sports_names.contains(&"Matrix Animated"));
+
     let genre_hints = body_json(
         request(
             &app,
@@ -323,6 +364,20 @@ async fn exercise_search_routes(database_name: &str) {
     .await;
     assert_eq!(
         genre_series_filtered,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
+
+    let genre_sports_filtered = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Cyberpunk&includeMedia=false&includeGenres=true&isSports=true",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        genre_sports_filtered,
         json!({ "SearchHints": [], "TotalRecordCount": 0 })
     );
 

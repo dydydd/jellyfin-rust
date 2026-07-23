@@ -46,6 +46,12 @@ pub(crate) struct SearchHintsQuery {
     is_movie: Option<bool>,
     #[serde(rename = "isSeries", alias = "IsSeries")]
     is_series: Option<bool>,
+    #[serde(rename = "isNews", alias = "IsNews")]
+    is_news: Option<bool>,
+    #[serde(rename = "isKids", alias = "IsKids")]
+    is_kids: Option<bool>,
+    #[serde(rename = "isSports", alias = "IsSports")]
+    is_sports: Option<bool>,
     #[serde(rename = "includePeople", alias = "IncludePeople")]
     include_people: Option<bool>,
     #[serde(rename = "includeMedia", alias = "IncludeMedia")]
@@ -91,6 +97,9 @@ pub(crate) async fn hints(
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
+                    is_news: query.is_news,
+                    is_kids: query.is_kids,
+                    is_sports: query.is_sports,
                     is_virtual_item: Some(false),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -118,6 +127,9 @@ pub(crate) async fn hints(
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
+                    is_news: query.is_news,
+                    is_kids: query.is_kids,
+                    is_sports: query.is_sports,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -148,6 +160,9 @@ pub(crate) async fn hints(
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
+                    is_news: query.is_news,
+                    is_kids: query.is_kids,
+                    is_sports: query.is_sports,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -178,6 +193,9 @@ pub(crate) async fn hints(
                     media_types: query.media_types.clone(),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
+                    is_news: query.is_news,
+                    is_kids: query.is_kids,
+                    is_sports: query.is_sports,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,
@@ -209,6 +227,9 @@ pub(crate) async fn hints(
                     media_types: query.media_types,
                     is_movie: query.is_movie,
                     is_series: query.is_series,
+                    is_news: query.is_news,
+                    is_kids: query.is_kids,
+                    is_sports: query.is_sports,
                     user_id: Some(target_user_id),
                     start_index: query.start_index,
                     limit: query.limit,

@@ -30,6 +30,9 @@ pub struct ItemValueQuery {
     pub media_types: Vec<String>,
     pub is_movie: Option<bool>,
     pub is_series: Option<bool>,
+    pub is_news: Option<bool>,
+    pub is_kids: Option<bool>,
+    pub is_sports: Option<bool>,
     pub is_favorite: Option<bool>,
     pub user_id: Option<Uuid>,
     pub name_starts_with_or_greater: Option<String>,
@@ -367,6 +370,9 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
     append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
+    append_tag_class_filter(sql, query.is_sports, "sports");
+    append_tag_class_filter(sql, query.is_news, "news");
+    append_tag_class_filter(sql, query.is_kids, "kids");
     if let Some(is_favorite) = query.is_favorite {
         let Some(user_id) = query.user_id else {
             return;
@@ -392,6 +398,33 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
         }
         sql.push(')');
     }
+}
+
+fn append_tag_class_filter(sql: &mut String, expected: Option<bool>, clean_tag: &'static str) {
+    let Some(expected) = expected else {
+        return;
+    };
+    let expression = tag_class_expression(clean_tag);
+    if expected {
+        sql.push_str(" AND ");
+        sql.push_str(&expression);
+    } else {
+        sql.push_str(" AND NOT ");
+        sql.push_str(&expression);
+    }
+}
+
+fn tag_class_expression(clean_tag: &'static str) -> String {
+    format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.item_value_map AS tag_map \
+            JOIN jellyfin.item_values AS tag_value \
+              ON tag_value.item_value_id = tag_map.item_value_id \
+            WHERE tag_map.item_id = item.id \
+              AND tag_value.type = 4 \
+              AND tag_value.clean_value = '{clean_tag}'\
+        )"
+    )
 }
 
 fn append_media_class_filter(
