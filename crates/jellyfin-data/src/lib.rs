@@ -58,7 +58,8 @@ pub use quick_connect_repository::{
     AuthorizedQuickConnect, NewQuickConnectRequest, QuickConnectRepository, QuickConnectStoreError,
 };
 pub use server_configuration_repository::{
-    ServerConfigurationRepository, ServerConfigurationStoreError, StartupConfigurationUpdate,
+    ServerConfigurationRepository, ServerConfigurationStoreError, ServerConfigurationUpdate,
+    StartupConfigurationUpdate,
 };
 pub use session_command_repository::{
     NewSessionCommand, SessionCommandRepository, SessionCommandStoreError,

@@ -1,6 +1,6 @@
 use jellyfin_data::{
     DatabaseConfig, ServerConfigurationRepository, ServerConfigurationStoreError,
-    StartupConfigurationUpdate,
+    ServerConfigurationUpdate, StartupConfigurationUpdate,
 };
 use jellyfin_migration::{
     AddClientLogUploadConfigurationMigration, AddPlaystateResumeConfigurationMigration,
@@ -100,6 +100,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_content_type_updates(&database, &first, &second).await;
     assert_plugin_repository_updates(&first, &second).await;
     assert_client_log_upload_updates(&first, &second).await;
+    assert_server_configuration_update(&first, &second).await;
 
     let invalid_insert = database
         .execute_unprepared(
@@ -141,6 +142,12 @@ async fn exercise_server_configuration(database_name: &str) {
     ));
     assert!(matches!(
         first.update_client_log_upload(true).await,
+        Err(ServerConfigurationStoreError::MissingSingleton)
+    ));
+    assert!(matches!(
+        first
+            .update_server_configuration(server_configuration_update("Missing"))
+            .await,
         Err(ServerConfigurationStoreError::MissingSingleton)
     ));
 
@@ -276,6 +283,40 @@ async fn assert_plugin_repository_updates(
     assert!(replaced.row_version > updated.row_version);
 }
 
+async fn assert_server_configuration_update(
+    first: &ServerConfigurationRepository,
+    second: &ServerConfigurationRepository,
+) {
+    let before = first.load().await.expect("server configuration before");
+    let updated = first
+        .update_server_configuration(server_configuration_update("Full update"))
+        .await
+        .expect("server configuration full update");
+
+    assert_eq!(updated.server_name, "Full update");
+    assert_eq!(updated.ui_culture, "sv-SE");
+    assert_eq!(updated.metadata_country_code, "SE");
+    assert_eq!(updated.preferred_metadata_language, "sv");
+    assert!(!updated.is_startup_wizard_completed);
+    assert_eq!(
+        updated.content_types,
+        json!([{ "Name": "/library/books", "Value": "books" }])
+    );
+    assert_eq!(
+        updated.plugin_repositories,
+        json!([{ "Name": "Nightly", "Url": "https://repo.example.test/nightly.json", "Enabled": false }])
+    );
+    assert_eq!(updated.min_resume_pct, 7);
+    assert_eq!(updated.max_resume_pct, 85);
+    assert_eq!(updated.min_resume_duration_seconds, 420);
+    assert_eq!(updated.min_audiobook_resume, 6);
+    assert_eq!(updated.max_audiobook_resume, 8);
+    assert!(!updated.allow_client_log_upload);
+    assert_eq!(updated.created_at, before.created_at);
+    assert!(updated.row_version > before.row_version);
+    assert_eq!(second.load().await.expect("reloaded full update"), updated);
+}
+
 fn content_types(value: &Value) -> BTreeMap<String, String> {
     value
         .as_array()
@@ -302,6 +343,30 @@ fn configuration(server_name: &str) -> StartupConfigurationUpdate {
         ui_culture: "nl-BE".to_owned(),
         metadata_country_code: "be".to_owned(),
         preferred_metadata_language: "nl".to_owned(),
+    }
+}
+
+fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
+    ServerConfigurationUpdate {
+        server_name: server_name.to_owned(),
+        ui_culture: "sv-SE".to_owned(),
+        metadata_country_code: "SE".to_owned(),
+        preferred_metadata_language: "sv".to_owned(),
+        is_startup_wizard_completed: false,
+        content_types: json!([{ "Name": "/library/books", "Value": "books" }]),
+        plugin_repositories: json!([
+            {
+                "Name": "Nightly",
+                "Url": "https://repo.example.test/nightly.json",
+                "Enabled": false
+            }
+        ]),
+        min_resume_pct: 7,
+        max_resume_pct: 85,
+        min_resume_duration_seconds: 420,
+        min_audiobook_resume: 6,
+        max_audiobook_resume: 8,
+        allow_client_log_upload: false,
     }
 }
 

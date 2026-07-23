@@ -14,6 +14,23 @@ pub struct StartupConfigurationUpdate {
     pub preferred_metadata_language: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerConfigurationUpdate {
+    pub server_name: String,
+    pub ui_culture: String,
+    pub metadata_country_code: String,
+    pub preferred_metadata_language: String,
+    pub is_startup_wizard_completed: bool,
+    pub content_types: Value,
+    pub plugin_repositories: Value,
+    pub min_resume_pct: i32,
+    pub max_resume_pct: i32,
+    pub min_resume_duration_seconds: i32,
+    pub min_audiobook_resume: i32,
+    pub max_audiobook_resume: i32,
+    pub allow_client_log_upload: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum ServerConfigurationStoreError {
     #[error("the server configuration singleton is missing")]
@@ -234,6 +251,68 @@ impl ServerConfigurationRepository {
                 row_version, created_at, updated_at
             ",
             [plugin_repositories.into()],
+        );
+        server_configuration::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or(ServerConfigurationStoreError::MissingSingleton)
+    }
+
+    /// Atomically replaces the persisted server-configuration fields.
+    ///
+    /// Jellyfin's public configuration object is larger than the fields
+    /// currently persisted by this Rust port. This method updates every column
+    /// represented in the `PostgreSQL` singleton in one statement, preserving
+    /// the official replace-on-save behavior for the durable subset and letting
+    /// database constraints validate JSON array fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-singleton or database error.
+    pub async fn update_server_configuration(
+        &self,
+        update: ServerConfigurationUpdate,
+    ) -> Result<server_configuration::Model, ServerConfigurationStoreError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.server_configuration
+            SET server_name = $1,
+                ui_culture = $2,
+                metadata_country_code = $3,
+                preferred_metadata_language = $4,
+                is_startup_wizard_completed = $5,
+                content_types = $6,
+                plugin_repositories = $7,
+                min_resume_pct = $8,
+                max_resume_pct = $9,
+                min_resume_duration_seconds = $10,
+                min_audiobook_resume = $11,
+                max_audiobook_resume = $12,
+                allow_client_log_upload = $13
+            WHERE id = 1
+            RETURNING id, server_name, ui_culture, metadata_country_code,
+                preferred_metadata_language, is_startup_wizard_completed,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, allow_client_log_upload,
+                row_version, created_at, updated_at
+            ",
+            [
+                update.server_name.into(),
+                update.ui_culture.into(),
+                update.metadata_country_code.into(),
+                update.preferred_metadata_language.into(),
+                update.is_startup_wizard_completed.into(),
+                update.content_types.into(),
+                update.plugin_repositories.into(),
+                update.min_resume_pct.into(),
+                update.max_resume_pct.into(),
+                update.min_resume_duration_seconds.into(),
+                update.min_audiobook_resume.into(),
+                update.max_audiobook_resume.into(),
+                update.allow_client_log_upload.into(),
+            ],
         );
         server_configuration::Model::find_by_statement(statement)
             .one(&self.database)

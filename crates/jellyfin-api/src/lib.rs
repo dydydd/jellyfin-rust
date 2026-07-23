@@ -327,7 +327,10 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
-        .route("/System/Configuration", get(configuration::get))
+        .route(
+            "/System/Configuration",
+            get(configuration::get).post(configuration::update),
+        )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
         .route(
             "/web/ConfigurationPages",

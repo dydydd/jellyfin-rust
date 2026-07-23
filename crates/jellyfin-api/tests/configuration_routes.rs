@@ -105,18 +105,25 @@ async fn exercise_configuration_routes(database_name: &str) {
 
     let suffix = Uuid::new_v4().simple().to_string();
     let users = UserService::new(database.clone());
+    let administrator = users
+        .create_initial_administrator(&format!("configuration-admin-{suffix}"))
+        .await
+        .expect("administrator creation");
     let user = users
         .create(&format!("configuration-user-{suffix}"))
         .await
         .expect("user creation");
-    let token = session(&DeviceRepository::new(database.clone()), user.id, &suffix).await;
+    let devices = DeviceRepository::new(database.clone());
+    let admin_token = session(&devices, administrator.id, &format!("admin-{suffix}")).await;
+    let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
 
     assert_eq!(
         request(&app, "/System/Configuration", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
 
-    let configuration = body_json(request(&app, "/System/Configuration", Some(&token)).await).await;
+    let mut configuration =
+        body_json(request(&app, "/System/Configuration", Some(&user_token)).await).await;
     assert_eq!(configuration["ServerName"], "Configuration Test Server");
     assert_eq!(configuration["UICulture"], "de-DE");
     assert_eq!(configuration["MetadataCountryCode"], "DE");
@@ -143,6 +150,116 @@ async fn exercise_configuration_routes(database_name: &str) {
     );
     assert!(configuration.get("server_name").is_none());
     assert!(configuration.get("UiCulture").is_none());
+
+    let updated = configuration
+        .as_object_mut()
+        .expect("server configuration object");
+    updated.insert(
+        "ServerName".to_owned(),
+        json!("Updated Configuration Server"),
+    );
+    updated.insert("UICulture".to_owned(), json!("ja-JP"));
+    updated.insert("MetadataCountryCode".to_owned(), json!("JP"));
+    updated.insert("PreferredMetadataLanguage".to_owned(), json!("ja"));
+    updated.insert("IsStartupWizardCompleted".to_owned(), json!(false));
+    updated.insert(
+        "ContentTypes".to_owned(),
+        json!([{ "Name": "/anime", "Value": "tvshows" }]),
+    );
+    updated.insert(
+        "PluginRepositories".to_owned(),
+        json!([
+            {
+                "Name": "Nightly",
+                "Url": "https://repo.example.test/nightly.json",
+                "Enabled": false
+            }
+        ]),
+    );
+    updated.insert("MinResumePct".to_owned(), json!(8));
+    updated.insert("MaxResumePct".to_owned(), json!(88));
+    updated.insert("MinResumeDurationSeconds".to_owned(), json!(480));
+    updated.insert("MinAudiobookResume".to_owned(), json!(9));
+    updated.insert("MaxAudiobookResume".to_owned(), json!(11));
+    updated.insert("AllowClientLogUpload".to_owned(), json!(true));
+
+    assert_eq!(
+        post_json(&app, "/System/Configuration", None, &configuration)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration",
+            Some(&user_token),
+            &configuration
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/System/Configuration",
+            Some(&admin_token),
+            &json!({ "ServerName": [] }),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let response = post_json(
+        &app,
+        "/System/Configuration",
+        Some(&admin_token),
+        &configuration,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let saved = body_json(request(&app, "/System/Configuration", Some(&user_token)).await).await;
+    assert_eq!(saved["ServerName"], "Updated Configuration Server");
+    assert_eq!(saved["UICulture"], "ja-JP");
+    assert_eq!(saved["MetadataCountryCode"], "JP");
+    assert_eq!(saved["PreferredMetadataLanguage"], "ja");
+    assert_eq!(saved["IsStartupWizardCompleted"], false);
+    assert_eq!(saved["ContentTypes"][0]["Name"], "/anime");
+    assert_eq!(saved["ContentTypes"][0]["Value"], "tvshows");
+    assert_eq!(saved["PluginRepositories"][0]["Enabled"], false);
+    assert_eq!(saved["MinResumePct"], 8);
+    assert_eq!(saved["MaxResumePct"], 88);
+    assert_eq!(saved["MinResumeDurationSeconds"], 480);
+    assert_eq!(saved["MinAudiobookResume"], 9);
+    assert_eq!(saved["MaxAudiobookResume"], 11);
+    assert_eq!(saved["AllowClientLogUpload"], true);
+
+    let persisted = repository.load().await.expect("server configuration load");
+    assert_eq!(persisted.server_name, "Updated Configuration Server");
+    assert_eq!(persisted.ui_culture, "ja-JP");
+    assert_eq!(
+        persisted.content_types,
+        json!([{ "Name": "/anime", "Value": "tvshows" }])
+    );
+    assert_eq!(
+        persisted.plugin_repositories,
+        json!([
+            {
+                "Name": "Nightly",
+                "Url": "https://repo.example.test/nightly.json",
+                "Enabled": false
+            }
+        ])
+    );
 
     user::Entity::delete_many()
         .exec(&database)
@@ -175,6 +292,25 @@ async fn request(app: &Router, uri: &str, token: Option<&str>) -> axum::response
     }
     app.clone()
         .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn post_json(
+    app: &Router,
+    uri: &str,
+    token: Option<&str>,
+    body: &Value,
+) -> axum::response::Response {
+    let mut request = Request::post(uri).header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        request = request.header(
+            header::AUTHORIZATION,
+            format!("{AUTHORIZATION}, Token=\"{token}\""),
+        );
+    }
+    app.clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
         .await
         .unwrap()
 }
