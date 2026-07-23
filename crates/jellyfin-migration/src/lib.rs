@@ -21,6 +21,7 @@ mod m20260722_000018_create_user_profile_images;
 mod m20260722_000019_create_base_item_images;
 mod m20260722_000020_create_keyframe_data;
 mod m20260722_000021_create_media_streams;
+mod m20260722_000022_create_media_attachments;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -64,6 +65,8 @@ pub use m20260722_000019_create_base_item_images::Migration as CreateBaseItemIma
 pub use m20260722_000020_create_keyframe_data::Migration as CreateKeyframeDataMigration;
 #[doc(hidden)]
 pub use m20260722_000021_create_media_streams::Migration as CreateMediaStreamsMigration;
+#[doc(hidden)]
+pub use m20260722_000022_create_media_attachments::Migration as CreateMediaAttachmentsMigration;
 
 pub struct Migrator;
 
@@ -92,6 +95,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000019_create_base_item_images::Migration),
             Box::new(m20260722_000020_create_keyframe_data::Migration),
             Box::new(m20260722_000021_create_media_streams::Migration),
+            Box::new(m20260722_000022_create_media_attachments::Migration),
         ]
     }
 }

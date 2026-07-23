@@ -10,12 +10,12 @@ use axum::{
 use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
     InstalledPlugin, ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService,
-    LibraryControllerError, LibraryControllerService, LocalizationService, MediaStreamService,
-    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
-    MusicGenreService, PersonError, PersonService, PlaystateError, PlaystateService,
-    PluginRegistry, SystemLogError, SystemLogService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError,
+    LibraryControllerError, LibraryControllerService, LocalizationService, MediaAttachmentService,
+    MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
+    MetadataEditorService, MusicGenreError, MusicGenreService, PersonError, PersonService,
+    PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
+    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
+    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -77,6 +77,7 @@ pub struct AppState {
     pub(crate) server_configuration: ServerConfigurationRepository,
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
+    pub(crate) media_attachments: MediaAttachmentService,
     pub(crate) media_streams: MediaStreamService,
     pub(crate) videos: VideoService,
     pub(crate) tuner_hosts: TunerHostManager,
@@ -112,6 +113,7 @@ impl AppState {
             server_configuration: ServerConfigurationRepository::new(database.clone()),
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
+            media_attachments: MediaAttachmentService::new(database.clone()),
             media_streams: MediaStreamService::new(database.clone()),
             videos: VideoService::new(database.clone()),
             tuner_hosts: TunerHostManager::new(database.clone()),
@@ -544,6 +546,7 @@ pub(crate) enum ApiError {
     TunerHost(TunerHostError),
     ItemLookup(ItemLookupError),
     ItemUpdate(ItemUpdateError),
+    MediaAttachment(MediaAttachmentServiceError),
     MediaStream(MediaStreamServiceError),
     MetadataEditor(MetadataEditorError),
     SystemLog(SystemLogError),
@@ -643,6 +646,12 @@ impl From<TunerHostError> for ApiError {
 impl From<ItemUpdateError> for ApiError {
     fn from(error: ItemUpdateError) -> Self {
         Self::ItemUpdate(error)
+    }
+}
+
+impl From<MediaAttachmentServiceError> for ApiError {
+    fn from(error: MediaAttachmentServiceError) -> Self {
+        Self::MediaAttachment(error)
     }
 }
 
@@ -785,6 +794,7 @@ impl IntoResponse for ApiError {
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemLookup(error) => item_lookup_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
+            Self::MediaAttachment(error) => media_attachment_error_response(&error),
             Self::MediaStream(error) => media_stream_error_response(&error),
             Self::MetadataEditor(error) => metadata_editor_error_response(&error),
             Self::SystemLog(error) => system_log_error_response(&error),
@@ -863,6 +873,25 @@ fn media_stream_error_response(error: &MediaStreamServiceError) -> (StatusCode, 
         MediaStreamServiceError::Store(jellyfin_data::MediaStreamStoreError::Database(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Media stream persistence failed",
+        ),
+    }
+}
+
+fn media_attachment_error_response(
+    error: &MediaAttachmentServiceError,
+) -> (StatusCode, &'static str) {
+    match error {
+        MediaAttachmentServiceError::Store(
+            jellyfin_data::MediaAttachmentStoreError::BaseItemNotFound { .. },
+        ) => (StatusCode::NOT_FOUND, "Media attachment item not found"),
+        MediaAttachmentServiceError::Store(
+            jellyfin_data::MediaAttachmentStoreError::DuplicateAttachmentIndex { .. },
+        ) => (StatusCode::BAD_REQUEST, "Invalid media attachment"),
+        MediaAttachmentServiceError::Store(jellyfin_data::MediaAttachmentStoreError::Database(
+            _,
+        )) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Media attachment persistence failed",
         ),
     }
 }

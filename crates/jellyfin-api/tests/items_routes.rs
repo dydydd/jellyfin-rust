@@ -4,13 +4,14 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
+use jellyfin_controller::MediaAttachmentService;
 use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
     entities::user,
 };
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -89,6 +90,19 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         )
         .await
         .expect("media streams");
+    MediaAttachmentService::new(fixture.database.clone())
+        .save_media_attachments(
+            media.id,
+            &[MediaAttachment {
+                index: 4,
+                codec: Some("mjpeg".to_owned()),
+                file_name: Some("poster.jpg".to_owned()),
+                mime_type: Some("image/jpeg".to_owned()),
+                ..MediaAttachment::default()
+            }],
+        )
+        .await
+        .expect("media attachments");
 
     let route = format!(
         "/Items?recursive=true&searchTerm={}&fields=MediaSources,MediaStreams",
@@ -102,6 +116,11 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         .find(|item| item["Id"] == media.id.simple().to_string())
         .expect("projected item");
     assert_eq!(item["MediaSources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        item["MediaSources"][0]["MediaAttachments"][0]["FileName"],
+        "poster.jpg"
+    );
+    assert_eq!(item["MediaSources"][0]["MediaAttachments"][0]["Index"], 4);
     assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
     assert_eq!(item["MediaStreams"][0]["Language"], "deu");
 

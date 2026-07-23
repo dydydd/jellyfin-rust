@@ -9,7 +9,7 @@ pub use audio_resolver::{AudioResolveRequest, AudioResolver, ResolvedAudioStream
 pub use embedded_image_provider::{
     EmbeddedImageCacheKey, EmbeddedImageCapability, EmbeddedImageExtractionRequest,
     EmbeddedImageItem, EmbeddedImageItemKind, EmbeddedImageProvider, EmbeddedImageResponse,
-    EmbeddedImageStream, MediaAttachment,
+    EmbeddedImageStream,
 };
 pub use ffprobe_video_info::{
     BlurayDiscInfo, ChapterInfo, DummyChapterError, EmbeddedSubtitleMode, FfprobeVideoInfo,

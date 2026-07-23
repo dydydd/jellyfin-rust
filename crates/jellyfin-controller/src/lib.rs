@@ -7,6 +7,7 @@ mod item_update;
 pub mod library;
 mod library_controller;
 mod localization;
+mod media_attachments;
 pub mod media_encoding;
 mod media_streams;
 mod metadata_editor;
@@ -31,6 +32,10 @@ pub use item_types::{
 pub use item_update::{ItemUpdateError, ItemUpdateInput, ItemUpdateService};
 pub use library_controller::{LibraryControllerError, LibraryControllerService};
 pub use localization::LocalizationService;
+pub use media_attachments::{
+    MediaAttachmentFilter, MediaAttachmentMapper, MediaAttachmentService,
+    MediaAttachmentServiceError,
+};
 pub use media_streams::{
     IdentityMediaStreamPathMapper, MediaStreamFilter, MediaStreamMapper, MediaStreamPathMapper,
     MediaStreamService, MediaStreamServiceError,

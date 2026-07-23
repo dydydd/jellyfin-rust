@@ -3,13 +3,14 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
+use jellyfin_controller::MediaAttachmentService;
 use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, USER_ROOT_FOLDER_ID,
     entities::{base_item, user},
 };
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -143,6 +144,11 @@ async fn media_stream_fields_are_projected_for_single_item_routes() {
             .len(),
         1
     );
+    assert_eq!(
+        item["MediaSources"][0]["MediaAttachments"][0]["FileName"],
+        "poster.jpg"
+    );
+    assert_eq!(item["MediaSources"][0]["MediaAttachments"][0]["Index"], 4);
     assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
     assert_eq!(item["MediaStreams"][0]["Language"], "deu");
 
@@ -298,21 +304,7 @@ impl UserLibraryFixture {
             }
         }));
         let media = items.create(media).await.expect("media item");
-        MediaStreamService::new(database.clone())
-            .save_media_streams(
-                media.id,
-                &[MediaStream {
-                    index: 0,
-                    stream_type: MediaStreamType::Audio,
-                    codec: Some("ac3".to_owned()),
-                    language: Some("ger".to_owned()),
-                    path: Some("/media/Test Song.mkv".to_owned()),
-                    is_default: true,
-                    ..MediaStream::default()
-                }],
-            )
-            .await
-            .expect("media streams");
+        save_media_source_metadata(&database, media.id).await;
 
         let mut intro = item("Video", "Intro", Some(media.id), false);
         intro.data = Some(json!({ "IsIntro": true }));
@@ -360,6 +352,37 @@ impl UserLibraryFixture {
             .await
             .expect("user cleanup");
     }
+}
+
+async fn save_media_source_metadata(database: &DatabaseConnection, item_id: Uuid) {
+    MediaStreamService::new(database.clone())
+        .save_media_streams(
+            item_id,
+            &[MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Audio,
+                codec: Some("ac3".to_owned()),
+                language: Some("ger".to_owned()),
+                path: Some("/media/Test Song.mkv".to_owned()),
+                is_default: true,
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("media streams");
+    MediaAttachmentService::new(database.clone())
+        .save_media_attachments(
+            item_id,
+            &[MediaAttachment {
+                index: 4,
+                codec: Some("mjpeg".to_owned()),
+                file_name: Some("poster.jpg".to_owned()),
+                mime_type: Some("image/jpeg".to_owned()),
+                ..MediaAttachment::default()
+            }],
+        )
+        .await
+        .expect("media attachments");
 }
 
 fn item(item_type: &str, name: &str, parent_id: Option<Uuid>, is_folder: bool) -> NewBaseItem {

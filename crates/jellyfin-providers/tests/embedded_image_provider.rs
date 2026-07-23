@@ -1,12 +1,11 @@
 use std::cell::RefCell;
 
 use jellyfin_model::{
-    ImageFormat, ImageType, MediaProtocol, MediaStream, MediaStreamType, VideoType,
+    ImageFormat, ImageType, MediaAttachment, MediaProtocol, MediaStream, MediaStreamType, VideoType,
 };
 use jellyfin_providers::media_info::{
     EmbeddedImageCacheKey, EmbeddedImageCapability, EmbeddedImageExtractionRequest,
     EmbeddedImageItem, EmbeddedImageItemKind, EmbeddedImageProvider, EmbeddedImageStream, IsoType,
-    MediaAttachment,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -145,6 +144,7 @@ fn get_image_attachment_returns_official_selection_and_format_matrix() {
                     "unmatched".to_owned()
                 }),
                 mime_type: mime_type.map(ToOwned::to_owned),
+                ..MediaAttachment::default()
             })
             .collect::<Vec<_>>();
         let capability = FixtureCapability::default();
@@ -262,6 +262,7 @@ fn attachments_take_precedence_over_matching_embedded_streams() {
         index: 7,
         file_name: Some("poster.png".to_owned()),
         mime_type: None,
+        ..MediaAttachment::default()
     }];
     let streams = [EmbeddedImageStream {
         stream: MediaStream {
@@ -291,6 +292,7 @@ fn nonempty_unknown_attachment_mime_type_uses_jpg_fallback() {
         index: 1,
         file_name: Some("poster.png".to_owned()),
         mime_type: Some("application/x-unknown-embedded-image".to_owned()),
+        ..MediaAttachment::default()
     }];
     let capability = FixtureCapability::default();
     let response = EmbeddedImageProvider::get_image(
@@ -340,6 +342,7 @@ fn get_image_rejects_protocol_placeholder_and_dvd_before_extraction() {
         index: 1,
         file_name: Some("poster.png".to_owned()),
         mime_type: None,
+        ..MediaAttachment::default()
     }];
     for item in [
         EmbeddedImageItem {
@@ -375,6 +378,7 @@ fn cache_key_is_stable_and_cache_hit_returns_file_response_without_extraction() 
         index: 3,
         file_name: Some("poster.webp".to_owned()),
         mime_type: None,
+        ..MediaAttachment::default()
     }];
     let capability = FixtureCapability {
         cached_path: Some("cache/poster.webp".to_owned()),
@@ -416,6 +420,7 @@ fn extraction_error_is_propagated_without_success_response() {
         index: 1,
         file_name: Some("poster.jpg".to_owned()),
         mime_type: None,
+        ..MediaAttachment::default()
     }];
     let capability = FixtureCapability {
         error: Some("fixture extraction failed"),

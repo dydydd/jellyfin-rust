@@ -8,7 +8,9 @@ use axum::{
 use axum_extra::extract::Query;
 use jellyfin_controller::{MusicGenre, Person, RelatedItemKind, library::get_media_source_name};
 use jellyfin_data::entities::base_item;
-use jellyfin_model::{MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream};
+use jellyfin_model::{
+    MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -51,6 +53,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_media_streams(self) -> bool {
         self.media_sources || self.media_streams
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_media_attachments(self) -> bool {
+        self.media_sources
     }
 }
 
@@ -434,7 +441,17 @@ pub(crate) async fn project_item_to_dto(
         .await?
         .remove(&item_id)
         .unwrap_or_default();
-    project_item_dto_with_streams(&mut dto, fields, media_streams);
+    let media_attachments = if fields.wants_media_attachments() {
+        state
+            .media_attachments
+            .get_media_attachments_for_items(&[item_id])
+            .await?
+            .remove(&item_id)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    project_item_dto_with_streams(&mut dto, fields, media_streams, media_attachments);
     Ok(dto)
 }
 
@@ -442,9 +459,10 @@ pub(crate) fn project_item_dto_with_streams(
     dto: &mut BaseItemDto,
     fields: BaseItemDtoFields,
     media_streams: Vec<MediaStream>,
+    media_attachments: Vec<MediaAttachment>,
 ) {
     if fields.media_sources
-        && let Some(source) = media_source_from_dto(dto, &media_streams)
+        && let Some(source) = media_source_from_dto(dto, &media_streams, media_attachments)
     {
         dto.media_sources = Some(vec![source]);
     }
@@ -456,6 +474,7 @@ pub(crate) fn project_item_dto_with_streams(
 fn media_source_from_dto(
     dto: &BaseItemDto,
     media_streams: &[MediaStream],
+    media_attachments: Vec<MediaAttachment>,
 ) -> Option<MediaSourceInfo> {
     if dto.is_folder || !is_media_source_item(dto) {
         return None;
@@ -476,6 +495,7 @@ fn media_source_from_dto(
         source_type: MediaSourceType::Default,
         run_time_ticks: dto.run_time_ticks,
         media_streams: media_streams.to_vec(),
+        media_attachments,
         ..MediaSourceInfo::default()
     })
 }

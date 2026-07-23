@@ -1,5 +1,6 @@
 use jellyfin_model::{
-    ImageFormat, ImageType, MediaProtocol, MediaStream, MediaStreamType, MimeTypes, VideoType,
+    ImageFormat, ImageType, MediaAttachment, MediaProtocol, MediaStream, MediaStreamType,
+    MimeTypes, VideoType,
 };
 
 use super::IsoType;
@@ -38,14 +39,6 @@ pub struct EmbeddedImageItem<'a> {
     pub is_shortcut: bool,
     pub is_placeholder: bool,
     pub is_complete_media: bool,
-}
-
-/// Stored attachment metadata considered before embedded image streams.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct MediaAttachment {
-    pub index: i32,
-    pub file_name: Option<String>,
-    pub mime_type: Option<String>,
 }
 
 /// Model stream plus the ffprobe comment used as its image label.

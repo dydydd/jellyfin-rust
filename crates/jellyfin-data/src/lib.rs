@@ -6,6 +6,7 @@ pub mod entities;
 mod item_update_repository;
 mod item_value_repository;
 mod keyframe_data_repository;
+mod media_attachment_repository;
 mod media_stream_repository;
 mod person_repository;
 mod quick_connect_repository;
@@ -36,6 +37,10 @@ pub use item_value_repository::{ItemValueError, ItemValueRepository};
 pub use keyframe_data_repository::{
     KeyframeDataExport, KeyframeDataRecord, KeyframeDataRepository, KeyframeDataStoreError,
     NewKeyframeData,
+};
+pub use media_attachment_repository::{
+    MediaAttachmentQuery, MediaAttachmentRepository, MediaAttachmentStoreError,
+    PersistedMediaAttachment,
 };
 pub use media_stream_repository::{
     InvalidPersistedMediaStreamType, MediaStreamQuery, MediaStreamRepository,

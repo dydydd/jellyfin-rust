@@ -161,6 +161,15 @@ async fn page_to_dto(
     } else {
         std::collections::HashMap::new()
     };
+    let mut media_attachments = if requested_fields.wants_media_attachments() {
+        let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+        state
+            .media_attachments
+            .get_media_attachments_for_items(&item_ids)
+            .await?
+    } else {
+        std::collections::HashMap::new()
+    };
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -168,7 +177,13 @@ async fn page_to_dto(
         let mut dto = user_library::item_to_dto(item, state.server_id());
         if requested_fields.wants_media_streams() {
             let streams = media_streams.remove(&item_id).unwrap_or_default();
-            user_library::project_item_dto_with_streams(&mut dto, requested_fields, streams);
+            let attachments = media_attachments.remove(&item_id).unwrap_or_default();
+            user_library::project_item_dto_with_streams(
+                &mut dto,
+                requested_fields,
+                streams,
+                attachments,
+            );
         }
         items.push(dto);
     }
