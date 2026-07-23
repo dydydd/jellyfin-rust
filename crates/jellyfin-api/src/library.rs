@@ -3,7 +3,7 @@ use std::{path::Path as FilePath, sync::Arc};
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::Response,
 };
@@ -31,6 +31,13 @@ pub(crate) struct ItemCountsQuery {
     user_id: Option<Uuid>,
     #[serde(default, rename = "isFavorite", alias = "IsFavorite")]
     is_favorite: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct MediaFoldersQuery {
+    #[serde(rename = "isHidden", alias = "IsHidden")]
+    is_hidden: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,6 +190,36 @@ pub(crate) async fn item_counts(
     )))
 }
 
+pub(crate) async fn media_folders(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<MediaFoldersQuery>, QueryRejection>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let items = state
+        .virtual_folders
+        .list()
+        .await?
+        .into_iter()
+        .filter(is_enabled_media_folder)
+        .filter(|folder| {
+            query
+                .is_hidden
+                .is_none_or(|hidden| is_hidden(folder) == hidden)
+        })
+        .map(|folder| crate::user_views::view_to_dto(folder, state.server_id()))
+        .collect::<Vec<_>>();
+    Ok(Json(user_library::BaseItemQueryResult {
+        total_record_count: items.len(),
+        start_index: 0,
+        items,
+    }))
+}
+
 pub(crate) async fn delete_item(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -308,6 +345,18 @@ fn counts_to_dto(counts: BaseItemCounts) -> ItemCounts {
         book_count: saturating_i32(counts.book_count),
         item_count: saturating_i32(counts.item_count),
     }
+}
+
+fn is_enabled_media_folder(folder: &jellyfin_controller::VirtualFolder) -> bool {
+    crate::user_views::bool_option(&folder.library_options, &["Enabled", "enabled"]).unwrap_or(true)
+}
+
+fn is_hidden(folder: &jellyfin_controller::VirtualFolder) -> bool {
+    crate::user_views::bool_option(
+        &folder.library_options,
+        &["IsHidden", "isHidden", "Hidden", "hidden"],
+    )
+    .unwrap_or(false)
 }
 
 fn saturating_i32(value: i64) -> i32 {

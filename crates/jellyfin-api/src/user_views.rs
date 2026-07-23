@@ -140,7 +140,7 @@ async fn target_user_id(
     identity.target_user_id(requested_user_id)
 }
 
-fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto {
+pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto {
     BaseItemDto {
         name: Some(folder.name.clone()),
         server_id: server_id.to_owned(),
@@ -201,7 +201,7 @@ fn is_hidden(folder: &VirtualFolder) -> bool {
     .unwrap_or(false)
 }
 
-fn bool_option(value: &Value, keys: &[&str]) -> Option<bool> {
+pub(crate) fn bool_option(value: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter()
         .find_map(|key| value.as_object()?.get(*key)?.as_bool())
 }
