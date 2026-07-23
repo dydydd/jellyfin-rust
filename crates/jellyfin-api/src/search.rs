@@ -2,7 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use axum::{Json, extract::State, http::HeaderMap};
 use axum_extra::extract::Query;
-use jellyfin_controller::{Artist, ArtistValueKind, Genre, Person, Studio};
+use jellyfin_controller::{Artist, ArtistValueKind, Genre, MusicGenre, Person, Studio};
 use jellyfin_data::{
     BaseItemPage, BaseItemQuery, ItemValueQuery, PersonQuery, entities::base_item,
 };
@@ -183,6 +183,40 @@ pub(crate) async fn hints(
         );
     }
 
+    if query.include_genres.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Genre", "MusicGenre"])
+        && !excludes_hint_type(&query.exclude_item_types, &["MusicGenre"])
+    {
+        let page = state
+            .music_genres
+            .list(
+                &authenticated.user,
+                target_user_id,
+                ItemValueQuery {
+                    parent_id: query.parent_id,
+                    recursive: true,
+                    search_term: Some(search_term.to_owned()),
+                    media_types: query.media_types.clone(),
+                    is_movie: query.is_movie,
+                    is_series: query.is_series,
+                    is_news: query.is_news,
+                    is_kids: query.is_kids,
+                    is_sports: query.is_sports,
+                    user_id: Some(target_user_id),
+                    start_index: query.start_index,
+                    limit: query.limit,
+                    ..ItemValueQuery::default()
+                },
+            )
+            .await?;
+        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+        result.search_hints.extend(
+            page.genres
+                .into_iter()
+                .map(|genre| music_genre_hint(genre, search_term)),
+        );
+    }
+
     if query.include_studios.unwrap_or(true)
         && includes_hint_type(&query.include_item_types, &["Studio"])
         && !excludes_hint_type(&query.exclude_item_types, &["Studio"])
@@ -328,6 +362,18 @@ fn genre_hint(genre: Genre, matched_term: &str) -> SearchHint {
         name: genre.name,
         matched_term: Some(matched_term.to_owned()),
         item_type: "Genre".to_owned(),
+        is_folder: Some(true),
+        ..SearchHint::default()
+    }
+}
+
+fn music_genre_hint(genre: MusicGenre, matched_term: &str) -> SearchHint {
+    SearchHint {
+        item_id: genre.id,
+        id: genre.id,
+        name: genre.name,
+        matched_term: Some(matched_term.to_owned()),
+        item_type: "MusicGenre".to_owned(),
         is_folder: Some(true),
         ..SearchHint::default()
     }

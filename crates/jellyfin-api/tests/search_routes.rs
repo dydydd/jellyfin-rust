@@ -181,6 +181,11 @@ async fn exercise_search_routes(database_name: &str) {
         .link(audio_id, item_value::ItemValueType::Artist, &artist)
         .await
         .expect("artist link");
+    let music_genre = format!("Synthwave {suffix}");
+    let music_genre_row = values
+        .link(audio_id, item_value::ItemValueType::Genre, &music_genre)
+        .await
+        .expect("music genre link");
     let people = PersonRepository::new(database.clone());
     let person = format!("Laurence Search {suffix}");
     let person_row = people
@@ -376,6 +381,48 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(genre_hints["SearchHints"][0]["MatchedTerm"], "Cyberpunk");
     assert_eq!(genre_hints["SearchHints"][0]["Type"], "Genre");
     assert_eq!(genre_hints["SearchHints"][0]["IsFolder"], true);
+
+    let music_genre_hints = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Synthwave&includeMedia=false&includeGenres=true&includeItemTypes=Genre",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    let music_genre_id = music_genre_row.item_value_id.simple().to_string();
+    assert_eq!(music_genre_hints["TotalRecordCount"], 1);
+    assert_eq!(
+        music_genre_hints["SearchHints"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(music_genre_hints["SearchHints"][0]["Id"], music_genre_id);
+    assert_eq!(
+        music_genre_hints["SearchHints"][0]["ItemId"],
+        music_genre_id
+    );
+    assert_eq!(music_genre_hints["SearchHints"][0]["Name"], music_genre);
+    assert_eq!(
+        music_genre_hints["SearchHints"][0]["MatchedTerm"],
+        "Synthwave"
+    );
+    assert_eq!(music_genre_hints["SearchHints"][0]["Type"], "MusicGenre");
+    assert_eq!(music_genre_hints["SearchHints"][0]["IsFolder"], true);
+
+    let music_genre_excluded = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Synthwave&includeMedia=false&includeGenres=true&includeItemTypes=Genre&excludeItemTypes=MusicGenre",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        music_genre_excluded,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
 
     let genre_movie_type_filtered = body_json(
         request(
