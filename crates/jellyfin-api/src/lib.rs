@@ -16,6 +16,7 @@ use jellyfin_controller::{
     PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
     UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
     UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -34,6 +35,7 @@ mod activity_log;
 mod authentication;
 mod authorization;
 mod branding;
+mod client_log;
 mod dashboard;
 mod environment;
 mod hls_segment;
@@ -88,6 +90,7 @@ pub struct AppState {
     pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
     pub(crate) system_logs: SystemLogService,
+    pub(crate) client_event_logger: ClientEventLogger,
     pub(crate) network_manager: Arc<NetworkManager>,
     pub(crate) transcode_directory: std::path::PathBuf,
     pub(crate) authentication: DefaultAuthenticationProvider,
@@ -125,6 +128,7 @@ impl AppState {
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
             system_logs: SystemLogService::default(),
+            client_event_logger: ClientEventLogger::new("logs"),
             network_manager: Arc::new(NetworkManager::new(
                 NetworkConfiguration::default(),
                 Vec::new(),
@@ -206,7 +210,9 @@ impl AppState {
     /// Replaces the top-level directory exposed by the server log endpoint.
     #[must_use]
     pub fn with_log_directory(mut self, log_directory: impl Into<std::path::PathBuf>) -> Self {
-        self.system_logs = SystemLogService::new(log_directory);
+        let log_directory = log_directory.into();
+        self.system_logs = SystemLogService::new(log_directory.clone());
+        self.client_event_logger = ClientEventLogger::new(log_directory);
         self
     }
 
@@ -234,11 +240,7 @@ impl AppState {
 
 pub fn router(state: AppState) -> Router {
     openapi::documented_routes()
-        .route("/System/ActivityLog/Entries", get(activity_log::entries))
-        .route("/System/Logs", get(system::get_logs))
-        .route("/System/Logs/Log", get(system::get_log_file))
-        .route("/System/Endpoint", get(system::endpoint_info))
-        .route("/GetUtcTime", get(time_sync::get_utc_time))
+        .merge(system_routes())
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
@@ -333,6 +335,16 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(robots::redirect_or_not_found)
         .with_state(Arc::new(state))
+}
+
+fn system_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/System/ActivityLog/Entries", get(activity_log::entries))
+        .route("/System/Logs", get(system::get_logs))
+        .route("/System/Logs/Log", get(system::get_log_file))
+        .route("/System/Endpoint", get(system::endpoint_info))
+        .route("/Document", post(client_log::document))
+        .route("/GetUtcTime", get(time_sync::get_utc_time))
 }
 
 fn environment_routes() -> Router<Arc<AppState>> {
@@ -601,6 +613,7 @@ pub(crate) enum ApiError {
     Environment(EnvironmentError),
     InvalidRequest,
     UnsupportedMediaType,
+    PayloadTooLarge,
     Unauthorized,
     Forbidden,
     Internal,
@@ -751,6 +764,7 @@ impl IntoResponse for ApiError {
             Self::UnsupportedMediaType => {
                 (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Unsupported media type")
             }
+            Self::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "Payload too large"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             Self::Forbidden
             | Self::Playstate(PlaystateError::Forbidden)

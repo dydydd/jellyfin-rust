@@ -23,6 +23,7 @@ mod m20260722_000020_create_keyframe_data;
 mod m20260722_000021_create_media_streams;
 mod m20260722_000022_create_media_attachments;
 mod m20260722_000023_add_playstate_resume_configuration;
+mod m20260722_000024_add_client_log_upload_configuration;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -70,6 +71,8 @@ pub use m20260722_000021_create_media_streams::Migration as CreateMediaStreamsMi
 pub use m20260722_000022_create_media_attachments::Migration as CreateMediaAttachmentsMigration;
 #[doc(hidden)]
 pub use m20260722_000023_add_playstate_resume_configuration::Migration as AddPlaystateResumeConfigurationMigration;
+#[doc(hidden)]
+pub use m20260722_000024_add_client_log_upload_configuration::Migration as AddClientLogUploadConfigurationMigration;
 
 pub struct Migrator;
 
@@ -100,6 +103,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000021_create_media_streams::Migration),
             Box::new(m20260722_000022_create_media_attachments::Migration),
             Box::new(m20260722_000023_add_playstate_resume_configuration::Migration),
+            Box::new(m20260722_000024_add_client_log_upload_configuration::Migration),
         ]
     }
 }

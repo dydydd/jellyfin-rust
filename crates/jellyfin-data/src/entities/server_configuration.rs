@@ -18,6 +18,7 @@ pub struct Model {
     pub min_resume_duration_seconds: i32,
     pub min_audiobook_resume: i32,
     pub max_audiobook_resume: i32,
+    pub allow_client_log_upload: bool,
     pub row_version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

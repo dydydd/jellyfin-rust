@@ -69,7 +69,8 @@ impl ServerConfigurationRepository {
                 preferred_metadata_language, is_startup_wizard_completed,
                 content_types, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
-                max_audiobook_resume, row_version, created_at, updated_at
+                max_audiobook_resume, allow_client_log_upload,
+                row_version, created_at, updated_at
             ",
             [
                 update.server_name.into(),
@@ -103,7 +104,8 @@ impl ServerConfigurationRepository {
                 preferred_metadata_language, is_startup_wizard_completed,
                 content_types, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
-                max_audiobook_resume, row_version, created_at, updated_at
+                max_audiobook_resume, allow_client_log_upload,
+                row_version, created_at, updated_at
             "
             .to_owned(),
         );
@@ -158,12 +160,45 @@ impl ServerConfigurationRepository {
                 preferred_metadata_language, is_startup_wizard_completed,
                 content_types, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
-                max_audiobook_resume, row_version, created_at, updated_at
+                max_audiobook_resume, allow_client_log_upload,
+                row_version, created_at, updated_at
             ",
             [
                 path.to_owned().into(),
                 content_type.map(str::to_owned).into(),
             ],
+        );
+        server_configuration::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or(ServerConfigurationStoreError::MissingSingleton)
+    }
+
+    /// Enables or disables client diagnostic log uploads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-singleton or database error. The setting is stored on
+    /// the singleton row so API workers observe one `PostgreSQL` source of
+    /// truth.
+    pub async fn update_client_log_upload(
+        &self,
+        allow_client_log_upload: bool,
+    ) -> Result<server_configuration::Model, ServerConfigurationStoreError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.server_configuration
+            SET allow_client_log_upload = $1
+            WHERE id = 1
+            RETURNING id, server_name, ui_culture, metadata_country_code,
+                preferred_metadata_language, is_startup_wizard_completed,
+                content_types, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, allow_client_log_upload,
+                row_version, created_at, updated_at
+            ",
+            [allow_client_log_upload.into()],
         );
         server_configuration::Model::find_by_statement(statement)
             .one(&self.database)

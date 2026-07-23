@@ -8,7 +8,7 @@ use axum::{
 use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike, Utc, Weekday};
 use jellyfin_data::{
     NewDevice,
-    entities::{api_key, user},
+    entities::{api_key, device, user},
 };
 use jellyfin_model::{DynamicDayOfWeek, UserPolicy};
 use percent_encoding::percent_decode_str;
@@ -113,6 +113,7 @@ pub(crate) async fn current_user(
 #[derive(Debug)]
 pub(crate) struct AuthenticatedSession {
     pub(crate) user: user::Model,
+    pub(crate) device: device::Model,
     pub(crate) access_token: String,
     policy: UserPolicy,
 }
@@ -174,6 +175,24 @@ impl AuthenticatedIdentity {
             Self::ApiKey(_) => Ok(requested.unwrap_or_else(Uuid::nil)),
         }
     }
+
+    pub(crate) fn client_log_file_parts(&self, headers: &HeaderMap) -> (String, String) {
+        match self {
+            Self::Device(session) => {
+                let metadata = headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .map(parse_authorization)
+                    .unwrap_or_default();
+                (
+                    nonblank(metadata.client).unwrap_or_else(|| session.device.app_name.clone()),
+                    nonblank(metadata.version)
+                        .unwrap_or_else(|| session.device.app_version.clone()),
+                )
+            }
+            Self::ApiKey(api_key) => (api_key.name.clone(), "apikey".to_owned()),
+        }
+    }
 }
 
 pub(crate) async fn authenticated_session(
@@ -213,6 +232,7 @@ pub(crate) async fn authenticated_identity(
         return Ok(AuthenticatedIdentity::Device(Box::new(
             AuthenticatedSession {
                 user,
+                device: session.clone(),
                 access_token,
                 policy,
             },
@@ -325,6 +345,10 @@ fn nonempty_header(headers: &HeaderMap, name: &str) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn nonblank(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
 }
 
 fn parse_authorization(value: &str) -> ClientMetadata {

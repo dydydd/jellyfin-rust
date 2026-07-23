@@ -3,7 +3,8 @@ use jellyfin_data::{
     StartupConfigurationUpdate,
 };
 use jellyfin_migration::{
-    AddPlaystateResumeConfigurationMigration, CreateServerConfigurationMigration,
+    AddClientLogUploadConfigurationMigration, AddPlaystateResumeConfigurationMigration,
+    CreateServerConfigurationMigration,
 };
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -71,6 +72,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.min_resume_duration_seconds, 300);
     assert_eq!(seeded.min_audiobook_resume, 5);
     assert_eq!(seeded.max_audiobook_resume, 5);
+    assert!(seeded.allow_client_log_upload);
     assert_eq!(seeded.row_version, 1);
 
     let updated = first
@@ -95,6 +97,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert!(concurrent.row_version >= updated.row_version + 2);
 
     assert_content_type_updates(&database, &first, &second).await;
+    assert_client_log_upload_updates(&first, &second).await;
 
     let invalid_insert = database
         .execute_unprepared(
@@ -134,6 +137,10 @@ async fn exercise_server_configuration(database_name: &str) {
             .await,
         Err(ServerConfigurationStoreError::MissingSingleton)
     ));
+    assert!(matches!(
+        first.update_client_log_upload(true).await,
+        Err(ServerConfigurationStoreError::MissingSingleton)
+    ));
 
     database
         .close()
@@ -158,6 +165,14 @@ async fn assert_configuration_migrations_are_idempotent(schema: &SchemaManager<'
         .up(schema)
         .await
         .expect("playstate configuration DDL must remain idempotent");
+    AddClientLogUploadConfigurationMigration
+        .up(schema)
+        .await
+        .expect("reapplying client-log configuration DDL must succeed");
+    AddClientLogUploadConfigurationMigration
+        .up(schema)
+        .await
+        .expect("client-log configuration DDL must remain idempotent");
 }
 
 async fn assert_content_type_updates(
@@ -199,6 +214,24 @@ async fn assert_content_type_updates(
             ("/library/music".to_owned(), "music".to_owned()),
         ])
     );
+}
+
+async fn assert_client_log_upload_updates(
+    first: &ServerConfigurationRepository,
+    second: &ServerConfigurationRepository,
+) {
+    let disabled = first
+        .update_client_log_upload(false)
+        .await
+        .expect("client-log upload disable");
+    assert!(!disabled.allow_client_log_upload);
+
+    let enabled = second
+        .update_client_log_upload(true)
+        .await
+        .expect("client-log upload enable");
+    assert!(enabled.allow_client_log_upload);
+    assert!(enabled.row_version > disabled.row_version);
 }
 
 fn content_types(value: &Value) -> BTreeMap<String, String> {
@@ -273,6 +306,7 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
     );
 
     assert_playstate_resume_schema(database).await;
+    assert_client_log_upload_schema(database).await;
 
     let row = database
         .query_one(Statement::from_string(
@@ -301,6 +335,31 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("content-types constraint catalog query")
         .expect("content-types constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_client_log_upload_schema(database: &sea_orm::DatabaseConnection) {
+    let column = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name = 'allow_client_log_upload'"
+                .to_owned(),
+        ))
+        .await
+        .expect("client-log upload column catalog query")
+        .expect("client-log upload column");
+    assert_eq!(
+        String::try_get(&column, "", "data_type").unwrap(),
+        "boolean"
+    );
+    assert_eq!(String::try_get(&column, "", "is_nullable").unwrap(), "NO");
+    assert_eq!(
+        String::try_get(&column, "", "column_default").unwrap(),
+        "true"
+    );
 }
 
 async fn assert_playstate_resume_schema(database: &sea_orm::DatabaseConnection) {
