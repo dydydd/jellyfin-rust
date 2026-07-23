@@ -5,7 +5,7 @@ use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_controller::{PlaybackProgressUpdate, parse_date_played};
+use jellyfin_controller::{PlaybackProgressUpdate, PlaybackStartUpdate, parse_date_played};
 use jellyfin_model::UserItemDataDto;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -37,6 +37,12 @@ pub struct PlaybackProgressInfo {
     pub position_ticks: Option<i64>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlaybackStartInfo {
+    pub item_id: Uuid,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -148,6 +154,36 @@ pub(crate) async fn report_playback_progress(
     report_playback_progress_for_current_session(state, &uri, headers, progress.into()).await
 }
 
+pub(crate) async fn report_playback_start(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<PlaybackStartInfo>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Json(start) = request.map_err(|_| ApiError::InvalidRequest)?;
+    report_playback_start_for_current_session(state, &uri, headers, start.into()).await
+}
+
+pub(crate) async fn report_playback_start_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    report_playback_start_for_current_session(state, &uri, headers, PlaybackStartUpdate { item_id })
+        .await
+}
+
+pub(crate) async fn report_playback_start_legacy_for_user(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((_user_id, item_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    report_playback_start_for_current_session(state, &uri, headers, PlaybackStartUpdate { item_id })
+        .await
+}
+
 pub(crate) async fn report_playback_progress_legacy(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -203,6 +239,19 @@ async fn report_playback_progress_for_current_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn report_playback_start_for_current_session(
+    state: Arc<AppState>,
+    uri: &axum::http::Uri,
+    headers: HeaderMap,
+    update: PlaybackStartUpdate,
+) -> Result<StatusCode, ApiError> {
+    let identity = authorization::require_default(&state, &headers, uri).await?;
+    if let AuthenticatedIdentity::Device(session) = identity {
+        record_device_playback_start(&state, &session, update).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn record_device_playback_progress(
     state: &AppState,
     session: &AuthenticatedSession,
@@ -215,6 +264,18 @@ async fn record_device_playback_progress(
     Ok(())
 }
 
+async fn record_device_playback_start(
+    state: &AppState,
+    session: &AuthenticatedSession,
+    update: PlaybackStartUpdate,
+) -> Result<(), ApiError> {
+    state
+        .playstate
+        .report_playback_start(&session.user, update)
+        .await?;
+    Ok(())
+}
+
 impl From<PlaybackProgressInfo> for PlaybackProgressUpdate {
     fn from(info: PlaybackProgressInfo) -> Self {
         Self {
@@ -222,6 +283,14 @@ impl From<PlaybackProgressInfo> for PlaybackProgressUpdate {
             position_ticks: info.position_ticks,
             audio_stream_index: info.audio_stream_index,
             subtitle_stream_index: info.subtitle_stream_index,
+        }
+    }
+}
+
+impl From<PlaybackStartInfo> for PlaybackStartUpdate {
+    fn from(info: PlaybackStartInfo) -> Self {
+        Self {
+            item_id: info.item_id,
         }
     }
 }

@@ -67,6 +67,11 @@ pub struct PlaybackProgressUpdate {
     pub subtitle_stream_index: Option<i32>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlaybackStartUpdate {
+    pub item_id: Uuid,
+}
+
 impl From<PlaystateUpdate> for UserItemDataDto {
     fn from(update: PlaystateUpdate) -> Self {
         user_data_to_dto(update.user_data, None)
@@ -215,6 +220,37 @@ impl PlaystateService {
         Ok(Some(PlaystateUpdate { user_data }))
     }
 
+    /// Applies the user-data side effects of a playback start report.
+    ///
+    /// Empty or unknown item identifiers behave like Jellyfin session reports:
+    /// the call succeeds without writing user data. Known items increment the
+    /// reporting user's play count and update the last-played timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence errors for database failures.
+    pub async fn report_playback_start(
+        &self,
+        user: &user::Model,
+        update: PlaybackStartUpdate,
+    ) -> Result<Option<PlaystateUpdate>, PlaystateError> {
+        let Some(item) = self.progress_item(update.item_id).await? else {
+            return Ok(None);
+        };
+        let keys = current_user_data_keys(&item);
+        let user_data = self
+            .user_data
+            .record_playback_start(
+                item.id,
+                user.id,
+                &keys,
+                Utc::now(),
+                should_mark_played_on_start(&item),
+            )
+            .await?;
+        Ok(Some(PlaystateUpdate { user_data }))
+    }
+
     async fn validate_request(
         &self,
         authenticated_user: &user::Model,
@@ -291,4 +327,22 @@ const fn has_playback_progress_changes(patch: &UserDataPatch) -> bool {
     patch.playback_position_ticks.is_some()
         || patch.audio_stream_index.is_some()
         || patch.subtitle_stream_index.is_some()
+}
+
+fn should_mark_played_on_start(item: &base_item::Model) -> bool {
+    supports_played_status(item) && !supports_position_ticks_resume(item)
+}
+
+fn supports_played_status(item: &base_item::Model) -> bool {
+    matches!(
+        item.item_type.as_str(),
+        "Audio" | "Book" | "Episode" | "Movie" | "MusicVideo" | "Video"
+    )
+}
+
+fn supports_position_ticks_resume(item: &base_item::Model) -> bool {
+    matches!(
+        item.item_type.as_str(),
+        "AudioBook" | "Book" | "Episode" | "Movie" | "MusicVideo" | "Video"
+    )
 }

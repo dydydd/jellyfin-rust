@@ -367,13 +367,22 @@ fn user_routes() -> Router<Arc<AppState>> {
 
 fn playstate_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/Sessions/Playing", post(playstate::report_playback_start))
         .route(
             "/Sessions/Playing/Progress",
             post(playstate::report_playback_progress),
         )
         .route(
+            "/PlayingItems/{item_id}",
+            post(playstate::report_playback_start_legacy),
+        )
+        .route(
             "/PlayingItems/{item_id}/Progress",
             post(playstate::report_playback_progress_legacy),
+        )
+        .route(
+            "/Users/{user_id}/PlayingItems/{item_id}",
+            post(playstate::report_playback_start_legacy_for_user),
         )
         .route(
             "/Users/{user_id}/PlayingItems/{item_id}/Progress",

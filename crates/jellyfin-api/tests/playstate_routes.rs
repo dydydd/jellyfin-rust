@@ -2,6 +2,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
@@ -205,6 +206,90 @@ async fn playback_progress_legacy_route_uses_authenticated_user_and_missing_item
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn playback_start_routes_increment_play_count_and_preserve_existing_state() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+    let mut initial = NewUserData::new(
+        fixture.item_id,
+        fixture.user_id,
+        fixture.item_id.to_string(),
+    );
+    initial.play_count = 2;
+    initial.playback_position_ticks = 44_000;
+    initial.is_favorite = true;
+    initial.audio_stream_index = Some(1);
+    initial.subtitle_stream_index = Some(-1);
+    repository.upsert(initial).await.expect("start seed");
+
+    let before_start = Utc::now();
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing",
+        &fixture.user_token,
+        json!({ "ItemId": fixture.item_id }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_started(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        3,
+        before_start,
+    )
+    .await;
+
+    let legacy_route = format!(
+        "/Users/{}/PlayingItems/{}",
+        fixture.administrator_id, fixture.item_id
+    );
+    let before_legacy = Utc::now();
+    let response = request(&fixture.app, "POST", &legacy_route, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_started(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        4,
+        before_legacy,
+    )
+    .await;
+    assert!(
+        repository
+            .get(
+                fixture.item_id,
+                fixture.administrator_id,
+                &fixture.item_id.to_string()
+            )
+            .await
+            .expect("administrator start lookup")
+            .is_none(),
+        "legacy start userId route parameter is ignored by Jellyfin"
+    );
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing",
+        &fixture.user_token,
+        json!({ "ItemId": Uuid::new_v4() }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_started(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        4,
+        before_legacy,
+    )
+    .await;
+
+    fixture.cleanup().await;
+}
+
 async fn assert_progress(
     repository: &UserDataRepository,
     item_id: Uuid,
@@ -221,6 +306,33 @@ async fn assert_progress(
     assert_eq!(persisted.playback_position_ticks, position_ticks);
     assert_eq!(persisted.audio_stream_index, audio_stream_index);
     assert_eq!(persisted.subtitle_stream_index, subtitle_stream_index);
+}
+
+async fn assert_started(
+    repository: &UserDataRepository,
+    item_id: Uuid,
+    user_id: Uuid,
+    play_count: i32,
+    not_before: chrono::DateTime<Utc>,
+) {
+    let persisted = repository
+        .get(item_id, user_id, &item_id.to_string())
+        .await
+        .expect("start lookup")
+        .expect("start row");
+    assert_eq!(persisted.play_count, play_count);
+    let lower_bound = not_before - chrono::Duration::seconds(1);
+    assert!(
+        persisted
+            .last_played_date
+            .is_some_and(|date| date >= lower_bound),
+        "last played date should be refreshed"
+    );
+    assert!(!persisted.played);
+    assert_eq!(persisted.playback_position_ticks, 44_000);
+    assert!(persisted.is_favorite);
+    assert_eq!(persisted.audio_stream_index, Some(1));
+    assert_eq!(persisted.subtitle_stream_index, Some(-1));
 }
 
 struct PlaystateFixture {
