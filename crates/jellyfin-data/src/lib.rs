@@ -2,6 +2,7 @@ mod activity_log_repository;
 mod authentication_repository;
 mod base_item_image_repository;
 mod base_item_repository;
+mod display_preference_repository;
 pub mod entities;
 mod item_update_repository;
 mod item_value_repository;
@@ -33,6 +34,7 @@ pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
     BaseItemQuery, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
 };
+pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{ItemValueError, ItemValueRepository};
 pub use keyframe_data_repository::{

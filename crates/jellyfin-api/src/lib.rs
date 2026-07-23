@@ -20,9 +20,10 @@ use jellyfin_controller::{
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
-    BaseItemError, DeviceOptionsRepository, DeviceRepository, ItemUpdateStoreError,
-    QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
-    SessionCommandRepository, SessionCommandStoreError, entities::user,
+    BaseItemError, DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
+    DisplayPreferenceStoreError, ItemUpdateStoreError, QuickConnectRepository,
+    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
+    SessionCommandStoreError, entities::user,
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
@@ -43,6 +44,7 @@ mod branding;
 mod client_log;
 mod dashboard;
 mod devices;
+mod display_preferences;
 mod environment;
 mod hls_segment;
 mod item_lookup;
@@ -80,6 +82,7 @@ pub struct AppState {
     pub(crate) api_keys: ApiKeyRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) device_options: DeviceOptionsRepository,
+    pub(crate) display_preferences: DisplayPreferenceRepository,
     pub(crate) session_commands: SessionCommandRepository,
     pub(crate) quick_connect:
         QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
@@ -122,6 +125,7 @@ impl AppState {
             api_keys: ApiKeyRepository::new(database.clone()),
             devices: DeviceRepository::new(database.clone()),
             device_options: DeviceOptionsRepository::new(database.clone()),
+            display_preferences: DisplayPreferenceRepository::new(database.clone()),
             session_commands: SessionCommandRepository::new(database.clone()),
             quick_connect: QuickConnectManager::new(
                 QuickConnectRepository::new(database.clone()),
@@ -283,6 +287,7 @@ pub fn router(state: AppState) -> Router {
         .merge(localization_routes())
         .merge(api_key_routes())
         .merge(device_routes())
+        .merge(display_preference_routes())
         .merge(user_routes())
         .merge(user_view_routes())
         .merge(startup_routes())
@@ -436,6 +441,13 @@ fn device_routes() -> Router<Arc<AppState>> {
             "/Devices/Options",
             get(devices::options).post(devices::update_options),
         )
+}
+
+fn display_preference_routes() -> Router<Arc<AppState>> {
+    Router::new().route(
+        "/DisplayPreferences/{display_preferences_id}",
+        get(display_preferences::get).post(display_preferences::update),
+    )
 }
 
 fn user_routes() -> Router<Arc<AppState>> {
@@ -749,6 +761,7 @@ pub(crate) enum ApiError {
     MediaStream(MediaStreamServiceError),
     MetadataEditor(MetadataEditorError),
     SystemLog(SystemLogError),
+    DisplayPreferenceStore(DisplayPreferenceStoreError),
     ServerConfiguration(ServerConfigurationStoreError),
     Environment(EnvironmentError),
     QuickConnect(QuickConnectError),
@@ -892,6 +905,12 @@ impl From<MetadataEditorError> for ApiError {
 impl From<SystemLogError> for ApiError {
     fn from(error: SystemLogError) -> Self {
         Self::SystemLog(error)
+    }
+}
+
+impl From<DisplayPreferenceStoreError> for ApiError {
+    fn from(error: DisplayPreferenceStoreError) -> Self {
+        Self::DisplayPreferenceStore(error)
     }
 }
 
@@ -1039,6 +1058,7 @@ impl IntoResponse for ApiError {
             Self::MediaStream(error) => media_stream_error_response(&error),
             Self::MetadataEditor(error) => metadata_editor_error_response(&error),
             Self::SystemLog(error) => system_log_error_response(&error),
+            Self::DisplayPreferenceStore(error) => display_preference_error_response(&error),
             Self::ServerConfiguration(_error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Startup configuration persistence failed",
@@ -1222,6 +1242,22 @@ fn user_error_response(error: &UserError) -> (StatusCode, &'static str) {
         UserError::Database(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Database operation failed",
+        ),
+    }
+}
+
+fn display_preference_error_response(
+    error: &DisplayPreferenceStoreError,
+) -> (StatusCode, &'static str) {
+    match error {
+        DisplayPreferenceStoreError::EmptyField(_)
+        | DisplayPreferenceStoreError::FieldTooLong { .. }
+        | DisplayPreferenceStoreError::InvalidPreferences => {
+            (StatusCode::BAD_REQUEST, "Invalid display preferences")
+        }
+        DisplayPreferenceStoreError::Database(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Display preferences persistence failed",
         ),
     }
 }
