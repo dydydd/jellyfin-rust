@@ -1,4 +1,4 @@
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaStream, MediaStreamType, SubtitlePlaybackMode};
 use jellyfin_server_implementations::MediaStreamSelector;
 
 #[test]
@@ -156,6 +156,123 @@ fn equal_scores_preserve_input_order_and_non_audio_streams_are_ignored() {
     );
 }
 
+#[test]
+fn subtitle_modes_match_official_default_selection_rules() {
+    let streams = subtitle_selection_streams();
+    let preferred = strings(&["eng"]);
+
+    assert_eq!(
+        MediaStreamSelector::default_subtitle_stream_index(
+            &streams,
+            &preferred,
+            SubtitlePlaybackMode::Default,
+            Some("fre"),
+        ),
+        Some(6)
+    );
+    assert_eq!(
+        MediaStreamSelector::default_subtitle_stream_index(
+            &streams,
+            &preferred,
+            SubtitlePlaybackMode::Always,
+            Some("fre"),
+        ),
+        Some(2)
+    );
+    assert_eq!(
+        MediaStreamSelector::default_subtitle_stream_index(
+            &streams,
+            &preferred,
+            SubtitlePlaybackMode::Smart,
+            Some("fre"),
+        ),
+        Some(2)
+    );
+    assert_eq!(
+        MediaStreamSelector::default_subtitle_stream_index(
+            &streams,
+            &preferred,
+            SubtitlePlaybackMode::Smart,
+            Some("eng"),
+        ),
+        Some(3)
+    );
+    assert_eq!(
+        MediaStreamSelector::default_subtitle_stream_index(
+            &streams,
+            &preferred,
+            SubtitlePlaybackMode::OnlyForced,
+            Some("eng"),
+        ),
+        Some(3)
+    );
+    assert_eq!(
+        MediaStreamSelector::default_subtitle_stream_index(
+            &streams,
+            &preferred,
+            SubtitlePlaybackMode::None,
+            Some("fre"),
+        ),
+        None
+    );
+}
+
+#[test]
+fn forced_subtitles_fall_back_to_undefined_languages() {
+    let streams = [
+        subtitle_stream(8, Some("zxx"), true, false, false),
+        subtitle_stream(9, Some("fre"), true, false, false),
+    ];
+
+    assert_eq!(
+        MediaStreamSelector::default_subtitle_stream_index(
+            &streams,
+            &strings(&["eng"]),
+            SubtitlePlaybackMode::OnlyForced,
+            Some("eng"),
+        ),
+        Some(8)
+    );
+}
+
+#[test]
+fn subtitle_scores_are_applied_to_the_mode_candidates() {
+    let mut streams = subtitle_selection_streams();
+    let preferred = strings(&["eng"]);
+
+    MediaStreamSelector::set_subtitle_stream_scores(
+        &mut streams,
+        &preferred,
+        SubtitlePlaybackMode::Always,
+        Some("fre"),
+    );
+
+    assert_eq!(
+        streams
+            .iter()
+            .find(|stream| stream.index == 2)
+            .and_then(|stream| stream.score),
+        Some(MediaStreamSelector::stream_score(
+            streams.iter().find(|stream| stream.index == 2).unwrap(),
+            &preferred,
+        ))
+    );
+    assert_eq!(
+        streams
+            .iter()
+            .find(|stream| stream.index == 3)
+            .and_then(|stream| stream.score),
+        None
+    );
+    assert_eq!(
+        streams
+            .iter()
+            .find(|stream| stream.index == 6)
+            .and_then(|stream| stream.score),
+        None
+    );
+}
+
 fn audio_selection_streams() -> [MediaStream; 3] {
     [
         MediaStream {
@@ -178,6 +295,35 @@ fn audio_selection_streams() -> [MediaStream; 3] {
             ..Default::default()
         },
     ]
+}
+
+fn subtitle_selection_streams() -> [MediaStream; 5] {
+    [
+        subtitle_stream(2, Some("eng"), false, false, false),
+        subtitle_stream(3, Some("eng"), true, false, false),
+        subtitle_stream(4, Some("zxx"), true, false, false),
+        subtitle_stream(5, Some("fre"), false, true, false),
+        subtitle_stream(6, Some("spa"), false, false, true),
+    ]
+}
+
+fn subtitle_stream(
+    index: i32,
+    language: Option<&str>,
+    is_forced: bool,
+    is_default: bool,
+    is_external: bool,
+) -> MediaStream {
+    MediaStream {
+        index,
+        stream_type: MediaStreamType::Subtitle,
+        codec: Some("srt".to_owned()),
+        language: language.map(ToOwned::to_owned),
+        is_forced,
+        is_default,
+        is_external,
+        ..Default::default()
+    }
 }
 
 fn stream_with_language(language: &str) -> MediaStream {

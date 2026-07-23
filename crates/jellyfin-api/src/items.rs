@@ -103,7 +103,9 @@ async fn get_for(
         .user_library
         .query_items(&authenticated.user, target_user_id, query.try_into()?)
         .await?;
-    Ok(Json(page_to_dto(state.as_ref(), page, fields).await?))
+    Ok(Json(
+        page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
+    ))
 }
 
 async fn resume_for(
@@ -119,7 +121,9 @@ async fn resume_for(
         .user_library
         .resume_items(&authenticated.user, target_user_id, query.try_into()?)
         .await?;
-    Ok(Json(page_to_dto(state.as_ref(), page, fields).await?))
+    Ok(Json(
+        page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
+    ))
 }
 
 impl TryFrom<ItemsQuery> for BaseItemQuery {
@@ -150,8 +154,12 @@ async fn page_to_dto(
     state: &AppState,
     page: BaseItemPage,
     fields: Vec<String>,
+    target_user_id: Uuid,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let requested_fields = user_library::BaseItemDtoFields::from_names(&fields);
+    let defaults =
+        user_library::media_stream_defaults_for_user(state, target_user_id, requested_fields)
+            .await?;
     let mut media_streams = if requested_fields.wants_media_streams() {
         let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
         state
@@ -183,6 +191,7 @@ async fn page_to_dto(
                 requested_fields,
                 streams,
                 attachments,
+                defaults.as_ref(),
             );
         }
         items.push(dto);

@@ -11,7 +11,10 @@ use jellyfin_data::{
     entities::{base_item, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+    Set,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -152,6 +155,99 @@ async fn media_stream_fields_are_projected_for_single_item_routes() {
     assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
     assert_eq!(item["MediaStreams"][0]["Language"], "deu");
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn media_source_defaults_follow_target_user_stream_preferences() {
+    let fixture = UserLibraryFixture::new().await;
+    set_stream_preferences(&fixture.database, fixture.user_id).await;
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let path = format!("/media/Stream Defaults {}.mkv", Uuid::new_v4().simple());
+    let mut video = item("Movie", "Stream Defaults", Some(fixture.root_id), false);
+    video.media_type = Some("Video".to_owned());
+    video.path = Some(path.clone());
+    let video = items.create(video).await.expect("video item");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            video.id,
+            &[
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    path: Some(path.clone()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("ac3".to_owned()),
+                    language: Some("fre".to_owned()),
+                    is_default: true,
+                    path: Some(path.clone()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 2,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    language: Some("eng".to_owned()),
+                    path: Some(path.clone()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 3,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("srt".to_owned()),
+                    language: Some("eng".to_owned()),
+                    path: Some(path.clone()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 4,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("srt".to_owned()),
+                    language: Some("eng".to_owned()),
+                    is_forced: true,
+                    path: Some(path.clone()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 5,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("srt".to_owned()),
+                    language: Some("fre".to_owned()),
+                    is_forced: true,
+                    path: Some(path),
+                    ..MediaStream::default()
+                },
+            ],
+        )
+        .await
+        .expect("video streams");
+
+    let route = format!(
+        "/Users/{}/Items/{}?fields=MediaSources,MediaStreams",
+        fixture.user_id, video.id
+    );
+    let item = get_json(&fixture.app, &route, &fixture.user_token).await;
+    let source = &item["MediaSources"][0];
+    assert_eq!(source["DefaultAudioStreamIndex"], 2);
+    assert_eq!(source["DefaultSubtitleStreamIndex"], 3);
+
+    let source_subtitle = stream_by_index(&source["MediaStreams"], 3);
+    let top_level_subtitle = stream_by_index(&item["MediaStreams"], 3);
+    assert!(source_subtitle["Score"].as_i64().is_some());
+    assert_eq!(top_level_subtitle["Score"], source_subtitle["Score"]);
+    assert!(
+        stream_by_index(&item["MediaStreams"], 4)
+            .get("Score")
+            .is_none()
+    );
+
+    items.delete(video.id).await.expect("video cleanup");
     fixture.cleanup().await;
 }
 
@@ -383,6 +479,34 @@ async fn save_media_source_metadata(database: &DatabaseConnection, item_id: Uuid
         )
         .await
         .expect("media attachments");
+}
+
+async fn set_stream_preferences(database: &DatabaseConnection, user_id: Uuid) {
+    user::ActiveModel {
+        id: Set(user_id),
+        preferences: Set(json!({
+            "AudioLanguagePreference": "English",
+            "PlayDefaultAudioTrack": false,
+            "SubtitleLanguagePreference": "English",
+            "SubtitleMode": "Always",
+            "RememberAudioSelections": true,
+            "RememberSubtitleSelections": true,
+            "EnableNextEpisodeAutoPlay": true
+        })),
+        ..Default::default()
+    }
+    .update(database)
+    .await
+    .expect("stream preference update");
+}
+
+fn stream_by_index(streams: &Value, index: i64) -> &Value {
+    streams
+        .as_array()
+        .expect("media streams array")
+        .iter()
+        .find(|stream| stream["Index"] == index)
+        .expect("media stream index")
 }
 
 fn item(item_type: &str, name: &str, parent_id: Option<Uuid>, is_folder: bool) -> NewBaseItem {

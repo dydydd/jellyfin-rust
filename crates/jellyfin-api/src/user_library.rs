@@ -6,11 +6,15 @@ use axum::{
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
-use jellyfin_controller::{MusicGenre, Person, RelatedItemKind, library::get_media_source_name};
+use jellyfin_controller::{
+    LocalizationService, MusicGenre, Person, RelatedItemKind, library::get_media_source_name,
+};
 use jellyfin_data::entities::base_item;
 use jellyfin_model::{
-    MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream,
+    MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
+    SubtitlePlaybackMode, UserConfiguration,
 };
+use jellyfin_server_implementations::MediaStreamSelector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -116,6 +120,45 @@ pub struct BaseItemQueryResult {
     pub items: Vec<BaseItemDto>,
     pub total_record_count: usize,
     pub start_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MediaStreamDefaults {
+    audio_languages: Vec<String>,
+    subtitle_languages: Vec<String>,
+    play_default_audio_track: bool,
+    subtitle_mode: SubtitlePlaybackMode,
+}
+
+impl MediaStreamDefaults {
+    #[must_use]
+    pub(crate) fn from_user_configuration(configuration: &UserConfiguration) -> Self {
+        Self {
+            audio_languages: normalize_language(configuration.audio_language_preference.as_deref()),
+            subtitle_languages: normalize_language(
+                configuration.subtitle_language_preference.as_deref(),
+            ),
+            play_default_audio_track: configuration.play_default_audio_track,
+            subtitle_mode: configuration.subtitle_mode,
+        }
+    }
+}
+
+pub(crate) async fn media_stream_defaults_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    fields: BaseItemDtoFields,
+) -> Result<Option<MediaStreamDefaults>, ApiError> {
+    if !fields.wants_media_streams() {
+        return Ok(None);
+    }
+
+    let user = state.users.get(user_id).await?;
+    let configuration: UserConfiguration =
+        serde_json::from_value(user.preferences).unwrap_or_default();
+    Ok(Some(MediaStreamDefaults::from_user_configuration(
+        &configuration,
+    )))
 }
 
 pub(crate) async fn get_root_legacy(
@@ -300,8 +343,10 @@ async fn get_root_for(
         .user_library
         .root(&authenticated.user, target_user_id)
         .await?;
+    let defaults =
+        media_stream_defaults_for_user(state.as_ref(), target_user_id, requested_fields).await?;
     Ok(Json(
-        project_item_to_dto(state.as_ref(), item, requested_fields).await?,
+        project_item_to_dto(state.as_ref(), item, requested_fields, defaults.as_ref()).await?,
     ))
 }
 
@@ -318,8 +363,10 @@ async fn get_item_for(
         .user_library
         .item(&authenticated.user, target_user_id, item_id)
         .await?;
+    let defaults =
+        media_stream_defaults_for_user(state.as_ref(), target_user_id, requested_fields).await?;
     Ok(Json(
-        project_item_to_dto(state.as_ref(), item, requested_fields).await?,
+        project_item_to_dto(state.as_ref(), item, requested_fields, defaults.as_ref()).await?,
     ))
 }
 
@@ -428,6 +475,7 @@ pub(crate) async fn project_item_to_dto(
     state: &AppState,
     item: base_item::Model,
     fields: BaseItemDtoFields,
+    defaults: Option<&MediaStreamDefaults>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
     let mut dto = item_to_dto(item, state.server_id());
@@ -451,18 +499,28 @@ pub(crate) async fn project_item_to_dto(
     } else {
         Vec::new()
     };
-    project_item_dto_with_streams(&mut dto, fields, media_streams, media_attachments);
+    project_item_dto_with_streams(&mut dto, fields, media_streams, media_attachments, defaults);
     Ok(dto)
 }
 
 pub(crate) fn project_item_dto_with_streams(
     dto: &mut BaseItemDto,
     fields: BaseItemDtoFields,
-    media_streams: Vec<MediaStream>,
+    mut media_streams: Vec<MediaStream>,
     media_attachments: Vec<MediaAttachment>,
+    defaults: Option<&MediaStreamDefaults>,
 ) {
+    let (default_audio_stream_index, default_subtitle_stream_index) =
+        apply_media_stream_defaults(dto, &mut media_streams, defaults);
+
     if fields.media_sources
-        && let Some(source) = media_source_from_dto(dto, &media_streams, media_attachments)
+        && let Some(source) = media_source_from_dto(
+            dto,
+            &media_streams,
+            media_attachments,
+            default_audio_stream_index,
+            default_subtitle_stream_index,
+        )
     {
         dto.media_sources = Some(vec![source]);
     }
@@ -475,6 +533,8 @@ fn media_source_from_dto(
     dto: &BaseItemDto,
     media_streams: &[MediaStream],
     media_attachments: Vec<MediaAttachment>,
+    default_audio_stream_index: Option<i32>,
+    default_subtitle_stream_index: Option<i32>,
 ) -> Option<MediaSourceInfo> {
     if dto.is_folder || !is_media_source_item(dto) {
         return None;
@@ -496,8 +556,98 @@ fn media_source_from_dto(
         run_time_ticks: dto.run_time_ticks,
         media_streams: media_streams.to_vec(),
         media_attachments,
+        default_audio_stream_index,
+        default_subtitle_stream_index,
         ..MediaSourceInfo::default()
     })
+}
+
+fn apply_media_stream_defaults(
+    dto: &BaseItemDto,
+    media_streams: &mut [MediaStream],
+    defaults: Option<&MediaStreamDefaults>,
+) -> (Option<i32>, Option<i32>) {
+    let Some(defaults) = defaults else {
+        return (None, None);
+    };
+
+    if is_audio_item(dto) {
+        return (first_audio_stream_index(media_streams), None);
+    }
+
+    if !is_video_item(dto) {
+        return (None, None);
+    }
+
+    let default_audio_stream_index = MediaStreamSelector::default_audio_stream_index(
+        media_streams,
+        &defaults.audio_languages,
+        defaults.play_default_audio_track,
+    );
+    let audio_language = default_audio_stream_index
+        .and_then(|index| {
+            media_streams.iter().find(|stream| {
+                stream.stream_type == MediaStreamType::Audio && stream.index == index
+            })
+        })
+        .and_then(|stream| stream.language.clone());
+    let default_subtitle_stream_index = MediaStreamSelector::default_subtitle_stream_index(
+        media_streams,
+        &defaults.subtitle_languages,
+        defaults.subtitle_mode,
+        audio_language.as_deref(),
+    );
+    MediaStreamSelector::set_subtitle_stream_scores(
+        media_streams,
+        &defaults.subtitle_languages,
+        defaults.subtitle_mode,
+        audio_language.as_deref(),
+    );
+
+    (default_audio_stream_index, default_subtitle_stream_index)
+}
+
+fn first_audio_stream_index(media_streams: &[MediaStream]) -> Option<i32> {
+    media_streams
+        .iter()
+        .find(|stream| stream.stream_type == MediaStreamType::Audio)
+        .map(|stream| stream.index)
+}
+
+fn is_audio_item(dto: &BaseItemDto) -> bool {
+    dto.media_type
+        .as_deref()
+        .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Audio"))
+        || dto.item_type.eq_ignore_ascii_case("Audio")
+}
+
+fn is_video_item(dto: &BaseItemDto) -> bool {
+    dto.media_type
+        .as_deref()
+        .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Video"))
+        || matches!(
+            dto.item_type.as_str(),
+            "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+        )
+}
+
+fn normalize_language(language: Option<&str>) -> Vec<String> {
+    let Some(language) = language
+        .map(str::trim)
+        .filter(|language| !language.is_empty())
+    else {
+        return Vec::new();
+    };
+
+    if let Some(culture) = LocalizationService.find_language_info(language) {
+        if culture.name.contains('-') {
+            vec![culture.name]
+        } else {
+            culture.three_letter_iso_language_names
+        }
+    } else {
+        vec![language.to_owned()]
+    }
 }
 
 fn is_media_source_item(dto: &BaseItemDto) -> bool {
