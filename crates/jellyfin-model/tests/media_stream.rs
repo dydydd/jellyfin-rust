@@ -1,6 +1,51 @@
 use jellyfin_model::{
     AudioSpatialFormat, MediaStream, MediaStreamType, VideoRange, VideoRangeType,
 };
+use serde_json::json;
+
+#[test]
+fn repository_backed_fields_use_official_wire_names() {
+    let value = serde_json::to_value(MediaStream {
+        color_range: Some("pc".into()),
+        color_space: Some("bt709".into()),
+        color_transfer: Some("smpte2084".into()),
+        color_primaries: Some("bt709".into()),
+        dv_version_major: Some(1),
+        dv_version_minor: Some(0),
+        dv_level: Some(6),
+        el_present_flag: Some(0),
+        comment: Some("commentary".into()),
+        time_base: Some("1/90000".into()),
+        codec_time_base: Some("1/48".into()),
+        nal_length_size: Some("4".into()),
+        is_avc: Some(true),
+        aspect_ratio: Some("16:9".into()),
+        score: Some(202),
+        delivery_url: Some("/Videos/1/Subtitles/2.vtt".into()),
+        is_external_url: Some(false),
+        pixel_format: Some("yuv420p".into()),
+        ..MediaStream::default()
+    })
+    .unwrap();
+
+    assert_eq!(value["ColorRange"], json!("pc"));
+    assert_eq!(value["ColorSpace"], json!("bt709"));
+    assert_eq!(value["ColorTransfer"], json!("smpte2084"));
+    assert_eq!(value["ColorPrimaries"], json!("bt709"));
+    assert_eq!(value["DvVersionMajor"], json!(1));
+    assert_eq!(value["DvVersionMinor"], json!(0));
+    assert_eq!(value["DvLevel"], json!(6));
+    assert_eq!(value["ElPresentFlag"], json!(0));
+    assert_eq!(value["TimeBase"], json!("1/90000"));
+    assert_eq!(value["CodecTimeBase"], json!("1/48"));
+    assert_eq!(value["NalLengthSize"], json!("4"));
+    assert_eq!(value["IsAVC"], json!(true));
+    assert_eq!(value["AspectRatio"], json!("16:9"));
+    assert_eq!(value["Score"], json!(202));
+    assert_eq!(value["DeliveryUrl"], json!("/Videos/1/Subtitles/2.vtt"));
+    assert_eq!(value["IsExternalUrl"], json!(false));
+    assert_eq!(value["PixelFormat"], json!("yuv420p"));
+}
 
 #[test]
 fn display_title_matches_official_matrix() {
