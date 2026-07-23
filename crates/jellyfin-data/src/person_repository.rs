@@ -44,6 +44,9 @@ pub struct PersonQuery {
     pub recursive: bool,
     pub appears_in_item_id: Option<Uuid>,
     pub search_term: Option<String>,
+    pub include_item_types: Vec<String>,
+    pub exclude_item_types: Vec<String>,
+    pub media_types: Vec<String>,
     pub person_types: Vec<String>,
     pub exclude_person_types: Vec<String>,
     pub is_favorite: Option<bool>,
@@ -391,6 +394,21 @@ fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, quer
     if let Some(item_id) = query.appears_in_item_id {
         push_bind(sql, values, item_id, " AND item.id = ");
     }
+    append_string_list_filter(
+        sql,
+        values,
+        "item.item_type",
+        &query.include_item_types,
+        false,
+    );
+    append_string_list_filter(
+        sql,
+        values,
+        "item.item_type",
+        &query.exclude_item_types,
+        true,
+    );
+    append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     append_string_list_filter(sql, values, "map.person_type", &query.person_types, false);
     append_string_list_filter(
         sql,

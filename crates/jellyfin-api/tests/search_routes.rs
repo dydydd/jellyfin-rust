@@ -6,7 +6,7 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice,
+    NewDevice, NewPerson, PersonRepository,
     entities::{item_value, user},
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
@@ -108,9 +108,10 @@ async fn exercise_search_routes(database_name: &str) {
         None,
     )
     .await;
+    let audio_id = Uuid::from_u128(0x279b_76fd_c49e_4de0_8767_f1f7_dbb4_f038);
     create_item(
         &items,
-        Uuid::from_u128(0x279b_76fd_c49e_4de0_8767_f1f7_dbb4_f038),
+        audio_id,
         root.id,
         "Audio",
         "Matrix Theme",
@@ -134,6 +135,22 @@ async fn exercise_search_routes(database_name: &str) {
         .link(matrix_id, item_value::ItemValueType::Genre, &genre)
         .await
         .expect("genre link");
+    let studio = format!("Warner Search {suffix}");
+    let studio_row = values
+        .link(matrix_id, item_value::ItemValueType::Studios, &studio)
+        .await
+        .expect("studio link");
+    let artist = format!("Propellerheads Search {suffix}");
+    let artist_row = values
+        .link(audio_id, item_value::ItemValueType::Artist, &artist)
+        .await
+        .expect("artist link");
+    let people = PersonRepository::new(database.clone());
+    let person = format!("Laurence Search {suffix}");
+    let person_row = people
+        .link(matrix_id, NewPerson::new(&person), "Actor", None, None, 0)
+        .await
+        .expect("person link");
 
     let app = jellyfin_api::router(AppState::new(
         database.clone(),
@@ -235,10 +252,98 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(genre_hints["SearchHints"][0]["Type"], "Genre");
     assert_eq!(genre_hints["SearchHints"][0]["IsFolder"], true);
 
+    let people_hints = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Laurence&includeMedia=false&includeGenres=false&includeStudios=false&includeArtists=false&includePeople=true&includeItemTypes=Movie&mediaTypes=Video",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    let person_id = person_row.id.simple().to_string();
+    assert_eq!(people_hints["TotalRecordCount"], 1);
+    assert_eq!(people_hints["SearchHints"].as_array().unwrap().len(), 1);
+    assert_eq!(people_hints["SearchHints"][0]["Id"], person_id);
+    assert_eq!(people_hints["SearchHints"][0]["ItemId"], person_id);
+    assert_eq!(people_hints["SearchHints"][0]["Name"], person);
+    assert_eq!(people_hints["SearchHints"][0]["MatchedTerm"], "Laurence");
+    assert_eq!(people_hints["SearchHints"][0]["Type"], "Person");
+    assert!(people_hints["SearchHints"][0].get("IsFolder").is_none());
+
+    let people_filtered = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Laurence&includeMedia=false&includeGenres=false&includeStudios=false&includeArtists=false&includePeople=true&includeItemTypes=Audio",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        people_filtered,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
+
+    let studio_hints = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Warner&includeMedia=false&includePeople=false&includeGenres=false&includeArtists=false&includeStudios=true",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    let studio_id = studio_row.item_value_id.simple().to_string();
+    assert_eq!(studio_hints["TotalRecordCount"], 1);
+    assert_eq!(studio_hints["SearchHints"].as_array().unwrap().len(), 1);
+    assert_eq!(studio_hints["SearchHints"][0]["Id"], studio_id);
+    assert_eq!(studio_hints["SearchHints"][0]["ItemId"], studio_id);
+    assert_eq!(studio_hints["SearchHints"][0]["Name"], studio);
+    assert_eq!(studio_hints["SearchHints"][0]["MatchedTerm"], "Warner");
+    assert_eq!(studio_hints["SearchHints"][0]["Type"], "Studio");
+    assert_eq!(studio_hints["SearchHints"][0]["IsFolder"], true);
+
+    let artist_hints = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Propellerheads&includeMedia=false&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=true&mediaTypes=Audio",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    let artist_id = artist_row.item_value_id.simple().to_string();
+    assert_eq!(artist_hints["TotalRecordCount"], 1);
+    assert_eq!(artist_hints["SearchHints"].as_array().unwrap().len(), 1);
+    assert_eq!(artist_hints["SearchHints"][0]["Id"], artist_id);
+    assert_eq!(artist_hints["SearchHints"][0]["ItemId"], artist_id);
+    assert_eq!(artist_hints["SearchHints"][0]["Name"], artist);
+    assert_eq!(
+        artist_hints["SearchHints"][0]["MatchedTerm"],
+        "Propellerheads"
+    );
+    assert_eq!(artist_hints["SearchHints"][0]["Type"], "MusicArtist");
+    assert_eq!(artist_hints["SearchHints"][0]["IsFolder"], true);
+
+    let artist_filtered = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=Propellerheads&includeMedia=false&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=true&mediaTypes=Video",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        artist_filtered,
+        json!({ "SearchHints": [], "TotalRecordCount": 0 })
+    );
+
     let disabled = body_json(
         request(
             &app,
-            "/Search/Hints?searchTerm=Matrix&includeMedia=false&includeGenres=false",
+            "/Search/Hints?searchTerm=Matrix&includeMedia=false&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=false",
             Some(&user_token),
         )
         .await,
