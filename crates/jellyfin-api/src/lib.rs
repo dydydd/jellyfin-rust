@@ -38,6 +38,7 @@ mod authorization;
 mod branding;
 mod client_log;
 mod dashboard;
+mod devices;
 mod environment;
 mod hls_segment;
 mod item_lookup;
@@ -265,6 +266,7 @@ pub fn router(state: AppState) -> Router {
         .merge(environment_routes())
         .merge(localization_routes())
         .merge(api_key_routes())
+        .merge(device_routes())
         .merge(user_routes())
         .route(
             "/Startup/Configuration",
@@ -384,6 +386,12 @@ fn api_key_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
         .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
+}
+
+fn device_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Devices", get(devices::list).delete(devices::delete))
+        .route("/Devices/Info", get(devices::info))
 }
 
 fn user_routes() -> Router<Arc<AppState>> {
@@ -643,6 +651,7 @@ pub(crate) enum ApiError {
     Unauthorized,
     Forbidden,
     Internal,
+    DeviceNotFound,
 }
 
 impl From<ActivityLogError> for ApiError {
@@ -798,6 +807,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::FORBIDDEN, "Forbidden")
             }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Self::DeviceNotFound => (StatusCode::NOT_FOUND, "Device not found"),
             Self::Environment(error) => environment_error_response(&error),
             Self::ActivityLog(
                 ActivityLogError::EmptyField(_) | ActivityLogError::FieldTooLong { .. },

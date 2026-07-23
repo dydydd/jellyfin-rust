@@ -7,6 +7,7 @@
 mod authentication;
 pub mod configuration;
 pub mod cryptography;
+mod devices;
 pub mod dlna;
 pub mod drawing;
 pub mod dto;
@@ -31,6 +32,7 @@ pub mod users;
 pub use authentication::{AuthenticationInfo, QueryResult};
 pub use configuration::UserConfiguration;
 pub use cryptography::{PasswordHash, PasswordHashError, PasswordHashSegment};
+pub use devices::DeviceInfoDto;
 pub use dlna::{
     CodecProfile, CodecType, ContainerHelper, ContainerProfile, DeviceProfile, DirectPlayProfile,
     DlnaProfileType, EncodingContext, IsoType, MediaOptions, MediaProtocol, MediaSourceInfo,

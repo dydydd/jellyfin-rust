@@ -1,8 +1,8 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    AuthenticationInfo, ClientCapabilitiesDto, EndPointInfo, GeneralCommandType, MediaType,
-    NameIdPair, PublicSystemInfo, QueryResult, SessionInfoDto, SyncPlayUserAccessType, UserDto,
-    UserPolicy, UtcTimeResponse,
+    AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, EndPointInfo, GeneralCommandType,
+    MediaType, NameIdPair, PublicSystemInfo, QueryResult, SessionInfoDto, SyncPlayUserAccessType,
+    UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -82,6 +82,36 @@ fn api_key_query_result_uses_official_authentication_info_contract() {
     );
     assert!(value["Items"][0].get("DateRevoked").is_none());
     assert!(value["Items"][0].get("DeviceId").is_none());
+}
+
+#[test]
+fn device_info_uses_official_wire_names_and_guid_format() {
+    let device = DeviceInfoDto {
+        name: Some("Browser".to_owned()),
+        custom_name: None,
+        access_token: None,
+        id: Some("device-id".to_owned()),
+        last_user_name: Some("alice".to_owned()),
+        app_name: Some("Jellyfin Web".to_owned()),
+        app_version: Some("10.10.0".to_owned()),
+        last_user_id: Some(Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap()),
+        date_last_activity: Some(Utc.with_ymd_and_hms(2026, 7, 23, 11, 0, 0).unwrap()),
+        capabilities: ClientCapabilitiesDto {
+            icon_url: Some("https://example.test/icon.png".to_owned()),
+            ..ClientCapabilitiesDto::default()
+        },
+        icon_url: Some("https://example.test/icon.png".to_owned()),
+    };
+
+    let value = serde_json::to_value(device).unwrap();
+    assert_eq!(value["Name"], "Browser");
+    assert_eq!(value["Id"], "device-id");
+    assert_eq!(value["LastUserId"], "f9c1ad0c820f44df8db852fbfc0d3d93");
+    assert_eq!(value["DateLastActivity"], "2026-07-23T11:00:00.0000000Z");
+    assert_eq!(value["Capabilities"]["SupportsPersistentIdentifier"], true);
+    assert_eq!(value["IconUrl"], "https://example.test/icon.png");
+    assert!(value.get("AccessToken").is_none());
+    assert!(value.get("CustomName").is_none());
 }
 
 #[test]

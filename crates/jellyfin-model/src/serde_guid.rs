@@ -48,6 +48,20 @@ pub(crate) mod vec {
     }
 }
 
+pub(crate) mod option {
+    use super::*;
+
+    pub fn serialize<S>(value: &Option<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.collect_str(&value.simple()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 pub(crate) mod option_vec {
     use super::*;
 
