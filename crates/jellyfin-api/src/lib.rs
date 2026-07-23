@@ -834,7 +834,9 @@ fn user_library_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/Audio/{item_id}/Lyrics",
-            get(user_library::get_lyrics).delete(user_library::delete_lyrics),
+            get(user_library::get_lyrics)
+                .post(user_library::upload_lyrics)
+                .delete(user_library::delete_lyrics),
         )
         .route(
             "/Providers/Lyrics/{lyric_id}",

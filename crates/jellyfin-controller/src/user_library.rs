@@ -235,6 +235,35 @@ impl UserLibraryService {
         Err(UserLibraryError::LyricsNotFound)
     }
 
+    /// Saves parsed lyric metadata on an audio item.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found when the item is missing or is not an audio item.
+    pub async fn save_lyrics(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        lyrics: Value,
+    ) -> Result<Value, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        let mut item = self.load_item(item_id).await?;
+        if !item.item_type.eq_ignore_ascii_case("Audio") {
+            return Err(UserLibraryError::ItemNotFound);
+        }
+        if !matches!(item.data, Some(Value::Object(_))) {
+            item.data = Some(Value::Object(Default::default()));
+        }
+        if let Some(Value::Object(object)) = item.data.as_mut() {
+            object.insert("Lyrics".to_owned(), lyrics.clone());
+            object.remove("lyrics");
+        }
+        self.items.update(item).await?;
+        Ok(lyrics)
+    }
+
     /// Deletes embedded lyric metadata from an audio item.
     ///
     /// # Errors

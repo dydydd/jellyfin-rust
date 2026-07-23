@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
@@ -17,7 +18,7 @@ use jellyfin_model::{
 };
 use jellyfin_server_implementations::MediaStreamSelector;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication};
@@ -33,6 +34,12 @@ pub(crate) struct UserIdQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UploadLyricsQuery {
+    #[serde(default, rename = "fileName", alias = "FileName")]
+    file_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -377,6 +384,31 @@ pub(crate) async fn delete_lyrics(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn upload_lyrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<UploadLyricsQuery>,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    let file_name = query.file_name.as_deref().ok_or(ApiError::InvalidRequest)?;
+    let format = lyric_format(file_name).ok_or(ApiError::InvalidRequest)?;
+    if body.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let content = String::from_utf8_lossy(&body);
+    let lyrics = parse_uploaded_lyrics(format, &content).ok_or(ApiError::InvalidRequest)?;
+    let lyrics = state
+        .user_library
+        .save_lyrics(&authenticated.user, authenticated.user.id, item_id, lyrics)
+        .await?;
+    Ok(Json(lyrics))
+}
+
 pub(crate) async fn search_remote_lyrics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -424,6 +456,98 @@ pub(crate) async fn get_remote_lyrics(
         return Err(ApiError::Forbidden);
     }
     Err(UserLibraryError::LyricsNotFound.into())
+}
+
+fn lyric_format(file_name: &str) -> Option<&str> {
+    let (_, extension) = file_name.rsplit_once('.')?;
+    (!extension.is_empty() && !extension.contains('/') && !extension.contains('\\'))
+        .then_some(extension)
+}
+
+fn parse_uploaded_lyrics(format: &str, content: &str) -> Option<Value> {
+    if format.eq_ignore_ascii_case("lrc") || format.eq_ignore_ascii_case("elrc") {
+        if let Some(lyrics) = parse_lrc_lyrics(content) {
+            return Some(lyrics);
+        }
+    }
+    if ["lrc", "elrc", "txt"]
+        .iter()
+        .any(|supported| format.eq_ignore_ascii_case(supported))
+    {
+        return Some(parse_txt_lyrics(content));
+    }
+    None
+}
+
+fn parse_txt_lyrics(content: &str) -> Value {
+    json!({
+        "Metadata": {},
+        "Lyrics": content.split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).trim())
+            .map(|text| json!({ "Text": text, "Start": null, "Cues": null }))
+            .collect::<Vec<_>>()
+    })
+}
+
+fn parse_lrc_lyrics(content: &str) -> Option<Value> {
+    let mut lines = Vec::new();
+    for raw_line in content.lines() {
+        let mut rest = raw_line.trim_start();
+        let mut starts = Vec::new();
+        while let Some(after_open) = rest.strip_prefix('[') {
+            let Some((tag, after_close)) = after_open.split_once(']') else {
+                break;
+            };
+            let Some(ticks) = parse_lrc_timestamp_ticks(tag) else {
+                break;
+            };
+            starts.push(ticks);
+            rest = after_close;
+        }
+        if starts.is_empty() {
+            continue;
+        }
+        let text = rest.trim();
+        for start in starts {
+            lines.push(json!({ "Text": text, "Start": start, "Cues": [] }));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    lines.sort_by_key(|line| line["Start"].as_i64().unwrap_or_default());
+    Some(json!({ "Metadata": {}, "Lyrics": lines }))
+}
+
+fn parse_lrc_timestamp_ticks(tag: &str) -> Option<i64> {
+    let pieces = tag.split(':').collect::<Vec<_>>();
+    let (hours, minutes, seconds) = match pieces.as_slice() {
+        [minutes, seconds] => (0_i64, minutes.parse::<i64>().ok()?, *seconds),
+        [hours, minutes, seconds] => (
+            hours.parse::<i64>().ok()?,
+            minutes.parse::<i64>().ok()?,
+            *seconds,
+        ),
+        _ => return None,
+    };
+    let (whole_seconds, fraction) = seconds
+        .split_once('.')
+        .or_else(|| seconds.split_once(','))
+        .unwrap_or((seconds, ""));
+    let whole_seconds = whole_seconds.parse::<i64>().ok()?;
+    let fraction = fraction
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .take(3)
+        .collect::<String>();
+    let milliseconds = if fraction.is_empty() {
+        0
+    } else {
+        let scale = 10_i64.pow(u32::try_from(3_usize.saturating_sub(fraction.len())).ok()?);
+        fraction.parse::<i64>().ok()? * scale
+    };
+    let total_milliseconds = (((hours * 60) + minutes) * 60 + whole_seconds) * 1_000 + milliseconds;
+    Some(total_milliseconds * 10_000)
 }
 
 async fn get_root_for(

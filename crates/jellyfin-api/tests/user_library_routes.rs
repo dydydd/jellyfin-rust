@@ -232,6 +232,115 @@ async fn remote_lyric_search_matches_management_policy_and_empty_provider_contra
 }
 
 #[tokio::test]
+async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata() {
+    let fixture = UserLibraryFixture::new().await;
+    let route = format!("/Audio/{}/Lyrics?fileName=uploaded.txt", fixture.item_id);
+
+    let unauthenticated = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::post(&route)
+                .body(Body::from("Uploaded line"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let regular_user =
+        request_post_body(&fixture.app, &route, &fixture.user_token, "Uploaded line").await;
+    assert_eq!(regular_user.status(), StatusCode::FORBIDDEN);
+
+    let empty = request_post_body(&fixture.app, &route, &fixture.administrator_token, "").await;
+    assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+    let missing_extension = request_post_body(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics?fileName=uploaded", fixture.item_id),
+        &fixture.administrator_token,
+        "Uploaded line",
+    )
+    .await;
+    assert_eq!(missing_extension.status(), StatusCode::BAD_REQUEST);
+
+    let unsupported = request_post_body(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics?fileName=uploaded.srt", fixture.item_id),
+        &fixture.administrator_token,
+        "Uploaded line",
+    )
+    .await;
+    assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
+
+    let missing = request_post_body(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics?fileName=uploaded.txt", Uuid::new_v4()),
+        &fixture.administrator_token,
+        "Uploaded line",
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let non_audio = request_post_body(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics?fileName=uploaded.txt", fixture.root_id),
+        &fixture.administrator_token,
+        "Uploaded line",
+    )
+    .await;
+    assert_eq!(non_audio.status(), StatusCode::NOT_FOUND);
+
+    let uploaded = request_post_body(
+        &fixture.app,
+        &route,
+        &fixture.administrator_token,
+        "  First uploaded  \nSecond uploaded",
+    )
+    .await;
+    assert_eq!(uploaded.status(), StatusCode::OK);
+    let uploaded = body_json(uploaded).await;
+    assert_eq!(uploaded["Metadata"], json!({}));
+    assert_eq!(uploaded["Lyrics"][0]["Text"], "First uploaded");
+    assert_eq!(uploaded["Lyrics"][1]["Text"], "Second uploaded");
+    assert_eq!(uploaded["Lyrics"][0]["Start"], Value::Null);
+    assert_eq!(uploaded["Lyrics"][0]["Cues"], Value::Null);
+
+    let saved = get_json(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics", fixture.item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(saved["Lyrics"][0]["Text"], "First uploaded");
+
+    let uploaded_lrc = request_post_body(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics?fileName=uploaded.lrc", fixture.item_id),
+        &fixture.administrator_token,
+        "[00:01.50]Synced later\n[00:00.25]Synced earlier",
+    )
+    .await;
+    assert_eq!(uploaded_lrc.status(), StatusCode::OK);
+    let uploaded_lrc = body_json(uploaded_lrc).await;
+    assert_eq!(uploaded_lrc["Lyrics"][0]["Text"], "Synced earlier");
+    assert_eq!(uploaded_lrc["Lyrics"][0]["Start"], 2_500_000);
+    assert_eq!(uploaded_lrc["Lyrics"][0]["Cues"], json!([]));
+    assert_eq!(uploaded_lrc["Lyrics"][1]["Text"], "Synced later");
+    assert_eq!(uploaded_lrc["Lyrics"][1]["Start"], 15_000_000);
+
+    let item = get_json(
+        &fixture.app,
+        &format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(item["HasLyrics"], true);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata() {
     let fixture = UserLibraryFixture::new().await;
     let route = format!("/Audio/{}/Lyrics", fixture.item_id);
@@ -791,6 +900,26 @@ async fn request_post(app: &axum::Router, uri: &str, token: &str) -> axum::respo
         .unwrap()
 }
 
+async fn request_post_body(
+    app: &axum::Router,
+    uri: &str,
+    token: &str,
+    body: &str,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::post(uri)
+                .header(
+                    header::AUTHORIZATION,
+                    format!("{AUTHORIZATION}, Token=\"{token}\""),
+                )
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 async fn request_delete(app: &axum::Router, uri: &str, token: &str) -> axum::response::Response {
     app.clone()
         .oneshot(
@@ -809,6 +938,10 @@ async fn request_delete(app: &axum::Router, uri: &str, token: &str) -> axum::res
 async fn get_json(app: &axum::Router, uri: &str, token: &str) -> Value {
     let response = request(app, uri, token).await;
     assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    body_json(response).await
+}
+
+async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(
         &to_bytes(response.into_body(), usize::MAX)
             .await
