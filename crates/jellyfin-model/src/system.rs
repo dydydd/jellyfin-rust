@@ -56,6 +56,27 @@ pub struct PackageInfo {
     pub image_url: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct RepositoryInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub enabled: bool,
+}
+
+impl Default for RepositoryInfo {
+    fn default() -> Self {
+        Self {
+            name: None,
+            url: None,
+            enabled: true,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]

@@ -74,7 +74,7 @@ pub use session::{
 pub use sync_play::UtcTimeResponse;
 pub use system::{
     CastReceiverApplication, FolderStorageDto, InstallationInfo, LibraryStorageDto, PackageInfo,
-    PublicSystemInfo, SystemInfo, SystemStorageDto,
+    PublicSystemInfo, RepositoryInfo, SystemInfo, SystemStorageDto,
 };
 pub use tasks::{
     DayOfWeek, TaskCompletionStatus, TaskInfo, TaskResult, TaskState, TaskTriggerInfo,

@@ -13,12 +13,13 @@ use jellyfin_controller::{
     ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
     LibraryControllerService, LocalizationService, MediaAttachmentService,
     MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
-    MetadataEditorService, MusicGenreError, MusicGenreService, PersonError, PersonService,
-    PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError, ScheduledTaskService,
-    StudioError, StudioService, SystemLogError, SystemLogService, SystemStorageService,
-    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
-    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
-    YearError, YearService, client_event::ClientEventLogger,
+    MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
+    PersonError, PersonService, PlaystateError, PlaystateService, PluginRegistry,
+    ScheduledTaskError, ScheduledTaskService, StudioError, StudioService, SystemLogError,
+    SystemLogService, SystemStorageService, UserDataService, UserDataServiceError, UserError,
+    UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -61,6 +62,7 @@ mod localization;
 mod media_info;
 mod music_genre;
 mod openapi;
+mod packages;
 mod persons;
 mod playstate;
 mod plugins;
@@ -117,6 +119,7 @@ pub struct AppState {
     pub(crate) dashboard: DashboardService,
     pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
+    pub(crate) packages: PackageService,
     pub(crate) scheduled_tasks: ScheduledTaskService,
     pub(crate) system_logs: SystemLogService,
     pub(crate) system_storage: SystemStorageService,
@@ -173,6 +176,7 @@ impl AppState {
             dashboard: DashboardService::default(),
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
+            packages: PackageService::default(),
             scheduled_tasks: ScheduledTaskService::default(),
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
@@ -249,6 +253,17 @@ impl AppState {
     #[must_use]
     pub fn with_plugins(mut self, plugins: Vec<jellyfin_model::PluginInfo>) -> Self {
         self.plugins = PluginRegistry::new(plugins);
+        self
+    }
+
+    /// Replaces package manifests and repositories exposed by the package API.
+    #[must_use]
+    pub fn with_packages(
+        mut self,
+        packages: Vec<jellyfin_model::PackageInfo>,
+        repositories: Vec<jellyfin_model::RepositoryInfo>,
+    ) -> Self {
+        self.packages = PackageService::new(packages, repositories);
         self
     }
 
@@ -331,6 +346,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Plugins", get(plugins::list))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
+        .merge(package_routes())
         .merge(environment_routes())
         .merge(localization_routes())
         .merge(api_key_routes())
@@ -469,6 +485,13 @@ fn api_key_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
         .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
+}
+
+fn package_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Packages", get(packages::list))
+        .route("/Packages/{name}", get(packages::get))
+        .route("/Repositories", get(packages::repositories))
 }
 
 fn startup_routes() -> Router<Arc<AppState>> {
@@ -876,6 +899,7 @@ pub(crate) enum ApiError {
     Environment(EnvironmentError),
     QuickConnect(QuickConnectError),
     ScheduledTask(ScheduledTaskError),
+    Package(PackageError),
     InvalidRequest,
     UnsupportedMediaType,
     PayloadTooLarge,
@@ -1073,6 +1097,12 @@ impl From<ScheduledTaskError> for ApiError {
     }
 }
 
+impl From<PackageError> for ApiError {
+    fn from(error: PackageError) -> Self {
+        Self::Package(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     #[allow(
         clippy::too_many_lines,
@@ -1243,6 +1273,7 @@ impl IntoResponse for ApiError {
             Self::ScheduledTask(ScheduledTaskError::NotFound) => {
                 (StatusCode::NOT_FOUND, "Scheduled task not found")
             }
+            Self::Package(PackageError::NotFound) => (StatusCode::NOT_FOUND, "Package not found"),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
     }

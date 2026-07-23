@@ -14,6 +14,7 @@ pub mod media_encoding;
 mod media_streams;
 mod metadata_editor;
 mod music_genre;
+mod packages;
 mod persons;
 mod playstate;
 mod plugins;
@@ -50,6 +51,7 @@ pub use media_streams::{
 };
 pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};
+pub use packages::{PackageError, PackageService};
 pub use persons::{Person, PersonError, PersonPage, PersonService};
 pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,

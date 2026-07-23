@@ -2,9 +2,10 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
     ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, ItemCounts,
-    MediaType, MessageCommand, NameIdPair, PinRedeemResult, PlayCommand, PlayRequest,
+    MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
     PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    RepositoryInfo, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy,
+    UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -110,6 +111,46 @@ fn item_counts_use_official_wire_names() {
     assert_eq!(value["BoxSetCount"], 29);
     assert_eq!(value["ItemCount"], 160);
     assert!(value.get("movie_count").is_none());
+}
+
+#[test]
+fn package_and_repository_info_use_official_wire_names() {
+    let package_id = Uuid::from_u128(0x6f80_9b36_d6a1_4fcb_84ef_5c7b_70ed_2ef9);
+    let package = serde_json::to_value(PackageInfo {
+        name: "Bookshelf".to_owned(),
+        description: "Long package description".to_owned(),
+        overview: "Short overview".to_owned(),
+        owner: "Jellyfin".to_owned(),
+        category: "General".to_owned(),
+        id: package_id,
+        versions: vec![json!({ "version": "1.0.0.0" })],
+        image_url: Some("https://repo.example.test/bookshelf.png".to_owned()),
+    })
+    .unwrap();
+
+    assert_eq!(package["name"], "Bookshelf");
+    assert_eq!(package["guid"], package_id.simple().to_string());
+    assert_eq!(
+        package["imageUrl"],
+        "https://repo.example.test/bookshelf.png"
+    );
+    assert!(package.get("Name").is_none());
+
+    let repository = serde_json::to_value(RepositoryInfo {
+        name: Some("Stable".to_owned()),
+        url: Some("https://repo.example.test/manifest.json".to_owned()),
+        enabled: true,
+    })
+    .unwrap();
+
+    assert_eq!(
+        repository,
+        json!({
+            "Name": "Stable",
+            "Url": "https://repo.example.test/manifest.json",
+            "Enabled": true
+        })
+    );
 }
 
 #[test]
