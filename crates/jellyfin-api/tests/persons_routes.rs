@@ -214,6 +214,14 @@ async fn persons_list_matches_official_persons_contract() {
     .await;
     assert_people(&favorite, &[&fixture.person_name], 1, 0);
 
+    let not_favorite = body_json(
+        fixture
+            .request("/Persons?isFavorite=false", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_people(&not_favorite, &[&fixture.director_name], 1, 0);
+
     let appears_in = body_json(
         fixture
             .request(
@@ -395,12 +403,41 @@ impl Fixture {
         for result in [one, two, three, four] {
             assert_eq!(result.expect("concurrent deduplication").id, person.id);
         }
-        let mut favorite = NewUserData::new(item.id, user.id, "PersonFavorite");
-        favorite.is_favorite = true;
-        UserDataRepository::new(database.clone())
-            .upsert(favorite)
+        let mut person_item = NewBaseItem::new(Uuid::new_v4(), "Person");
+        person_item.name = Some(person_name.clone());
+        person_item.sort_name = person_item.name.clone();
+        let person_item = items
+            .create(person_item)
             .await
-            .expect("favorite user data");
+            .expect("person base item creation");
+        let mut director_person_item = NewBaseItem::new(Uuid::new_v4(), "Person");
+        director_person_item.name = Some(director_name.clone());
+        director_person_item.sort_name = director_person_item.name.clone();
+        let director_person_item = items
+            .create(director_person_item)
+            .await
+            .expect("director person base item creation");
+        let user_data = UserDataRepository::new(database.clone());
+        let mut movie_favorite = NewUserData::new(second_item.id, user.id, "MovieFavorite");
+        movie_favorite.is_favorite = true;
+        user_data
+            .upsert(movie_favorite)
+            .await
+            .expect("movie favorite user data");
+        let mut person_favorite = NewUserData::new(person_item.id, user.id, "PersonFavorite");
+        person_favorite.is_favorite = true;
+        user_data
+            .upsert(person_favorite)
+            .await
+            .expect("person favorite user data");
+        user_data
+            .upsert(NewUserData::new(
+                director_person_item.id,
+                user.id,
+                "PersonFavorite",
+            ))
+            .await
+            .expect("person non-favorite user data");
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Persons Test Server".to_owned(),

@@ -428,25 +428,18 @@ fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, quer
         let Some(user_id) = query.user_id else {
             return;
         };
-        if is_favorite {
-            push_bind(
-                sql,
-                values,
-                user_id,
-                " AND item.id IN (
-                    SELECT data.item_id FROM jellyfin.user_data AS data
-                    WHERE data.is_favorite = true AND data.user_id = ",
-            );
-        } else {
-            push_bind(
-                sql,
-                values,
-                user_id,
-                " AND item.id NOT IN (
-                    SELECT data.item_id FROM jellyfin.user_data AS data
-                    WHERE data.is_favorite = true AND data.user_id = ",
-            );
-        }
+        push_bind(
+            sql,
+            values,
+            user_id,
+            " AND EXISTS (
+                SELECT 1 FROM jellyfin.user_data AS data
+                JOIN jellyfin.base_items AS person_item ON person_item.id = data.item_id
+                WHERE person_item.item_type = 'Person'
+                  AND person_item.name = person.name
+                  AND data.user_id = ",
+        );
+        push_bind(sql, values, is_favorite, " AND data.is_favorite = ");
         sql.push(')');
     }
 }
