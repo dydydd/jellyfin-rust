@@ -1416,6 +1416,7 @@ dependencies = [
  "jellyfin-extensions",
  "jellyfin-model",
  "jellyfin-providers",
+ "md-5",
  "sea-orm",
  "serde",
  "serde_json",

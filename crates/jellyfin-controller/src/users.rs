@@ -1,12 +1,16 @@
-use chrono::Utc;
+use std::fmt::Write as _;
+
+use chrono::{Duration, Utc};
 use jellyfin_data::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
-    entities::{user, user_profile_image},
+    entities::{password_reset, user, user_profile_image},
 };
-use jellyfin_model::{NameIdPair, UserPolicy};
+use jellyfin_model::{ForgotPasswordAction, ForgotPasswordResult, NameIdPair, UserPolicy};
+use md5::{Digest, Md5};
 use sea_orm::{
+    ActiveValue::NotSet,
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, Set, SqlErr, Statement, TransactionTrait,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, SqlErr, Statement, TransactionTrait,
     TryInsertResult,
     sea_query::{Expr, OnConflict},
 };
@@ -40,6 +44,8 @@ pub enum UserError {
     InvalidPolicy,
     #[error("administrator passwords must not be empty")]
     AdministratorPasswordRequired,
+    #[error("password reset pin not found")]
+    PasswordResetPinNotFound,
     #[error("failed to serialize user policy")]
     PolicySerialization(#[source] serde_json::Error),
     #[error(transparent)]
@@ -78,6 +84,131 @@ impl UserService {
             name: DEFAULT_PASSWORD_RESET_PROVIDER_NAME.to_owned(),
             id: UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
         }]
+    }
+
+    /// Starts Jellyfin's default PIN-based password reset flow.
+    ///
+    /// The official provider persists a `passwordreset*.json` file. This Rust
+    /// port keeps the same public API shape while storing the active PIN in
+    /// `PostgreSQL`, keyed by the same Jellyfin MD5 username hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the reset row cannot be persisted.
+    pub async fn start_forgot_password_process(
+        &self,
+        entered_username: &str,
+        is_in_network: bool,
+    ) -> Result<ForgotPasswordResult, UserError> {
+        let now = Utc::now();
+        let expires_at = now + Duration::minutes(30);
+        let username_hash = jellyfin_md5(&entered_username.to_uppercase());
+        let pin_file = format!("passwordreset{username_hash}.json");
+
+        let user = if entered_username.trim().is_empty() {
+            None
+        } else {
+            user::Entity::find()
+                .filter(user::Column::NormalizedUsername.eq(normalize_username(entered_username)))
+                .one(&self.database)
+                .await?
+        };
+
+        if let Some(user) = user.filter(|_| is_in_network) {
+            let pin = generate_pin();
+            let pin_compact = compact_pin(&pin);
+            password_reset::Entity::insert(password_reset::ActiveModel {
+                id: NotSet,
+                username_hash: Set(username_hash),
+                user_id: Set(user.id),
+                user_name: Set(user.username),
+                pin: Set(pin),
+                pin_compact: Set(pin_compact),
+                pin_file: Set(pin_file.clone()),
+                created_at: Set(now),
+                expires_at: Set(expires_at),
+            })
+            .on_conflict(
+                OnConflict::column(password_reset::Column::UsernameHash)
+                    .update_columns([
+                        password_reset::Column::UserId,
+                        password_reset::Column::UserName,
+                        password_reset::Column::Pin,
+                        password_reset::Column::PinCompact,
+                        password_reset::Column::PinFile,
+                        password_reset::Column::CreatedAt,
+                        password_reset::Column::ExpiresAt,
+                    ])
+                    .to_owned(),
+            )
+            .exec(&self.database)
+            .await?;
+        }
+
+        Ok(ForgotPasswordResult {
+            action: ForgotPasswordAction::PinCode,
+            pin_file: Some(pin_file),
+            pin_expiration_date: Some(expires_at),
+        })
+    }
+
+    /// Redeems a password reset PIN and updates every matching user.
+    ///
+    /// Expired rows are purged in the same `PostgreSQL` transaction. Matching
+    /// rows are locked before password update and deletion, so concurrent
+    /// redemption attempts cannot consume the same PIN twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::PasswordResetPinNotFound`] for unknown or expired
+    /// PINs, or a database error when persistence fails.
+    pub async fn redeem_password_reset_pin(
+        &self,
+        pin: &str,
+        password_hash: Option<String>,
+    ) -> Result<Vec<String>, UserError> {
+        let pin_compact = compact_pin(pin);
+        let now = Utc::now();
+        let transaction = self.database.begin().await?;
+
+        password_reset::Entity::delete_many()
+            .filter(password_reset::Column::ExpiresAt.lt(now))
+            .exec(&transaction)
+            .await?;
+
+        let resets = password_reset::Entity::find()
+            .filter(password_reset::Column::PinCompact.eq(pin_compact))
+            .filter(password_reset::Column::ExpiresAt.gte(now))
+            .lock_exclusive()
+            .all(&transaction)
+            .await?;
+        if resets.is_empty() {
+            transaction.commit().await?;
+            return Err(UserError::PasswordResetPinNotFound);
+        }
+
+        let user_ids = resets.iter().map(|reset| reset.user_id).collect::<Vec<_>>();
+        let reset_ids = resets.iter().map(|reset| reset.id).collect::<Vec<_>>();
+        let users_reset = resets
+            .iter()
+            .map(|reset| reset.user_name.clone())
+            .collect::<Vec<_>>();
+        let updated = user::Entity::update_many()
+            .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
+            .filter(user::Column::Id.is_in(user_ids))
+            .exec(&transaction)
+            .await?;
+        if updated.rows_affected == 0 {
+            transaction.commit().await?;
+            return Err(UserError::PasswordResetPinNotFound);
+        }
+
+        password_reset::Entity::delete_many()
+            .filter(password_reset::Column::Id.is_in(reset_ids))
+            .exec(&transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(users_reset)
     }
 
     /// Creates a user, atomically rejecting a case-insensitive duplicate.
@@ -550,6 +681,35 @@ fn normalize_username(name: &str) -> String {
     name.to_uppercase()
 }
 
+fn compact_pin(pin: &str) -> String {
+    pin.replace('-', "")
+}
+
+fn generate_pin() -> String {
+    let bytes = *Uuid::new_v4().as_bytes();
+    format!(
+        "{:02X}-{:02X}-{:02X}-{:02X}",
+        bytes[0], bytes[1], bytes[2], bytes[3]
+    )
+}
+
+fn jellyfin_md5(value: &str) -> String {
+    let mut hasher = Md5::new();
+    for unit in value.encode_utf16() {
+        hasher.update(unit.to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    let bytes = digest.as_slice();
+    let mut result = format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[3], bytes[2], bytes[1], bytes[0], bytes[5], bytes[4], bytes[7], bytes[6]
+    );
+    for byte in &bytes[8..] {
+        write!(result, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    result
+}
+
 fn validate_policy_provider_id(value: Option<&str>) -> Result<String, UserError> {
     let value = value.ok_or(UserError::InvalidPolicy)?;
     if value.trim().is_empty() || value.chars().count() > 255 {
@@ -620,5 +780,14 @@ mod tests {
         assert_eq!(normalize_username("münchen"), "MÜNCHEN");
         assert_eq!(normalize_username("Ñoño"), "ÑOÑO");
         assert_eq!(normalize_username("Çelebi"), "ÇELEBI");
+    }
+
+    #[test]
+    fn password_reset_username_hash_matches_official_guid_md5_format() {
+        assert_eq!(jellyfin_md5("USER"), "2d7db5040a259018420769625d251673");
+        assert_eq!(
+            jellyfin_md5("PASSWORD-RESET-USER"),
+            "ee941ebf0999c2c0a333d9d14c13fb6b"
+        );
     }
 }

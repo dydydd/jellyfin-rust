@@ -441,6 +441,11 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
+        .route("/Users/ForgotPassword", post(users::forgot_password))
+        .route(
+            "/Users/ForgotPassword/Pin",
+            post(users::forgot_password_pin),
+        )
         .route(
             "/Users/{id}",
             get(users::get)
@@ -1180,6 +1185,9 @@ fn user_error_response(error: &UserError) -> (StatusCode, &'static str) {
             StatusCode::FORBIDDEN,
             "Administrator passwords must not be empty",
         ),
+        UserError::PasswordResetPinNotFound => {
+            (StatusCode::NOT_FOUND, "Password reset PIN not found")
+        }
         UserError::PolicySerialization(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "User policy serialization failed",

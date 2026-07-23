@@ -1,12 +1,15 @@
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    body::to_bytes,
+    extract::{ConnectInfo, OriginalUri, Path, Query, State, rejection::JsonRejection},
+    http::{HeaderMap, Request, StatusCode},
 };
 use jellyfin_data::entities::user;
-use jellyfin_model::{UserDto, UserPolicy};
+use jellyfin_model::{
+    ForgotPasswordDto, ForgotPasswordPinDto, PinRedeemResult, UserDto, UserPolicy,
+};
 use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -60,6 +63,51 @@ pub(crate) async fn create(
         user = hash_and_save_password(&state, user, password).await?;
     }
     Ok(Json(user_to_dto(user)))
+}
+
+pub(crate) async fn forgot_password(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Json<jellyfin_model::ForgotPasswordResult>, ApiError> {
+    let remote_ip = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), |info| {
+            normalize_ip(info.0.ip())
+        });
+    let body = to_bytes(request.into_body(), 1024 * 1024)
+        .await
+        .map_err(|_| ApiError::InvalidRequest)?;
+    let request: ForgotPasswordDto =
+        serde_json::from_slice(&body).map_err(|_| ApiError::InvalidRequest)?;
+    let entered_username = request
+        .entered_username
+        .as_deref()
+        .ok_or(ApiError::InvalidRequest)?;
+    let is_in_network = state.network_manager.is_in_local_network(remote_ip);
+    Ok(Json(
+        state
+            .users
+            .start_forgot_password_process(entered_username, is_in_network)
+            .await?,
+    ))
+}
+
+pub(crate) async fn forgot_password_pin(
+    State(state): State<Arc<AppState>>,
+    request: Result<Json<ForgotPasswordPinDto>, JsonRejection>,
+) -> Result<Json<PinRedeemResult>, ApiError> {
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let pin = request.pin.as_deref().ok_or(ApiError::InvalidRequest)?;
+    let password_hash = state.authentication.password_hash(pin);
+    let users_reset = state
+        .users
+        .redeem_password_reset_pin(pin, password_hash)
+        .await?;
+    Ok(Json(PinRedeemResult {
+        success: true,
+        users_reset,
+    }))
 }
 
 pub(crate) async fn get(
@@ -257,4 +305,13 @@ async fn hash_and_save_password(
         .users
         .set_password_hash(user.id, user.password_hash)
         .await?)
+}
+
+fn normalize_ip(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V6(address) => address
+            .to_ipv4_mapped()
+            .map_or(IpAddr::V6(address), IpAddr::V4),
+        address @ IpAddr::V4(_) => address,
+    }
 }

@@ -11,6 +11,7 @@ pub mod keyframe_data;
 pub mod media_attachment;
 pub mod media_path;
 pub mod media_stream;
+pub mod password_reset;
 pub mod person;
 pub mod person_base_item_map;
 pub mod quick_connect;

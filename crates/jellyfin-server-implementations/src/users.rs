@@ -90,7 +90,12 @@ impl DefaultAuthenticationProvider {
     }
 
     pub fn change_password(&self, user: &mut user::Model, new_password: &str) {
-        user.password_hash = if new_password.is_empty() {
+        user.password_hash = self.password_hash(new_password);
+    }
+
+    #[must_use]
+    pub fn password_hash(&self, new_password: &str) -> Option<String> {
+        if new_password.is_empty() {
             None
         } else {
             Some(
@@ -98,6 +103,6 @@ impl DefaultAuthenticationProvider {
                     .create_password_hash(new_password)
                     .to_string(),
             )
-        };
+        }
     }
 }

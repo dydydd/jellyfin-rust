@@ -31,6 +31,7 @@ mod m20260723_000028_create_session_command_outbox;
 mod m20260723_000029_add_session_now_viewing;
 mod m20260723_000030_add_session_additional_users;
 mod m20260723_000031_add_session_playback_state;
+mod m20260723_000032_create_password_resets;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -94,6 +95,8 @@ pub use m20260723_000029_add_session_now_viewing::Migration as AddSessionNowView
 pub use m20260723_000030_add_session_additional_users::Migration as AddSessionAdditionalUsersMigration;
 #[doc(hidden)]
 pub use m20260723_000031_add_session_playback_state::Migration as AddSessionPlaybackStateMigration;
+#[doc(hidden)]
+pub use m20260723_000032_create_password_resets::Migration as CreatePasswordResetsMigration;
 
 pub struct Migrator;
 
@@ -132,6 +135,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260723_000029_add_session_now_viewing::Migration),
             Box::new(m20260723_000030_add_session_additional_users::Migration),
             Box::new(m20260723_000031_add_session_playback_state::Migration),
+            Box::new(m20260723_000032_create_password_resets::Migration),
         ]
     }
 }

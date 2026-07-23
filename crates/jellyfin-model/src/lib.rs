@@ -69,4 +69,7 @@ pub use session::{
 pub use sync_play::UtcTimeResponse;
 pub use system::PublicSystemInfo;
 pub use user_data::{UpdateUserItemDataDto, UserItemDataDto};
-pub use users::{AccessSchedule, UserPolicy};
+pub use users::{
+    AccessSchedule, ForgotPasswordAction, ForgotPasswordDto, ForgotPasswordPinDto,
+    ForgotPasswordResult, PinRedeemResult, UserPolicy,
+};

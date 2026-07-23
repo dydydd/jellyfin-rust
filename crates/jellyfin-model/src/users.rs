@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -78,6 +79,56 @@ pub struct UserPolicy {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_reset_provider_id: Option<String>,
     pub sync_play_access: SyncPlayUserAccessType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ForgotPasswordAction {
+    ContactAdmin,
+    PinCode,
+    InNetworkRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ForgotPasswordResult {
+    pub action: ForgotPasswordAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_file: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::serde_datetime::option"
+    )]
+    pub pin_expiration_date: Option<DateTime<Utc>>,
+}
+
+impl Default for ForgotPasswordResult {
+    fn default() -> Self {
+        Self {
+            action: ForgotPasswordAction::PinCode,
+            pin_file: None,
+            pin_expiration_date: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PinRedeemResult {
+    pub success: bool,
+    pub users_reset: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ForgotPasswordDto {
+    pub entered_username: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ForgotPasswordPinDto {
+    pub pin: Option<String>,
 }
 
 impl UserPolicy {

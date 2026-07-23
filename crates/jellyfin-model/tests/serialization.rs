@@ -1,10 +1,10 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    GeneralCommand, GeneralCommandType, ItemCounts, MediaType, MessageCommand, NameIdPair,
-    PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    PublicSystemInfo, QueryResult, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
-    UserDto, UserPolicy, UtcTimeResponse,
+    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, ItemCounts,
+    MediaType, MessageCommand, NameIdPair, PinRedeemResult, PlayCommand, PlayRequest,
+    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
+    SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -110,6 +110,36 @@ fn item_counts_use_official_wire_names() {
     assert_eq!(value["BoxSetCount"], 29);
     assert_eq!(value["ItemCount"], 160);
     assert!(value.get("movie_count").is_none());
+}
+
+#[test]
+fn forgot_password_results_use_official_wire_names() {
+    let value = serde_json::to_value(ForgotPasswordResult {
+        action: ForgotPasswordAction::PinCode,
+        pin_file: Some("passwordreset0123456789abcdef0123456789abcdef.json".to_owned()),
+        pin_expiration_date: Some(Utc.with_ymd_and_hms(2026, 7, 24, 10, 30, 0).unwrap()),
+    })
+    .unwrap();
+
+    assert_eq!(value["Action"], "PinCode");
+    assert_eq!(
+        value["PinFile"],
+        "passwordreset0123456789abcdef0123456789abcdef.json"
+    );
+    assert_eq!(value["PinExpirationDate"], "2026-07-24T10:30:00.0000000Z");
+    assert!(value.get("pin_file").is_none());
+
+    assert_eq!(
+        serde_json::to_value(PinRedeemResult {
+            success: true,
+            users_reset: vec!["user".to_owned()],
+        })
+        .unwrap(),
+        json!({
+            "Success": true,
+            "UsersReset": ["user"]
+        })
+    );
 }
 
 #[test]
