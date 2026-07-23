@@ -36,6 +36,7 @@ pub struct MarkUnplayedQuery {
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackProgressInfo {
     pub item_id: Uuid,
+    pub media_source_id: Option<String>,
     pub position_ticks: Option<i64>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
@@ -45,18 +46,28 @@ pub struct PlaybackProgressInfo {
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackStartInfo {
     pub item_id: Uuid,
+    pub media_source_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackStopInfo {
     pub item_id: Uuid,
+    pub media_source_id: Option<String>,
     pub position_ticks: Option<i64>,
     pub failed: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
+pub struct PlaybackStartQuery {
+    #[serde(default, rename = "mediaSourceId", alias = "MediaSourceId")]
+    pub media_source_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub struct PlaybackProgressQuery {
+    #[serde(default, rename = "mediaSourceId", alias = "MediaSourceId")]
+    pub media_source_id: Option<String>,
     #[serde(default, rename = "positionTicks", alias = "PositionTicks")]
     pub position_ticks: Option<i64>,
     #[serde(default, rename = "audioStreamIndex", alias = "AudioStreamIndex")]
@@ -67,6 +78,8 @@ pub struct PlaybackProgressQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PlaybackStopQuery {
+    #[serde(default, rename = "mediaSourceId", alias = "MediaSourceId")]
+    pub media_source_id: Option<String>,
     #[serde(default, rename = "positionTicks", alias = "PositionTicks")]
     pub position_ticks: Option<i64>,
 }
@@ -195,9 +208,18 @@ pub(crate) async fn report_playback_start_legacy(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
+    Query(query): Query<PlaybackStartQuery>,
 ) -> Result<StatusCode, ApiError> {
-    report_playback_start_for_current_session(state, &uri, headers, PlaybackStartUpdate { item_id })
-        .await
+    report_playback_start_for_current_session(
+        state,
+        &uri,
+        headers,
+        PlaybackStartUpdate {
+            item_id,
+            media_source_id: query.media_source_id,
+        },
+    )
+    .await
 }
 
 pub(crate) async fn report_playback_stopped_legacy(
@@ -213,6 +235,7 @@ pub(crate) async fn report_playback_stopped_legacy(
         headers,
         PlaybackStopUpdate {
             item_id,
+            media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             failed: false,
         },
@@ -225,9 +248,18 @@ pub(crate) async fn report_playback_start_legacy_for_user(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((_user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<PlaybackStartQuery>,
 ) -> Result<StatusCode, ApiError> {
-    report_playback_start_for_current_session(state, &uri, headers, PlaybackStartUpdate { item_id })
-        .await
+    report_playback_start_for_current_session(
+        state,
+        &uri,
+        headers,
+        PlaybackStartUpdate {
+            item_id,
+            media_source_id: query.media_source_id,
+        },
+    )
+    .await
 }
 
 pub(crate) async fn report_playback_stopped_legacy_for_user(
@@ -243,6 +275,7 @@ pub(crate) async fn report_playback_stopped_legacy_for_user(
         headers,
         PlaybackStopUpdate {
             item_id,
+            media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             failed: false,
         },
@@ -263,6 +296,7 @@ pub(crate) async fn report_playback_progress_legacy(
         headers,
         PlaybackProgressUpdate {
             item_id,
+            media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             audio_stream_index: query.audio_stream_index,
             subtitle_stream_index: query.subtitle_stream_index,
@@ -284,6 +318,7 @@ pub(crate) async fn report_playback_progress_legacy_for_user(
         headers,
         PlaybackProgressUpdate {
             item_id,
+            media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             audio_stream_index: query.audio_stream_index,
             subtitle_stream_index: query.subtitle_stream_index,
@@ -371,6 +406,7 @@ impl From<PlaybackProgressInfo> for PlaybackProgressUpdate {
     fn from(info: PlaybackProgressInfo) -> Self {
         Self {
             item_id: info.item_id,
+            media_source_id: info.media_source_id,
             position_ticks: info.position_ticks,
             audio_stream_index: info.audio_stream_index,
             subtitle_stream_index: info.subtitle_stream_index,
@@ -382,6 +418,7 @@ impl From<PlaybackStopInfo> for PlaybackStopUpdate {
     fn from(info: PlaybackStopInfo) -> Self {
         Self {
             item_id: info.item_id,
+            media_source_id: info.media_source_id,
             position_ticks: info.position_ticks,
             failed: info.failed,
         }
@@ -392,6 +429,7 @@ impl From<PlaybackStartInfo> for PlaybackStartUpdate {
     fn from(info: PlaybackStartInfo) -> Self {
         Self {
             item_id: info.item_id,
+            media_source_id: info.media_source_id,
         }
     }
 }

@@ -242,6 +242,48 @@ impl BaseItemRepository {
             .await?)
     }
 
+    /// Resolves `version_item_id` when it is a video alternate visible from
+    /// `source_item_id`.
+    ///
+    /// Jellyfin playback reports can carry the displayed item as `ItemId` and
+    /// the actually played alternate version as `MediaSourceId`. `PostgreSQL`
+    /// resolves the source group and target video in one indexed read; missing,
+    /// non-video, or unrelated targets return `None` so callers can fall back to
+    /// the displayed item.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn alternate_video_version(
+        &self,
+        source_item_id: Uuid,
+        version_item_id: Uuid,
+    ) -> Result<Option<base_item::Model>, BaseItemError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!(
+                "WITH requested AS MATERIALIZED (\
+                     SELECT COALESCE(primary_version_id, id) AS group_id \
+                     FROM jellyfin.base_items \
+                     WHERE id = $1 \
+                       AND item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')\
+                 ), target_version AS (\
+                     SELECT item.* \
+                     FROM jellyfin.base_items AS item \
+                     INNER JOIN requested \
+                       ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
+                     WHERE item.id = $2 \
+                       AND item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')\
+                 ) \
+                 SELECT {BASE_ITEM_COLUMNS} FROM target_version"
+            ),
+            [source_item_id.into(), version_item_id.into()],
+        );
+        Ok(base_item::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?)
+    }
+
     /// Reports whether an item identifier is present.
     ///
     /// # Errors

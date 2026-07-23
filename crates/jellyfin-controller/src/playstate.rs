@@ -62,6 +62,7 @@ pub struct PlaystateUpdate {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlaybackProgressUpdate {
     pub item_id: Uuid,
+    pub media_source_id: Option<String>,
     pub position_ticks: Option<i64>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
@@ -70,11 +71,13 @@ pub struct PlaybackProgressUpdate {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlaybackStartUpdate {
     pub item_id: Uuid,
+    pub media_source_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlaybackStopUpdate {
     pub item_id: Uuid,
+    pub media_source_id: Option<String>,
     pub position_ticks: Option<i64>,
     pub failed: bool,
 }
@@ -246,7 +249,10 @@ impl PlaystateService {
         {
             return Err(UserDataError::NegativePlaybackValue.into());
         }
-        let Some(item) = self.progress_item(update.item_id).await? else {
+        let Some(item) = self
+            .progress_item(update.item_id, update.media_source_id.as_deref())
+            .await?
+        else {
             return Ok(None);
         };
         let configuration: UserConfiguration =
@@ -283,7 +289,10 @@ impl PlaystateService {
         user: &user::Model,
         update: PlaybackStartUpdate,
     ) -> Result<Option<PlaystateUpdate>, PlaystateError> {
-        let Some(item) = self.progress_item(update.item_id).await? else {
+        let Some(item) = self
+            .progress_item(update.item_id, update.media_source_id.as_deref())
+            .await?
+        else {
             return Ok(None);
         };
         let keys = current_user_data_keys(&item);
@@ -325,7 +334,10 @@ impl PlaystateService {
         if update.failed {
             return Ok(None);
         }
-        let Some(item) = self.progress_item(update.item_id).await? else {
+        let Some(item) = self
+            .progress_item(update.item_id, update.media_source_id.as_deref())
+            .await?
+        else {
             return Ok(None);
         };
         let effect = playback_stop_effect(&item, update.position_ticks);
@@ -389,6 +401,7 @@ impl PlaystateService {
     async fn progress_item(
         &self,
         item_id: Uuid,
+        media_source_id: Option<&str>,
     ) -> Result<Option<base_item::Model>, PlaystateError> {
         if item_id.is_nil() {
             return Ok(None);
@@ -396,8 +409,25 @@ impl PlaystateService {
         let Some(item) = self.items.get(item_id).await? else {
             return Ok(None);
         };
+        if is_video_item(&item)
+            && let Some(version_item_id) = parse_media_source_item_id(media_source_id)
+            && version_item_id != item.id
+            && let Some(version) = self
+                .items
+                .alternate_video_version(item.id, version_item_id)
+                .await?
+        {
+            return Ok(Some(version));
+        }
         Ok(Some(item))
     }
+}
+
+fn parse_media_source_item_id(media_source_id: Option<&str>) -> Option<Uuid> {
+    media_source_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| Uuid::parse_str(value).ok())
 }
 
 fn playback_progress_patch(

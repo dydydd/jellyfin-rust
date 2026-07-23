@@ -594,6 +594,117 @@ async fn playback_completion_propagates_to_alternate_versions() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn playback_reports_use_media_source_id_alternate_version_for_user_data() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+    let media_source_id = fixture.alternate_item_id.simple().to_string();
+
+    let before_start = Utc::now();
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "MediaSourceId": media_source_id
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let alternate_started = repository
+        .get(
+            fixture.alternate_item_id,
+            fixture.user_id,
+            &fixture.alternate_item_id.to_string(),
+        )
+        .await
+        .expect("alternate start lookup")
+        .expect("alternate start row");
+    assert_eq!(alternate_started.play_count, 1);
+    assert!(
+        alternate_started
+            .last_played_date
+            .is_some_and(|date| date >= before_start - chrono::Duration::seconds(1)),
+        "alternate version should receive the start timestamp"
+    );
+    assert!(
+        repository
+            .get(
+                fixture.runtime_item_id,
+                fixture.user_id,
+                &fixture.runtime_item_id.to_string()
+            )
+            .await
+            .expect("primary start lookup")
+            .is_none(),
+        "displayed primary item should not receive version playback start data"
+    );
+
+    let progress_route = format!(
+        "/PlayingItems/{}/Progress?mediaSourceId={}&positionTicks={}&audioStreamIndex=8",
+        fixture.runtime_item_id,
+        fixture.alternate_item_id.simple(),
+        ticks(300)
+    );
+    let response = request(&fixture.app, "POST", &progress_route, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_progress(
+        &repository,
+        fixture.alternate_item_id,
+        fixture.user_id,
+        ticks(300),
+        Some(8),
+        None,
+        false,
+    )
+    .await;
+    assert!(
+        repository
+            .get(
+                fixture.runtime_item_id,
+                fixture.user_id,
+                &fixture.runtime_item_id.to_string()
+            )
+            .await
+            .expect("primary progress lookup")
+            .is_none(),
+        "displayed primary item should not receive version progress data"
+    );
+
+    let stop_route = format!(
+        "/Users/{}/PlayingItems/{}?MediaSourceId={}&PositionTicks={}",
+        fixture.administrator_id,
+        fixture.runtime_item_id,
+        fixture.alternate_item_id.simple(),
+        ticks(590)
+    );
+    let response = request(&fixture.app, "DELETE", &stop_route, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_stopped(
+        &repository,
+        fixture.alternate_item_id,
+        fixture.user_id,
+        1,
+        0,
+        true,
+    )
+    .await;
+    assert_stopped(
+        &repository,
+        fixture.runtime_item_id,
+        fixture.user_id,
+        0,
+        0,
+        true,
+    )
+    .await;
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn manual_played_unplayed_routes_propagate_to_alternate_versions() {
     let fixture = PlaystateFixture::new().await;
     let repository = UserDataRepository::new(fixture.database.clone());
