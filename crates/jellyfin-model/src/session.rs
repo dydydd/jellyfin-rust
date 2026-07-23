@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -10,6 +12,14 @@ pub enum MediaType {
     Audio,
     Photo,
     Book,
+}
+
+impl std::str::FromStr for MediaType {
+    type Err = serde_json::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        deserialize_enum_name(value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +70,14 @@ pub enum GeneralCommandType {
     SetPlaybackOrder,
 }
 
+impl std::str::FromStr for GeneralCommandType {
+    type Err = serde_json::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        deserialize_enum_name(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
@@ -68,6 +86,8 @@ pub struct ClientCapabilitiesDto {
     pub supported_commands: Vec<GeneralCommandType>,
     pub supports_media_control: bool,
     pub supports_persistent_identifier: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_profile: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_store_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +101,7 @@ impl Default for ClientCapabilitiesDto {
             supported_commands: Vec::new(),
             supports_media_control: false,
             supports_persistent_identifier: true,
+            device_profile: None,
             app_store_url: None,
             icon_url: None,
         }
@@ -130,4 +151,11 @@ pub struct SessionInfoDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_primary_image_tag: Option<String>,
     pub supported_commands: Vec<GeneralCommandType>,
+}
+
+fn deserialize_enum_name<T>(value: &str) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(Value::String(value.to_owned()))
 }

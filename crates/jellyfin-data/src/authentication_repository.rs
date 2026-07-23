@@ -3,6 +3,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, DbErr, DeleteResult,
     EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, sea_query::Expr,
 };
+use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -14,6 +15,8 @@ pub enum AuthenticationStoreError {
     EmptyField(&'static str),
     #[error("authentication {field} exceeds its {max} character limit")]
     FieldTooLong { field: &'static str, max: usize },
+    #[error("device capabilities must be a JSON object")]
+    InvalidCapabilities,
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -228,6 +231,7 @@ impl DeviceRepository {
             device_name: Set(new_device.device_name),
             device_id: Set(new_device.device_id),
             is_active: Set(is_active),
+            capabilities: Set(json!({})),
             date_created: Set(now),
             date_modified: Set(now),
             date_last_activity: Set(now),
@@ -365,11 +369,35 @@ impl DeviceRepository {
             device_name: Set(model.device_name),
             device_id: Set(model.device_id),
             is_active: Set(model.is_active),
+            capabilities: Set(model.capabilities),
             date_created: Set(model.date_created),
             date_modified: Set(Utc::now()),
             date_last_activity: Set(model.date_last_activity),
         };
         Ok(active.update(&self.database).await?)
+    }
+
+    /// Persists client capabilities for a device session identified by token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for non-object capabilities, or a database
+    /// error when updating fails.
+    pub async fn update_capabilities_by_token(
+        &self,
+        access_token: &str,
+        capabilities: Value,
+    ) -> Result<u64, AuthenticationStoreError> {
+        if !capabilities.is_object() {
+            return Err(AuthenticationStoreError::InvalidCapabilities);
+        }
+        Ok(device::Entity::update_many()
+            .col_expr(device::Column::Capabilities, Expr::value(capabilities))
+            .col_expr(device::Column::DateModified, Expr::value(Utc::now()))
+            .filter(device::Column::AccessToken.eq(access_token))
+            .exec(&self.database)
+            .await?
+            .rows_affected)
     }
 
     /// Deletes a device authentication record.

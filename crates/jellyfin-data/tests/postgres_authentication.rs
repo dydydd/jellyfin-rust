@@ -3,7 +3,10 @@ use jellyfin_data::{
     ApiKeyRepository, DatabaseConfig, DeviceQuery, DeviceRepository, NewDevice,
     entities::{device, user},
 };
-use jellyfin_migration::{CreateAuthenticationMigration, OptimizeDeviceSessionQueriesMigration};
+use jellyfin_migration::{
+    AddDeviceCapabilitiesMigration, CreateAuthenticationMigration,
+    OptimizeDeviceSessionQueriesMigration,
+};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ConnectionTrait, DatabaseConnection, EntityTrait,
     IntoActiveModel, Set, SqlErr, Statement, TransactionTrait, TryGetable,
@@ -40,6 +43,10 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("device session optimization DDL must remain idempotent");
+    AddDeviceCapabilitiesMigration
+        .up(&schema)
+        .await
+        .expect("device capabilities DDL must remain idempotent");
     assert_authentication_indexes(&database).await;
     database
 }

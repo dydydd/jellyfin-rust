@@ -54,6 +54,9 @@ fn session_info_uses_official_wire_names_and_guid_format() {
             playable_media_types: vec![MediaType::Video],
             supported_commands: vec![GeneralCommandType::Play],
             supports_media_control: true,
+            device_profile: Some(json!({
+                "Name": "Browser profile"
+            })),
             ..ClientCapabilitiesDto::default()
         },
         playable_media_types: vec![MediaType::Video],
@@ -87,6 +90,10 @@ fn session_info_uses_official_wire_names_and_guid_format() {
     assert_eq!(
         value["Capabilities"]["PlayableMediaTypes"],
         json!(["Video"])
+    );
+    assert_eq!(
+        value["Capabilities"]["DeviceProfile"]["Name"],
+        "Browser profile"
     );
     assert_eq!(value["LastActivityDate"], "2026-07-23T09:15:00.0000000Z");
     assert!(value.get("LastPausedDate").is_none());
