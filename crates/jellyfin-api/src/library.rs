@@ -3,7 +3,10 @@ use std::{path::Path as FilePath, sync::Arc};
 use axum::{
     Json,
     body::Body,
-    extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
+    extract::{
+        OriginalUri, Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::Response,
 };
@@ -43,6 +46,32 @@ pub(crate) struct MediaFoldersQuery {
 #[derive(Debug, Deserialize)]
 pub(crate) struct DeleteItemsQuery {
     ids: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UpdatedSeriesQuery {
+    #[serde(default, rename = "tvdbId", alias = "TvdbId")]
+    tvdb_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UpdatedMoviesQuery {
+    #[serde(default, rename = "tmdbId", alias = "TmdbId")]
+    tmdb_id: Option<String>,
+    #[serde(default, rename = "imdbId", alias = "ImdbId")]
+    imdb_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct MediaUpdateInfoDto {
+    updates: Vec<MediaUpdateInfoPathDto>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct MediaUpdateInfoPathDto {
+    path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -237,6 +266,55 @@ pub(crate) async fn physical_paths(
             .flat_map(|folder| folder.locations)
             .collect(),
     ))
+}
+
+pub(crate) async fn refresh(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn updated_series(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<UpdatedSeriesQuery>, QueryRejection>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let _ = query.tvdb_id.as_deref();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn updated_movies(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<UpdatedMoviesQuery>, QueryRejection>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let _ = (query.imdb_id.as_deref(), query.tmdb_id.as_deref());
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn updated_media(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<MediaUpdateInfoDto>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    if request.updates.iter().any(|update| update.path.is_none()) {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn delete_item(
