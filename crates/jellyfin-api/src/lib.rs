@@ -362,6 +362,7 @@ pub fn router(state: AppState) -> Router {
         .merge(user_library_routes())
         .merge(video_routes())
         .merge(live_tv_routes())
+        .route("/Years", get(years::list))
         .route("/Years/{year}", get(years::get))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons/{name}", get(persons::get))

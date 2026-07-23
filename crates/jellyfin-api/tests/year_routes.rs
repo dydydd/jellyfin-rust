@@ -27,6 +27,108 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    assert_eq!(
+        fixture
+            .request(Method::GET, "/Years", Credential::None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?sortOrder=Descending&limit=2",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&years, &["2024", "2001"], 4, 0);
+
+    let paged = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?startIndex=1&limit=2",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&paged, &["1999", "2001"], 4, 1);
+
+    let direct_child_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={}&recursive=false", fixture.parent_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&direct_child_years, &["1999"], 1, 0);
+
+    let recursive_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={}&recursive=true", fixture.parent_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&recursive_years, &["1999", "2001"], 2, 0);
+
+    let audio_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?includeItemTypes=Audio",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&audio_years, &["1977"], 1, 0);
+
+    let video_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?mediaTypes=Video",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&video_years, &["1999", "2001", "2024"], 3, 0);
+
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?sortOrder=sideways",
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
 
     let virtual_year = body_json(
         fixture
@@ -114,6 +216,26 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     fixture.cleanup().await;
 }
 
+fn assert_years(
+    body: &Value,
+    expected_names: &[&str],
+    expected_total: usize,
+    expected_start: usize,
+) {
+    assert_eq!(body["TotalRecordCount"], expected_total);
+    assert_eq!(body["StartIndex"], expected_start);
+    let items = body["Items"].as_array().expect("year items");
+    assert_eq!(items.len(), expected_names.len());
+    let names = items
+        .iter()
+        .map(|item| item["Name"].as_str().expect("year name"))
+        .collect::<Vec<_>>();
+    assert_eq!(names, expected_names);
+    assert!(items.iter().all(|item| item["Type"] == "Year"));
+    assert!(items.iter().all(|item| item["IsFolder"] == true));
+    assert!(body.get("items").is_none());
+}
+
 async fn body_json(response: axum::response::Response) -> Value {
     assert_eq!(response.status(), StatusCode::OK);
     serde_json::from_slice(
@@ -136,6 +258,7 @@ struct Fixture {
     app: Router,
     user_id: Uuid,
     other_user_id: Uuid,
+    parent_id: Uuid,
     user_token: String,
     admin_token: String,
     persisted_year_id: Uuid,
@@ -188,6 +311,50 @@ impl Fixture {
         movie.production_year = Some(2024);
         items.create(movie).await.expect("movie creation");
 
+        let parent_id = Uuid::new_v4();
+        let mut parent = NewBaseItem::new(parent_id, "Folder");
+        parent.name = Some("Year Parent".to_owned());
+        parent.sort_name = Some("Year Parent".to_owned());
+        parent.is_folder = true;
+        items.create(parent).await.expect("parent creation");
+
+        let mut child_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        child_movie.name = Some("Direct Child".to_owned());
+        child_movie.sort_name = Some("Direct Child".to_owned());
+        child_movie.media_type = Some("Video".to_owned());
+        child_movie.production_year = Some(1999);
+        child_movie.parent_id = Some(parent_id);
+        items
+            .create(child_movie)
+            .await
+            .expect("child movie creation");
+
+        let nested_id = Uuid::new_v4();
+        let mut nested = NewBaseItem::new(nested_id, "Folder");
+        nested.name = Some("Nested".to_owned());
+        nested.sort_name = Some("Nested".to_owned());
+        nested.is_folder = true;
+        nested.parent_id = Some(parent_id);
+        items.create(nested).await.expect("nested folder creation");
+
+        let mut nested_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        nested_movie.name = Some("Nested Child".to_owned());
+        nested_movie.sort_name = Some("Nested Child".to_owned());
+        nested_movie.media_type = Some("Video".to_owned());
+        nested_movie.production_year = Some(2001);
+        nested_movie.parent_id = Some(nested_id);
+        items
+            .create(nested_movie)
+            .await
+            .expect("nested movie creation");
+
+        let mut audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
+        audio.name = Some("Old Song".to_owned());
+        audio.sort_name = Some("Old Song".to_owned());
+        audio.media_type = Some("Audio".to_owned());
+        audio.production_year = Some(1977);
+        items.create(audio).await.expect("audio creation");
+
         let persisted_year_id = Uuid::new_v4();
         let mut year = NewBaseItem::new(persisted_year_id, "Year");
         year.name = Some("1984".to_owned());
@@ -207,6 +374,7 @@ impl Fixture {
             app,
             user_id: user.id,
             other_user_id: other_user.id,
+            parent_id,
             user_token,
             admin_token,
             persisted_year_id,

@@ -32,7 +32,7 @@ pub use base_item_image_repository::{
 };
 pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
-    BaseItemQuery, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
+    BaseItemQuery, BaseItemRepository, NewBaseItem, ProductionYearPage, USER_ROOT_FOLDER_ID,
 };
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};

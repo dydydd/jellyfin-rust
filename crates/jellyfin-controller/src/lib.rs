@@ -59,4 +59,4 @@ pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};
 pub use videos::{VideoError, VideoService};
 pub use virtual_folders::{VirtualFolder, VirtualFolderService, VirtualFolderServiceError};
-pub use years::{Year, YearError, YearItem, YearService};
+pub use years::{Year, YearError, YearItem, YearPage, YearService};

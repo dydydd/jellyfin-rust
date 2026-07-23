@@ -134,6 +134,13 @@ pub struct BaseItemCounts {
     pub item_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionYearPage {
+    pub years: Vec<i32>,
+    pub total_record_count: u64,
+    pub start_index: u64,
+}
+
 #[derive(Debug, Error)]
 pub enum BaseItemError {
     #[error("base item type cannot be empty")]
@@ -403,6 +410,70 @@ impl BaseItemRepository {
             .one(&self.database)
             .await?
             .is_some())
+    }
+
+    /// Queries distinct positive production years through PostgreSQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the filtered distinct-year query fails.
+    pub async fn production_years(
+        &self,
+        query: &BaseItemQuery,
+        descending: bool,
+    ) -> Result<ProductionYearPage, BaseItemError> {
+        let (cte, values) = production_years_cte(query);
+        let transaction = self
+            .database
+            .begin_with_config(
+                Some(IsolationLevel::RepeatableRead),
+                Some(AccessMode::ReadOnly),
+            )
+            .await?;
+        let count = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!("{cte} SELECT COUNT(*) AS total_record_count FROM years"),
+                values.clone(),
+            ))
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("year count returned no row".to_owned()))?
+            .try_get::<i64>("", "total_record_count")?;
+
+        let mut year_values = values;
+        let order = if descending { "DESC" } else { "ASC" };
+        let mut year_sql =
+            format!("{cte} SELECT production_year FROM years ORDER BY production_year {order}");
+        push_bind(
+            &mut year_sql,
+            &mut year_values,
+            i64::try_from(query.start_index).unwrap_or(i64::MAX),
+            " OFFSET ",
+        );
+        if let Some(limit) = query.limit {
+            push_bind(
+                &mut year_sql,
+                &mut year_values,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                " LIMIT ",
+            );
+        }
+        let years = transaction
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                year_sql,
+                year_values,
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<i32>("", "production_year"))
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await?;
+        Ok(ProductionYearPage {
+            years,
+            total_record_count: u64::try_from(count).unwrap_or_default(),
+            start_index: query.start_index,
+        })
     }
 
     /// Queries persisted library items with stable sorting and database-side
@@ -1060,6 +1131,24 @@ fn date_played_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Ve
              SELECT item.*, version_dates.date_played \
              FROM filtered AS item \
              LEFT JOIN version_dates ON version_dates.primary_id = item.id\
+         )",
+    );
+    (sql, values)
+}
+
+fn production_years_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = Vec::new();
+    let mut sql = String::from(
+        "WITH filtered AS (\
+             SELECT item.production_year \
+             FROM jellyfin.base_items AS item \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND item.production_year > 0",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query);
+    sql.push_str(
+        "), years AS (\
+             SELECT DISTINCT production_year FROM filtered\
          )",
     );
     (sql, values)
