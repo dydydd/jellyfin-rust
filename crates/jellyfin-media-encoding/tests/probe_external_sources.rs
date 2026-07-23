@@ -4,11 +4,21 @@ use std::sync::{Arc, Mutex};
 
 use jellyfin_media_encoding::probing::{
     ExternalMediaSource, ExternalProbeError, ExternalProbeOptions, ExternalSourceProber,
-    MediaProtocol, ProbeProcessOutput, ProbeProcessRequest, ProbeProcessRunner,
+    MediaAttachment, MediaProtocol, ProbeProcessOutput, ProbeProcessRequest, ProbeProcessRunner,
     external_probe_extra_arguments,
 };
 
 const PROBE_JSON: &str = include_str!("fixtures/probing/video_webm.json");
+const PROBE_WITH_ATTACHMENT_JSON: &str = r#"{
+    "streams": [{
+        "index": 4,
+        "codec_name": "ttf",
+        "codec_type": "attachment",
+        "codec_tag_string": "TTF",
+        "tags": {"filename": "font.ttf", "mimetype": "font/ttf", "comment": "Font"}
+    }],
+    "format": {"format_name": "matroska,webm", "bit_rate": "1000"}
+}"#;
 
 #[derive(Debug, Default)]
 struct FixtureState {
@@ -114,6 +124,7 @@ fn http_probe_preserves_source_connection_and_applies_normalized_metadata() {
     assert_eq!(media_source.container, media_info.container);
     assert_eq!(media_source.bitrate, media_info.bitrate);
     assert_eq!(media_source.media_streams, media_info.media_streams);
+    assert_eq!(media_source.media_attachments, media_info.media_attachments);
     assert!(!media_source.media_streams.is_empty());
 
     let requests = runner.requests();
@@ -135,6 +146,35 @@ fn http_probe_preserves_source_connection_and_applies_normalized_metadata() {
             .iter()
             .any(|argument| argument == "-show_frames")
     );
+}
+
+#[test]
+fn probe_and_apply_replaces_media_attachments_from_normalized_probe() {
+    let mut media_source = source("/media/movie.mkv", MediaProtocol::File);
+    media_source.media_attachments = vec![MediaAttachment {
+        index: 99,
+        codec: "stale".to_owned(),
+        codec_tag: None,
+        file_name: Some("stale.bin".to_owned()),
+        mime_type: None,
+        comment: None,
+    }];
+    let runner = FixtureRunner::success(PROBE_WITH_ATTACHMENT_JSON);
+    let prober = ExternalSourceProber::new("ffprobe", runner);
+
+    let media_info = prober
+        .probe_and_apply(&mut media_source, &ExternalProbeOptions::default())
+        .unwrap();
+
+    assert_eq!(media_source.media_attachments, media_info.media_attachments);
+    assert_eq!(media_source.media_attachments.len(), 1);
+    let attachment = &media_source.media_attachments[0];
+    assert_eq!(attachment.index, 4);
+    assert_eq!(attachment.codec, "ttf");
+    assert_eq!(attachment.codec_tag.as_deref(), Some("TTF"));
+    assert_eq!(attachment.file_name.as_deref(), Some("font.ttf"));
+    assert_eq!(attachment.mime_type.as_deref(), Some("font/ttf"));
+    assert_eq!(attachment.comment.as_deref(), Some("Font"));
 }
 
 #[test]
@@ -208,6 +248,14 @@ fn failed_probe_reports_stderr_and_leaves_source_metadata_unchanged() {
     let mut media_source = source("https://media.example.test/broken", MediaProtocol::Http);
     media_source.container = Some("existing".to_owned());
     media_source.bitrate = Some(42);
+    media_source.media_attachments = vec![MediaAttachment {
+        index: 1,
+        codec: "mjpeg".to_owned(),
+        codec_tag: None,
+        file_name: Some("poster.jpg".to_owned()),
+        mime_type: Some("image/jpeg".to_owned()),
+        comment: None,
+    }];
     let original = media_source.clone();
     let runner = FixtureRunner::failure(2, "connection refused");
     let prober = ExternalSourceProber::new("ffprobe", runner);

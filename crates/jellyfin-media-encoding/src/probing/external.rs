@@ -4,7 +4,9 @@ use std::fmt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use super::{MediaInfo, MediaStream, ProbeContext, ProbeError, normalize_probe_json};
+use super::{
+    MediaAttachment, MediaInfo, MediaStream, ProbeContext, ProbeError, normalize_probe_json,
+};
 
 /// Access protocol for a media source passed to `FFprobe`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -29,6 +31,7 @@ pub struct ExternalMediaSource {
     pub container: Option<String>,
     pub bitrate: Option<i64>,
     pub media_streams: Vec<MediaStream>,
+    pub media_attachments: Vec<MediaAttachment>,
 }
 
 impl ExternalMediaSource {
@@ -38,6 +41,8 @@ impl ExternalMediaSource {
         self.container.clone_from(&media_info.container);
         self.bitrate = media_info.bitrate;
         self.media_streams.clone_from(&media_info.media_streams);
+        self.media_attachments
+            .clone_from(&media_info.media_attachments);
     }
 }
 
