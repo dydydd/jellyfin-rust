@@ -2,10 +2,11 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
     ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, ItemCounts,
-    MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
-    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration, SessionInfoDto,
-    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
+    PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    PublicSystemInfo, QueryResult, RepositoryInfo, SearchHint, SearchHintResult,
+    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto,
+    UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -86,6 +87,28 @@ fn api_key_query_result_uses_official_authentication_info_contract() {
     );
     assert!(value["Items"][0].get("DateRevoked").is_none());
     assert!(value["Items"][0].get("DeviceId").is_none());
+}
+
+#[test]
+fn media_segments_use_official_query_result_contract() {
+    let item_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+    let segment_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+    let value = serde_json::to_value(QueryResult::from_items(vec![MediaSegmentDto {
+        id: segment_id,
+        item_id,
+        segment_type: MediaSegmentType::Intro,
+        start_ticks: 12_000_000,
+        end_ticks: 45_000_000,
+    }]))
+    .unwrap();
+
+    assert_eq!(value["StartIndex"], 0);
+    assert_eq!(value["TotalRecordCount"], 1);
+    assert_eq!(value["Items"][0]["Id"], segment_id.simple().to_string());
+    assert_eq!(value["Items"][0]["ItemId"], item_id.simple().to_string());
+    assert_eq!(value["Items"][0]["Type"], "Intro");
+    assert_eq!(value["Items"][0]["StartTicks"], 12_000_000);
+    assert_eq!(value["Items"][0]["EndTicks"], 45_000_000);
 }
 
 #[test]

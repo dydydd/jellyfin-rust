@@ -62,6 +62,7 @@ mod library;
 mod live_tv;
 mod localization;
 mod media_info;
+mod media_segments;
 mod music_genre;
 mod openapi;
 mod packages;
@@ -359,6 +360,10 @@ pub fn router(state: AppState) -> Router {
             get(dashboard::configuration_pages),
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
+        .route(
+            "/MediaSegments/{item_id}",
+            get(media_segments::get_item_segments),
+        )
         .route(
             "/Audio/{item_id}/hls/{*legacy_path}",
             get(hls_segment::audio),

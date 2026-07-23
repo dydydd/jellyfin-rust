@@ -19,6 +19,7 @@ mod globalization;
 pub mod io;
 mod library_options;
 pub mod live_tv;
+mod media_segments;
 mod metadata_editor;
 pub mod net;
 pub mod plugins;
@@ -62,6 +63,7 @@ pub use globalization::LocalizationOption;
 pub use io::{FileSystemEntryInfo, FileSystemEntryType};
 pub use library_options::{LibraryOptionInfoDto, LibraryOptionsResultDto, LibraryTypeOptionsDto};
 pub use live_tv::{TimerInfo, TunerHostInfo};
+pub use media_segments::{MediaSegmentDto, MediaSegmentType};
 pub use metadata_editor::{
     CollectionType, CountryInfo, CultureDto, ExternalIdInfo, ExternalIdMediaType,
     MetadataEditorInfo, NameValuePair, ParentalRating, ParentalRatingScore,
