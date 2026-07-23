@@ -28,6 +28,7 @@ mod serde_guid;
 mod session;
 mod sync_play;
 pub mod system;
+mod tasks;
 mod user_data;
 pub mod users;
 
@@ -72,6 +73,10 @@ pub use session::{
 };
 pub use sync_play::UtcTimeResponse;
 pub use system::{FolderStorageDto, LibraryStorageDto, PublicSystemInfo, SystemStorageDto};
+pub use tasks::{
+    DayOfWeek, TaskCompletionStatus, TaskInfo, TaskResult, TaskState, TaskTriggerInfo,
+    TaskTriggerInfoType,
+};
 pub use user_data::{UpdateUserItemDataDto, UserItemDataDto};
 pub use users::{
     AccessSchedule, ForgotPasswordAction, ForgotPasswordDto, ForgotPasswordPinDto,

@@ -13,10 +13,10 @@ use jellyfin_controller::{
     LibraryControllerError, LibraryControllerService, LocalizationService, MediaAttachmentService,
     MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
     MetadataEditorService, MusicGenreError, MusicGenreService, PersonError, PersonService,
-    PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
-    SystemStorageService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
-    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError, client_event::ClientEventLogger,
+    PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError, ScheduledTaskService,
+    SystemLogError, SystemLogService, SystemStorageService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -62,6 +62,7 @@ mod plugins;
 pub mod query;
 mod quick_connect;
 mod robots;
+mod scheduled_tasks;
 mod session;
 mod startup;
 mod system;
@@ -105,6 +106,7 @@ pub struct AppState {
     pub(crate) dashboard: DashboardService,
     pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
+    pub(crate) scheduled_tasks: ScheduledTaskService,
     pub(crate) system_logs: SystemLogService,
     pub(crate) system_storage: SystemStorageService,
     pub(crate) client_event_logger: ClientEventLogger,
@@ -156,6 +158,7 @@ impl AppState {
             dashboard: DashboardService::default(),
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
+            scheduled_tasks: ScheduledTaskService::default(),
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
             client_event_logger: ClientEventLogger::new("logs"),
@@ -392,6 +395,16 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/Endpoint", get(system::endpoint_info))
         .route("/Document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
+        .route("/ScheduledTasks", get(scheduled_tasks::list))
+        .route(
+            "/ScheduledTasks/Running/{task_id}",
+            post(scheduled_tasks::start).delete(scheduled_tasks::stop),
+        )
+        .route(
+            "/ScheduledTasks/{task_id}/Triggers",
+            post(scheduled_tasks::update_triggers),
+        )
+        .route("/ScheduledTasks/{task_id}", get(scheduled_tasks::get))
 }
 
 fn environment_routes() -> Router<Arc<AppState>> {
@@ -817,6 +830,7 @@ pub(crate) enum ApiError {
     ServerConfiguration(ServerConfigurationStoreError),
     Environment(EnvironmentError),
     QuickConnect(QuickConnectError),
+    ScheduledTask(ScheduledTaskError),
     InvalidRequest,
     UnsupportedMediaType,
     PayloadTooLarge,
@@ -984,6 +998,12 @@ impl From<QuickConnectError> for ApiError {
     }
 }
 
+impl From<ScheduledTaskError> for ApiError {
+    fn from(error: ScheduledTaskError) -> Self {
+        Self::ScheduledTask(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     #[allow(
         clippy::too_many_lines,
@@ -1116,6 +1136,9 @@ impl IntoResponse for ApiError {
                 "Startup configuration persistence failed",
             ),
             Self::QuickConnect(error) => quick_connect_error_response(&error),
+            Self::ScheduledTask(ScheduledTaskError::NotFound) => {
+                (StatusCode::NOT_FOUND, "Scheduled task not found")
+            }
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
     }
