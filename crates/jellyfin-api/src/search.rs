@@ -1,0 +1,147 @@
+use std::{str::FromStr, sync::Arc};
+
+use axum::{Json, extract::State, http::HeaderMap};
+use axum_extra::extract::Query;
+use jellyfin_data::{BaseItemPage, BaseItemQuery, entities::base_item};
+use jellyfin_model::{MediaType, SearchHint, SearchHintResult};
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::{ApiError, AppState, authentication};
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct SearchHintsQuery {
+    #[serde(rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+    #[serde(rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(rename = "searchTerm", alias = "SearchTerm")]
+    search_term: Option<String>,
+    #[serde(
+        rename = "includeItemTypes",
+        alias = "IncludeItemTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    include_item_types: Vec<String>,
+    #[serde(
+        rename = "excludeItemTypes",
+        alias = "ExcludeItemTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    exclude_item_types: Vec<String>,
+    #[serde(
+        rename = "mediaTypes",
+        alias = "MediaTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    media_types: Vec<String>,
+    #[serde(rename = "parentId", alias = "ParentId")]
+    parent_id: Option<Uuid>,
+    #[serde(rename = "includeMedia", alias = "IncludeMedia")]
+    include_media: Option<bool>,
+}
+
+pub(crate) async fn hints(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<SearchHintsQuery>,
+) -> Result<Json<SearchHintResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !query.include_media.unwrap_or(true) {
+        return Ok(Json(SearchHintResult::default()));
+    }
+
+    let search_term = query
+        .search_term
+        .as_deref()
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .ok_or(ApiError::InvalidRequest)?;
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
+    let page = state
+        .user_library
+        .query_items(
+            &authenticated.user,
+            target_user_id,
+            BaseItemQuery {
+                parent_id: query.parent_id,
+                recursive: true,
+                search_term: Some(search_term.to_owned()),
+                include_item_types: query.include_item_types,
+                exclude_item_types: query.exclude_item_types,
+                media_types: query.media_types,
+                is_virtual_item: Some(false),
+                start_index: query.start_index,
+                limit: query.limit,
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+
+    Ok(Json(search_hint_result(page, search_term)))
+}
+
+fn search_hint_result(page: BaseItemPage, matched_term: &str) -> SearchHintResult {
+    SearchHintResult {
+        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        search_hints: page
+            .items
+            .into_iter()
+            .map(|item| search_hint(item, matched_term))
+            .collect(),
+    }
+}
+
+fn search_hint(item: base_item::Model, matched_term: &str) -> SearchHint {
+    SearchHint {
+        item_id: item.id,
+        id: item.id,
+        name: item.name.unwrap_or_default(),
+        matched_term: Some(matched_term.to_owned()),
+        index_number: item.index_number,
+        production_year: item.production_year,
+        parent_index_number: item.parent_index_number,
+        item_type: item.item_type,
+        is_folder: item.is_folder.then_some(true),
+        run_time_ticks: item.runtime_ticks,
+        media_type: item
+            .media_type
+            .as_deref()
+            .and_then(|media_type| MediaType::from_str(media_type).ok())
+            .unwrap_or(MediaType::Unknown),
+        artists: metadata_string_array(item.data.as_ref(), &["Artists", "artists"]),
+        album: metadata_string(item.data.as_ref(), &["Album", "album"]),
+        album_artist: metadata_string(item.data.as_ref(), &["AlbumArtist", "album_artist"]),
+        series: metadata_string(item.data.as_ref(), &["Series", "SeriesName", "series"]),
+        ..SearchHint::default()
+    }
+}
+
+fn metadata_string(value: Option<&serde_json::Value>, keys: &[&str]) -> Option<String> {
+    let object = value?.as_object()?;
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| value.as_str().map(str::to_owned))
+}
+
+fn metadata_string_array(value: Option<&serde_json::Value>, keys: &[&str]) -> Vec<String> {
+    let Some(object) = value.and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| {
+            value.as_array().map(|array| {
+                array
+                    .iter()
+                    .filter_map(|entry| entry.as_str().map(str::to_owned))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}

@@ -4,8 +4,8 @@ use jellyfin_model::{
     ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, ItemCounts,
     MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
     PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RepositoryInfo, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
-    UserDto, UserPolicy, UtcTimeResponse,
+    RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration, SessionInfoDto,
+    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -185,6 +185,43 @@ fn server_configuration_uses_official_pascal_case_defaults() {
     assert_eq!(value["PluginRepositories"][0]["Name"], "Stable");
     assert!(value.get("server_name").is_none());
     assert!(value.get("UiCulture").is_none());
+}
+
+#[test]
+fn search_hint_result_uses_official_wire_names_and_guid_format() {
+    let item_id = Uuid::from_u128(0x1f75_3b4d_22f1_4fed_9e30_4cc8_14d1_0a11);
+    let value = serde_json::to_value(SearchHintResult {
+        search_hints: vec![SearchHint {
+            item_id,
+            id: item_id,
+            name: "The Matrix".to_owned(),
+            matched_term: Some("Matrix".to_owned()),
+            item_type: "Movie".to_owned(),
+            media_type: MediaType::Video,
+            production_year: Some(1999),
+            run_time_ticks: Some(8_160_000_000),
+            artists: Vec::new(),
+            ..SearchHint::default()
+        }],
+        total_record_count: 1,
+    })
+    .unwrap();
+
+    assert_eq!(
+        value["SearchHints"][0]["Id"],
+        "1f753b4d22f14fed9e304cc814d10a11"
+    );
+    assert_eq!(
+        value["SearchHints"][0]["ItemId"],
+        value["SearchHints"][0]["Id"]
+    );
+    assert_eq!(value["SearchHints"][0]["Name"], "The Matrix");
+    assert_eq!(value["SearchHints"][0]["MatchedTerm"], "Matrix");
+    assert_eq!(value["SearchHints"][0]["Type"], "Movie");
+    assert_eq!(value["SearchHints"][0]["MediaType"], "Video");
+    assert_eq!(value["SearchHints"][0]["Artists"], json!([]));
+    assert_eq!(value["TotalRecordCount"], 1);
+    assert!(value.get("search_hints").is_none());
 }
 
 #[test]

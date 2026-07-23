@@ -23,6 +23,7 @@ mod metadata_editor;
 pub mod net;
 pub mod plugins;
 pub mod providers;
+mod search;
 mod serde_datetime;
 mod serde_guid;
 mod session;
@@ -69,6 +70,7 @@ pub use metadata_editor::{
 pub use net::{EndPointInfo, MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
+pub use search::{SearchHint, SearchHintResult};
 pub use session::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     PlayCommand, PlayRequest, PlaybackOrder, PlayerStateInfo, PlaystateCommand, PlaystateRequest,

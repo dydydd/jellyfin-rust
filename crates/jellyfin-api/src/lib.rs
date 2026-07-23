@@ -72,6 +72,7 @@ pub mod query;
 mod quick_connect;
 mod robots;
 mod scheduled_tasks;
+mod search;
 mod session;
 mod startup;
 mod studios;
@@ -335,6 +336,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
+        .route("/Search/Hints", get(search::hints))
         .route(
             "/System/Configuration",
             get(configuration::get).post(configuration::update),
