@@ -1,5 +1,6 @@
 use jellyfin_data::{
-    ItemValueError, ItemValueInfo, ItemValueQuery, ItemValueRepository,
+    BaseItemError, BaseItemRepository, ItemValueError, ItemValueInfo, ItemValueQuery,
+    ItemValueRepository,
     entities::{item_value, user},
 };
 use md5::{Digest, Md5};
@@ -36,12 +37,15 @@ pub enum GenreError {
     #[error(transparent)]
     User(#[from] UserError),
     #[error(transparent)]
+    BaseItem(#[from] BaseItemError),
+    #[error(transparent)]
     ItemValue(#[from] ItemValueError),
 }
 
 #[derive(Clone)]
 pub struct GenreService {
     users: UserService,
+    items: BaseItemRepository,
     item_values: ItemValueRepository,
 }
 
@@ -50,6 +54,7 @@ impl GenreService {
     pub fn new(database: DatabaseConnection) -> Self {
         Self {
             users: UserService::new(database.clone()),
+            items: BaseItemRepository::new(database.clone()),
             item_values: ItemValueRepository::new(database),
         }
     }
@@ -116,6 +121,7 @@ impl GenreService {
     ) -> Result<GenrePage, GenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        let query = self.scope_parent(query).await?;
         let page = self
             .item_values
             .query_values(
@@ -128,6 +134,25 @@ impl GenreService {
             total_record_count: page.total_record_count,
             start_index: page.start_index,
         })
+    }
+
+    async fn scope_parent(&self, mut query: ItemValueQuery) -> Result<ItemValueQuery, GenreError> {
+        let Some(parent_id) = query.parent_id else {
+            return Ok(query);
+        };
+        let parent = self
+            .items
+            .get(parent_id)
+            .await?
+            .ok_or(GenreError::NotFound)?;
+        if parent.is_folder {
+            query.recursive = true;
+        } else {
+            query.parent_id = None;
+            query.recursive = false;
+            query.ids = vec![parent_id];
+        }
+        Ok(query)
     }
 
     async fn find_value(&self, name: &str) -> Result<Option<item_value::Model>, GenreError> {

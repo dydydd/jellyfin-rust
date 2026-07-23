@@ -129,6 +129,18 @@ async fn genre_routes_match_official_generic_genre_contract() {
         0,
     );
 
+    let item_scoped = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Genres?parentId={}", fixture.movie_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(&item_scoped, &[&fixture.drama_genre], 1, 0);
+
     let audio_filtered = body_json(
         fixture
             .request(
@@ -291,6 +303,7 @@ struct Fixture {
     app: Router,
     user_id: Uuid,
     other_user_id: Uuid,
+    movie_id: Uuid,
     parent_id: Uuid,
     user_token: String,
     admin_token: String,
@@ -424,6 +437,7 @@ impl Fixture {
             app,
             user_id: user.id,
             other_user_id: other_user.id,
+            movie_id: movie.id,
             parent_id: parent.id,
             user_token,
             admin_token,

@@ -1227,7 +1227,8 @@ impl IntoResponse for ApiError {
             Self::Genre(
                 GenreError::NotFound
                 | GenreError::UserNotFound
-                | GenreError::User(UserError::NotFound),
+                | GenreError::User(UserError::NotFound)
+                | GenreError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Genre or user not found"),
             Self::Artist(
                 ArtistError::NotFound
