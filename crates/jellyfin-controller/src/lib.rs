@@ -33,7 +33,7 @@ mod years;
 pub use artists::{Artist, ArtistError, ArtistPage, ArtistService, ArtistValueKind};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
-pub use genres::{Genre, GenreError, GenrePage, GenreService};
+pub use genres::{Genre, GenreError, GenreKind, GenrePage, GenreService};
 pub use item_lookup::{ItemLookupError, ItemLookupService};
 pub use item_types::{
     HydratedBaseItem, ItemTypeRegistrationError, ItemTypeRegistry, KnownItemType,

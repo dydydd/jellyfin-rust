@@ -12,7 +12,7 @@ use jellyfin_data::{
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -141,6 +141,28 @@ async fn genre_routes_match_official_generic_genre_contract() {
     .await;
     assert_genres(&item_scoped, &[&fixture.drama_genre], 1, 0);
 
+    let music_collection_scoped = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Genres?parentId={}", fixture.music_collection_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres_with_type(
+        &music_collection_scoped,
+        &[&fixture.music_collection_genre],
+        "MusicGenre",
+        1,
+        0,
+    );
+    assert_eq!(
+        music_collection_scoped["Items"][0]["PresentationUniqueKey"],
+        format!("MusicGenre-{}", fixture.music_collection_genre)
+    );
+
     let audio_filtered = body_json(
         fixture
             .request(
@@ -267,6 +289,22 @@ fn assert_genres(
     expected_total: usize,
     expected_start: usize,
 ) {
+    assert_genres_with_type(
+        body,
+        expected_names,
+        "Genre",
+        expected_total,
+        expected_start,
+    );
+}
+
+fn assert_genres_with_type(
+    body: &Value,
+    expected_names: &[&str],
+    expected_type: &str,
+    expected_total: usize,
+    expected_start: usize,
+) {
     assert_eq!(body["TotalRecordCount"], expected_total);
     assert_eq!(body["StartIndex"], expected_start);
     let items = body["Items"].as_array().expect("genre items");
@@ -276,7 +314,7 @@ fn assert_genres(
         .map(|item| item["Name"].as_str().expect("genre name"))
         .collect::<Vec<_>>();
     assert_eq!(names, expected_names);
-    assert!(items.iter().all(|item| item["Type"] == "Genre"));
+    assert!(items.iter().all(|item| item["Type"] == expected_type));
     assert!(items.iter().all(|item| item["IsFolder"] == true));
     assert!(body.get("items").is_none());
 }
@@ -305,6 +343,7 @@ struct Fixture {
     other_user_id: Uuid,
     movie_id: Uuid,
     parent_id: Uuid,
+    music_collection_id: Uuid,
     user_token: String,
     admin_token: String,
     drama_genre_id: Uuid,
@@ -312,6 +351,7 @@ struct Fixture {
     comedy_genre: String,
     parent_genre: String,
     nested_genre: String,
+    music_collection_genre: String,
     slug_genre_id: Uuid,
     slug_genre_name: String,
     slug_route_name: String,
@@ -361,6 +401,16 @@ impl Fixture {
         let trailer = create_item(&items, "Trailer", "Funny Trailer", None, false).await;
         let audio = create_item(&items, "Audio", "Music Track", None, false).await;
         let parent = create_item(&items, "Folder", "Genre Parent", None, true).await;
+        let music_collection =
+            create_music_collection(&items, &format!("Music Collection {suffix}")).await;
+        let music_collection_audio = create_item(
+            &items,
+            "Audio",
+            "Collection Music Track",
+            Some(music_collection.id),
+            false,
+        )
+        .await;
         let parent_movie =
             create_item(&items, "Movie", "Parent Movie", Some(parent.id), false).await;
         let nested = create_item(&items, "Folder", "Nested", Some(parent.id), true).await;
@@ -374,6 +424,7 @@ impl Fixture {
         let parent_genre = format!("Parent {suffix}");
         let nested_genre = format!("Nested {suffix}");
         let music_genre = format!("Electronic {suffix}");
+        let music_collection_genre = format!("Collection Electronic {suffix}");
         let drama = values
             .link(movie.id, item_value::ItemValueType::Genre, &drama_genre)
             .await
@@ -386,6 +437,14 @@ impl Fixture {
             .link(audio.id, item_value::ItemValueType::Genre, &music_genre)
             .await
             .expect("music genre");
+        values
+            .link(
+                music_collection_audio.id,
+                item_value::ItemValueType::Genre,
+                &music_collection_genre,
+            )
+            .await
+            .expect("music collection genre");
         values
             .link(
                 parent_movie.id,
@@ -439,6 +498,7 @@ impl Fixture {
             other_user_id: other_user.id,
             movie_id: movie.id,
             parent_id: parent.id,
+            music_collection_id: music_collection.id,
             user_token,
             admin_token,
             drama_genre_id: drama.item_value_id,
@@ -446,6 +506,7 @@ impl Fixture {
             comedy_genre,
             parent_genre,
             nested_genre,
+            music_collection_genre,
             slug_genre_id: slug_genre.item_value_id,
             slug_genre_name,
             slug_route_name,
@@ -505,6 +566,18 @@ async fn create_item(
     item.parent_id = parent_id;
     item.is_folder = is_folder;
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_music_collection(repository: &BaseItemRepository, name: &str) -> base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), "CollectionFolder");
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.is_folder = true;
+    item.data = Some(json!({ "CollectionType": "music" }));
+    repository
+        .create(item)
+        .await
+        .expect("music collection creation")
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

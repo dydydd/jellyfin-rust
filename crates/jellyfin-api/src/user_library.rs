@@ -7,8 +7,8 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_controller::{
-    Artist, Genre, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio, Year,
-    library::get_media_source_name,
+    Artist, Genre, GenreKind, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio,
+    Year, library::get_media_source_name,
 };
 use jellyfin_data::entities::{base_item, user_data};
 use jellyfin_model::{
@@ -885,11 +885,15 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
 }
 
 pub(crate) fn genre_to_dto(genre: &Genre, server_id: &str) -> BaseItemDto {
+    let (item_type, presentation_prefix) = match genre.kind {
+        GenreKind::Genre => ("Genre", "Genre"),
+        GenreKind::MusicGenre => ("MusicGenre", "MusicGenre"),
+    };
     BaseItemDto {
         name: Some(genre.name.clone()),
         server_id: server_id.to_owned(),
         id: genre.id.simple().to_string(),
-        item_type: "Genre".to_owned(),
+        item_type: item_type.to_owned(),
         etag: genre.id.simple().to_string(),
         date_created: None,
         sort_name: Some(genre.name.clone()),
@@ -904,7 +908,7 @@ pub(crate) fn genre_to_dto(genre: &Genre, server_id: &str) -> BaseItemDto {
         parent_index_number: None,
         production_year: None,
         run_time_ticks: None,
-        presentation_unique_key: Some(format!("Genre-{}", genre.name)),
+        presentation_unique_key: Some(format!("{presentation_prefix}-{}", genre.name)),
         series_id: None,
         season_id: None,
         extra_type: None,
