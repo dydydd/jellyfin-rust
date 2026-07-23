@@ -6,7 +6,7 @@ use axum::{
     http::HeaderMap,
 };
 use jellyfin_controller::YearItem;
-use jellyfin_data::BaseItemQuery;
+use jellyfin_data::{BaseItemQuery, ProductionYearOrder};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -46,6 +46,13 @@ pub(crate) struct YearsQuery {
     media_types: Vec<String>,
     #[serde(
         default,
+        rename = "sortBy",
+        alias = "SortBy",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_by: Vec<String>,
+    #[serde(
+        default,
         rename = "sortOrder",
         alias = "SortOrder",
         deserialize_with = "crate::query::comma::deserialize"
@@ -63,7 +70,7 @@ pub(crate) async fn list(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
-    let descending = descending(&query.sort_order)?;
+    let order = production_year_order(&query.sort_by, &query.sort_order)?;
     let page = state
         .years
         .list(
@@ -79,7 +86,7 @@ pub(crate) async fn list(
                 limit: query.limit,
                 ..BaseItemQuery::default()
             },
-            descending,
+            order,
         )
         .await?;
     Ok(Json(user_library::BaseItemQueryResult {
@@ -124,6 +131,35 @@ fn descending(sort_order: &[String]) -> Result<bool, ApiError> {
         Ok(false)
     } else {
         Err(ApiError::InvalidRequest)
+    }
+}
+
+fn production_year_order(
+    sort_by: &[String],
+    sort_order: &[String],
+) -> Result<ProductionYearOrder, ApiError> {
+    let Some(order) = sort_by.first() else {
+        return production_year_direction(sort_order);
+    };
+
+    if order.eq_ignore_ascii_case("Default")
+        || order.eq_ignore_ascii_case("ProductionYear")
+        || order.eq_ignore_ascii_case("SortName")
+        || order.eq_ignore_ascii_case("Name")
+    {
+        production_year_direction(sort_order)
+    } else if order.eq_ignore_ascii_case("Random") {
+        Ok(ProductionYearOrder::Random)
+    } else {
+        Err(ApiError::InvalidRequest)
+    }
+}
+
+fn production_year_direction(sort_order: &[String]) -> Result<ProductionYearOrder, ApiError> {
+    if descending(sort_order)? {
+        Ok(ProductionYearOrder::Descending)
+    } else {
+        Ok(ProductionYearOrder::Ascending)
     }
 }
 

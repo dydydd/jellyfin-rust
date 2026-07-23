@@ -151,6 +151,14 @@ pub struct ProductionYearPage {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProductionYearOrder {
+    #[default]
+    Ascending,
+    Descending,
+    Random,
+}
+
 #[derive(Debug, Error)]
 pub enum BaseItemError {
     #[error("base item type cannot be empty")]
@@ -431,7 +439,7 @@ impl BaseItemRepository {
     pub async fn production_years(
         &self,
         query: &BaseItemQuery,
-        descending: bool,
+        order: ProductionYearOrder,
     ) -> Result<ProductionYearPage, BaseItemError> {
         let (cte, values) = production_years_cte(query);
         let transaction = self
@@ -452,9 +460,12 @@ impl BaseItemRepository {
             .try_get::<i64>("", "total_record_count")?;
 
         let mut year_values = values;
-        let order = if descending { "DESC" } else { "ASC" };
-        let mut year_sql =
-            format!("{cte} SELECT production_year FROM years ORDER BY production_year {order}");
+        let order = match order {
+            ProductionYearOrder::Ascending => "production_year ASC",
+            ProductionYearOrder::Descending => "production_year DESC",
+            ProductionYearOrder::Random => "random(), production_year ASC",
+        };
+        let mut year_sql = format!("{cte} SELECT production_year FROM years ORDER BY {order}");
         push_bind(
             &mut year_sql,
             &mut year_values,

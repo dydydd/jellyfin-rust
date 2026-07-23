@@ -39,7 +39,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
         fixture
             .request(
                 Method::GET,
-                "/Years?sortOrder=Descending&limit=2",
+                "/Years?sortBy=ProductionYear&sortOrder=Descending&limit=2",
                 Credential::Device(&fixture.user_token),
             )
             .await,
@@ -112,6 +112,17 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .request(
                 Method::GET,
                 "/Years?sortOrder=sideways",
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?sortBy=sideways",
                 Credential::Device(&fixture.user_token),
             )
             .await

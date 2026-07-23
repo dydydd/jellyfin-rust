@@ -6,7 +6,8 @@ use axum::{
     http::HeaderMap,
 };
 use jellyfin_data::{
-    BaseItemQuery, BaseItemRepository, ItemValueQuery, ItemValueRepository, entities::item_value,
+    BaseItemQuery, BaseItemRepository, ItemValueQuery, ItemValueRepository, ProductionYearOrder,
+    entities::item_value,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -152,7 +153,10 @@ pub(crate) async fn filters_legacy(
 
     let items = BaseItemRepository::new(state.database.clone());
     let values = ItemValueRepository::new(state.database.clone());
-    let years = items.production_years(&item_query, false).await?.years;
+    let years = items
+        .production_years(&item_query, ProductionYearOrder::Ascending)
+        .await?
+        .years;
     let official_ratings = items.official_ratings(&item_query).await?;
     let tags = values
         .query_values(item_value::ItemValueType::Tags, &value_query)

@@ -1,5 +1,5 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemQuery, BaseItemRepository,
+    BaseItemError, BaseItemQuery, BaseItemRepository, ProductionYearOrder,
     entities::{base_item, user},
 };
 use md5::{Digest, Md5};
@@ -100,11 +100,11 @@ impl YearService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         query: BaseItemQuery,
-        descending: bool,
+        order: ProductionYearOrder,
     ) -> Result<YearPage, YearError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let page = self.items.production_years(&query, descending).await?;
+        let page = self.items.production_years(&query, order).await?;
         Ok(YearPage {
             years: page
                 .years
