@@ -17,6 +17,7 @@ jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-live-tv = { path = "../jellyfin-live-tv" }
 jellyfin-model = { path = "../jellyfin-model", features = ["openapi"] }
+jellyfin-networking = { path = "../jellyfin-networking" }
 jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }
 percent-encoding = "2.3"
 sea-orm.workspace = true

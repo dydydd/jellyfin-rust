@@ -1,17 +1,21 @@
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use axum::{
     Json,
     body::Body,
-    extract::{OriginalUri, Query, State, rejection::QueryRejection},
+    extract::{ConnectInfo, OriginalUri, Query, Request, State, rejection::QueryRejection},
     http::{HeaderMap, HeaderValue, Response, header},
 };
 use chrono::{DateTime, Utc};
 use jellyfin_controller::SystemLogFile;
+use jellyfin_model::EndPointInfo;
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 
-use crate::{ApiError, AppState, authentication};
+use crate::{ApiError, AppState, authentication, authorization};
 
 const STREAM_BUFFER_SIZE: usize = 64 * 1024;
 const TEXT_UTF8: HeaderValue = HeaderValue::from_static("text/plain; charset=utf-8");
@@ -69,6 +73,20 @@ pub(crate) async fn get_log_file(
         .map_err(|_| ApiError::Internal)
 }
 
+pub(crate) async fn endpoint_info(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    request: Request,
+) -> Result<Json<EndPointInfo>, ApiError> {
+    authorization::require_default(&state, request.headers(), &uri).await?;
+    let connect_info = request.extensions().get::<ConnectInfo<SocketAddr>>();
+    let remote_ip = remote_ip(connect_info);
+    Ok(Json(EndPointInfo {
+        is_local: is_local_request(connect_info),
+        is_in_network: state.network_manager.is_in_local_network(remote_ip),
+    }))
+}
+
 impl From<SystemLogFile> for LogFileDto {
     fn from(log: SystemLogFile) -> Self {
         Self {
@@ -77,6 +95,25 @@ impl From<SystemLogFile> for LogFileDto {
             size: log.size,
             name: log.name,
         }
+    }
+}
+
+fn remote_ip(connect_info: Option<&ConnectInfo<SocketAddr>>) -> IpAddr {
+    connect_info.map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |connect_info| {
+        normalize_ip(connect_info.0.ip())
+    })
+}
+
+fn is_local_request(connect_info: Option<&ConnectInfo<SocketAddr>>) -> bool {
+    connect_info.is_none_or(|connect_info| normalize_ip(connect_info.0.ip()).is_loopback())
+}
+
+fn normalize_ip(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V6(address) => address
+            .to_ipv4_mapped()
+            .map_or(IpAddr::V6(address), IpAddr::V4),
+        address @ IpAddr::V4(_) => address,
     }
 }
 

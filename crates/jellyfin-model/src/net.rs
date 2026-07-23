@@ -1,5 +1,7 @@
 use std::{borrow::Cow, error::Error, fmt};
 
+use serde::{Deserialize, Serialize};
+
 const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
 
 const VIDEO_FILE_EXTENSIONS: &[&str] = &[
@@ -92,6 +94,15 @@ const EXTENSION_OVERRIDES: &[(&str, &str)] = &[
     ("image/vnd.microsoft.icon", ".ico"),
     ("video/mp2t", ".ts"),
 ];
+
+/// Request endpoint classification returned by `/System/Endpoint`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct EndPointInfo {
+    pub is_local: bool,
+    pub is_in_network: bool,
+}
 
 /// MIME mapping helpers compatible with Jellyfin's `MediaBrowser.Model.Net.MimeTypes`.
 pub struct MimeTypes;

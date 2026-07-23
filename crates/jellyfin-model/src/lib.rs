@@ -53,7 +53,7 @@ pub use metadata_editor::{
     MetadataEditorInfo, NameValuePair, ParentalRating, ParentalRatingScore,
     ParseCollectionTypeError,
 };
-pub use net::{MimeTypeError, MimeTypes};
+pub use net::{EndPointInfo, MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
 pub use sync_play::UtcTimeResponse;

@@ -24,6 +24,7 @@ use jellyfin_data::{
 };
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
+use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{AuthenticationError, DefaultAuthenticationProvider};
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
@@ -87,6 +88,7 @@ pub struct AppState {
     pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
     pub(crate) system_logs: SystemLogService,
+    pub(crate) network_manager: Arc<NetworkManager>,
     pub(crate) transcode_directory: std::path::PathBuf,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
@@ -123,6 +125,10 @@ impl AppState {
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
             system_logs: SystemLogService::default(),
+            network_manager: Arc::new(NetworkManager::new(
+                NetworkConfiguration::default(),
+                Vec::new(),
+            )),
             transcode_directory: std::env::temp_dir()
                 .join("jellyfin-rust")
                 .join("transcodes"),
@@ -204,6 +210,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the network classifier used by request endpoint APIs.
+    #[must_use]
+    pub fn with_network_manager(mut self, network_manager: NetworkManager) -> Self {
+        self.network_manager = Arc::new(network_manager);
+        self
+    }
+
     /// Replaces the directory containing active transcoding output.
     #[must_use]
     pub fn with_transcode_directory(
@@ -224,6 +237,7 @@ pub fn router(state: AppState) -> Router {
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
+        .route("/System/Endpoint", get(system::endpoint_info))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))

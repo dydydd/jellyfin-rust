@@ -1387,6 +1387,7 @@ dependencies = [
  "jellyfin-extensions",
  "jellyfin-live-tv",
  "jellyfin-model",
+ "jellyfin-networking",
  "jellyfin-server-implementations",
  "oas3",
  "percent-encoding",

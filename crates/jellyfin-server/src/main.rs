@@ -47,10 +47,13 @@ async fn main() -> anyhow::Result<()> {
     );
 
     info!(address = %bind_address, "Jellyfin Rust server listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server failed")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server failed")
 }
 
 async fn ensure_initial_user(

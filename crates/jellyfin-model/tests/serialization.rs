@@ -1,6 +1,6 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    PublicSystemInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    EndPointInfo, PublicSystemInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -64,6 +64,21 @@ fn utc_time_response_matches_syncplay_wire_contract() {
         json!({
             "RequestReceptionTime": "2026-07-22T08:30:00.1234567Z",
             "ResponseTransmissionTime": "2026-07-22T08:30:01.0000000Z"
+        })
+    );
+}
+
+#[test]
+fn endpoint_info_matches_official_wire_contract() {
+    assert_eq!(
+        serde_json::to_value(EndPointInfo {
+            is_local: true,
+            is_in_network: false,
+        })
+        .unwrap(),
+        json!({
+            "IsLocal": true,
+            "IsInNetwork": false
         })
     );
 }
