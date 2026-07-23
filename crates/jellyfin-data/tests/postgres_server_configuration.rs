@@ -4,7 +4,7 @@ use jellyfin_data::{
 };
 use jellyfin_migration::{
     AddClientLogUploadConfigurationMigration, AddPlaystateResumeConfigurationMigration,
-    CreateServerConfigurationMigration,
+    AddPluginRepositoriesMigration, CreateServerConfigurationMigration,
 };
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -67,6 +67,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.server_name, "Jellyfin");
     assert!(!seeded.is_startup_wizard_completed);
     assert_eq!(seeded.content_types, json!([]));
+    assert_eq!(seeded.plugin_repositories, json!([]));
     assert_eq!(seeded.min_resume_pct, 5);
     assert_eq!(seeded.max_resume_pct, 90);
     assert_eq!(seeded.min_resume_duration_seconds, 300);
@@ -97,6 +98,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert!(concurrent.row_version >= updated.row_version + 2);
 
     assert_content_type_updates(&database, &first, &second).await;
+    assert_plugin_repository_updates(&first, &second).await;
     assert_client_log_upload_updates(&first, &second).await;
 
     let invalid_insert = database
@@ -173,6 +175,14 @@ async fn assert_configuration_migrations_are_idempotent(schema: &SchemaManager<'
         .up(schema)
         .await
         .expect("client-log configuration DDL must remain idempotent");
+    AddPluginRepositoriesMigration
+        .up(schema)
+        .await
+        .expect("reapplying plugin-repositories DDL must succeed");
+    AddPluginRepositoriesMigration
+        .up(schema)
+        .await
+        .expect("plugin-repositories DDL must remain idempotent");
 }
 
 async fn assert_content_type_updates(
@@ -232,6 +242,38 @@ async fn assert_client_log_upload_updates(
         .expect("client-log upload enable");
     assert!(enabled.allow_client_log_upload);
     assert!(enabled.row_version > disabled.row_version);
+}
+
+async fn assert_plugin_repository_updates(
+    first: &ServerConfigurationRepository,
+    second: &ServerConfigurationRepository,
+) {
+    let stable = json!([
+        {
+            "Name": "Stable",
+            "Url": "https://repo.example.test/stable.json",
+            "Enabled": true
+        }
+    ]);
+    let updated = first
+        .update_plugin_repositories(stable.clone())
+        .await
+        .expect("plugin repositories update");
+    assert_eq!(updated.plugin_repositories, stable);
+
+    let beta = json!([
+        {
+            "Name": "Beta",
+            "Url": "https://repo.example.test/beta.json",
+            "Enabled": false
+        }
+    ]);
+    let replaced = second
+        .update_plugin_repositories(beta.clone())
+        .await
+        .expect("plugin repositories replacement");
+    assert_eq!(replaced.plugin_repositories, beta);
+    assert!(replaced.row_version > updated.row_version);
 }
 
 fn content_types(value: &Value) -> BTreeMap<String, String> {
@@ -307,6 +349,7 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
 
     assert_playstate_resume_schema(database).await;
     assert_client_log_upload_schema(database).await;
+    assert_plugin_repositories_schema(database).await;
 
     let row = database
         .query_one(Statement::from_string(
@@ -335,6 +378,42 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("content-types constraint catalog query")
         .expect("content-types constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+
+    let row = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT count(*)::bigint AS count FROM pg_constraint \
+             WHERE connamespace = 'jellyfin'::regnamespace \
+               AND conrelid = 'jellyfin.server_configuration'::regclass \
+               AND conname = 'server_configuration_plugin_repositories_array'"
+                .to_owned(),
+        ))
+        .await
+        .expect("plugin-repositories constraint catalog query")
+        .expect("plugin-repositories constraint count row");
+    assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_plugin_repositories_schema(database: &sea_orm::DatabaseConnection) {
+    let column = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name = 'plugin_repositories'"
+                .to_owned(),
+        ))
+        .await
+        .expect("plugin-repositories column catalog query")
+        .expect("plugin-repositories column");
+    assert_eq!(String::try_get(&column, "", "data_type").unwrap(), "jsonb");
+    assert_eq!(String::try_get(&column, "", "is_nullable").unwrap(), "NO");
+    assert_eq!(
+        String::try_get(&column, "", "column_default").unwrap(),
+        "'[]'::jsonb"
+    );
 }
 
 async fn assert_client_log_upload_schema(database: &sea_orm::DatabaseConnection) {

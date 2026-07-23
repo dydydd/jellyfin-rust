@@ -6,10 +6,10 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice,
+    ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice, ServerConfigurationRepository,
     entities::{api_key, user},
 };
-use jellyfin_model::{PackageInfo, RepositoryInfo};
+use jellyfin_model::PackageInfo;
 use sea_orm::{ConnectionTrait, EntityTrait};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -73,17 +73,10 @@ async fn exercise_package_routes(database_name: &str) {
             "Package Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
         )
-        .with_packages(
-            vec![
-                package("Bookshelf", package_id),
-                package("Playback Reporting", alternate_id),
-            ],
-            vec![RepositoryInfo {
-                name: Some("Jellyfin Stable".to_owned()),
-                url: Some("https://repo.jellyfin.org/files/plugin/manifest.json".to_owned()),
-                enabled: true,
-            }],
-        ),
+        .with_packages(vec![
+            package("Bookshelf", package_id),
+            package("Playback Reporting", alternate_id),
+        ]),
     );
 
     let suffix = Uuid::new_v4().simple().to_string();
@@ -148,6 +141,42 @@ async fn exercise_package_routes(database_name: &str) {
     );
 
     let repositories = body_json(request(&app, "/Repositories", Some(&admin_token)).await).await;
+    assert_eq!(repositories, json!([]));
+
+    assert_eq!(
+        post_repositories(&app, "/Repositories", None, repositories_fixture())
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_repositories(
+            &app,
+            "/Repositories",
+            Some(&user_token),
+            repositories_fixture(),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let response = post_repositories(
+        &app,
+        "/Repositories",
+        Some(&admin_token),
+        repositories_fixture(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let repositories = body_json(request(&app, "/Repositories", Some(&admin_token)).await).await;
     assert_eq!(
         repositories,
         json!([
@@ -158,6 +187,11 @@ async fn exercise_package_routes(database_name: &str) {
             }
         ])
     );
+    let persisted = ServerConfigurationRepository::new(database.clone())
+        .load()
+        .await
+        .expect("server configuration load");
+    assert_eq!(persisted.plugin_repositories, repositories);
 
     let api_key_packages = body_json(
         request(
@@ -226,6 +260,35 @@ async fn request(app: &Router, uri: &str, token: Option<&str>) -> axum::response
         .oneshot(request.body(Body::empty()).unwrap())
         .await
         .unwrap()
+}
+
+async fn post_repositories(
+    app: &Router,
+    uri: &str,
+    token: Option<&str>,
+    body: Value,
+) -> axum::response::Response {
+    let mut request = Request::post(uri).header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        request = request.header(
+            header::AUTHORIZATION,
+            format!("{AUTHORIZATION}, Token=\"{token}\""),
+        );
+    }
+    app.clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
+}
+
+fn repositories_fixture() -> Value {
+    json!([
+        {
+            "Name": "Jellyfin Stable",
+            "Url": "https://repo.jellyfin.org/files/plugin/manifest.json",
+            "Enabled": true
+        }
+    ])
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

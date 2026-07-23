@@ -13,6 +13,7 @@ pub struct Model {
     pub preferred_metadata_language: String,
     pub is_startup_wizard_completed: bool,
     pub content_types: Value,
+    pub plugin_repositories: Value,
     pub min_resume_pct: i32,
     pub max_resume_pct: i32,
     pub min_resume_duration_seconds: i32,

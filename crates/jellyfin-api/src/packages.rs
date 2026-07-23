@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, Query, State},
-    http::HeaderMap,
+    extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
+    http::{HeaderMap, StatusCode},
 };
 use jellyfin_model::{PackageInfo, RepositoryInfo};
 use serde::Deserialize;
@@ -44,7 +44,23 @@ pub(crate) async fn repositories(
     headers: HeaderMap,
 ) -> Result<Json<Vec<RepositoryInfo>>, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
-    Ok(Json(state.packages.repositories()))
+    repository_info(&state).await.map(Json)
+}
+
+pub(crate) async fn set_repositories(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<Vec<RepositoryInfo>>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    let Json(repositories) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let value = serde_json::to_value(&repositories).map_err(|_| ApiError::Internal)?;
+    state
+        .server_configuration
+        .update_plugin_repositories(value)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn require_elevated(
@@ -55,4 +71,9 @@ async fn require_elevated(
     authentication::authenticated_identity(state, headers, Some(uri))
         .await?
         .require_administrator()
+}
+
+async fn repository_info(state: &AppState) -> Result<Vec<RepositoryInfo>, ApiError> {
+    let configuration = state.server_configuration.load().await?;
+    serde_json::from_value(configuration.plugin_repositories).map_err(|_| ApiError::Internal)
 }

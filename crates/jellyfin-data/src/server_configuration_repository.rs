@@ -1,4 +1,5 @@
 use sea_orm::{DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::entities::server_configuration;
@@ -67,7 +68,7 @@ impl ServerConfigurationRepository {
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                content_types, min_resume_pct, max_resume_pct,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload,
                 row_version, created_at, updated_at
@@ -102,7 +103,7 @@ impl ServerConfigurationRepository {
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                content_types, min_resume_pct, max_resume_pct,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload,
                 row_version, created_at, updated_at
@@ -158,7 +159,7 @@ impl ServerConfigurationRepository {
             WHERE configuration.id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                content_types, min_resume_pct, max_resume_pct,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload,
                 row_version, created_at, updated_at
@@ -193,12 +194,46 @@ impl ServerConfigurationRepository {
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
-                content_types, min_resume_pct, max_resume_pct,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload,
                 row_version, created_at, updated_at
             ",
             [allow_client_log_upload.into()],
+        );
+        server_configuration::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or(ServerConfigurationStoreError::MissingSingleton)
+    }
+
+    /// Atomically replaces the configured plugin repositories.
+    ///
+    /// The JSON shape is validated by a `PostgreSQL` array constraint, matching
+    /// Jellyfin's configuration-manager behavior of replacing the whole
+    /// repository list on save.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-singleton or database error.
+    pub async fn update_plugin_repositories(
+        &self,
+        plugin_repositories: Value,
+    ) -> Result<server_configuration::Model, ServerConfigurationStoreError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.server_configuration
+            SET plugin_repositories = $1
+            WHERE id = 1
+            RETURNING id, server_name, ui_culture, metadata_country_code,
+                preferred_metadata_language, is_startup_wizard_completed,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, allow_client_log_upload,
+                row_version, created_at, updated_at
+            ",
+            [plugin_repositories.into()],
         );
         server_configuration::Model::find_by_statement(statement)
             .one(&self.database)

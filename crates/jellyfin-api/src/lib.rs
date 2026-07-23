@@ -258,12 +258,8 @@ impl AppState {
 
     /// Replaces package manifests and repositories exposed by the package API.
     #[must_use]
-    pub fn with_packages(
-        mut self,
-        packages: Vec<jellyfin_model::PackageInfo>,
-        repositories: Vec<jellyfin_model::RepositoryInfo>,
-    ) -> Self {
-        self.packages = PackageService::new(packages, repositories);
+    pub fn with_packages(mut self, packages: Vec<jellyfin_model::PackageInfo>) -> Self {
+        self.packages = PackageService::new(packages);
         self
     }
 
@@ -491,7 +487,10 @@ fn package_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Packages", get(packages::list))
         .route("/Packages/{name}", get(packages::get))
-        .route("/Repositories", get(packages::repositories))
+        .route(
+            "/Repositories",
+            get(packages::repositories).post(packages::set_repositories),
+        )
 }
 
 fn startup_routes() -> Router<Arc<AppState>> {

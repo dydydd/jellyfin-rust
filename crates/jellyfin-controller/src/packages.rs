@@ -1,4 +1,4 @@
-use jellyfin_model::{PackageInfo, RepositoryInfo};
+use jellyfin_model::PackageInfo;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -11,16 +11,12 @@ pub enum PackageError {
 #[derive(Clone, Default)]
 pub struct PackageService {
     packages: Vec<PackageInfo>,
-    repositories: Vec<RepositoryInfo>,
 }
 
 impl PackageService {
     #[must_use]
-    pub fn new(packages: Vec<PackageInfo>, repositories: Vec<RepositoryInfo>) -> Self {
-        Self {
-            packages,
-            repositories,
-        }
+    pub fn new(packages: Vec<PackageInfo>) -> Self {
+        Self { packages }
     }
 
     #[must_use]
@@ -47,10 +43,5 @@ impl PackageService {
             })
             .cloned()
             .ok_or(PackageError::NotFound)
-    }
-
-    #[must_use]
-    pub fn repositories(&self) -> Vec<RepositoryInfo> {
-        self.repositories.clone()
     }
 }
