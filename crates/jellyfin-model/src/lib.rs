@@ -71,7 +71,7 @@ pub use session::{
     RepeatMode, SessionInfoDto, SessionUserInfo,
 };
 pub use sync_play::UtcTimeResponse;
-pub use system::PublicSystemInfo;
+pub use system::{FolderStorageDto, LibraryStorageDto, PublicSystemInfo, SystemStorageDto};
 pub use user_data::{UpdateUserItemDataDto, UserItemDataDto};
 pub use users::{
     AccessSchedule, ForgotPasswordAction, ForgotPasswordDto, ForgotPasswordPinDto,

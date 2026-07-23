@@ -59,6 +59,11 @@ impl SystemLogService {
         }
     }
 
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        self.log_directory.as_ref()
+    }
+
     /// Lists top-level `.txt` and `.log` files using Jellyfin's stable order.
     ///
     /// Filesystem enumeration failures produce an empty list, matching the

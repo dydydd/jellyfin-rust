@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -14,9 +14,9 @@ use jellyfin_controller::{
     MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
     MetadataEditorService, MusicGenreError, MusicGenreService, PersonError, PersonService,
     PlaystateError, PlaystateService, PluginRegistry, SystemLogError, SystemLogService,
-    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
-    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
-    client_event::ClientEventLogger,
+    SystemStorageService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
+    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -106,9 +106,15 @@ pub struct AppState {
     pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
     pub(crate) system_logs: SystemLogService,
+    pub(crate) system_storage: SystemStorageService,
     pub(crate) client_event_logger: ClientEventLogger,
+    pub(crate) program_data_directory: PathBuf,
+    pub(crate) web_directory: PathBuf,
+    pub(crate) image_cache_directory: PathBuf,
+    pub(crate) cache_directory: PathBuf,
+    pub(crate) internal_metadata_directory: PathBuf,
     pub(crate) network_manager: Arc<NetworkManager>,
-    pub(crate) transcode_directory: std::path::PathBuf,
+    pub(crate) transcode_directory: PathBuf,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -151,7 +157,13 @@ impl AppState {
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
             system_logs: SystemLogService::default(),
+            system_storage: SystemStorageService::new(),
             client_event_logger: ClientEventLogger::new("logs"),
+            program_data_directory: PathBuf::from("programdata"),
+            web_directory: PathBuf::from("web"),
+            image_cache_directory: PathBuf::from("cache").join("images"),
+            cache_directory: PathBuf::from("cache"),
+            internal_metadata_directory: PathBuf::from("metadata"),
             network_manager: Arc::new(NetworkManager::new(
                 NetworkConfiguration::default(),
                 Vec::new(),
@@ -236,6 +248,24 @@ impl AppState {
         let log_directory = log_directory.into();
         self.system_logs = SystemLogService::new(log_directory.clone());
         self.client_event_logger = ClientEventLogger::new(log_directory);
+        self
+    }
+
+    /// Replaces the storage directories reported by `/System/Info/Storage`.
+    #[must_use]
+    pub fn with_storage_paths(
+        mut self,
+        program_data_directory: impl Into<PathBuf>,
+        web_directory: impl Into<PathBuf>,
+        image_cache_directory: impl Into<PathBuf>,
+        cache_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) -> Self {
+        self.program_data_directory = program_data_directory.into();
+        self.web_directory = web_directory.into();
+        self.image_cache_directory = image_cache_directory.into();
+        self.cache_directory = cache_directory.into();
+        self.internal_metadata_directory = internal_metadata_directory.into();
         self
     }
 
@@ -358,6 +388,7 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
+        .route("/System/Info/Storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
         .route("/Document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))

@@ -11,7 +11,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use jellyfin_controller::SystemLogFile;
-use jellyfin_model::EndPointInfo;
+use jellyfin_model::{EndPointInfo, LibraryStorageDto, SystemStorageDto};
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 
@@ -71,6 +71,41 @@ pub(crate) async fn get_log_file(
         .header(header::CONTENT_TYPE, TEXT_UTF8)
         .body(Body::from_stream(stream))
         .map_err(|_| ApiError::Internal)
+}
+
+pub(crate) async fn storage(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<SystemStorageDto>, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    let libraries = state
+        .virtual_folders
+        .list()
+        .await?
+        .into_iter()
+        .map(|library| LibraryStorageDto {
+            id: library.id,
+            name: library.name,
+            folders: library
+                .locations
+                .into_iter()
+                .map(|path| state.system_storage.folder(path))
+                .collect(),
+        })
+        .collect();
+    Ok(Json(SystemStorageDto {
+        program_data_folder: state.system_storage.folder(&state.program_data_directory),
+        web_folder: state.system_storage.folder(&state.web_directory),
+        image_cache_folder: state.system_storage.folder(&state.image_cache_directory),
+        cache_folder: state.system_storage.folder(&state.cache_directory),
+        log_folder: state.system_storage.folder(state.system_logs.directory()),
+        internal_metadata_folder: state
+            .system_storage
+            .folder(&state.internal_metadata_directory),
+        transcoding_temp_folder: state.system_storage.folder(&state.transcode_directory),
+        libraries,
+    }))
 }
 
 pub(crate) async fn endpoint_info(
