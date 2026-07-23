@@ -426,14 +426,8 @@ fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, quer
     append_tag_class_filter(sql, query.is_sports, "sports");
     append_tag_class_filter(sql, query.is_news, "news");
     append_tag_class_filter(sql, query.is_kids, "kids");
-    append_string_list_filter(sql, values, "map.person_type", &query.person_types, false);
-    append_string_list_filter(
-        sql,
-        values,
-        "map.person_type",
-        &query.exclude_person_types,
-        true,
-    );
+    append_person_type_filter(sql, values, &query.person_types, false);
+    append_person_type_filter(sql, values, &query.exclude_person_types, true);
     if let Some(is_favorite) = query.is_favorite {
         let Some(user_id) = query.user_id else {
             return;
@@ -459,6 +453,24 @@ fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, quer
         }
         sql.push(')');
     }
+}
+
+fn append_person_type_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    items: &[String],
+    negated: bool,
+) {
+    let valid_items = items
+        .iter()
+        .filter(|item| is_valid_person_type(item))
+        .cloned()
+        .collect::<Vec<_>>();
+    append_string_list_filter(sql, values, "map.person_type", &valid_items, negated);
+}
+
+fn is_valid_person_type(value: &str) -> bool {
+    !value.trim().is_empty() && value.chars().all(char::is_alphanumeric)
 }
 
 fn append_tag_class_filter(sql: &mut String, expected: Option<bool>, clean_tag: &'static str) {

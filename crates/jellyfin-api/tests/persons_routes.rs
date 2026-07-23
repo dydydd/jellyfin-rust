@@ -165,6 +165,31 @@ async fn persons_list_matches_official_persons_contract() {
     .await;
     assert_people(&actors, &[&fixture.person_name], 1, 0);
 
+    let invalid_types = body_json(
+        fixture
+            .request("/Persons?personTypes=@@@", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_people(
+        &invalid_types,
+        &[
+            &fixture.director_name,
+            &fixture.nested_person_name,
+            &fixture.person_name,
+        ],
+        3,
+        0,
+    );
+
+    let mixed_types = body_json(
+        fixture
+            .request("/Persons?personTypes=Actor,@@@", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_people(&mixed_types, &[&fixture.person_name], 1, 0);
+
     let non_actors = body_json(
         fixture
             .request(
