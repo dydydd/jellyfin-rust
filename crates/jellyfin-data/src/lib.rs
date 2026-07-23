@@ -30,8 +30,8 @@ pub use base_item_image_repository::{
     InvalidBaseItemImageType, NewBaseItemImage,
 };
 pub use base_item_repository::{
-    BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage, BaseItemQuery,
-    BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
+    BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
+    BaseItemQuery, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID,
 };
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{ItemValueError, ItemValueRepository};

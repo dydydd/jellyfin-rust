@@ -5,15 +5,19 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
+    UserDataRepository,
     entities::{user, user_data},
 };
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
-use serde_json::Value;
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Library Tests\", DeviceId=\"library-tests\", Device=\"Test\", Version=\"1.0\"";
+const DATABASE_PREFIX: &str = "jellyfin_library_routes_";
 static LIBRARY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
@@ -71,6 +75,7 @@ async fn ancestors_download_similar_and_empty_relationships_have_real_success_se
     assert_streamed_downloads(&fixture).await;
     assert_similar_items(&fixture).await;
     assert_empty_relationships(&fixture).await;
+    assert_item_counts(&fixture).await;
     fixture.cleanup().await;
 }
 
@@ -206,6 +211,54 @@ async fn assert_empty_relationships(fixture: &Fixture) {
     assert_eq!(collections["StartIndex"], 3);
 }
 
+async fn assert_item_counts(fixture: &Fixture) {
+    assert_eq!(
+        fixture.request("GET", "/Items/Counts", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Items/Counts?userId={}&isFavorite=true", fixture.admin_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let counts = fixture
+        .json("GET", "/Items/Counts?isFavorite=true", &fixture.user_token)
+        .await;
+    assert_eq!(
+        counts,
+        json!({
+            "MovieCount": 1,
+            "SeriesCount": 1,
+            "EpisodeCount": 1,
+            "ArtistCount": 1,
+            "ProgramCount": 1,
+            "TrailerCount": 1,
+            "SongCount": 1,
+            "AlbumCount": 1,
+            "MusicVideoCount": 1,
+            "BoxSetCount": 1,
+            "BookCount": 1,
+            "ItemCount": 11
+        })
+    );
+
+    let administrator_counts = fixture
+        .json(
+            "GET",
+            &format!("/Items/Counts?userId={}&isFavorite=true", fixture.user_id),
+            &fixture.admin_token,
+        )
+        .await;
+    assert_eq!(administrator_counts, counts);
+}
+
 #[tokio::test]
 async fn administrator_single_and_batch_deletion_are_atomic_and_database_only() {
     let _guard = LIBRARY_TEST_LOCK.lock().await;
@@ -274,7 +327,9 @@ async fn administrator_single_and_batch_deletion_are_atomic_and_database_only() 
 }
 
 struct Fixture {
+    administrator: DatabaseConnection,
     database: DatabaseConnection,
+    database_name: String,
     app: axum::Router,
     admin_id: Uuid,
     admin_token: String,
@@ -300,9 +355,22 @@ impl Fixture {
     }
 
     async fn new() -> Self {
-        let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
+        let administrator = jellyfin_data::connect(&DatabaseConfig::default())
             .await
             .expect("local PostgreSQL must be available");
+        let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+        assert_temporary_database_name(&database_name);
+        administrator
+            .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+            .await
+            .expect("temporary PostgreSQL database creation must succeed");
+        let database = jellyfin_data::connect(&DatabaseConfig {
+            url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
+            max_connections: 16,
+            min_connections: 1,
+        })
+        .await
+        .expect("temporary PostgreSQL database must be available");
         jellyfin_data::migrate(&database).await.expect("migrations");
         for pattern in ["library-admin-%", "library-user-%"] {
             user::Entity::delete_many()
@@ -341,6 +409,20 @@ impl Fixture {
         )
         .await;
         let grandchild = create_item(&items, "Episode", "Library Episode", child.id, None).await;
+        let mut count_items = Vec::new();
+        for (item_type, name) in [
+            ("Series", "Count Series"),
+            ("MusicArtist", "Count Artist"),
+            ("Program", "Count Program"),
+            ("Trailer", "Count Trailer"),
+            ("Audio", "Count Song"),
+            ("MusicAlbum", "Count Album"),
+            ("MusicVideo", "Count Music Video"),
+            ("BoxSet", "Count Box Set"),
+            ("Book", "Count Book"),
+        ] {
+            count_items.push(create_item(&items, item_type, name, parent.id, None).await);
+        }
         let similar = create_item(&items, "Movie", "Similar Movie", root.id, None).await;
         let single_delete = create_item(&items, "Video", "Single Delete", root.id, None).await;
         let missing_file = create_item(
@@ -362,17 +444,23 @@ impl Fixture {
         .await;
         let mut resume = NewUserData::new(grandchild.id, user.id, "library");
         resume.playback_position_ticks = 100;
-        UserDataRepository::new(database.clone())
-            .upsert(resume)
-            .await
-            .expect("library user data");
+        let user_data = UserDataRepository::new(database.clone());
+        user_data.upsert(resume).await.expect("library user data");
+        for item_id in std::iter::once(child.id)
+            .chain(std::iter::once(grandchild.id))
+            .chain(count_items.into_iter().map(|item| item.id))
+        {
+            favorite(&user_data, user.id, item_id).await;
+        }
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Library Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
         ));
         Self {
+            administrator,
             database,
+            database_name,
             app,
             admin_id: admin.id,
             admin_token,
@@ -453,6 +541,19 @@ impl Fixture {
             .await
             .expect("library users cleanup");
         let _ = tokio::fs::remove_file(self.media_path).await;
+        drop(items);
+        self.database.close().await.expect("database pool cleanup");
+        self.administrator
+            .execute_unprepared(&format!(
+                "DROP DATABASE {} WITH (FORCE)",
+                self.database_name
+            ))
+            .await
+            .expect("temporary PostgreSQL database cleanup must succeed");
+        self.administrator
+            .close()
+            .await
+            .expect("administrator database pool cleanup");
     }
 }
 
@@ -473,6 +574,12 @@ async fn create_item(
     repository.create(item).await.expect("library item")
 }
 
+async fn favorite(repository: &UserDataRepository, user_id: Uuid, item_id: Uuid) {
+    let mut data = NewUserData::new(item_id, user_id, format!("library-favorite-{item_id}"));
+    data.is_favorite = true;
+    repository.upsert(data).await.expect("favorite user data");
+}
+
 async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) -> String {
     repository
         .create_session(NewDevice::new(
@@ -485,4 +592,12 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
         .await
         .expect("library session")
         .access_token
+}
+
+fn assert_temporary_database_name(name: &str) {
+    assert!(name.starts_with(DATABASE_PREFIX));
+    assert!(
+        name.bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    );
 }

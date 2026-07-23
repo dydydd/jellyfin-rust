@@ -80,3 +80,21 @@ impl std::fmt::Display for UserDto {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ItemCounts {
+    pub movie_count: i32,
+    pub series_count: i32,
+    pub episode_count: i32,
+    pub artist_count: i32,
+    pub program_count: i32,
+    pub trailer_count: i32,
+    pub song_count: i32,
+    pub album_count: i32,
+    pub music_video_count: i32,
+    pub box_set_count: i32,
+    pub book_count: i32,
+    pub item_count: i32,
+}

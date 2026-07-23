@@ -1,10 +1,10 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    GeneralCommand, GeneralCommandType, MediaType, MessageCommand, NameIdPair, PlayCommand,
-    PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo,
-    QueryResult, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy,
-    UtcTimeResponse,
+    GeneralCommand, GeneralCommandType, ItemCounts, MediaType, MessageCommand, NameIdPair,
+    PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    PublicSystemInfo, QueryResult, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
+    UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -85,6 +85,31 @@ fn api_key_query_result_uses_official_authentication_info_contract() {
     );
     assert!(value["Items"][0].get("DateRevoked").is_none());
     assert!(value["Items"][0].get("DeviceId").is_none());
+}
+
+#[test]
+fn item_counts_use_official_wire_names() {
+    let value = serde_json::to_value(ItemCounts {
+        movie_count: 2,
+        series_count: 3,
+        episode_count: 5,
+        artist_count: 7,
+        program_count: 11,
+        trailer_count: 13,
+        song_count: 17,
+        album_count: 19,
+        music_video_count: 23,
+        box_set_count: 29,
+        book_count: 31,
+        item_count: 160,
+    })
+    .unwrap();
+
+    assert_eq!(value["MovieCount"], 2);
+    assert_eq!(value["MusicVideoCount"], 23);
+    assert_eq!(value["BoxSetCount"], 29);
+    assert_eq!(value["ItemCount"], 160);
+    assert!(value.get("movie_count").is_none());
 }
 
 #[test]

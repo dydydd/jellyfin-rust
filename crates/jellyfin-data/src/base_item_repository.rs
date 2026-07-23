@@ -115,6 +115,22 @@ pub struct BaseItemPage {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, FromQueryResult)]
+pub struct BaseItemCounts {
+    pub movie_count: i64,
+    pub series_count: i64,
+    pub episode_count: i64,
+    pub artist_count: i64,
+    pub program_count: i64,
+    pub trailer_count: i64,
+    pub song_count: i64,
+    pub album_count: i64,
+    pub music_video_count: i64,
+    pub box_set_count: i64,
+    pub book_count: i64,
+    pub item_count: i64,
+}
+
 #[derive(Debug, Error)]
 pub enum BaseItemError {
     #[error("base item type cannot be empty")]
@@ -435,6 +451,77 @@ impl BaseItemRepository {
             total_record_count,
             start_index: query.start_index,
         })
+    }
+
+    /// Counts non-virtual library items by Jellyfin's public item-count buckets.
+    ///
+    /// `PostgreSQL` computes all buckets in one aggregate scan using `FILTER`
+    /// clauses. When `is_favorite` is provided for a user, the filter treats
+    /// missing user-data rows as not favorite, matching Jellyfin's public query
+    /// semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the aggregate query fails.
+    pub async fn item_counts(
+        &self,
+        user_id: Option<Uuid>,
+        is_favorite: Option<bool>,
+    ) -> Result<BaseItemCounts, BaseItemError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            SELECT
+                COUNT(*) FILTER (WHERE item.item_type = 'Movie')::bigint AS movie_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'Series')::bigint AS series_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'Episode')::bigint AS episode_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'MusicArtist')::bigint AS artist_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'Program')::bigint AS program_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'Trailer')::bigint AS trailer_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'Audio')::bigint AS song_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'MusicAlbum')::bigint AS album_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'MusicVideo')::bigint AS music_video_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'BoxSet')::bigint AS box_set_count,
+                COUNT(*) FILTER (WHERE item.item_type = 'Book')::bigint AS book_count,
+                COUNT(*)::bigint AS item_count
+            FROM jellyfin.base_items AS item
+            WHERE item.item_type <> 'PLACEHOLDER'
+              AND item.is_virtual_item = false
+              AND (
+                  $1::boolean IS NULL
+                  OR (
+                      $2::uuid IS NOT NULL
+                      AND (
+                          ($1 = true AND EXISTS (
+                              SELECT 1
+                              FROM jellyfin.user_data AS data
+                              WHERE data.item_id = item.id
+                                AND data.user_id = $2
+                                AND data.is_favorite
+                          ))
+                          OR ($1 = false AND NOT EXISTS (
+                              SELECT 1
+                              FROM jellyfin.user_data AS data
+                              WHERE data.item_id = item.id
+                                AND data.user_id = $2
+                                AND data.is_favorite
+                          ))
+                      )
+                  )
+                  OR ($2::uuid IS NULL AND $1 = false)
+              )
+            ",
+            vec![is_favorite.into(), user_id.into()],
+        );
+        base_item::Model::find_by_statement(statement)
+            .into_model::<BaseItemCounts>()
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| {
+                BaseItemError::Database(DbErr::RecordNotFound(
+                    "item counts returned no row".to_owned(),
+                ))
+            })
     }
 
     async fn query_grouped_versions(

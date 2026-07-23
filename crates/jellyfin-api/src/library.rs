@@ -7,7 +7,8 @@ use axum::{
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::Response,
 };
-use jellyfin_data::BaseItemPage;
+use jellyfin_data::{BaseItemCounts, BaseItemPage};
+use jellyfin_model::ItemCounts;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -22,6 +23,14 @@ pub(crate) struct LibraryQuery {
     #[serde(default, rename = "startIndex", alias = "StartIndex")]
     start_index: u64,
     limit: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ItemCountsQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(default, rename = "isFavorite", alias = "IsFavorite")]
+    is_favorite: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +162,27 @@ pub(crate) async fn similar(
     Ok(Json(page_to_dto(page, state.server_id())))
 }
 
+pub(crate) async fn item_counts(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ItemCountsQuery>,
+) -> Result<Json<ItemCounts>, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let target_user_id = identity.target_user_id(query.user_id)?;
+    let user_id = if target_user_id.is_nil() {
+        None
+    } else {
+        state.users.get(target_user_id).await?;
+        Some(target_user_id)
+    };
+    Ok(Json(counts_to_dto(
+        state
+            .library_controller
+            .item_counts(user_id, query.is_favorite)
+            .await?,
+    )))
+}
+
 pub(crate) async fn delete_item(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -261,6 +291,27 @@ fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQue
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
     }
+}
+
+fn counts_to_dto(counts: BaseItemCounts) -> ItemCounts {
+    ItemCounts {
+        movie_count: saturating_i32(counts.movie_count),
+        series_count: saturating_i32(counts.series_count),
+        episode_count: saturating_i32(counts.episode_count),
+        artist_count: saturating_i32(counts.artist_count),
+        program_count: saturating_i32(counts.program_count),
+        trailer_count: saturating_i32(counts.trailer_count),
+        song_count: saturating_i32(counts.song_count),
+        album_count: saturating_i32(counts.album_count),
+        music_video_count: saturating_i32(counts.music_video_count),
+        box_set_count: saturating_i32(counts.box_set_count),
+        book_count: saturating_i32(counts.book_count),
+        item_count: saturating_i32(counts.item_count),
+    }
+}
+
+fn saturating_i32(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
 }
 
 fn safe_filename(path: &str) -> String {

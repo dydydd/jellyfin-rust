@@ -583,6 +583,7 @@ fn item_query_routes() -> Router<Arc<AppState>> {
 
 fn library_controller_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/Items/Counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
         .route("/Items/{item_id}/ThemeVideos", get(library::theme_videos))

@@ -1,5 +1,5 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository,
+    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository,
     entities::{base_item, user},
 };
 use sea_orm::DatabaseConnection;
@@ -140,6 +140,19 @@ impl LibraryControllerService {
             })
             .await?;
         Ok(self.hydrate_page(page))
+    }
+
+    /// Counts non-virtual library items, optionally scoped to a user's favorite state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when the aggregate query fails.
+    pub async fn item_counts(
+        &self,
+        user_id: Option<Uuid>,
+        is_favorite: Option<bool>,
+    ) -> Result<BaseItemCounts, LibraryControllerError> {
+        Ok(self.items.item_counts(user_id, is_favorite).await?)
     }
 
     /// Atomically deletes complete item subtrees for an administrator.
