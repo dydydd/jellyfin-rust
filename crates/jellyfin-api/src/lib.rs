@@ -448,6 +448,7 @@ fn user_routes() -> Router<Arc<AppState>> {
             "/Users/ForgotPassword/Pin",
             post(users::forgot_password_pin),
         )
+        .route("/Users/Configuration", post(users::update_configuration))
         .route(
             "/Users/{id}",
             get(users::get)
@@ -456,6 +457,10 @@ fn user_routes() -> Router<Arc<AppState>> {
         )
         .route("/User/{id}", axum::routing::delete(users::delete))
         .route("/Users/Password", post(users::update_password_query))
+        .route(
+            "/Users/{id}/Configuration",
+            post(users::update_configuration_legacy),
+        )
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/Users/{id}/Policy", post(users::update_policy))
 }
@@ -1206,6 +1211,10 @@ fn user_error_response(error: &UserError) -> (StatusCode, &'static str) {
         UserError::PasswordResetPinNotFound => {
             (StatusCode::NOT_FOUND, "Password reset PIN not found")
         }
+        UserError::ConfigurationSerialization(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "User configuration serialization failed",
+        ),
         UserError::PolicySerialization(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "User policy serialization failed",

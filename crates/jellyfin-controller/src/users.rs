@@ -5,7 +5,9 @@ use jellyfin_data::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
     entities::{password_reset, user, user_profile_image},
 };
-use jellyfin_model::{ForgotPasswordAction, ForgotPasswordResult, NameIdPair, UserPolicy};
+use jellyfin_model::{
+    ForgotPasswordAction, ForgotPasswordResult, NameIdPair, UserConfiguration, UserPolicy,
+};
 use md5::{Digest, Md5};
 use sea_orm::{
     ActiveValue::NotSet,
@@ -46,6 +48,8 @@ pub enum UserError {
     AdministratorPasswordRequired,
     #[error("password reset pin not found")]
     PasswordResetPinNotFound,
+    #[error("failed to serialize user configuration")]
+    ConfigurationSerialization(#[source] serde_json::Error),
     #[error("failed to serialize user policy")]
     PolicySerialization(#[source] serde_json::Error),
     #[error(transparent)]
@@ -648,6 +652,37 @@ impl UserService {
             .ok_or(UserError::NotFound)?;
         transaction.commit().await?;
         Ok((updated, became_disabled))
+    }
+
+    /// Replaces a user's client configuration preferences.
+    ///
+    /// The official server stores these settings in per-user configuration
+    /// files. This Rust port keeps `PostgreSQL` as the source of truth by
+    /// storing the same wire contract in the `users.preferences` `jsonb`
+    /// column.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::NotFound`] when the user does not exist, a
+    /// serialization error when the DTO cannot be represented as JSON, or a
+    /// persistence error.
+    pub async fn update_configuration(
+        &self,
+        id: Uuid,
+        configuration: &UserConfiguration,
+    ) -> Result<user::Model, UserError> {
+        let serialized =
+            serde_json::to_value(configuration).map_err(UserError::ConfigurationSerialization)?;
+        let result = user::Entity::update_many()
+            .col_expr(user::Column::Preferences, Expr::value(serialized))
+            .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(user::Column::Id.eq(id))
+            .exec(&self.database)
+            .await?;
+        if result.rows_affected == 0 {
+            return Err(UserError::NotFound);
+        }
+        self.get(id).await
     }
 
     /// Lists all users in normalized username order.

@@ -8,7 +8,8 @@ use axum::{
 };
 use jellyfin_data::entities::user;
 use jellyfin_model::{
-    ForgotPasswordDto, ForgotPasswordPinDto, PinRedeemResult, UserDto, UserPolicy,
+    ForgotPasswordDto, ForgotPasswordPinDto, PinRedeemResult, UserConfiguration, UserDto,
+    UserPolicy,
 };
 use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
@@ -124,7 +125,7 @@ pub(crate) async fn get(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct UpdateUserQuery {
-    #[serde(rename = "userId")]
+    #[serde(rename = "userId", alias = "UserId")]
     pub user_id: Option<Uuid>,
 }
 
@@ -162,6 +163,45 @@ async fn update_with_id(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let name = request.name.as_deref().ok_or(ApiError::InvalidRequest)?;
     state.users.rename(target_id, name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn update_configuration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<UpdateUserQuery>,
+    request: Result<Json<UserConfiguration>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    update_configuration_with_id(&state, authenticated.user, target_id, request).await
+}
+
+pub(crate) async fn update_configuration_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(target_id): Path<Uuid>,
+    request: Result<Json<UserConfiguration>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    update_configuration_with_id(&state, authenticated.user, target_id, request).await
+}
+
+async fn update_configuration_with_id(
+    state: &AppState,
+    authenticated_user: user::Model,
+    target_id: Uuid,
+    request: Result<Json<UserConfiguration>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let target = state.users.get(target_id).await?;
+    if !authenticated_user.is_administrator && authenticated_user.id != target.id {
+        return Err(ApiError::Forbidden);
+    }
+    let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .users
+        .update_configuration(target.id, &configuration)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
