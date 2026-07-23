@@ -28,6 +28,7 @@ mod search;
 mod serde_datetime;
 mod serde_guid;
 mod session;
+mod subtitles;
 mod sync_play;
 pub mod system;
 mod tasks;
@@ -81,6 +82,7 @@ pub use session::{
     PlayCommand, PlayRequest, PlaybackOrder, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
     RepeatMode, SessionInfoDto, SessionUserInfo,
 };
+pub use subtitles::FontFile;
 pub use sync_play::UtcTimeResponse;
 pub use system::{
     CastReceiverApplication, FolderStorageDto, InstallationInfo, LibraryStorageDto, PackageInfo,

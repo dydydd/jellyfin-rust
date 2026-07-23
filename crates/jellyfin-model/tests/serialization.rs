@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType,
+    FontFile, ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType,
     ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
     MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
     PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
@@ -158,6 +158,22 @@ fn remote_search_result_uses_official_provider_contract() {
     assert_eq!(value["SearchProviderName"], "Example");
     assert_eq!(value["Artists"], json!([]));
     assert!(value.get("provider_ids").is_none());
+}
+
+#[test]
+fn font_file_uses_official_subtitle_contract() {
+    let value = serde_json::to_value(FontFile {
+        name: Some("fallback.ttf".to_owned()),
+        size: 4096,
+        date_created: Utc.with_ymd_and_hms(2026, 7, 23, 8, 0, 0).unwrap(),
+        date_modified: Utc.with_ymd_and_hms(2026, 7, 23, 9, 0, 0).unwrap(),
+    })
+    .unwrap();
+
+    assert_eq!(value["Name"], "fallback.ttf");
+    assert_eq!(value["Size"], 4096);
+    assert_eq!(value["DateCreated"], "2026-07-23T08:00:00.0000000Z");
+    assert_eq!(value["DateModified"], "2026-07-23T09:00:00.0000000Z");
 }
 
 #[test]
