@@ -245,7 +245,18 @@ async fn persons_list_matches_official_persons_contract() {
             .await,
     )
     .await;
-    assert_people(&item_scoped, &[&fixture.person_name], 1, 0);
+    assert_people(&item_scoped, &[], 0, 0);
+
+    let missing_parent = body_json(
+        fixture
+            .request(
+                &format!("/Persons?parentId={}", Uuid::new_v4()),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_people(&missing_parent, &[], 0, 0);
 
     let for_admin = format!("/Persons?userId={}", fixture.admin_id);
     assert_eq!(

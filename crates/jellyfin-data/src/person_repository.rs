@@ -390,18 +390,14 @@ fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, quer
         sql.push(')');
     }
     if let Some(parent_id) = query.parent_id {
-        if query.recursive {
-            push_bind(
-                sql,
-                values,
-                parent_id,
-                " AND item.id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
-                  WHERE closure.parent_item_id = ",
-            );
-            sql.push(')');
-        } else {
-            push_bind(sql, values, parent_id, " AND item.parent_id = ");
-        }
+        push_bind(
+            sql,
+            values,
+            parent_id,
+            " AND item.id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
+              WHERE closure.parent_item_id = ",
+        );
+        sql.push(')');
     }
     if let Some(item_id) = query.appears_in_item_id {
         push_bind(sql, values, item_id, " AND item.id = ");

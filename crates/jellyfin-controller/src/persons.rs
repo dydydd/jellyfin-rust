@@ -1,6 +1,5 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, PersonError as PersonRepositoryError, PersonQuery,
-    PersonRepository,
+    PersonError as PersonRepositoryError, PersonQuery, PersonRepository,
     entities::{person, user},
 };
 use sea_orm::DatabaseConnection;
@@ -32,15 +31,12 @@ pub enum PersonError {
     #[error(transparent)]
     User(#[from] UserError),
     #[error(transparent)]
-    BaseItem(#[from] BaseItemError),
-    #[error(transparent)]
     Repository(#[from] PersonRepositoryError),
 }
 
 #[derive(Clone)]
 pub struct PersonService {
     users: UserService,
-    items: BaseItemRepository,
     people: PersonRepository,
 }
 
@@ -49,7 +45,6 @@ impl PersonService {
     pub fn new(database: DatabaseConnection) -> Self {
         Self {
             users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
             people: PersonRepository::new(database),
         }
     }
@@ -95,7 +90,6 @@ impl PersonService {
     ) -> Result<PersonPage, PersonError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let query = self.scope_parent(query).await?;
         let page = self.people.query(&query).await?;
         Ok(PersonPage {
             people: page
@@ -122,24 +116,5 @@ impl PersonService {
             return Err(PersonError::Forbidden);
         }
         Ok(())
-    }
-
-    async fn scope_parent(&self, mut query: PersonQuery) -> Result<PersonQuery, PersonError> {
-        let Some(parent_id) = query.parent_id else {
-            return Ok(query);
-        };
-        let parent = self
-            .items
-            .get(parent_id)
-            .await?
-            .ok_or(PersonError::NotFound)?;
-        if parent.is_folder {
-            query.recursive = true;
-        } else {
-            query.parent_id = None;
-            query.recursive = false;
-            query.ids = vec![parent_id];
-        }
-        Ok(query)
     }
 }

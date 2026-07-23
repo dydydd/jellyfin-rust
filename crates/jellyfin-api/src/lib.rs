@@ -1281,8 +1281,7 @@ impl IntoResponse for ApiError {
             Self::Person(
                 PersonError::NotFound
                 | PersonError::UserNotFound
-                | PersonError::User(UserError::NotFound)
-                | PersonError::BaseItem(BaseItemError::NotFound),
+                | PersonError::User(UserError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Person or user not found"),
             Self::Person(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
