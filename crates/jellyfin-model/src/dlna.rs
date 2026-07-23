@@ -172,6 +172,7 @@ impl TranscodeSeekInfo {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[repr(i32)]
 pub enum PlayMethod {
     #[default]

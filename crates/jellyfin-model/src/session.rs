@@ -1,3 +1,4 @@
+use crate::PlayMethod;
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -228,6 +229,48 @@ pub struct PlaystateRequest {
     pub controlling_user_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+pub enum RepeatMode {
+    #[default]
+    RepeatNone,
+    RepeatAll,
+    RepeatOne,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+pub enum PlaybackOrder {
+    #[default]
+    Default,
+    Shuffle,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlayerStateInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position_ticks: Option<i64>,
+    pub can_seek: bool,
+    pub is_paused: bool,
+    pub is_muted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume_level: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_stream_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle_stream_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub play_method: Option<PlayMethod>,
+    pub repeat_mode: RepeatMode,
+    pub playback_order: PlaybackOrder,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_stream_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
@@ -266,6 +309,7 @@ pub struct MessageCommand {
 #[serde(rename_all = "PascalCase")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SessionInfoDto {
+    pub play_state: PlayerStateInfo,
     pub additional_users: Vec<SessionUserInfo>,
     pub capabilities: ClientCapabilitiesDto,
     pub playable_media_types: Vec<MediaType>,
@@ -292,12 +336,15 @@ pub struct SessionInfoDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub now_playing_item: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub application_version: Option<String>,
     pub is_active: bool,
     pub supports_media_control: bool,
     pub supports_remote_control: bool,
+    pub now_playing_queue: Vec<Value>,
     pub has_custom_device_name: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playlist_item_id: Option<String>,

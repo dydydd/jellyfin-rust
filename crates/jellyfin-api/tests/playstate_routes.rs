@@ -187,6 +187,128 @@ async fn playback_progress_json_route_updates_resume_and_stream_choices() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn playback_reports_update_session_state_projection() {
+    let fixture = PlaystateFixture::new().await;
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "CanSeek": true,
+            "PositionTicks": ticks(42),
+            "IsPaused": true,
+            "IsMuted": true,
+            "VolumeLevel": 33,
+            "MediaSourceId": "media-source-1",
+            "PlayMethod": "DirectPlay",
+            "RepeatMode": "RepeatAll",
+            "PlaybackOrder": "Shuffle",
+            "NowPlayingQueue": [{
+                "Id": "queue-item",
+                "Name": "Queued Item"
+            }],
+            "PlaylistItemId": "playlist-entry"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    let session = &sessions.as_array().expect("sessions array")[0];
+    assert_eq!(session["PlayState"]["CanSeek"], true);
+    assert_eq!(session["PlayState"]["IsPaused"], true);
+    assert_eq!(session["PlayState"]["IsMuted"], true);
+    assert_eq!(session["PlayState"]["VolumeLevel"], 33);
+    assert_eq!(session["PlayState"]["PositionTicks"], ticks(42));
+    assert_eq!(session["PlayState"]["MediaSourceId"], "media-source-1");
+    assert_eq!(session["PlayState"]["PlayMethod"], "DirectPlay");
+    assert_eq!(session["PlayState"]["RepeatMode"], "RepeatAll");
+    assert_eq!(session["PlayState"]["PlaybackOrder"], "Shuffle");
+    assert!(session["LastPausedDate"].is_string());
+    assert_eq!(
+        session["NowPlayingItem"]["Id"],
+        fixture.runtime_item_id.simple().to_string()
+    );
+    assert_eq!(session["NowPlayingItem"]["Type"], "Movie");
+    assert_eq!(session["NowPlayingQueue"][0]["Name"], "Queued Item");
+    assert_eq!(session["PlaylistItemId"], "playlist-entry");
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(43),
+            "IsPaused": false
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    let session = &sessions.as_array().expect("sessions array")[0];
+    assert_eq!(session["PlayState"]["PositionTicks"], ticks(43));
+    assert_eq!(session["PlayState"]["IsPaused"], false);
+    assert!(session["LastPausedDate"].is_null());
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(44)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    let session = &sessions.as_array().expect("sessions array")[0];
+    assert_eq!(session["PlayState"]["IsPaused"], false);
+    assert_eq!(session["PlayState"]["RepeatMode"], "RepeatNone");
+    assert!(session["NowPlayingItem"].is_null());
+    assert!(session["NowPlayingQueue"].as_array().unwrap().is_empty());
+    assert!(session["PlaylistItemId"].is_null());
+    assert!(session["LastPausedDate"].is_null());
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn playback_progress_legacy_route_uses_authenticated_user_and_missing_items_are_noops() {
     let fixture = PlaystateFixture::new().await;
     let repository = UserDataRepository::new(fixture.database.clone());
@@ -1008,6 +1130,7 @@ struct PlaystateFixture {
     administrator_token: String,
     user_id: Uuid,
     user_token: String,
+    user_device_id: String,
     blocked_user_id: Uuid,
     blocked_user_token: String,
     api_key_id: i64,
@@ -1053,13 +1176,14 @@ impl PlaystateFixture {
             ))
             .await
             .expect("administrator session");
+        let user_device_id = format!("user-{suffix}");
         let user_session = devices
             .create_session(NewDevice::new(
                 user.id,
                 "Playstate Tests",
                 "1.0",
                 "Test",
-                format!("user-{suffix}"),
+                user_device_id.clone(),
             ))
             .await
             .expect("user session");
@@ -1107,6 +1231,7 @@ impl PlaystateFixture {
             administrator_token: administrator_session.access_token,
             user_id: user.id,
             user_token: user_session.access_token,
+            user_device_id,
             blocked_user_id: blocked_user.id,
             blocked_user_token: blocked_user_session.access_token,
             api_key_id: api_key.id,

@@ -8,14 +8,16 @@ use axum::{
 use jellyfin_controller::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, parse_date_played,
 };
-use jellyfin_model::UserItemDataDto;
+use jellyfin_data::BaseItemRepository;
+use jellyfin_model::{PlayMethod, PlaybackOrder, PlayerStateInfo, RepeatMode, UserItemDataDto};
 use serde::Deserialize;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
     ApiError, AppState,
     authentication::{AuthenticatedIdentity, AuthenticatedSession},
-    authorization,
+    authorization, user_library,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -32,30 +34,64 @@ pub struct MarkUnplayedQuery {
     pub user_id: Option<Uuid>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackProgressInfo {
+    pub can_seek: bool,
+    pub item: Option<Value>,
     pub item_id: Uuid,
+    pub session_id: Option<String>,
     pub media_source_id: Option<String>,
     pub position_ticks: Option<i64>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
+    pub is_paused: bool,
+    pub is_muted: bool,
+    pub volume_level: Option<i32>,
+    pub play_method: Option<PlayMethod>,
+    pub live_stream_id: Option<String>,
+    pub repeat_mode: RepeatMode,
+    pub playback_order: PlaybackOrder,
+    pub now_playing_queue: Option<Vec<Value>>,
+    pub playlist_item_id: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackStartInfo {
+    pub can_seek: bool,
+    pub item: Option<Value>,
     pub item_id: Uuid,
-    pub media_source_id: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
-pub struct PlaybackStopInfo {
-    pub item_id: Uuid,
+    pub session_id: Option<String>,
     pub media_source_id: Option<String>,
     pub position_ticks: Option<i64>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
+    pub is_paused: bool,
+    pub is_muted: bool,
+    pub volume_level: Option<i32>,
+    pub play_method: Option<PlayMethod>,
+    pub live_stream_id: Option<String>,
+    pub repeat_mode: RepeatMode,
+    pub playback_order: PlaybackOrder,
+    pub now_playing_queue: Option<Vec<Value>>,
+    pub playlist_item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlaybackStopInfo {
+    pub item: Option<Value>,
+    pub item_id: Uuid,
+    pub session_id: Option<String>,
+    pub media_source_id: Option<String>,
+    pub position_ticks: Option<i64>,
+    pub live_stream_id: Option<String>,
+    pub play_session_id: Option<String>,
     pub failed: bool,
+    pub next_media_type: Option<String>,
+    pub playlist_item_id: Option<String>,
+    pub now_playing_queue: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -186,7 +222,7 @@ pub(crate) async fn report_playback_progress(
     request: Result<Json<PlaybackProgressInfo>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Json(progress) = request.map_err(|_| ApiError::InvalidRequest)?;
-    report_playback_progress_for_current_session(state, &uri, headers, progress.into()).await
+    report_playback_progress_for_current_session(state, &uri, headers, progress).await
 }
 
 pub(crate) async fn report_playback_start(
@@ -196,7 +232,7 @@ pub(crate) async fn report_playback_start(
     request: Result<Json<PlaybackStartInfo>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Json(start) = request.map_err(|_| ApiError::InvalidRequest)?;
-    report_playback_start_for_current_session(state, &uri, headers, start.into()).await
+    report_playback_start_for_current_session(state, &uri, headers, start).await
 }
 
 pub(crate) async fn report_playback_stopped(
@@ -206,7 +242,7 @@ pub(crate) async fn report_playback_stopped(
     request: Result<Json<PlaybackStopInfo>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Json(stop) = request.map_err(|_| ApiError::InvalidRequest)?;
-    report_playback_stop_for_current_session(state, &uri, headers, stop.into()).await
+    report_playback_stop_for_current_session(state, &uri, headers, stop).await
 }
 
 pub(crate) async fn ping_playback_session(
@@ -233,9 +269,10 @@ pub(crate) async fn report_playback_start_legacy(
         state,
         &uri,
         headers,
-        PlaybackStartUpdate {
+        PlaybackStartInfo {
             item_id,
             media_source_id: query.media_source_id,
+            ..Default::default()
         },
     )
     .await
@@ -252,11 +289,12 @@ pub(crate) async fn report_playback_stopped_legacy(
         state,
         &uri,
         headers,
-        PlaybackStopUpdate {
+        PlaybackStopInfo {
             item_id,
             media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             failed: false,
+            ..Default::default()
         },
     )
     .await
@@ -273,9 +311,10 @@ pub(crate) async fn report_playback_start_legacy_for_user(
         state,
         &uri,
         headers,
-        PlaybackStartUpdate {
+        PlaybackStartInfo {
             item_id,
             media_source_id: query.media_source_id,
+            ..Default::default()
         },
     )
     .await
@@ -292,11 +331,12 @@ pub(crate) async fn report_playback_stopped_legacy_for_user(
         state,
         &uri,
         headers,
-        PlaybackStopUpdate {
+        PlaybackStopInfo {
             item_id,
             media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             failed: false,
+            ..Default::default()
         },
     )
     .await
@@ -313,12 +353,13 @@ pub(crate) async fn report_playback_progress_legacy(
         state,
         &uri,
         headers,
-        PlaybackProgressUpdate {
+        PlaybackProgressInfo {
             item_id,
             media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             audio_stream_index: query.audio_stream_index,
             subtitle_stream_index: query.subtitle_stream_index,
+            ..Default::default()
         },
     )
     .await
@@ -335,12 +376,13 @@ pub(crate) async fn report_playback_progress_legacy_for_user(
         state,
         &uri,
         headers,
-        PlaybackProgressUpdate {
+        PlaybackProgressInfo {
             item_id,
             media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
             audio_stream_index: query.audio_stream_index,
             subtitle_stream_index: query.subtitle_stream_index,
+            ..Default::default()
         },
     )
     .await
@@ -350,11 +392,11 @@ async fn report_playback_progress_for_current_session(
     state: Arc<AppState>,
     uri: &axum::http::Uri,
     headers: HeaderMap,
-    update: PlaybackProgressUpdate,
+    info: PlaybackProgressInfo,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
-        record_device_playback_progress(&state, &session, update).await?;
+        record_device_playback_progress(&state, &session, info).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -363,11 +405,11 @@ async fn report_playback_start_for_current_session(
     state: Arc<AppState>,
     uri: &axum::http::Uri,
     headers: HeaderMap,
-    update: PlaybackStartUpdate,
+    info: PlaybackStartInfo,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
-        record_device_playback_start(&state, &session, update).await?;
+        record_device_playback_start(&state, &session, info).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -376,11 +418,11 @@ async fn report_playback_stop_for_current_session(
     state: Arc<AppState>,
     uri: &axum::http::Uri,
     headers: HeaderMap,
-    update: PlaybackStopUpdate,
+    info: PlaybackStopInfo,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
-        record_device_playback_stop(&state, &session, update).await?;
+        record_device_playback_stop(&state, &session, info).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -388,37 +430,238 @@ async fn report_playback_stop_for_current_session(
 async fn record_device_playback_progress(
     state: &AppState,
     session: &AuthenticatedSession,
-    update: PlaybackProgressUpdate,
+    info: PlaybackProgressInfo,
 ) -> Result<(), ApiError> {
+    let update = PlaybackProgressUpdate::from(info.clone());
     state
         .playstate
         .report_playback_progress(&session.user, update)
         .await?;
+    persist_session_playback_state(state, session, info).await?;
     Ok(())
 }
 
 async fn record_device_playback_start(
     state: &AppState,
     session: &AuthenticatedSession,
-    update: PlaybackStartUpdate,
+    info: PlaybackStartInfo,
 ) -> Result<(), ApiError> {
+    let update = PlaybackStartUpdate::from(info.clone());
     state
         .playstate
         .report_playback_start(&session.user, update)
         .await?;
+    persist_session_playback_state(state, session, info).await?;
     Ok(())
 }
 
 async fn record_device_playback_stop(
     state: &AppState,
     session: &AuthenticatedSession,
-    update: PlaybackStopUpdate,
+    info: PlaybackStopInfo,
 ) -> Result<(), ApiError> {
+    let update = PlaybackStopUpdate::from(info);
     state
         .playstate
         .report_playback_stop(&session.user, update)
         .await?;
+    state
+        .devices
+        .clear_playback_state(session.device.id)
+        .await?;
     Ok(())
+}
+
+async fn persist_session_playback_state<T>(
+    state: &AppState,
+    session: &AuthenticatedSession,
+    info: T,
+) -> Result<(), ApiError>
+where
+    T: PlaybackSessionState,
+{
+    let now_playing_item = session_now_playing_item(state, info.item_id(), info.item()).await?;
+    let media_source_id = info
+        .media_source_id()
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| (!info.item_id().is_nil()).then(|| info.item_id().simple().to_string()));
+    let play_state = PlayerStateInfo {
+        position_ticks: info.position_ticks(),
+        can_seek: info.can_seek(),
+        is_paused: info.is_paused(),
+        is_muted: info.is_muted(),
+        volume_level: info.volume_level(),
+        audio_stream_index: info.audio_stream_index(),
+        subtitle_stream_index: info.subtitle_stream_index(),
+        media_source_id,
+        play_method: info.play_method(),
+        repeat_mode: info.repeat_mode(),
+        playback_order: info.playback_order(),
+        live_stream_id: info.live_stream_id().map(ToOwned::to_owned),
+    };
+    let play_state = serde_json::to_value(play_state).map_err(|_| ApiError::Internal)?;
+    let now_playing_queue = json!(info.now_playing_queue().unwrap_or_default());
+    if state
+        .devices
+        .update_playback_state(
+            session.device.id,
+            play_state,
+            now_playing_item,
+            now_playing_queue,
+            info.playlist_item_id().map(ToOwned::to_owned),
+            info.is_paused(),
+        )
+        .await?
+        != 1
+    {
+        return Err(ApiError::SessionNotFound);
+    }
+    Ok(())
+}
+
+async fn session_now_playing_item(
+    state: &AppState,
+    item_id: Uuid,
+    reported_item: Option<&Value>,
+) -> Result<Option<Value>, ApiError> {
+    if let Some(item) = reported_item.filter(|value| value.is_object()) {
+        return Ok(Some(item.clone()));
+    }
+    if item_id.is_nil() {
+        return Ok(None);
+    }
+    let Some(item) = BaseItemRepository::new(state.database.clone())
+        .get(item_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let item = user_library::item_to_dto(item, state.server_id());
+    Ok(Some(
+        serde_json::to_value(item).map_err(|_| ApiError::Internal)?,
+    ))
+}
+
+trait PlaybackSessionState {
+    fn item_id(&self) -> Uuid;
+    fn item(&self) -> Option<&Value>;
+    fn media_source_id(&self) -> Option<&str>;
+    fn position_ticks(&self) -> Option<i64>;
+    fn audio_stream_index(&self) -> Option<i32>;
+    fn subtitle_stream_index(&self) -> Option<i32>;
+    fn can_seek(&self) -> bool;
+    fn is_paused(&self) -> bool;
+    fn is_muted(&self) -> bool;
+    fn volume_level(&self) -> Option<i32>;
+    fn play_method(&self) -> Option<PlayMethod>;
+    fn live_stream_id(&self) -> Option<&str>;
+    fn repeat_mode(&self) -> RepeatMode;
+    fn playback_order(&self) -> PlaybackOrder;
+    fn now_playing_queue(&self) -> Option<Vec<Value>>;
+    fn playlist_item_id(&self) -> Option<&str>;
+}
+
+impl PlaybackSessionState for PlaybackProgressInfo {
+    fn item_id(&self) -> Uuid {
+        self.item_id
+    }
+    fn item(&self) -> Option<&Value> {
+        self.item.as_ref()
+    }
+    fn media_source_id(&self) -> Option<&str> {
+        self.media_source_id.as_deref()
+    }
+    fn position_ticks(&self) -> Option<i64> {
+        self.position_ticks
+    }
+    fn audio_stream_index(&self) -> Option<i32> {
+        self.audio_stream_index
+    }
+    fn subtitle_stream_index(&self) -> Option<i32> {
+        self.subtitle_stream_index
+    }
+    fn can_seek(&self) -> bool {
+        self.can_seek
+    }
+    fn is_paused(&self) -> bool {
+        self.is_paused
+    }
+    fn is_muted(&self) -> bool {
+        self.is_muted
+    }
+    fn volume_level(&self) -> Option<i32> {
+        self.volume_level
+    }
+    fn play_method(&self) -> Option<PlayMethod> {
+        self.play_method
+    }
+    fn live_stream_id(&self) -> Option<&str> {
+        self.live_stream_id.as_deref()
+    }
+    fn repeat_mode(&self) -> RepeatMode {
+        self.repeat_mode
+    }
+    fn playback_order(&self) -> PlaybackOrder {
+        self.playback_order
+    }
+    fn now_playing_queue(&self) -> Option<Vec<Value>> {
+        self.now_playing_queue.clone()
+    }
+    fn playlist_item_id(&self) -> Option<&str> {
+        self.playlist_item_id.as_deref()
+    }
+}
+
+impl PlaybackSessionState for PlaybackStartInfo {
+    fn item_id(&self) -> Uuid {
+        self.item_id
+    }
+    fn item(&self) -> Option<&Value> {
+        self.item.as_ref()
+    }
+    fn media_source_id(&self) -> Option<&str> {
+        self.media_source_id.as_deref()
+    }
+    fn position_ticks(&self) -> Option<i64> {
+        self.position_ticks
+    }
+    fn audio_stream_index(&self) -> Option<i32> {
+        self.audio_stream_index
+    }
+    fn subtitle_stream_index(&self) -> Option<i32> {
+        self.subtitle_stream_index
+    }
+    fn can_seek(&self) -> bool {
+        self.can_seek
+    }
+    fn is_paused(&self) -> bool {
+        self.is_paused
+    }
+    fn is_muted(&self) -> bool {
+        self.is_muted
+    }
+    fn volume_level(&self) -> Option<i32> {
+        self.volume_level
+    }
+    fn play_method(&self) -> Option<PlayMethod> {
+        self.play_method
+    }
+    fn live_stream_id(&self) -> Option<&str> {
+        self.live_stream_id.as_deref()
+    }
+    fn repeat_mode(&self) -> RepeatMode {
+        self.repeat_mode
+    }
+    fn playback_order(&self) -> PlaybackOrder {
+        self.playback_order
+    }
+    fn now_playing_queue(&self) -> Option<Vec<Value>> {
+        self.now_playing_queue.clone()
+    }
+    fn playlist_item_id(&self) -> Option<&str> {
+        self.playlist_item_id.as_deref()
+    }
 }
 
 impl From<PlaybackProgressInfo> for PlaybackProgressUpdate {

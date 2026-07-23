@@ -2,8 +2,9 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
     GeneralCommand, GeneralCommandType, MediaType, MessageCommand, NameIdPair, PlayCommand,
-    PlayRequest, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, SessionInfoDto,
-    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo,
+    QueryResult, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy,
+    UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -222,6 +223,12 @@ fn session_commands_use_official_wire_names() {
 #[test]
 fn session_info_uses_official_wire_names_and_guid_format() {
     let session = SessionInfoDto {
+        play_state: PlayerStateInfo {
+            position_ticks: Some(12_345),
+            can_seek: true,
+            is_paused: true,
+            ..PlayerStateInfo::default()
+        },
         additional_users: vec![SessionUserInfo {
             user_id: Uuid::parse_str("2b8cf5ff-3f3d-4f7f-a452-6a7f8d190cce").unwrap(),
             user_name: "bob".to_owned(),
@@ -245,11 +252,19 @@ fn session_info_uses_official_wire_names_and_guid_format() {
         last_paused_date: None,
         device_name: Some("Browser".to_owned()),
         device_type: None,
+        now_playing_item: Some(json!({
+            "Name": "Now Playing",
+            "Id": "865fc63461c748dc9bb7f7e5b617f337",
+            "Type": "Movie"
+        })),
         device_id: Some("device-id".to_owned()),
         application_version: Some("1.0".to_owned()),
         is_active: true,
         supports_media_control: true,
         supports_remote_control: true,
+        now_playing_queue: vec![json!({
+            "Id": "queue-item"
+        })],
         has_custom_device_name: false,
         playlist_item_id: None,
         server_id: Some("server-id".to_owned()),
@@ -281,6 +296,11 @@ fn session_info_uses_official_wire_names_and_guid_format() {
         value["Capabilities"]["DeviceProfile"]["Name"],
         "Browser profile"
     );
+    assert_eq!(value["PlayState"]["PositionTicks"], 12_345);
+    assert_eq!(value["PlayState"]["CanSeek"], true);
+    assert_eq!(value["PlayState"]["IsPaused"], true);
+    assert_eq!(value["NowPlayingItem"]["Name"], "Now Playing");
+    assert_eq!(value["NowPlayingQueue"][0]["Id"], "queue-item");
     assert_eq!(value["NowViewingItem"]["Name"], "The Matrix");
     assert_eq!(value["LastActivityDate"], "2026-07-23T09:15:00.0000000Z");
     assert!(value.get("LastPausedDate").is_none());

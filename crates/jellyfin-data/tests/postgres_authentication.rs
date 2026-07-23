@@ -6,8 +6,9 @@ use jellyfin_data::{
 };
 use jellyfin_migration::{
     AddDeviceCapabilitiesMigration, AddSessionAdditionalUsersMigration,
-    AddSessionNowViewingMigration, CreateAuthenticationMigration, CreateDeviceOptionsMigration,
-    CreateSessionCommandOutboxMigration, OptimizeDeviceSessionQueriesMigration,
+    AddSessionNowViewingMigration, AddSessionPlaybackStateMigration, CreateAuthenticationMigration,
+    CreateDeviceOptionsMigration, CreateSessionCommandOutboxMigration,
+    OptimizeDeviceSessionQueriesMigration,
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ConnectionTrait, DatabaseConnection, EntityTrait,
@@ -83,6 +84,14 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("session additional-users DDL must stay idempotent");
+    AddSessionPlaybackStateMigration
+        .up(&schema)
+        .await
+        .expect("session playback-state DDL must remain idempotent");
+    AddSessionPlaybackStateMigration
+        .up(&schema)
+        .await
+        .expect("session playback-state DDL must stay idempotent");
     assert_authentication_indexes(&database).await;
     database
 }
@@ -212,6 +221,7 @@ async fn test_devices(database: &DatabaseConnection) {
         .await
         .expect("device update must succeed");
     assert_device_query_filters(&repository, &device_id, &activated, &second).await;
+    assert_playback_state_update(database, &repository, activated.id).await;
     assert_now_viewing_item_update(database, &repository, activated.id).await;
     assert_additional_users_update(database, &repository, activated.id).await;
 
@@ -308,6 +318,80 @@ async fn assert_additional_users_update(
         .expect("device with removed additional user must load")
         .expect("device with removed additional user must exist");
     assert_eq!(cleared.additional_users, json!([]));
+}
+
+async fn assert_playback_state_update(
+    database: &DatabaseConnection,
+    repository: &DeviceRepository,
+    device_id: i64,
+) {
+    assert_eq!(
+        repository
+            .update_playback_state(
+                device_id,
+                json!({
+                    "PositionTicks": 123,
+                    "CanSeek": true,
+                    "IsPaused": true
+                }),
+                Some(json!({
+                    "Name": "Now Playing",
+                    "Id": Uuid::new_v4().simple().to_string(),
+                    "Type": "Movie"
+                })),
+                json!([{
+                    "Id": "queue-1"
+                }]),
+                Some("playlist-1".to_owned()),
+                true,
+            )
+            .await
+            .expect("playback state update must succeed"),
+        1
+    );
+    let updated = device::Entity::find_by_id(device_id)
+        .one(database)
+        .await
+        .expect("device with playback state must load")
+        .expect("device with playback state must exist");
+    assert_eq!(updated.play_state["PositionTicks"], 123);
+    assert_eq!(
+        updated.now_playing_item.as_ref().unwrap()["Name"],
+        "Now Playing"
+    );
+    assert_eq!(updated.now_playing_queue[0]["Id"], "queue-1");
+    assert_eq!(updated.playlist_item_id.as_deref(), Some("playlist-1"));
+    assert!(
+        updated.date_last_paused.is_some(),
+        "paused playback should remember the first paused timestamp"
+    );
+
+    let error = repository
+        .update_playback_state(device_id, Value::Null, None, json!([]), None, false)
+        .await
+        .expect_err("non-object play state must be rejected");
+    assert!(matches!(
+        error,
+        jellyfin_data::AuthenticationStoreError::InvalidPlayState
+    ));
+
+    assert_eq!(
+        repository
+            .clear_playback_state(device_id)
+            .await
+            .expect("playback state clear must succeed"),
+        1
+    );
+    let cleared = device::Entity::find_by_id(device_id)
+        .one(database)
+        .await
+        .expect("device with cleared playback state must load")
+        .expect("device with cleared playback state must exist");
+    assert_eq!(cleared.play_state, json!({}));
+    assert!(cleared.now_playing_item.is_none());
+    assert_eq!(cleared.now_playing_queue, json!([]));
+    assert!(cleared.playlist_item_id.is_none());
+    assert!(cleared.date_last_paused.is_none());
 }
 
 async fn assert_now_viewing_item_update(

@@ -12,8 +12,8 @@ use chrono::{Duration, Utc};
 use jellyfin_data::{BaseItemRepository, DeviceQuery, NewSessionCommand, entities::device};
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
-    NameIdPair, PlayCommand, PlayRequest, PlaystateCommand, PlaystateRequest, SessionInfoDto,
-    SessionUserInfo,
+    NameIdPair, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    SessionInfoDto, SessionUserInfo,
 };
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
@@ -541,11 +541,15 @@ async fn find_active_session(
 fn session_info(device: device::Model, user_name: String, server_id: &str) -> SessionInfoDto {
     let capabilities: ClientCapabilitiesDto =
         serde_json::from_value(device.capabilities).unwrap_or_default();
+    let play_state: PlayerStateInfo = serde_json::from_value(device.play_state).unwrap_or_default();
     let additional_users: Vec<SessionUserInfo> =
         serde_json::from_value(device.additional_users).unwrap_or_default();
+    let now_playing_queue: Vec<serde_json::Value> =
+        serde_json::from_value(device.now_playing_queue).unwrap_or_default();
     let playable_media_types = capabilities.playable_media_types.clone();
     let supported_commands = capabilities.supported_commands.clone();
     SessionInfoDto {
+        play_state,
         additional_users,
         id: Some(jellyfin_session_id(&device.app_name, &device.device_id)),
         user_id: device.user_id,
@@ -553,16 +557,18 @@ fn session_info(device: device::Model, user_name: String, server_id: &str) -> Se
         client: Some(device.app_name),
         last_activity_date: device.date_last_activity,
         last_playback_check_in: device.date_last_activity,
-        last_paused_date: None,
+        last_paused_date: device.date_last_paused,
         device_name: Some(device.device_name),
         device_type: None,
+        now_playing_item: device.now_playing_item,
         device_id: Some(device.device_id),
         application_version: Some(device.app_version),
         is_active: device.is_active,
         supports_media_control: false,
         supports_remote_control: false,
+        now_playing_queue,
         has_custom_device_name: false,
-        playlist_item_id: None,
+        playlist_item_id: device.playlist_item_id,
         server_id: Some(server_id.to_owned()),
         user_primary_image_tag: None,
         now_viewing_item: device.now_viewing_item,

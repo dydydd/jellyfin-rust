@@ -16,11 +16,16 @@ pub struct Model {
     pub device_id: String,
     pub is_active: bool,
     pub capabilities: Value,
+    pub play_state: Value,
+    pub now_playing_item: Option<Value>,
+    pub now_playing_queue: Value,
+    pub playlist_item_id: Option<String>,
     pub now_viewing_item: Option<Value>,
     pub additional_users: Value,
     pub date_created: DateTime<Utc>,
     pub date_modified: DateTime<Utc>,
     pub date_last_activity: DateTime<Utc>,
+    pub date_last_paused: Option<DateTime<Utc>>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

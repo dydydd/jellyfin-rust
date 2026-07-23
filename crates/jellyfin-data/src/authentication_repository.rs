@@ -19,6 +19,12 @@ pub enum AuthenticationStoreError {
     FieldTooLong { field: &'static str, max: usize },
     #[error("device capabilities must be a JSON object")]
     InvalidCapabilities,
+    #[error("session play state must be a JSON object")]
+    InvalidPlayState,
+    #[error("session now playing item must be a JSON object")]
+    InvalidNowPlayingItem,
+    #[error("session now playing queue must be a JSON array")]
+    InvalidNowPlayingQueue,
     #[error("session now viewing item must be a JSON object")]
     InvalidNowViewingItem,
     #[error("session additional users must be a JSON array")]
@@ -238,11 +244,16 @@ impl DeviceRepository {
             device_id: Set(new_device.device_id),
             is_active: Set(is_active),
             capabilities: Set(json!({})),
+            play_state: Set(json!({})),
+            now_playing_item: Set(None),
+            now_playing_queue: Set(json!([])),
+            playlist_item_id: Set(None),
             now_viewing_item: Set(None),
             additional_users: Set(json!([])),
             date_created: Set(now),
             date_modified: Set(now),
             date_last_activity: Set(now),
+            date_last_paused: Set(None),
         }
         .insert(connection)
         .await?)
@@ -394,11 +405,16 @@ impl DeviceRepository {
             device_id: Set(model.device_id),
             is_active: Set(model.is_active),
             capabilities: Set(model.capabilities),
+            play_state: Set(model.play_state),
+            now_playing_item: Set(model.now_playing_item),
+            now_playing_queue: Set(model.now_playing_queue),
+            playlist_item_id: Set(model.playlist_item_id),
             now_viewing_item: Set(model.now_viewing_item),
             additional_users: Set(model.additional_users),
             date_created: Set(model.date_created),
             date_modified: Set(Utc::now()),
             date_last_activity: Set(model.date_last_activity),
+            date_last_paused: Set(model.date_last_paused),
         };
         Ok(active.update(&self.database).await?)
     }
@@ -421,6 +437,99 @@ impl DeviceRepository {
             .col_expr(device::Column::Capabilities, Expr::value(capabilities))
             .col_expr(device::Column::DateModified, Expr::value(Utc::now()))
             .filter(device::Column::AccessToken.eq(access_token))
+            .exec(&self.database)
+            .await?
+            .rows_affected)
+    }
+
+    /// Persists the currently playing item and player state for an active session.
+    ///
+    /// `PostgreSQL` keeps the JSONB session snapshot in one row with object/array
+    /// constraints, avoiding read/modify/write races while matching Jellyfin's
+    /// in-memory `SessionInfo` projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for invalid JSON shapes or playlist metadata,
+    /// or a database error when updating fails.
+    pub async fn update_playback_state(
+        &self,
+        id: i64,
+        play_state: Value,
+        now_playing_item: Option<Value>,
+        now_playing_queue: Value,
+        playlist_item_id: Option<String>,
+        is_paused: bool,
+    ) -> Result<u64, AuthenticationStoreError> {
+        if !play_state.is_object() {
+            return Err(AuthenticationStoreError::InvalidPlayState);
+        }
+        if now_playing_item
+            .as_ref()
+            .is_some_and(|value| !value.is_object())
+        {
+            return Err(AuthenticationStoreError::InvalidNowPlayingItem);
+        }
+        if !now_playing_queue.is_array() {
+            return Err(AuthenticationStoreError::InvalidNowPlayingQueue);
+        }
+        if let Some(playlist_item_id) = playlist_item_id.as_deref() {
+            validate_length("playlist item id", playlist_item_id, 256)?;
+        }
+        let now = Utc::now();
+        let date_last_paused = if is_paused {
+            Expr::cust("COALESCE(date_last_paused, clock_timestamp())")
+        } else {
+            Expr::value(Option::<DateTime<Utc>>::None)
+        };
+        Ok(device::Entity::update_many()
+            .col_expr(device::Column::PlayState, Expr::value(play_state))
+            .col_expr(
+                device::Column::NowPlayingItem,
+                Expr::value(now_playing_item),
+            )
+            .col_expr(
+                device::Column::NowPlayingQueue,
+                Expr::value(now_playing_queue),
+            )
+            .col_expr(
+                device::Column::PlaylistItemId,
+                Expr::value(playlist_item_id),
+            )
+            .col_expr(device::Column::DateModified, Expr::value(now))
+            .col_expr(device::Column::DateLastActivity, Expr::value(now))
+            .col_expr(device::Column::DateLastPaused, date_last_paused)
+            .filter(device::Column::Id.eq(id))
+            .exec(&self.database)
+            .await?
+            .rows_affected)
+    }
+
+    /// Clears playback state after a session reports stopped playback.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when updating fails.
+    pub async fn clear_playback_state(&self, id: i64) -> Result<u64, AuthenticationStoreError> {
+        let now = Utc::now();
+        Ok(device::Entity::update_many()
+            .col_expr(device::Column::PlayState, Expr::value(json!({})))
+            .col_expr(
+                device::Column::NowPlayingItem,
+                Expr::value(Option::<Value>::None),
+            )
+            .col_expr(device::Column::NowPlayingQueue, Expr::value(json!([])))
+            .col_expr(
+                device::Column::PlaylistItemId,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(device::Column::DateModified, Expr::value(now))
+            .col_expr(device::Column::DateLastActivity, Expr::value(now))
+            .col_expr(
+                device::Column::DateLastPaused,
+                Expr::value(Option::<DateTime<Utc>>::None),
+            )
+            .filter(device::Column::Id.eq(id))
             .exec(&self.database)
             .await?
             .rows_affected)
@@ -633,7 +742,37 @@ fn validate_device_model(device: &device::Model) -> Result<(), AuthenticationSto
     validate_length("app name", &device.app_name, 64)?;
     validate_length("app version", &device.app_version, 32)?;
     validate_length("device name", &device.device_name, 64)?;
-    validate_required("device id", &device.device_id, 256)
+    validate_required("device id", &device.device_id, 256)?;
+    if !device.capabilities.is_object() {
+        return Err(AuthenticationStoreError::InvalidCapabilities);
+    }
+    if !device.play_state.is_object() {
+        return Err(AuthenticationStoreError::InvalidPlayState);
+    }
+    if device
+        .now_playing_item
+        .as_ref()
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err(AuthenticationStoreError::InvalidNowPlayingItem);
+    }
+    if !device.now_playing_queue.is_array() {
+        return Err(AuthenticationStoreError::InvalidNowPlayingQueue);
+    }
+    if device
+        .now_viewing_item
+        .as_ref()
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err(AuthenticationStoreError::InvalidNowViewingItem);
+    }
+    if !device.additional_users.is_array() {
+        return Err(AuthenticationStoreError::InvalidAdditionalUsers);
+    }
+    if let Some(playlist_item_id) = device.playlist_item_id.as_deref() {
+        validate_length("playlist item id", playlist_item_id, 256)?;
+    }
+    Ok(())
 }
 
 fn validate_required(

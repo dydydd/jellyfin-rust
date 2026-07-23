@@ -63,7 +63,8 @@ pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{ImageType, RatingType, RemoteImageInfo, order_by_language_descending};
 pub use session::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
-    PlayCommand, PlayRequest, PlaystateCommand, PlaystateRequest, SessionInfoDto, SessionUserInfo,
+    PlayCommand, PlayRequest, PlaybackOrder, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    RepeatMode, SessionInfoDto, SessionUserInfo,
 };
 pub use sync_play::UtcTimeResponse;
 pub use system::PublicSystemInfo;
