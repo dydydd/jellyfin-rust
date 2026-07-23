@@ -44,7 +44,8 @@ pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenreService};
 pub use persons::{Person, PersonError, PersonService};
 pub use playstate::{
-    PlaystateError, PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
+    PlaybackProgressUpdate, PlaystateError, PlaystateService, PlaystateUpdate, format_date_played,
+    parse_date_played,
 };
 pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};

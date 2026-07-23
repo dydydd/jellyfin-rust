@@ -368,6 +368,18 @@ fn user_routes() -> Router<Arc<AppState>> {
 fn playstate_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
+            "/Sessions/Playing/Progress",
+            post(playstate::report_playback_progress),
+        )
+        .route(
+            "/PlayingItems/{item_id}/Progress",
+            post(playstate::report_playback_progress_legacy),
+        )
+        .route(
+            "/Users/{user_id}/PlayingItems/{item_id}/Progress",
+            post(playstate::report_playback_progress_legacy_for_user),
+        )
+        .route(
             "/UserPlayedItems/{item_id}",
             post(playstate::mark_played_modern).delete(playstate::mark_unplayed_modern),
         )
@@ -744,6 +756,10 @@ impl IntoResponse for ApiError {
                 | UserDataServiceError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "User or item not found"),
             Self::UserData(UserDataServiceError::UserData(
+                jellyfin_data::UserDataError::InvalidRating
+                | jellyfin_data::UserDataError::NegativePlaybackValue,
+            ))
+            | Self::Playstate(PlaystateError::UserData(
                 jellyfin_data::UserDataError::InvalidRating
                 | jellyfin_data::UserDataError::NegativePlaybackValue,
             )) => (StatusCode::BAD_REQUEST, "Invalid user data"),

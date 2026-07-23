@@ -10,8 +10,8 @@ use jellyfin_data::{
     entities::{api_key, user},
 };
 use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, UserPolicy};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
-use serde_json::Value;
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -83,6 +83,144 @@ async fn played_unplayed_permissions_and_concurrency_use_postgres_state() {
     assert_played_and_unplayed(&fixture).await;
     assert_concurrent_manual_play_is_idempotent(&fixture).await;
     fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn playback_progress_json_route_updates_resume_and_stream_choices() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.item_id,
+            "PositionTicks": 654_321,
+            "AudioStreamIndex": 2,
+            "SubtitleStreamIndex": 3
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_progress(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        654_321,
+        Some(2),
+        Some(3),
+    )
+    .await;
+
+    set_stream_remembering(&fixture.database, fixture.user_id, false).await;
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.item_id,
+            "PositionTicks": 700_000,
+            "AudioStreamIndex": 4,
+            "SubtitleStreamIndex": 5
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_progress(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        700_000,
+        None,
+        None,
+    )
+    .await;
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.item_id,
+            "PositionTicks": -1
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn playback_progress_legacy_route_uses_authenticated_user_and_missing_items_are_noops() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+
+    set_stream_remembering(&fixture.database, fixture.user_id, true).await;
+    let legacy_route = format!(
+        "/Users/{}/PlayingItems/{}/Progress?positionTicks=800000&audioStreamIndex=6&subtitleStreamIndex=-1",
+        fixture.administrator_id, fixture.item_id
+    );
+    let response = request(&fixture.app, "POST", &legacy_route, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_progress(
+        &repository,
+        fixture.item_id,
+        fixture.user_id,
+        800_000,
+        Some(6),
+        Some(-1),
+    )
+    .await;
+    assert!(
+        repository
+            .get(
+                fixture.item_id,
+                fixture.administrator_id,
+                &fixture.item_id.to_string()
+            )
+            .await
+            .expect("administrator progress lookup")
+            .is_none(),
+        "legacy userId route parameter is ignored by Jellyfin"
+    );
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": Uuid::new_v4(),
+            "PositionTicks": 999_999
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    fixture.cleanup().await;
+}
+
+async fn assert_progress(
+    repository: &UserDataRepository,
+    item_id: Uuid,
+    user_id: Uuid,
+    position_ticks: i64,
+    audio_stream_index: Option<i32>,
+    subtitle_stream_index: Option<i32>,
+) {
+    let persisted = repository
+        .get(item_id, user_id, &item_id.to_string())
+        .await
+        .expect("progress lookup")
+        .expect("progress row");
+    assert_eq!(persisted.playback_position_ticks, position_ticks);
+    assert_eq!(persisted.audio_stream_index, audio_stream_index);
+    assert_eq!(persisted.subtitle_stream_index, subtitle_stream_index);
 }
 
 struct PlaystateFixture {
@@ -450,6 +588,21 @@ fn blocked_policy() -> UserPolicy {
     }
 }
 
+async fn set_stream_remembering(database: &DatabaseConnection, user_id: Uuid, remember: bool) {
+    user::ActiveModel {
+        id: Set(user_id),
+        preferences: Set(json!({
+            "RememberAudioSelections": remember,
+            "RememberSubtitleSelections": remember,
+            "EnableNextEpisodeAutoPlay": true
+        })),
+        ..Default::default()
+    }
+    .update(database)
+    .await
+    .expect("stream remembering preference update");
+}
+
 async fn request(
     app: &axum::Router,
     method: &str,
@@ -466,6 +619,30 @@ async fn request(
                     format!("{AUTHORIZATION}, Token=\"{token}\""),
                 )
                 .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn request_json(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Value,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(
+                    header::AUTHORIZATION,
+                    format!("{AUTHORIZATION}, Token=\"{token}\""),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
                 .unwrap(),
         )
         .await

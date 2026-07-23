@@ -520,6 +520,100 @@ impl UserDataRepository {
             .ok_or_else(|| DbErr::RecordNotFound("rating upsert returned no row".to_owned()).into())
     }
 
+    /// Atomically applies playback progress and remembered stream-selection changes.
+    ///
+    /// `PostgreSQL` resolves the preferred custom-data key and upserts the
+    /// mutable playback fields in one statement so concurrent favorite/rating
+    /// writes are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error when no key is supplied or numeric playback
+    /// values are invalid, or a database error when the upsert fails.
+    pub async fn apply_playback_progress_patch(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        keys: &[String],
+        patch: UserDataPatch,
+    ) -> Result<user_data::Model, UserDataError> {
+        let primary_key = keys.first().ok_or(UserDataError::EmptyKey)?;
+        validate_optional_values(None, patch.playback_position_ticks, None)?;
+
+        let position_present = patch.playback_position_ticks.is_some();
+        let audio_present = patch.audio_stream_index.is_some();
+        let subtitle_present = patch.subtitle_stream_index.is_some();
+        let audio_stream_index = patch.audio_stream_index.flatten();
+        let subtitle_stream_index = patch.subtitle_stream_index.flatten();
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT value AS custom_data_key, ordinality AS priority
+                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
+            ), chosen_key AS (
+                SELECT data.custom_data_key
+                FROM jellyfin.user_data AS data
+                LEFT JOIN preferred_keys AS preferred
+                    USING (custom_data_key)
+                WHERE data.item_id = $1 AND data.user_id = $2
+                ORDER BY preferred.priority NULLS LAST, data.custom_data_key
+                LIMIT 1
+            ), target_key AS (
+                SELECT COALESCE(
+                    (SELECT custom_data_key FROM chosen_key),
+                    $4::text
+                ) AS custom_data_key
+            )
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key,
+                playback_position_ticks, audio_stream_index,
+                subtitle_stream_index
+            )
+            SELECT $1, $2, custom_data_key,
+                CASE WHEN $5::boolean THEN $6::bigint ELSE 0 END,
+                CASE WHEN $7::boolean THEN $8::integer ELSE NULL END,
+                CASE WHEN $9::boolean THEN $10::integer ELSE NULL END
+            FROM target_key
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET playback_position_ticks = CASE
+                    WHEN $5::boolean THEN $6::bigint
+                    ELSE jellyfin.user_data.playback_position_ticks
+                END,
+                audio_stream_index = CASE
+                    WHEN $7::boolean THEN $8::integer
+                    ELSE jellyfin.user_data.audio_stream_index
+                END,
+                subtitle_stream_index = CASE
+                    WHEN $9::boolean THEN $10::integer
+                    ELSE jellyfin.user_data.subtitle_stream_index
+                END
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                serde_json::json!(keys).into(),
+                primary_key.as_str().into(),
+                position_present.into(),
+                patch.playback_position_ticks.unwrap_or_default().into(),
+                audio_present.into(),
+                audio_stream_index.into(),
+                subtitle_present.into(),
+                subtitle_stream_index.into(),
+            ],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("playback progress upsert returned no row".to_owned()).into()
+            })
+    }
+
     /// Atomically marks an item played and resets its resume position.
     ///
     /// Without an explicit date, repeated and concurrent manual toggles keep

@@ -1,15 +1,19 @@
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, UserDataError, UserDataRepository,
-    entities::{user, user_data},
+    BaseItemError, BaseItemRepository, UserDataError, UserDataPatch, UserDataRepository,
+    entities::{base_item, user, user_data},
 };
+use jellyfin_model::UserConfiguration;
 use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
 use jellyfin_model::UserItemDataDto;
 
-use crate::{UserError, UserService, user_data::user_data_to_dto};
+use crate::{
+    UserError, UserService,
+    user_data::{current_user_data_keys, user_data_to_dto},
+};
 
 #[derive(Debug, Error)]
 pub enum PlaystateError {
@@ -53,6 +57,14 @@ pub fn format_date_played(value: DateTime<Utc>) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaystateUpdate {
     pub user_data: user_data::Model,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlaybackProgressUpdate {
+    pub item_id: Uuid,
+    pub position_ticks: Option<i64>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
 }
 
 impl From<PlaystateUpdate> for UserItemDataDto {
@@ -169,6 +181,40 @@ impl PlaystateService {
         Ok(PlaystateUpdate { user_data })
     }
 
+    /// Applies the user-data side effects of a playback progress report.
+    ///
+    /// Jellyfin treats session progress as best-effort: an empty or unknown
+    /// item id records no user data and still succeeds. When an item is known,
+    /// `PostgreSQL` atomically updates the resume position and remembered stream
+    /// selections according to the reporting user's configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation or persistence errors for invalid playback values or
+    /// database failures.
+    pub async fn report_playback_progress(
+        &self,
+        user: &user::Model,
+        update: PlaybackProgressUpdate,
+    ) -> Result<Option<PlaystateUpdate>, PlaystateError> {
+        let Some(item) = self.progress_item(update.item_id).await? else {
+            return Ok(None);
+        };
+        let configuration: UserConfiguration =
+            serde_json::from_value(user.preferences.clone()).unwrap_or_default();
+        let patch = playback_progress_patch(&configuration, &update);
+        if !has_playback_progress_changes(&patch) {
+            return Ok(None);
+        }
+
+        let keys = current_user_data_keys(&item);
+        let user_data = self
+            .user_data
+            .apply_playback_progress_patch(item.id, user.id, &keys, patch)
+            .await?;
+        Ok(Some(PlaystateUpdate { user_data }))
+    }
+
     async fn validate_request(
         &self,
         authenticated_user: &user::Model,
@@ -206,4 +252,43 @@ impl PlaystateService {
             .ok_or(PlaystateError::ItemNotFound)?;
         Ok(())
     }
+
+    async fn progress_item(
+        &self,
+        item_id: Uuid,
+    ) -> Result<Option<base_item::Model>, PlaystateError> {
+        if item_id.is_nil() {
+            return Ok(None);
+        }
+        let Some(item) = self.items.get(item_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(item))
+    }
+}
+
+fn playback_progress_patch(
+    configuration: &UserConfiguration,
+    update: &PlaybackProgressUpdate,
+) -> UserDataPatch {
+    UserDataPatch {
+        playback_position_ticks: update.position_ticks,
+        audio_stream_index: if configuration.remember_audio_selections {
+            update.audio_stream_index.map(Some)
+        } else {
+            Some(None)
+        },
+        subtitle_stream_index: if configuration.remember_subtitle_selections {
+            update.subtitle_stream_index.map(Some)
+        } else {
+            Some(None)
+        },
+        ..Default::default()
+    }
+}
+
+const fn has_playback_progress_changes(patch: &UserDataPatch) -> bool {
+    patch.playback_position_ticks.is_some()
+        || patch.audio_stream_index.is_some()
+        || patch.subtitle_stream_index.is_some()
 }

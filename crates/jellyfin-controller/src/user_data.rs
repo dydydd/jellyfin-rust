@@ -319,7 +319,7 @@ impl UserDataService {
     }
 }
 
-fn current_user_data_keys(item: &base_item::Model) -> Vec<String> {
+pub(crate) fn current_user_data_keys(item: &base_item::Model) -> Vec<String> {
     let id = item.id.to_string();
     match item
         .presentation_unique_key
