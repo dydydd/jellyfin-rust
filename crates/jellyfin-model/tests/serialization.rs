@@ -4,8 +4,8 @@ use jellyfin_model::{
     ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, ItemCounts,
     MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
     PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RepositoryInfo, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy,
-    UtcTimeResponse,
+    RepositoryInfo, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
+    UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -151,6 +151,40 @@ fn package_and_repository_info_use_official_wire_names() {
             "Enabled": true
         })
     );
+}
+
+#[test]
+fn server_configuration_uses_official_pascal_case_defaults() {
+    let value = serde_json::to_value(ServerConfiguration {
+        server_name: "Living Room".to_owned(),
+        ui_culture: "fr-FR".to_owned(),
+        plugin_repositories: vec![RepositoryInfo {
+            name: Some("Stable".to_owned()),
+            url: Some("https://repo.example.test/manifest.json".to_owned()),
+            enabled: true,
+        }],
+        ..ServerConfiguration::default()
+    })
+    .unwrap();
+
+    assert_eq!(value["ServerName"], "Living Room");
+    assert_eq!(value["UICulture"], "fr-FR");
+    assert_eq!(value["LogFileRetentionDays"], 3);
+    assert_eq!(value["PreferredMetadataLanguage"], "en");
+    assert_eq!(value["MetadataCountryCode"], "US");
+    assert_eq!(value["MinResumePct"], 5);
+    assert_eq!(value["MaxResumePct"], 90);
+    assert_eq!(value["QuickConnectAvailable"], true);
+    assert_eq!(value["SortReplaceCharacters"], json!([".", "+", "%"]));
+    assert_eq!(
+        value["MetadataOptions"][2]["DisabledMetadataFetchers"],
+        json!(["The Open Movie Database"])
+    );
+    assert_eq!(value["TrickplayOptions"]["ScanBehavior"], "NonBlocking");
+    assert_eq!(value["TrickplayOptions"]["ProcessPriority"], "BelowNormal");
+    assert_eq!(value["PluginRepositories"][0]["Name"], "Stable");
+    assert!(value.get("server_name").is_none());
+    assert!(value.get("UiCulture").is_none());
 }
 
 #[test]

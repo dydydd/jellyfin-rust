@@ -33,7 +33,10 @@ mod user_data;
 pub mod users;
 
 pub use authentication::{AuthenticationInfo, QueryResult};
-pub use configuration::{ImageOption, UserConfiguration};
+pub use configuration::{
+    ImageOption, ImageResolution, ImageSavingConvention, MetadataOptions, PathSubstitution,
+    ServerConfiguration, TrickplayOptions, TrickplayScanBehavior, UserConfiguration,
+};
 pub use cryptography::{PasswordHash, PasswordHashError, PasswordHashSegment};
 pub use devices::{DeviceInfoDto, DeviceOptionsDto};
 pub use display_preferences::{DisplayPreferencesDto, ScrollDirection, SortOrder};
