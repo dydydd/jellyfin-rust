@@ -1,9 +1,15 @@
-use std::{fs::File, io::Read, path::PathBuf, sync::Arc};
+use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use axum::{
     Json,
-    extract::{OriginalUri, State},
-    http::HeaderMap,
+    extract::{OriginalUri, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use jellyfin_model::{BackupManifestDto, BackupOptionsDto};
@@ -21,6 +27,11 @@ struct BackupManifest {
     backup_engine_version: String,
     date_created: DateTime<Utc>,
     options: BackupOptionsDto,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct BackupManifestQuery {
+    path: String,
 }
 
 impl Default for BackupManifest {
@@ -73,6 +84,28 @@ pub(crate) async fn list(
     Ok(Json(manifests))
 }
 
+pub(crate) async fn manifest(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<BackupManifestQuery>,
+) -> Result<Response, ApiError> {
+    authorization::require_default(&state, &headers, &uri)
+        .await?
+        .require_administrator()?;
+
+    let Some(archive_path) = sanitized_backup_path(&state, &query.path) else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    if !archive_path.is_file() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let Some(manifest) = load_manifest(archive_path).await? else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    Ok(Json(manifest).into_response())
+}
+
 async fn load_manifest(path: PathBuf) -> Result<Option<BackupManifestDto>, ApiError> {
     tokio::task::spawn_blocking(move || load_manifest_blocking(path))
         .await
@@ -93,4 +126,12 @@ fn load_manifest_blocking(path: PathBuf) -> Option<BackupManifestDto> {
         path: path.to_string_lossy().into_owned(),
         options: manifest.options,
     })
+}
+
+fn sanitized_backup_path(state: &AppState, path: &str) -> Option<PathBuf> {
+    let file_name = Path::new(path).file_name()?.to_str()?;
+    if file_name.trim().is_empty() {
+        return None;
+    }
+    Some(state.program_data_directory.join("backups").join(file_name))
 }

@@ -343,6 +343,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Css.css", get(branding::get_css))
         .route("/Search/Hints", get(search::hints))
         .route("/Backup", get(backup::list))
+        .route("/Backup/Manifest", get(backup::manifest))
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",

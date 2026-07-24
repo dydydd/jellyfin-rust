@@ -17,7 +17,7 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Backup Tests\", Device=\"Test
 const DATABASE_PREFIX: &str = "jellyfin_backup_routes_";
 
 #[tokio::test]
-async fn backup_list_route_requires_elevation_and_reads_zip_manifests() {
+async fn backup_routes_require_elevation_and_read_zip_manifests() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -30,7 +30,7 @@ async fn backup_list_route_requires_elevation_and_reads_zip_manifests() {
 
     let task_database_name = database_name.clone();
     let outcome = tokio::spawn(async move {
-        exercise_backup_list_route(&task_database_name).await;
+        exercise_backup_routes(&task_database_name).await;
     })
     .await;
 
@@ -47,7 +47,7 @@ async fn backup_list_route_requires_elevation_and_reads_zip_manifests() {
     }
 }
 
-async fn exercise_backup_list_route(database_name: &str) {
+async fn exercise_backup_routes(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
 
     assert_eq!(
@@ -89,6 +89,56 @@ async fn exercise_backup_list_route(database_name: &str) {
     tokio::fs::write(backup_directory.join("not-a-backup.zip"), b"not a zip")
         .await
         .expect("invalid archive");
+
+    let archive_manifest_uri = "/Backup/Manifest?path=jellyfin-backup-20260724090000.zip";
+    assert_eq!(
+        fixture.get(archive_manifest_uri, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(archive_manifest_uri, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .get(
+                "/Backup/Manifest?path=missing-backup.zip",
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                "/Backup/Manifest?path=not-a-backup.zip",
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let manifest = fixture
+        .get(
+            "/Backup/Manifest?path=%2Ftmp%2Fevil%2Fjellyfin-backup-20260724090000.zip",
+            Some(&fixture.admin_token),
+        )
+        .await;
+    assert_eq!(manifest.status(), StatusCode::OK);
+    let manifest = body_json(manifest).await;
+    assert_eq!(manifest["ServerVersion"], "10.11.0");
+    assert_eq!(manifest["BackupEngineVersion"], "1.0");
+    assert_eq!(manifest["DateCreated"], "2026-07-24T09:00:00.0000000Z");
+    assert_eq!(manifest["Path"], archive_path.to_string_lossy().as_ref());
+    assert_eq!(manifest["Options"]["Metadata"], true);
+    assert_eq!(manifest["Options"]["Trickplay"], false);
+    assert_eq!(manifest["Options"]["Subtitles"], true);
+    assert_eq!(manifest["Options"]["Database"], true);
 
     let listed = fixture.get("/Backup", Some(&fixture.admin_token)).await;
     assert_eq!(listed.status(), StatusCode::OK);
