@@ -3,6 +3,7 @@ use std::{
     fmt::Write as _,
 };
 
+use chrono::{DateTime, Utc};
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
     AccessMode,
@@ -37,6 +38,7 @@ pub struct NewBaseItem {
     pub index_number: Option<i32>,
     pub parent_index_number: Option<i32>,
     pub production_year: Option<i32>,
+    pub premiere_date: Option<DateTime<Utc>>,
     pub runtime_ticks: Option<i64>,
     pub is_folder: bool,
     pub is_virtual_item: bool,
@@ -64,6 +66,7 @@ impl NewBaseItem {
             index_number: None,
             parent_index_number: None,
             production_year: None,
+            premiere_date: None,
             runtime_ticks: None,
             is_folder: false,
             is_virtual_item: false,
@@ -92,6 +95,7 @@ pub enum BaseItemOrder {
     DateCreatedDescending,
     DatePlayedAscending,
     DatePlayedDescending,
+    PremiereDateAscending,
     Random,
 }
 
@@ -115,6 +119,7 @@ pub struct BaseItemQuery {
     pub user_id: Option<Uuid>,
     pub is_resumable: Option<bool>,
     pub is_played: Option<bool>,
+    pub min_premiere_date: Option<DateTime<Utc>>,
     pub order: BaseItemOrder,
     pub start_index: u64,
     pub limit: Option<u64>,
@@ -258,6 +263,7 @@ impl BaseItemRepository {
             index_number: Set(item.index_number),
             parent_index_number: Set(item.parent_index_number),
             production_year: Set(item.production_year),
+            premiere_date: Set(item.premiere_date),
             runtime_ticks: Set(item.runtime_ticks),
             is_folder: Set(item.is_folder),
             is_virtual_item: Set(item.is_virtual_item),
@@ -729,6 +735,9 @@ impl BaseItemRepository {
                 select.filter(base_item::Column::Id.not_in_subquery(played_items))
             };
         }
+        if let Some(min_premiere_date) = query.min_premiere_date {
+            select = select.filter(base_item::Column::PremiereDate.gte(min_premiere_date));
+        }
         let total_record_count = if total_count_enabled(query) {
             Some(select.clone().count(&self.database).await?)
         } else {
@@ -746,6 +755,9 @@ impl BaseItemRepository {
             BaseItemOrder::Random => select.order_by(Expr::cust("random()"), Order::Asc),
             BaseItemOrder::DatePlayedAscending | BaseItemOrder::DatePlayedDescending => {
                 unreachable!("date-played queries are handled by query_by_date_played")
+            }
+            BaseItemOrder::PremiereDateAscending => {
+                select.order_by_asc(base_item::Column::PremiereDate)
             }
         }
         .order_by_asc(base_item::Column::Id)
@@ -949,6 +961,7 @@ impl BaseItemRepository {
             BaseItemOrder::DatePlayedDescending => "date_played DESC NULLS LAST, id",
             BaseItemOrder::DateCreatedAscending => "date_created ASC, id",
             BaseItemOrder::DateCreatedDescending => "date_created DESC, id",
+            BaseItemOrder::PremiereDateAscending => "premiere_date ASC NULLS LAST, sort_name, id",
             BaseItemOrder::SortName => "sort_name, id",
             BaseItemOrder::SortNameDescending => "sort_name DESC, id",
             BaseItemOrder::Random => "random(), id",
@@ -1056,6 +1069,7 @@ impl BaseItemRepository {
             index_number: Set(item.index_number),
             parent_index_number: Set(item.parent_index_number),
             production_year: Set(item.production_year),
+            premiere_date: Set(item.premiere_date),
             runtime_ticks: Set(item.runtime_ticks),
             is_folder: Set(item.is_folder),
             is_virtual_item: Set(item.is_virtual_item),
@@ -1235,7 +1249,7 @@ impl BaseItemRepository {
 
 const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \
     clean_name, sort_name, media_type, overview, official_rating, index_number, parent_index_number, production_year, \
-    runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, primary_version_id, series_id, season_id, \
+    premiere_date, runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, primary_version_id, series_id, season_id, \
     series_presentation_unique_key, date_created, date_modified, row_version";
 
 fn grouped_versions_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
@@ -1451,6 +1465,14 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
             );
         }
         sql.push(')');
+    }
+    if let Some(min_premiere_date) = query.min_premiere_date {
+        push_bind(
+            sql,
+            values,
+            min_premiere_date,
+            " AND item.premiere_date >= ",
+        );
     }
 }
 

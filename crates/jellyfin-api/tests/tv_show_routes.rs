@@ -2,6 +2,7 @@ use axum::{
     body::{Body, Bytes},
     http::{Request, StatusCode, header},
 };
+use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
@@ -170,6 +171,7 @@ async fn exercise_seasons_route(database_name: &str) {
 
     assert_episodes_route(&fixture).await;
     assert_next_up_route(&fixture).await;
+    assert_upcoming_route(&fixture).await;
     fixture.cleanup().await;
 }
 
@@ -506,6 +508,72 @@ async fn assert_next_up_route(fixture: &Fixture) {
     );
 }
 
+async fn assert_upcoming_route(fixture: &Fixture) {
+    assert_eq!(
+        fixture.get("/Shows/Upcoming", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Shows/Upcoming?userId={}", fixture.admin_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let upcoming = body_json(
+        fixture
+            .get("/Shows/Upcoming", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(upcoming["StartIndex"], 0);
+    assert_eq!(upcoming["TotalRecordCount"], 3);
+    assert_eq!(
+        item_ids(&upcoming),
+        vec![
+            fixture.third_episode_id.simple().to_string(),
+            fixture.missing_episode_id.simple().to_string(),
+            fixture.first_episode_id.simple().to_string(),
+        ]
+    );
+    assert!(upcoming["Items"][0]["PremiereDate"].as_str().is_some());
+
+    let parent_scoped = body_json(
+        fixture
+            .get(
+                &format!("/Shows/Upcoming?parentId={}", fixture.first_season_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(parent_scoped["TotalRecordCount"], 1);
+    assert_eq!(
+        item_ids(&parent_scoped),
+        vec![fixture.first_episode_id.simple().to_string()]
+    );
+
+    let paged = body_json(
+        fixture
+            .get(
+                "/Shows/Upcoming?startIndex=1&limit=1",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(paged["StartIndex"], 1);
+    assert_eq!(paged["TotalRecordCount"], 1);
+    assert_eq!(
+        item_ids(&paged),
+        vec![fixture.missing_episode_id.simple().to_string()]
+    );
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
@@ -602,7 +670,7 @@ impl Fixture {
             None,
         )
         .await;
-        let first_episode = create_episode(
+        let first_episode = create_episode_with_premiere_date(
             &items,
             "01 Episode One",
             first_season.id,
@@ -610,6 +678,7 @@ impl Fixture {
             1,
             1,
             None,
+            Some(Utc::now() + Duration::days(3)),
         )
         .await;
         let second_episode = create_episode(
@@ -622,7 +691,7 @@ impl Fixture {
             None,
         )
         .await;
-        let third_episode = create_episode(
+        let third_episode = create_episode_with_premiere_date(
             &items,
             "03 Episode Three",
             second_season.id,
@@ -630,9 +699,10 @@ impl Fixture {
             2,
             1,
             None,
+            Some(Utc::now() + Duration::hours(1)),
         )
         .await;
-        let missing_episode = create_episode(
+        let missing_episode = create_episode_with_premiere_date(
             &items,
             "04 Missing Episode",
             second_season.id,
@@ -640,6 +710,7 @@ impl Fixture {
             2,
             2,
             Some(json!({ "IsMissing": true })),
+            Some(Utc::now() + Duration::days(1)),
         )
         .await;
         let user_data = UserDataRepository::new(database.clone());
@@ -741,6 +812,29 @@ async fn create_episode(
     index_number: i32,
     data: Option<Value>,
 ) -> jellyfin_data::entities::base_item::Model {
+    create_episode_with_premiere_date(
+        repository,
+        name,
+        season_id,
+        series_id,
+        parent_index_number,
+        index_number,
+        data,
+        None,
+    )
+    .await
+}
+
+async fn create_episode_with_premiere_date(
+    repository: &BaseItemRepository,
+    name: &str,
+    season_id: Uuid,
+    series_id: Uuid,
+    parent_index_number: i32,
+    index_number: i32,
+    data: Option<Value>,
+    premiere_date: Option<chrono::DateTime<Utc>>,
+) -> jellyfin_data::entities::base_item::Model {
     let mut item = NewBaseItem::new(Uuid::new_v4(), "Episode");
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
@@ -751,6 +845,7 @@ async fn create_episode(
     item.season_id = Some(season_id);
     item.media_type = Some("Video".to_owned());
     item.data = data;
+    item.premiere_date = premiere_date;
     repository.create(item).await.expect("episode creation")
 }
 

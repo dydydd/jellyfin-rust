@@ -362,6 +362,7 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             user_id: query.user_id,
             is_resumable: None,
             is_played: query.is_played,
+            min_premiere_date: None,
             order: item_order(&query.sort_by, &query.sort_order),
             start_index: query.start_index,
             limit: query.limit,
@@ -397,6 +398,9 @@ fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemOrder {
             }
         }
         Some(sort) if sort.eq_ignore_ascii_case("Random") => BaseItemOrder::Random,
+        Some(sort) if sort.eq_ignore_ascii_case("PremiereDate") => {
+            BaseItemOrder::PremiereDateAscending
+        }
         Some(sort)
             if sort.eq_ignore_ascii_case("SortName") || sort.eq_ignore_ascii_case("Name") =>
         {

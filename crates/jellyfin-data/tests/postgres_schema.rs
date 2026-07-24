@@ -1,6 +1,6 @@
 use jellyfin_migration::{
-    AddBaseItemOfficialRatingMigration, AddUserPolicyProvidersMigration, CreateUsersMigration,
-    OptimizeYearQueriesMigration,
+    AddBaseItemOfficialRatingMigration, AddBaseItemPremiereDateMigration,
+    AddUserPolicyProvidersMigration, CreateUsersMigration, OptimizeYearQueriesMigration,
 };
 use sea_orm::{ConnectionTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -51,6 +51,14 @@ async fn postgres_schema_installs_specialized_indexes() {
         .up(&schema)
         .await
         .expect("the official-rating DDL must remain idempotent");
+    AddBaseItemPremiereDateMigration
+        .up(&schema)
+        .await
+        .expect("reapplying the premiere-date DDL must succeed");
+    AddBaseItemPremiereDateMigration
+        .up(&schema)
+        .await
+        .expect("the premiere-date DDL must remain idempotent");
 
     let rows = database
         .query_all(Statement::from_string(
@@ -97,6 +105,11 @@ async fn postgres_schema_installs_specialized_indexes() {
         base_item_index_names
             .iter()
             .any(|name| name == "base_items_official_rating_idx")
+    );
+    assert!(
+        base_item_index_names
+            .iter()
+            .any(|name| name == "base_items_episode_premiere_date_idx")
     );
 
     let columns = database

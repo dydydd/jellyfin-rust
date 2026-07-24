@@ -21,6 +21,7 @@ pub struct Model {
     pub index_number: Option<i32>,
     pub parent_index_number: Option<i32>,
     pub production_year: Option<i32>,
+    pub premiere_date: Option<DateTime<Utc>>,
     pub runtime_ticks: Option<i64>,
     pub is_folder: bool,
     pub is_virtual_item: bool,

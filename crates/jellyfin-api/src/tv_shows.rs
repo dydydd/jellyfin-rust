@@ -6,6 +6,7 @@ use axum::{
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
+use chrono::{Duration, Utc};
 use jellyfin_controller::UserLibraryError;
 use jellyfin_data::{BaseItemOrder, BaseItemQuery, entities::base_item};
 use serde::Deserialize;
@@ -133,6 +134,80 @@ pub(crate) struct NextUpQuery {
     enable_resumable: bool,
     #[serde(default, rename = "enableRewatching", alias = "EnableRewatching")]
     enable_rewatching: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UpcomingQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(rename = "parentId", alias = "ParentId")]
+    parent_id: Option<Uuid>,
+    #[serde(rename = "enableImages", alias = "EnableImages")]
+    enable_images: Option<bool>,
+    #[serde(rename = "imageTypeLimit", alias = "ImageTypeLimit")]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(rename = "enableUserData", alias = "EnableUserData")]
+    enable_user_data: Option<bool>,
+}
+
+pub(crate) async fn upcoming(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<UpcomingQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
+    let _ = (
+        query.enable_images,
+        query.image_type_limit,
+        query.enable_image_types,
+        query.enable_user_data,
+    );
+
+    let page = state
+        .user_library
+        .query_items(
+            &authenticated.user,
+            target_user_id,
+            BaseItemQuery {
+                parent_id: query.parent_id,
+                recursive: true,
+                include_item_types: vec!["Episode".to_owned()],
+                min_premiere_date: Some(Utc::now() - Duration::days(1)),
+                order: BaseItemOrder::PremiereDateAscending,
+                start_index: query.start_index,
+                limit: query.limit,
+                enable_total_record_count: Some(false),
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+    let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+    let start_index = usize::try_from(page.start_index).unwrap_or(usize::MAX);
+    let items = project_items_to_dtos(state.as_ref(), page.items, fields, target_user_id).await?;
+    Ok(Json(user_library::BaseItemQueryResult {
+        items,
+        total_record_count,
+        start_index,
+    }))
 }
 
 pub(crate) async fn next_up(
