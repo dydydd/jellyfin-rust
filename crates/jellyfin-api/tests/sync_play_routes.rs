@@ -71,10 +71,9 @@ async fn exercise_sync_play_routes(database_name: &str) {
     set_sync_play_access(&users, joiner.id, SyncPlayUserAccessType::JoinGroups).await;
     set_sync_play_access(&users, blocked.id, SyncPlayUserAccessType::None).await;
     let items = BaseItemRepository::new(database.clone());
-    let first_item = items
-        .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
-        .await
-        .unwrap();
+    let mut first = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    first.runtime_ticks = Some(50_000);
+    let first_item = items.create(first).await.unwrap();
     let second_item = items
         .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
         .await
@@ -255,6 +254,87 @@ async fn exercise_sync_play_routes(database_name: &str) {
         request(
             &app,
             "POST",
+            "/SyncPlay/Unpause",
+            Some(&creator_token),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_group_state(&app, &group_id, &creator_token, "Playing").await;
+    assert_no_content(request(&app, "POST", "/SyncPlay/Pause", Some(&joiner_token), None).await)
+        .await;
+    assert_group_state(&app, &group_id, &creator_token, "Paused").await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/Seek",
+            Some(&creator_token),
+            Some(json!({ "PositionTicks": 999_999 })),
+        )
+        .await,
+    )
+    .await;
+    assert_group_state(&app, &group_id, &creator_token, "Waiting").await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/SetRepeatMode",
+            Some(&creator_token),
+            Some(json!({ "Mode": "RepeatAll" })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/SetShuffleMode",
+            Some(&creator_token),
+            Some(json!({ "Mode": "Shuffle" })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/NextItem",
+            Some(&creator_token),
+            Some(json!({ "PlaylistItemId": Uuid::new_v4() })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/PreviousItem",
+            Some(&creator_token),
+            Some(json!({ "PlaylistItemId": Uuid::new_v4() })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        request(&app, "POST", "/SyncPlay/Pause", Some(&blocked_token), None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_no_content(request(&app, "POST", "/SyncPlay/Stop", Some(&creator_token), None).await)
+        .await;
+    assert_group_state(&app, &group_id, &creator_token, "Idle").await;
+
+    assert_no_content(
+        request(
+            &app,
+            "POST",
             "/SyncPlay/SetNewQueue",
             Some(&joiner_token),
             Some(json!({
@@ -418,6 +498,21 @@ async fn response_json(response: axum::response::Response) -> Value {
 async fn assert_no_content(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert!(to_bytes(response.into_body(), 1).await.unwrap().is_empty());
+}
+
+async fn assert_group_state(app: &Router, group_id: &str, token: &str, expected: &str) {
+    let group = response_json(
+        request(
+            app,
+            "GET",
+            &format!("/SyncPlay/{group_id}"),
+            Some(token),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(group["State"], expected);
 }
 
 fn assert_temporary_database_name(database_name: &str) {

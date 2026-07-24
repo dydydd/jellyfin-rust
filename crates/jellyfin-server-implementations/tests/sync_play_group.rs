@@ -1,5 +1,6 @@
 use std::{cell::RefCell, collections::HashMap};
 
+use jellyfin_model::{GroupRepeatMode, GroupShuffleMode};
 use jellyfin_server_implementations::{GroupLibrary, SyncPlayGroup};
 use uuid::Uuid;
 
@@ -156,6 +157,62 @@ fn clearing_queue_can_preserve_or_remove_the_playing_occurrence() {
     assert!(group.play_queue().get_playlist().is_empty());
     assert!(!group.play_queue().is_item_playing());
     assert_eq!(group.play_queue().playing_item_index(), -1);
+}
+
+#[test]
+fn navigation_respects_repeat_modes_and_current_boundaries() {
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    let mut group = SyncPlayGroup::new(RecordingLibrary::default());
+    group.play_queue_mut().set_playlist(&[first, second]);
+    group.play_queue_mut().set_playing_item_by_index(0);
+
+    assert!(!group.play_queue_mut().previous());
+    assert_eq!(group.play_queue().playing_item_id(), first);
+    assert!(group.play_queue_mut().next_item());
+    assert_eq!(group.play_queue().playing_item_id(), second);
+    assert!(!group.play_queue_mut().next_item());
+    assert_eq!(group.play_queue().playing_item_id(), second);
+
+    group
+        .play_queue_mut()
+        .set_repeat_mode(GroupRepeatMode::RepeatAll);
+    assert!(group.play_queue_mut().next_item());
+    assert_eq!(group.play_queue().playing_item_id(), first);
+    assert!(group.play_queue_mut().previous());
+    assert_eq!(group.play_queue().playing_item_id(), second);
+
+    group
+        .play_queue_mut()
+        .set_repeat_mode(GroupRepeatMode::RepeatOne);
+    assert!(group.play_queue_mut().next_item());
+    assert_eq!(group.play_queue().playing_item_id(), second);
+}
+
+#[test]
+fn shuffle_preserves_current_occurrence_and_restores_sorted_order() {
+    let expected_ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    let mut group = SyncPlayGroup::new(RecordingLibrary::default());
+    group.play_queue_mut().set_playlist(&expected_ids);
+    group.play_queue_mut().set_playing_item_by_index(1);
+    let playing_playlist_id = group.play_queue().playing_item_playlist_id();
+
+    group
+        .play_queue_mut()
+        .set_shuffle_mode(GroupShuffleMode::Shuffle);
+    assert_eq!(group.play_queue().shuffle_mode(), GroupShuffleMode::Shuffle);
+    assert_eq!(group.play_queue().playing_item_index(), 0);
+    assert_eq!(
+        group.play_queue().playing_item_playlist_id(),
+        playing_playlist_id
+    );
+
+    group
+        .play_queue_mut()
+        .set_shuffle_mode(GroupShuffleMode::Sorted);
+    assert_eq!(item_ids(group.play_queue()), expected_ids);
+    assert_eq!(group.play_queue().playing_item_index(), 1);
+    assert_eq!(group.play_queue().shuffle_mode(), GroupShuffleMode::Sorted);
 }
 
 fn item_ids(queue: &jellyfin_server_implementations::PlayQueue) -> Vec<Uuid> {

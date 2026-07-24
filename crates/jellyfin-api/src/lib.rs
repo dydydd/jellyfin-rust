@@ -645,6 +645,17 @@ fn sync_play_routes() -> Router<Arc<AppState>> {
             post(sync_play::move_playlist_item),
         )
         .route("/SyncPlay/Queue", post(sync_play::queue_items))
+        .route("/SyncPlay/Unpause", post(sync_play::unpause))
+        .route("/SyncPlay/Pause", post(sync_play::pause))
+        .route("/SyncPlay/Stop", post(sync_play::stop))
+        .route("/SyncPlay/Seek", post(sync_play::seek))
+        .route("/SyncPlay/NextItem", post(sync_play::next_item))
+        .route("/SyncPlay/PreviousItem", post(sync_play::previous_item))
+        .route("/SyncPlay/SetRepeatMode", post(sync_play::set_repeat_mode))
+        .route(
+            "/SyncPlay/SetShuffleMode",
+            post(sync_play::set_shuffle_mode),
+        )
         .route("/SyncPlay/{id}", get(sync_play::get_group))
 }
 

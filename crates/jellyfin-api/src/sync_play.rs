@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_model::{GroupInfoDto, GroupQueueMode};
+use jellyfin_model::{GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode};
 use jellyfin_server_implementations::SyncPlaySession;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -58,6 +58,30 @@ pub(crate) struct MovePlaylistItemRequest {
 pub(crate) struct QueueRequest {
     item_ids: Vec<Uuid>,
     mode: GroupQueueMode,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct SeekRequest {
+    position_ticks: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct NavigationRequest {
+    playlist_item_id: Uuid,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct RepeatModeRequest {
+    mode: GroupRepeatMode,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct ShuffleModeRequest {
+    mode: GroupShuffleMode,
 }
 
 pub(crate) async fn create_group(
@@ -263,6 +287,130 @@ pub(crate) async fn queue_items(
         }
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn unpause(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    state.sync_play.unpause(&session.session_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn pause(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    state.sync_play.pause(&session.session_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn stop(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    state.sync_play.stop(&session.session_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn seek(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<SeekRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let runtime_ticks = current_item_runtime(&state, &session).await?;
+    state
+        .sync_play
+        .seek(&session.session_id, request.position_ticks, runtime_ticks)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn next_item(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<NavigationRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .sync_play
+        .next_item(&session.session_id, request.playlist_item_id)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn previous_item(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<NavigationRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .sync_play
+        .previous_item(&session.session_id, request.playlist_item_id)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_repeat_mode(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<RepeatModeRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .sync_play
+        .set_repeat_mode(&session.session_id, request.mode)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_shuffle_mode(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<ShuffleModeRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .sync_play
+        .set_shuffle_mode(&session.session_id, request.mode)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn current_item_runtime(
+    state: &AppState,
+    session: &SyncPlaySession,
+) -> Result<i64, ApiError> {
+    let Some(queue) = state
+        .sync_play
+        .queue_state_for_session(&session.session_id)
+        .await
+    else {
+        return Ok(0);
+    };
+    let Some(item) = usize::try_from(queue.playing_item_index)
+        .ok()
+        .and_then(|index| queue.items.get(index))
+    else {
+        return Ok(0);
+    };
+    let user = state.users.get(session.user_id).await?;
+    Ok(state
+        .user_library
+        .item(&user, user.id, item.item_id)
+        .await?
+        .runtime_ticks
+        .unwrap_or(0))
 }
 
 async fn require_active_user(

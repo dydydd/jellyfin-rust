@@ -18,6 +18,21 @@ pub enum GroupQueueMode {
     QueueNext,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupRepeatMode {
+    RepeatOne,
+    RepeatAll,
+    #[default]
+    RepeatNone,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupShuffleMode {
+    #[default]
+    Sorted,
+    Shuffle,
+}
+
 /// Public summary of a `SyncPlay` group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]

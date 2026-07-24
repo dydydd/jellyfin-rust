@@ -1,7 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
-use jellyfin_model::{GroupInfoDto, GroupQueueMode, GroupStateType};
+use jellyfin_model::{
+    GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
+};
+use rand::seq::SliceRandom;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -162,6 +165,8 @@ impl SyncPlayManager {
             items: group.play_queue.get_playlist().to_vec(),
             playing_item_index: group.play_queue.playing_item_index(),
             position_ticks: group.position_ticks,
+            repeat_mode: group.play_queue.repeat_mode(),
+            shuffle_mode: group.play_queue.shuffle_mode(),
         })
     }
 
@@ -207,6 +212,7 @@ impl SyncPlayManager {
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
             return false;
         };
+        group.play_queue.reset();
         group.play_queue.set_playlist(item_ids);
         group
             .play_queue
@@ -292,6 +298,105 @@ impl SyncPlayManager {
         }
         true
     }
+
+    pub async fn unpause(&self, session_id: &str) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        group.state = match group.state {
+            GroupStateType::Idle => GroupStateType::Waiting,
+            GroupStateType::Waiting | GroupStateType::Paused | GroupStateType::Playing => {
+                GroupStateType::Playing
+            }
+        };
+        true
+    }
+
+    pub async fn pause(&self, session_id: &str) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        if group.state == GroupStateType::Playing {
+            group.state = GroupStateType::Paused;
+        }
+        true
+    }
+
+    pub async fn stop(&self, session_id: &str) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        group.state = GroupStateType::Idle;
+        group.position_ticks = 0;
+        true
+    }
+
+    pub async fn seek(&self, session_id: &str, position_ticks: i64, runtime_ticks: i64) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        if group.state == GroupStateType::Idle {
+            return false;
+        }
+        group.position_ticks = position_ticks.clamp(0, runtime_ticks.max(0));
+        group.state = GroupStateType::Waiting;
+        true
+    }
+
+    pub async fn next_item(&self, session_id: &str, playlist_item_id: Uuid) -> bool {
+        navigate_queue(self, session_id, playlist_item_id, true).await
+    }
+
+    pub async fn previous_item(&self, session_id: &str, playlist_item_id: Uuid) -> bool {
+        navigate_queue(self, session_id, playlist_item_id, false).await
+    }
+
+    pub async fn set_repeat_mode(&self, session_id: &str, mode: GroupRepeatMode) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        group.play_queue.set_repeat_mode(mode);
+        true
+    }
+
+    pub async fn set_shuffle_mode(&self, session_id: &str, mode: GroupShuffleMode) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        group.play_queue.set_shuffle_mode(mode);
+        true
+    }
+}
+
+async fn navigate_queue(
+    manager: &SyncPlayManager,
+    session_id: &str,
+    playlist_item_id: Uuid,
+    forwards: bool,
+) -> bool {
+    let mut state = manager.state.write().await;
+    let Some(group) = group_for_session_mut(&mut state, session_id) else {
+        return false;
+    };
+    if group.play_queue.playing_item_playlist_id() != playlist_item_id {
+        return false;
+    }
+    let changed = if forwards {
+        group.play_queue.next_item()
+    } else {
+        group.play_queue.previous()
+    };
+    if changed {
+        group.position_ticks = 0;
+        group.state = GroupStateType::Waiting;
+    }
+    changed
 }
 
 fn group_for_session_mut<'a>(
@@ -340,7 +445,10 @@ impl PlayQueueItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayQueue {
     playlist: Vec<PlayQueueItem>,
+    sorted_playlist: Option<Vec<PlayQueueItem>>,
     playing_item_index: i32,
+    repeat_mode: GroupRepeatMode,
+    shuffle_mode: GroupShuffleMode,
 }
 
 impl Default for PlayQueue {
@@ -354,19 +462,26 @@ impl PlayQueue {
     pub const fn new() -> Self {
         Self {
             playlist: Vec::new(),
+            sorted_playlist: None,
             playing_item_index: -1,
+            repeat_mode: GroupRepeatMode::RepeatNone,
+            shuffle_mode: GroupShuffleMode::Sorted,
         }
     }
 
     /// Clears every queued item.
     pub fn reset(&mut self) {
         self.playlist.clear();
+        self.sorted_playlist = None;
         self.playing_item_index = -1;
+        self.repeat_mode = GroupRepeatMode::RepeatNone;
+        self.shuffle_mode = GroupShuffleMode::Sorted;
     }
 
     /// Replaces the queue while preserving input order and duplicate items.
     pub fn set_playlist(&mut self, item_ids: &[Uuid]) {
         self.playlist = item_ids.iter().copied().map(PlayQueueItem::new).collect();
+        self.sorted_playlist = None;
         self.playing_item_index = -1;
     }
 
@@ -384,6 +499,28 @@ impl PlayQueue {
     #[must_use]
     pub const fn is_item_playing(&self) -> bool {
         self.playing_item_index != -1
+    }
+
+    #[must_use]
+    pub const fn repeat_mode(&self) -> GroupRepeatMode {
+        self.repeat_mode
+    }
+
+    #[must_use]
+    pub const fn shuffle_mode(&self) -> GroupShuffleMode {
+        self.shuffle_mode
+    }
+
+    #[must_use]
+    pub fn playing_item_playlist_id(&self) -> Uuid {
+        self.playing_item()
+            .map_or_else(Uuid::nil, |item| item.playlist_item_id)
+    }
+
+    #[must_use]
+    pub fn playing_item_id(&self) -> Uuid {
+        self.playing_item()
+            .map_or_else(Uuid::nil, |item| item.item_id)
     }
 
     pub fn set_playing_item_by_index(&mut self, index: i32) {
@@ -404,25 +541,48 @@ impl PlayQueue {
     }
 
     pub fn queue(&mut self, item_ids: &[Uuid]) {
-        self.playlist
-            .extend(item_ids.iter().copied().map(PlayQueueItem::new));
+        let items = item_ids
+            .iter()
+            .copied()
+            .map(PlayQueueItem::new)
+            .collect::<Vec<_>>();
+        self.playlist.extend(items.iter().copied());
+        if let Some(sorted) = self.sorted_playlist.as_mut() {
+            sorted.extend(items);
+        }
     }
 
     pub fn queue_next(&mut self, item_ids: &[Uuid]) {
+        let playing_item = self.playing_item();
         let insertion_index = usize::try_from(self.playing_item_index + 1)
             .unwrap_or(0)
             .min(self.playlist.len());
-        self.playlist.splice(
-            insertion_index..insertion_index,
-            item_ids.iter().copied().map(PlayQueueItem::new),
-        );
+        let items = item_ids
+            .iter()
+            .copied()
+            .map(PlayQueueItem::new)
+            .collect::<Vec<_>>();
+        self.playlist
+            .splice(insertion_index..insertion_index, items.iter().copied());
+        if let Some(sorted) = self.sorted_playlist.as_mut() {
+            let sorted_index = playing_item
+                .and_then(|playing| sorted.iter().position(|item| *item == playing))
+                .map_or(0, |index| index + 1);
+            sorted.splice(sorted_index..sorted_index, items);
+        }
     }
 
     pub fn clear_playlist(&mut self, clear_playing_item: bool) {
         let playing_item = self.playing_item();
         self.playlist.clear();
+        if let Some(sorted) = self.sorted_playlist.as_mut() {
+            sorted.clear();
+        }
         if !clear_playing_item && let Some(playing_item) = playing_item {
             self.playlist.push(playing_item);
+            if let Some(sorted) = self.sorted_playlist.as_mut() {
+                sorted.push(playing_item);
+            }
             self.playing_item_index = 0;
         } else {
             self.playing_item_index = -1;
@@ -433,6 +593,9 @@ impl PlayQueue {
         let playing_item = self.playing_item();
         self.playlist
             .retain(|item| !playlist_item_ids.contains(&item.playlist_item_id));
+        if let Some(sorted) = self.sorted_playlist.as_mut() {
+            sorted.retain(|item| !playlist_item_ids.contains(&item.playlist_item_id));
+        }
         let Some(playing_item) = playing_item else {
             return false;
         };
@@ -468,6 +631,84 @@ impl PlayQueue {
         true
     }
 
+    pub const fn set_repeat_mode(&mut self, mode: GroupRepeatMode) {
+        self.repeat_mode = mode;
+    }
+
+    pub fn set_shuffle_mode(&mut self, mode: GroupShuffleMode) {
+        match mode {
+            GroupShuffleMode::Shuffle => self.shuffle_playlist(),
+            GroupShuffleMode::Sorted => self.restore_sorted_playlist(),
+        }
+    }
+
+    pub fn next_item(&mut self) -> bool {
+        if self.repeat_mode == GroupRepeatMode::RepeatOne {
+            return self.is_item_playing();
+        }
+        let candidate = self.playing_item_index + 1;
+        if usize::try_from(candidate).is_ok_and(|index| index < self.playlist.len()) {
+            self.playing_item_index = candidate;
+            return true;
+        }
+        if self.repeat_mode == GroupRepeatMode::RepeatAll && !self.playlist.is_empty() {
+            self.playing_item_index = 0;
+            return true;
+        }
+        if !self.playlist.is_empty() {
+            self.playing_item_index = i32::try_from(self.playlist.len() - 1).unwrap_or(i32::MAX);
+        }
+        false
+    }
+
+    pub fn previous(&mut self) -> bool {
+        if self.repeat_mode == GroupRepeatMode::RepeatOne {
+            return self.is_item_playing();
+        }
+        let candidate = self.playing_item_index - 1;
+        if candidate >= 0 {
+            self.playing_item_index = candidate;
+            return true;
+        }
+        if self.repeat_mode == GroupRepeatMode::RepeatAll && !self.playlist.is_empty() {
+            self.playing_item_index = i32::try_from(self.playlist.len() - 1).unwrap_or(i32::MAX);
+            return true;
+        }
+        if !self.playlist.is_empty() {
+            self.playing_item_index = 0;
+        }
+        false
+    }
+
+    fn shuffle_playlist(&mut self) {
+        let playing_item = self.playing_item();
+        if self.sorted_playlist.is_none() {
+            self.sorted_playlist = Some(self.playlist.clone());
+        }
+        if let Some(playing_item) = playing_item {
+            self.playlist
+                .retain(|item| item.playlist_item_id != playing_item.playlist_item_id);
+            self.playlist.shuffle(&mut rand::rng());
+            self.playlist.insert(0, playing_item);
+            self.playing_item_index = 0;
+        } else {
+            self.playlist.shuffle(&mut rand::rng());
+        }
+        self.shuffle_mode = GroupShuffleMode::Shuffle;
+    }
+
+    fn restore_sorted_playlist(&mut self) {
+        let playing_item = self.playing_item();
+        if let Some(sorted) = self.sorted_playlist.take() {
+            self.playlist = sorted;
+        }
+        self.playing_item_index = playing_item
+            .and_then(|playing| self.playlist.iter().position(|item| *item == playing))
+            .and_then(|index| i32::try_from(index).ok())
+            .unwrap_or(-1);
+        self.shuffle_mode = GroupShuffleMode::Sorted;
+    }
+
     fn playing_item(&self) -> Option<PlayQueueItem> {
         usize::try_from(self.playing_item_index)
             .ok()
@@ -481,6 +722,8 @@ pub struct SyncPlayQueueState {
     pub items: Vec<PlayQueueItem>,
     pub playing_item_index: i32,
     pub position_ticks: i64,
+    pub repeat_mode: GroupRepeatMode,
+    pub shuffle_mode: GroupShuffleMode,
 }
 
 /// Library lookup and standalone visibility boundary used by `SyncPlay` groups.

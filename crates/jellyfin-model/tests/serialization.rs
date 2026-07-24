@@ -2,13 +2,13 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, BackupManifestDto, BackupOptionsDto, ClientCapabilitiesDto, DeviceInfoDto,
     DeviceOptionsDto, EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult,
-    GeneralCommand, GeneralCommandType, GroupInfoDto, GroupQueueMode, GroupStateType, ImageInfo,
-    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
-    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
-    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint,
-    SearchHintResult, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
-    UserDto, UserPolicy, UtcTimeResponse,
+    GeneralCommand, GeneralCommandType, GroupInfoDto, GroupQueueMode, GroupRepeatMode,
+    GroupShuffleMode, GroupStateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
+    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
+    PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
+    RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration, SessionInfoDto,
+    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -721,6 +721,26 @@ fn sync_play_queue_mode_uses_official_string_values() {
     assert_eq!(
         serde_json::from_value::<GroupQueueMode>(json!("QueueNext")).unwrap(),
         GroupQueueMode::QueueNext
+    );
+}
+
+#[test]
+fn sync_play_playback_modes_use_official_string_values() {
+    assert_eq!(
+        serde_json::to_value(GroupRepeatMode::RepeatNone).unwrap(),
+        "RepeatNone"
+    );
+    assert_eq!(
+        serde_json::from_value::<GroupRepeatMode>(json!("RepeatOne")).unwrap(),
+        GroupRepeatMode::RepeatOne
+    );
+    assert_eq!(
+        serde_json::to_value(GroupShuffleMode::Sorted).unwrap(),
+        "Sorted"
+    );
+    assert_eq!(
+        serde_json::from_value::<GroupShuffleMode>(json!("Shuffle")).unwrap(),
+        GroupShuffleMode::Shuffle
     );
 }
 

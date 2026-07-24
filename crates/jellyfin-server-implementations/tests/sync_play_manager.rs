@@ -1,4 +1,4 @@
-use jellyfin_model::GroupQueueMode;
+use jellyfin_model::{GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType};
 use jellyfin_server_implementations::{SyncPlayManager, SyncPlaySession};
 use uuid::Uuid;
 
@@ -117,4 +117,104 @@ async fn sync_play_manager_applies_queue_requests_only_for_group_sessions() {
 
 fn queue_item_ids(state: &jellyfin_server_implementations::SyncPlayQueueState) -> Vec<Uuid> {
     state.items.iter().map(|item| item.item_id).collect()
+}
+
+#[tokio::test]
+async fn sync_play_manager_controls_playback_state_and_navigation() {
+    let manager = SyncPlayManager::new();
+    let user_id = Uuid::new_v4();
+    let items = [Uuid::new_v4(), Uuid::new_v4()];
+    let group = manager
+        .create_group(session(1, user_id, "alice"), "Playback".to_owned())
+        .await;
+    assert!(manager.set_new_queue("1", &items, 0, 50).await);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Waiting
+    );
+
+    assert!(manager.unpause("1").await);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Playing
+    );
+    assert!(manager.pause("1").await);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Paused
+    );
+    assert!(manager.seek("1", 500, 300).await);
+    let sought = manager.queue_state_for_session("1").await.unwrap();
+    assert_eq!(sought.position_ticks, 300);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Waiting
+    );
+
+    let current = sought.items[0].playlist_item_id;
+    assert!(!manager.next_item("1", Uuid::new_v4()).await);
+    assert!(manager.next_item("1", current).await);
+    assert_eq!(
+        manager
+            .queue_state_for_session("1")
+            .await
+            .unwrap()
+            .playing_item_index,
+        1
+    );
+    assert!(
+        manager
+            .set_repeat_mode("1", GroupRepeatMode::RepeatAll)
+            .await
+    );
+    let current = manager.queue_state_for_session("1").await.unwrap().items[1].playlist_item_id;
+    assert!(manager.next_item("1", current).await);
+    assert_eq!(
+        manager
+            .queue_state_for_session("1")
+            .await
+            .unwrap()
+            .playing_item_index,
+        0
+    );
+    assert!(
+        manager
+            .set_shuffle_mode("1", GroupShuffleMode::Shuffle)
+            .await
+    );
+    assert!(
+        manager
+            .set_shuffle_mode("1", GroupShuffleMode::Sorted)
+            .await
+    );
+    assert!(
+        manager
+            .set_repeat_mode("1", GroupRepeatMode::RepeatOne)
+            .await
+    );
+    assert!(
+        manager
+            .set_shuffle_mode("1", GroupShuffleMode::Shuffle)
+            .await
+    );
+    assert!(manager.set_new_queue("1", &items, 0, 5).await);
+    let reset = manager.queue_state_for_session("1").await.unwrap();
+    assert_eq!(reset.playing_item_index, 0);
+    assert_eq!(reset.repeat_mode, GroupRepeatMode::RepeatNone);
+    assert_eq!(reset.shuffle_mode, GroupShuffleMode::Sorted);
+
+    assert!(manager.stop("1").await);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Idle
+    );
+    assert_eq!(
+        manager
+            .queue_state_for_session("1")
+            .await
+            .unwrap()
+            .position_ticks,
+        0
+    );
+    assert!(!manager.seek("1", 10, 300).await);
 }
