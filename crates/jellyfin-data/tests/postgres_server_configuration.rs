@@ -74,6 +74,8 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.min_audiobook_resume, 5);
     assert_eq!(seeded.max_audiobook_resume, 5);
     assert!(seeded.allow_client_log_upload);
+    assert_eq!(seeded.trickplay_options["Interval"], 10_000);
+    assert_eq!(seeded.trickplay_options["ScanBehavior"], "NonBlocking");
     assert_eq!(seeded.row_version, 1);
 
     let updated = first
@@ -312,6 +314,11 @@ async fn assert_server_configuration_update(
     assert_eq!(updated.min_audiobook_resume, 6);
     assert_eq!(updated.max_audiobook_resume, 8);
     assert!(!updated.allow_client_log_upload);
+    assert_eq!(updated.trickplay_options["Interval"], 2_500);
+    assert_eq!(
+        updated.trickplay_options["WidthResolutions"],
+        json!([320, 640])
+    );
     assert_eq!(updated.created_at, before.created_at);
     assert!(updated.row_version > before.row_version);
     assert_eq!(second.load().await.expect("reloaded full update"), updated);
@@ -367,6 +374,20 @@ fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
         min_audiobook_resume: 6,
         max_audiobook_resume: 8,
         allow_client_log_upload: false,
+        trickplay_options: json!({
+            "EnableHwAcceleration": false,
+            "EnableHwEncoding": false,
+            "EnableKeyFrameOnlyExtraction": false,
+            "ScanBehavior": "Blocking",
+            "ProcessPriority": "Normal",
+            "Interval": 2500,
+            "WidthResolutions": [320, 640],
+            "TileWidth": 8,
+            "TileHeight": 6,
+            "Qscale": 5,
+            "JpegQuality": 85,
+            "ProcessThreads": 2
+        }),
     }
 }
 
@@ -415,6 +436,7 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
     assert_playstate_resume_schema(database).await;
     assert_client_log_upload_schema(database).await;
     assert_plugin_repositories_schema(database).await;
+    assert_trickplay_configuration_schema(database).await;
 
     let row = database
         .query_one(Statement::from_string(
@@ -457,6 +479,40 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("plugin-repositories constraint catalog query")
         .expect("plugin-repositories constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_trickplay_configuration_schema(database: &sea_orm::DatabaseConnection) {
+    let column = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name = 'trickplay_options'"
+                .to_owned(),
+        ))
+        .await
+        .expect("trickplay-options column catalog query")
+        .expect("trickplay-options column");
+    assert_eq!(String::try_get(&column, "", "data_type").unwrap(), "jsonb");
+    assert_eq!(String::try_get(&column, "", "is_nullable").unwrap(), "NO");
+    let default = String::try_get(&column, "", "column_default").unwrap();
+    assert!(default.contains("\"Interval\": 10000"));
+
+    let constraints = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT count(*)::bigint AS count FROM pg_constraint \
+             WHERE connamespace = 'jellyfin'::regnamespace \
+               AND conrelid = 'jellyfin.server_configuration'::regclass \
+               AND conname = 'server_configuration_trickplay_options_object'"
+                .to_owned(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(i64::try_get(&constraints, "", "count").unwrap(), 1);
 }
 
 async fn assert_plugin_repositories_schema(database: &sea_orm::DatabaseConnection) {

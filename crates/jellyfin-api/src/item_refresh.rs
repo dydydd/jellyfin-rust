@@ -61,13 +61,14 @@ pub(crate) async fn refresh(
             query.metadata_refresh_mode,
             MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
         ) {
+            let configuration = state.server_configuration.load().await?;
+            let trickplay_options = serde_json::from_value::<jellyfin_model::TrickplayOptions>(
+                configuration.trickplay_options,
+            )
+            .map_err(|_| ApiError::Internal)?;
             state
                 .trickplay
-                .discover_data(
-                    item_id,
-                    item.runtime_ticks,
-                    jellyfin_model::TrickplayOptions::default().interval,
-                )
+                .discover_data(item_id, item.runtime_ticks, trickplay_options.interval)
                 .await?;
         }
     }

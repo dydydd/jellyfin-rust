@@ -48,6 +48,14 @@ async fn item_refresh_route_requires_elevation_and_accepts_existing_items() {
 
 async fn exercise_item_refresh_route(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
+    fixture
+        .database
+        .execute_unprepared(
+            "UPDATE jellyfin.server_configuration SET trickplay_options = \
+             jsonb_set(trickplay_options, '{Interval}', '2500'::jsonb) WHERE id = 1",
+        )
+        .await
+        .expect("custom trickplay interval");
     let trickplay = TrickplayInfoRepository::new(fixture.database.clone());
     let trickplay_info = NewTrickplayInfo {
         width: 320,
@@ -164,7 +172,7 @@ async fn exercise_item_refresh_route(database_name: &str) {
     assert_eq!(inferred.tile_width, 3);
     assert_eq!(inferred.tile_height, 2);
     assert_eq!(inferred.thumbnail_count, 12);
-    assert_eq!(inferred.interval, 10_000);
+    assert_eq!(inferred.interval, 2_500);
     assert!(inferred.bandwidth > 0);
 
     assert_eq!(

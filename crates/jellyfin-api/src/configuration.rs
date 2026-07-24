@@ -6,7 +6,9 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_data::{ServerConfigurationUpdate, entities::server_configuration};
-use jellyfin_model::{MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration};
+use jellyfin_model::{
+    MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration, TrickplayOptions,
+};
 use serde_json::Value;
 
 use crate::{ApiError, AppState, authentication, authorization};
@@ -107,6 +109,8 @@ fn server_configuration(
         )
         .map_err(|_| ApiError::Internal)?,
         allow_client_log_upload: model.allow_client_log_upload,
+        trickplay_options: serde_json::from_value::<TrickplayOptions>(model.trickplay_options)
+            .map_err(|_| ApiError::Internal)?,
         ..ServerConfiguration::default()
     })
 }
@@ -130,5 +134,7 @@ fn server_configuration_update(
         min_audiobook_resume: configuration.min_audiobook_resume,
         max_audiobook_resume: configuration.max_audiobook_resume,
         allow_client_log_upload: configuration.allow_client_log_upload,
+        trickplay_options: serde_json::to_value(configuration.trickplay_options)
+            .map_err(|_| ApiError::Internal)?,
     })
 }

@@ -397,6 +397,8 @@ async fn exercise_configuration_routes(database_name: &str) {
     updated.insert("MinAudiobookResume".to_owned(), json!(9));
     updated.insert("MaxAudiobookResume".to_owned(), json!(11));
     updated.insert("AllowClientLogUpload".to_owned(), json!(true));
+    updated["TrickplayOptions"]["Interval"] = json!(2_500);
+    updated["TrickplayOptions"]["WidthResolutions"] = json!([320, 640]);
 
     assert_eq!(
         post_json(&app, "/System/Configuration", None, &configuration)
@@ -457,6 +459,11 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(saved["MinAudiobookResume"], 9);
     assert_eq!(saved["MaxAudiobookResume"], 11);
     assert_eq!(saved["AllowClientLogUpload"], true);
+    assert_eq!(saved["TrickplayOptions"]["Interval"], 2_500);
+    assert_eq!(
+        saved["TrickplayOptions"]["WidthResolutions"],
+        json!([320, 640])
+    );
 
     let persisted = repository.load().await.expect("server configuration load");
     assert_eq!(persisted.server_name, "Updated Configuration Server");
@@ -475,6 +482,7 @@ async fn exercise_configuration_routes(database_name: &str) {
             }
         ])
     );
+    assert_eq!(persisted.trickplay_options["Interval"], 2_500);
 
     user::Entity::delete_many()
         .exec(&database)
