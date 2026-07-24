@@ -83,6 +83,7 @@ mod studios;
 mod subtitles;
 mod system;
 mod time_sync;
+mod trailers;
 mod user_data;
 mod user_library;
 mod user_views;
@@ -446,6 +447,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Genres/{genre_name}", get(genres::get))
         .route("/Studios", get(studios::list))
         .route("/Studios/{name}", get(studios::get))
+        .route("/Trailers", get(trailers::list))
         .route("/MusicGenres", get(music_genre::list))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route("/Persons", get(persons::list))

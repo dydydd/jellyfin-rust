@@ -151,7 +151,7 @@ pub(crate) async fn get(
     headers: HeaderMap,
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    get_for(state, headers, query.user_id, query).await
+    query_items(state, headers, query).await
 }
 
 pub(crate) async fn get_legacy(
@@ -161,6 +161,14 @@ pub(crate) async fn get_legacy(
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     get_for(state, headers, Some(user_id), query).await
+}
+
+pub(crate) async fn query_items(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    query: ItemsQuery,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    get_for(state, headers, query.user_id, query).await
 }
 
 pub(crate) async fn resume(
@@ -359,6 +367,12 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             limit: query.limit,
             enable_total_record_count: Some(query.enable_total_record_count),
         })
+    }
+}
+
+impl ItemsQuery {
+    pub(crate) fn force_include_item_type(&mut self, item_type: impl Into<String>) {
+        self.include_item_types = vec![item_type.into()];
     }
 }
 
