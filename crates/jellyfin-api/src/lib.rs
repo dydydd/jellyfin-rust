@@ -471,6 +471,14 @@ pub fn router(state: AppState) -> Router {
             "/Videos/{item_id}/hls/{*legacy_path}",
             get(hls_segment::video),
         )
+        .route(
+            "/Videos/{item_id}/stream",
+            get(videos::stream).head(videos::stream),
+        )
+        .route(
+            "/Videos/{item_id}/stream.{container}",
+            get(videos::stream_with_container).head(videos::stream_with_container),
+        )
         .route("/Plugins", get(plugins::list))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .merge(package_routes())

@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Body,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
+    response::Response,
 };
 use axum_extra::extract::Query;
 use serde::Deserialize;
@@ -15,6 +17,70 @@ use crate::{ApiError, AppState, authentication, user_library};
 pub(crate) struct MergeVersionsQuery {
     #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
     ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct StreamQuery {
+    #[serde(rename = "static", alias = "Static")]
+    static_stream: Option<bool>,
+}
+
+pub(crate) async fn stream(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<StreamQuery>,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    stream_file(state, headers, item_id, None, query, request).await
+}
+
+pub(crate) async fn stream_with_container(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((item_id, container)): Path<(Uuid, String)>,
+    Query(query): Query<StreamQuery>,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    stream_file(state, headers, item_id, Some(&container), query, request).await
+}
+
+async fn stream_file(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    item_id: Uuid,
+    requested_container: Option<&str>,
+    query: StreamQuery,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let item = state
+        .library_controller
+        .item(&authenticated.user, authenticated.user.id, item_id)
+        .await?;
+    if !matches!(
+        item.item_type.as_str(),
+        "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+    ) {
+        return Err(ApiError::NotFound);
+    }
+    let path = item
+        .path
+        .filter(|path| !path.is_empty())
+        .ok_or(ApiError::NotFound)?;
+    if let Some(container) = requested_container {
+        let actual = std::path::Path::new(&path)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        if !container.eq_ignore_ascii_case(actual) {
+            return Err(ApiError::UnsupportedMediaType);
+        }
+    }
+    if !query.static_stream.unwrap_or(true) {
+        return Err(ApiError::UnsupportedMediaType);
+    }
+    crate::audio::serve_path(&headers, &path, request).await
 }
 
 pub(crate) async fn delete_alternate_sources(

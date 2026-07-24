@@ -80,7 +80,59 @@ async fn ancestors_download_similar_and_empty_relationships_have_real_success_se
     assert_item_counts(&fixture).await;
     assert_instant_mix(&fixture).await;
     assert_audio_stream(&fixture).await;
+    assert_video_stream(&fixture).await;
     fixture.cleanup().await;
+}
+
+async fn assert_video_stream(fixture: &Fixture) {
+    let media_bytes = Fixture::media_bytes();
+    let route = format!("/Videos/{}/stream.mkv", fixture.child_id);
+    let response = fixture
+        .request("GET", &route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
+    let head = fixture
+        .request("HEAD", &route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(
+        to_bytes(head.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let range = fixture.range_request(&route, "bytes=30-39").await;
+    assert_eq!(range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        to_bytes(range.into_body(), usize::MAX).await.unwrap(),
+        &media_bytes[30..=39]
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Videos/{}/stream.mp4", fixture.child_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Videos/{}/stream?static=false", fixture.child_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
 }
 
 async fn assert_audio_stream(fixture: &Fixture) {

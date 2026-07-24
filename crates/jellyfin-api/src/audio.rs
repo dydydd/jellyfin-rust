@@ -133,7 +133,7 @@ async fn stream_file(
     serve_path(&headers, &path, request).await
 }
 
-async fn serve_path(
+pub(crate) async fn serve_path(
     headers: &HeaderMap,
     path: &str,
     mut request: Request<Body>,
