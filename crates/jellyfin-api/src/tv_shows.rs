@@ -86,6 +86,114 @@ pub(crate) struct EpisodesQuery {
     sort_by: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct NextUpQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(rename = "seriesId", alias = "SeriesId")]
+    series_id: Option<Uuid>,
+    #[serde(rename = "parentId", alias = "ParentId")]
+    parent_id: Option<Uuid>,
+    #[serde(rename = "enableImages", alias = "EnableImages")]
+    enable_images: Option<bool>,
+    #[serde(rename = "imageTypeLimit", alias = "ImageTypeLimit")]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(rename = "enableUserData", alias = "EnableUserData")]
+    enable_user_data: Option<bool>,
+    #[serde(rename = "nextUpDateCutoff", alias = "NextUpDateCutoff")]
+    next_up_date_cutoff: Option<String>,
+    #[serde(
+        default = "default_enable_total_record_count",
+        rename = "enableTotalRecordCount",
+        alias = "EnableTotalRecordCount"
+    )]
+    enable_total_record_count: bool,
+    #[serde(
+        default = "default_true",
+        rename = "enableResumable",
+        alias = "EnableResumable"
+    )]
+    enable_resumable: bool,
+    #[serde(default, rename = "enableRewatching", alias = "EnableRewatching")]
+    enable_rewatching: bool,
+}
+
+pub(crate) async fn next_up(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<NextUpQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
+    let parent_id = if let Some(series_id) = query.series_id {
+        validate_series(
+            state.as_ref(),
+            &authenticated.user,
+            target_user_id,
+            series_id,
+        )
+        .await?;
+        Some(series_id)
+    } else {
+        query.parent_id
+    };
+
+    let _ = (
+        query.enable_images,
+        query.image_type_limit,
+        query.enable_image_types,
+        query.enable_user_data,
+        query.next_up_date_cutoff,
+        query.enable_resumable,
+    );
+
+    let page = state
+        .user_library
+        .query_items(
+            &authenticated.user,
+            target_user_id,
+            BaseItemQuery {
+                parent_id,
+                recursive: true,
+                include_item_types: vec!["Episode".to_owned()],
+                is_virtual_item: Some(false),
+                is_played: (!query.enable_rewatching).then_some(false),
+                order: BaseItemOrder::SortName,
+                start_index: query.start_index,
+                limit: query.limit,
+                enable_total_record_count: Some(query.enable_total_record_count),
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+    let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+    let start_index = usize::try_from(page.start_index).unwrap_or(usize::MAX);
+    let items = project_items_to_dtos(state.as_ref(), page.items, fields, target_user_id).await?;
+    Ok(Json(user_library::BaseItemQueryResult {
+        items,
+        total_record_count,
+        start_index,
+    }))
+}
+
 pub(crate) async fn episodes(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -415,4 +523,12 @@ fn filter_for_adjacency(items: Vec<base_item::Model>, adjacent_to: Uuid) -> Vec<
             .then_some(item)
         })
         .collect()
+}
+
+const fn default_enable_total_record_count() -> bool {
+    true
+}
+
+const fn default_true() -> bool {
+    true
 }

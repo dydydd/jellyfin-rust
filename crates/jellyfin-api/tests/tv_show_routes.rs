@@ -4,7 +4,10 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice};
+use jellyfin_data::{
+    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
+    UserDataRepository,
+};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -166,6 +169,7 @@ async fn exercise_seasons_route(database_name: &str) {
     );
 
     assert_episodes_route(&fixture).await;
+    assert_next_up_route(&fixture).await;
     fixture.cleanup().await;
 }
 
@@ -385,6 +389,123 @@ async fn assert_episodes_route(fixture: &Fixture) {
     );
 }
 
+async fn assert_next_up_route(fixture: &Fixture) {
+    assert_eq!(
+        fixture.get("/Shows/NextUp", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?userId={}", fixture.admin_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", Uuid::new_v4()),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", fixture.movie_id),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let next_up = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableTotalRecordCount=true",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(next_up["StartIndex"], 0);
+    assert_eq!(next_up["TotalRecordCount"], 4);
+    assert_eq!(
+        item_ids(&next_up),
+        vec![
+            fixture.special_episode_id.simple().to_string(),
+            fixture.first_episode_id.simple().to_string(),
+            fixture.third_episode_id.simple().to_string(),
+            fixture.missing_episode_id.simple().to_string(),
+        ]
+    );
+
+    let with_rewatching = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableRewatching=true",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(with_rewatching["TotalRecordCount"], 5);
+    assert!(item_ids(&with_rewatching).contains(&fixture.second_episode_id.simple().to_string()));
+
+    let parent_scoped = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?parentId={}&limit=1&enableTotalRecordCount=false",
+                    fixture.first_season_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(parent_scoped["StartIndex"], 0);
+    assert_eq!(parent_scoped["TotalRecordCount"], 1);
+    assert_eq!(
+        item_ids(&parent_scoped),
+        vec![fixture.first_episode_id.simple().to_string()]
+    );
+
+    let paged = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&startIndex=1&limit=2",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(paged["StartIndex"], 1);
+    assert_eq!(paged["TotalRecordCount"], 4);
+    assert_eq!(
+        item_ids(&paged),
+        vec![
+            fixture.first_episode_id.simple().to_string(),
+            fixture.third_episode_id.simple().to_string(),
+        ]
+    );
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
@@ -521,6 +642,14 @@ impl Fixture {
             Some(json!({ "IsMissing": true })),
         )
         .await;
+        let user_data = UserDataRepository::new(database.clone());
+        let mut watched =
+            NewUserData::new(second_episode.id, user.id, second_episode.id.to_string());
+        watched.played = true;
+        user_data
+            .upsert(watched)
+            .await
+            .expect("played episode user data");
         create_item(
             &items,
             "Episode",
