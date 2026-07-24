@@ -116,6 +116,15 @@ impl GenreService {
         })
     }
 
+    /// Resolves the persisted `Genre` item that owns image metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the item lookup fails.
+    pub async fn image_item(&self, name: &str) -> Result<Option<base_item::Model>, GenreError> {
+        Ok(self.items.get_by_type_and_name("Genre", name).await?)
+    }
+
     /// Lists generic Jellyfin genres attached to filtered non-music items.
     ///
     /// # Errors

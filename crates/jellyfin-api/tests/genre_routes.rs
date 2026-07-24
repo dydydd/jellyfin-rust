@@ -3,11 +3,13 @@ use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, NewUserData, UserDataRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData,
+    UserDataRepository,
     entities::{base_item, item_value},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -280,6 +282,89 @@ async fn genre_routes_match_official_generic_genre_contract() {
     .await;
     assert_eq!(admin_targeted["TotalRecordCount"], 5);
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn genre_image_routes_resolve_public_ordinals() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let name = format!("Image Genre {}", Uuid::new_v4().simple());
+    let genre = create_item(&items, "Genre", &name, None, true).await;
+    let first_path = std::env::temp_dir().join(format!("genre-{}.png", Uuid::new_v4().simple()));
+    let second_path = std::env::temp_dir().join(format!("genre-{}.png", Uuid::new_v4().simple()));
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([220, 30, 30, 255]))
+        .save(&first_path)
+        .unwrap();
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([30, 30, 220, 255]))
+        .save(&second_path)
+        .unwrap();
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            genre.id,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 4,
+                    path: first_path.to_string_lossy().into_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(4),
+                    height: Some(2),
+                    blurhash: None,
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 9,
+                    path: second_path.to_string_lossy().into_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(4),
+                    height: Some(2),
+                    blurhash: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    let base = format!("/Genres/{}/Images/Backdrop", encoded(&name));
+    for route in [format!("{base}?imageIndex=1"), format!("{base}/1")] {
+        let response = fixture.request(Method::GET, &route, Credential::None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
+    }
+    let head = fixture
+        .request(Method::HEAD, &format!("{base}/0"), Credential::None)
+        .await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(
+        to_bytes(head.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .request(Method::GET, &format!("{base}/99"), Credential::None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Genres/{}/Images/Backdrop/0", encoded("missing genre")),
+                Credential::None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let _ = std::fs::remove_file(first_path);
+    let _ = std::fs::remove_file(second_path);
     fixture.cleanup().await;
 }
 

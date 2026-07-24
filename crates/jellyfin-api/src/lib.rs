@@ -489,6 +489,14 @@ pub fn router(state: AppState) -> Router {
         .route("/Years/{year}", get(years::get))
         .route("/Genres", get(genres::list))
         .route("/Genres/{genre_name}", get(genres::get))
+        .route(
+            "/Genres/{name}/Images/{image_type}",
+            get(genres::get_image),
+        )
+        .route(
+            "/Genres/{name}/Images/{image_type}/{image_index}",
+            get(genres::get_image_by_index),
+        )
         .route("/Studios", get(studios::list))
         .route("/Studios/{name}", get(studios::get))
         .route("/Trailers", get(trailers::list))

@@ -54,7 +54,7 @@ pub(crate) struct GetItemImageQuery {
     #[serde(default, rename = "foregroundLayer", alias = "ForegroundLayer")]
     foreground_layer: Option<String>,
     #[serde(default, rename = "imageIndex", alias = "ImageIndex")]
-    image_index: Option<i32>,
+    pub(crate) image_index: Option<i32>,
     #[serde(default, rename = "accept", alias = "Accept")]
     accept: Option<String>,
 }
