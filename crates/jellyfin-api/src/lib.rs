@@ -929,6 +929,10 @@ fn video_routes() -> Router<Arc<AppState>> {
             "/Videos/{item_id}/{media_source_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}",
             get(subtitles::get_subtitle_with_ticks),
         )
+        .route(
+            "/Videos/{item_id}/{media_source_id}/Subtitles/{index}/subtitles.m3u8",
+            get(subtitles::get_subtitle_playlist),
+        )
 }
 
 fn live_tv_routes() -> Router<Arc<AppState>> {

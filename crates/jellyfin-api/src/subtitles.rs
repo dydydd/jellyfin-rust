@@ -70,6 +70,13 @@ pub(crate) struct SubtitleStreamQuery {
     start_position_ticks: Option<i64>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct SubtitlePlaylistQuery {
+    #[serde(alias = "SegmentLength")]
+    segment_length: Option<i64>,
+}
+
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -129,6 +136,50 @@ pub(crate) async fn get_subtitle_with_ticks(
         query,
     )
     .await
+}
+
+pub(crate) async fn get_subtitle_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    AxumPath((item_id, media_source_id, index)): AxumPath<(Uuid, String, i32)>,
+    Query(query): Query<SubtitlePlaylistQuery>,
+) -> Result<Response, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let item = ensure_video_item_by_id(&state, item_id).await?;
+    let runtime_ticks = item
+        .runtime_ticks
+        .filter(|runtime_ticks| *runtime_ticks > 0)
+        .ok_or(ApiError::InvalidRequest)?;
+    let segment_length_seconds = query
+        .segment_length
+        .filter(|segment_length| *segment_length > 0)
+        .ok_or(ApiError::InvalidRequest)?;
+    let _subtitle_stream = state
+        .media_streams
+        .get_media_streams(jellyfin_controller::MediaStreamFilter {
+            item_id,
+            index: Some(index),
+            stream_type: Some(MediaStreamType::Subtitle),
+        })
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(BaseItemError::NotFound)?;
+
+    let playlist = subtitle_playlist(
+        runtime_ticks,
+        segment_length_seconds,
+        identity.access_token(),
+    );
+    let content_type =
+        HeaderValue::from_str("application/x-mpegURL").map_err(|_| ApiError::Internal)?;
+    let mut response = Response::new(Body::from(playlist));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, content_type);
+    let _media_source_id = media_source_id;
+    Ok(response)
 }
 
 pub(crate) async fn upload_subtitle(
@@ -531,6 +582,41 @@ fn subtitle_payload(
         return Ok(srt_to_vtt(&text, add_vtt_time_map, start_position_ticks).into_bytes());
     }
     Err(ApiError::InvalidRequest)
+}
+
+fn subtitle_playlist(
+    runtime_ticks: i64,
+    segment_length_seconds: i64,
+    access_token: &str,
+) -> String {
+    const TICKS_PER_SECOND: i64 = 10_000_000;
+
+    let segment_length_ticks = segment_length_seconds.saturating_mul(TICKS_PER_SECOND);
+    let mut playlist = format!(
+        "#EXTM3U\n#EXT-X-TARGETDURATION:{segment_length_seconds}\n#EXT-X-VERSION:3\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+    );
+    let mut position_ticks = 0_i64;
+    while position_ticks < runtime_ticks {
+        let remaining = runtime_ticks - position_ticks;
+        let length_ticks = remaining.min(segment_length_ticks);
+        let length_seconds = length_ticks as f64 / TICKS_PER_SECOND as f64;
+        playlist.push_str("#EXTINF:");
+        playlist.push_str(&format_hls_seconds(length_seconds));
+        playlist.push_str(",\n");
+        let end_position_ticks =
+            runtime_ticks.min(position_ticks.saturating_add(segment_length_ticks));
+        playlist.push_str(&format!(
+            "stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks={position_ticks}&EndPositionTicks={end_position_ticks}&ApiKey={access_token}\n"
+        ));
+        position_ticks = position_ticks.saturating_add(segment_length_ticks);
+    }
+    playlist.push_str("#EXT-X-ENDLIST\n");
+    playlist
+}
+
+fn format_hls_seconds(value: f64) -> String {
+    let text = format!("{value:.7}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 fn srt_to_vtt(text: &str, add_vtt_time_map: bool, start_position_ticks: i64) -> String {

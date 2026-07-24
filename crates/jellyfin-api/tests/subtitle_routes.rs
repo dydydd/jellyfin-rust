@@ -428,6 +428,59 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         StatusCode::NOT_FOUND
     );
 
+    let playlist_route = Fixture::playlist_route(fixture.item_id, 4, 10);
+    assert_eq!(
+        fixture
+            .send(Method::GET, &playlist_route, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let playlist = fixture
+        .send(Method::GET, &playlist_route, Some(&fixture.manager_token))
+        .await;
+    assert_eq!(playlist.status(), StatusCode::OK);
+    assert_eq!(
+        String::from_utf8(body_bytes(playlist).await.to_vec()).expect("playlist text"),
+        format!(
+            "#EXTM3U\n\
+             #EXT-X-TARGETDURATION:10\n\
+             #EXT-X-VERSION:3\n\
+             #EXT-X-MEDIA-SEQUENCE:0\n\
+             #EXT-X-PLAYLIST-TYPE:VOD\n\
+             #EXTINF:10,\n\
+             stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=0&EndPositionTicks=100000000&ApiKey={}\n\
+             #EXTINF:10,\n\
+             stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=100000000&EndPositionTicks=200000000&ApiKey={}\n\
+             #EXTINF:5,\n\
+             stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=200000000&EndPositionTicks=250000000&ApiKey={}\n\
+             #EXT-X-ENDLIST\n",
+            fixture.manager_token, fixture.manager_token, fixture.manager_token
+        )
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &Fixture::playlist_route(fixture.item_id, 4, 0),
+                Some(&fixture.manager_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &Fixture::playlist_route(Uuid::new_v4(), 4, 10),
+                Some(&fixture.manager_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
     fixture.cleanup().await;
 }
 
@@ -516,6 +569,7 @@ impl Fixture {
         item.name = Some(format!("Subtitle Movie {suffix}"));
         item.media_type = Some("Video".to_owned());
         item.path = Some(format!("/media/Subtitle Movie {suffix}.mkv"));
+        item.runtime_ticks = Some(25 * 10_000_000);
         let item = BaseItemRepository::new(database.clone())
             .create(item)
             .await
@@ -624,6 +678,12 @@ impl Fixture {
     ) -> String {
         format!(
             "/Videos/{item_id}/{item_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}"
+        )
+    }
+
+    fn playlist_route(item_id: Uuid, index: i32, segment_length: i64) -> String {
+        format!(
+            "/Videos/{item_id}/{item_id}/Subtitles/{index}/subtitles.m3u8?segmentLength={segment_length}"
         )
     }
 
