@@ -71,6 +71,7 @@ async fn exercise_base_item_images(database_name: &str) {
     let items = BaseItemRepository::new(database.clone());
     let images = BaseItemImageRepository::new(database.clone());
     assert_replace_reload_and_clear(&database, &items, &images).await;
+    assert_delete_by_public_ordinal(&items, &images).await;
     assert_all_image_types_and_list_many(&items, &images).await;
     assert_validation_is_typed(&items, &images).await;
     assert_database_constraints(&database, &items, &images).await;
@@ -84,6 +85,54 @@ async fn exercise_base_item_images(database_name: &str) {
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_delete_by_public_ordinal(
+    items: &BaseItemRepository,
+    images: &BaseItemImageRepository,
+) {
+    let item = create_item(items, "delete-ordinal").await;
+    let stored = vec![
+        image(BaseItemImageType::Primary, 0, "delete-primary.jpg", 10),
+        image(BaseItemImageType::Backdrop, 4, "delete-backdrop-4.jpg", 11),
+        image(BaseItemImageType::Backdrop, 9, "delete-backdrop-9.jpg", 12),
+        image(
+            BaseItemImageType::Backdrop,
+            20,
+            "delete-backdrop-20.jpg",
+            13,
+        ),
+    ];
+    images.replace(item.id, &stored).await.unwrap();
+
+    assert_eq!(
+        images
+            .delete_at(item.id, BaseItemImageType::Backdrop, 1)
+            .await
+            .unwrap(),
+        persisted(item.id, &stored).into_iter().nth(2)
+    );
+    assert_eq!(
+        images
+            .at(item.id, BaseItemImageType::Backdrop, 1)
+            .await
+            .unwrap()
+            .map(|image| image.image_index),
+        Some(20)
+    );
+    assert_eq!(
+        images
+            .delete_at(item.id, BaseItemImageType::Backdrop, 99)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(matches!(
+        images
+            .delete_at(Uuid::new_v4(), BaseItemImageType::Primary, 0)
+            .await,
+        Err(BaseItemImageStoreError::BaseItemNotFound { .. })
+    ));
 }
 
 async fn assert_replace_reload_and_clear(

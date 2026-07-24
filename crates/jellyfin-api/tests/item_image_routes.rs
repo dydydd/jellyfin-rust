@@ -94,6 +94,174 @@ async fn item_image_files_match_official_processing_and_cache_contract() {
     }
 }
 
+#[tokio::test]
+async fn item_image_deletes_match_official_authorization_and_ordinal_contract() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_item_image_deletes(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_item_image_deletes(database_name: &str) {
+    let fixture = Fixture::new(database_name).await;
+    let primary = format!("/Items/{}/Images/Primary", fixture.item_id);
+    let backdrop = format!("/Items/{}/Images/Backdrop/0", fixture.item_id);
+
+    assert_eq!(
+        fixture
+            .request(Method::DELETE, &primary, &[])
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::DELETE,
+                &primary,
+                &[("X-Emby-Token", "invalid-token")],
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request_with_token(Method::DELETE, &primary, &fixture.ordinary_token)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    assert_eq!(
+        fixture
+            .request_with_token(Method::DELETE, &backdrop, &fixture.token)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!Path::new(&fixture.path("backdrop.png")).exists());
+    let remaining = BaseItemImageRepository::new(fixture.database.clone())
+        .at(fixture.item_id, BaseItemImageType::Backdrop, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(remaining.image_index, 9);
+
+    let remote_path = "https://images.example.invalid/remote.png";
+    fixture
+        .database
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE jellyfin.base_item_images SET path = $4 \
+             WHERE item_id = $1 AND image_type = $2 AND image_index = $3",
+            [
+                fixture.item_id.into(),
+                2_i16.into(),
+                9_i32.into(),
+                remote_path.into(),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .request(
+                Method::DELETE,
+                &format!(
+                    "/Items/{}/Images/Backdrop?ImageIndex=0&api_key={}",
+                    fixture.item_id, fixture.api_key
+                ),
+                &[],
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(Path::new(&fixture.path("remote-backdrop.png")).exists());
+    assert!(
+        BaseItemImageRepository::new(fixture.database.clone())
+            .at(fixture.item_id, BaseItemImageType::Backdrop, 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    assert_eq!(
+        fixture
+            .request_with_token(
+                Method::DELETE,
+                &format!("{primary}?imageIndex=0"),
+                &fixture.token,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!Path::new(&fixture.path("poster.png")).exists());
+
+    for route in [
+        format!("/Items/{}/Images/Primary/99", fixture.item_id),
+        format!("/Items/{}/Images/Primary/-1", fixture.item_id),
+    ] {
+        assert_eq!(
+            fixture
+                .request_with_token(Method::DELETE, &route, &fixture.token)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT,
+            "route {route}"
+        );
+    }
+    assert_eq!(
+        fixture
+            .request_with_token(
+                Method::DELETE,
+                &format!("/Items/{}/Images/Primary", Uuid::new_v4()),
+                &fixture.token,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request_with_token(
+                Method::DELETE,
+                &format!("/Items/{}/Images/not-an-image", fixture.item_id),
+                &fixture.token,
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    fixture.cleanup().await;
+}
+
 async fn exercise_item_image_files(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
     let primary = format!("/Items/{}/Images/Primary", fixture.item_id);
@@ -419,10 +587,12 @@ struct Fixture {
     app: axum::Router,
     temporary: TempDirectory,
     user_id: Uuid,
+    ordinary_user_id: Uuid,
     item_id: Uuid,
     empty_item_id: Uuid,
     token: String,
     api_key: String,
+    ordinary_token: String,
 }
 
 impl Fixture {
@@ -475,6 +645,21 @@ impl Fixture {
             ))
             .await
             .expect("administrator session")
+            .access_token;
+        let ordinary_user = users
+            .create(&format!("item-image-user-{suffix}"))
+            .await
+            .expect("ordinary user creation");
+        let ordinary_token = DeviceRepository::new(database.clone())
+            .create_session(NewDevice::new(
+                ordinary_user.id,
+                "Item Image Tests",
+                "1.0",
+                "Test",
+                format!("item-images-user-{suffix}"),
+            ))
+            .await
+            .expect("ordinary user session")
             .access_token;
         let api_key = ApiKeyRepository::new(database.clone())
             .create(&format!("item-image-api-key-{suffix}"))
@@ -567,10 +752,12 @@ impl Fixture {
             app,
             temporary,
             user_id: user.id,
+            ordinary_user_id: ordinary_user.id,
             item_id: item.id,
             empty_item_id: empty_item.id,
             token,
             api_key,
+            ordinary_token,
         }
     }
 
@@ -615,6 +802,29 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn request_with_token(
+        &self,
+        method: Method,
+        uri: &str,
+        token: &str,
+    ) -> axum::response::Response {
+        self.app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("{AUTHORIZATION}, Token=\"{token}\""),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     fn path(&self, name: &str) -> String {
         self.temporary
             .path()
@@ -630,7 +840,7 @@ impl Fixture {
             .await
             .expect("item cleanup");
         user::Entity::delete_many()
-            .filter(user::Column::Id.eq(self.user_id))
+            .filter(user::Column::Id.is_in([self.user_id, self.ordinary_user_id]))
             .exec(&self.database)
             .await
             .expect("user cleanup");

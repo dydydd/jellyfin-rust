@@ -58,6 +58,12 @@ pub(crate) struct GetItemImageQuery {
     accept: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct DeleteItemImageQuery {
+    #[serde(default, rename = "imageIndex", alias = "ImageIndex")]
+    image_index: Option<i32>,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -92,6 +98,59 @@ pub(crate) async fn get_by_index(
 ) -> Result<Response, ApiError> {
     let image_type = parse_image_type(&image_type)?;
     get_internal(state, uri, headers, item_id, image_type, image_index, query).await
+}
+
+pub(crate) async fn delete(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((item_id, image_type)): Path<(Uuid, String)>,
+    Query(query): Query<DeleteItemImageQuery>,
+) -> Result<StatusCode, ApiError> {
+    delete_internal(
+        &state,
+        &uri,
+        &headers,
+        item_id,
+        &image_type,
+        query.image_index.unwrap_or(0),
+    )
+    .await
+}
+
+pub(crate) async fn delete_by_index(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((item_id, image_type, image_index)): Path<(Uuid, String, i32)>,
+) -> Result<StatusCode, ApiError> {
+    delete_internal(&state, &uri, &headers, item_id, &image_type, image_index).await
+}
+
+async fn delete_internal(
+    state: &AppState,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    item_id: Uuid,
+    image_type: &str,
+    image_index: i32,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(state, headers, Some(uri))
+        .await?
+        .require_administrator()?;
+    let image_type = parse_image_type(image_type)?;
+    if let Ok(image_index) = u32::try_from(image_index) {
+        state
+            .item_images
+            .delete(item_id, image_type, image_index)
+            .await?;
+    } else {
+        BaseItemRepository::new(state.database.clone())
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn parse_image_type(value: &str) -> Result<ImageType, ApiError> {

@@ -137,6 +137,50 @@ impl ItemImageService {
         })
     }
 
+    /// Deletes one image by public ordinal and removes a local backing file.
+    ///
+    /// Missing images are idempotent. Remote paths only lose their persisted
+    /// metadata because they are not local file-system targets.
+    ///
+    /// # Errors
+    ///
+    /// Returns missing-item or persistence errors. File cleanup failures are
+    /// logged after the durable metadata delete and do not change the result.
+    pub async fn delete(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        image_index: u32,
+    ) -> Result<(), ItemImageError> {
+        let image = self
+            .images
+            .delete_at(
+                item_id,
+                persisted_image_type(image_type),
+                u64::from(image_index),
+            )
+            .await
+            .map_err(|error| match error {
+                BaseItemImageStoreError::BaseItemNotFound { .. } => ItemImageError::NotFound,
+                error => ItemImageError::Store(error),
+            })?;
+        let Some(image) = image else {
+            return Ok(());
+        };
+        if !is_remote_path(&image.path) {
+            match fs::remove_file(&image.path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => tracing::warn!(
+                    path = %image.path,
+                    %error,
+                    "image metadata was deleted but its local file could not be removed"
+                ),
+            }
+        }
+        Ok(())
+    }
+
     async fn materialize_remote(
         &self,
         image: BaseItemImage,

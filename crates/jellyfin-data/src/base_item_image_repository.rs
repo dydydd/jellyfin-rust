@@ -200,7 +200,7 @@ impl BaseItemImageRepository {
             .transpose()
     }
 
-    /// Loads one image through the composite PostgreSQL primary key.
+    /// Loads one image through the composite `PostgreSQL` primary key.
     ///
     /// # Errors
     ///
@@ -224,7 +224,7 @@ impl BaseItemImageRepository {
     ///
     /// Persisted image indexes can contain gaps after metadata refreshes. The
     /// public API nevertheless addresses images by their ordered position, so
-    /// PostgreSQL resolves that position through the composite primary key.
+    /// `PostgreSQL` resolves that position through the composite primary key.
     ///
     /// # Errors
     ///
@@ -245,6 +245,68 @@ impl BaseItemImageRepository {
             .await?
             .map(BaseItemImage::try_from)
             .transpose()
+    }
+
+    /// Atomically deletes an image by its public zero-based ordinal.
+    ///
+    /// The owning item row serializes this operation with image replacements.
+    /// Persisted indexes are intentionally left unchanged; public ordinals are
+    /// derived from their ordered values and therefore close gaps naturally.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-item, database, or corrupt-row error.
+    pub async fn delete_at(
+        &self,
+        item_id: Uuid,
+        image_type: BaseItemImageType,
+        ordinal: u64,
+    ) -> Result<Option<BaseItemImage>, BaseItemImageStoreError> {
+        let transaction = self.database.begin().await?;
+        let owner = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT id FROM jellyfin.base_items WHERE id = $1 FOR UPDATE",
+                [item_id.into()],
+            ))
+            .await?;
+        if owner.is_none() {
+            return Err(BaseItemImageStoreError::BaseItemNotFound { item_id });
+        }
+        let Some(ordinal) = i64::try_from(ordinal).ok() else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH target AS (
+                SELECT image_index
+                FROM jellyfin.base_item_images
+                WHERE item_id = $1 AND image_type = $2
+                ORDER BY image_index
+                OFFSET $3
+                LIMIT 1
+            )
+            DELETE FROM jellyfin.base_item_images AS stored
+            USING target
+            WHERE stored.item_id = $1
+              AND stored.image_type = $2
+              AND stored.image_index = target.image_index
+            RETURNING stored.item_id, stored.image_type, stored.image_index,
+                      stored.path, stored.date_modified, stored.width,
+                      stored.height, stored.blurhash
+            ",
+            [item_id.into(), image_type.as_i16().into(), ordinal.into()],
+        );
+        let deleted = base_item_image::Model::find_by_statement(statement)
+            .one(&transaction)
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()?;
+        transaction.commit().await?;
+        Ok(deleted)
     }
 
     /// Replaces a remote image path after it has been materialized locally.

@@ -367,11 +367,11 @@ pub fn router(state: AppState) -> Router {
         .route("/Items/{item_id}/Images", get(item_images::list))
         .route(
             "/Items/{item_id}/Images/{image_type}",
-            get(item_images::get),
+            get(item_images::get).delete(item_images::delete),
         )
         .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}",
-            get(item_images::get_by_index),
+            get(item_images::get_by_index).delete(item_images::delete_by_index),
         )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
