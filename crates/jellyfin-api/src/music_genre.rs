@@ -2,14 +2,19 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{OriginalUri, Path, Query, State},
     http::HeaderMap,
+    response::Response,
 };
 use jellyfin_data::ItemValueQuery;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, user_library};
+use crate::{
+    ApiError, AppState, authentication,
+    item_images::{GetItemImageQuery, parse_image_type, render_item_image},
+    user_library,
+};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct MusicGenreQuery {
@@ -134,6 +139,53 @@ pub(crate) async fn get(
         &genre,
         state.server_id(),
     )))
+}
+
+pub(crate) async fn get_image(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((name, image_type)): Path<(String, String)>,
+    Query(query): Query<GetItemImageQuery>,
+) -> Result<Response, ApiError> {
+    authentication::optional_authenticated_user_id(&state, &headers, &uri).await?;
+    let image_index = query.image_index.unwrap_or(0);
+    get_image_for(&state, &headers, &name, &image_type, image_index, query).await
+}
+
+pub(crate) async fn get_image_by_index(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((name, image_type, image_index)): Path<(String, String, i32)>,
+    Query(query): Query<GetItemImageQuery>,
+) -> Result<Response, ApiError> {
+    authentication::optional_authenticated_user_id(&state, &headers, &uri).await?;
+    get_image_for(&state, &headers, &name, &image_type, image_index, query).await
+}
+
+async fn get_image_for(
+    state: &AppState,
+    headers: &HeaderMap,
+    name: &str,
+    image_type: &str,
+    image_index: i32,
+    query: GetItemImageQuery,
+) -> Result<Response, ApiError> {
+    let item = state
+        .music_genres
+        .image_item(name)
+        .await?
+        .ok_or(jellyfin_controller::MusicGenreError::NotFound)?;
+    render_item_image(
+        state,
+        headers,
+        item.id,
+        parse_image_type(image_type)?,
+        image_index,
+        query,
+    )
+    .await
 }
 
 fn descending(sort_order: &[String]) -> Result<bool, ApiError> {

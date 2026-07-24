@@ -502,6 +502,14 @@ pub fn router(state: AppState) -> Router {
         .route("/Trailers", get(trailers::list))
         .route("/MusicGenres", get(music_genre::list))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
+        .route(
+            "/MusicGenres/{name}/Images/{image_type}",
+            get(music_genre::get_image),
+        )
+        .route(
+            "/MusicGenres/{name}/Images/{image_type}/{image_index}",
+            get(music_genre::get_image_by_index),
+        )
         .route("/Persons", get(persons::list))
         .route("/Persons/{name}", get(persons::get))
         .route(

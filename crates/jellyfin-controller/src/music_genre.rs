@@ -93,6 +93,18 @@ impl MusicGenreService {
         })
     }
 
+    /// Resolves the persisted `MusicGenre` item that owns image metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the item lookup fails.
+    pub async fn image_item(
+        &self,
+        name: &str,
+    ) -> Result<Option<base_item::Model>, MusicGenreError> {
+        Ok(self.items.get_by_type_and_name("MusicGenre", name).await?)
+    }
+
     /// Lists music genres attached to filtered music items.
     ///
     /// # Errors

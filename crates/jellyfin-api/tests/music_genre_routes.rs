@@ -1,12 +1,14 @@
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, NewUserData, UserDataRepository, entities::item_value,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData,
+    UserDataRepository, entities::item_value,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
@@ -16,6 +18,7 @@ use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Music Genre Tests\", Device=\"Test\", DeviceId=\"music-genre\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_music_genre_routes_";
+const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 
 #[tokio::test]
 async fn official_fake_music_genre_is_not_found() {
@@ -266,6 +269,103 @@ async fn music_genre_list_matches_official_music_genre_contract() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn music_genre_image_routes_resolve_public_ordinals() {
+    let fixture = MusicGenreFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let owner = create_item(&items, "MusicGenre", &fixture.genre_name).await;
+    assert_ne!(owner.id, fixture.genre_id);
+
+    let first_path =
+        std::env::temp_dir().join(format!("music-genre-{}.png", Uuid::new_v4().simple()));
+    let second_path =
+        std::env::temp_dir().join(format!("music-genre-{}.png", Uuid::new_v4().simple()));
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([220, 30, 30, 255]))
+        .save(&first_path)
+        .unwrap();
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([30, 30, 220, 255]))
+        .save(&second_path)
+        .unwrap();
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            owner.id,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 4,
+                    path: first_path.to_string_lossy().into_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(4),
+                    height: Some(2),
+                    blurhash: None,
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 9,
+                    path: second_path.to_string_lossy().into_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(4),
+                    height: Some(2),
+                    blurhash: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    let base = format!(
+        "/MusicGenres/{}/Images/Backdrop",
+        encoded(&fixture.genre_name)
+    );
+    for route in [format!("{base}?imageIndex=1"), format!("{base}/1")] {
+        let response = request(&fixture.app, &route, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
+    }
+
+    let head = request_method(&fixture.app, Method::HEAD, &format!("{base}/0"), None).await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(
+        to_bytes(head.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        request(&fixture.app, &format!("{base}/99"), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &fixture.app,
+            &format!(
+                "/MusicGenres/{}/Images/Backdrop/0",
+                encoded("missing music genre")
+            ),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&fixture.app, &base, Some("invalid-token"))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let _ = std::fs::remove_file(first_path);
+    let _ = std::fs::remove_file(second_path);
+    fixture.cleanup().await;
+}
+
 fn assert_genres(
     body: &Value,
     expected_names: &[&str],
@@ -507,7 +607,16 @@ fn genre_route(name: &str) -> String {
 }
 
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::response::Response {
-    let mut request = Request::get(uri);
+    request_method(app, Method::GET, uri, token).await
+}
+
+async fn request_method(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         request = request.header(
             header::AUTHORIZATION,
