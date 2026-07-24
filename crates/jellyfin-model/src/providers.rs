@@ -22,6 +22,20 @@ pub enum ImageType {
     Profile = 12,
 }
 
+/// Metadata describing one image attached to a library item.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ImageInfo {
+    pub image_type: ImageType,
+    pub image_index: Option<i32>,
+    pub image_tag: String,
+    pub path: String,
+    pub blur_hash: Option<String>,
+    pub height: Option<i32>,
+    pub width: Option<i32>,
+    pub size: i64,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum RatingType {

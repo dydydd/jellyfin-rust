@@ -3,6 +3,7 @@ pub mod client_event;
 mod dashboard;
 mod environment;
 mod genres;
+mod item_images;
 mod item_lookup;
 mod item_types;
 mod item_update;
@@ -34,6 +35,7 @@ pub use artists::{Artist, ArtistError, ArtistPage, ArtistService, ArtistValueKin
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
 pub use genres::{Genre, GenreError, GenreKind, GenrePage, GenreService};
+pub use item_images::{ItemImageError, ItemImageService};
 pub use item_lookup::{ItemLookupError, ItemLookupService};
 pub use item_types::{
     HydratedBaseItem, ItemTypeRegistrationError, ItemTypeRegistry, KnownItemType,

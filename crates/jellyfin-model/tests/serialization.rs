@@ -2,9 +2,9 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, BackupManifestDto, BackupOptionsDto, ClientCapabilitiesDto, DeviceInfoDto,
     DeviceOptionsDto, EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult,
-    GeneralCommand, GeneralCommandType, ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto,
-    MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult,
-    PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    GeneralCommand, GeneralCommandType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
+    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
+    PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
     PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
     RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration, SessionInfoDto,
     SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
@@ -136,6 +136,35 @@ fn remote_images_use_official_empty_provider_contract() {
     .unwrap();
     assert_eq!(provider["Name"], "Example");
     assert_eq!(provider["SupportedImages"], json!(["Primary", "Backdrop"]));
+}
+
+#[test]
+fn item_image_info_uses_official_wire_contract() {
+    let value = serde_json::to_value(ImageInfo {
+        image_type: ImageType::Backdrop,
+        image_index: Some(1),
+        image_tag: "0123456789abcdef0123456789abcdef".to_owned(),
+        path: "/media/backdrop.jpg".to_owned(),
+        blur_hash: None,
+        height: Some(1080),
+        width: Some(1920),
+        size: 42,
+    })
+    .unwrap();
+
+    assert_eq!(
+        value,
+        json!({
+            "ImageType": "Backdrop",
+            "ImageIndex": 1,
+            "ImageTag": "0123456789abcdef0123456789abcdef",
+            "Path": "/media/backdrop.jpg",
+            "BlurHash": null,
+            "Height": 1080,
+            "Width": 1920,
+            "Size": 42
+        })
+    );
 }
 
 #[test]

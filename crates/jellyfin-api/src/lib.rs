@@ -9,9 +9,9 @@ use axum::{
 };
 use jellyfin_controller::{
     ArtistError, ArtistService, DashboardError, DashboardPage, DashboardService, EnvironmentError,
-    EnvironmentService, GenreError, GenreService, InstalledPlugin, ItemLookupError,
-    ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
-    LibraryControllerService, LocalizationService, MediaAttachmentService,
+    EnvironmentService, GenreError, GenreService, InstalledPlugin, ItemImageError,
+    ItemImageService, ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService,
+    LibraryControllerError, LibraryControllerService, LocalizationService, MediaAttachmentService,
     MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
     MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
     PersonError, PersonService, PlaystateError, PlaystateService, PluginRegistry,
@@ -57,6 +57,7 @@ mod environment;
 mod filters;
 mod genres;
 mod hls_segment;
+mod item_images;
 mod item_lookup;
 mod item_refresh;
 mod item_update;
@@ -116,6 +117,7 @@ pub struct AppState {
     pub(crate) studios: StudioService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
+    pub(crate) item_images: ItemImageService,
     pub(crate) item_lookup: ItemLookupService,
     pub(crate) item_update: ItemUpdateService,
     pub(crate) metadata_editor: MetadataEditorService,
@@ -174,6 +176,7 @@ impl AppState {
             studios: StudioService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
+            item_images: ItemImageService::new(database.clone()),
             item_lookup: ItemLookupService::new(database.clone()),
             item_update: ItemUpdateService::new(database.clone()),
             metadata_editor: MetadataEditorService::new(database.clone()),
@@ -350,6 +353,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Search/Hints", get(search::hints))
         .route("/Backup", get(backup::list))
         .route("/Backup/Manifest", get(backup::manifest))
+        .route("/Items/{item_id}/Images", get(item_images::list))
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",
@@ -1043,6 +1047,7 @@ pub(crate) enum ApiError {
     TunerHost(TunerHostError),
     ItemLookup(ItemLookupError),
     ItemUpdate(ItemUpdateError),
+    ItemImage(ItemImageError),
     MediaAttachment(MediaAttachmentServiceError),
     MediaStream(MediaStreamServiceError),
     MetadataEditor(MetadataEditorError),
@@ -1188,6 +1193,12 @@ impl From<TunerHostError> for ApiError {
 impl From<ItemUpdateError> for ApiError {
     fn from(error: ItemUpdateError) -> Self {
         Self::ItemUpdate(error)
+    }
+}
+
+impl From<ItemImageError> for ApiError {
+    fn from(error: ItemImageError) -> Self {
+        Self::ItemImage(error)
     }
 }
 
@@ -1420,6 +1431,10 @@ impl IntoResponse for ApiError {
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemLookup(error) => item_lookup_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
+            Self::ItemImage(_error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Item image persistence failed",
+            ),
             Self::MediaAttachment(error) => media_attachment_error_response(&error),
             Self::MediaStream(error) => media_stream_error_response(&error),
             Self::MetadataEditor(error) => metadata_editor_error_response(&error),
