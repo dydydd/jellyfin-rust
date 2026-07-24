@@ -259,6 +259,34 @@ impl LibraryControllerService {
         })
     }
 
+    /// Creates a random audio mix from a normalized genre name.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn instant_mix_for_genre_name(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        genre_name: &str,
+        limit: Option<u64>,
+    ) -> Result<BaseItemPage, LibraryControllerError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        let genre = self
+            .item_values
+            .get_normalized(item_value::ItemValueType::Genre, genre_name)
+            .await?
+            .ok_or(LibraryControllerError::ItemNotFound)?;
+        self.instant_mix_for_genre(
+            authenticated_user,
+            target_user_id,
+            genre.item_value_id,
+            limit,
+        )
+        .await
+    }
+
     /// Counts non-virtual library items, optionally scoped to a user's favorite state.
     ///
     /// # Errors

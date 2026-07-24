@@ -937,6 +937,11 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
             "/MusicGenres/InstantMix",
             get(library::instant_mix_genre_by_id),
         )
+        .route("/Artists/InstantMix", get(library::instant_mix_by_id))
+        .route(
+            "/MusicGenres/{name}/InstantMix",
+            get(library::instant_mix_genre_by_name),
+        )
         .route("/Items/Counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))

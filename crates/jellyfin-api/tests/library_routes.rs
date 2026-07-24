@@ -124,6 +124,23 @@ async fn assert_instant_mix(fixture: &Fixture) {
     assert_eq!(genre_mix["TotalRecordCount"], 3);
     assert_eq!(genre_mix["Items"].as_array().unwrap().len(), 1);
     assert_eq!(genre_mix["Items"][0]["Type"], "Audio");
+
+    let genre_name_mix = fixture
+        .json(
+            "GET",
+            "/MusicGenres/Post%20Rock/InstantMix?limit=1",
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(genre_name_mix["TotalRecordCount"], 3);
+    assert_eq!(genre_name_mix["Items"].as_array().unwrap().len(), 1);
+
+    let legacy_artist_route = format!("/Artists/InstantMix?id={}&limit=1", fixture.album_id);
+    let legacy_mix = fixture
+        .json("GET", &legacy_artist_route, &fixture.user_token)
+        .await;
+    assert_eq!(legacy_mix["TotalRecordCount"], 3);
+    assert_eq!(legacy_mix["Items"].as_array().unwrap().len(), 1);
 }
 
 async fn assert_ancestors(fixture: &Fixture) {

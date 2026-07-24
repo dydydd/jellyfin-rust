@@ -247,6 +247,36 @@ pub(crate) async fn instant_mix_genre_by_id(
     Ok(Json(page_to_dto(page, state.server_id())))
 }
 
+pub(crate) async fn instant_mix_by_id(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<InstantMixByIdQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let item_id = query.id.ok_or(ApiError::InvalidRequest)?;
+    let page = state
+        .library_controller
+        .instant_mix(&authenticated.user, target_user_id, item_id, query.limit)
+        .await?;
+    Ok(Json(page_to_dto(page, state.server_id())))
+}
+
+pub(crate) async fn instant_mix_genre_by_name(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let page = state
+        .library_controller
+        .instant_mix_for_genre_name(&authenticated.user, target_user_id, &name, query.limit)
+        .await?;
+    Ok(Json(page_to_dto(page, state.server_id())))
+}
+
 pub(crate) async fn item_counts(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
