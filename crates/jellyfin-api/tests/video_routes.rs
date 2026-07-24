@@ -100,6 +100,67 @@ async fn primary_and_alternate_entries_persist_complete_group_detachment() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn merge_versions_route_enforces_official_contract_and_persists_group() {
+    let fixture = Fixture::new().await;
+    let merge_ids = format!(
+        "{},{}",
+        fixture.group_a.alternates[0], fixture.group_b.primary
+    );
+    let route = format!("/Videos/MergeVersions?ids={merge_ids}");
+
+    assert_eq!(
+        fixture.send(Method::POST, &route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send(Method::POST, &route, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::POST,
+                &format!(
+                    "/Videos/MergeVersions?ids={},{}",
+                    fixture.non_video_id,
+                    Uuid::new_v4()
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    assert_eq!(
+        fixture
+            .send(Method::POST, &route, Some(&fixture.admin_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let mut expected_ids = fixture.group_a.ids().to_vec();
+    expected_ids.extend(fixture.group_b.ids());
+    expected_ids.sort_unstable();
+    let expected_primary = expected_ids[0];
+    let mut merged = fixture.load_group(&fixture.group_a).await;
+    merged.extend(fixture.load_group(&fixture.group_b).await);
+    for item in merged {
+        if item.id == expected_primary {
+            assert_eq!(item.primary_version_id, None);
+        } else {
+            assert_eq!(item.primary_version_id, Some(expected_primary));
+        }
+    }
+
+    fixture.cleanup().await;
+}
+
 struct Fixture {
     database: DatabaseConnection,
     repository: BaseItemRepository,

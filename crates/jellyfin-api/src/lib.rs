@@ -917,6 +917,7 @@ fn user_library_routes() -> Router<Arc<AppState>> {
 
 fn video_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/Videos/MergeVersions", post(videos::merge_versions))
         .route(
             "/Videos/{item_id}/AlternateSources",
             axum::routing::delete(videos::delete_alternate_sources),
@@ -1668,6 +1669,7 @@ fn video_error_response(error: &VideoError) -> (StatusCode, &'static str) {
             (StatusCode::NOT_FOUND, "Video not found")
         }
         VideoError::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
+        VideoError::NotEnoughVideos => (StatusCode::BAD_REQUEST, "Not enough videos to merge"),
         VideoError::InvalidItemType => (StatusCode::BAD_REQUEST, "Item is not a video"),
         VideoError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -382,6 +382,81 @@ impl BaseItemRepository {
         Ok(())
     }
 
+    /// Merges the supplied video identifiers and their existing version groups.
+    ///
+    /// `PostgreSQL` expands every requested row to its current version group,
+    /// chooses a stable primary identifier, and rewrites all members in one
+    /// data-modifying CTE. This preserves rows and media metadata while making
+    /// concurrent merges serialize on the updated rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidItemType` when fewer than two existing rows are supplied,
+    /// or a database error when the transaction cannot be completed.
+    pub async fn merge_alternate_versions(&self, item_ids: &[Uuid]) -> Result<Uuid, BaseItemError> {
+        if item_ids.len() < 2 {
+            return Err(BaseItemError::InvalidItemType);
+        }
+
+        let mut values = Vec::with_capacity(item_ids.len());
+        let mut sql = String::from("WITH requested(id) AS (VALUES ");
+        for (index, item_id) in item_ids.iter().copied().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push(item_id.into());
+            let _ = write!(sql, "(${}::uuid)", values.len());
+        }
+        sql.push_str(
+            "), requested_distinct AS MATERIALIZED (\
+                 SELECT DISTINCT id FROM requested\
+             ), requested_items AS MATERIALIZED (\
+                 SELECT item.id, COALESCE(item.primary_version_id, item.id) AS group_id \
+                 FROM jellyfin.base_items AS item \
+                 INNER JOIN requested_distinct AS requested \
+                   ON requested.id = item.id\
+             ), merge_groups AS MATERIALIZED (\
+                 SELECT DISTINCT group_id FROM requested_items\
+             ), merge_members AS MATERIALIZED (\
+                 SELECT DISTINCT item.id \
+                 FROM jellyfin.base_items AS item \
+                 INNER JOIN merge_groups \
+                   ON item.id = merge_groups.group_id \
+                   OR item.primary_version_id = merge_groups.group_id\
+             ), primary_version AS MATERIALIZED (\
+                 SELECT id FROM merge_members ORDER BY id LIMIT 1\
+             ), updated AS (\
+                 UPDATE jellyfin.base_items AS item \
+                 SET primary_version_id = CASE \
+                         WHEN item.id = (SELECT id FROM primary_version) THEN NULL \
+                         ELSE (SELECT id FROM primary_version) \
+                     END \
+                 FROM merge_members \
+                 WHERE item.id = merge_members.id \
+                 RETURNING item.id\
+             ) \
+             SELECT (SELECT COUNT(*) FROM requested_items) AS requested_count, \
+                    (SELECT id FROM primary_version) AS primary_id",
+        );
+
+        let transaction = self.database.begin().await?;
+        let result = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("version merge returned no row".to_owned()))?;
+        let requested_count = result.try_get::<i64>("", "requested_count")?;
+        if requested_count < 2 {
+            return Err(BaseItemError::InvalidItemType);
+        }
+        let primary_id = result.try_get::<Uuid>("", "primary_id")?;
+        transaction.commit().await?;
+        Ok(primary_id)
+    }
+
     /// Uses the `PostgreSQL` partial hash index to test an exact item path.
     ///
     /// # Errors

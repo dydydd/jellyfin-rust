@@ -100,6 +100,54 @@ async fn concurrent_clears_are_idempotent_and_never_leave_a_partial_group() {
     cleanup(&repository, [&group]).await;
 }
 
+#[tokio::test]
+async fn merge_versions_expands_existing_groups_and_preserves_rows() {
+    let repository = repository().await;
+    let group = create_group(&repository, "merge-group").await;
+    let (standalone, standalone_directory) =
+        create_standalone_video(&repository, "merge-standalone").await;
+    let mut expected_ids = group.ids().to_vec();
+    expected_ids.push(standalone);
+    expected_ids.sort_unstable();
+    let expected_primary = expected_ids[0];
+
+    let primary = repository
+        .merge_alternate_versions(&[group.alternates[0], standalone])
+        .await
+        .expect("version merge");
+    assert_eq!(primary, expected_primary);
+
+    let mut merged = load_group(&repository, &group).await;
+    merged.push(
+        repository
+            .get(standalone)
+            .await
+            .expect("standalone lookup")
+            .expect("standalone row must remain present"),
+    );
+    assert_eq!(merged.len(), 4);
+    for item in merged {
+        if item.id == expected_primary {
+            assert_eq!(item.primary_version_id, None);
+        } else {
+            assert_eq!(item.primary_version_id, Some(expected_primary));
+        }
+        assert!(
+            item.path
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path).is_file()),
+            "merging versions must not remove media files"
+        );
+    }
+
+    repository
+        .delete(standalone)
+        .await
+        .expect("standalone cleanup");
+    std::fs::remove_dir_all(&standalone_directory).expect("standalone media cleanup");
+    cleanup(&repository, [&group]).await;
+}
+
 fn spawn_clear(
     repository: BaseItemRepository,
     barrier: Arc<Barrier>,
@@ -185,6 +233,17 @@ async fn create_item(
         .create(item)
         .await
         .expect("version item creation");
+}
+
+async fn create_standalone_video(
+    repository: &BaseItemRepository,
+    label: &str,
+) -> (Uuid, std::path::PathBuf) {
+    let id = Uuid::new_v4();
+    let media_directory = std::env::temp_dir().join(format!("jellyfin-alt-{label}-{id}"));
+    std::fs::create_dir(&media_directory).expect("standalone media directory creation");
+    create_item(repository, id, label, "Movie", None, &media_directory).await;
+    (id, media_directory)
 }
 
 async fn load_group(

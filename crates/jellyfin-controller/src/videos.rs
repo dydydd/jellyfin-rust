@@ -11,6 +11,8 @@ pub enum VideoError {
     NotFound,
     #[error("administrator access is required")]
     Forbidden,
+    #[error("at least two videos are required")]
+    NotEnoughVideos,
     #[error("item is not a video")]
     InvalidItemType,
     #[error(transparent)]
@@ -64,5 +66,49 @@ impl VideoService {
         }
         self.items.clear_alternate_sources(item_id).await?;
         Ok(())
+    }
+
+    /// Merges two or more videos into one version group.
+    ///
+    /// Missing and non-video ids are ignored before applying Jellyfin's
+    /// "at least two videos" validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns forbidden, not-enough-videos, or persistence errors.
+    pub async fn merge_versions(
+        &self,
+        authenticated_user: &user::Model,
+        item_ids: &[Uuid],
+    ) -> Result<Uuid, VideoError> {
+        if !authenticated_user.is_administrator {
+            return Err(VideoError::Forbidden);
+        }
+
+        let mut video_ids = Vec::new();
+        for item_id in item_ids {
+            let Some(item) = self.items.get(*item_id).await? else {
+                continue;
+            };
+            let Some(item_type) = self.item_types.resolve(&item.item_type) else {
+                continue;
+            };
+            if matches!(
+                item_type.name(),
+                "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+            ) && !video_ids.contains(&item.id)
+            {
+                video_ids.push(item.id);
+            }
+        }
+
+        if video_ids.len() < 2 {
+            return Err(VideoError::NotEnoughVideos);
+        }
+
+        self.items
+            .merge_alternate_versions(&video_ids)
+            .await
+            .map_err(VideoError::BaseItem)
     }
 }
