@@ -382,6 +382,10 @@ pub fn router(state: AppState) -> Router {
             "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
             post(item_images::update_index),
         )
+        .route(
+            "/Items/{item_id}/Images/{image_type}/{image_index}/{tag}/{format}/{max_width}/{max_height}/{percent_played}/{unplayed_count}",
+            get(item_images::get_legacy_path),
+        )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",

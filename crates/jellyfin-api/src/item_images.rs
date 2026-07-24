@@ -107,6 +107,41 @@ pub(crate) async fn get_by_index(
     get_internal(state, uri, headers, item_id, image_type, image_index, query).await
 }
 
+pub(crate) async fn get_legacy_path(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((
+        item_id,
+        image_type,
+        image_index,
+        tag,
+        format,
+        max_width,
+        max_height,
+        percent_played,
+        unplayed_count,
+    )): Path<(Uuid, String, i32, String, String, u32, u32, f64, i32)>,
+    Query(mut query): Query<GetItemImageQuery>,
+) -> Result<Response, ApiError> {
+    query.tag = Some(tag);
+    query.format = Some(format);
+    query.max_width = Some(max_width);
+    query.max_height = Some(max_height);
+    query.percent_played = Some(percent_played);
+    query.unplayed_count = Some(unplayed_count);
+    get_internal(
+        state,
+        uri,
+        headers,
+        item_id,
+        parse_image_type(&image_type)?,
+        image_index,
+        query,
+    )
+    .await
+}
+
 pub(crate) async fn delete(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,

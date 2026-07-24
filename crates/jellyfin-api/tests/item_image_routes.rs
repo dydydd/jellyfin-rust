@@ -188,6 +188,100 @@ async fn item_image_index_updates_match_official_file_swap_contract() {
     }
 }
 
+#[tokio::test]
+async fn legacy_item_image_path_matches_official_parameter_contract() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_legacy_item_image_path(&task_database_name).await;
+    })
+    .await;
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_legacy_item_image_path(database_name: &str) {
+    let fixture = Fixture::new(database_name).await;
+    let path = format!(
+        "/Items/{}/Images/Primary/0/legacy-tag/jpg/4/4/0/0?width=2&height=2&quality=80&format=png&tag=query-tag",
+        fixture.item_id
+    );
+    let response = fixture.request(Method::GET, &path, &[]).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(response.headers()[header::ETAG], "\"legacy-tag\"");
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (2, 1));
+
+    let head = fixture.request(Method::HEAD, &path, &[]).await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert!(
+        to_bytes(head.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Items/{}/Images/Primary/0/tag/not-a-format/1/1/0/0",
+                    fixture.item_id
+                ),
+                &[],
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Items/{}/Images/Primary/0/tag/png/1/1/not-a-number/0",
+                    fixture.item_id
+                ),
+                &[],
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Items/{}/Images/Primary/0/tag/png/1/1/0/0", Uuid::new_v4()),
+                &[],
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    fixture.cleanup().await;
+}
+
 async fn exercise_item_image_index_updates(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
     let route = format!(
