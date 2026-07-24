@@ -293,6 +293,24 @@ impl BaseItemRepository {
             .await?)
     }
 
+    /// Loads a set of items in one `PostgreSQL` query.
+    ///
+    /// The returned order is database-defined; callers that carry a separate
+    /// presentation order should join the models by identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn get_many(&self, ids: &[Uuid]) -> Result<Vec<base_item::Model>, BaseItemError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(base_item::Entity::find()
+            .filter(base_item::Column::Id.is_in(ids.iter().copied()))
+            .all(&self.database)
+            .await?)
+    }
+
     /// Resolves a persisted item-by-name entity by its raw display name.
     ///
     /// The exact equality predicate intentionally preserves `PostgreSQL` text

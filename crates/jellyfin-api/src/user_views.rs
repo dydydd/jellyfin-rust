@@ -145,6 +145,7 @@ pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto
         name: Some(folder.name.clone()),
         server_id: server_id.to_owned(),
         id: folder.id.simple().to_string(),
+        playlist_item_id: None,
         item_type: "CollectionFolder".to_owned(),
         etag: folder.id.simple().to_string(),
         date_created: None,

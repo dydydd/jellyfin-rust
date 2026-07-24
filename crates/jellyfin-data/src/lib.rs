@@ -13,6 +13,7 @@ mod media_attachment_repository;
 mod media_stream_repository;
 mod named_configuration_repository;
 mod person_repository;
+mod playlist_repository;
 mod quick_connect_repository;
 mod server_configuration_repository;
 mod session_command_repository;
@@ -66,6 +67,9 @@ pub use named_configuration_repository::{
 };
 pub use person_repository::{
     NewPerson, PersonCredit, PersonError, PersonPage, PersonQuery, PersonRepository,
+};
+pub use playlist_repository::{
+    PlaylistRecord, PlaylistRepository, PlaylistStoreError, PlaylistUserPermission,
 };
 pub use quick_connect_repository::{
     AuthorizedQuickConnect, NewQuickConnectRequest, QuickConnectRepository, QuickConnectStoreError,

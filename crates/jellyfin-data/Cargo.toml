@@ -11,6 +11,7 @@ jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-migration = { path = "../jellyfin-migration" }
 sea-orm.workspace = true
 sea-orm-migration.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

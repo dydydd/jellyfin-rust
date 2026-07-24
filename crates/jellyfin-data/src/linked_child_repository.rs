@@ -90,6 +90,23 @@ impl LinkedChildRepository {
         parent_id: Uuid,
         child_ids: &[Uuid],
     ) -> Result<Vec<LinkedChild>, LinkedChildStoreError> {
+        self.add_manual_at(parent_id, child_ids, None).await
+    }
+
+    /// Adds unique manual links at a requested zero-based position.
+    ///
+    /// The parent row lock and one `PostgreSQL` upsert keep insertion and
+    /// renumbering atomic when several clients edit the same playlist.
+    ///
+    /// # Errors
+    ///
+    /// Returns missing-item, self-link, overflow, or database errors.
+    pub async fn add_manual_at(
+        &self,
+        parent_id: Uuid,
+        child_ids: &[Uuid],
+        position: Option<i32>,
+    ) -> Result<Vec<LinkedChild>, LinkedChildStoreError> {
         let child_ids = unique_ids(child_ids);
         if child_ids.contains(&parent_id) {
             return Err(LinkedChildStoreError::SelfLink);
@@ -98,46 +115,83 @@ impl LinkedChildRepository {
         lock_parent(&transaction, parent_id).await?;
         validate_children(&transaction, &child_ids).await?;
 
-        let existing = linked_child::Entity::find()
-            .filter(linked_child::Column::ParentId.eq(parent_id))
-            .all(&transaction)
-            .await?;
+        let existing = list_models_with(&transaction, parent_id).await?;
         let existing_ids = existing
             .iter()
             .map(|link| link.child_id)
             .collect::<HashSet<_>>();
-        let first_order = existing
-            .iter()
-            .filter_map(|link| link.sort_order)
-            .max()
-            .unwrap_or(-1)
-            .checked_add(1)
-            .ok_or(LinkedChildStoreError::SortOrderOverflow)?;
-        let mut inserts = Vec::new();
-        for child_id in child_ids {
-            if existing_ids.contains(&child_id) {
-                continue;
-            }
-            let offset = i32::try_from(inserts.len())
-                .map_err(|_| LinkedChildStoreError::SortOrderOverflow)?;
-            let sort_order = first_order
-                .checked_add(offset)
-                .ok_or(LinkedChildStoreError::SortOrderOverflow)?;
-            inserts.push(linked_child::ActiveModel {
-                parent_id: Set(parent_id),
-                child_id: Set(child_id),
-                child_type: Set(LinkedChildType::Manual as i16),
-                sort_order: Set(Some(sort_order)),
+        let new_ids = child_ids
+            .into_iter()
+            .filter(|child_id| !existing_ids.contains(child_id))
+            .collect::<Vec<_>>();
+        if !new_ids.is_empty() {
+            let insert_at = position.map_or(existing.len(), |position| {
+                usize::try_from(position.max(0))
+                    .unwrap_or(usize::MAX)
+                    .min(existing.len())
             });
-        }
-        if !inserts.is_empty() {
-            linked_child::Entity::insert_many(inserts)
+            let mut ordered = existing;
+            ordered.splice(
+                insert_at..insert_at,
+                new_ids.into_iter().map(|child_id| linked_child::Model {
+                    parent_id,
+                    child_id,
+                    child_type: LinkedChildType::Manual as i16,
+                    sort_order: None,
+                }),
+            );
+            let rows = ordered_rows(parent_id, ordered)?;
+            linked_child::Entity::insert_many(rows)
                 .on_conflict(
                     OnConflict::columns([
                         linked_child::Column::ParentId,
                         linked_child::Column::ChildId,
                     ])
-                    .do_nothing()
+                    .update_column(linked_child::Column::SortOrder)
+                    .to_owned(),
+                )
+                .exec_without_returning(&transaction)
+                .await?;
+        }
+        let links = list_with(&transaction, parent_id).await?;
+        transaction.commit().await?;
+        Ok(links)
+    }
+
+    /// Moves one linked child to a clamped zero-based position.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-parent, overflow, or database error.
+    pub async fn move_to(
+        &self,
+        parent_id: Uuid,
+        child_id: Uuid,
+        new_index: usize,
+    ) -> Result<Vec<LinkedChild>, LinkedChildStoreError> {
+        let transaction = self.database.begin().await?;
+        lock_parent(&transaction, parent_id).await?;
+        let mut ordered = list_models_with(&transaction, parent_id).await?;
+        let Some(old_index) = ordered.iter().position(|link| link.child_id == child_id) else {
+            let links = ordered
+                .into_iter()
+                .map(LinkedChild::try_from)
+                .collect::<Result<Vec<_>, _>>()?;
+            transaction.commit().await?;
+            return Ok(links);
+        };
+        if old_index != new_index {
+            let item = ordered.remove(old_index);
+            let insert_at = new_index.min(ordered.len());
+            ordered.insert(insert_at, item);
+            let rows = ordered_rows(parent_id, ordered)?;
+            linked_child::Entity::insert_many(rows)
+                .on_conflict(
+                    OnConflict::columns([
+                        linked_child::Column::ParentId,
+                        linked_child::Column::ChildId,
+                    ])
+                    .update_column(linked_child::Column::SortOrder)
                     .to_owned(),
                 )
                 .exec_without_returning(&transaction)
@@ -158,6 +212,28 @@ impl LinkedChildRepository {
         parent_id: Uuid,
         child_ids: &[Uuid],
     ) -> Result<Vec<LinkedChild>, LinkedChildStoreError> {
+        self.remove_inner(parent_id, child_ids, false).await
+    }
+
+    /// Removes links and rewrites the remaining entries to consecutive positions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-parent, overflow, or database error.
+    pub async fn remove_compact(
+        &self,
+        parent_id: Uuid,
+        child_ids: &[Uuid],
+    ) -> Result<Vec<LinkedChild>, LinkedChildStoreError> {
+        self.remove_inner(parent_id, child_ids, true).await
+    }
+
+    async fn remove_inner(
+        &self,
+        parent_id: Uuid,
+        child_ids: &[Uuid],
+        compact: bool,
+    ) -> Result<Vec<LinkedChild>, LinkedChildStoreError> {
         let child_ids = unique_ids(child_ids);
         let transaction = self.database.begin().await?;
         lock_parent(&transaction, parent_id).await?;
@@ -167,6 +243,24 @@ impl LinkedChildRepository {
                 .filter(linked_child::Column::ChildId.is_in(child_ids))
                 .exec(&transaction)
                 .await?;
+            let remaining = if compact {
+                list_models_with(&transaction, parent_id).await?
+            } else {
+                Vec::new()
+            };
+            if compact && !remaining.is_empty() {
+                linked_child::Entity::insert_many(ordered_rows(parent_id, remaining)?)
+                    .on_conflict(
+                        OnConflict::columns([
+                            linked_child::Column::ParentId,
+                            linked_child::Column::ChildId,
+                        ])
+                        .update_column(linked_child::Column::SortOrder)
+                        .to_owned(),
+                    )
+                    .exec_without_returning(&transaction)
+                    .await?;
+            }
         }
         let links = list_with(&transaction, parent_id).await?;
         transaction.commit().await?;
@@ -227,6 +321,45 @@ where
         .await?
         .into_iter()
         .map(LinkedChild::try_from)
+        .collect()
+}
+
+async fn list_models_with<C>(
+    database: &C,
+    parent_id: Uuid,
+) -> Result<Vec<linked_child::Model>, LinkedChildStoreError>
+where
+    C: ConnectionTrait,
+{
+    Ok(linked_child::Entity::find()
+        .filter(linked_child::Column::ParentId.eq(parent_id))
+        .order_by_with_nulls(
+            linked_child::Column::SortOrder,
+            Order::Asc,
+            NullOrdering::Last,
+        )
+        .order_by_asc(linked_child::Column::ChildId)
+        .all(database)
+        .await?)
+}
+
+fn ordered_rows(
+    parent_id: Uuid,
+    ordered: Vec<linked_child::Model>,
+) -> Result<Vec<linked_child::ActiveModel>, LinkedChildStoreError> {
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, link)| {
+            Ok(linked_child::ActiveModel {
+                parent_id: Set(parent_id),
+                child_id: Set(link.child_id),
+                child_type: Set(link.child_type),
+                sort_order: Set(Some(
+                    i32::try_from(index).map_err(|_| LinkedChildStoreError::SortOrderOverflow)?,
+                )),
+            })
+        })
         .collect()
 }
 

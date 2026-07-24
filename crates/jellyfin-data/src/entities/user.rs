@@ -31,11 +31,19 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_one = "super::user_profile_image::Entity")]
     ProfileImage,
+    #[sea_orm(has_many = "super::playlist::Entity")]
+    OwnedPlaylists,
 }
 
 impl Related<super::user_profile_image::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::ProfileImage.def()
+    }
+}
+
+impl Related<super::playlist::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::OwnedPlaylists.def()
     }
 }
 

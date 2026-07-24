@@ -14,12 +14,13 @@ use jellyfin_controller::{
     ItemUpdateError, ItemUpdateService, LibraryControllerError, LibraryControllerService,
     LocalizationService, MediaAttachmentService, MediaAttachmentServiceError, MediaStreamService,
     MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
-    MusicGenreService, PackageError, PackageService, PersonError, PersonService, PlaystateError,
-    PlaystateService, PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError,
-    StudioService, SystemLogError, SystemLogService, SystemStorageService, TrickplayError,
-    TrickplayService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
-    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
+    MusicGenreService, PackageError, PackageService, PersonError, PersonService, PlaylistError,
+    PlaylistService, PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError,
+    ScheduledTaskService, StudioError, StudioService, SystemLogError, SystemLogService,
+    SystemStorageService, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -74,6 +75,7 @@ mod music_genre;
 mod openapi;
 mod packages;
 mod persons;
+mod playlists;
 mod playstate;
 mod plugins;
 pub mod query;
@@ -114,6 +116,7 @@ pub struct AppState {
     pub(crate) quick_connect:
         QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
     pub(crate) playstate: PlaystateService,
+    pub(crate) playlists: PlaylistService,
     pub(crate) collections: CollectionService,
     pub(crate) user_data: UserDataService,
     pub(crate) artists: ArtistService,
@@ -176,6 +179,7 @@ impl AppState {
                 SystemQuickConnectCapability::new(true),
             ),
             playstate: PlaystateService::new(database.clone()),
+            playlists: PlaylistService::new(database.clone()),
             collections: CollectionService::new(database.clone()),
             user_data: UserDataService::new(database.clone()),
             artists: ArtistService::new(database.clone()),
@@ -898,6 +902,18 @@ fn collection_routes() -> Router<Arc<AppState>> {
             "/Collections/{collection_id}/Items",
             post(collections::add_items).delete(collections::remove_items),
         )
+        .route("/Playlists", post(playlists::create))
+        .route("/Playlists/{playlist_id}", get(playlists::get))
+        .route(
+            "/Playlists/{playlist_id}/Items",
+            get(playlists::get_items)
+                .post(playlists::add_items)
+                .delete(playlists::remove_items),
+        )
+        .route(
+            "/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
+            post(playlists::move_item),
+        )
 }
 
 fn library_controller_routes() -> Router<Arc<AppState>> {
@@ -1173,6 +1189,7 @@ pub(crate) enum ApiError {
     Package(PackageError),
     Trickplay(TrickplayError),
     Collection(CollectionError),
+    Playlist(PlaylistError),
     InvalidRequest,
     UnsupportedMediaType,
     PayloadTooLarge,
@@ -1407,6 +1424,12 @@ impl From<CollectionError> for ApiError {
     }
 }
 
+impl From<PlaylistError> for ApiError {
+    fn from(error: PlaylistError) -> Self {
+        Self::Playlist(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     #[allow(
         clippy::too_many_lines,
@@ -1619,6 +1642,7 @@ impl IntoResponse for ApiError {
             Self::Package(PackageError::NotFound) => (StatusCode::NOT_FOUND, "Package not found"),
             Self::Trickplay(error) => trickplay_error_response(&error),
             Self::Collection(error) => collection_error_response(&error),
+            Self::Playlist(error) => playlist_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
     }
@@ -1659,6 +1683,40 @@ fn collection_error_response(error: &CollectionError) -> (StatusCode, &'static s
         | CollectionError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Collection persistence failed",
+        ),
+    }
+}
+
+fn playlist_error_response(error: &PlaylistError) -> (StatusCode, &'static str) {
+    use jellyfin_data::{LinkedChildStoreError, PlaylistStoreError};
+
+    match error {
+        PlaylistError::InvalidName => (StatusCode::BAD_REQUEST, "Playlist name is invalid"),
+        PlaylistError::NotFound
+        | PlaylistError::Store(PlaylistStoreError::NotFound)
+        | PlaylistError::Links(LinkedChildStoreError::ParentNotFound { .. }) => {
+            (StatusCode::NOT_FOUND, "Playlist not found")
+        }
+        PlaylistError::Forbidden => (StatusCode::FORBIDDEN, "Playlist access is forbidden"),
+        PlaylistError::Store(
+            PlaylistStoreError::UserNotFound { .. }
+            | PlaylistStoreError::ItemNotFound { .. }
+            | PlaylistStoreError::TooManyItems,
+        )
+        | PlaylistError::Links(
+            LinkedChildStoreError::ChildNotFound { .. }
+            | LinkedChildStoreError::SelfLink
+            | LinkedChildStoreError::SortOrderOverflow,
+        ) => (StatusCode::BAD_REQUEST, "Playlist request is invalid"),
+        PlaylistError::Store(
+            PlaylistStoreError::CorruptShares(_) | PlaylistStoreError::Database(_),
+        )
+        | PlaylistError::Links(
+            LinkedChildStoreError::CorruptChildType(_) | LinkedChildStoreError::Database(_),
+        )
+        | PlaylistError::Items(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Playlist persistence failed",
         ),
     }
 }
@@ -1850,6 +1908,10 @@ fn user_error_response(error: &UserError) -> (StatusCode, &'static str) {
         UserError::PolicySerialization(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "User policy serialization failed",
+        ),
+        UserError::CorruptPlaylistShares => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Playlist persistence failed",
         ),
         UserError::Database(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,

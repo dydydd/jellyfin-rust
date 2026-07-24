@@ -47,6 +47,8 @@ pub enum Relation {
     MediaStreams,
     #[sea_orm(has_many = "super::trickplay_info::Entity")]
     TrickplayInfos,
+    #[sea_orm(has_one = "super::playlist::Entity")]
+    Playlist,
     #[sea_orm(
         belongs_to = "Entity",
         from = "Column::ParentId",
@@ -92,6 +94,12 @@ impl Related<super::media_stream::Entity> for Entity {
 impl Related<super::trickplay_info::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::TrickplayInfos.def()
+    }
+}
+
+impl Related<super::playlist::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Playlist.def()
     }
 }
 

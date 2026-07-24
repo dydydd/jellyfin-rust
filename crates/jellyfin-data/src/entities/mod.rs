@@ -17,6 +17,7 @@ pub mod named_configuration;
 pub mod password_reset;
 pub mod person;
 pub mod person_base_item_map;
+pub mod playlist;
 pub mod quick_connect;
 pub mod server_configuration;
 pub mod session_command;

@@ -18,6 +18,7 @@ mod metadata_editor;
 mod music_genre;
 mod packages;
 mod persons;
+mod playlists;
 mod playstate;
 mod plugins;
 pub mod providers;
@@ -58,6 +59,7 @@ pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};
 pub use packages::{PackageError, PackageService};
 pub use persons::{Person, PersonError, PersonPage, PersonService};
+pub use playlists::{PlaylistError, PlaylistService};
 pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,
     PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,

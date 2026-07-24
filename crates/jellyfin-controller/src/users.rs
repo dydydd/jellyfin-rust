@@ -2,8 +2,9 @@ use std::fmt::Write as _;
 
 use chrono::{Duration, Utc};
 use jellyfin_data::{
-    NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
-    entities::{password_reset, user, user_profile_image},
+    NewUserProfileImage, PlaylistUserPermission, UserProfileImageRepository,
+    UserProfileImageStoreError,
+    entities::{base_item, linked_child, password_reset, playlist, user, user_profile_image},
 };
 use jellyfin_model::{
     ForgotPasswordAction, ForgotPasswordResult, NameIdPair, UserConfiguration, UserPolicy,
@@ -12,8 +13,9 @@ use md5::{Digest, Md5};
 use sea_orm::{
     ActiveValue::NotSet,
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, SqlErr, Statement, TransactionTrait,
-    TryInsertResult,
+    FromQueryResult, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, SqlErr, Statement,
+    TransactionTrait, TryInsertResult,
+    sea_query::Value,
     sea_query::{Expr, OnConflict},
 };
 use serde_json::json;
@@ -52,6 +54,8 @@ pub enum UserError {
     ConfigurationSerialization(#[source] serde_json::Error),
     #[error("failed to serialize user policy")]
     PolicySerialization(#[source] serde_json::Error),
+    #[error("stored playlist shares are invalid")]
+    CorruptPlaylistShares,
     #[error(transparent)]
     Database(#[from] DbErr),
 }
@@ -556,6 +560,7 @@ impl UserService {
         {
             return Err(UserError::LastAdministrator);
         }
+        remove_user_from_playlists(&transaction, id).await?;
         user::Entity::delete_by_id(id).exec(&transaction).await?;
         transaction.commit().await?;
         Ok(())
@@ -731,6 +736,65 @@ impl UserService {
             .all(&self.database)
             .await?)
     }
+}
+
+async fn remove_user_from_playlists<C>(database: &C, user_id: Uuid) -> Result<(), UserError>
+where
+    C: ConnectionTrait,
+{
+    let rows = playlist::Model::find_by_statement(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT playlist_id, owner_user_id, open_access, media_type, shares \
+         FROM jellyfin.playlists \
+         WHERE owner_user_id = $1::uuid OR shares @> $2::jsonb \
+         FOR UPDATE",
+        [
+            user_id.into(),
+            serde_json::json!([{ "UserId": user_id }]).into(),
+        ],
+    ))
+    .all(database)
+    .await?;
+    for row in rows {
+        let mut shares = serde_json::from_value::<Vec<PlaylistUserPermission>>(row.shares)
+            .map_err(|_| UserError::CorruptPlaylistShares)?;
+        shares.retain(|share| share.user_id != user_id);
+        let mut owner_user_id = row.owner_user_id;
+        if owner_user_id == Some(user_id) {
+            shares.sort_by_key(|share| !share.can_edit);
+            if let Some(new_owner) = shares.first().copied() {
+                owner_user_id = Some(new_owner.user_id);
+                shares.remove(0);
+            } else if !row.open_access {
+                linked_child::Entity::delete_many()
+                    .filter(linked_child::Column::ParentId.eq(row.playlist_id))
+                    .exec(database)
+                    .await?;
+                base_item::Entity::delete_by_id(row.playlist_id)
+                    .exec(database)
+                    .await?;
+                continue;
+            } else {
+                owner_user_id = None;
+            }
+        }
+        database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "UPDATE jellyfin.playlists \
+                 SET owner_user_id = $1::uuid, shares = $2::jsonb \
+                 WHERE playlist_id = $3::uuid",
+                [
+                    Value::Uuid(owner_user_id.map(Box::new)),
+                    serde_json::to_value(shares)
+                        .map_err(|_| UserError::CorruptPlaylistShares)?
+                        .into(),
+                    row.playlist_id.into(),
+                ],
+            ))
+            .await?;
+    }
+    Ok(())
 }
 
 fn normalize_username(name: &str) -> String {
