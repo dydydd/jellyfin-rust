@@ -14,7 +14,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
-use jellyfin_data::NamedConfigurationStoreError;
+use jellyfin_data::{BaseItemError, BaseItemRepository, NamedConfigurationStoreError};
 use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -49,6 +49,27 @@ pub(crate) struct UploadSubtitleDto {
     data: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct SubtitleStreamQuery {
+    #[serde(alias = "ItemId")]
+    item_id: Option<Uuid>,
+    #[serde(alias = "MediaSourceId")]
+    media_source_id: Option<String>,
+    #[serde(alias = "Index")]
+    index: Option<i32>,
+    #[serde(alias = "Format")]
+    format: Option<String>,
+    #[serde(alias = "EndPositionTicks")]
+    end_position_ticks: Option<i64>,
+    #[serde(alias = "CopyTimestamps")]
+    copy_timestamps: bool,
+    #[serde(alias = "AddVttTimeMap")]
+    add_vtt_time_map: bool,
+    #[serde(alias = "StartPositionTicks")]
+    start_position_ticks: Option<i64>,
+}
+
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -63,6 +84,51 @@ pub(crate) async fn delete_subtitle(
         .delete_media_stream(item_id, index, MediaStreamType::Subtitle)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn get_subtitle(
+    State(state): State<Arc<AppState>>,
+    AxumPath((route_item_id, route_media_source_id, route_index, route_format)): AxumPath<(
+        Uuid,
+        String,
+        i32,
+        String,
+    )>,
+    Query(query): Query<SubtitleStreamQuery>,
+) -> Result<Response, ApiError> {
+    subtitle_response(
+        &state,
+        route_item_id,
+        route_media_source_id,
+        route_index,
+        0,
+        route_format,
+        query,
+    )
+    .await
+}
+
+pub(crate) async fn get_subtitle_with_ticks(
+    State(state): State<Arc<AppState>>,
+    AxumPath((
+        route_item_id,
+        route_media_source_id,
+        route_index,
+        route_start_position_ticks,
+        route_format,
+    )): AxumPath<(Uuid, String, i32, i64, String)>,
+    Query(query): Query<SubtitleStreamQuery>,
+) -> Result<Response, ApiError> {
+    subtitle_response(
+        &state,
+        route_item_id,
+        route_media_source_id,
+        route_index,
+        route_start_position_ticks,
+        route_format,
+        query,
+    )
+    .await
 }
 
 pub(crate) async fn upload_subtitle(
@@ -348,18 +414,182 @@ async fn ensure_video_item(
         .user_library
         .item(authenticated_user, authenticated_user.id, item_id)
         .await?;
-    if item.media_type.as_deref().is_some_and(|media_type| {
+    if is_video_item(&item) {
+        Ok(item)
+    } else {
+        Err(jellyfin_controller::UserLibraryError::ItemNotFound.into())
+    }
+}
+
+async fn ensure_video_item_by_id(
+    state: &AppState,
+    item_id: Uuid,
+) -> Result<jellyfin_data::entities::base_item::Model, ApiError> {
+    let item = BaseItemRepository::new(state.database.clone())
+        .get(item_id)
+        .await?
+        .ok_or(BaseItemError::NotFound)?;
+    if is_video_item(&item) {
+        Ok(item)
+    } else {
+        Err(BaseItemError::NotFound.into())
+    }
+}
+
+async fn subtitle_response(
+    state: &AppState,
+    route_item_id: Uuid,
+    route_media_source_id: String,
+    route_index: i32,
+    route_start_position_ticks: i64,
+    route_format: String,
+    query: SubtitleStreamQuery,
+) -> Result<Response, ApiError> {
+    let item_id = query.item_id.unwrap_or(route_item_id);
+    let _media_source_id = query.media_source_id.unwrap_or(route_media_source_id);
+    let index = query.index.unwrap_or(route_index);
+    let start_position_ticks = query
+        .start_position_ticks
+        .unwrap_or(route_start_position_ticks)
+        .max(0);
+    let requested_format = normalize_subtitle_format(
+        query
+            .format
+            .as_deref()
+            .filter(|format| !format.trim().is_empty())
+            .unwrap_or(&route_format),
+    )
+    .ok_or(ApiError::InvalidRequest)?;
+    let _end_position_ticks = query.end_position_ticks;
+    let _copy_timestamps = query.copy_timestamps;
+
+    ensure_video_item_by_id(state, item_id).await?;
+    let stream = state
+        .media_streams
+        .get_media_streams(jellyfin_controller::MediaStreamFilter {
+            item_id,
+            index: Some(index),
+            stream_type: Some(MediaStreamType::Subtitle),
+        })
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(BaseItemError::NotFound)?;
+    let path = stream
+        .path
+        .as_ref()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or(BaseItemError::NotFound)?;
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|_| BaseItemError::NotFound)?;
+    let source_format = stream
+        .codec
+        .as_deref()
+        .and_then(normalize_subtitle_format)
+        .or_else(|| {
+            Path::new(path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .and_then(normalize_subtitle_format)
+        })
+        .ok_or(ApiError::InvalidRequest)?;
+
+    let payload = subtitle_payload(
+        &bytes,
+        &source_format,
+        &requested_format,
+        query.add_vtt_time_map,
+        start_position_ticks,
+    )?;
+    let mime_type = MimeTypes::get_mime_type(&format!("file.{requested_format}"))
+        .map_err(|_| ApiError::Internal)?;
+    let content_type = HeaderValue::from_str(&mime_type).map_err(|_| ApiError::Internal)?;
+    let mut response = Response::new(Body::from(payload));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, content_type);
+    Ok(response)
+}
+
+fn subtitle_payload(
+    bytes: &[u8],
+    source_format: &str,
+    requested_format: &str,
+    add_vtt_time_map: bool,
+    start_position_ticks: i64,
+) -> Result<Vec<u8>, ApiError> {
+    if source_format.eq_ignore_ascii_case(requested_format) {
+        if requested_format.eq_ignore_ascii_case("vtt") && add_vtt_time_map {
+            let text = String::from_utf8_lossy(bytes);
+            return Ok(add_vtt_timestamp_map(&text, start_position_ticks).into_bytes());
+        }
+        return Ok(bytes.to_vec());
+    }
+    if source_format.eq_ignore_ascii_case("srt") && requested_format.eq_ignore_ascii_case("vtt") {
+        let text = String::from_utf8_lossy(bytes);
+        return Ok(srt_to_vtt(&text, add_vtt_time_map, start_position_ticks).into_bytes());
+    }
+    Err(ApiError::InvalidRequest)
+}
+
+fn srt_to_vtt(text: &str, add_vtt_time_map: bool, start_position_ticks: i64) -> String {
+    let mut output = "WEBVTT\n".to_owned();
+    if add_vtt_time_map {
+        output.push_str(&vtt_timestamp_map(start_position_ticks));
+        output.push('\n');
+    }
+    output.push('\n');
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.chars().all(|character| character.is_ascii_digit()) {
+            continue;
+        }
+        if trimmed.contains("-->") {
+            output.push_str(&trimmed.replace(',', "."));
+        } else {
+            output.push_str(line);
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn add_vtt_timestamp_map(text: &str, start_position_ticks: i64) -> String {
+    if text.contains("X-TIMESTAMP-MAP=") {
+        return text.to_owned();
+    }
+    let map = vtt_timestamp_map(start_position_ticks);
+    if let Some(rest) = text.strip_prefix("WEBVTT") {
+        format!("WEBVTT\n{map}{rest}")
+    } else {
+        format!("WEBVTT\n{map}\n{text}")
+    }
+}
+
+fn vtt_timestamp_map(start_position_ticks: i64) -> String {
+    let mpegts = start_position_ticks.saturating_mul(9) / 1000;
+    format!("X-TIMESTAMP-MAP=MPEGTS:{mpegts},LOCAL:00:00:00.000")
+}
+
+fn normalize_subtitle_format(value: &str) -> Option<String> {
+    let format = subtitle_token(Some(value))?;
+    Some(if format.eq_ignore_ascii_case("js") {
+        "json".to_owned()
+    } else {
+        format
+    })
+}
+
+fn is_video_item(item: &jellyfin_data::entities::base_item::Model) -> bool {
+    item.media_type.as_deref().is_some_and(|media_type| {
         media_type.eq_ignore_ascii_case("Video")
             || media_type.eq_ignore_ascii_case("VideoFile")
             || media_type.eq_ignore_ascii_case("VideoStream")
     }) || matches!(
         item.item_type.as_str(),
         "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
-    ) {
-        Ok(item)
-    } else {
-        Err(jellyfin_controller::UserLibraryError::ItemNotFound.into())
-    }
+    )
 }
 
 fn subtitle_token(value: Option<&str>) -> Option<String> {

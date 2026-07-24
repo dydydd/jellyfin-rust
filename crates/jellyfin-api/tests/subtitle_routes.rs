@@ -277,7 +277,7 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         "Format": "SRT",
         "IsForced": true,
         "IsHearingImpaired": false,
-        "Data": "MSAwMDowMDowMSwwMDAgLS0+IDAwOjAwOjAyLDAwMApIZWxsbyBmcm9tIHVwbG9hZAo="
+        "Data": "MQowMDowMDowMSwwMDAgLS0+IDAwOjAwOjAyLDAwMApIZWxsbyBmcm9tIHVwbG9hZAo="
     });
 
     assert_eq!(
@@ -364,7 +364,68 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
     let bytes = tokio::fs::read(path).await.expect("uploaded subtitle file");
     assert_eq!(
         Bytes::from(bytes),
-        Bytes::from_static(b"1 00:00:01,000 --> 00:00:02,000\nHello from upload\n")
+        Bytes::from_static(b"1\n00:00:01,000 --> 00:00:02,000\nHello from upload\n")
+    );
+
+    let direct = fixture
+        .send(
+            Method::GET,
+            &Fixture::stream_route(fixture.item_id, 4, "srt"),
+            None,
+        )
+        .await;
+    assert_eq!(direct.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(direct).await,
+        Bytes::from_static(b"1\n00:00:01,000 --> 00:00:02,000\nHello from upload\n")
+    );
+
+    let converted = fixture
+        .send(
+            Method::GET,
+            &format!(
+                "{}?addVttTimeMap=true&startPositionTicks=10000000",
+                Fixture::stream_route(fixture.item_id, 4, "vtt")
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(converted.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(converted).await,
+        Bytes::from_static(
+            b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
+        )
+    );
+
+    let converted_from_ticks_route = fixture
+        .send(
+            Method::GET,
+            &format!(
+                "{}?addVttTimeMap=true",
+                Fixture::stream_with_ticks_route(fixture.item_id, 4, 10_000_000, "vtt")
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(converted_from_ticks_route.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(converted_from_ticks_route).await,
+        Bytes::from_static(
+            b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
+        )
+    );
+
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &Fixture::stream_route(Uuid::new_v4(), 4, "srt"),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
     );
 
     fixture.cleanup().await;
@@ -551,6 +612,21 @@ impl Fixture {
         format!("/Videos/{item_id}/Subtitles")
     }
 
+    fn stream_route(item_id: Uuid, index: i32, format: &str) -> String {
+        format!("/Videos/{item_id}/{item_id}/Subtitles/{index}/Stream.{format}")
+    }
+
+    fn stream_with_ticks_route(
+        item_id: Uuid,
+        index: i32,
+        start_position_ticks: i64,
+        format: &str,
+    ) -> String {
+        format!(
+            "/Videos/{item_id}/{item_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}"
+        )
+    }
+
     async fn send(
         &self,
         method: Method,
@@ -622,6 +698,12 @@ async fn body_json(response: axum::response::Response) -> Value {
             .expect("response body"),
     )
     .expect("JSON response")
+}
+
+async fn body_bytes(response: axum::response::Response) -> Bytes {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body")
 }
 
 fn subtitle_manager_policy() -> UserPolicy {
