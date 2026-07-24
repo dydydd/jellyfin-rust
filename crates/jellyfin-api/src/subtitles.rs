@@ -8,16 +8,17 @@ use std::{
 use axum::{
     Json,
     body::Body,
-    extract::{OriginalUri, Path as AxumPath, State},
+    extract::{OriginalUri, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use jellyfin_data::NamedConfigurationStoreError;
-use jellyfin_model::{FontFile, MediaStreamType, MimeTypes};
+use jellyfin_model::{FontFile, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
+use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, authorization};
 
@@ -30,11 +31,18 @@ struct EncodingOptionsSubset {
     fallback_font_path: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct RemoteSubtitleSearchQuery {
+    #[serde(alias = "isPerfectMatch")]
+    is_perfect_match: Option<bool>,
+}
+
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    AxumPath((item_id, index)): AxumPath<(uuid::Uuid, i32)>,
+    AxumPath((item_id, index)): AxumPath<(Uuid, i32)>,
 ) -> Result<StatusCode, ApiError> {
     authorization::require_default(&state, &headers, &uri)
         .await?
@@ -44,6 +52,59 @@ pub(crate) async fn delete_subtitle(
         .delete_media_stream(item_id, index, MediaStreamType::Subtitle)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn search_remote_subtitles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath((item_id, language)): AxumPath<(Uuid, String)>,
+    Query(query): Query<RemoteSubtitleSearchQuery>,
+) -> Result<Json<Vec<RemoteSubtitleInfo>>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
+    ensure_video_item(&state, &authenticated.user, item_id).await?;
+
+    // Remote subtitle providers are not wired yet. The query is parsed so the
+    // route keeps Jellyfin's official parameter surface while returning the
+    // empty provider aggregate clients expect on an installation without
+    // subtitle providers.
+    let RemoteSubtitleSearchQuery {
+        is_perfect_match: _is_perfect_match,
+    } = query;
+    let _language = language;
+    Ok(Json(Vec::new()))
+}
+
+pub(crate) async fn download_remote_subtitles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath((item_id, subtitle_id)): AxumPath<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
+    ensure_video_item(&state, &authenticated.user, item_id).await?;
+
+    // Jellyfin logs provider download failures and still returns NoContent.
+    // With no providers registered there is nothing to persist or refresh yet.
+    let _subtitle_id = subtitle_id;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn get_remote_subtitles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(_subtitle_id): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
+
+    Ok(StatusCode::NOT_FOUND.into_response())
 }
 
 pub(crate) async fn fallback_fonts(
@@ -191,4 +252,27 @@ fn is_supported_font_path(path: &Path) -> bool {
 fn metadata_time(time: Option<SystemTime>) -> DateTime<Utc> {
     time.map(DateTime::<Utc>::from)
         .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+}
+
+async fn ensure_video_item(
+    state: &AppState,
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    item_id: Uuid,
+) -> Result<(), ApiError> {
+    let item = state
+        .user_library
+        .item(authenticated_user, authenticated_user.id, item_id)
+        .await?;
+    if item.media_type.as_deref().is_some_and(|media_type| {
+        media_type.eq_ignore_ascii_case("Video")
+            || media_type.eq_ignore_ascii_case("VideoFile")
+            || media_type.eq_ignore_ascii_case("VideoStream")
+    }) || matches!(
+        item.item_type.as_str(),
+        "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+    ) {
+        Ok(())
+    } else {
+        Err(jellyfin_controller::UserLibraryError::ItemNotFound.into())
+    }
 }

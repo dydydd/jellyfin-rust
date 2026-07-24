@@ -8,8 +8,9 @@ use jellyfin_data::{
     BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
     entities::{base_item, user},
 };
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -108,6 +109,133 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn remote_subtitle_routes_match_management_policy_and_empty_provider_contract() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_remote_subtitle_routes(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_remote_subtitle_routes(database_name: &str) {
+    let fixture = Fixture::new(database_name).await;
+    let search_route = Fixture::search_route(fixture.item_id, "eng");
+
+    assert_eq!(
+        fixture
+            .send(Method::GET, &search_route, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send(Method::GET, &search_route, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let search = fixture
+        .send(Method::GET, &search_route, Some(&fixture.manager_token))
+        .await;
+    assert_eq!(search.status(), StatusCode::OK);
+    assert_eq!(body_json(search).await, Value::Array(Vec::new()));
+
+    let missing_search = fixture
+        .send(
+            Method::GET,
+            &Fixture::search_route(Uuid::new_v4(), "eng"),
+            Some(&fixture.manager_token),
+        )
+        .await;
+    assert_eq!(missing_search.status(), StatusCode::NOT_FOUND);
+
+    let non_video_search = fixture
+        .send(
+            Method::GET,
+            &Fixture::search_route(fixture.folder_id, "eng"),
+            Some(&fixture.manager_token),
+        )
+        .await;
+    assert_eq!(non_video_search.status(), StatusCode::NOT_FOUND);
+
+    let download_route = Fixture::download_route(fixture.item_id, "provider-subtitle-id");
+    assert_eq!(
+        fixture
+            .send(Method::POST, &download_route, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send(Method::POST, &download_route, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .send(Method::POST, &download_route, Some(&fixture.manager_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::POST,
+                &Fixture::download_route(Uuid::new_v4(), "provider-subtitle-id"),
+                Some(&fixture.manager_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let provider_route = "/Providers/Subtitles/Subtitles/provider-subtitle-id";
+    assert_eq!(
+        fixture
+            .send(Method::GET, provider_route, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .send(Method::GET, provider_route, Some(&fixture.manager_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    fixture.cleanup().await;
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
@@ -115,7 +243,10 @@ struct Fixture {
     admin_token: String,
     user_id: Uuid,
     user_token: String,
+    manager_id: Uuid,
+    manager_token: String,
     item_id: Uuid,
+    folder_id: Uuid,
 }
 
 impl Fixture {
@@ -141,6 +272,14 @@ impl Fixture {
             .create(&format!("subtitle-user-{suffix}"))
             .await
             .expect("user creation");
+        let manager = users
+            .create(&format!("subtitle-manager-{suffix}"))
+            .await
+            .expect("manager creation");
+        users
+            .update_policy(manager.id, &subtitle_manager_policy())
+            .await
+            .expect("subtitle manager policy");
         let devices = DeviceRepository::new(database.clone());
         let admin_token = devices
             .create_session(NewDevice::new(
@@ -164,6 +303,17 @@ impl Fixture {
             .await
             .expect("user session")
             .access_token;
+        let manager_token = devices
+            .create_session(NewDevice::new(
+                manager.id,
+                "Subtitle Tests",
+                "1.0",
+                "Test",
+                format!("subtitle-manager-{suffix}"),
+            ))
+            .await
+            .expect("manager session")
+            .access_token;
 
         let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
         item.name = Some(format!("Subtitle Movie {suffix}"));
@@ -173,6 +323,13 @@ impl Fixture {
             .create(item)
             .await
             .expect("movie item creation");
+        let mut folder = NewBaseItem::new(Uuid::new_v4(), "Folder");
+        folder.name = Some(format!("Subtitle Folder {suffix}"));
+        folder.is_folder = true;
+        let folder = BaseItemRepository::new(database.clone())
+            .create(folder)
+            .await
+            .expect("folder item creation");
         MediaStreamService::new(database.clone())
             .save_media_streams(
                 item.id,
@@ -226,12 +383,23 @@ impl Fixture {
             admin_token,
             user_id: user.id,
             user_token,
+            manager_id: manager.id,
+            manager_token,
             item_id: item.id,
+            folder_id: folder.id,
         }
     }
 
     fn subtitle_route(item_id: Uuid, index: i32) -> String {
         format!("/Videos/{item_id}/Subtitles/{index}")
+    }
+
+    fn search_route(item_id: Uuid, language: &str) -> String {
+        format!("/Items/{item_id}/RemoteSearch/Subtitles/{language}?isPerfectMatch=true")
+    }
+
+    fn download_route(item_id: Uuid, subtitle_id: &str) -> String {
+        format!("/Items/{item_id}/RemoteSearch/Subtitles/{subtitle_id}")
     }
 
     async fn send(
@@ -256,16 +424,34 @@ impl Fixture {
 
     async fn cleanup(self) {
         base_item::Entity::delete_many()
-            .filter(base_item::Column::Id.eq(self.item_id))
+            .filter(base_item::Column::Id.is_in([self.item_id, self.folder_id]))
             .exec(&self.database)
             .await
             .expect("item cleanup");
         user::Entity::delete_many()
-            .filter(user::Column::Id.is_in([self.admin_id, self.user_id]))
+            .filter(user::Column::Id.is_in([self.admin_id, self.user_id, self.manager_id]))
             .exec(&self.database)
             .await
             .expect("user cleanup");
         self.database.close().await.unwrap();
+    }
+}
+
+async fn body_json(response: axum::response::Response) -> Value {
+    serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body"),
+    )
+    .expect("JSON response")
+}
+
+fn subtitle_manager_policy() -> UserPolicy {
+    UserPolicy {
+        enable_subtitle_management: true,
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
     }
 }
 

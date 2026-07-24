@@ -74,7 +74,7 @@ pub use net::{EndPointInfo, MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{
     ImageProviderInfo, ImageType, RatingType, RemoteImageInfo, RemoteImageResult,
-    RemoteSearchResult, order_by_language_descending,
+    RemoteSearchResult, RemoteSubtitleInfo, order_by_language_descending,
 };
 pub use search::{SearchHint, SearchHintResult};
 pub use session::{

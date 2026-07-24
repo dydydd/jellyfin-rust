@@ -63,6 +63,33 @@ pub struct ImageProviderInfo {
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
+pub struct RemoteSubtitleInfo {
+    #[serde(rename = "ThreeLetterISOLanguageName")]
+    pub three_letter_iso_language_name: Option<String>,
+    pub id: Option<String>,
+    pub provider_name: Option<String>,
+    pub name: Option<String>,
+    pub format: Option<String>,
+    pub author: Option<String>,
+    pub comment: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::serde_datetime::option"
+    )]
+    pub date_created: Option<DateTime<Utc>>,
+    pub community_rating: Option<f32>,
+    pub frame_rate: Option<f32>,
+    pub download_count: Option<i32>,
+    pub is_hash_match: Option<bool>,
+    pub ai_translated: Option<bool>,
+    pub machine_translated: Option<bool>,
+    pub forced: Option<bool>,
+    pub hearing_impaired: Option<bool>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct RemoteSearchResult {
     pub name: Option<String>,
     pub provider_ids: HashMap<String, String>,

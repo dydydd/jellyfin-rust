@@ -5,9 +5,9 @@ use jellyfin_model::{
     ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
     MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
     PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RemoteImageResult, RemoteSearchResult, RepositoryInfo, SearchHint, SearchHintResult,
-    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto,
-    UserPolicy, UtcTimeResponse,
+    RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint,
+    SearchHintResult, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
+    UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -158,6 +158,36 @@ fn remote_search_result_uses_official_provider_contract() {
     assert_eq!(value["SearchProviderName"], "Example");
     assert_eq!(value["Artists"], json!([]));
     assert!(value.get("provider_ids").is_none());
+}
+
+#[test]
+fn remote_subtitle_info_uses_official_provider_contract() {
+    let value = serde_json::to_value(RemoteSubtitleInfo {
+        three_letter_iso_language_name: Some("eng".to_owned()),
+        id: Some("provider-subtitle-id".to_owned()),
+        provider_name: Some("Example".to_owned()),
+        name: Some("English subtitles".to_owned()),
+        format: Some("srt".to_owned()),
+        date_created: Some(Utc.with_ymd_and_hms(2026, 7, 24, 9, 0, 0).unwrap()),
+        community_rating: Some(4.5),
+        download_count: Some(42),
+        is_hash_match: Some(true),
+        hearing_impaired: Some(false),
+        ..RemoteSubtitleInfo::default()
+    })
+    .unwrap();
+
+    assert_eq!(value["ThreeLetterISOLanguageName"], "eng");
+    assert_eq!(value["Id"], "provider-subtitle-id");
+    assert_eq!(value["ProviderName"], "Example");
+    assert_eq!(value["Name"], "English subtitles");
+    assert_eq!(value["Format"], "srt");
+    assert_eq!(value["DateCreated"], "2026-07-24T09:00:00.0000000Z");
+    assert_eq!(value["CommunityRating"], 4.5);
+    assert_eq!(value["DownloadCount"], 42);
+    assert_eq!(value["IsHashMatch"], true);
+    assert_eq!(value["HearingImpaired"], false);
+    assert!(value.get("ThreeLetterIsoLanguageName").is_none());
 }
 
 #[test]

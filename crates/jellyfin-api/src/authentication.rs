@@ -197,6 +197,10 @@ impl AuthenticatedSession {
     pub(crate) fn can_manage_lyrics(&self) -> bool {
         self.user.is_administrator || self.policy.enable_lyric_management
     }
+
+    pub(crate) fn can_manage_subtitles(&self) -> bool {
+        self.user.is_administrator || self.policy.enable_subtitle_management
+    }
 }
 
 impl AuthenticatedIdentity {
