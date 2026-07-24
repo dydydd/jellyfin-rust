@@ -1,3 +1,8 @@
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
@@ -6,29 +11,69 @@ use jellyfin_data::{
 use jellyfin_model::{ImageInfo, ImageType};
 use md5::{Digest, Md5};
 use thiserror::Error;
+use tokio::{fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
 const DOTNET_UNIX_EPOCH_TICKS: i128 = 621_355_968_000_000_000;
 const TICKS_PER_SECOND: i128 = 10_000_000;
+const MAX_REMOTE_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+const REMOTE_IMAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Failure while loading an item's persisted image metadata.
 #[derive(Debug, Error)]
 pub enum ItemImageError {
+    #[error("item image was not found")]
+    NotFound,
+    #[error("remote image URL is invalid")]
+    InvalidRemoteUrl,
+    #[error("remote image exceeded the download limit")]
+    RemoteImageTooLarge,
+    #[error("remote image download failed")]
+    RemoteDownload(#[source] reqwest::Error),
+    #[error("item image file operation failed")]
+    Io(#[from] std::io::Error),
     #[error(transparent)]
     Store(#[from] BaseItemImageStoreError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemImageResource {
+    pub path: PathBuf,
+    pub date_modified: DateTime<Utc>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 /// Projects PostgreSQL-backed item images onto Jellyfin's public image DTO.
 #[derive(Clone)]
 pub struct ItemImageService {
     images: BaseItemImageRepository,
+    http: reqwest::Client,
+    cache_directory: PathBuf,
 }
 
 impl ItemImageService {
     #[must_use]
     pub fn new(database: sea_orm::DatabaseConnection) -> Self {
+        Self::with_cache_directory(database, PathBuf::from("cache").join("images"))
+    }
+
+    #[must_use]
+    pub fn with_cache_directory(
+        database: sea_orm::DatabaseConnection,
+        cache_directory: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             images: BaseItemImageRepository::new(database),
+            http: reqwest::Client::builder()
+                .timeout(REMOTE_IMAGE_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .build()
+                .unwrap_or_else(|error| {
+                    tracing::error!(%error, "could not configure the item image HTTP client");
+                    reqwest::Client::new()
+                }),
+            cache_directory: cache_directory.into(),
         }
     }
 
@@ -58,6 +103,139 @@ impl ItemImageService {
 
         Ok(infos)
     }
+
+    /// Resolves one image by its public zero-based ordinal.
+    ///
+    /// Remote image stubs are downloaded once, moved into the image cache, and
+    /// conditionally persisted before the local resource is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, download, file-system, or persistence errors.
+    pub async fn resource(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        image_index: u32,
+    ) -> Result<ItemImageResource, ItemImageError> {
+        let stored_type = persisted_image_type(image_type);
+        let image = self
+            .images
+            .at(item_id, stored_type, u64::from(image_index))
+            .await?
+            .ok_or(ItemImageError::NotFound)?;
+        let image = if is_remote_path(&image.path) {
+            self.materialize_remote(image).await?
+        } else {
+            image
+        };
+        Ok(ItemImageResource {
+            path: PathBuf::from(image.path),
+            date_modified: image.date_modified,
+            width: image.width,
+            height: image.height,
+        })
+    }
+
+    async fn materialize_remote(
+        &self,
+        image: BaseItemImage,
+    ) -> Result<BaseItemImage, ItemImageError> {
+        let url = reqwest::Url::parse(&image.path).map_err(|_| ItemImageError::InvalidRemoteUrl)?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(ItemImageError::InvalidRemoteUrl);
+        }
+        let mut response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(ItemImageError::RemoteDownload)?
+            .error_for_status()
+            .map_err(ItemImageError::RemoteDownload)?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_REMOTE_IMAGE_BYTES)
+        {
+            return Err(ItemImageError::RemoteImageTooLarge);
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let mut bytes = Vec::with_capacity(
+            response
+                .content_length()
+                .and_then(|length| usize::try_from(length).ok())
+                .unwrap_or_default(),
+        );
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(ItemImageError::RemoteDownload)?
+        {
+            let next_length = bytes.len().saturating_add(chunk.len());
+            if u64::try_from(next_length).unwrap_or(u64::MAX) > MAX_REMOTE_IMAGE_BYTES {
+                return Err(ItemImageError::RemoteImageTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+
+        let extension = jellyfin_model::MimeTypes::try_get_image_extension(content_type.as_deref())
+            .or_else(|| {
+                Path::new(image.path.split('?').next().unwrap_or_default())
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| format!(".{extension}"))
+            })
+            .unwrap_or_else(|| ".img".to_owned());
+        let target_directory = self.cache_directory.join("remote");
+        fs::create_dir_all(&target_directory).await?;
+        let source_key = format!("{:x}", Md5::digest(image.path.as_bytes()));
+        let file_name = format!(
+            "{}-{}-{}-{source_key}{}",
+            image.item_id.simple(),
+            image.image_type.as_i16(),
+            image.image_index,
+            extension
+        );
+        let target = target_directory.join(file_name);
+        let temporary = target.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
+        let write_result = async {
+            let mut file = fs::File::create(&temporary).await?;
+            file.write_all(&bytes).await?;
+            file.sync_all().await?;
+            drop(file);
+            fs::rename(&temporary, &target).await
+        }
+        .await;
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary).await;
+        }
+        write_result?;
+        let modified = fs::metadata(&target)
+            .await?
+            .modified()
+            .map(DateTime::<Utc>::from)?;
+        let target = target.to_string_lossy().into_owned();
+        if let Some(relocated) = self
+            .images
+            .relocate_if_path_matches(&image, &target, modified)
+            .await?
+        {
+            return Ok(relocated);
+        }
+        self.images
+            .get(image.item_id, image.image_type, image.image_index)
+            .await?
+            .ok_or(ItemImageError::NotFound)
+    }
+}
+
+fn is_remote_path(path: &str) -> bool {
+    path.get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http"))
 }
 
 const fn allows_multiple_images(image_type: BaseItemImageType) -> bool {
@@ -163,6 +341,24 @@ const fn model_image_type(image_type: BaseItemImageType) -> ImageType {
         BaseItemImageType::Chapter => ImageType::Chapter,
         BaseItemImageType::BoxRear => ImageType::BoxRear,
         BaseItemImageType::Profile => ImageType::Profile,
+    }
+}
+
+const fn persisted_image_type(image_type: ImageType) -> BaseItemImageType {
+    match image_type {
+        ImageType::Primary => BaseItemImageType::Primary,
+        ImageType::Art => BaseItemImageType::Art,
+        ImageType::Backdrop => BaseItemImageType::Backdrop,
+        ImageType::Banner => BaseItemImageType::Banner,
+        ImageType::Logo => BaseItemImageType::Logo,
+        ImageType::Thumb => BaseItemImageType::Thumb,
+        ImageType::Disc => BaseItemImageType::Disc,
+        ImageType::Box => BaseItemImageType::Box,
+        ImageType::Screenshot => BaseItemImageType::Screenshot,
+        ImageType::Menu => BaseItemImageType::Menu,
+        ImageType::Chapter => BaseItemImageType::Chapter,
+        ImageType::BoxRear => BaseItemImageType::BoxRear,
+        ImageType::Profile => BaseItemImageType::Profile,
     }
 }
 

@@ -5,6 +5,7 @@ members = [
     "crates/jellyfin-common",
     "crates/jellyfin-controller",
     "crates/jellyfin-data",
+    "crates/jellyfin-drawing",
     "crates/jellyfin-extensions",
     "crates/jellyfin-live-tv",
     "crates/jellyfin-media-encoding",
@@ -31,6 +32,7 @@ aide = { version = "0.15.1", features = ["axum-json"] }
 anyhow = "1.0"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+image = { version = "0.25.8", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = "2"
 regex = "1.11"
 schemars = { version = "0.9", features = ["chrono04", "preserve_order", "uuid1"] }
@@ -38,6 +40,7 @@ sea-orm = { version = "1.1", features = ["macros", "runtime-tokio-rustls", "sqlx
 sea-orm-migration = { version = "1.1", features = ["runtime-tokio-rustls", "sqlx-postgres"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 sysinfo = { version = "0.38", default-features = false, features = ["disk", "linux-netdevs"] }
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "signal"] }

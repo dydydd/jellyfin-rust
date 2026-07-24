@@ -35,7 +35,7 @@ pub use artists::{Artist, ArtistError, ArtistPage, ArtistService, ArtistValueKin
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
 pub use genres::{Genre, GenreError, GenreKind, GenrePage, GenreService};
-pub use item_images::{ItemImageError, ItemImageService};
+pub use item_images::{ItemImageError, ItemImageResource, ItemImageService};
 pub use item_lookup::{ItemLookupError, ItemLookupService};
 pub use item_types::{
     HydratedBaseItem, ItemTypeRegistrationError, ItemTypeRegistry, KnownItemType,

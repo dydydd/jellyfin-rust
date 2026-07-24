@@ -29,6 +29,7 @@ use jellyfin_data::{
     ServerConfigurationStoreError, SessionCommandRepository, SessionCommandStoreError,
     entities::user,
 };
+use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
@@ -118,6 +119,7 @@ pub struct AppState {
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_images: ItemImageService,
+    pub(crate) image_processor: ImageProcessor,
     pub(crate) item_lookup: ItemLookupService,
     pub(crate) item_update: ItemUpdateService,
     pub(crate) metadata_editor: MetadataEditorService,
@@ -177,6 +179,9 @@ impl AppState {
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
             item_images: ItemImageService::new(database.clone()),
+            image_processor: ImageProcessor::with_concurrency::<4>(
+                PathBuf::from("cache").join("images"),
+            ),
             item_lookup: ItemLookupService::new(database.clone()),
             item_update: ItemUpdateService::new(database.clone()),
             metadata_editor: MetadataEditorService::new(database.clone()),
@@ -316,6 +321,12 @@ impl AppState {
         self.program_data_directory = program_data_directory.into();
         self.web_directory = web_directory.into();
         self.image_cache_directory = image_cache_directory.into();
+        self.item_images = ItemImageService::with_cache_directory(
+            self.database.clone(),
+            self.image_cache_directory.clone(),
+        );
+        self.image_processor =
+            ImageProcessor::with_concurrency::<4>(self.image_cache_directory.clone());
         self.cache_directory = cache_directory.into();
         self.internal_metadata_directory = internal_metadata_directory.into();
         self
@@ -354,6 +365,14 @@ pub fn router(state: AppState) -> Router {
         .route("/Backup", get(backup::list))
         .route("/Backup/Manifest", get(backup::manifest))
         .route("/Items/{item_id}/Images", get(item_images::list))
+        .route(
+            "/Items/{item_id}/Images/{image_type}",
+            get(item_images::get),
+        )
+        .route(
+            "/Items/{item_id}/Images/{image_type}/{image_index}",
+            get(item_images::get_by_index),
+        )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",
@@ -1048,6 +1067,7 @@ pub(crate) enum ApiError {
     ItemLookup(ItemLookupError),
     ItemUpdate(ItemUpdateError),
     ItemImage(ItemImageError),
+    ImageProcessing(ImageProcessingError),
     MediaAttachment(MediaAttachmentServiceError),
     MediaStream(MediaStreamServiceError),
     MetadataEditor(MetadataEditorError),
@@ -1199,6 +1219,12 @@ impl From<ItemUpdateError> for ApiError {
 impl From<ItemImageError> for ApiError {
     fn from(error: ItemImageError) -> Self {
         Self::ItemImage(error)
+    }
+}
+
+impl From<ImageProcessingError> for ApiError {
+    fn from(error: ImageProcessingError) -> Self {
+        Self::ImageProcessing(error)
     }
 }
 
@@ -1431,10 +1457,35 @@ impl IntoResponse for ApiError {
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemLookup(error) => item_lookup_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
-            Self::ItemImage(_error) => (
+            Self::ItemImage(ItemImageError::NotFound) => {
+                (StatusCode::NOT_FOUND, "Item image not found")
+            }
+            Self::ItemImage(
+                ItemImageError::InvalidRemoteUrl
+                | ItemImageError::RemoteImageTooLarge
+                | ItemImageError::RemoteDownload(_)
+                | ItemImageError::Io(_)
+                | ItemImageError::Store(_),
+            ) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Item image persistence failed",
             ),
+            Self::ImageProcessing(
+                ImageProcessingError::InvalidQuality(_)
+                | ImageProcessingError::InvalidPercentPlayed
+                | ImageProcessingError::UnsupportedOutputFormat(_)
+                | ImageProcessingError::NoSupportedOutputFormat
+                | ImageProcessingError::InvalidBackgroundColor(_)
+                | ImageProcessingError::UnknownSourceFormat(_),
+            ) => (StatusCode::BAD_REQUEST, "Invalid image processing request"),
+            Self::ImageProcessing(ImageProcessingError::FileAccess { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                (StatusCode::NOT_FOUND, "Item image file not found")
+            }
+            Self::ImageProcessing(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Image processing failed")
+            }
             Self::MediaAttachment(error) => media_attachment_error_response(&error),
             Self::MediaStream(error) => media_stream_error_response(&error),
             Self::MetadataEditor(error) => metadata_editor_error_response(&error),

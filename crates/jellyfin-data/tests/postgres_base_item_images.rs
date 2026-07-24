@@ -78,6 +78,7 @@ async fn exercise_base_item_images(database_name: &str) {
     assert_concurrent_replacements_are_complete(&items, &images).await;
     assert_postgres_catalog(&database).await;
     assert_primary_lookup_plan(&database, &items, &images).await;
+    assert_exact_lookup_plan(&database, &items, &images).await;
 
     database
         .close()
@@ -130,6 +131,40 @@ async fn assert_replace_reload_and_clear(
     assert_eq!(
         restarted.primary(item.id).await.unwrap(),
         Some(persisted(item.id, &replacement).remove(0))
+    );
+    assert_eq!(
+        restarted
+            .get(item.id, BaseItemImageType::Thumb, 0)
+            .await
+            .unwrap(),
+        persisted(item.id, &replacement).into_iter().nth(1)
+    );
+    assert_eq!(
+        restarted
+            .get(item.id, BaseItemImageType::Thumb, 1)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(matches!(
+        restarted
+            .get(item.id, BaseItemImageType::Thumb, u32::MAX)
+            .await,
+        Err(BaseItemImageStoreError::ImageIndexOutOfRange { value: u32::MAX })
+    ));
+    assert_eq!(
+        restarted
+            .at(item.id, BaseItemImageType::Thumb, 0)
+            .await
+            .unwrap(),
+        persisted(item.id, &replacement).into_iter().nth(1)
+    );
+    assert_eq!(
+        restarted
+            .at(item.id, BaseItemImageType::Thumb, 1)
+            .await
+            .unwrap(),
+        None
     );
 
     assert!(restarted.replace(item.id, &[]).await.unwrap().is_empty());
@@ -543,6 +578,56 @@ async fn assert_primary_lookup_plan(
     assert!(
         plan.contains("base_item_images_primary_lookup_idx"),
         "expected partial primary-image index in plan:\n{plan}"
+    );
+    transaction.rollback().await.expect("EXPLAIN rollback");
+}
+
+async fn assert_exact_lookup_plan(
+    database: &DatabaseConnection,
+    items: &BaseItemRepository,
+    images: &BaseItemImageRepository,
+) {
+    let item = create_item(items, "exact-explain").await;
+    let rows = (0_u32..256)
+        .map(|index| {
+            image(
+                BaseItemImageType::Backdrop,
+                index,
+                &format!("exact-backdrop-{index}.jpg"),
+                1_000 + i64::from(index),
+            )
+        })
+        .collect::<Vec<_>>();
+    images.replace(item.id, &rows).await.unwrap();
+    database
+        .execute_unprepared("ANALYZE jellyfin.base_item_images")
+        .await
+        .expect("analyze base-item images");
+
+    let transaction = database.begin().await.expect("EXPLAIN transaction");
+    transaction
+        .execute_unprepared("SET LOCAL enable_seqscan = off")
+        .await
+        .expect("disable sequential scans");
+    let plan = transaction
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "EXPLAIN (FORMAT TEXT) \
+             SELECT item_id, image_type, image_index, path, date_modified, \
+                    width, height, blurhash \
+             FROM jellyfin.base_item_images \
+             WHERE item_id = $1 AND image_type = $2 AND image_index = $3",
+            [item.id.into(), 2_i16.into(), 128_i32.into()],
+        ))
+        .await
+        .expect("exact image EXPLAIN")
+        .iter()
+        .map(explain_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        plan.contains("base_item_images_pkey"),
+        "expected composite primary-key index in plan:\n{plan}"
     );
     transaction.rollback().await.expect("EXPLAIN rollback");
 }

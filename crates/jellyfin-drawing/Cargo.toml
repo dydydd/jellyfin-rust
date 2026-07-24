@@ -1,0 +1,21 @@
+[package]
+name = "jellyfin-drawing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Image decoding, transformation, and caching for Jellyfin"
+
+[dependencies]
+image.workspace = true
+jellyfin-model = { path = "../jellyfin-model" }
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "sync"] }
+
+[dev-dependencies]
+tempfile = "3.20"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

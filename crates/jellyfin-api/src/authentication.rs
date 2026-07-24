@@ -79,7 +79,7 @@ async fn authenticate_username_password(
     username: String,
     password: String,
 ) -> Result<Json<AuthenticationResult>, ApiError> {
-    let client = ClientMetadata::from_headers(&headers)?;
+    let client = ClientMetadata::from_headers(headers)?;
 
     let mut user = state
         .users
@@ -120,7 +120,7 @@ async fn authenticate_username_password(
         .await?;
 
     Ok(Json(authentication_result_from_device(
-        &state, &user, session,
+        state, &user, session,
     )))
 }
 
@@ -286,6 +286,20 @@ pub(crate) async fn authenticated_session(
             Ok(*session)
         }
         AuthenticatedIdentity::ApiKey(_) => Err(ApiError::Unauthorized),
+    }
+}
+
+pub(crate) async fn optional_authenticated_user_id(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Result<Option<Uuid>, ApiError> {
+    if access_token(headers, uri.query()).is_none() {
+        return Ok(None);
+    }
+    match authenticated_identity(state, headers, Some(uri)).await? {
+        AuthenticatedIdentity::Device(session) => Ok(Some(session.user.id)),
+        AuthenticatedIdentity::ApiKey(_) => Ok(None),
     }
 }
 

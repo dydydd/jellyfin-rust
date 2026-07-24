@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    FromQueryResult, QueryFilter, QueryOrder, Statement, TransactionTrait,
+    FromQueryResult, QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -194,6 +194,104 @@ impl BaseItemImageRepository {
             .filter(base_item_image::Column::ItemId.eq(item_id))
             .filter(base_item_image::Column::ImageType.eq(BaseItemImageType::Primary.as_i16()))
             .filter(base_item_image::Column::ImageIndex.eq(0))
+            .one(&self.database)
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()
+    }
+
+    /// Loads one image through the composite PostgreSQL primary key.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, database, or corrupt-row errors.
+    pub async fn get(
+        &self,
+        item_id: Uuid,
+        image_type: BaseItemImageType,
+        image_index: u32,
+    ) -> Result<Option<BaseItemImage>, BaseItemImageStoreError> {
+        let image_index = i32::try_from(image_index)
+            .map_err(|_| BaseItemImageStoreError::ImageIndexOutOfRange { value: image_index })?;
+        base_item_image::Entity::find_by_id((item_id, image_type.as_i16(), image_index))
+            .one(&self.database)
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()
+    }
+
+    /// Loads an image by Jellyfin's zero-based ordinal within its type.
+    ///
+    /// Persisted image indexes can contain gaps after metadata refreshes. The
+    /// public API nevertheless addresses images by their ordered position, so
+    /// PostgreSQL resolves that position through the composite primary key.
+    ///
+    /// # Errors
+    ///
+    /// Returns database or corrupt-row errors.
+    pub async fn at(
+        &self,
+        item_id: Uuid,
+        image_type: BaseItemImageType,
+        ordinal: u64,
+    ) -> Result<Option<BaseItemImage>, BaseItemImageStoreError> {
+        base_item_image::Entity::find()
+            .filter(base_item_image::Column::ItemId.eq(item_id))
+            .filter(base_item_image::Column::ImageType.eq(image_type.as_i16()))
+            .order_by_asc(base_item_image::Column::ImageIndex)
+            .offset(ordinal)
+            .limit(1)
+            .one(&self.database)
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()
+    }
+
+    /// Replaces a remote image path after it has been materialized locally.
+    ///
+    /// The original path predicate prevents a slow downloader from overwriting
+    /// a newer metadata refresh. A missing return row means the image changed
+    /// concurrently and callers should reload it.
+    ///
+    /// # Errors
+    ///
+    /// Returns database or corrupt-row errors.
+    pub async fn relocate_if_path_matches(
+        &self,
+        image: &BaseItemImage,
+        path: &str,
+        date_modified: DateTime<Utc>,
+    ) -> Result<Option<BaseItemImage>, BaseItemImageStoreError> {
+        if path.trim().is_empty() {
+            return Err(BaseItemImageStoreError::EmptyPath);
+        }
+        let image_index = i32::try_from(image.image_index).map_err(|_| {
+            BaseItemImageStoreError::ImageIndexOutOfRange {
+                value: image.image_index,
+            }
+        })?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.base_item_images
+            SET path = $5, date_modified = $6
+            WHERE item_id = $1
+              AND image_type = $2
+              AND image_index = $3
+              AND path = $4
+            RETURNING item_id, image_type, image_index, path, date_modified,
+                      width, height, blurhash
+            ",
+            [
+                image.item_id.into(),
+                image.image_type.as_i16().into(),
+                image_index.into(),
+                image.path.clone().into(),
+                path.to_owned().into(),
+                date_modified.into(),
+            ],
+        );
+        base_item_image::Model::find_by_statement(statement)
             .one(&self.database)
             .await?
             .map(BaseItemImage::try_from)

@@ -1,0 +1,987 @@
+//! Image decoding, transformation, and disk caching for Jellyfin.
+
+use std::{
+    fs::{self, OpenOptions},
+    io::{BufWriter, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use image::{
+    DynamicImage, GenericImageView, ImageEncoder, ImageFormat as DecoderFormat, ImageReader, Rgba,
+    RgbaImage, imageops::FilterType,
+};
+use jellyfin_model::ImageFormat;
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+use tokio::sync::Semaphore;
+
+const CACHE_VERSION: u8 = 1;
+const DEFAULT_QUALITY: u8 = 100;
+
+/// A source image and the metadata needed to safely key processed-image caches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageSource {
+    pub path: PathBuf,
+    pub date_modified: SystemTime,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+impl ImageSource {
+    pub fn new(path: impl Into<PathBuf>, date_modified: SystemTime) -> Self {
+        Self {
+            path: path.into(),
+            date_modified,
+            width: None,
+            height: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_dimensions(mut self, width: u32, height: u32) -> Self {
+        self.width = Some(width);
+        self.height = Some(height);
+        self
+    }
+}
+
+/// Transformations requested for a source image.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageProcessingRequest {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub max_width: Option<u32>,
+    pub max_height: Option<u32>,
+    pub fill_width: Option<u32>,
+    pub fill_height: Option<u32>,
+    pub quality: u8,
+    /// A convenience override for callers that require exactly one format.
+    pub format: Option<ImageFormat>,
+    /// Client-supported formats, in preference order.
+    pub supported_formats: Vec<ImageFormat>,
+    pub blur: Option<u32>,
+    pub percent_played: Option<f64>,
+    pub unplayed_count: Option<i32>,
+    pub background_color: Option<String>,
+    pub foreground_layer: Option<String>,
+}
+
+impl Default for ImageProcessingRequest {
+    fn default() -> Self {
+        Self {
+            width: None,
+            height: None,
+            max_width: None,
+            max_height: None,
+            fill_width: None,
+            fill_height: None,
+            quality: DEFAULT_QUALITY,
+            format: None,
+            supported_formats: vec![
+                ImageFormat::Webp,
+                ImageFormat::Jpg,
+                ImageFormat::Png,
+                ImageFormat::Gif,
+                ImageFormat::Bmp,
+            ],
+            blur: None,
+            percent_played: None,
+            unplayed_count: None,
+            background_color: None,
+            foreground_layer: None,
+        }
+    }
+}
+
+/// A file ready to be returned by the image API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessedImage {
+    pub path: PathBuf,
+    pub mime_type: &'static str,
+    pub date_modified: SystemTime,
+}
+
+/// Typed failures produced while validating or processing an image.
+#[derive(Debug, Error)]
+pub enum ImageProcessingError {
+    #[error("image encoding concurrency limit must be at least one")]
+    InvalidConcurrencyLimit,
+    #[error("image processor concurrency limiter was closed")]
+    SemaphoreClosed,
+    #[error("image quality must be between 1 and 100, got {0}")]
+    InvalidQuality(u8),
+    #[error("percent played must be finite")]
+    InvalidPercentPlayed,
+    #[error("image output format is not supported: {0:?}")]
+    UnsupportedOutputFormat(ImageFormat),
+    #[error("none of the requested image output formats are supported")]
+    NoSupportedOutputFormat,
+    #[error("invalid background color: {0}")]
+    InvalidBackgroundColor(String),
+    #[error("source image format could not be determined: {0}")]
+    UnknownSourceFormat(PathBuf),
+    #[error("could not access image file {path}: {source}")]
+    FileAccess {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not decode image file {path}: {source}")]
+    Decode {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
+    #[error("could not encode image cache file {path}: {source}")]
+    Encode {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
+    #[error("image processing task failed: {0}")]
+    ProcessingTask(#[from] tokio::task::JoinError),
+}
+
+/// Processes images into a stable on-disk cache while bounding memory-heavy work.
+#[derive(Clone, Debug)]
+pub struct ImageProcessor {
+    cache_directory: Arc<PathBuf>,
+    encoding_limit: Arc<Semaphore>,
+}
+
+impl ImageProcessor {
+    /// Creates an image processor with a compile-time positive concurrency limit.
+    #[must_use]
+    pub fn with_concurrency<const LIMIT: usize>(cache_directory: impl Into<PathBuf>) -> Self {
+        const {
+            assert!(
+                LIMIT > 0,
+                "image processor concurrency limit must be positive"
+            );
+        };
+        Self {
+            cache_directory: Arc::new(cache_directory.into()),
+            encoding_limit: Arc::new(Semaphore::new(LIMIT)),
+        }
+    }
+
+    /// Creates an image processor using `cache_directory` for derived files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageProcessingError::InvalidConcurrencyLimit`] when the limit is zero.
+    pub fn new(
+        cache_directory: impl Into<PathBuf>,
+        max_concurrent_encodes: usize,
+    ) -> Result<Self, ImageProcessingError> {
+        if max_concurrent_encodes == 0 {
+            return Err(ImageProcessingError::InvalidConcurrencyLimit);
+        }
+
+        Ok(Self {
+            cache_directory: Arc::new(cache_directory.into()),
+            encoding_limit: Arc::new(Semaphore::new(max_concurrent_encodes)),
+        })
+    }
+
+    #[must_use]
+    pub fn cache_directory(&self) -> &Path {
+        self.cache_directory.as_path()
+    }
+
+    /// Returns the source unchanged when possible, or creates/reuses a transformed cache file.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`ImageProcessingError`] when validation, file access, decoding, or
+    /// encoding fails.
+    pub async fn process(
+        &self,
+        source: &ImageSource,
+        request: &ImageProcessingRequest,
+    ) -> Result<ProcessedImage, ImageProcessingError> {
+        let normalized = NormalizedRequest::new(request)?;
+        let source_format = format_from_path(&source.path);
+
+        ensure_source_exists(&source.path).await?;
+        // Jellyfin serves GIFs untouched so animated sources are never flattened to one frame.
+        if source_format == Some(ImageFormat::Gif) {
+            return Ok(ProcessedImage {
+                path: source.path.clone(),
+                mime_type: ImageFormat::Gif.mime_type(),
+                date_modified: source.date_modified,
+            });
+        }
+        if normalized.can_return_original(source, source_format)
+            && let Some(format) = source_format
+        {
+            return Ok(ProcessedImage {
+                path: source.path.clone(),
+                mime_type: format.mime_type(),
+                date_modified: source.date_modified,
+            });
+        }
+
+        let output_format = normalized.output_format(source_format)?;
+        let cache_path = cache_path(
+            self.cache_directory.as_path(),
+            source,
+            &normalized,
+            output_format,
+        );
+        if let Some(result) = cached_result(&cache_path, output_format).await? {
+            return Ok(result);
+        }
+
+        let permit = Arc::clone(&self.encoding_limit)
+            .acquire_owned()
+            .await
+            .map_err(|_| ImageProcessingError::SemaphoreClosed)?;
+        if let Some(result) = cached_result(&cache_path, output_format).await? {
+            return Ok(result);
+        }
+
+        let source_path = source.path.clone();
+        let task_cache_path = cache_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            process_to_cache(&source_path, &task_cache_path, &normalized, output_format)
+        })
+        .await??;
+
+        cached_result(&cache_path, output_format)
+            .await?
+            .ok_or_else(|| ImageProcessingError::FileAccess {
+                path: cache_path.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "encoded cache file disappeared",
+                ),
+            })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct NormalizedRequest {
+    width: Option<u32>,
+    height: Option<u32>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    fill_width: Option<u32>,
+    fill_height: Option<u32>,
+    quality: u8,
+    format: Option<ImageFormat>,
+    supported_formats: Vec<ImageFormat>,
+    blur: Option<u32>,
+    background_color: Option<Rgba<u8>>,
+    foreground_opacity: Option<f64>,
+    percent_played: Option<f64>,
+    unplayed_count: Option<i32>,
+}
+
+impl NormalizedRequest {
+    fn new(request: &ImageProcessingRequest) -> Result<Self, ImageProcessingError> {
+        if !(1..=100).contains(&request.quality) {
+            return Err(ImageProcessingError::InvalidQuality(request.quality));
+        }
+        if request
+            .percent_played
+            .is_some_and(|value| !value.is_finite())
+        {
+            return Err(ImageProcessingError::InvalidPercentPlayed);
+        }
+
+        let percent_played = request
+            .percent_played
+            .filter(|value| *value > 0.0 && *value < 100.0);
+        let unplayed_count = request
+            .unplayed_count
+            .filter(|value| *value > 0 && percent_played.is_none());
+        let foreground_opacity = request
+            .foreground_layer
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse::<f64>().unwrap_or(0.4).clamp(0.0, 1.0));
+
+        let background_color = request
+            .background_color
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(parse_color)
+            .transpose()?;
+
+        Ok(Self {
+            width: nonzero(request.width),
+            height: nonzero(request.height),
+            max_width: nonzero(request.max_width),
+            max_height: nonzero(request.max_height),
+            fill_width: nonzero(request.fill_width),
+            fill_height: nonzero(request.fill_height),
+            quality: request.quality,
+            format: request.format,
+            supported_formats: request.supported_formats.clone(),
+            blur: nonzero(request.blur),
+            background_color,
+            foreground_opacity,
+            percent_played,
+            unplayed_count,
+        })
+    }
+
+    fn can_return_original(
+        &self,
+        source: &ImageSource,
+        source_format: Option<ImageFormat>,
+    ) -> bool {
+        let Some(source_format) = source_format else {
+            return false;
+        };
+        if !self.accepts_source_format(source_format)
+            || self.quality < 90
+            || self.blur.is_some()
+            || self.background_color.is_some()
+            || self.foreground_opacity.is_some()
+            || self.percent_played.is_some()
+            || self.unplayed_count.is_some()
+            || self.fill_width.is_some()
+            || self.fill_height.is_some()
+        {
+            return false;
+        }
+
+        let dimensions = source.width.zip(source.height);
+        dimensions.is_some_and(|(width, height)| {
+            self.width.is_none_or(|requested| requested == width)
+                && self.height.is_none_or(|requested| requested == height)
+                && self.max_width.is_none_or(|maximum| width <= maximum)
+                && self.max_height.is_none_or(|maximum| height <= maximum)
+        }) || (dimensions.is_none()
+            && self.width.is_none()
+            && self.height.is_none()
+            && self.max_width.is_none()
+            && self.max_height.is_none())
+    }
+
+    fn accepts_source_format(&self, source_format: ImageFormat) -> bool {
+        (validate_output_format(source_format).is_ok()
+            || source_format == ImageFormat::Svg && self.format == Some(ImageFormat::Svg))
+            && self.format.map_or_else(
+                || self.supported_formats.contains(&source_format),
+                |format| format == source_format,
+            )
+    }
+
+    fn output_format(
+        &self,
+        source_format: Option<ImageFormat>,
+    ) -> Result<ImageFormat, ImageProcessingError> {
+        if let Some(format) = self.format {
+            validate_output_format(format)?;
+            return Ok(format);
+        }
+        if self.supported_formats.contains(&ImageFormat::Webp) {
+            return Ok(ImageFormat::Webp);
+        }
+        if source_format.is_some_and(format_requires_transparency)
+            && self.supported_formats.contains(&ImageFormat::Png)
+        {
+            return Ok(ImageFormat::Png);
+        }
+        self.supported_formats
+            .iter()
+            .copied()
+            .find(|format| validate_output_format(*format).is_ok())
+            .ok_or(ImageProcessingError::NoSupportedOutputFormat)
+    }
+}
+
+const fn format_requires_transparency(format: ImageFormat) -> bool {
+    matches!(
+        format,
+        ImageFormat::Gif | ImageFormat::Png | ImageFormat::Svg | ImageFormat::Webp
+    )
+}
+
+const fn nonzero(value: Option<u32>) -> Option<u32> {
+    match value {
+        Some(0) | None => None,
+        Some(value) => Some(value),
+    }
+}
+
+async fn ensure_source_exists(path: &Path) -> Result<(), ImageProcessingError> {
+    tokio::fs::metadata(path)
+        .await
+        .map(|_| ())
+        .map_err(|source| ImageProcessingError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+async fn cached_result(
+    path: &Path,
+    format: ImageFormat,
+) -> Result<Option<ProcessedImage>, ImageProcessingError> {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) => {
+            let date_modified =
+                metadata
+                    .modified()
+                    .map_err(|source| ImageProcessingError::FileAccess {
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+            Ok(Some(ProcessedImage {
+                path: path.to_path_buf(),
+                mime_type: format.mime_type(),
+                date_modified,
+            }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ImageProcessingError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn cache_path(
+    cache_directory: &Path,
+    source: &ImageSource,
+    request: &NormalizedRequest,
+    format: ImageFormat,
+) -> PathBuf {
+    let mut hash = Sha256::new();
+    hash.update([CACHE_VERSION]);
+    hash.update(source.path.to_string_lossy().as_bytes());
+    hash_system_time(&mut hash, source.date_modified);
+    hash_option(&mut hash, source.width);
+    hash_option(&mut hash, source.height);
+    hash_option(&mut hash, request.width);
+    hash_option(&mut hash, request.height);
+    hash_option(&mut hash, request.max_width);
+    hash_option(&mut hash, request.max_height);
+    hash_option(&mut hash, request.fill_width);
+    hash_option(&mut hash, request.fill_height);
+    hash.update([request.quality, format as u8]);
+    hash_option(&mut hash, request.blur);
+    if let Some(color) = request.background_color {
+        hash.update([1]);
+        hash.update(color.0);
+    } else {
+        hash.update([0]);
+    }
+    hash.update(
+        request
+            .foreground_opacity
+            .map_or(0, f64::to_bits)
+            .to_le_bytes(),
+    );
+    hash.update(request.percent_played.map_or(0, f64::to_bits).to_le_bytes());
+    hash.update(request.unplayed_count.unwrap_or_default().to_le_bytes());
+    let digest = format!("{:x}", hash.finalize());
+    let extension = format.extension().trim_start_matches('.');
+    cache_directory
+        .join(&digest[..2])
+        .join(format!("{digest}.{extension}"))
+}
+
+fn hash_system_time(hash: &mut Sha256, value: SystemTime) {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(duration) => {
+            hash.update([0]);
+            hash.update(duration.as_secs().to_le_bytes());
+            hash.update(duration.subsec_nanos().to_le_bytes());
+        }
+        Err(error) => {
+            hash.update([1]);
+            hash.update(error.duration().as_secs().to_le_bytes());
+            hash.update(error.duration().subsec_nanos().to_le_bytes());
+        }
+    }
+}
+
+fn hash_option(hash: &mut Sha256, value: Option<u32>) {
+    if let Some(value) = value {
+        hash.update([1]);
+        hash.update(value.to_le_bytes());
+    } else {
+        hash.update([0]);
+    }
+}
+
+fn process_to_cache(
+    source_path: &Path,
+    cache_path: &Path,
+    request: &NormalizedRequest,
+    output_format: ImageFormat,
+) -> Result<(), ImageProcessingError> {
+    let reader =
+        ImageReader::open(source_path).map_err(|source| ImageProcessingError::FileAccess {
+            path: source_path.to_path_buf(),
+            source,
+        })?;
+    let reader =
+        reader
+            .with_guessed_format()
+            .map_err(|source| ImageProcessingError::FileAccess {
+                path: source_path.to_path_buf(),
+                source,
+            })?;
+    if reader.format().is_none() {
+        return Err(ImageProcessingError::UnknownSourceFormat(
+            source_path.to_path_buf(),
+        ));
+    }
+    let mut image = reader
+        .decode()
+        .map_err(|source| ImageProcessingError::Decode {
+            path: source_path.to_path_buf(),
+            source,
+        })?;
+
+    image = resize_image(image, request);
+    if let Some(sigma) = request.blur {
+        image = image.blur(blur_sigma(sigma));
+    }
+    if let Some(background) = request.background_color {
+        image = apply_background(&image, background);
+    }
+    if let Some(opacity) = request.foreground_opacity {
+        image = apply_foreground(&image, opacity);
+    }
+    if let Some(percent) = request.percent_played {
+        image = draw_percent_played(&image, percent);
+    } else if let Some(count) = request.unplayed_count {
+        image = draw_unplayed_count(&image, count);
+    }
+
+    let parent = cache_path
+        .parent()
+        .expect("cache files always have a parent");
+    fs::create_dir_all(parent).map_err(|source| ImageProcessingError::FileAccess {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let temporary_path = cache_path.with_extension(format!(
+        "{}.{}.tmp",
+        output_format.extension().trim_start_matches('.'),
+        unique_suffix()
+    ));
+    let result = encode_image(&image, &temporary_path, request.quality, output_format)
+        .and_then(|()| persist_cache(&temporary_path, cache_path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn blur_sigma(sigma: u32) -> f32 {
+    sigma as f32
+}
+
+fn resize_image(mut image: DynamicImage, request: &NormalizedRequest) -> DynamicImage {
+    let (width, height) = image.dimensions();
+    let (target_width, target_height) = contained_size(
+        width,
+        height,
+        request.width,
+        request.height,
+        request.max_width,
+        request.max_height,
+    );
+    if (target_width, target_height) != (width, height) {
+        image = image.resize_exact(target_width, target_height, FilterType::Lanczos3);
+    }
+
+    match (request.fill_width, request.fill_height) {
+        (Some(fill_width), Some(fill_height)) => {
+            let (width, height) = image.dimensions();
+            let scale = Ratio::new(fill_width, width).max(Ratio::new(fill_height, height));
+            let scaled_width = scale.scale_ceil(width);
+            let scaled_height = scale.scale_ceil(height);
+            let resized = image.resize_exact(scaled_width, scaled_height, FilterType::Lanczos3);
+            let x = (scaled_width - fill_width) / 2;
+            let y = (scaled_height - fill_height) / 2;
+            resized.crop_imm(x, y, fill_width, fill_height)
+        }
+        (Some(fill_width), None) => image.resize(fill_width, u32::MAX, FilterType::Lanczos3),
+        (None, Some(fill_height)) => image.resize(u32::MAX, fill_height, FilterType::Lanczos3),
+        (None, None) => image,
+    }
+}
+
+fn contained_size(
+    width: u32,
+    height: u32,
+    requested_width: Option<u32>,
+    requested_height: Option<u32>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> (u32, u32) {
+    let requested_scale = match (requested_width, requested_height) {
+        (Some(requested_width), Some(requested_height)) => {
+            Ratio::new(requested_width, width).min(Ratio::new(requested_height, height))
+        }
+        (Some(requested_width), None) => Ratio::new(requested_width, width),
+        (None, Some(requested_height)) => Ratio::new(requested_height, height),
+        (None, None) => Ratio::ONE,
+    };
+    let max_width_scale = max_width.map_or(Ratio::MAX, |maximum| Ratio::new(maximum, width));
+    let max_height_scale = max_height.map_or(Ratio::MAX, |maximum| Ratio::new(maximum, height));
+    let scale = requested_scale.min(max_width_scale).min(max_height_scale);
+    (scale.scale_round(width), scale.scale_round(height))
+}
+
+#[derive(Clone, Copy)]
+struct Ratio {
+    numerator: u32,
+    denominator: u32,
+}
+
+impl Ratio {
+    const MAX: Self = Self {
+        numerator: u32::MAX,
+        denominator: 1,
+    };
+    const ONE: Self = Self {
+        numerator: 1,
+        denominator: 1,
+    };
+
+    const fn new(numerator: u32, denominator: u32) -> Self {
+        Self {
+            numerator,
+            denominator,
+        }
+    }
+
+    fn min(self, other: Self) -> Self {
+        if u128::from(self.numerator) * u128::from(other.denominator)
+            <= u128::from(other.numerator) * u128::from(self.denominator)
+        {
+            self
+        } else {
+            other
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        if u128::from(self.numerator) * u128::from(other.denominator)
+            >= u128::from(other.numerator) * u128::from(self.denominator)
+        {
+            self
+        } else {
+            other
+        }
+    }
+
+    fn scale_round(self, dimension: u32) -> u32 {
+        let numerator = u64::from(dimension) * u64::from(self.numerator);
+        let rounded = (numerator + u64::from(self.denominator) / 2) / u64::from(self.denominator);
+        u32::try_from(rounded).unwrap_or(u32::MAX).max(1)
+    }
+
+    fn scale_ceil(self, dimension: u32) -> u32 {
+        let numerator = u64::from(dimension) * u64::from(self.numerator);
+        let rounded = numerator.div_ceil(u64::from(self.denominator));
+        u32::try_from(rounded).unwrap_or(u32::MAX).max(1)
+    }
+}
+
+fn apply_background(image: &DynamicImage, color: Rgba<u8>) -> DynamicImage {
+    let foreground = image.to_rgba8();
+    let mut canvas = RgbaImage::from_pixel(foreground.width(), foreground.height(), color);
+    image::imageops::overlay(&mut canvas, &foreground, 0, 0);
+    DynamicImage::ImageRgba8(canvas)
+}
+
+fn apply_foreground(image: &DynamicImage, opacity: f64) -> DynamicImage {
+    let mut canvas = image.to_rgba8();
+    let alpha = rounded_u8((1.0 - opacity) * 255.0);
+    let overlay = RgbaImage::from_pixel(canvas.width(), canvas.height(), Rgba([0, 0, 0, alpha]));
+    image::imageops::overlay(&mut canvas, &overlay, 0, 0);
+    DynamicImage::ImageRgba8(canvas)
+}
+
+fn draw_percent_played(image: &DynamicImage, percent: f64) -> DynamicImage {
+    let mut canvas = image.to_rgba8();
+    let width = canvas.width().saturating_sub(1);
+    let bottom = canvas.height().saturating_sub(1);
+    let top = bottom.saturating_sub(8);
+    for y in top..bottom {
+        for x in 0..width {
+            canvas.put_pixel(x, y, Rgba([0, 0, 0, 0x99]));
+        }
+    }
+    let played_width = rounded_u32((f64::from(width) * percent) / 100.0, width);
+    for y in top..bottom {
+        for x in 0..played_width {
+            canvas.put_pixel(x, y, Rgba([0, 0xa4, 0xdc, 0xff]));
+        }
+    }
+    DynamicImage::ImageRgba8(canvas)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn rounded_u8(value: f64) -> u8 {
+    value.round().clamp(0.0, f64::from(u8::MAX)) as u8
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn rounded_u32(value: f64, maximum: u32) -> u32 {
+    value.round().clamp(0.0, f64::from(maximum)) as u32
+}
+
+fn draw_unplayed_count(image: &DynamicImage, count: i32) -> DynamicImage {
+    let mut canvas = image.to_rgba8();
+    let center_x = canvas.width().saturating_sub(38);
+    let center_y = 38_u32.min(canvas.height().saturating_sub(1));
+    let radius = 20_i64;
+    let min_x = center_x.saturating_sub(20);
+    let max_x = center_x
+        .saturating_add(20)
+        .min(canvas.width().saturating_sub(1));
+    let min_y = center_y.saturating_sub(20);
+    let max_y = center_y
+        .saturating_add(20)
+        .min(canvas.height().saturating_sub(1));
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = i64::from(x) - i64::from(center_x);
+            let dy = i64::from(y) - i64::from(center_y);
+            if dx * dx + dy * dy <= radius * radius {
+                canvas.put_pixel(x, y, Rgba([0, 0xa4, 0xdc, 0xcc]));
+            }
+        }
+    }
+    draw_count_glyphs(&mut canvas, center_x, center_y, &count.to_string());
+    DynamicImage::ImageRgba8(canvas)
+}
+
+fn draw_count_glyphs(canvas: &mut RgbaImage, center_x: u32, center_y: u32, text: &str) {
+    const DIGITS: [[u8; 5]; 10] = [
+        [0b111, 0b101, 0b101, 0b101, 0b111],
+        [0b010, 0b110, 0b010, 0b010, 0b111],
+        [0b111, 0b001, 0b111, 0b100, 0b111],
+        [0b111, 0b001, 0b111, 0b001, 0b111],
+        [0b101, 0b101, 0b111, 0b001, 0b001],
+        [0b111, 0b100, 0b111, 0b001, 0b111],
+        [0b111, 0b100, 0b111, 0b101, 0b111],
+        [0b111, 0b001, 0b010, 0b010, 0b010],
+        [0b111, 0b101, 0b111, 0b101, 0b111],
+        [0b111, 0b101, 0b111, 0b001, 0b111],
+    ];
+    let digits = text
+        .bytes()
+        .filter_map(|digit| digit.checked_sub(b'0').map(usize::from))
+        .take(3)
+        .collect::<Vec<_>>();
+    let scale = if digits.len() >= 3 { 2 } else { 3 };
+    let glyph_width = 3 * scale;
+    let spacing = scale;
+    let total_width = digits
+        .len()
+        .saturating_mul(glyph_width + spacing)
+        .saturating_sub(spacing);
+    let start_x = center_x.saturating_sub(u32::try_from(total_width / 2).unwrap_or_default());
+    let start_y = center_y.saturating_sub(u32::try_from(5 * scale / 2).unwrap_or_default());
+    for (position, digit) in digits.into_iter().enumerate() {
+        for (row, bits) in DIGITS[digit].into_iter().enumerate() {
+            for column in 0..3 {
+                if bits & (1 << (2 - column)) == 0 {
+                    continue;
+                }
+                for offset_y in 0..scale {
+                    for offset_x in 0..scale {
+                        let x_offset =
+                            position * (glyph_width + spacing) + column * scale + offset_x;
+                        let x = start_x + u32::try_from(x_offset).unwrap_or_default();
+                        let y = start_y + u32::try_from(row * scale + offset_y).unwrap_or_default();
+                        if x < canvas.width() && y < canvas.height() {
+                            canvas.put_pixel(x, y, Rgba([255, 255, 255, 255]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn encode_image(
+    image: &DynamicImage,
+    path: &Path,
+    quality: u8,
+    format: ImageFormat,
+) -> Result<(), ImageProcessingError> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| ImageProcessingError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut writer = BufWriter::new(file);
+    let encode_result = match format {
+        ImageFormat::Jpg => {
+            let rgb = image.to_rgb8();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, quality).write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+        }
+        format => image.write_to(&mut writer, decoder_format(format)?),
+    };
+    encode_result.map_err(|source| ImageProcessingError::Encode {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    writer
+        .flush()
+        .map_err(|source| ImageProcessingError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|source| ImageProcessingError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn persist_cache(temporary_path: &Path, cache_path: &Path) -> Result<(), ImageProcessingError> {
+    match fs::rename(temporary_path, cache_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::remove_file(temporary_path).map_err(|source| ImageProcessingError::FileAccess {
+                path: temporary_path.to_path_buf(),
+                source,
+            })
+        }
+        Err(source) => Err(ImageProcessingError::FileAccess {
+            path: cache_path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn validate_output_format(format: ImageFormat) -> Result<(), ImageProcessingError> {
+    match format {
+        ImageFormat::Bmp
+        | ImageFormat::Gif
+        | ImageFormat::Jpg
+        | ImageFormat::Png
+        | ImageFormat::Webp => Ok(()),
+        ImageFormat::Svg => Err(ImageProcessingError::UnsupportedOutputFormat(format)),
+    }
+}
+
+fn decoder_format(format: ImageFormat) -> Result<DecoderFormat, ImageProcessingError> {
+    match format {
+        ImageFormat::Bmp => Ok(DecoderFormat::Bmp),
+        ImageFormat::Gif => Ok(DecoderFormat::Gif),
+        ImageFormat::Jpg => Ok(DecoderFormat::Jpeg),
+        ImageFormat::Png => Ok(DecoderFormat::Png),
+        ImageFormat::Webp => Ok(DecoderFormat::WebP),
+        ImageFormat::Svg => Err(ImageProcessingError::UnsupportedOutputFormat(format)),
+    }
+}
+
+fn format_from_path(path: &Path) -> Option<ImageFormat> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "bmp" => Some(ImageFormat::Bmp),
+        "gif" => Some(ImageFormat::Gif),
+        "jpg" | "jpeg" => Some(ImageFormat::Jpg),
+        "png" => Some(ImageFormat::Png),
+        "webp" => Some(ImageFormat::Webp),
+        "svg" => Some(ImageFormat::Svg),
+        _ => None,
+    }
+}
+
+fn parse_color(value: &str) -> Result<Rgba<u8>, ImageProcessingError> {
+    let normalized = value.strip_prefix('#').unwrap_or(value);
+    let color = match normalized.len() {
+        3 => Rgba([
+            duplicate_hex(&normalized[0..1])?,
+            duplicate_hex(&normalized[1..2])?,
+            duplicate_hex(&normalized[2..3])?,
+            255,
+        ]),
+        4 => Rgba([
+            duplicate_hex(&normalized[0..1])?,
+            duplicate_hex(&normalized[1..2])?,
+            duplicate_hex(&normalized[2..3])?,
+            duplicate_hex(&normalized[3..4])?,
+        ]),
+        6 | 8 => {
+            let mut channels = [0, 0, 0, 255];
+            for (index, chunk) in normalized.as_bytes().chunks_exact(2).enumerate() {
+                let chunk = std::str::from_utf8(chunk)
+                    .map_err(|_| ImageProcessingError::InvalidBackgroundColor(value.into()))?;
+                channels[index] = u8::from_str_radix(chunk, 16)
+                    .map_err(|_| ImageProcessingError::InvalidBackgroundColor(value.into()))?;
+            }
+            Rgba(channels)
+        }
+        _ => {
+            return Err(ImageProcessingError::InvalidBackgroundColor(value.into()));
+        }
+    };
+    Ok(color)
+}
+
+fn duplicate_hex(value: &str) -> Result<u8, ImageProcessingError> {
+    let digit = u8::from_str_radix(value, 16)
+        .map_err(|_| ImageProcessingError::InvalidBackgroundColor(value.into()))?;
+    Ok(digit * 17)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contained_size_preserves_aspect_ratio_and_never_upscales_for_maximums() {
+        assert_eq!(
+            contained_size(1920, 1080, None, None, Some(1280), Some(800)),
+            (1280, 720)
+        );
+        assert_eq!(
+            contained_size(320, 180, None, None, Some(1280), Some(800)),
+            (320, 180)
+        );
+    }
+
+    #[test]
+    fn parses_short_and_alpha_hex_colors() {
+        assert_eq!(parse_color("#0f8").unwrap(), Rgba([0, 255, 136, 255]));
+        assert_eq!(parse_color("11223344").unwrap(), Rgba([17, 34, 51, 68]));
+    }
+}

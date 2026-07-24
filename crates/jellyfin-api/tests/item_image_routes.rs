@@ -1,21 +1,28 @@
 use std::{
     fs,
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
+    thread,
 };
 
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use chrono::{TimeZone, Utc};
+use image::{Rgba, RgbaImage};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
-    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice,
-    entities::{base_item, user},
+    ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
+    DatabaseConfig, DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice,
+    entities::{base_item, base_item_image, user},
 };
-use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    Statement,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -56,6 +63,278 @@ async fn item_image_infos_match_official_postgres_contract() {
     }
 }
 
+#[tokio::test]
+async fn item_image_files_match_official_processing_and_cache_contract() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_item_image_files(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_item_image_files(database_name: &str) {
+    let fixture = Fixture::new(database_name).await;
+    let primary = format!("/Items/{}/Images/Primary", fixture.item_id);
+
+    let anonymous = fixture.request(Method::GET, &primary, &[]).await;
+    assert_eq!(anonymous.status(), StatusCode::OK);
+    assert_eq!(anonymous.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        anonymous.headers()[header::CONTENT_DISPOSITION],
+        "attachment"
+    );
+    assert_eq!(anonymous.headers()[header::CACHE_CONTROL], "public");
+    assert_eq!(anonymous.headers()[header::VARY], "Accept");
+    assert_eq!(anonymous.headers()["transfermode.dlna.org"], "Interactive");
+    assert_eq!(
+        anonymous.headers()["realtimeinfo.dlna.org"],
+        "DLNA.ORG_TLAG=*"
+    );
+    assert!(anonymous.headers().contains_key(header::LAST_MODIFIED));
+    assert!(!anonymous.headers().contains_key(header::ETAG));
+    assert!(!anonymous.headers().contains_key(header::ACCEPT_RANGES));
+    let primary_bytes = to_bytes(anonymous.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        primary_bytes.as_ref(),
+        fs::read(fixture.path("poster.png")).unwrap()
+    );
+
+    let lowercase = fixture
+        .request(
+            Method::GET,
+            &format!("/Items/{}/Images/primary", fixture.item_id),
+            &[],
+        )
+        .await;
+    assert_eq!(lowercase.status(), StatusCode::OK);
+
+    let invalid_token = fixture
+        .request(Method::GET, &primary, &[("X-Emby-Token", "invalid-token")])
+        .await;
+    assert_eq!(invalid_token.status(), StatusCode::UNAUTHORIZED);
+
+    let api_key = fixture
+        .request(
+            Method::GET,
+            &format!("{primary}?api_key={}", fixture.api_key),
+            &[],
+        )
+        .await;
+    assert_eq!(api_key.status(), StatusCode::OK);
+
+    let head = fixture.request(Method::HEAD, &primary, &[]).await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        head.headers()[header::CONTENT_LENGTH],
+        fs::metadata(fixture.path("poster.png"))
+            .unwrap()
+            .len()
+            .to_string()
+    );
+    assert!(
+        to_bytes(head.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let range = fixture
+        .request(
+            Method::GET,
+            &primary,
+            &[(header::RANGE.as_str(), "bytes=0-2")],
+        )
+        .await;
+    assert_eq!(range.status(), StatusCode::OK);
+    assert!(!range.headers().contains_key(header::CONTENT_RANGE));
+
+    let tagged_route = format!("{primary}?tag=immutable-tag");
+    let tagged = fixture.request(Method::GET, &tagged_route, &[]).await;
+    assert_eq!(tagged.status(), StatusCode::OK);
+    assert_eq!(tagged.headers()[header::ETAG], "\"immutable-tag\"");
+    assert_eq!(
+        tagged.headers()[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+
+    for validator in ["immutable-tag", "\"immutable-tag\""] {
+        let cached = fixture
+            .request(
+                Method::GET,
+                &tagged_route,
+                &[(header::IF_NONE_MATCH.as_str(), validator)],
+            )
+            .await;
+        assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        assert!(
+            to_bytes(cached.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    let cached_by_date = fixture
+        .request(
+            Method::GET,
+            &primary,
+            &[(
+                header::IF_MODIFIED_SINCE.as_str(),
+                "Wed, 03 Jan 2024 00:00:00 GMT",
+            )],
+        )
+        .await;
+    assert_eq!(cached_by_date.status(), StatusCode::NOT_MODIFIED);
+
+    let no_cache = fixture
+        .request(
+            Method::GET,
+            &tagged_route,
+            &[
+                (header::CACHE_CONTROL.as_str(), "no-cache"),
+                (header::IF_NONE_MATCH.as_str(), "immutable-tag"),
+            ],
+        )
+        .await;
+    assert_eq!(no_cache.status(), StatusCode::OK);
+    assert_eq!(
+        no_cache.headers()[header::CACHE_CONTROL],
+        "no-cache, no-store, must-revalidate"
+    );
+    assert_eq!(
+        no_cache.headers()[header::PRAGMA],
+        "no-cache, no-store, must-revalidate"
+    );
+    assert!(!no_cache.headers().contains_key(header::LAST_MODIFIED));
+    assert!(!no_cache.headers().contains_key(header::ETAG));
+
+    let resized = fixture
+        .request(
+            Method::GET,
+            &format!("{primary}?maxWidth=4&format=Jpg&quality=75"),
+            &[(header::ACCEPT.as_str(), "image/jpeg")],
+        )
+        .await;
+    assert_eq!(resized.status(), StatusCode::OK);
+    assert_eq!(resized.headers()[header::CONTENT_TYPE], "image/jpeg");
+    let resized_bytes = to_bytes(resized.into_body(), usize::MAX).await.unwrap();
+    let decoded = image::load_from_memory(&resized_bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (4, 2));
+
+    let selected_by_query = fixture
+        .request(
+            Method::GET,
+            &format!("/Items/{}/Images/Backdrop?imageIndex=1", fixture.item_id),
+            &[],
+        )
+        .await;
+    assert_eq!(selected_by_query.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(selected_by_query.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        fs::read(fixture.path("remote-backdrop.png")).unwrap()
+    );
+
+    let webp = fixture
+        .request(
+            Method::GET,
+            &format!("{primary}?maxWidth=4"),
+            &[(header::ACCEPT.as_str(), "image/webp")],
+        )
+        .await;
+    assert_eq!(webp.status(), StatusCode::OK);
+    assert_eq!(webp.headers()[header::CONTENT_TYPE], "image/webp");
+    assert_eq!(
+        image::guess_format(&to_bytes(webp.into_body(), usize::MAX).await.unwrap()).unwrap(),
+        image::ImageFormat::WebP
+    );
+
+    for route in [
+        format!("{primary}?format=not-an-image"),
+        format!("{primary}?quality=0"),
+        format!("{primary}?quality=101"),
+    ] {
+        let invalid = fixture.request(Method::GET, &route, &[]).await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST, "route {route}");
+    }
+
+    let remote_bytes = fs::read(fixture.path("remote-backdrop.png")).unwrap();
+    let (remote_url, remote_server) = serve_image_once(remote_bytes.clone());
+    fixture
+        .database
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE jellyfin.base_item_images SET path = $4 \
+             WHERE item_id = $1 AND image_type = $2 AND image_index = $3",
+            [
+                fixture.item_id.into(),
+                2_i16.into(),
+                9_i32.into(),
+                remote_url.into(),
+            ],
+        ))
+        .await
+        .unwrap();
+    let backdrop = fixture
+        .request(
+            Method::GET,
+            &format!("/Items/{}/Images/Backdrop/1", fixture.item_id),
+            &[],
+        )
+        .await;
+    assert_eq!(backdrop.status(), StatusCode::OK);
+    assert_eq!(backdrop.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        to_bytes(backdrop.into_body(), usize::MAX).await.unwrap(),
+        remote_bytes
+    );
+    remote_server.join().unwrap();
+    let relocated = base_item_image::Entity::find_by_id((fixture.item_id, 2, 9))
+        .one(&fixture.database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!relocated.path.starts_with("http"));
+    assert!(relocated.path.contains("cache/images/remote"));
+    assert!(Path::new(&relocated.path).is_file());
+
+    for route in [
+        format!("/Items/{}/Images/Backdrop/2", fixture.item_id),
+        format!("/Items/{}/Images/Primary/-1", fixture.item_id),
+        format!("/Items/{}/Images/Primary", Uuid::new_v4()),
+        format!("/Items/{}/Images/Logo", fixture.item_id),
+    ] {
+        let missing = fixture.request(Method::GET, &route, &[]).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "route {route}");
+    }
+
+    fixture.cleanup().await;
+}
+
 async fn exercise_item_image_infos(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
     let route = format!("/Items/{}/Images", fixture.item_id);
@@ -83,11 +362,11 @@ async fn exercise_item_image_infos(database_name: &str) {
                 "ImageType": "Primary",
                 "ImageIndex": null,
                 "ImageTag": IMAGE_TAG,
-                "Path": fixture.path("poster.jpg"),
+                "Path": fixture.path("poster.png"),
                 "BlurHash": "primary-blurhash",
                 "Height": 900,
                 "Width": 600,
-                "Size": 11
+                "Size": fs::metadata(fixture.path("poster.png")).unwrap().len()
             },
             {
                 "ImageType": "Logo",
@@ -103,31 +382,31 @@ async fn exercise_item_image_infos(database_name: &str) {
                 "ImageType": "Backdrop",
                 "ImageIndex": 0,
                 "ImageTag": IMAGE_TAG,
-                "Path": fixture.path("backdrop.jpg"),
+                "Path": fixture.path("backdrop.png"),
                 "BlurHash": "backdrop-blurhash",
                 "Height": 1080,
                 "Width": 1920,
-                "Size": 8
+                "Size": fs::metadata(fixture.path("backdrop.png")).unwrap().len()
             },
             {
                 "ImageType": "Backdrop",
                 "ImageIndex": 1,
                 "ImageTag": IMAGE_TAG,
-                "Path": "https://images.example.invalid/backdrop.jpg",
-                "BlurHash": null,
-                "Height": null,
-                "Width": null,
-                "Size": 0
+                "Path": fixture.path("remote-backdrop.png"),
+                "BlurHash": "remote-blurhash",
+                "Height": 720,
+                "Width": 1280,
+                "Size": fs::metadata(fixture.path("remote-backdrop.png")).unwrap().len()
             },
             {
                 "ImageType": "Chapter",
                 "ImageIndex": 0,
                 "ImageTag": IMAGE_TAG,
-                "Path": fixture.path("chapter.jpg"),
+                "Path": fixture.path("chapter.png"),
                 "BlurHash": "chapter-blurhash",
                 "Height": 360,
                 "Width": 640,
-                "Size": 7
+                "Size": fs::metadata(fixture.path("chapter.png")).unwrap().len()
             }
         ])
     );
@@ -143,6 +422,7 @@ struct Fixture {
     item_id: Uuid,
     empty_item_id: Uuid,
     token: String,
+    api_key: String,
 }
 
 impl Fixture {
@@ -160,9 +440,25 @@ impl Fixture {
 
         let suffix = Uuid::new_v4().simple().to_string();
         let temporary = TempDirectory::new();
-        fs::write(temporary.path().join("poster.jpg"), b"poster-data").unwrap();
-        fs::write(temporary.path().join("backdrop.jpg"), b"backdrop").unwrap();
-        fs::write(temporary.path().join("chapter.jpg"), b"chapter").unwrap();
+        image_fixture(&temporary.path().join("poster.png"), 8, 4, [255, 0, 0, 255]);
+        image_fixture(
+            &temporary.path().join("backdrop.png"),
+            8,
+            4,
+            [0, 0, 255, 255],
+        );
+        image_fixture(
+            &temporary.path().join("remote-backdrop.png"),
+            4,
+            2,
+            [0, 255, 0, 255],
+        );
+        image_fixture(
+            &temporary.path().join("chapter.png"),
+            6,
+            3,
+            [255, 255, 0, 255],
+        );
 
         let users = UserService::new(database.clone());
         let user = users
@@ -179,6 +475,11 @@ impl Fixture {
             ))
             .await
             .expect("administrator session")
+            .access_token;
+        let api_key = ApiKeyRepository::new(database.clone())
+            .create(&format!("item-image-api-key-{suffix}"))
+            .await
+            .expect("API key creation")
             .access_token;
 
         let items = BaseItemRepository::new(database.clone());
@@ -205,7 +506,7 @@ impl Fixture {
                     image(
                         BaseItemImageType::Primary,
                         0,
-                        temporary.path().join("poster.jpg"),
+                        temporary.path().join("poster.png"),
                         modified,
                         Some((600, 900)),
                         Some("primary-blurhash"),
@@ -213,7 +514,7 @@ impl Fixture {
                     image(
                         BaseItemImageType::Backdrop,
                         4,
-                        temporary.path().join("backdrop.jpg"),
+                        temporary.path().join("backdrop.png"),
                         modified,
                         Some((1920, 1080)),
                         Some("backdrop-blurhash"),
@@ -221,7 +522,7 @@ impl Fixture {
                     image(
                         BaseItemImageType::Backdrop,
                         9,
-                        PathBuf::from("https://images.example.invalid/backdrop.jpg"),
+                        temporary.path().join("remote-backdrop.png"),
                         modified,
                         Some((1280, 720)),
                         Some("remote-blurhash"),
@@ -237,7 +538,7 @@ impl Fixture {
                     image(
                         BaseItemImageType::Chapter,
                         8,
-                        temporary.path().join("chapter.jpg"),
+                        temporary.path().join("chapter.png"),
                         modified,
                         Some((640, 360)),
                         Some("chapter-blurhash"),
@@ -247,11 +548,20 @@ impl Fixture {
             .await
             .expect("image metadata replacement");
 
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Item Image Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        ));
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Item Image Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                temporary.path().join("programdata"),
+                temporary.path().join("web"),
+                temporary.path().join("cache/images"),
+                temporary.path().join("cache"),
+                temporary.path().join("metadata"),
+            ),
+        );
         Self {
             database,
             app,
@@ -260,6 +570,7 @@ impl Fixture {
             item_id: item.id,
             empty_item_id: empty_item.id,
             token,
+            api_key,
         }
     }
 
@@ -283,6 +594,23 @@ impl Fixture {
         self.app
             .clone()
             .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn request(
+        &self,
+        method: Method,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> axum::response::Response {
+        let mut request = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        self.app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
     }
@@ -336,6 +664,31 @@ async fn body_json(response: axum::response::Response) -> Value {
             .expect("response body"),
     )
     .expect("JSON response")
+}
+
+fn image_fixture(path: &Path, width: u32, height: u32, color: [u8; 4]) {
+    RgbaImage::from_pixel(width, height, Rgba(color))
+        .save(path)
+        .expect("write image fixture");
+}
+
+fn serve_image_once(bytes: Vec<u8>) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let _ = stream.read(&mut request).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .unwrap();
+        stream.write_all(&bytes).unwrap();
+        stream.flush().unwrap();
+    });
+    (format!("http://{address}/remote.png"), server)
 }
 
 struct TempDirectory(PathBuf);

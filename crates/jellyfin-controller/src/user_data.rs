@@ -59,6 +59,36 @@ impl UserDataService {
         }
     }
 
+    /// Loads an item only when it is visible to the requested user.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found for a missing user, item, or item hidden by folder
+    /// policy, and returns persistence or policy errors unchanged.
+    pub async fn visible_item(
+        &self,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<base_item::Model, UserDataServiceError> {
+        if item_id.is_nil() {
+            return Err(UserDataServiceError::ItemNotFound);
+        }
+        let user = match self.users.get(target_user_id).await {
+            Ok(user) => user,
+            Err(UserError::NotFound) => return Err(UserDataServiceError::UserNotFound),
+            Err(error) => return Err(error.into()),
+        };
+        let item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(UserDataServiceError::ItemNotFound)?;
+        if !self.is_visible(&item, &user.policy).await? {
+            return Err(UserDataServiceError::ItemNotFound);
+        }
+        Ok(item)
+    }
+
     /// Sets an item's favorite state after the API layer authorizes the target user.
     ///
     /// A nil item identifier addresses the persisted user root, matching the

@@ -12,6 +12,7 @@ jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-providers = { path = "../jellyfin-providers" }
 md-5 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
