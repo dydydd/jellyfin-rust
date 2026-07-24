@@ -145,6 +145,41 @@ async fn assert_audio_stream(fixture: &Fixture) {
             .status(),
         StatusCode::UNSUPPORTED_MEDIA_TYPE
     );
+
+    let universal = format!(
+        "/Audio/{}/universal?container=mp3,bin|pcm",
+        fixture.stream_audio_id
+    );
+    let response = fixture
+        .request("GET", &universal, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
+    let universal_range = fixture.range_request(&universal, "bytes=20-29").await;
+    assert_eq!(universal_range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        to_bytes(universal_range.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        &media_bytes[20..=29]
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!(
+                    "/Audio/{}/universal?container=mp3&transcodingContainer=mp3",
+                    fixture.stream_audio_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
 }
 
 async fn assert_instant_mix(fixture: &Fixture) {

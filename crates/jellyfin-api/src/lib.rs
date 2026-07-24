@@ -464,6 +464,10 @@ pub fn router(state: AppState) -> Router {
             get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
+            "/Audio/{item_id}/universal",
+            get(audio::universal).head(audio::universal),
+        )
+        .route(
             "/Videos/{item_id}/hls/{*legacy_path}",
             get(hls_segment::video),
         )
