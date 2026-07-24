@@ -85,6 +85,7 @@ mod user_data;
 mod user_library;
 mod user_views;
 mod users;
+mod video_attachments;
 mod videos;
 mod virtual_folders;
 mod years;
@@ -932,6 +933,10 @@ fn video_routes() -> Router<Arc<AppState>> {
         .route(
             "/Videos/{item_id}/{media_source_id}/Subtitles/{index}/subtitles.m3u8",
             get(subtitles::get_subtitle_playlist),
+        )
+        .route(
+            "/Videos/{item_id}/{media_source_id}/Attachments/{index}",
+            get(video_attachments::get),
         )
 }
 
