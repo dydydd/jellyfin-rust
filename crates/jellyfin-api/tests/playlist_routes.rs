@@ -48,9 +48,141 @@ async fn exercise(database_name: &str) {
     let playlist_id = assert_creation(&fixture).await;
     assert_read_and_edit_permissions(&fixture, playlist_id).await;
     assert_items_projection_and_reordering(&fixture, playlist_id).await;
+    assert_update_and_share_routes(&fixture, playlist_id).await;
     assert_user_deletion_lifecycle(&fixture).await;
     assert_invalid_creation_rolls_back(&fixture).await;
     fixture.database.close().await.unwrap();
+}
+
+async fn assert_update_and_share_routes(fixture: &Fixture, playlist_id: Uuid) {
+    let route = format!("/Playlists/{playlist_id}");
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &route,
+                Some(&fixture.reader_token),
+                Some(json!({ "Name": "Denied" })),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &route,
+                Some(&fixture.editor_token),
+                Some(json!({
+                    "Name": "Updated Playlist",
+                    "Ids": [fixture.first_id, fixture.third_id],
+                    "IsPublic": true
+                })),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let item = BaseItemRepository::new(fixture.database.clone())
+        .get(playlist_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.name.as_deref(), Some("Updated Playlist"));
+    let metadata = PlaylistRepository::new(fixture.database.clone())
+        .get(playlist_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(metadata.open_access);
+    let links = LinkedChildRepository::new(fixture.database.clone())
+        .list(playlist_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        links.iter().map(|link| link.child_id).collect::<Vec<_>>(),
+        [fixture.first_id, fixture.third_id]
+    );
+
+    let users_route = format!("/Playlists/{playlist_id}/Users");
+    assert_eq!(
+        fixture
+            .request(Method::GET, &users_route, Some(&fixture.editor_token), None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let users = body_json(
+        fixture
+            .request(Method::GET, &users_route, Some(&fixture.owner_token), None)
+            .await,
+    )
+    .await;
+    assert_eq!(users.as_array().unwrap().len(), 2);
+
+    let outsider_route = format!("/Playlists/{playlist_id}/Users/{}", fixture.outsider_id);
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &outsider_route,
+                Some(&fixture.editor_token),
+                Some(json!({ "CanEdit": true })),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &outsider_route,
+                Some(&fixture.owner_token),
+                Some(json!({ "CanEdit": true })),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let permission = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &outsider_route,
+                Some(&fixture.outsider_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(permission["UserId"], fixture.outsider_id.to_string());
+    assert_eq!(permission["CanEdit"], true);
+    assert_eq!(
+        fixture
+            .request(
+                Method::DELETE,
+                &outsider_route,
+                Some(&fixture.editor_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &outsider_route,
+                Some(&fixture.outsider_token),
+                None
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 }
 
 async fn assert_creation_defaults(fixture: &Fixture) {
@@ -392,6 +524,7 @@ struct Fixture {
     owner_id: Uuid,
     editor_id: Uuid,
     reader_id: Uuid,
+    outsider_id: Uuid,
     owner_token: String,
     editor_token: String,
     reader_token: String,
@@ -441,6 +574,7 @@ impl Fixture {
             owner_id: owner.id,
             editor_id: editor.id,
             reader_id: reader.id,
+            outsider_id: outsider.id,
             owner_token,
             editor_token,
             reader_token,

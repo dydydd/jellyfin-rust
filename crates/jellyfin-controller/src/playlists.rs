@@ -243,6 +243,146 @@ impl PlaylistService {
         self.links.remove_compact(playlist_id, item_ids).await?;
         Ok(())
     }
+
+    /// Updates optional playlist metadata and optionally replaces all items.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, not-found, forbidden, or persistence errors.
+    pub async fn update(
+        &self,
+        playlist_id: Uuid,
+        user_id: Uuid,
+        name: Option<String>,
+        item_ids: Option<&[Uuid]>,
+        shares: Option<&[PlaylistUserPermission]>,
+        open_access: Option<bool>,
+    ) -> Result<(), PlaylistError> {
+        let playlist = self.get_for_user(playlist_id, user_id).await?;
+        if !can_edit(&playlist, user_id) {
+            return Err(PlaylistError::Forbidden);
+        }
+        let name = name
+            .map(|name| name.trim().to_owned())
+            .map(|name| {
+                if name.is_empty() {
+                    Err(PlaylistError::InvalidName)
+                } else {
+                    Ok(name)
+                }
+            })
+            .transpose()?;
+        self.playlists
+            .update(playlist_id, name, open_access, shares, item_ids)
+            .await?;
+        Ok(())
+    }
+
+    /// Lists shares for the playlist owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn users(
+        &self,
+        playlist_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Vec<PlaylistUserPermission>, PlaylistError> {
+        let playlist = self.get_for_user(playlist_id, user_id).await?;
+        if playlist.owner_user_id != Some(user_id) {
+            return Err(PlaylistError::Forbidden);
+        }
+        Ok(playlist.shares)
+    }
+
+    /// Resolves one permission visible to its subject or an editor.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn user(
+        &self,
+        playlist_id: Uuid,
+        calling_user_id: Uuid,
+        target_user_id: Uuid,
+    ) -> Result<PlaylistUserPermission, PlaylistError> {
+        let playlist = self.get_for_user(playlist_id, calling_user_id).await?;
+        if playlist.owner_user_id == Some(calling_user_id) {
+            return Ok(PlaylistUserPermission {
+                user_id: calling_user_id,
+                can_edit: true,
+            });
+        }
+        if calling_user_id != target_user_id && !can_edit(&playlist, calling_user_id) {
+            return Err(PlaylistError::Forbidden);
+        }
+        playlist
+            .shares
+            .into_iter()
+            .find(|share| share.user_id == target_user_id)
+            .ok_or(PlaylistError::NotFound)
+    }
+
+    /// Adds or replaces one share as the playlist owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn set_user(
+        &self,
+        playlist_id: Uuid,
+        calling_user_id: Uuid,
+        target_user_id: Uuid,
+        can_edit: bool,
+    ) -> Result<(), PlaylistError> {
+        let playlist = self.get_for_user(playlist_id, calling_user_id).await?;
+        if playlist.owner_user_id != Some(calling_user_id) {
+            return Err(PlaylistError::Forbidden);
+        }
+        let mut shares = playlist.shares;
+        shares.retain(|share| share.user_id != target_user_id);
+        shares.push(PlaylistUserPermission {
+            user_id: target_user_id,
+            can_edit,
+        });
+        self.playlists
+            .update(playlist_id, None, None, Some(&shares), None)
+            .await?;
+        Ok(())
+    }
+
+    /// Removes one share as an owner or editable share.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn remove_user(
+        &self,
+        playlist_id: Uuid,
+        calling_user_id: Uuid,
+        target_user_id: Uuid,
+    ) -> Result<(), PlaylistError> {
+        let playlist = self.get_for_user(playlist_id, calling_user_id).await?;
+        if !can_edit(&playlist, calling_user_id) {
+            return Err(PlaylistError::Forbidden);
+        }
+        if !playlist
+            .shares
+            .iter()
+            .any(|share| share.user_id == target_user_id)
+        {
+            return Err(PlaylistError::NotFound);
+        }
+        let shares = playlist
+            .shares
+            .into_iter()
+            .filter(|share| share.user_id != target_user_id)
+            .collect::<Vec<_>>();
+        self.playlists
+            .update(playlist_id, None, None, Some(&shares), None)
+            .await?;
+        Ok(())
+    }
 }
 
 fn can_read(playlist: &PlaylistRecord, user_id: Uuid) -> bool {

@@ -89,6 +89,21 @@ pub(crate) struct PlaylistDto {
     item_ids: Vec<Uuid>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct UpdateBody {
+    name: Option<String>,
+    ids: Option<Vec<Uuid>>,
+    users: Option<Vec<PlaylistUserPermission>>,
+    is_public: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct UpdateUserBody {
+    can_edit: Option<bool>,
+}
+
 pub(crate) async fn create(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -145,6 +160,94 @@ pub(crate) async fn get(
         shares: playlist.shares,
         item_ids,
     }))
+}
+
+pub(crate) async fn update(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(playlist_id): Path<Uuid>,
+    request: Result<Json<UpdateBody>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(None)?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .playlists
+        .update(
+            playlist_id,
+            user_id,
+            request.name,
+            request.ids.as_deref(),
+            request.users.as_deref(),
+            request.is_public,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn get_users(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(playlist_id): Path<Uuid>,
+) -> Result<Json<Vec<PlaylistUserPermission>>, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(None)?;
+    Ok(Json(state.playlists.users(playlist_id, user_id).await?))
+}
+
+pub(crate) async fn get_user(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((playlist_id, target_user_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<PlaylistUserPermission>, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(None)?;
+    Ok(Json(
+        state
+            .playlists
+            .user(playlist_id, user_id, target_user_id)
+            .await?,
+    ))
+}
+
+pub(crate) async fn set_user(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((playlist_id, target_user_id)): Path<(Uuid, Uuid)>,
+    request: Result<Json<UpdateUserBody>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(None)?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .playlists
+        .set_user(
+            playlist_id,
+            user_id,
+            target_user_id,
+            request.can_edit.unwrap_or(false),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn remove_user(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((playlist_id, target_user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(None)?;
+    state
+        .playlists
+        .remove_user(playlist_id, user_id, target_user_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn add_items(

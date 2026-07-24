@@ -903,7 +903,17 @@ fn collection_routes() -> Router<Arc<AppState>> {
             post(collections::add_items).delete(collections::remove_items),
         )
         .route("/Playlists", post(playlists::create))
-        .route("/Playlists/{playlist_id}", get(playlists::get))
+        .route(
+            "/Playlists/{playlist_id}",
+            get(playlists::get).post(playlists::update),
+        )
+        .route("/Playlists/{playlist_id}/Users", get(playlists::get_users))
+        .route(
+            "/Playlists/{playlist_id}/Users/{user_id}",
+            get(playlists::get_user)
+                .post(playlists::set_user)
+                .delete(playlists::remove_user),
+        )
         .route(
             "/Playlists/{playlist_id}/Items",
             get(playlists::get_items)
