@@ -62,15 +62,28 @@ async fn exercise_item_refresh_route(database_name: &str) {
         .upsert(fixture.item_id, trickplay_info)
         .await
         .expect("trickplay metadata");
-    tokio::fs::create_dir_all(fixture.trickplay_item_directory())
+    let existing_directory = fixture.trickplay_resolution_directory(320, 2, 2);
+    tokio::fs::create_dir_all(&existing_directory)
         .await
         .unwrap();
     tokio::fs::write(
-        fixture.trickplay_item_directory().join("sentinel.jpg"),
-        b"tile",
+        existing_directory.join("0.jpg"),
+        b"temporarily corrupt tile",
     )
     .await
     .unwrap();
+    let discovered_directory = fixture.trickplay_resolution_directory(640, 3, 2);
+    tokio::fs::create_dir_all(&discovered_directory)
+        .await
+        .unwrap();
+    for index in 0..2 {
+        image::RgbImage::from_pixel(1_920, 720, image::Rgb([20, 40, 60]))
+            .save_with_format(
+                discovered_directory.join(format!("{index}.jpg")),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+    }
 
     let route = format!("/Items/{}/Refresh", fixture.item_id);
     assert_eq!(
@@ -142,6 +155,17 @@ async fn exercise_item_refresh_route(database_name: &str) {
         "regeneration only replaces trickplay during a full metadata refresh"
     );
     assert!(fixture.trickplay_item_directory().is_dir());
+    let inferred = trickplay
+        .get(fixture.item_id, 640)
+        .await
+        .unwrap()
+        .expect("valid managed tiles must be discovered");
+    assert_eq!(inferred.height, 360);
+    assert_eq!(inferred.tile_width, 3);
+    assert_eq!(inferred.tile_height, 2);
+    assert_eq!(inferred.thumbnail_count, 12);
+    assert_eq!(inferred.interval, 10_000);
+    assert!(inferred.bandwidth > 0);
 
     assert_eq!(
         fixture
@@ -258,6 +282,16 @@ impl Fixture {
     fn trickplay_item_directory(&self) -> std::path::PathBuf {
         let id = self.item_id.hyphenated().to_string();
         self.program_data.join("trickplay").join(&id[..2]).join(id)
+    }
+
+    fn trickplay_resolution_directory(
+        &self,
+        width: i32,
+        tile_width: i32,
+        tile_height: i32,
+    ) -> std::path::PathBuf {
+        self.trickplay_item_directory()
+            .join(format!("{width} - {tile_width}x{tile_height}"))
     }
 
     async fn post(&self, uri: &str, token: Option<&str>) -> axum::response::Response {

@@ -52,11 +52,24 @@ pub(crate) async fn refresh(
         .await?
         .ok_or(BaseItemError::NotFound)?;
 
-    if query.regenerate_trickplay
-        && query.metadata_refresh_mode == MetadataRefreshMode::FullRefresh
-        && is_video_item(&item)
-    {
-        state.trickplay.delete_data(item_id).await?;
+    if is_video_item(&item) {
+        if query.regenerate_trickplay
+            && query.metadata_refresh_mode == MetadataRefreshMode::FullRefresh
+        {
+            state.trickplay.delete_data(item_id).await?;
+        } else if matches!(
+            query.metadata_refresh_mode,
+            MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
+        ) {
+            state
+                .trickplay
+                .discover_data(
+                    item_id,
+                    item.runtime_ticks,
+                    jellyfin_model::TrickplayOptions::default().interval,
+                )
+                .await?;
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

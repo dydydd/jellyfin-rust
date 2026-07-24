@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    FromQueryResult, QueryFilter, Statement, TransactionTrait, Value,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr,
+    EntityTrait, FromQueryResult, QueryFilter, QueryOrder, Statement, TransactionTrait, Value,
+    sea_query::OnConflict,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -178,6 +179,92 @@ impl TrickplayInfoRepository {
         Ok(result.rows_affected > 0)
     }
 
+    /// Reconciles metadata with resolutions discovered in managed storage.
+    ///
+    /// `present_widths` includes every valid directory that still contains a
+    /// JPEG, even when its image header could not be inspected. Such rows are
+    /// retained, while `discovered` rows fill only missing primary keys. A row
+    /// lock serializes the fixed-size delete/insert/read sequence with item
+    /// deletion and competing discovery passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, missing-owner, or database errors.
+    pub async fn synchronize_discovered(
+        &self,
+        item_id: Uuid,
+        present_widths: &[i32],
+        discovered: &[NewTrickplayInfo],
+    ) -> Result<Vec<TrickplayInfo>, TrickplayInfoStoreError> {
+        let present_widths = unique_widths(present_widths);
+        let mut discovered = discovered
+            .iter()
+            .copied()
+            .map(|info| {
+                info.validate()?;
+                Ok((info.width, info))
+            })
+            .collect::<Result<BTreeMap<_, _>, TrickplayInfoStoreError>>()?;
+        discovered.retain(|width, _| present_widths.binary_search(width).is_ok());
+
+        let transaction = self.database.begin().await?;
+        if transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT id FROM jellyfin.base_items WHERE id = $1 FOR UPDATE",
+                [item_id.into()],
+            ))
+            .await?
+            .is_none()
+        {
+            return Err(TrickplayInfoStoreError::BaseItemNotFound { item_id });
+        }
+
+        let mut delete = trickplay_info::Entity::delete_many()
+            .filter(trickplay_info::Column::ItemId.eq(item_id));
+        if !present_widths.is_empty() {
+            delete = delete.filter(trickplay_info::Column::Width.is_not_in(present_widths));
+        }
+        delete.exec(&transaction).await?;
+
+        if !discovered.is_empty() {
+            let rows = discovered
+                .into_values()
+                .map(|info| trickplay_info::ActiveModel {
+                    item_id: Set(item_id),
+                    width: Set(info.width),
+                    height: Set(info.height),
+                    tile_width: Set(info.tile_width),
+                    tile_height: Set(info.tile_height),
+                    thumbnail_count: Set(info.thumbnail_count),
+                    interval: Set(info.interval),
+                    bandwidth: Set(info.bandwidth),
+                });
+            trickplay_info::Entity::insert_many(rows)
+                .on_conflict(
+                    OnConflict::columns([
+                        trickplay_info::Column::ItemId,
+                        trickplay_info::Column::Width,
+                    ])
+                    .do_nothing()
+                    .to_owned(),
+                )
+                .exec_without_returning(&transaction)
+                .await?;
+        }
+
+        let rows = trickplay_info::Entity::find()
+            .filter(trickplay_info::Column::ItemId.eq(item_id))
+            .order_by_asc(trickplay_info::Column::Width)
+            .all(&transaction)
+            .await?
+            .into_iter()
+            .map(TrickplayInfo::from)
+            .collect();
+        transaction.commit().await?;
+        Ok(rows)
+    }
+
     /// Atomically creates or replaces metadata for one resolution.
     ///
     /// `PostgreSQL`'s composite-key conflict handler makes concurrent writers
@@ -275,6 +362,17 @@ fn unique_ids(ids: &[Uuid]) -> Vec<Uuid> {
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+fn unique_widths(widths: &[i32]) -> Vec<i32> {
+    let mut widths = widths
+        .iter()
+        .copied()
+        .filter(|width| *width > 0)
+        .collect::<Vec<_>>();
+    widths.sort_unstable();
+    widths.dedup();
+    widths
 }
 
 impl NewTrickplayInfo {

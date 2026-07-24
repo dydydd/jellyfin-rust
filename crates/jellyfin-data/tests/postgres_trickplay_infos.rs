@@ -73,6 +73,7 @@ async fn exercise_trickplay_infos(database_name: &str) {
     assert_upsert_and_resolution_key(&database, &repository, item.id).await;
     assert_batch_manifests_expand_all_local_sources(&database, &items, &repository, item.id).await;
     assert_delete_for_item_is_complete_and_idempotent(&items, &repository).await;
+    assert_discovery_sync_preserves_precise_rows(&items, &repository).await;
     assert_validation_and_missing_owner(&repository).await;
     assert_database_constraints(&database, item.id).await;
     assert_catalog(&database).await;
@@ -80,6 +81,55 @@ async fn exercise_trickplay_infos(database_name: &str) {
     assert_cascade(&items, &database, item).await;
 
     database.close().await.unwrap();
+}
+
+async fn assert_discovery_sync_preserves_precise_rows(
+    items: &BaseItemRepository,
+    repository: &TrickplayInfoRepository,
+) {
+    let item = create_item(items).await;
+    let precise = info(320, 181, 4, 3, 17, 750, 44_000);
+    repository.upsert(item.id, precise).await.unwrap();
+    repository
+        .upsert(item.id, info(960, 540, 5, 5, 25, 1_000, 99_000))
+        .await
+        .unwrap();
+
+    let synchronized = repository
+        .synchronize_discovered(
+            item.id,
+            &[640, 320, 640],
+            &[
+                info(320, 180, 2, 2, 6, 1_500, 22_000),
+                info(640, 360, 3, 2, 12, 2_000, 33_000),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(synchronized.len(), 2);
+    assert_eq!(
+        synchronized[0],
+        repository.get(item.id, 320).await.unwrap().unwrap()
+    );
+    assert_eq!(synchronized[0].height, precise.height);
+    assert_eq!(synchronized[0].interval, precise.interval);
+    assert_eq!(synchronized[1].width, 640);
+    assert_eq!(synchronized[1].height, 360);
+    assert_eq!(repository.get(item.id, 960).await.unwrap(), None);
+
+    assert!(
+        repository
+            .synchronize_discovered(item.id, &[], &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        repository
+            .synchronize_discovered(Uuid::new_v4(), &[], &[])
+            .await,
+        Err(TrickplayInfoStoreError::BaseItemNotFound { .. })
+    ));
 }
 
 async fn assert_delete_for_item_is_complete_and_idempotent(
