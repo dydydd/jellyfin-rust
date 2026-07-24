@@ -187,6 +187,7 @@ fn item(item_type: &str) -> base_item::Model {
         index_number: None,
         parent_index_number: None,
         production_year: None,
+        premiere_date: None,
         runtime_ticks: None,
         is_folder: false,
         is_virtual_item: false,
