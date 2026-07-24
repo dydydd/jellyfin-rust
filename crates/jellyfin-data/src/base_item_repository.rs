@@ -293,6 +293,28 @@ impl BaseItemRepository {
             .await?)
     }
 
+    /// Resolves a persisted item-by-name entity by its raw display name.
+    ///
+    /// The exact equality predicate intentionally preserves `PostgreSQL` text
+    /// collation semantics instead of applying the fuzzy search normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn get_by_type_and_name(
+        &self,
+        item_type: &str,
+        name: &str,
+    ) -> Result<Option<base_item::Model>, BaseItemError> {
+        Ok(base_item::Entity::find()
+            .filter(base_item::Column::ItemType.eq(item_type))
+            .filter(base_item::Column::Name.eq(name))
+            .order_by_asc(base_item::Column::IsVirtualItem)
+            .order_by_asc(base_item::Column::Id)
+            .one(&self.database)
+            .await?)
+    }
+
     /// Resolves `version_item_id` when it is a video alternate visible from
     /// `source_item_id`.
     ///

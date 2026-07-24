@@ -283,7 +283,7 @@ async fn delete_internal(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn parse_image_type(value: &str) -> Result<ImageType, ApiError> {
+pub(crate) fn parse_image_type(value: &str) -> Result<ImageType, ApiError> {
     [
         ImageType::Primary,
         ImageType::Art,
@@ -332,6 +332,17 @@ async fn get_internal(
     query: GetItemImageQuery,
 ) -> Result<Response, ApiError> {
     ensure_visible_item(&state, &headers, &uri, item_id).await?;
+    render_item_image(&state, &headers, item_id, image_type, image_index, query).await
+}
+
+pub(crate) async fn render_item_image(
+    state: &AppState,
+    headers: &HeaderMap,
+    item_id: Uuid,
+    image_type: ImageType,
+    image_index: i32,
+    query: GetItemImageQuery,
+) -> Result<Response, ApiError> {
     let image_index = u32::try_from(image_index).map_err(|_| BaseItemError::NotFound)?;
     let resource = state
         .item_images
@@ -343,7 +354,7 @@ async fn get_internal(
         .map(parse_image_format)
         .transpose()?;
     let supported_formats = format.map_or_else(
-        || negotiated_formats(&headers, query.accept.as_deref()),
+        || negotiated_formats(headers, query.accept.as_deref()),
         |format| vec![format],
     );
     let source = ImageSource {
@@ -369,7 +380,7 @@ async fn get_internal(
         foreground_layer: query.foreground_layer,
     };
     let processed = state.image_processor.process(&source, &request).await?;
-    build_response(&headers, query.tag.as_deref(), processed).await
+    build_response(headers, query.tag.as_deref(), processed).await
 }
 
 pub(crate) async fn render_simple_image(

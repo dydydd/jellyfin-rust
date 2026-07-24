@@ -3,11 +3,13 @@ use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, NewUserData, UserDataRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData,
+    UserDataRepository,
     entities::{base_item, item_value},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -248,6 +250,109 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_eq!(admin_targeted["TotalRecordCount"], 4);
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn artist_image_route_resolves_public_base_item_owner() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let image_name = format!("Image Artist {}", Uuid::new_v4().simple());
+    let linked = ItemValueRepository::new(fixture.database.clone())
+        .link(
+            fixture.audio_id,
+            item_value::ItemValueType::Artist,
+            &image_name,
+        )
+        .await
+        .unwrap();
+    let artist = create_item(&items, "MusicArtist", &image_name, None, true, "").await;
+    assert_ne!(linked.item_value_id, artist.id);
+    let path = std::env::temp_dir().join(format!(
+        "jellyfin-artist-image-{}.png",
+        Uuid::new_v4().simple()
+    ));
+    let image = image::RgbaImage::from_pixel(4, 2, image::Rgba([10, 80, 220, 255]));
+    image.save(&path).unwrap();
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            artist.id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: path.to_string_lossy().into_owned(),
+                date_modified: Utc::now(),
+                width: Some(4),
+                height: Some(2),
+                blurhash: None,
+            }],
+        )
+        .await
+        .unwrap();
+    let route = format!(
+        "/Artists/{}/Images/Primary/0?tag=artist-tag",
+        encoded(&image_name)
+    );
+    assert_eq!(
+        fixture
+            .request(Method::GET, &route, Credential::Device("invalid-token"))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = fixture.request(Method::GET, &route, Credential::None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(response.headers()[header::ETAG], "\"artist-tag\"");
+    let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+        .await
+        .unwrap();
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (4, 2));
+    let head = fixture
+        .request(Method::HEAD, &route, Credential::None)
+        .await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(
+        to_bytes(head.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists/{}/Images/Primary/-1", encoded(&image_name)),
+                Credential::None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists/{}/Images/not-an-image/0", encoded(&image_name)),
+                Credential::None,
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists/{}/Images/Primary/0", encoded("missing artist")),
+                Credential::None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let _ = std::fs::remove_file(path);
     fixture.cleanup().await;
 }
 
