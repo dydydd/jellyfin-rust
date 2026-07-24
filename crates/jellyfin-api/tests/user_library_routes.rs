@@ -7,8 +7,8 @@ use jellyfin_controller::MediaAttachmentService;
 use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData, USER_ROOT_FOLDER_ID,
-    UserDataRepository,
+    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewTrickplayInfo, NewUserData,
+    TrickplayInfoRepository, USER_ROOT_FOLDER_ID, UserDataRepository,
     entities::{base_item, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
@@ -156,6 +156,58 @@ async fn media_stream_fields_are_projected_for_single_item_routes() {
     assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
     assert_eq!(item["MediaStreams"][0]["Language"], "deu");
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn trickplay_field_is_opt_in_for_single_video_items() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut video = item("Movie", "Trickplay Video", Some(fixture.root_id), false);
+    video.media_type = Some("Video".to_owned());
+    let video = items.create(video).await.expect("video item");
+    TrickplayInfoRepository::new(fixture.database.clone())
+        .upsert(
+            video.id,
+            NewTrickplayInfo {
+                width: 640,
+                height: 360,
+                tile_width: 5,
+                tile_height: 5,
+                thumbnail_count: 50,
+                interval: 1_000,
+                bandwidth: 88_000,
+            },
+        )
+        .await
+        .expect("trickplay metadata");
+
+    let route = format!("/Users/{}/Items/{}", fixture.user_id, video.id);
+    let plain = get_json(&fixture.app, &route, &fixture.user_token).await;
+    assert!(plain.get("Trickplay").is_none());
+    let projected = get_json(
+        &fixture.app,
+        &format!("{route}?fields=trickPLAY"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(
+        projected["Trickplay"][video.id.simple().to_string()]["640"]["Bandwidth"],
+        88_000
+    );
+
+    let audio = get_json(
+        &fixture.app,
+        &format!(
+            "/Users/{}/Items/{}?Fields=Trickplay",
+            fixture.user_id, fixture.item_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(audio.get("Trickplay").is_none());
+
+    items.delete(video.id).await.expect("video cleanup");
     fixture.cleanup().await;
 }
 

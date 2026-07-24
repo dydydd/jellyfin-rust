@@ -127,20 +127,27 @@ async fn page_items_to_dtos(
     } else {
         HashMap::new()
     };
+    let mut trickplay_manifests =
+        user_library::trickplay_manifests_for_items(state, &page.items, fields).await?;
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
-        let remembered = remembered_user_data.remove(&item.id);
-        items.push(
-            user_library::project_item_to_dto(
-                state,
-                item,
-                fields,
-                defaults.as_ref(),
-                remembered.as_ref(),
-            )
-            .await?,
+        let item_id = item.id;
+        let remembered = remembered_user_data.remove(&item_id);
+        let mut dto = user_library::project_item_to_dto(
+            state,
+            item,
+            fields.without_trickplay(),
+            defaults.as_ref(),
+            remembered.as_ref(),
+        )
+        .await?;
+        user_library::attach_trickplay_manifest(
+            &mut dto,
+            fields,
+            trickplay_manifests.remove(&item_id).unwrap_or_default(),
         );
+        items.push(dto);
     }
     Ok(items)
 }

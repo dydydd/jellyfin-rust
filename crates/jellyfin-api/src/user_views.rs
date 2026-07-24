@@ -169,6 +169,7 @@ pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto
         provider_ids: None,
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 

@@ -8,8 +8,8 @@ use jellyfin_controller::MediaAttachmentService;
 use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
-    entities::user,
+    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewTrickplayInfo, NewUserData,
+    TrickplayInfoRepository, UserDataRepository, entities::user,
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -160,6 +160,104 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(item["MediaStreams"][1]["Language"], "deu");
 
     items.delete(media.id).await.expect("media cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn trickplay_field_is_opt_in_batched_and_matches_official_shape() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let mut video = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    video.name = Some(format!("Trickplay {}", fixture.suffix));
+    video.sort_name = video.name.clone();
+    video.parent_id = Some(root.id);
+    video.media_type = Some("Video".to_owned());
+    let video = items.create(video).await.expect("video item");
+    let mut empty_video = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    empty_video.name = Some(format!("Empty Trickplay {}", fixture.suffix));
+    empty_video.sort_name = empty_video.name.clone();
+    empty_video.parent_id = Some(root.id);
+    empty_video.media_type = Some("Video".to_owned());
+    let empty_video = items.create(empty_video).await.expect("empty video item");
+    let trickplay = TrickplayInfoRepository::new(fixture.database.clone());
+    trickplay
+        .upsert(
+            video.id,
+            NewTrickplayInfo {
+                width: 320,
+                height: 180,
+                tile_width: 4,
+                tile_height: 3,
+                thumbnail_count: 25,
+                interval: 1_500,
+                bandwidth: 42_000,
+            },
+        )
+        .await
+        .expect("trickplay metadata");
+
+    let without_field = body_json(
+        fixture
+            .request(
+                &format!("/Items?ids={},{}", video.id, empty_video.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        without_field["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item.get("Trickplay").is_none())
+    );
+
+    let with_field = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?ids={},{}&Fields=Trickplay",
+                    video.id, empty_video.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let projected = with_field["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == video.id.simple().to_string())
+        .unwrap();
+    assert_eq!(
+        projected["Trickplay"][video.id.simple().to_string()]["320"],
+        serde_json::json!({
+            "Width": 320,
+            "Height": 180,
+            "TileWidth": 4,
+            "TileHeight": 3,
+            "ThumbnailCount": 25,
+            "Interval": 1500,
+            "Bandwidth": 42000
+        })
+    );
+    let empty = with_field["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == empty_video.id.simple().to_string())
+        .unwrap();
+    assert_eq!(empty["Trickplay"], serde_json::json!({}));
+
+    items.delete(video.id).await.expect("video cleanup");
+    items
+        .delete(empty_video.id)
+        .await
+        .expect("empty video cleanup");
     fixture.cleanup().await;
 }
 

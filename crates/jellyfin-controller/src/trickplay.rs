@@ -1,6 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::{Path, PathBuf},
+};
 
 use jellyfin_data::{TrickplayInfo, TrickplayInfoRepository, TrickplayInfoStoreError};
+use jellyfin_model::TrickplayInfoDto;
 use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
@@ -44,6 +48,36 @@ impl TrickplayService {
         Ok(build_playlist(info, api_key))
     }
 
+    /// Loads API manifests for multiple displayed items without N+1 queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when trickplay metadata cannot be loaded.
+    pub async fn manifests_for_items(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<TrickplayManifests, TrickplayError> {
+        Ok(self
+            .repository
+            .manifests_for_items(item_ids)
+            .await?
+            .into_iter()
+            .map(|(display_item_id, sources)| {
+                let sources = sources
+                    .into_iter()
+                    .map(|(source_id, resolutions)| {
+                        let resolutions = resolutions
+                            .into_iter()
+                            .map(|(width, info)| (width, info_to_dto(info)))
+                            .collect();
+                        (source_id.simple().to_string(), resolutions)
+                    })
+                    .collect();
+                (display_item_id, sources)
+            })
+            .collect())
+    }
+
     /// Resolves an internally stored JPEG tile without trusting path input.
     ///
     /// # Errors
@@ -63,6 +97,21 @@ impl TrickplayService {
             info,
             index,
         )))
+    }
+}
+
+pub type TrickplayManifest = BTreeMap<String, BTreeMap<i32, TrickplayInfoDto>>;
+pub type TrickplayManifests = HashMap<Uuid, TrickplayManifest>;
+
+const fn info_to_dto(info: TrickplayInfo) -> TrickplayInfoDto {
+    TrickplayInfoDto {
+        width: info.width,
+        height: info.height,
+        tile_width: info.tile_width,
+        tile_height: info.tile_height,
+        thumbnail_count: info.thumbnail_count,
+        interval: info.interval,
+        bandwidth: info.bandwidth,
     }
 }
 

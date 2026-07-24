@@ -67,7 +67,7 @@ pub use scheduled_tasks::{ScheduledTaskError, ScheduledTaskService};
 pub use studios::{Studio, StudioError, StudioPage, StudioService};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
 pub use system_storage::SystemStorageService;
-pub use trickplay::{TrickplayError, TrickplayService};
+pub use trickplay::{TrickplayError, TrickplayManifest, TrickplayManifests, TrickplayService};
 pub use user_data::{UserDataService, UserDataServiceError, UserDataUpdate};
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use users::{UserError, UserService, validate_username};

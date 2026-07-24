@@ -40,6 +40,7 @@ mod m20260724_000037_create_named_configurations;
 mod m20260724_000038_add_base_item_premiere_date;
 mod m20260725_000039_create_trickplay_infos;
 mod m20260725_000040_create_linked_children;
+mod m20260725_000041_optimize_trickplay_manifests;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -121,6 +122,8 @@ pub use m20260724_000038_add_base_item_premiere_date::Migration as AddBaseItemPr
 pub use m20260725_000039_create_trickplay_infos::Migration as CreateTrickplayInfosMigration;
 #[doc(hidden)]
 pub use m20260725_000040_create_linked_children::Migration as CreateLinkedChildrenMigration;
+#[doc(hidden)]
+pub use m20260725_000041_optimize_trickplay_manifests::Migration as OptimizeTrickplayManifestsMigration;
 
 pub struct Migrator;
 
@@ -168,6 +171,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260724_000038_add_base_item_premiere_date::Migration),
             Box::new(m20260725_000039_create_trickplay_infos::Migration),
             Box::new(m20260725_000040_create_linked_children::Migration),
+            Box::new(m20260725_000041_optimize_trickplay_manifests::Migration),
         ]
     }
 }

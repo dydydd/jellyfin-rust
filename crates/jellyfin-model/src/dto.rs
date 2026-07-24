@@ -4,6 +4,20 @@ use uuid::Uuid;
 
 use crate::{UserConfiguration, UserPolicy};
 
+/// Public metadata for one trickplay thumbnail resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "PascalCase")]
+pub struct TrickplayInfoDto {
+    pub width: i32,
+    pub height: i32,
+    pub tile_width: i32,
+    pub tile_height: i32,
+    pub thumbnail_count: i32,
+    pub interval: i32,
+    pub bandwidth: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "PascalCase")]

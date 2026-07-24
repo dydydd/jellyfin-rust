@@ -458,6 +458,8 @@ async fn page_to_dto(
     } else {
         std::collections::HashMap::new()
     };
+    let mut trickplay_manifests =
+        user_library::trickplay_manifests_for_items(state, &page.items, requested_fields).await?;
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -478,6 +480,11 @@ async fn page_to_dto(
                 original_language.as_deref(),
             );
         }
+        user_library::attach_trickplay_manifest(
+            &mut dto,
+            requested_fields,
+            trickplay_manifests.remove(&item_id).unwrap_or_default(),
+        );
         items.push(dto);
     }
 

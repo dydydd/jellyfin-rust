@@ -1,11 +1,11 @@
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, NewBaseItem, NewTrickplayInfo, TrickplayInfoRepository,
-    TrickplayInfoStoreError,
-    entities::{base_item, trickplay_info},
+    BaseItemRepository, DatabaseConfig, LinkedChildType, NewBaseItem, NewTrickplayInfo,
+    TrickplayInfoRepository, TrickplayInfoStoreError,
+    entities::{base_item, linked_child, trickplay_info},
 };
-use jellyfin_migration::CreateTrickplayInfosMigration;
+use jellyfin_migration::{CreateTrickplayInfosMigration, OptimizeTrickplayManifestsMigration};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, ModelTrait,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
     QueryFilter, Statement, TryGetable,
 };
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -61,18 +61,118 @@ async fn exercise_trickplay_infos(database_name: &str) {
         .up(&schema)
         .await
         .expect("reapplying trickplay DDL must succeed");
+    OptimizeTrickplayManifestsMigration
+        .up(&schema)
+        .await
+        .expect("reapplying trickplay manifest indexes must succeed");
 
     let items = BaseItemRepository::new(database.clone());
     let repository = TrickplayInfoRepository::new(database.clone());
     let item = create_item(&items).await;
 
     assert_upsert_and_resolution_key(&database, &repository, item.id).await;
+    assert_batch_manifests_expand_all_local_sources(&database, &items, &repository, item.id).await;
     assert_validation_and_missing_owner(&repository).await;
     assert_database_constraints(&database, item.id).await;
     assert_catalog(&database).await;
-    assert_cascade(&database, item).await;
+    assert_manifest_indexes(&database).await;
+    assert_cascade(&items, &database, item).await;
 
     database.close().await.unwrap();
+}
+
+async fn assert_manifest_indexes(database: &DatabaseConnection) {
+    let indexes = database
+        .query_all(Statement::from_string(
+            DbBackend::Postgres,
+            r"
+            SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'jellyfin'
+              AND indexname IN (
+                  'linked_children_alternate_child_lookup_idx',
+                  'trickplay_infos_manifest_covering_idx'
+              )
+            "
+            .to_owned(),
+        ))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                String::try_get(&row, "", "indexname").unwrap(),
+                String::try_get(&row, "", "indexdef").unwrap(),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    assert!(
+        indexes["linked_children_alternate_child_lookup_idx"]
+            .contains("(child_id, parent_id) WHERE (child_type = ANY (ARRAY[2, 3]))")
+    );
+    let covering = &indexes["trickplay_infos_manifest_covering_idx"];
+    assert!(covering.contains("(item_id, width) INCLUDE"));
+    for column in [
+        "height",
+        "tile_width",
+        "tile_height",
+        "thumbnail_count",
+        "interval",
+        "bandwidth",
+    ] {
+        assert!(covering.contains(column));
+    }
+}
+
+async fn assert_batch_manifests_expand_all_local_sources(
+    database: &DatabaseConnection,
+    items: &BaseItemRepository,
+    repository: &TrickplayInfoRepository,
+    primary_id: Uuid,
+) {
+    let alternate = create_item(items).await;
+    let linked = create_item(items).await;
+    let empty = create_item(items).await;
+    let group_primary = items
+        .merge_alternate_versions(&[primary_id, alternate.id])
+        .await
+        .unwrap();
+    linked_child::Entity::insert(linked_child::ActiveModel {
+        parent_id: Set(group_primary),
+        child_id: Set(linked.id),
+        child_type: Set(LinkedChildType::LinkedAlternateVersion as i16),
+        sort_order: Set(None),
+    })
+    .exec(database)
+    .await
+    .unwrap();
+    repository
+        .upsert(alternate.id, info(480, 270, 3, 2, 10, 1_000, 33_000))
+        .await
+        .unwrap();
+    repository
+        .upsert(linked.id, info(720, 405, 4, 3, 20, 750, 55_000))
+        .await
+        .unwrap();
+
+    let manifests = repository
+        .manifests_for_items(&[primary_id, alternate.id, empty.id, primary_id])
+        .await
+        .unwrap();
+    for display_id in [primary_id, alternate.id] {
+        let manifest = &manifests[&display_id];
+        assert_eq!(manifest[&primary_id].len(), 2);
+        assert_eq!(manifest[&alternate.id][&480].height, 270);
+        assert_eq!(manifest[&linked.id][&720].bandwidth, 55_000);
+    }
+    assert!(manifests[&empty.id].is_empty());
+    assert!(
+        repository
+            .manifests_for_items(&[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 async fn assert_upsert_and_resolution_key(
@@ -187,9 +287,13 @@ async fn assert_catalog(database: &DatabaseConnection) {
     assert_eq!(constraints.len(), 9);
 }
 
-async fn assert_cascade(database: &DatabaseConnection, item: base_item::Model) {
+async fn assert_cascade(
+    items: &BaseItemRepository,
+    database: &DatabaseConnection,
+    item: base_item::Model,
+) {
     let item_id = item.id;
-    item.delete(database).await.unwrap();
+    items.delete(item_id).await.unwrap();
     assert!(
         trickplay_info::Entity::find()
             .filter(trickplay_info::Column::ItemId.eq(item_id))

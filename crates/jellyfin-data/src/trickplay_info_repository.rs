@@ -1,11 +1,16 @@
+use std::collections::{BTreeMap, HashMap};
+
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Statement,
-    TransactionTrait,
+    TransactionTrait, Value,
 };
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::entities::trickplay_info;
+
+pub type TrickplayManifestStore = BTreeMap<Uuid, BTreeMap<i32, TrickplayInfo>>;
+pub type TrickplayManifestStores = HashMap<Uuid, TrickplayManifestStore>;
 
 /// Metadata for one trickplay thumbnail resolution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +77,90 @@ impl TrickplayInfoRepository {
             .map(TrickplayInfo::from))
     }
 
+    /// Loads the local media-source manifests for multiple displayed items.
+    ///
+    /// One `PostgreSQL` query expands primary-version and linked alternate
+    /// relationships, then joins every stored resolution. The outer map is
+    /// initialized for every requested item so callers can distinguish an
+    /// explicitly requested empty manifest without issuing follow-up queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the batch query cannot be executed.
+    pub async fn manifests_for_items(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<TrickplayManifestStores, TrickplayInfoStoreError> {
+        let item_ids = unique_ids(item_ids);
+        let mut manifests = item_ids
+            .iter()
+            .copied()
+            .map(|item_id| (item_id, BTreeMap::new()))
+            .collect::<HashMap<_, _>>();
+        if item_ids.is_empty() {
+            return Ok(manifests);
+        }
+
+        let values = item_ids
+            .iter()
+            .copied()
+            .map(Value::from)
+            .collect::<Vec<_>>();
+        let placeholders = (1..=values.len())
+            .map(|index| format!("(${index}::uuid)"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rows = TrickplayManifestRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!(
+                "WITH RECURSIVE requested(display_item_id) AS (VALUES {placeholders}), \
+                 version_roots AS MATERIALIZED (\
+                     SELECT requested.display_item_id, \
+                            COALESCE(item.primary_version_id, item.id) AS root_id \
+                     FROM requested \
+                     INNER JOIN jellyfin.base_items AS item \
+                       ON item.id = requested.display_item_id \
+                     WHERE item.item_type IN \
+                           ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')\
+                 ), media_sources(display_item_id, source_id) AS (\
+                     SELECT display_item_id, root_id FROM version_roots \
+                     UNION \
+                     SELECT roots.display_item_id, item.id \
+                     FROM version_roots AS roots \
+                     INNER JOIN jellyfin.base_items AS item \
+                       ON item.primary_version_id = roots.root_id \
+                     UNION \
+                     SELECT sources.display_item_id, \
+                            CASE WHEN links.parent_id = sources.source_id \
+                                 THEN links.child_id ELSE links.parent_id END \
+                     FROM media_sources AS sources \
+                     INNER JOIN jellyfin.linked_children AS links \
+                       ON (links.parent_id = sources.source_id \
+                           OR links.child_id = sources.source_id) \
+                      AND links.child_type IN (2, 3)\
+                 ) \
+                 SELECT sources.display_item_id, info.* \
+                 FROM media_sources AS sources \
+                 INNER JOIN jellyfin.trickplay_infos AS info \
+                   ON info.item_id = sources.source_id \
+                 ORDER BY sources.display_item_id, info.item_id, info.width"
+            ),
+            values,
+        ))
+        .all(&self.database)
+        .await?;
+
+        for row in rows {
+            manifests
+                .entry(row.display_item_id)
+                .or_default()
+                .entry(row.item_id)
+                .or_default()
+                .insert(row.width, row.into());
+        }
+        Ok(manifests)
+    }
+
     /// Atomically creates or replaces metadata for one resolution.
     ///
     /// `PostgreSQL`'s composite-key conflict handler makes concurrent writers
@@ -134,6 +223,41 @@ impl TrickplayInfoRepository {
         transaction.commit().await?;
         Ok(row.into())
     }
+}
+
+#[derive(Debug, FromQueryResult)]
+struct TrickplayManifestRow {
+    display_item_id: Uuid,
+    item_id: Uuid,
+    width: i32,
+    height: i32,
+    tile_width: i32,
+    tile_height: i32,
+    thumbnail_count: i32,
+    interval: i32,
+    bandwidth: i32,
+}
+
+impl From<TrickplayManifestRow> for TrickplayInfo {
+    fn from(row: TrickplayManifestRow) -> Self {
+        Self {
+            item_id: row.item_id,
+            width: row.width,
+            height: row.height,
+            tile_width: row.tile_width,
+            tile_height: row.tile_height,
+            thumbnail_count: row.thumbnail_count,
+            interval: row.interval,
+            bandwidth: row.bandwidth,
+        }
+    }
+}
+
+fn unique_ids(ids: &[Uuid]) -> Vec<Uuid> {
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 impl NewTrickplayInfo {

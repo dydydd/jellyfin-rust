@@ -79,6 +79,7 @@ pub use session_command_repository::{
 };
 pub use trickplay_info_repository::{
     NewTrickplayInfo, TrickplayInfo, TrickplayInfoRepository, TrickplayInfoStoreError,
+    TrickplayManifestStore, TrickplayManifestStores,
 };
 pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStoreError};
 pub use user_data_repository::{

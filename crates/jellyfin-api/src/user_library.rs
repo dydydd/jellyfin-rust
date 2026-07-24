@@ -9,7 +9,7 @@ use axum::{
 use axum_extra::extract::Query;
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio,
-    UserLibraryError, Year, library::get_media_source_name,
+    TrickplayManifest, UserLibraryError, Year, library::get_media_source_name,
 };
 use jellyfin_data::entities::{base_item, user_data};
 use jellyfin_model::{
@@ -46,6 +46,7 @@ pub(crate) struct UploadLyricsQuery {
 pub(crate) struct BaseItemDtoFields {
     media_sources: bool,
     media_streams: bool,
+    trickplay: bool,
 }
 
 impl BaseItemDtoFields {
@@ -57,6 +58,8 @@ impl BaseItemDtoFields {
                 result.media_sources = true;
             } else if field.eq_ignore_ascii_case("MediaStreams") {
                 result.media_streams = true;
+            } else if field.eq_ignore_ascii_case("Trickplay") {
+                result.trickplay = true;
             }
         }
         result
@@ -70,6 +73,17 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_media_attachments(self) -> bool {
         self.media_sources
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_trickplay(self) -> bool {
+        self.trickplay
+    }
+
+    #[must_use]
+    pub(crate) const fn without_trickplay(mut self) -> Self {
+        self.trickplay = false;
+        self
     }
 }
 
@@ -124,6 +138,8 @@ pub struct BaseItemDto {
     pub media_sources: Option<Vec<jellyfin_model::MediaSourceInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_streams: Option<Vec<jellyfin_model::MediaStream>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trickplay: Option<TrickplayManifest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -711,6 +727,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         provider_ids: metadata_value(item.data.as_ref(), &["ProviderIds", "provider_ids"]),
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 
@@ -724,6 +741,16 @@ pub(crate) async fn project_item_to_dto(
     let item_id = item.id;
     let original_language = original_language_from_item(&item);
     let mut dto = item_to_dto(item, state.server_id());
+    if fields.wants_trickplay() && is_video_item(&dto) {
+        dto.trickplay = Some(
+            state
+                .trickplay
+                .manifests_for_items(&[item_id])
+                .await?
+                .remove(&item_id)
+                .unwrap_or_default(),
+        );
+    }
     if !fields.wants_media_streams() {
         return Ok(dto);
     }
@@ -754,6 +781,28 @@ pub(crate) async fn project_item_to_dto(
         original_language.as_deref(),
     );
     Ok(dto)
+}
+
+pub(crate) async fn trickplay_manifests_for_items(
+    state: &AppState,
+    items: &[base_item::Model],
+    fields: BaseItemDtoFields,
+) -> Result<jellyfin_controller::TrickplayManifests, ApiError> {
+    if !fields.wants_trickplay() {
+        return Ok(Default::default());
+    }
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    Ok(state.trickplay.manifests_for_items(&item_ids).await?)
+}
+
+pub(crate) fn attach_trickplay_manifest(
+    dto: &mut BaseItemDto,
+    fields: BaseItemDtoFields,
+    manifest: TrickplayManifest,
+) {
+    if fields.wants_trickplay() && is_video_item(dto) {
+        dto.trickplay = Some(manifest);
+    }
 }
 
 pub(crate) fn project_item_dto_with_streams(
@@ -1074,6 +1123,7 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
         provider_ids: None,
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 
@@ -1110,6 +1160,7 @@ pub(crate) fn genre_to_dto(genre: &Genre, server_id: &str) -> BaseItemDto {
         provider_ids: None,
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 
@@ -1142,6 +1193,7 @@ pub(crate) fn studio_to_dto(studio: &Studio, server_id: &str) -> BaseItemDto {
         provider_ids: None,
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 
@@ -1174,6 +1226,7 @@ pub(crate) fn artist_to_dto(artist: &Artist, server_id: &str) -> BaseItemDto {
         provider_ids: None,
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 
@@ -1206,6 +1259,7 @@ pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
         provider_ids: Some(person.model.provider_ids.clone()),
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 
@@ -1238,6 +1292,7 @@ pub(crate) fn year_to_dto(year: &Year, server_id: &str) -> BaseItemDto {
         provider_ids: None,
         media_sources: None,
         media_streams: None,
+        trickplay: None,
     }
 }
 
