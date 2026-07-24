@@ -47,16 +47,27 @@ pub(crate) async fn refresh(
         .require_administrator()?;
 
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let _force_save = query.metadata_refresh_mode == MetadataRefreshMode::FullRefresh
-        || query.image_refresh_mode == MetadataRefreshMode::FullRefresh
-        || query.replace_all_images
-        || query.replace_all_metadata;
-    let _regenerate_trickplay = query.regenerate_trickplay;
-
-    BaseItemRepository::new(state.database.clone())
+    let item = BaseItemRepository::new(state.database.clone())
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;
 
+    if query.regenerate_trickplay
+        && query.metadata_refresh_mode == MetadataRefreshMode::FullRefresh
+        && is_video_item(&item)
+    {
+        state.trickplay.delete_data(item_id).await?;
+    }
+
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn is_video_item(item: &jellyfin_data::entities::base_item::Model) -> bool {
+    item.media_type
+        .as_deref()
+        .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Video"))
+        || matches!(
+            item.item_type.as_str(),
+            "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+        )
 }

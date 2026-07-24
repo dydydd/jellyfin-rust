@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Statement,
-    TransactionTrait, Value,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
+    FromQueryResult, QueryFilter, Statement, TransactionTrait, Value,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -159,6 +159,23 @@ impl TrickplayInfoRepository {
                 .insert(row.width, row.into());
         }
         Ok(manifests)
+    }
+
+    /// Deletes every stored resolution for one item.
+    ///
+    /// The item itself is intentionally not locked: deleting absent metadata is
+    /// idempotent, and the owner foreign key serializes this operation safely
+    /// against concurrent item deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the delete cannot be executed.
+    pub async fn delete_for_item(&self, item_id: Uuid) -> Result<bool, TrickplayInfoStoreError> {
+        let result = trickplay_info::Entity::delete_many()
+            .filter(trickplay_info::Column::ItemId.eq(item_id))
+            .exec(&self.database)
+            .await?;
+        Ok(result.rows_affected > 0)
     }
 
     /// Atomically creates or replaces metadata for one resolution.

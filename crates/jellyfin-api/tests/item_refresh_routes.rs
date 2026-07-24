@@ -6,6 +6,7 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
+    NewTrickplayInfo, TrickplayInfoRepository,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use tower::ServiceExt;
@@ -47,6 +48,29 @@ async fn item_refresh_route_requires_elevation_and_accepts_existing_items() {
 
 async fn exercise_item_refresh_route(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
+    let trickplay = TrickplayInfoRepository::new(fixture.database.clone());
+    let trickplay_info = NewTrickplayInfo {
+        width: 320,
+        height: 180,
+        tile_width: 2,
+        tile_height: 2,
+        thumbnail_count: 6,
+        interval: 1_500,
+        bandwidth: 22_000,
+    };
+    trickplay
+        .upsert(fixture.item_id, trickplay_info)
+        .await
+        .expect("trickplay metadata");
+    tokio::fs::create_dir_all(fixture.trickplay_item_directory())
+        .await
+        .unwrap();
+    tokio::fs::write(
+        fixture.trickplay_item_directory().join("sentinel.jpg"),
+        b"tile",
+    )
+    .await
+    .unwrap();
 
     let route = format!("/Items/{}/Refresh", fixture.item_id);
     assert_eq!(
@@ -100,6 +124,29 @@ async fn exercise_item_refresh_route(database_name: &str) {
         fixture
             .post(
                 &format!(
+                    "/Items/{}/Refresh?metadataRefreshMode=Default&regenerateTrickplay=true",
+                    fixture.item_id
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        trickplay
+            .get(fixture.item_id, trickplay_info.width)
+            .await
+            .unwrap()
+            .is_some(),
+        "regeneration only replaces trickplay during a full metadata refresh"
+    );
+    assert!(fixture.trickplay_item_directory().is_dir());
+
+    assert_eq!(
+        fixture
+            .post(
+                &format!(
                     "/Items/{}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=ValidationOnly&replaceAllMetadata=true&replaceAllImages=true&regenerateTrickplay=true",
                     fixture.item_id
                 ),
@@ -109,6 +156,14 @@ async fn exercise_item_refresh_route(database_name: &str) {
             .status(),
         StatusCode::NO_CONTENT
     );
+    assert_eq!(
+        trickplay
+            .get(fixture.item_id, trickplay_info.width)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(!fixture.trickplay_item_directory().exists());
     assert_eq!(
         fixture
             .post(
@@ -133,6 +188,7 @@ struct Fixture {
     admin_token: String,
     user_token: String,
     api_key: String,
+    program_data: std::path::PathBuf,
 }
 
 impl Fixture {
@@ -171,11 +227,22 @@ impl Fixture {
             .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
             .await
             .expect("item creation");
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Item Refresh Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        ));
+        let storage_root = std::env::temp_dir().join(format!("jellyfin-item-refresh-{suffix}"));
+        let program_data = storage_root.join("programdata");
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Item Refresh Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                &program_data,
+                storage_root.join("web"),
+                storage_root.join("images"),
+                storage_root.join("cache"),
+                storage_root.join("metadata"),
+            ),
+        );
 
         Self {
             database,
@@ -184,7 +251,13 @@ impl Fixture {
             admin_token,
             user_token,
             api_key,
+            program_data,
         }
+    }
+
+    fn trickplay_item_directory(&self) -> std::path::PathBuf {
+        let id = self.item_id.hyphenated().to_string();
+        self.program_data.join("trickplay").join(&id[..2]).join(id)
     }
 
     async fn post(&self, uri: &str, token: Option<&str>) -> axum::response::Response {
@@ -203,7 +276,13 @@ impl Fixture {
     }
 
     async fn cleanup(self) {
+        let storage_root = self.program_data.parent().unwrap().to_path_buf();
         self.database.close().await.unwrap();
+        match tokio::fs::remove_dir_all(storage_root).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("temporary storage cleanup failed: {error}"),
+        }
     }
 }
 

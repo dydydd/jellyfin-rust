@@ -7,6 +7,7 @@ use jellyfin_data::{TrickplayInfo, TrickplayInfoRepository, TrickplayInfoStoreEr
 use jellyfin_model::TrickplayInfoDto;
 use sea_orm::DatabaseConnection;
 use thiserror::Error;
+use tokio::fs;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -76,6 +77,29 @@ impl TrickplayService {
                 (display_item_id, sources)
             })
             .collect())
+    }
+
+    /// Removes persisted metadata and internally managed tiles for one item.
+    ///
+    /// Metadata is deleted first so a failed best-effort file cleanup cannot
+    /// leave stale playlists or manifests visible to clients.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when trickplay metadata cannot be deleted.
+    pub async fn delete_data(&self, item_id: Uuid) -> Result<bool, TrickplayError> {
+        let deleted = self.repository.delete_for_item(item_id).await?;
+        let directory = internal_item_directory(&self.storage_directory, item_id);
+        match fs::remove_dir_all(&directory).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                path = %directory.display(),
+                %error,
+                "trickplay metadata was deleted but managed tiles could not be removed"
+            ),
+        }
+        Ok(deleted)
     }
 
     /// Resolves an internally stored JPEG tile without trusting path input.
@@ -176,14 +200,17 @@ fn format_milliseconds(milliseconds: i64) -> String {
 }
 
 fn internal_tile_path(root: &Path, info: TrickplayInfo, index: i32) -> PathBuf {
-    let id = info.item_id.hyphenated().to_string();
-    root.join(&id[..2])
-        .join(id)
+    internal_item_directory(root, info.item_id)
         .join(format!(
             "{} - {}x{}",
             info.width, info.tile_width, info.tile_height
         ))
         .join(format!("{index}.jpg"))
+}
+
+fn internal_item_directory(root: &Path, item_id: Uuid) -> PathBuf {
+    let id = item_id.hyphenated().to_string();
+    root.join(&id[..2]).join(id)
 }
 
 #[cfg(test)]
