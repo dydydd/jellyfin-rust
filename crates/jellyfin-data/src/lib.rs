@@ -14,6 +14,7 @@ mod person_repository;
 mod quick_connect_repository;
 mod server_configuration_repository;
 mod session_command_repository;
+mod trickplay_info_repository;
 mod tuner_host_repository;
 mod user_data_repository;
 mod user_profile_image_repository;
@@ -69,6 +70,9 @@ pub use server_configuration_repository::{
 };
 pub use session_command_repository::{
     NewSessionCommand, SessionCommandRepository, SessionCommandStoreError,
+};
+pub use trickplay_info_repository::{
+    NewTrickplayInfo, TrickplayInfo, TrickplayInfoRepository, TrickplayInfoStoreError,
 };
 pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStoreError};
 pub use user_data_repository::{

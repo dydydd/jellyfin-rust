@@ -16,9 +16,9 @@ use jellyfin_controller::{
     MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
     PersonError, PersonService, PlaystateError, PlaystateService, PluginRegistry,
     ScheduledTaskError, ScheduledTaskService, StudioError, StudioService, SystemLogError,
-    SystemLogService, SystemStorageService, UserDataService, UserDataServiceError, UserError,
-    UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    SystemLogService, SystemStorageService, TrickplayError, TrickplayService, UserDataService,
+    UserDataServiceError, UserError, UserLibraryError, UserLibraryService, UserService, VideoError,
+    VideoService, VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
     client_event::ClientEventLogger,
 };
 use jellyfin_data::{
@@ -88,6 +88,7 @@ mod subtitles;
 mod system;
 mod time_sync;
 mod trailers;
+mod trickplay;
 mod tv_shows;
 mod user_data;
 mod user_library;
@@ -140,6 +141,7 @@ pub struct AppState {
     pub(crate) scheduled_tasks: ScheduledTaskService,
     pub(crate) system_logs: SystemLogService,
     pub(crate) system_storage: SystemStorageService,
+    pub(crate) trickplay: TrickplayService,
     pub(crate) client_event_logger: ClientEventLogger,
     pub(crate) named_configurations: Option<NamedConfigurationRepository>,
     pub(crate) program_data_directory: PathBuf,
@@ -202,6 +204,10 @@ impl AppState {
             scheduled_tasks: ScheduledTaskService::default(),
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
+            trickplay: TrickplayService::new(
+                database.clone(),
+                PathBuf::from("programdata").join("trickplay"),
+            ),
             client_event_logger: ClientEventLogger::new("logs"),
             named_configurations: if matches!(database, DatabaseConnection::Disconnected) {
                 None
@@ -329,6 +335,10 @@ impl AppState {
         );
         self.image_processor =
             ImageProcessor::with_concurrency::<4>(self.image_cache_directory.clone());
+        self.trickplay = TrickplayService::new(
+            self.database.clone(),
+            self.program_data_directory.join("trickplay"),
+        );
         self.cache_directory = cache_directory.into();
         self
     }
@@ -1043,6 +1053,14 @@ fn video_routes() -> Router<Arc<AppState>> {
             "/Videos/{item_id}/{media_source_id}/Attachments/{index}",
             get(video_attachments::get),
         )
+        .route(
+            "/Videos/{item_id}/Trickplay/{width}/tiles.m3u8",
+            get(trickplay::playlist),
+        )
+        .route(
+            "/Videos/{item_id}/Trickplay/{width}/{*tile}",
+            get(trickplay::tile),
+        )
 }
 
 fn live_tv_routes() -> Router<Arc<AppState>> {
@@ -1140,6 +1158,7 @@ pub(crate) enum ApiError {
     QuickConnect(QuickConnectError),
     ScheduledTask(ScheduledTaskError),
     Package(PackageError),
+    Trickplay(TrickplayError),
     InvalidRequest,
     UnsupportedMediaType,
     PayloadTooLarge,
@@ -1362,6 +1381,12 @@ impl From<PackageError> for ApiError {
     }
 }
 
+impl From<TrickplayError> for ApiError {
+    fn from(error: TrickplayError) -> Self {
+        Self::Trickplay(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     #[allow(
         clippy::too_many_lines,
@@ -1572,9 +1597,17 @@ impl IntoResponse for ApiError {
                 (StatusCode::NOT_FOUND, "Scheduled task not found")
             }
             Self::Package(PackageError::NotFound) => (StatusCode::NOT_FOUND, "Package not found"),
+            Self::Trickplay(error) => trickplay_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
     }
+}
+
+fn trickplay_error_response(_error: &TrickplayError) -> (StatusCode, &'static str) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Trickplay persistence failed",
+    )
 }
 
 fn quick_connect_error_response(error: &QuickConnectError) -> (StatusCode, &'static str) {
