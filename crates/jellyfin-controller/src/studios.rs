@@ -1,7 +1,7 @@
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemValueError, ItemValueInfo, ItemValueQuery,
     ItemValueRepository,
-    entities::{item_value, user},
+    entities::{base_item, item_value, user},
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -95,6 +95,15 @@ impl StudioService {
             name: value.value,
             item_count: u64::try_from(item_count).unwrap_or(u64::MAX),
         })
+    }
+
+    /// Resolves the persisted `Studio` item that owns image metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the item lookup fails.
+    pub async fn image_item(&self, name: &str) -> Result<Option<base_item::Model>, StudioError> {
+        Ok(self.items.get_by_type_and_name("Studio", name).await?)
     }
 
     /// Lists Jellyfin studios attached to filtered items.
