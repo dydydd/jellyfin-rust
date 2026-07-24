@@ -45,6 +45,7 @@ use uuid::Uuid;
 mod activity_log;
 mod api_keys;
 mod artists;
+mod audio;
 mod authentication;
 mod authorization;
 mod backup;
@@ -453,6 +454,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/Audio/{item_id}/hls/{*legacy_path}",
             get(hls_segment::audio),
+        )
+        .route(
+            "/Audio/{item_id}/stream",
+            get(audio::stream).head(audio::stream),
+        )
+        .route(
+            "/Audio/{item_id}/stream.{container}",
+            get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
             "/Videos/{item_id}/hls/{*legacy_path}",

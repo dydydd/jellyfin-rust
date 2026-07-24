@@ -79,7 +79,72 @@ async fn ancestors_download_similar_and_empty_relationships_have_real_success_se
     assert_empty_relationships(&fixture).await;
     assert_item_counts(&fixture).await;
     assert_instant_mix(&fixture).await;
+    assert_audio_stream(&fixture).await;
     fixture.cleanup().await;
+}
+
+async fn assert_audio_stream(fixture: &Fixture) {
+    let media_bytes = Fixture::media_bytes();
+    let route = format!("/Audio/{}/stream.bin", fixture.stream_audio_id);
+    assert_eq!(
+        fixture.request("GET", &route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = fixture
+        .request("GET", &route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH],
+        media_bytes.len().to_string()
+    );
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
+    let head = fixture
+        .request("HEAD", &route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(
+        head.headers()[header::CONTENT_LENGTH],
+        Fixture::MEDIA_SIZE.to_string()
+    );
+    assert!(
+        to_bytes(head.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let range = fixture.range_request(&route, "bytes=10-19").await;
+    assert_eq!(range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        to_bytes(range.into_body(), usize::MAX).await.unwrap(),
+        &media_bytes[10..=19]
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Audio/{}/stream.mp3", fixture.stream_audio_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Audio/{}/stream?static=false", fixture.stream_audio_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
 }
 
 async fn assert_instant_mix(fixture: &Fixture) {
@@ -408,10 +473,12 @@ struct Fixture {
     genre_song_ids: Vec<Uuid>,
     other_genre_song_id: Uuid,
     instant_genre_id: Uuid,
+    stream_audio_id: Uuid,
     single_delete_id: Uuid,
     missing_file_id: Uuid,
     io_error_id: Uuid,
     media_path: String,
+    audio_path: String,
 }
 
 impl Fixture {
@@ -469,6 +536,12 @@ impl Fixture {
         let items = BaseItemRepository::new(database.clone());
         let root = items.ensure_user_root().await.expect("user root");
         let parent = create_item(&items, "Folder", "Library Parent", root.id, None).await;
+        let audio_path = format!("/tmp/jellyfin-rust-audio-{suffix}.bin");
+        tokio::fs::write(&audio_path, Self::media_bytes())
+            .await
+            .expect("audio media fixture");
+        let stream_audio =
+            create_item(&items, "Audio", "Stream Audio", root.id, Some(&audio_path)).await;
         let child = create_item(
             &items,
             "Movie",
@@ -566,10 +639,12 @@ impl Fixture {
             genre_song_ids: vec![song.id, song_two.id, song_three.id],
             other_genre_song_id: other_genre_song.id,
             instant_genre_id,
+            stream_audio_id: stream_audio.id,
             single_delete_id: single_delete.id,
             missing_file_id: missing_file.id,
             io_error_id: io_error.id,
             media_path,
+            audio_path,
         }
     }
 
@@ -627,6 +702,7 @@ impl Fixture {
             self.similar_id,
             self.album_id,
             self.other_genre_song_id,
+            self.stream_audio_id,
             self.single_delete_id,
             self.missing_file_id,
             self.io_error_id,
@@ -643,6 +719,7 @@ impl Fixture {
             .await
             .expect("library users cleanup");
         let _ = tokio::fs::remove_file(self.media_path).await;
+        let _ = tokio::fs::remove_file(self.audio_path).await;
         drop(items);
         self.database.close().await.expect("database pool cleanup");
         self.administrator
