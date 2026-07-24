@@ -57,6 +57,7 @@ mod filters;
 mod genres;
 mod hls_segment;
 mod item_lookup;
+mod item_refresh;
 mod item_update;
 mod items;
 mod library;
@@ -829,6 +830,7 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),
         )
+        .route("/Items/{item_id}/Refresh", post(item_refresh::refresh))
         .route(
             "/Items/{item_id}/MetadataEditor",
             get(item_update::metadata_editor),
