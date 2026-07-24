@@ -9,6 +9,7 @@ pub mod display_preference;
 pub mod item_value;
 pub mod item_value_map;
 pub mod keyframe_data;
+pub mod linked_child;
 pub mod media_attachment;
 pub mod media_path;
 pub mod media_stream;

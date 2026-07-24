@@ -17,7 +17,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::entities::{ancestor_id, base_item, user_data};
+use crate::entities::{ancestor_id, base_item, linked_child, user_data};
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
 pub const USER_ROOT_FOLDER_ID: Uuid = Uuid::from_u128(2);
@@ -1194,8 +1194,16 @@ impl BaseItemRepository {
             .copied()
             .chain(descendants.into_iter().map(|row| row.item_id))
             .collect::<HashSet<_>>();
+        linked_child::Entity::delete_many()
+            .filter(
+                linked_child::Column::ParentId
+                    .is_in(affected_ids.iter().copied())
+                    .or(linked_child::Column::ChildId.is_in(affected_ids.iter().copied())),
+            )
+            .exec(&transaction)
+            .await?;
         user_data::Entity::delete_many()
-            .filter(user_data::Column::ItemId.is_in(affected_ids))
+            .filter(user_data::Column::ItemId.is_in(affected_ids.iter().copied()))
             .exec(&transaction)
             .await?;
         let DeleteResult { rows_affected } = base_item::Entity::delete_many()

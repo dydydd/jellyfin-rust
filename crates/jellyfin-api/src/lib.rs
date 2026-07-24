@@ -8,18 +8,18 @@ use axum::{
     routing::{get, post},
 };
 use jellyfin_controller::{
-    ArtistError, ArtistService, DashboardError, DashboardPage, DashboardService, EnvironmentError,
-    EnvironmentService, GenreError, GenreService, InstalledPlugin, ItemImageError,
-    ItemImageService, ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService,
-    LibraryControllerError, LibraryControllerService, LocalizationService, MediaAttachmentService,
-    MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
-    MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
-    PersonError, PersonService, PlaystateError, PlaystateService, PluginRegistry,
-    ScheduledTaskError, ScheduledTaskService, StudioError, StudioService, SystemLogError,
-    SystemLogService, SystemStorageService, TrickplayError, TrickplayService, UserDataService,
-    UserDataServiceError, UserError, UserLibraryError, UserLibraryService, UserService, VideoError,
-    VideoService, VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
-    client_event::ClientEventLogger,
+    ArtistError, ArtistService, CollectionError, CollectionService, DashboardError, DashboardPage,
+    DashboardService, EnvironmentError, EnvironmentService, GenreError, GenreService,
+    InstalledPlugin, ItemImageError, ItemImageService, ItemLookupError, ItemLookupService,
+    ItemUpdateError, ItemUpdateService, LibraryControllerError, LibraryControllerService,
+    LocalizationService, MediaAttachmentService, MediaAttachmentServiceError, MediaStreamService,
+    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
+    MusicGenreService, PackageError, PackageService, PersonError, PersonService, PlaystateError,
+    PlaystateService, PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError,
+    StudioService, SystemLogError, SystemLogService, SystemStorageService, TrickplayError,
+    TrickplayService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
+    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -50,6 +50,7 @@ mod backup;
 mod branding;
 mod channels;
 mod client_log;
+mod collections;
 mod configuration;
 mod dashboard;
 mod devices;
@@ -113,6 +114,7 @@ pub struct AppState {
     pub(crate) quick_connect:
         QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
     pub(crate) playstate: PlaystateService,
+    pub(crate) collections: CollectionService,
     pub(crate) user_data: UserDataService,
     pub(crate) artists: ArtistService,
     pub(crate) genres: GenreService,
@@ -174,6 +176,7 @@ impl AppState {
                 SystemQuickConnectCapability::new(true),
             ),
             playstate: PlaystateService::new(database.clone()),
+            collections: CollectionService::new(database.clone()),
             user_data: UserDataService::new(database.clone()),
             artists: ArtistService::new(database.clone()),
             genres: GenreService::new(database.clone()),
@@ -467,6 +470,7 @@ pub fn router(state: AppState) -> Router {
         .merge(session_routes())
         .merge(playstate_routes())
         .merge(user_data_routes())
+        .merge(collection_routes())
         .route(
             "/Users/{user_id}/Items/Root",
             get(user_library::get_root_legacy),
@@ -887,6 +891,15 @@ fn item_query_routes() -> Router<Arc<AppState>> {
         .route("/Users/{user_id}/Items/Resume", get(items::resume_legacy))
 }
 
+fn collection_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Collections", post(collections::create))
+        .route(
+            "/Collections/{collection_id}/Items",
+            post(collections::add_items).delete(collections::remove_items),
+        )
+}
+
 fn library_controller_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items/Counts", get(library::item_counts))
@@ -1159,6 +1172,7 @@ pub(crate) enum ApiError {
     ScheduledTask(ScheduledTaskError),
     Package(PackageError),
     Trickplay(TrickplayError),
+    Collection(CollectionError),
     InvalidRequest,
     UnsupportedMediaType,
     PayloadTooLarge,
@@ -1387,6 +1401,12 @@ impl From<TrickplayError> for ApiError {
     }
 }
 
+impl From<CollectionError> for ApiError {
+    fn from(error: CollectionError) -> Self {
+        Self::Collection(error)
+    }
+}
+
 impl IntoResponse for ApiError {
     #[allow(
         clippy::too_many_lines,
@@ -1598,6 +1618,7 @@ impl IntoResponse for ApiError {
             }
             Self::Package(PackageError::NotFound) => (StatusCode::NOT_FOUND, "Package not found"),
             Self::Trickplay(error) => trickplay_error_response(&error),
+            Self::Collection(error) => collection_error_response(&error),
         };
         (status, Json(serde_json::json!({ "Message": message }))).into_response()
     }
@@ -1608,6 +1629,38 @@ fn trickplay_error_response(_error: &TrickplayError) -> (StatusCode, &'static st
         StatusCode::INTERNAL_SERVER_ERROR,
         "Trickplay persistence failed",
     )
+}
+
+fn collection_error_response(error: &CollectionError) -> (StatusCode, &'static str) {
+    use jellyfin_data::{CollectionStoreError, LinkedChildStoreError};
+
+    match error {
+        CollectionError::InvalidCollection
+        | CollectionError::InvalidName
+        | CollectionError::CollectionStore(
+            CollectionStoreError::ParentNotFound
+            | CollectionStoreError::ChildNotFound { .. }
+            | CollectionStoreError::SelfLink
+            | CollectionStoreError::TooManyChildren,
+        )
+        | CollectionError::LinkedChildStore(
+            LinkedChildStoreError::ParentNotFound { .. }
+            | LinkedChildStoreError::ChildNotFound { .. }
+            | LinkedChildStoreError::SelfLink
+            | LinkedChildStoreError::SortOrderOverflow,
+        ) => (StatusCode::BAD_REQUEST, "Invalid collection request"),
+        CollectionError::BaseItem(BaseItemError::NotFound) => {
+            (StatusCode::BAD_REQUEST, "Invalid collection request")
+        }
+        CollectionError::CollectionStore(CollectionStoreError::Database(_))
+        | CollectionError::LinkedChildStore(
+            LinkedChildStoreError::Database(_) | LinkedChildStoreError::CorruptChildType(_),
+        )
+        | CollectionError::BaseItem(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Collection persistence failed",
+        ),
+    }
 }
 
 fn quick_connect_error_response(error: &QuickConnectError) -> (StatusCode, &'static str) {

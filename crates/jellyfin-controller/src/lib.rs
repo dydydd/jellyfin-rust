@@ -1,5 +1,6 @@
 mod artists;
 pub mod client_event;
+mod collections;
 mod dashboard;
 mod environment;
 mod genres;
@@ -33,6 +34,7 @@ mod virtual_folders;
 mod years;
 
 pub use artists::{Artist, ArtistError, ArtistPage, ArtistService, ArtistValueKind};
+pub use collections::{CollectionError, CollectionService};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
 pub use genres::{Genre, GenreError, GenreKind, GenrePage, GenreService};

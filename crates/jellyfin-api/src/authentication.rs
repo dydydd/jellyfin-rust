@@ -194,6 +194,10 @@ pub(crate) enum AuthenticatedIdentity {
 }
 
 impl AuthenticatedSession {
+    pub(crate) fn can_manage_collections(&self) -> bool {
+        self.user.is_administrator || self.policy.enable_collection_management
+    }
+
     pub(crate) fn can_manage_lyrics(&self) -> bool {
         self.user.is_administrator || self.policy.enable_lyric_management
     }

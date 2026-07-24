@@ -2,11 +2,13 @@ mod activity_log_repository;
 mod authentication_repository;
 mod base_item_image_repository;
 mod base_item_repository;
+mod collection_repository;
 mod display_preference_repository;
 pub mod entities;
 mod item_update_repository;
 mod item_value_repository;
 mod keyframe_data_repository;
+mod linked_child_repository;
 mod media_attachment_repository;
 mod media_stream_repository;
 mod named_configuration_repository;
@@ -37,6 +39,7 @@ pub use base_item_repository::{
     BaseItemQuery, BaseItemRepository, NewBaseItem, ProductionYearOrder, ProductionYearPage,
     USER_ROOT_FOLDER_ID,
 };
+pub use collection_repository::{CollectionRepository, CollectionStoreError};
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{
@@ -46,6 +49,9 @@ pub use item_value_repository::{
 pub use keyframe_data_repository::{
     KeyframeDataExport, KeyframeDataRecord, KeyframeDataRepository, KeyframeDataStoreError,
     NewKeyframeData,
+};
+pub use linked_child_repository::{
+    LinkedChild, LinkedChildRepository, LinkedChildStoreError, LinkedChildType,
 };
 pub use media_attachment_repository::{
     MediaAttachmentQuery, MediaAttachmentRepository, MediaAttachmentStoreError,
