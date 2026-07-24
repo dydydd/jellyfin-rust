@@ -100,6 +100,72 @@ fn duplicate_items_keep_order_and_receive_distinct_playlist_ids() {
     );
 }
 
+#[test]
+fn queue_mutations_match_official_current_item_contract() {
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    let third = Uuid::new_v4();
+    let next = Uuid::new_v4();
+    let mut group = SyncPlayGroup::new(RecordingLibrary::default());
+    group.play_queue_mut().set_playlist(&[first, second, third]);
+    group.play_queue_mut().set_playing_item_by_index(1);
+    let second_playlist_id = group.play_queue().get_playlist()[1].playlist_item_id;
+
+    group.play_queue_mut().queue_next(&[next]);
+    assert_eq!(item_ids(group.play_queue()), [first, second, next, third]);
+    assert_eq!(group.play_queue().playing_item_index(), 1);
+
+    let third_playlist_id = group.play_queue().get_playlist()[3].playlist_item_id;
+    assert!(
+        group
+            .play_queue_mut()
+            .move_playlist_item(third_playlist_id, -50)
+    );
+    assert_eq!(item_ids(group.play_queue()), [third, first, second, next]);
+    assert_eq!(group.play_queue().playing_item_index(), 2);
+
+    assert!(
+        group
+            .play_queue_mut()
+            .remove_from_playlist(&[second_playlist_id])
+    );
+    assert_eq!(item_ids(group.play_queue()), [third, first, next]);
+    assert_eq!(group.play_queue().playing_item_index(), 1);
+}
+
+#[test]
+fn clearing_queue_can_preserve_or_remove_the_playing_occurrence() {
+    let first = Uuid::new_v4();
+    let repeated = Uuid::new_v4();
+    let mut group = SyncPlayGroup::new(RecordingLibrary::default());
+    group
+        .play_queue_mut()
+        .set_playlist(&[first, repeated, repeated]);
+    group.play_queue_mut().set_playing_item_by_index(2);
+    let playing_playlist_id = group.play_queue().get_playlist()[2].playlist_item_id;
+
+    group.play_queue_mut().clear_playlist(false);
+    assert_eq!(item_ids(group.play_queue()), [repeated]);
+    assert_eq!(group.play_queue().playing_item_index(), 0);
+    assert_eq!(
+        group.play_queue().get_playlist()[0].playlist_item_id,
+        playing_playlist_id
+    );
+
+    group.play_queue_mut().clear_playlist(true);
+    assert!(group.play_queue().get_playlist().is_empty());
+    assert!(!group.play_queue().is_item_playing());
+    assert_eq!(group.play_queue().playing_item_index(), -1);
+}
+
+fn item_ids(queue: &jellyfin_server_implementations::PlayQueue) -> Vec<Uuid> {
+    queue
+        .get_playlist()
+        .iter()
+        .map(|item| item.item_id)
+        .collect()
+}
+
 #[derive(Debug)]
 struct TestUser;
 

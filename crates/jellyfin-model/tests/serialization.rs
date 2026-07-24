@@ -2,13 +2,13 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, BackupManifestDto, BackupOptionsDto, ClientCapabilitiesDto, DeviceInfoDto,
     DeviceOptionsDto, EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult,
-    GeneralCommand, GeneralCommandType, GroupInfoDto, GroupStateType, ImageInfo, ImageProviderInfo,
-    ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand,
-    NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo,
-    PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult,
-    RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult,
-    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto,
-    UserPolicy, UtcTimeResponse,
+    GeneralCommand, GeneralCommandType, GroupInfoDto, GroupQueueMode, GroupStateType, ImageInfo,
+    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
+    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
+    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
+    RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint,
+    SearchHintResult, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
+    UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -709,6 +709,18 @@ fn sync_play_group_info_matches_official_wire_contract() {
             "Participants": ["alice", "bob"],
             "LastUpdatedAt": "2026-07-25T08:30:00.0000000Z"
         })
+    );
+}
+
+#[test]
+fn sync_play_queue_mode_uses_official_string_values() {
+    assert_eq!(
+        serde_json::to_value(GroupQueueMode::Queue).unwrap(),
+        "Queue"
+    );
+    assert_eq!(
+        serde_json::from_value::<GroupQueueMode>(json!("QueueNext")).unwrap(),
+        GroupQueueMode::QueueNext
     );
 }
 

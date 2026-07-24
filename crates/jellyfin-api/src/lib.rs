@@ -631,6 +631,20 @@ fn sync_play_routes() -> Router<Arc<AppState>> {
         .route("/SyncPlay/Join", post(sync_play::join_group))
         .route("/SyncPlay/Leave", post(sync_play::leave_group))
         .route("/SyncPlay/List", get(sync_play::list_groups))
+        .route("/SyncPlay/SetNewQueue", post(sync_play::set_new_queue))
+        .route(
+            "/SyncPlay/SetPlaylistItem",
+            post(sync_play::set_playlist_item),
+        )
+        .route(
+            "/SyncPlay/RemoveFromPlaylist",
+            post(sync_play::remove_from_playlist),
+        )
+        .route(
+            "/SyncPlay/MovePlaylistItem",
+            post(sync_play::move_playlist_item),
+        )
+        .route("/SyncPlay/Queue", post(sync_play::queue_items))
         .route("/SyncPlay/{id}", get(sync_play::get_group))
 }
 

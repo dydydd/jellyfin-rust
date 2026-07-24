@@ -11,6 +11,13 @@ pub enum GroupStateType {
     Playing,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupQueueMode {
+    #[default]
+    Queue,
+    QueueNext,
+}
+
 /// Public summary of a `SyncPlay` group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]

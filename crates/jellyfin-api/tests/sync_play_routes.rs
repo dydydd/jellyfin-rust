@@ -5,7 +5,9 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{DatabaseConfig, DeviceRepository, NewDevice, entities::user};
+use jellyfin_data::{
+    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, entities::user,
+};
 use jellyfin_model::{SyncPlayUserAccessType, UserPolicy};
 use sea_orm::{ConnectionTrait, EntityTrait};
 use serde_json::{Value, json};
@@ -68,6 +70,15 @@ async fn exercise_sync_play_routes(database_name: &str) {
     let blocked = users.create(&format!("blocked-{suffix}")).await.unwrap();
     set_sync_play_access(&users, joiner.id, SyncPlayUserAccessType::JoinGroups).await;
     set_sync_play_access(&users, blocked.id, SyncPlayUserAccessType::None).await;
+    let items = BaseItemRepository::new(database.clone());
+    let first_item = items
+        .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
+        .await
+        .unwrap();
+    let second_item = items
+        .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
+        .await
+        .unwrap();
 
     let devices = DeviceRepository::new(database.clone());
     let creator_token = session(&devices, creator.id, "creator", &suffix).await;
@@ -195,6 +206,130 @@ async fn exercise_sync_play_routes(database_name: &str) {
     );
 
     assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/SetNewQueue",
+            Some(&blocked_token),
+            Some(json!({
+                "PlayingQueue": [first_item.id],
+                "PlayingItemPosition": 0,
+                "StartPositionTicks": 10
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/SetNewQueue",
+            Some(&creator_token),
+            Some(json!({
+                "PlayingQueue": [first_item.id, second_item.id, first_item.id],
+                "PlayingItemPosition": 1,
+                "StartPositionTicks": 12345
+            })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        response_json(
+            request(
+                &app,
+                "GET",
+                &format!("/SyncPlay/{group_id}"),
+                Some(&joiner_token),
+                None,
+            )
+            .await,
+        )
+        .await["State"],
+        "Waiting"
+    );
+
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/SetNewQueue",
+            Some(&joiner_token),
+            Some(json!({
+                "PlayingQueue": [Uuid::new_v4()],
+                "PlayingItemPosition": 0,
+                "StartPositionTicks": 0
+            })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/Queue",
+            Some(&joiner_token),
+            Some(json!({ "ItemIds": [second_item.id], "Mode": "QueueNext" })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/SetPlaylistItem",
+            Some(&creator_token),
+            Some(json!({ "PlaylistItemId": Uuid::new_v4() })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/MovePlaylistItem",
+            Some(&creator_token),
+            Some(json!({ "PlaylistItemId": Uuid::new_v4(), "NewIndex": -10 })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/RemoveFromPlaylist",
+            Some(&creator_token),
+            Some(json!({
+                "PlaylistItemIds": [],
+                "ClearPlaylist": true,
+                "ClearPlayingItem": true
+            })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        response_json(
+            request(
+                &app,
+                "GET",
+                &format!("/SyncPlay/{group_id}"),
+                Some(&creator_token),
+                None,
+            )
+            .await,
+        )
+        .await["State"],
+        "Idle"
+    );
+
+    assert_eq!(
         request(&app, "POST", "/SyncPlay/Leave", Some(&blocked_token), None,)
             .await
             .status(),
@@ -278,6 +413,11 @@ async fn request(
 async fn response_json(response: axum::response::Response) -> Value {
     assert_eq!(response.status(), StatusCode::OK);
     serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+}
+
+async fn assert_no_content(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(to_bytes(response.into_body(), 1).await.unwrap().is_empty());
 }
 
 fn assert_temporary_database_name(database_name: &str) {

@@ -1,3 +1,4 @@
+use jellyfin_model::GroupQueueMode;
 use jellyfin_server_implementations::{SyncPlayManager, SyncPlaySession};
 use uuid::Uuid;
 
@@ -70,4 +71,50 @@ async fn sync_play_manager_rejects_unknown_groups_without_moving_session() {
     );
     assert!(manager.get_group(created.group_id).await.is_some());
     assert!(manager.is_session_active("1").await);
+}
+
+#[tokio::test]
+async fn sync_play_manager_applies_queue_requests_only_for_group_sessions() {
+    let manager = SyncPlayManager::new();
+    let user_id = Uuid::new_v4();
+    let item_ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    manager
+        .create_group(session(1, user_id, "alice"), "Queue".to_owned())
+        .await;
+
+    assert!(manager.set_new_queue("1", &item_ids, 1, 42).await);
+    let initial = manager.queue_state_for_session("1").await.unwrap();
+    assert_eq!(initial.playing_item_index, 1);
+    assert_eq!(initial.position_ticks, 42);
+    assert_eq!(queue_item_ids(&initial), item_ids);
+    let playing_playlist_id = initial.items[1].playlist_item_id;
+
+    let next = Uuid::new_v4();
+    assert!(
+        manager
+            .queue_items("1", &[next], GroupQueueMode::QueueNext)
+            .await
+    );
+    assert_eq!(
+        queue_item_ids(&manager.queue_state_for_session("1").await.unwrap()),
+        [item_ids[0], item_ids[1], next, item_ids[2]]
+    );
+    assert!(manager.set_playlist_item("1", playing_playlist_id).await);
+    assert!(manager.remove_from_playlist("1", &[], true, false).await);
+    let preserved = manager.queue_state_for_session("1").await.unwrap();
+    assert_eq!(preserved.items.len(), 1);
+    assert_eq!(preserved.items[0].playlist_item_id, playing_playlist_id);
+    assert_eq!(preserved.playing_item_index, 0);
+
+    assert!(manager.remove_from_playlist("1", &[], true, true).await);
+    let cleared = manager.queue_state_for_session("1").await.unwrap();
+    assert!(cleared.items.is_empty());
+    assert_eq!(cleared.playing_item_index, -1);
+    assert!(!manager.set_new_queue("missing", &item_ids, 0, 0).await);
+    assert!(!manager.set_new_queue("1", &[], 0, 0).await);
+    assert!(!manager.set_new_queue("1", &item_ids, 3, 0).await);
+}
+
+fn queue_item_ids(state: &jellyfin_server_implementations::SyncPlayQueueState) -> Vec<Uuid> {
+    state.items.iter().map(|item| item.item_id).collect()
 }
