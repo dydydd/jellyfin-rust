@@ -12,6 +12,16 @@ pub(crate) mod required {
     {
         serialize_datetime(*value, serializer)
     }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        DateTime::parse_from_rfc3339(&value)
+            .map(DateTime::into)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 pub(crate) mod option {

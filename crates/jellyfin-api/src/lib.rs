@@ -45,6 +45,7 @@ mod api_keys;
 mod artists;
 mod authentication;
 mod authorization;
+mod backup;
 mod branding;
 mod client_log;
 mod configuration;
@@ -341,6 +342,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
         .route("/Search/Hints", get(search::hints))
+        .route("/Backup", get(backup::list))
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",

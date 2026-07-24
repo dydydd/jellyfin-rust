@@ -5,6 +5,7 @@
 //! those rules at the type boundary.
 
 mod authentication;
+mod backup;
 pub mod configuration;
 pub mod cryptography;
 mod devices;
@@ -36,6 +37,7 @@ mod user_data;
 pub mod users;
 
 pub use authentication::{AuthenticationInfo, QueryResult};
+pub use backup::{BackupManifestDto, BackupOptionsDto};
 pub use configuration::{
     ImageOption, ImageResolution, ImageSavingConvention, MetadataOptions, PathSubstitution,
     ServerConfiguration, TrickplayOptions, TrickplayScanBehavior, UserConfiguration,

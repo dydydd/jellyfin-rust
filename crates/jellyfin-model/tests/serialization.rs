@@ -1,13 +1,13 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    AuthenticationInfo, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    FontFile, ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType,
-    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
-    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
-    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint,
-    SearchHintResult, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
-    UserDto, UserPolicy, UtcTimeResponse,
+    AuthenticationInfo, BackupManifestDto, BackupOptionsDto, ClientCapabilitiesDto, DeviceInfoDto,
+    DeviceOptionsDto, EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult,
+    GeneralCommand, GeneralCommandType, ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto,
+    MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult,
+    PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
+    RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration, SessionInfoDto,
+    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -188,6 +188,36 @@ fn remote_subtitle_info_uses_official_provider_contract() {
     assert_eq!(value["IsHashMatch"], true);
     assert_eq!(value["HearingImpaired"], false);
     assert!(value.get("ThreeLetterIsoLanguageName").is_none());
+}
+
+#[test]
+fn backup_manifest_uses_official_system_backup_contract() {
+    let value = serde_json::to_value(BackupManifestDto {
+        server_version: "10.11.0".to_owned(),
+        backup_engine_version: "1.0".to_owned(),
+        date_created: Utc.with_ymd_and_hms(2026, 7, 24, 9, 0, 0).unwrap(),
+        path: "/var/lib/jellyfin/backups/jellyfin-backup.zip".to_owned(),
+        options: BackupOptionsDto {
+            metadata: true,
+            trickplay: false,
+            subtitles: true,
+            database: true,
+        },
+    })
+    .unwrap();
+
+    assert_eq!(value["ServerVersion"], "10.11.0");
+    assert_eq!(value["BackupEngineVersion"], "1.0");
+    assert_eq!(value["DateCreated"], "2026-07-24T09:00:00.0000000Z");
+    assert_eq!(
+        value["Path"],
+        "/var/lib/jellyfin/backups/jellyfin-backup.zip"
+    );
+    assert_eq!(value["Options"]["Metadata"], true);
+    assert_eq!(value["Options"]["Trickplay"], false);
+    assert_eq!(value["Options"]["Subtitles"], true);
+    assert_eq!(value["Options"]["Database"], true);
+    assert!(value.get("server_version").is_none());
 }
 
 #[test]
