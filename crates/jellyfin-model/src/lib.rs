@@ -85,7 +85,7 @@ pub use session::{
     RepeatMode, SessionInfoDto, SessionUserInfo,
 };
 pub use subtitles::FontFile;
-pub use sync_play::UtcTimeResponse;
+pub use sync_play::{GroupInfoDto, GroupStateType, UtcTimeResponse};
 pub use system::{
     CastReceiverApplication, FolderStorageDto, InstallationInfo, LibraryStorageDto, PackageInfo,
     PublicSystemInfo, RepositoryInfo, SystemInfo, SystemStorageDto,

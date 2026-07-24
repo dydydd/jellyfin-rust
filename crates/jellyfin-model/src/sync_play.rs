@@ -1,5 +1,47 @@
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupStateType {
+    #[default]
+    Idle,
+    Waiting,
+    Paused,
+    Playing,
+}
+
+/// Public summary of a `SyncPlay` group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct GroupInfoDto {
+    #[serde(with = "crate::serde_guid::single")]
+    pub group_id: Uuid,
+    pub group_name: String,
+    pub state: GroupStateType,
+    pub participants: Vec<String>,
+    #[serde(with = "crate::serde_datetime::required")]
+    pub last_updated_at: DateTime<Utc>,
+}
+
+impl GroupInfoDto {
+    #[must_use]
+    pub const fn new(
+        group_id: Uuid,
+        group_name: String,
+        state: GroupStateType,
+        participants: Vec<String>,
+        last_updated_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            group_id,
+            group_name,
+            state,
+            participants,
+            last_updated_at,
+        }
+    }
+}
 
 /// Response returned by Jellyfin's high-level UTC time sync endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

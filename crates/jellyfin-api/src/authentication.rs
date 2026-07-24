@@ -10,7 +10,7 @@ use jellyfin_data::{
     NewDevice,
     entities::{api_key, device, user},
 };
-use jellyfin_model::{DynamicDayOfWeek, UserPolicy};
+use jellyfin_model::{DynamicDayOfWeek, SyncPlayUserAccessType, UserPolicy};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -204,6 +204,17 @@ impl AuthenticatedSession {
 
     pub(crate) fn can_manage_subtitles(&self) -> bool {
         self.user.is_administrator || self.policy.enable_subtitle_management
+    }
+
+    pub(crate) fn can_create_sync_play_group(&self) -> bool {
+        self.policy.sync_play_access == SyncPlayUserAccessType::CreateAndJoinGroups
+    }
+
+    pub(crate) fn can_join_sync_play_group(&self) -> bool {
+        matches!(
+            self.policy.sync_play_access,
+            SyncPlayUserAccessType::CreateAndJoinGroups | SyncPlayUserAccessType::JoinGroups
+        )
     }
 }
 

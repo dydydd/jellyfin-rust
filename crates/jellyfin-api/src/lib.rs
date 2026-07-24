@@ -36,7 +36,7 @@ use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, QuickConnectError, QuickConnectManager,
-    SystemQuickConnectCapability,
+    SyncPlayManager, SystemQuickConnectCapability,
 };
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
@@ -89,6 +89,7 @@ mod session;
 mod startup;
 mod studios;
 mod subtitles;
+mod sync_play;
 mod system;
 mod time_sync;
 mod trailers;
@@ -114,6 +115,7 @@ pub struct AppState {
     pub(crate) device_options: DeviceOptionsRepository,
     pub(crate) display_preferences: DisplayPreferenceRepository,
     pub(crate) session_commands: SessionCommandRepository,
+    pub(crate) sync_play: SyncPlayManager,
     pub(crate) quick_connect:
         QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
     pub(crate) playstate: PlaystateService,
@@ -175,6 +177,7 @@ impl AppState {
             device_options: DeviceOptionsRepository::new(database.clone()),
             display_preferences: DisplayPreferenceRepository::new(database.clone()),
             session_commands: SessionCommandRepository::new(database.clone()),
+            sync_play: SyncPlayManager::new(),
             quick_connect: QuickConnectManager::new(
                 QuickConnectRepository::new(database.clone()),
                 SystemQuickConnectCapability::new(true),
@@ -376,6 +379,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     openapi::documented_routes()
         .merge(system_routes())
+        .merge(sync_play_routes())
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
@@ -619,6 +623,15 @@ fn system_routes() -> Router<Arc<AppState>> {
             post(scheduled_tasks::update_triggers),
         )
         .route("/ScheduledTasks/{task_id}", get(scheduled_tasks::get))
+}
+
+fn sync_play_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/SyncPlay/New", post(sync_play::create_group))
+        .route("/SyncPlay/Join", post(sync_play::join_group))
+        .route("/SyncPlay/Leave", post(sync_play::leave_group))
+        .route("/SyncPlay/List", get(sync_play::list_groups))
+        .route("/SyncPlay/{id}", get(sync_play::get_group))
 }
 
 fn environment_routes() -> Router<Arc<AppState>> {

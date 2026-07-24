@@ -2,12 +2,13 @@ use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, BackupManifestDto, BackupOptionsDto, ClientCapabilitiesDto, DeviceInfoDto,
     DeviceOptionsDto, EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult,
-    GeneralCommand, GeneralCommandType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
-    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
-    PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
-    RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration, SessionInfoDto,
-    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    GeneralCommand, GeneralCommandType, GroupInfoDto, GroupStateType, ImageInfo, ImageProviderInfo,
+    ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand,
+    NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo,
+    PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult,
+    RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult,
+    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType, UserDto,
+    UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -685,6 +686,28 @@ fn utc_time_response_matches_syncplay_wire_contract() {
         json!({
             "RequestReceptionTime": "2026-07-22T08:30:00.1234567Z",
             "ResponseTransmissionTime": "2026-07-22T08:30:01.0000000Z"
+        })
+    );
+}
+
+#[test]
+fn sync_play_group_info_matches_official_wire_contract() {
+    let group = GroupInfoDto::new(
+        Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+        "Living Room".to_owned(),
+        GroupStateType::Idle,
+        vec!["alice".to_owned(), "bob".to_owned()],
+        Utc.with_ymd_and_hms(2026, 7, 25, 8, 30, 0).unwrap(),
+    );
+
+    assert_eq!(
+        serde_json::to_value(group).unwrap(),
+        json!({
+            "GroupId": "f9c1ad0c820f44df8db852fbfc0d3d93",
+            "GroupName": "Living Room",
+            "State": "Idle",
+            "Participants": ["alice", "bob"],
+            "LastUpdatedAt": "2026-07-25T08:30:00.0000000Z"
         })
     );
 }

@@ -1,4 +1,169 @@
+use std::{collections::HashMap, sync::Arc};
+
+use chrono::Utc;
+use jellyfin_model::{GroupInfoDto, GroupStateType};
+use tokio::sync::RwLock;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncPlaySession {
+    pub session_id: String,
+    pub user_id: Uuid,
+    pub user_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct SyncPlayParticipant {
+    user_id: Uuid,
+    user_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedSyncPlayGroup {
+    id: Uuid,
+    name: String,
+    state: GroupStateType,
+    participants: HashMap<String, SyncPlayParticipant>,
+}
+
+impl ManagedSyncPlayGroup {
+    fn info(&self) -> GroupInfoDto {
+        let mut participants = self
+            .participants
+            .values()
+            .map(|participant| participant.user_name.clone())
+            .collect::<Vec<_>>();
+        participants.sort_unstable();
+        participants.dedup();
+        GroupInfoDto::new(
+            self.id,
+            self.name.clone(),
+            self.state,
+            participants,
+            Utc::now(),
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+struct SyncPlayManagerState {
+    groups: HashMap<Uuid, ManagedSyncPlayGroup>,
+    session_groups: HashMap<String, Uuid>,
+}
+
+/// Coordinates the process-local lifecycle of `SyncPlay` groups.
+#[derive(Debug, Clone, Default)]
+pub struct SyncPlayManager {
+    state: Arc<RwLock<SyncPlayManagerState>>,
+}
+
+impl SyncPlayManager {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn create_group(&self, session: SyncPlaySession, group_name: String) -> GroupInfoDto {
+        let mut state = self.state.write().await;
+        remove_session(&mut state, &session.session_id);
+
+        let id = Uuid::new_v4();
+        let participant = SyncPlayParticipant {
+            user_id: session.user_id,
+            user_name: session.user_name,
+        };
+        let group = ManagedSyncPlayGroup {
+            id,
+            name: group_name,
+            state: GroupStateType::Idle,
+            participants: HashMap::from([(session.session_id.clone(), participant)]),
+        };
+        let info = group.info();
+        state.groups.insert(id, group);
+        state.session_groups.insert(session.session_id, id);
+        info
+    }
+
+    pub async fn join_group(&self, session: SyncPlaySession, group_id: Uuid) -> bool {
+        let mut state = self.state.write().await;
+        if !state.groups.contains_key(&group_id) {
+            return false;
+        }
+        if state.session_groups.get(&session.session_id) == Some(&group_id) {
+            return true;
+        }
+
+        remove_session(&mut state, &session.session_id);
+        let participant = SyncPlayParticipant {
+            user_id: session.user_id,
+            user_name: session.user_name,
+        };
+        let Some(group) = state.groups.get_mut(&group_id) else {
+            return false;
+        };
+        group
+            .participants
+            .insert(session.session_id.clone(), participant);
+        state.session_groups.insert(session.session_id, group_id);
+        true
+    }
+
+    pub async fn leave_group(&self, session_id: &str) -> bool {
+        let mut state = self.state.write().await;
+        remove_session(&mut state, session_id)
+    }
+
+    pub async fn list_groups(&self) -> Vec<GroupInfoDto> {
+        let state = self.state.read().await;
+        let mut groups = state
+            .groups
+            .values()
+            .map(ManagedSyncPlayGroup::info)
+            .collect::<Vec<_>>();
+        groups.sort_unstable_by_key(|group| group.group_id);
+        groups
+    }
+
+    pub async fn get_group(&self, group_id: Uuid) -> Option<GroupInfoDto> {
+        self.state
+            .read()
+            .await
+            .groups
+            .get(&group_id)
+            .map(ManagedSyncPlayGroup::info)
+    }
+
+    pub async fn is_user_active(&self, user_id: Uuid) -> bool {
+        self.state.read().await.groups.values().any(|group| {
+            group
+                .participants
+                .values()
+                .any(|participant| participant.user_id == user_id)
+        })
+    }
+
+    pub async fn is_session_active(&self, session_id: &str) -> bool {
+        self.state
+            .read()
+            .await
+            .session_groups
+            .contains_key(session_id)
+    }
+}
+
+fn remove_session(state: &mut SyncPlayManagerState, session_id: &str) -> bool {
+    let Some(group_id) = state.session_groups.remove(session_id) else {
+        return false;
+    };
+    let remove_group = state.groups.get_mut(&group_id).is_some_and(|group| {
+        group.participants.remove(session_id);
+        group.participants.is_empty()
+    });
+    if remove_group {
+        state.groups.remove(&group_id);
+    }
+    true
+}
 
 /// A media item occurrence in a `SyncPlay` queue.
 ///

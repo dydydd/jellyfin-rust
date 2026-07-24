@@ -612,7 +612,7 @@ fn current_session_access_token<'a>(
     Ok(&session.access_token)
 }
 
-fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
+pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
     let key = format!("{app_name}{device_id}");
     let mut hasher = Md5::new();
     for unit in key.encode_utf16() {

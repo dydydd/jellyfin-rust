@@ -59,7 +59,9 @@ pub use sorting::{
     PremiereDateOrderKey, compare_aired_episode_order, compare_index_number,
     compare_parent_index_number, compare_premiere_date,
 };
-pub use sync_play::{GroupLibrary, PlayQueue, PlayQueueItem, SyncPlayGroup};
+pub use sync_play::{
+    GroupLibrary, PlayQueue, PlayQueueItem, SyncPlayGroup, SyncPlayManager, SyncPlaySession,
+};
 pub use user_manager_lock::{
     UserManagerLockContext, UserManagerLockError, UserManagerLockHandle, UserManagerLockHelper,
 };
