@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
@@ -10,7 +12,7 @@ use jellyfin_data::{
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -140,6 +142,37 @@ async fn remote_subtitle_routes_match_management_policy_and_empty_provider_contr
     }
 }
 
+#[tokio::test]
+async fn upload_subtitle_route_decodes_base64_file_and_persists_external_stream() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_upload_subtitle_route(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
 async fn exercise_remote_subtitle_routes(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
     let search_route = Fixture::search_route(fixture.item_id, "eng");
@@ -236,6 +269,107 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
     fixture.cleanup().await;
 }
 
+async fn exercise_upload_subtitle_route(database_name: &str) {
+    let fixture = Fixture::new(database_name).await;
+    let route = Fixture::upload_route(fixture.item_id);
+    let body = json!({
+        "Language": "Eng",
+        "Format": "SRT",
+        "IsForced": true,
+        "IsHearingImpaired": false,
+        "Data": "MSAwMDowMDowMSwwMDAgLS0+IDAwOjAwOjAyLDAwMApIZWxsbyBmcm9tIHVwbG9hZAo="
+    });
+
+    assert_eq!(
+        fixture
+            .send_json(Method::POST, &route, None, &body)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send_json(Method::POST, &route, Some(&fixture.user_token), &body)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .send_json(
+                Method::POST,
+                &route,
+                Some(&fixture.manager_token),
+                &json!({
+                    "Language": "eng",
+                    "Format": "srt",
+                    "IsForced": false,
+                    "IsHearingImpaired": false,
+                    "Data": "not-base64"
+                }),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .send_json(
+                Method::POST,
+                &Fixture::upload_route(Uuid::new_v4()),
+                Some(&fixture.manager_token),
+                &body,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .send_json(
+                Method::POST,
+                &Fixture::upload_route(fixture.folder_id),
+                Some(&fixture.manager_token),
+                &body,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .send_json(Method::POST, &route, Some(&fixture.manager_token), &body)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let streams = MediaStreamService::new(fixture.database.clone())
+        .get_media_streams(MediaStreamFilter::for_item(fixture.item_id))
+        .await
+        .expect("streams after upload");
+    let uploaded = streams
+        .iter()
+        .find(|stream| stream.index == 4)
+        .expect("uploaded subtitle stream");
+    assert_eq!(uploaded.stream_type, MediaStreamType::Subtitle);
+    assert_eq!(uploaded.codec.as_deref(), Some("srt"));
+    assert_eq!(uploaded.language.as_deref(), Some("eng"));
+    assert!(uploaded.is_external);
+    assert!(uploaded.is_forced);
+    assert!(!uploaded.is_hearing_impaired);
+    let path = uploaded.path.as_deref().expect("uploaded subtitle path");
+    assert!(path.contains("/subtitles/"));
+    assert!(path.ends_with("/4.eng.srt"));
+    let bytes = tokio::fs::read(path).await.expect("uploaded subtitle file");
+    assert_eq!(
+        Bytes::from(bytes),
+        Bytes::from_static(b"1 00:00:01,000 --> 00:00:02,000\nHello from upload\n")
+    );
+
+    fixture.cleanup().await;
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
@@ -247,6 +381,7 @@ struct Fixture {
     manager_token: String,
     item_id: Uuid,
     folder_id: Uuid,
+    storage_root: PathBuf,
 }
 
 impl Fixture {
@@ -263,6 +398,7 @@ impl Fixture {
             .expect("PostgreSQL migrations must succeed");
 
         let suffix = Uuid::new_v4().simple().to_string();
+        let storage_root = std::env::temp_dir().join(format!("jellyfin-subtitle-routes-{suffix}"));
         let users = UserService::new(database.clone());
         let admin = users
             .create_initial_administrator(&format!("subtitle-admin-{suffix}"))
@@ -371,11 +507,19 @@ impl Fixture {
             .await
             .expect("media stream creation");
 
-        let app = jellyfin_api::router(AppState::new(
+        let app_state = AppState::new(
             database.clone(),
             "Subtitle Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
-        ));
+        )
+        .with_storage_paths(
+            storage_root.join("programdata"),
+            storage_root.join("web"),
+            storage_root.join("cache").join("images"),
+            storage_root.join("cache"),
+            storage_root.join("metadata"),
+        );
+        let app = jellyfin_api::router(app_state);
         Self {
             database,
             app,
@@ -387,6 +531,7 @@ impl Fixture {
             manager_token,
             item_id: item.id,
             folder_id: folder.id,
+            storage_root,
         }
     }
 
@@ -400,6 +545,10 @@ impl Fixture {
 
     fn download_route(item_id: Uuid, subtitle_id: &str) -> String {
         format!("/Items/{item_id}/RemoteSearch/Subtitles/{subtitle_id}")
+    }
+
+    fn upload_route(item_id: Uuid) -> String {
+        format!("/Videos/{item_id}/Subtitles")
     }
 
     async fn send(
@@ -422,6 +571,34 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn send_json(
+        &self,
+        method: Method,
+        uri: &str,
+        token: Option<&str>,
+        body: &Value,
+    ) -> axum::response::Response {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(
+                header::AUTHORIZATION,
+                format!("{AUTHORIZATION}, Token=\"{token}\""),
+            );
+        }
+        self.app
+            .clone()
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::to_vec(body).expect("request JSON")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     async fn cleanup(self) {
         base_item::Entity::delete_many()
             .filter(base_item::Column::Id.is_in([self.item_id, self.folder_id]))
@@ -433,6 +610,7 @@ impl Fixture {
             .exec(&self.database)
             .await
             .expect("user cleanup");
+        let _ = tokio::fs::remove_dir_all(&self.storage_root).await;
         self.database.close().await.unwrap();
     }
 }

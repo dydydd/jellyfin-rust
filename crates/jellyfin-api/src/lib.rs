@@ -917,6 +917,10 @@ fn video_routes() -> Router<Arc<AppState>> {
             "/Videos/{item_id}/Subtitles/{index}",
             axum::routing::delete(subtitles::delete_subtitle),
         )
+        .route(
+            "/Videos/{item_id}/Subtitles",
+            post(subtitles::upload_subtitle),
+        )
 }
 
 fn live_tv_routes() -> Router<Arc<AppState>> {

@@ -8,13 +8,14 @@ use std::{
 use axum::{
     Json,
     body::Body,
-    extract::{OriginalUri, Path as AxumPath, Query, State},
+    extract::{OriginalUri, Path as AxumPath, Query, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
 use jellyfin_data::NamedConfigurationStoreError;
-use jellyfin_model::{FontFile, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
+use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -38,6 +39,16 @@ pub(crate) struct RemoteSubtitleSearchQuery {
     is_perfect_match: Option<bool>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct UploadSubtitleDto {
+    language: Option<String>,
+    format: Option<String>,
+    is_forced: Option<bool>,
+    is_hearing_impaired: Option<bool>,
+    data: Option<String>,
+}
+
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -51,6 +62,80 @@ pub(crate) async fn delete_subtitle(
         .media_streams
         .delete_media_stream(item_id, index, MediaStreamType::Subtitle)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn upload_subtitle(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(item_id): AxumPath<Uuid>,
+    request: Result<Json<UploadSubtitleDto>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
+    ensure_video_item(&state, &authenticated.user, item_id).await?;
+
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let language = subtitle_token(request.language.as_deref()).ok_or(ApiError::InvalidRequest)?;
+    let format = subtitle_token(request.format.as_deref()).ok_or(ApiError::InvalidRequest)?;
+    let is_forced = request.is_forced.ok_or(ApiError::InvalidRequest)?;
+    let is_hearing_impaired = request
+        .is_hearing_impaired
+        .ok_or(ApiError::InvalidRequest)?;
+    let encoded = request.data.ok_or(ApiError::InvalidRequest)?;
+    let subtitle = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| ApiError::InvalidRequest)?;
+    if subtitle.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+
+    let mut streams = state
+        .media_streams
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item_id))
+        .await?;
+    let index = streams
+        .iter()
+        .map(|stream| stream.index)
+        .max()
+        .unwrap_or(-1)
+        + 1;
+    let path = uploaded_subtitle_path(&state, item_id, index, &language, &format);
+    if let Some(directory) = path.parent() {
+        tokio::fs::create_dir_all(directory)
+            .await
+            .map_err(|_| ApiError::Internal)?;
+    }
+    let temporary_path = path.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
+    tokio::fs::write(&temporary_path, subtitle)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    tokio::fs::rename(&temporary_path, &path)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+
+    streams.push(MediaStream {
+        index,
+        stream_type: MediaStreamType::Subtitle,
+        codec: Some(format),
+        language: Some(language),
+        is_external: true,
+        is_forced,
+        is_hearing_impaired,
+        path: Some(path.to_string_lossy().into_owned()),
+        ..MediaStream::default()
+    });
+    if let Err(error) = state
+        .media_streams
+        .save_media_streams(item_id, &streams)
+        .await
+    {
+        let _ = tokio::fs::remove_file(path).await;
+        return Err(error.into());
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -258,7 +343,7 @@ async fn ensure_video_item(
     state: &AppState,
     authenticated_user: &jellyfin_data::entities::user::Model,
     item_id: Uuid,
-) -> Result<(), ApiError> {
+) -> Result<jellyfin_data::entities::base_item::Model, ApiError> {
     let item = state
         .user_library
         .item(authenticated_user, authenticated_user.id, item_id)
@@ -271,8 +356,32 @@ async fn ensure_video_item(
         item.item_type.as_str(),
         "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
     ) {
-        Ok(())
+        Ok(item)
     } else {
         Err(jellyfin_controller::UserLibraryError::ItemNotFound.into())
     }
+}
+
+fn subtitle_token(value: Option<&str>) -> Option<String> {
+    let value = value?.trim().trim_start_matches('.');
+    (!value.is_empty()
+        && value.len() <= 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+    .then(|| value.to_ascii_lowercase())
+}
+
+fn uploaded_subtitle_path(
+    state: &AppState,
+    item_id: Uuid,
+    index: i32,
+    language: &str,
+    format: &str,
+) -> PathBuf {
+    state
+        .internal_metadata_directory
+        .join("subtitles")
+        .join(item_id.simple().to_string())
+        .join(format!("{index}.{language}.{format}"))
 }
