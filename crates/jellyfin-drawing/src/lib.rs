@@ -165,6 +165,91 @@ pub enum ImageInspectionError {
     InspectionTask(#[from] tokio::task::JoinError),
 }
 
+/// Typed failures produced while decoding an image for `BlurHash` generation.
+#[derive(Debug, Error)]
+pub enum BlurHashError {
+    #[error("could not access image file {path}: {source}")]
+    FileAccess {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("source image format could not be determined: {0}")]
+    UnknownFormat(PathBuf),
+    #[error("could not decode image file {path}: {source}")]
+    Decode {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
+    #[error("could not encode image BlurHash: {0}")]
+    Encode(#[from] blurhash::Error),
+    #[error("BlurHash generation task failed: {0}")]
+    GenerationTask(#[from] tokio::task::JoinError),
+}
+
+/// Decodes a local raster image and generates Jellyfin-compatible `BlurHash` metadata.
+///
+/// The component counts follow Jellyfin's roughly-sixteen-square-tiles formula,
+/// while the pixel buffer is capped at 128x128 for predictable CPU cost.
+///
+/// # Errors
+///
+/// Returns [`BlurHashError`] for inaccessible, unsupported, malformed, or failed images.
+pub async fn generate_blur_hash(
+    path: impl AsRef<Path>,
+) -> Result<(u32, u32, String), BlurHashError> {
+    let path = path.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || generate_blur_hash_blocking(&path)).await?
+}
+
+fn generate_blur_hash_blocking(path: &Path) -> Result<(u32, u32, String), BlurHashError> {
+    let file = fs::File::open(path).map_err(|source| BlurHashError::FileAccess {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let reader = ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|source| BlurHashError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if reader.format().is_none() {
+        return Err(BlurHashError::UnknownFormat(path.to_path_buf()));
+    }
+    let image = reader.decode().map_err(|source| BlurHashError::Decode {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let (width, height) = image.dimensions();
+    let (components_x, components_y) = blur_hash_components(width, height);
+    let pixels = image.thumbnail(128, 128).to_rgba8();
+    let hash = blurhash::encode(
+        components_x,
+        components_y,
+        pixels.width(),
+        pixels.height(),
+        pixels.as_raw(),
+    )?;
+    Ok((width, height, hash))
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn blur_hash_components(width: u32, height: u32) -> (u32, u32) {
+    let width = width.max(1) as f32;
+    let height = height.max(1) as f32;
+    let x_float = (16.0 * width / height).sqrt();
+    let y_float = x_float * height / width;
+    (
+        (x_float as u32).saturating_add(1).clamp(1, 9),
+        (y_float as u32).saturating_add(1).clamp(1, 9),
+    )
+}
+
 /// Reads an image's dimensions from its encoded data without decoding its pixel buffer.
 ///
 /// The file contents, rather than its extension, determine the decoder. Upload callers can treat
@@ -1042,5 +1127,13 @@ mod tests {
     fn parses_short_and_alpha_hex_colors() {
         assert_eq!(parse_color("#0f8").unwrap(), Rgba([0, 255, 136, 255]));
         assert_eq!(parse_color("11223344").unwrap(), Rgba([17, 34, 51, 68]));
+    }
+
+    #[test]
+    fn blur_hash_components_follow_jellyfin_aspect_ratio_formula() {
+        assert_eq!(blur_hash_components(1920, 1080), (6, 4));
+        assert_eq!(blur_hash_components(1080, 1920), (4, 6));
+        assert_eq!(blur_hash_components(1, 10_000), (1, 9));
+        assert_eq!(blur_hash_components(10_000, 1), (9, 1));
     }
 }

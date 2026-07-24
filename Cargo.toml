@@ -31,6 +31,7 @@ rust-version = "1.88"
 aide = { version = "0.15.1", features = ["axum-json"] }
 anyhow = "1.0"
 axum = "0.8"
+blurhash = "0.2.3"
 chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25.8", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = "2"

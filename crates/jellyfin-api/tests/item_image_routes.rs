@@ -1097,6 +1097,37 @@ async fn exercise_item_image_infos(database_name: &str) {
         ])
     );
 
+    let refresh_route = format!("/Items/{}/Images", fixture.refresh_item_id);
+    let (first, second) = tokio::join!(fixture.get(&refresh_route), fixture.get(&refresh_route));
+    for response in [first, second] {
+        assert_eq!(response.status(), StatusCode::OK);
+        let infos = body_json(response).await;
+        let infos = infos.as_array().expect("refreshed image infos");
+        assert_eq!(infos.len(), 3);
+        assert_eq!(infos[0]["ImageType"], "Primary");
+        assert_eq!(infos[0]["Width"], 10);
+        assert_eq!(infos[0]["Height"], 5);
+        assert_eq!(infos[0]["BlurHash"], fixture.refresh_blurhash.as_str());
+        assert_eq!(infos[1]["ImageType"], "Art");
+        assert_eq!(infos[1]["BlurHash"], Value::Null);
+        assert_eq!(infos[1]["Width"], Value::Null);
+        assert_eq!(infos[2]["ImageType"], "Backdrop");
+        assert_eq!(infos[2]["BlurHash"], Value::Null);
+        assert_eq!(infos[2]["Size"], 0);
+    }
+    let stored = BaseItemImageRepository::new(fixture.database.clone())
+        .list(fixture.refresh_item_id)
+        .await
+        .unwrap();
+    assert_eq!(stored[0].width, Some(10));
+    assert_eq!(stored[0].height, Some(5));
+    assert_eq!(
+        stored[0].blurhash.as_deref(),
+        Some(fixture.refresh_blurhash.as_str())
+    );
+    assert_eq!(stored[1].blurhash, None);
+    assert_eq!(stored[2].blurhash, None);
+
     fixture.cleanup().await;
 }
 
@@ -1107,6 +1138,8 @@ struct Fixture {
     user_id: Uuid,
     ordinary_user_id: Uuid,
     item_id: Uuid,
+    refresh_item_id: Uuid,
+    refresh_blurhash: String,
     empty_item_id: Uuid,
     token: String,
     api_key: String,
@@ -1147,6 +1180,12 @@ impl Fixture {
             3,
             [255, 255, 0, 255],
         );
+        let refresh_path = temporary.path().join("refresh.png");
+        image_fixture(&refresh_path, 10, 5, [120, 40, 200, 255]);
+        let (_, _, refresh_blurhash) = jellyfin_drawing::generate_blur_hash(&refresh_path)
+            .await
+            .expect("refresh fixture BlurHash");
+        fs::write(temporary.path().join("corrupt.png"), b"not an image").unwrap();
 
         let users = UserService::new(database.clone());
         let user = users
@@ -1200,6 +1239,14 @@ impl Fixture {
             .create(empty_item)
             .await
             .expect("empty movie item creation");
+        let mut refresh_item = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        refresh_item.name = Some("BlurHash Refresh Movie".to_owned());
+        refresh_item.media_type = Some("Video".to_owned());
+        refresh_item.path = Some("/media/blurhash-refresh.mkv".to_owned());
+        let refresh_item = items
+            .create(refresh_item)
+            .await
+            .expect("BlurHash refresh item creation");
 
         let modified = Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).single().unwrap();
         BaseItemImageRepository::new(database.clone())
@@ -1250,6 +1297,38 @@ impl Fixture {
             )
             .await
             .expect("image metadata replacement");
+        BaseItemImageRepository::new(database.clone())
+            .replace(
+                refresh_item.id,
+                &[
+                    image(
+                        BaseItemImageType::Primary,
+                        0,
+                        refresh_path,
+                        modified,
+                        None,
+                        None,
+                    ),
+                    image(
+                        BaseItemImageType::Art,
+                        0,
+                        temporary.path().join("corrupt.png"),
+                        modified,
+                        None,
+                        None,
+                    ),
+                    image(
+                        BaseItemImageType::Backdrop,
+                        4,
+                        PathBuf::from("https://example.invalid/remote.png"),
+                        modified,
+                        None,
+                        None,
+                    ),
+                ],
+            )
+            .await
+            .expect("BlurHash refresh metadata replacement");
 
         let app = jellyfin_api::router(
             AppState::new(
@@ -1272,6 +1351,8 @@ impl Fixture {
             user_id: user.id,
             ordinary_user_id: ordinary_user.id,
             item_id: item.id,
+            refresh_item_id: refresh_item.id,
+            refresh_blurhash,
             empty_item_id: empty_item.id,
             token,
             api_key,
@@ -1397,7 +1478,11 @@ impl Fixture {
 
     async fn cleanup(self) {
         base_item::Entity::delete_many()
-            .filter(base_item::Column::Id.is_in([self.item_id, self.empty_item_id]))
+            .filter(base_item::Column::Id.is_in([
+                self.item_id,
+                self.empty_item_id,
+                self.refresh_item_id,
+            ]))
             .exec(&self.database)
             .await
             .expect("item cleanup");

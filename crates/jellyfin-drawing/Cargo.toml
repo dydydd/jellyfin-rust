@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Image decoding, transformation, and caching for Jellyfin"
 
 [dependencies]
+blurhash.workspace = true
 image.workspace = true
 jellyfin-model = { path = "../jellyfin-model" }
 sha2.workspace = true

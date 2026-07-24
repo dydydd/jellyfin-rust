@@ -8,7 +8,7 @@ use jellyfin_data::{
     BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
     NewBaseItemImage, entities::base_item,
 };
-use jellyfin_drawing::inspect_dimensions;
+use jellyfin_drawing::{generate_blur_hash, inspect_dimensions};
 use jellyfin_model::{ImageInfo, ImageType};
 use md5::{Digest, Md5};
 use thiserror::Error;
@@ -118,7 +118,7 @@ impl ItemImageService {
         for image in single_images.into_iter().chain(multiple_images) {
             let image_index =
                 public_image_index(image.image_type, &mut backdrop_index, &mut chapter_index);
-            infos.push(project_image(item.path.as_deref(), image, image_index).await);
+            infos.push(project_image(&self.images, item.path.as_deref(), image, image_index).await);
         }
 
         Ok(infos)
@@ -552,10 +552,34 @@ const fn upload_file_stem(image_type: BaseItemImageType) -> &'static str {
 }
 
 async fn project_image(
+    images: &BaseItemImageRepository,
     item_path: Option<&str>,
-    image: BaseItemImage,
+    mut image: BaseItemImage,
     image_index: Option<i32>,
 ) -> ImageInfo {
+    if !is_remote_path(&image.path)
+        && let Ok(metadata) = tokio::fs::metadata(&image.path).await
+        && let Ok(modified) = metadata.modified()
+        && local_metadata_needs_refresh(&image)
+        && let Ok((width, height, blurhash)) = generate_blur_hash(&image.path).await
+    {
+        let modified = DateTime::<Utc>::from(modified);
+        match images
+            .refresh_local_metadata_if_matches(&image, modified, width, height, &blurhash)
+            .await
+        {
+            Ok(Some(refreshed)) => image = refreshed,
+            Ok(None) => {
+                if let Ok(Some(current)) = images
+                    .get(image.item_id, image.image_type, image.image_index)
+                    .await
+                {
+                    image = current;
+                }
+            }
+            Err(_) => {}
+        }
+    }
     let (size, width, height, blur_hash) = local_image_metadata(&image).await;
     ImageInfo {
         image_type: model_image_type(image.image_type),
@@ -567,6 +591,12 @@ async fn project_image(
         width,
         size,
     }
+}
+
+fn local_metadata_needs_refresh(image: &BaseItemImage) -> bool {
+    image.width.is_none()
+        || image.height.is_none()
+        || image.blurhash.as_deref().is_none_or(str::is_empty)
 }
 
 async fn local_image_metadata(

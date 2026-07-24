@@ -495,6 +495,71 @@ impl BaseItemImageRepository {
             .transpose()
     }
 
+    /// Conditionally refreshes local image dimensions and `BlurHash` metadata.
+    ///
+    /// The path and previous modification timestamp form an optimistic guard,
+    /// preventing a slow decoder from overwriting a concurrently replaced image.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, database, or corrupt-row errors.
+    pub async fn refresh_local_metadata_if_matches(
+        &self,
+        image: &BaseItemImage,
+        date_modified: DateTime<Utc>,
+        width: u32,
+        height: u32,
+        blurhash: &str,
+    ) -> Result<Option<BaseItemImage>, BaseItemImageStoreError> {
+        let image_index = i32::try_from(image.image_index).map_err(|_| {
+            BaseItemImageStoreError::ImageIndexOutOfRange {
+                value: image.image_index,
+            }
+        })?;
+        let width = validate_dimension("width", Some(width))?.ok_or_else(|| {
+            BaseItemImageStoreError::InvalidDimension {
+                field: "width",
+                value: width,
+            }
+        })?;
+        let height = validate_dimension("height", Some(height))?.ok_or_else(|| {
+            BaseItemImageStoreError::InvalidDimension {
+                field: "height",
+                value: height,
+            }
+        })?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.base_item_images
+            SET date_modified = $6, width = $7, height = $8, blurhash = $9
+            WHERE item_id = $1
+              AND image_type = $2
+              AND image_index = $3
+              AND path = $4
+              AND date_modified = $5
+            RETURNING item_id, image_type, image_index, path, date_modified,
+                      width, height, blurhash
+            ",
+            [
+                image.item_id.into(),
+                image.image_type.as_i16().into(),
+                image_index.into(),
+                image.path.clone().into(),
+                image.date_modified.into(),
+                date_modified.into(),
+                width.into(),
+                height.into(),
+                blurhash.to_owned().into(),
+            ],
+        );
+        base_item_image::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()
+    }
+
     /// Replaces index zero for a single-image type or appends a backdrop.
     ///
     /// The owning item row is locked before a backdrop index is selected, so
