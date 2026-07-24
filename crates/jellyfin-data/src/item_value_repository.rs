@@ -1,8 +1,8 @@
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr,
-    EntityTrait, QueryFilter, QueryOrder, Statement, TransactionTrait, Value as SeaValue,
-    sea_query::OnConflict,
+    EntityTrait, FromQueryResult, QueryFilter, QueryOrder, Statement, TransactionTrait,
+    Value as SeaValue, sea_query::OnConflict,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -131,6 +131,22 @@ impl ItemValueRepository {
             .await?)
     }
 
+    /// Loads one normalized value by stable identifier and type.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn get_by_id(
+        &self,
+        id: Uuid,
+        value_type: item_value::ItemValueType,
+    ) -> Result<Option<item_value::Model>, ItemValueError> {
+        Ok(item_value::Entity::find_by_id(id)
+            .filter(item_value::Column::ValueType.eq(value_type))
+            .one(&self.database)
+            .await?)
+    }
+
     /// Atomically creates or reuses a normalized value and links it to a base
     /// item. Repeated and concurrent links are idempotent.
     ///
@@ -229,6 +245,60 @@ impl ItemValueRepository {
             .order_by_asc(base_item::Column::Id)
             .all(&self.database)
             .await?)
+    }
+
+    /// Selects random audio items sharing at least one normalized genre.
+    ///
+    /// PostgreSQL performs the set intersection, deduplication, randomization,
+    /// and limit in one query so the candidate library is never loaded into
+    /// application memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn random_audio_for_genres(
+        &self,
+        genre_ids: &[Uuid],
+        limit: u64,
+    ) -> Result<Vec<base_item::Model>, ItemValueError> {
+        if genre_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut values = genre_ids
+            .iter()
+            .copied()
+            .map(SeaValue::from)
+            .collect::<Vec<_>>();
+        let placeholders = (1..=genre_ids.len())
+            .map(|index| format!("${index}::uuid"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        values.push(limit.into());
+        Ok(
+            base_item::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "SELECT item.* \
+                 FROM jellyfin.base_items AS item \
+                 WHERE item.item_type = 'Audio' \
+                   AND item.is_virtual_item = false \
+                   AND EXISTS ( \
+                       SELECT 1 FROM jellyfin.item_value_map AS map \
+                       INNER JOIN jellyfin.item_values AS value \
+                         ON value.item_value_id = map.item_value_id \
+                       WHERE map.item_id = item.id \
+                         AND value.type = 2 \
+                         AND value.item_value_id IN ({placeholders}) \
+                   ) \
+                 ORDER BY random() \
+                 LIMIT ${}::bigint",
+                    genre_ids.len() + 1
+                ),
+                values,
+            ))
+            .all(&self.database)
+            .await?,
+        )
     }
 
     /// Lists item-by-name values that are attached to filtered base items.

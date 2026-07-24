@@ -32,6 +32,14 @@ pub(crate) struct LibraryQuery {
 }
 
 #[derive(Debug, Default, Deserialize)]
+pub(crate) struct InstantMixByIdQuery {
+    id: Option<Uuid>,
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub(crate) struct ItemCountsQuery {
     #[serde(default, rename = "userId", alias = "UserId")]
     user_id: Option<Uuid>,
@@ -205,6 +213,36 @@ pub(crate) async fn similar(
     let page = state
         .library_controller
         .similar_items(&authenticated.user, target_user_id, item_id, query.limit)
+        .await?;
+    Ok(Json(page_to_dto(page, state.server_id())))
+}
+
+pub(crate) async fn instant_mix(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<LibraryQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let page = state
+        .library_controller
+        .instant_mix(&authenticated.user, target_user_id, item_id, query.limit)
+        .await?;
+    Ok(Json(page_to_dto(page, state.server_id())))
+}
+
+pub(crate) async fn instant_mix_genre_by_id(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<InstantMixByIdQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let genre_id = query.id.ok_or(ApiError::InvalidRequest)?;
+    let page = state
+        .library_controller
+        .instant_mix_for_genre(&authenticated.user, target_user_id, genre_id, query.limit)
         .await?;
     Ok(Json(page_to_dto(page, state.server_id())))
 }

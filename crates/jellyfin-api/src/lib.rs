@@ -928,6 +928,15 @@ fn collection_routes() -> Router<Arc<AppState>> {
 
 fn library_controller_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/Songs/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/Albums/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/Playlists/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/Artists/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/Items/{item_id}/InstantMix", get(library::instant_mix))
+        .route(
+            "/MusicGenres/InstantMix",
+            get(library::instant_mix_genre_by_id),
+        )
         .route("/Items/Counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))

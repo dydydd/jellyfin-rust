@@ -1,6 +1,7 @@
 use jellyfin_data::{
-    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository,
-    entities::{base_item, user},
+    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ItemValueError,
+    ItemValueRepository, PlaylistRepository, PlaylistStoreError,
+    entities::{base_item, item_value, user},
 };
 use sea_orm::DatabaseConnection;
 use thiserror::Error;
@@ -22,6 +23,10 @@ pub enum LibraryControllerError {
     User(#[from] UserError),
     #[error(transparent)]
     BaseItem(#[from] BaseItemError),
+    #[error(transparent)]
+    ItemValue(#[from] ItemValueError),
+    #[error(transparent)]
+    Playlist(#[from] PlaylistStoreError),
 }
 
 /// Coordinates `LibraryController` authorization with persisted item queries.
@@ -30,6 +35,8 @@ pub struct LibraryControllerService {
     users: UserService,
     items: BaseItemRepository,
     item_types: ItemTypeRegistry,
+    item_values: ItemValueRepository,
+    playlists: PlaylistRepository,
 }
 
 impl LibraryControllerService {
@@ -45,7 +52,9 @@ impl LibraryControllerService {
     ) -> Self {
         Self {
             users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database),
+            items: BaseItemRepository::new(database.clone()),
+            item_values: ItemValueRepository::new(database.clone()),
+            playlists: PlaylistRepository::new(database),
             item_types,
         }
     }
@@ -140,6 +149,114 @@ impl LibraryControllerService {
             })
             .await?;
         Ok(self.hydrate_page(page))
+    }
+
+    /// Creates a random audio mix from the seed item's normalized genres.
+    ///
+    /// Audio seeds remain first, while all other candidates are selected by
+    /// PostgreSQL from shared genre mappings up to Jellyfin's 200-item cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, invalid-playlist, or persistence errors.
+    pub async fn instant_mix(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        limit: Option<u64>,
+    ) -> Result<BaseItemPage, LibraryControllerError> {
+        let item = self
+            .item(authenticated_user, target_user_id, item_id)
+            .await?;
+        if item.item_type == "Playlist" {
+            let playlist = self
+                .playlists
+                .get(item_id)
+                .await?
+                .ok_or(LibraryControllerError::ItemNotFound)?;
+            if !playlist.open_access
+                && playlist.owner_user_id != Some(target_user_id)
+                && !playlist
+                    .shares
+                    .iter()
+                    .any(|share| share.user_id == target_user_id)
+            {
+                return Err(LibraryControllerError::ItemNotFound);
+            }
+        }
+        let genres = self
+            .item_values
+            .values_for_item(item_id, item_value::ItemValueType::Genre)
+            .await?;
+        let genre_ids = genres
+            .into_iter()
+            .map(|genre| genre.item_value_id)
+            .collect::<Vec<_>>();
+        let seed_is_audio = item.item_type == "Audio";
+        let mut items = self
+            .item_values
+            .random_audio_for_genres(&genre_ids, 201)
+            .await?;
+        items.retain(|candidate| candidate.id != item.id);
+        items.truncate(200_usize.saturating_sub(usize::from(seed_is_audio)));
+        if seed_is_audio {
+            items.insert(0, item);
+        }
+        let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+        items.truncate(
+            usize::try_from(limit.unwrap_or(total_record_count))
+                .unwrap_or(usize::MAX)
+                .min(items.len()),
+        );
+        Ok(BaseItemPage {
+            items: items
+                .into_iter()
+                .filter_map(|item| self.item_types.hydrate(item))
+                .map(HydratedBaseItem::into_model)
+                .collect(),
+            total_record_count,
+            start_index: 0,
+        })
+    }
+
+    /// Creates a random audio mix from one normalized genre identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn instant_mix_for_genre(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        genre_id: Uuid,
+        limit: Option<u64>,
+    ) -> Result<BaseItemPage, LibraryControllerError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        self.item_values
+            .get_by_id(genre_id, item_value::ItemValueType::Genre)
+            .await?
+            .ok_or(LibraryControllerError::ItemNotFound)?;
+        let mut items = self
+            .item_values
+            .random_audio_for_genres(&[genre_id], 200)
+            .await?;
+        let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+        items.truncate(
+            usize::try_from(limit.unwrap_or(total_record_count))
+                .unwrap_or(usize::MAX)
+                .min(items.len()),
+        );
+        Ok(BaseItemPage {
+            items: items
+                .into_iter()
+                .filter_map(|item| self.item_types.hydrate(item))
+                .map(HydratedBaseItem::into_model)
+                .collect(),
+            total_record_count,
+            start_index: 0,
+        })
     }
 
     /// Counts non-virtual library items, optionally scoped to a user's favorite state.

@@ -5,8 +5,9 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
-    UserDataRepository,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice, NewUserData, UserDataRepository,
+    entities::item_value,
     entities::{user, user_data},
 };
 use sea_orm::{
@@ -39,6 +40,7 @@ async fn official_library_controller_missing_item_contract() {
         format!("/Shows/{missing}/Similar"),
         format!("/Movies/{missing}/Similar"),
         format!("/Trailers/{missing}/Similar"),
+        format!("/Items/{missing}/InstantMix"),
     ] {
         assert_eq!(
             fixture
@@ -76,7 +78,52 @@ async fn ancestors_download_similar_and_empty_relationships_have_real_success_se
     assert_similar_items(&fixture).await;
     assert_empty_relationships(&fixture).await;
     assert_item_counts(&fixture).await;
+    assert_instant_mix(&fixture).await;
     fixture.cleanup().await;
+}
+
+async fn assert_instant_mix(fixture: &Fixture) {
+    let song_route = format!("/Songs/{}/InstantMix?limit=2", fixture.song_id);
+    let mix = fixture.json("GET", &song_route, &fixture.user_token).await;
+    assert_eq!(mix["TotalRecordCount"], 3);
+    assert_eq!(mix["Items"].as_array().unwrap().len(), 2);
+    assert_eq!(mix["Items"][0]["Id"], fixture.song_id.simple().to_string());
+    assert!(
+        mix["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Audio")
+    );
+    assert!(
+        mix["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Id"] != fixture.other_genre_song_id.simple().to_string())
+    );
+
+    let non_audio_route = format!("/Items/{}/InstantMix", fixture.album_id);
+    let album_mix = fixture
+        .json("GET", &non_audio_route, &fixture.user_token)
+        .await;
+    assert_eq!(album_mix["TotalRecordCount"], 3);
+    assert!(
+        album_mix["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Audio")
+    );
+
+    let genre_route = format!(
+        "/MusicGenres/InstantMix?id={}&limit=1",
+        fixture.instant_genre_id
+    );
+    let genre_mix = fixture.json("GET", &genre_route, &fixture.user_token).await;
+    assert_eq!(genre_mix["TotalRecordCount"], 3);
+    assert_eq!(genre_mix["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(genre_mix["Items"][0]["Type"], "Audio");
 }
 
 async fn assert_ancestors(fixture: &Fixture) {
@@ -339,6 +386,11 @@ struct Fixture {
     child_id: Uuid,
     grandchild_id: Uuid,
     similar_id: Uuid,
+    song_id: Uuid,
+    album_id: Uuid,
+    genre_song_ids: Vec<Uuid>,
+    other_genre_song_id: Uuid,
+    instant_genre_id: Uuid,
     single_delete_id: Uuid,
     missing_file_id: Uuid,
     io_error_id: Uuid,
@@ -424,6 +476,28 @@ impl Fixture {
             count_items.push(create_item(&items, item_type, name, parent.id, None).await);
         }
         let similar = create_item(&items, "Movie", "Similar Movie", root.id, None).await;
+        let song = create_item(&items, "Audio", "Instant Seed", root.id, None).await;
+        let song_two = create_item(&items, "Audio", "Instant Two", root.id, None).await;
+        let song_three = create_item(&items, "Audio", "Instant Three", root.id, None).await;
+        let other_genre_song = create_item(&items, "Audio", "Other Genre", root.id, None).await;
+        let album = create_item(&items, "MusicAlbum", "Instant Album", root.id, None).await;
+        let values = ItemValueRepository::new(database.clone());
+        let mut instant_genre_id = Uuid::nil();
+        for id in [song.id, song_two.id, song_three.id, album.id] {
+            instant_genre_id = values
+                .link(id, item_value::ItemValueType::Genre, "Post Rock")
+                .await
+                .unwrap()
+                .item_value_id;
+        }
+        values
+            .link(
+                other_genre_song.id,
+                item_value::ItemValueType::Genre,
+                "Jazz",
+            )
+            .await
+            .unwrap();
         let single_delete = create_item(&items, "Video", "Single Delete", root.id, None).await;
         let missing_file = create_item(
             &items,
@@ -470,6 +544,11 @@ impl Fixture {
             child_id: child.id,
             grandchild_id: grandchild.id,
             similar_id: similar.id,
+            song_id: song.id,
+            album_id: album.id,
+            genre_song_ids: vec![song.id, song_two.id, song_three.id],
+            other_genre_song_id: other_genre_song.id,
+            instant_genre_id,
             single_delete_id: single_delete.id,
             missing_file_id: missing_file.id,
             io_error_id: io_error.id,
@@ -529,12 +608,18 @@ impl Fixture {
         for id in [
             self.parent_id,
             self.similar_id,
+            self.album_id,
+            self.other_genre_song_id,
             self.single_delete_id,
             self.missing_file_id,
             self.io_error_id,
         ] {
             items.delete(id).await.expect("library item cleanup");
         }
+        items
+            .delete_many(&self.genre_song_ids)
+            .await
+            .expect("instant mix song cleanup");
         user::Entity::delete_many()
             .filter(user::Column::Id.is_in([self.admin_id, self.user_id]))
             .exec(&self.database)
