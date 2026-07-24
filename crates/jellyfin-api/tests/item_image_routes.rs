@@ -10,6 +10,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{TimeZone, Utc};
 use image::{Rgba, RgbaImage};
 use jellyfin_api::AppState;
@@ -123,6 +124,281 @@ async fn item_image_deletes_match_official_authorization_and_ordinal_contract() 
         }
         panic!("temporary database test task was cancelled: {error}");
     }
+}
+
+#[tokio::test]
+async fn item_image_uploads_match_official_authorization_and_storage_contract() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_item_image_uploads(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_item_image_uploads(database_name: &str) {
+    let fixture = Fixture::new(database_name).await;
+    let primary = format!("/Items/{}/Images/Primary", fixture.item_id);
+    let png = fs::read(fixture.path("poster.png")).unwrap();
+    let encoded = BASE64_STANDARD.encode(&png);
+
+    assert_eq!(
+        fixture
+            .request_with_body(Method::POST, &primary, &[], encoded.as_bytes())
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request_with_body(
+                Method::POST,
+                &primary,
+                &[
+                    ("X-Emby-Token", "invalid-token"),
+                    ("Content-Type", "image/png")
+                ],
+                encoded.as_bytes(),
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request_with_token_and_body(
+                Method::POST,
+                &primary,
+                &fixture.ordinary_token,
+                "image/png",
+                encoded.as_bytes(),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request_with_token_and_body(
+                Method::POST,
+                &primary,
+                &fixture.token,
+                "text/plain",
+                encoded.as_bytes(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request_with_token_and_body(
+                Method::POST,
+                &primary,
+                &fixture.token,
+                "image/png; charset=utf-8",
+                encoded.as_bytes(),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let repository = BaseItemImageRepository::new(fixture.database.clone());
+    let first = repository
+        .get(fixture.item_id, BaseItemImageType::Primary, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(&first.path).unwrap(), png);
+    assert_eq!((first.width, first.height), (Some(8), Some(4)));
+    assert!(first.path.contains("/metadata/library/"));
+    assert!(Path::new(&fixture.path("poster.png")).exists());
+    let reconnected = jellyfin_data::connect(&DatabaseConfig {
+        url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
+        max_connections: 1,
+        min_connections: 1,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        BaseItemImageRepository::new(reconnected.clone())
+            .get(fixture.item_id, BaseItemImageType::Primary, 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .path,
+        first.path
+    );
+    reconnected.close().await.unwrap();
+    let downloaded = fixture.request(Method::GET, &primary, &[]).await;
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(downloaded.into_body(), usize::MAX).await.unwrap(),
+        png.as_slice()
+    );
+
+    let replacement = b"not actually an image";
+    assert_eq!(
+        fixture
+            .request_with_body(
+                Method::POST,
+                &format!("{primary}/-999?api_key={}", fixture.api_key),
+                &[("Content-Type", "image/avif")],
+                BASE64_STANDARD.encode(replacement).as_bytes(),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let second = repository
+        .get(fixture.item_id, BaseItemImageType::Primary, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(&second.path).unwrap(), replacement);
+    assert_eq!((second.width, second.height), (None, None));
+    assert!(!Path::new(&first.path).exists());
+
+    for index in [-1, 999] {
+        assert_eq!(
+            fixture
+                .request_with_token_and_body(
+                    Method::POST,
+                    &format!("/Items/{}/Images/Backdrop/{index}", fixture.item_id),
+                    &fixture.token,
+                    "image/png",
+                    encoded.as_bytes(),
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    let backdrops = repository
+        .list(fixture.item_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|image| image.image_type == BaseItemImageType::Backdrop)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        backdrops
+            .iter()
+            .map(|image| image.image_index)
+            .collect::<Vec<_>>(),
+        [4, 9, 10, 11]
+    );
+
+    assert_eq!(
+        fixture
+            .request_with_token_and_body(
+                Method::POST,
+                &format!("/Items/{}/Images/Chapter", fixture.item_id),
+                &fixture.token,
+                "image/png",
+                encoded.as_bytes(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request_with_token_and_body(
+                Method::POST,
+                &format!("/Items/{}/Images/Primary", Uuid::new_v4()),
+                &fixture.token,
+                "image/png",
+                encoded.as_bytes(),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request_with_token_and_body(
+                Method::POST,
+                &format!("/Items/{}/Images/Logo", fixture.empty_item_id),
+                &fixture.token,
+                "image/png",
+                b"",
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let empty = repository
+        .get(fixture.empty_item_id, BaseItemImageType::Logo, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::metadata(empty.path).unwrap().len(), 0);
+    assert_eq!(
+        fixture
+            .request_with_token_and_body(
+                Method::POST,
+                &primary,
+                &fixture.token,
+                "image/png",
+                b"!!!!",
+            )
+            .await
+            .status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+
+    for content_type in [
+        "image/apng",
+        "image/avif",
+        "image/bmp",
+        "image/gif",
+        "image/x-icon",
+        "image/jpeg",
+        "image/png",
+        "image/svg+xml",
+        "image/tiff",
+        "image/webp",
+    ] {
+        assert_eq!(
+            fixture
+                .request_with_token_and_body(
+                    Method::POST,
+                    &format!("/Items/{}/Images/Banner", fixture.empty_item_id),
+                    &fixture.token,
+                    content_type,
+                    b"",
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT,
+            "content type {content_type}"
+        );
+    }
+
+    fixture.cleanup().await;
 }
 
 async fn exercise_item_image_deletes(database_name: &str) {
@@ -819,6 +1095,50 @@ impl Fixture {
                         format!("{AUTHORIZATION}, Token=\"{token}\""),
                     )
                     .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn request_with_body(
+        &self,
+        method: Method,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> axum::response::Response {
+        let mut request = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        self.app
+            .clone()
+            .oneshot(request.body(Body::from(body.to_vec())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn request_with_token_and_body(
+        &self,
+        method: Method,
+        uri: &str,
+        token: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> axum::response::Response {
+        self.app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("{AUTHORIZATION}, Token=\"{token}\""),
+                    )
+                    .header(header::CONTENT_TYPE, content_type)
+                    .body(Body::from(body.to_vec()))
                     .unwrap(),
             )
             .await

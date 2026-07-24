@@ -321,14 +321,15 @@ impl AppState {
         self.program_data_directory = program_data_directory.into();
         self.web_directory = web_directory.into();
         self.image_cache_directory = image_cache_directory.into();
-        self.item_images = ItemImageService::with_cache_directory(
+        self.internal_metadata_directory = internal_metadata_directory.into();
+        self.item_images = ItemImageService::with_storage_directories(
             self.database.clone(),
             self.image_cache_directory.clone(),
+            self.internal_metadata_directory.clone(),
         );
         self.image_processor =
             ImageProcessor::with_concurrency::<4>(self.image_cache_directory.clone());
         self.cache_directory = cache_directory.into();
-        self.internal_metadata_directory = internal_metadata_directory.into();
         self
     }
 
@@ -367,11 +368,15 @@ pub fn router(state: AppState) -> Router {
         .route("/Items/{item_id}/Images", get(item_images::list))
         .route(
             "/Items/{item_id}/Images/{image_type}",
-            get(item_images::get).delete(item_images::delete),
+            get(item_images::get)
+                .post(item_images::upload)
+                .delete(item_images::delete),
         )
         .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}",
-            get(item_images::get_by_index).delete(item_images::delete_by_index),
+            get(item_images::get_by_index)
+                .post(item_images::upload_by_index)
+                .delete(item_images::delete_by_index),
         )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
@@ -1459,6 +1464,9 @@ impl IntoResponse for ApiError {
             Self::ItemUpdate(error) => item_update_error_response(&error),
             Self::ItemImage(ItemImageError::NotFound) => {
                 (StatusCode::NOT_FOUND, "Item image not found")
+            }
+            Self::ItemImage(ItemImageError::UnsupportedImageType) => {
+                (StatusCode::BAD_REQUEST, "Unsupported item image type")
             }
             Self::ItemImage(
                 ItemImageError::InvalidRemoteUrl

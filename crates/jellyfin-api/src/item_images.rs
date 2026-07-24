@@ -2,16 +2,17 @@ use std::{sync::Arc, time::SystemTime};
 
 use axum::{
     Json,
-    body::Body,
+    body::{Body, to_bytes},
     extract::{OriginalUri, Path, State},
     http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use axum_extra::extract::Query;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
 use jellyfin_data::{BaseItemError, BaseItemRepository};
 use jellyfin_drawing::{ImageProcessingRequest, ImageSource};
-use jellyfin_model::{ImageFormat, ImageInfo, ImageType};
+use jellyfin_model::{ImageFormat, ImageInfo, ImageType, MimeTypes};
 use serde::Deserialize;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -125,6 +126,70 @@ pub(crate) async fn delete_by_index(
     Path((item_id, image_type, image_index)): Path<(Uuid, String, i32)>,
 ) -> Result<StatusCode, ApiError> {
     delete_internal(&state, &uri, &headers, item_id, &image_type, image_index).await
+}
+
+pub(crate) async fn upload(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((item_id, image_type)): Path<(Uuid, String)>,
+    request: Request<Body>,
+) -> Result<StatusCode, ApiError> {
+    upload_internal(state, uri, headers, item_id, image_type, request).await
+}
+
+pub(crate) async fn upload_by_index(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((item_id, image_type, _image_index)): Path<(Uuid, String, i32)>,
+    request: Request<Body>,
+) -> Result<StatusCode, ApiError> {
+    upload_internal(state, uri, headers, item_id, image_type, request).await
+}
+
+async fn upload_internal(
+    state: Arc<AppState>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    item_id: Uuid,
+    image_type: String,
+    request: Request<Body>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    let image_type = parse_image_type(&image_type)?;
+    BaseItemRepository::new(state.database.clone())
+        .get(item_id)
+        .await?
+        .ok_or(BaseItemError::NotFound)?;
+    let extension = MimeTypes::try_get_image_extension(
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+    )
+    .ok_or(ApiError::InvalidRequest)?;
+    if image_type == ImageType::Chapter {
+        return Err(jellyfin_controller::ItemImageError::UnsupportedImageType.into());
+    }
+    let encoded = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    let mut encoded = encoded
+        .iter()
+        .copied()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    encoded.truncate(encoded.len() / 4 * 4);
+    let image = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| ApiError::Internal)?;
+    state
+        .item_images
+        .upload(item_id, image_type, &extension, &image)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_internal(

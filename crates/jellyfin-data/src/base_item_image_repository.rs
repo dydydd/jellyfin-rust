@@ -108,6 +108,13 @@ pub struct BaseItemImage {
     pub blurhash: Option<String>,
 }
 
+/// Result of atomically setting a single image or appending a backdrop.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredImageMutation {
+    pub current: BaseItemImage,
+    pub replaced: Option<BaseItemImage>,
+}
+
 /// Base-item image persistence or input validation failure.
 #[derive(Debug, Error)]
 pub enum BaseItemImageStoreError {
@@ -124,6 +131,8 @@ pub enum BaseItemImageStoreError {
     ImageIndexOutOfRange { value: u32 },
     #[error("base-item image {field} must be positive and fit PostgreSQL integer range: {value}")]
     InvalidDimension { field: &'static str, value: u32 },
+    #[error("{image_type:?} images cannot be uploaded through the item image endpoint")]
+    UnsupportedUploadImageType { image_type: BaseItemImageType },
     #[error(transparent)]
     InvalidImageType(#[from] InvalidBaseItemImageType),
     #[error("invalid persisted base-item image {field}: {value}")]
@@ -358,6 +367,108 @@ impl BaseItemImageRepository {
             .await?
             .map(BaseItemImage::try_from)
             .transpose()
+    }
+
+    /// Replaces index zero for a single-image type or appends a backdrop.
+    ///
+    /// The owning item row is locked before a backdrop index is selected, so
+    /// concurrent uploads cannot choose the same `MAX(image_index) + 1` key.
+    /// `PostgreSQL`'s composite primary key then handles the single-image upsert.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed input, missing-item, unsupported-type, corrupt-row, or
+    /// database errors.
+    pub async fn set_or_append(
+        &self,
+        item_id: Uuid,
+        mut image: NewBaseItemImage,
+    ) -> Result<StoredImageMutation, BaseItemImageStoreError> {
+        if image.image_type == BaseItemImageType::Chapter {
+            return Err(BaseItemImageStoreError::UnsupportedUploadImageType {
+                image_type: image.image_type,
+            });
+        }
+        image.image_index = 0;
+        let validated = validate_images(std::slice::from_ref(&image))?
+            .pop()
+            .ok_or_else(|| DbErr::Custom("validated upload image was missing".to_owned()))?;
+        let transaction = self.database.begin().await?;
+        let owner = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT id FROM jellyfin.base_items WHERE id = $1 FOR UPDATE",
+                [item_id.into()],
+            ))
+            .await?;
+        if owner.is_none() {
+            return Err(BaseItemImageStoreError::BaseItemNotFound { item_id });
+        }
+
+        let image_index = if image.image_type == BaseItemImageType::Backdrop {
+            let row = transaction
+                .query_one(Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    r"
+                    SELECT COALESCE(MAX(image_index)::bigint + 1, 0) AS next_index
+                    FROM jellyfin.base_item_images
+                    WHERE item_id = $1 AND image_type = $2
+                    ",
+                    [item_id.into(), image.image_type.as_i16().into()],
+                ))
+                .await?
+                .ok_or_else(|| DbErr::Custom("backdrop index aggregate was missing".to_owned()))?;
+            let next_index: i64 = row.try_get("", "next_index")?;
+            i32::try_from(next_index).map_err(|_| {
+                BaseItemImageStoreError::ImageIndexOutOfRange {
+                    value: u32::try_from(next_index).unwrap_or(u32::MAX),
+                }
+            })?
+        } else {
+            0
+        };
+
+        let replaced =
+            base_item_image::Entity::find_by_id((item_id, image.image_type.as_i16(), image_index))
+                .one(&transaction)
+                .await?
+                .map(BaseItemImage::try_from)
+                .transpose()?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            INSERT INTO jellyfin.base_item_images (
+                item_id, image_type, image_index, path, date_modified,
+                width, height, blurhash
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (item_id, image_type, image_index) DO UPDATE
+                SET path = EXCLUDED.path,
+                    date_modified = EXCLUDED.date_modified,
+                    width = EXCLUDED.width,
+                    height = EXCLUDED.height,
+                    blurhash = EXCLUDED.blurhash
+            RETURNING item_id, image_type, image_index, path, date_modified,
+                      width, height, blurhash
+            ",
+            [
+                item_id.into(),
+                validated.image_type.into(),
+                image_index.into(),
+                validated.path.into(),
+                validated.date_modified.into(),
+                validated.width.into(),
+                validated.height.into(),
+                validated.blurhash.into(),
+            ],
+        );
+        let current = base_item_image::Model::find_by_statement(statement)
+            .one(&transaction)
+            .await?
+            .ok_or_else(|| DbErr::Custom("image upsert did not return its row".to_owned()))?
+            .try_into()?;
+        transaction.commit().await?;
+        Ok(StoredImageMutation { current, replaced })
     }
 
     /// Atomically replaces every image for one base item.

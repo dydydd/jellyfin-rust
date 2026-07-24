@@ -72,6 +72,7 @@ async fn exercise_base_item_images(database_name: &str) {
     let images = BaseItemImageRepository::new(database.clone());
     assert_replace_reload_and_clear(&database, &items, &images).await;
     assert_delete_by_public_ordinal(&items, &images).await;
+    assert_upload_mutations(&items, &images).await;
     assert_all_image_types_and_list_many(&items, &images).await;
     assert_validation_is_typed(&items, &images).await;
     assert_database_constraints(&database, &items, &images).await;
@@ -85,6 +86,67 @@ async fn exercise_base_item_images(database_name: &str) {
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_upload_mutations(items: &BaseItemRepository, images: &BaseItemImageRepository) {
+    let item = create_item(items, "upload-mutations").await;
+    let original = image(BaseItemImageType::Primary, 0, "upload-old.jpg", 20);
+    images
+        .replace(
+            item.id,
+            &[
+                original.clone(),
+                image(BaseItemImageType::Backdrop, 4, "upload-backdrop-4.jpg", 21),
+                image(BaseItemImageType::Backdrop, 9, "upload-backdrop-9.jpg", 22),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let replacement = image(BaseItemImageType::Primary, 999, "upload-new.jpg", 23);
+    let mutation = images
+        .set_or_append(item.id, replacement.clone())
+        .await
+        .unwrap();
+    assert_eq!(mutation.current.image_index, 0);
+    assert_eq!(mutation.current.path, replacement.path);
+    assert_eq!(mutation.replaced.unwrap().path, original.path);
+
+    let first = image(BaseItemImageType::Backdrop, 0, "upload-first.jpg", 24);
+    let second = image(BaseItemImageType::Backdrop, 0, "upload-second.jpg", 25);
+    let concurrent = images.clone();
+    let (first_result, second_result) = tokio::join!(
+        images.set_or_append(item.id, first),
+        concurrent.set_or_append(item.id, second),
+    );
+    let mut indexes = [
+        first_result.unwrap().current.image_index,
+        second_result.unwrap().current.image_index,
+    ];
+    indexes.sort_unstable();
+    assert_eq!(indexes, [10, 11]);
+
+    let missing_id = Uuid::new_v4();
+    assert!(matches!(
+        images
+            .set_or_append(
+                missing_id,
+                image(BaseItemImageType::Primary, 0, "missing.jpg", 26)
+            )
+            .await,
+        Err(BaseItemImageStoreError::BaseItemNotFound { item_id }) if item_id == missing_id
+    ));
+    assert!(matches!(
+        images
+            .set_or_append(
+                item.id,
+                image(BaseItemImageType::Chapter, 0, "chapter.jpg", 27)
+            )
+            .await,
+        Err(BaseItemImageStoreError::UnsupportedUploadImageType {
+            image_type: BaseItemImageType::Chapter
+        })
+    ));
 }
 
 async fn assert_delete_by_public_ordinal(

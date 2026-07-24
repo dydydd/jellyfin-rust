@@ -29,7 +29,7 @@ pub use authentication_repository::{
 };
 pub use base_item_image_repository::{
     BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
-    InvalidBaseItemImageType, NewBaseItemImage,
+    InvalidBaseItemImageType, NewBaseItemImage, StoredImageMutation,
 };
 pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,

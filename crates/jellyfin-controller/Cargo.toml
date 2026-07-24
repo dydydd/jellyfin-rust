@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 chrono.workspace = true
 jellyfin-data = { path = "../jellyfin-data" }
+jellyfin-drawing = { path = "../jellyfin-drawing" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-providers = { path = "../jellyfin-providers" }

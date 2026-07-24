@@ -6,8 +6,9 @@ use std::{
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
-    entities::base_item,
+    NewBaseItemImage, entities::base_item,
 };
+use jellyfin_drawing::inspect_dimensions;
 use jellyfin_model::{ImageInfo, ImageType};
 use md5::{Digest, Md5};
 use thiserror::Error;
@@ -32,6 +33,8 @@ pub enum ItemImageError {
     RemoteDownload(#[source] reqwest::Error),
     #[error("item image file operation failed")]
     Io(#[from] std::io::Error),
+    #[error("the requested item image type cannot be uploaded")]
+    UnsupportedImageType,
     #[error(transparent)]
     Store(#[from] BaseItemImageStoreError),
 }
@@ -50,18 +53,32 @@ pub struct ItemImageService {
     images: BaseItemImageRepository,
     http: reqwest::Client,
     cache_directory: PathBuf,
+    internal_metadata_directory: PathBuf,
 }
 
 impl ItemImageService {
     #[must_use]
     pub fn new(database: sea_orm::DatabaseConnection) -> Self {
-        Self::with_cache_directory(database, PathBuf::from("cache").join("images"))
+        Self::with_storage_directories(
+            database,
+            PathBuf::from("cache").join("images"),
+            PathBuf::from("metadata"),
+        )
     }
 
     #[must_use]
     pub fn with_cache_directory(
         database: sea_orm::DatabaseConnection,
         cache_directory: impl Into<PathBuf>,
+    ) -> Self {
+        Self::with_storage_directories(database, cache_directory, PathBuf::from("metadata"))
+    }
+
+    #[must_use]
+    pub fn with_storage_directories(
+        database: sea_orm::DatabaseConnection,
+        cache_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
     ) -> Self {
         Self {
             images: BaseItemImageRepository::new(database),
@@ -74,6 +91,7 @@ impl ItemImageService {
                     reqwest::Client::new()
                 }),
             cache_directory: cache_directory.into(),
+            internal_metadata_directory: internal_metadata_directory.into(),
         }
     }
 
@@ -179,6 +197,103 @@ impl ItemImageService {
             }
         }
         Ok(())
+    }
+
+    /// Persists a Base64-decoded item image in the item's internal metadata directory.
+    ///
+    /// Single-image types replace index zero while backdrops append. Dimension
+    /// inspection is best-effort: unsupported or malformed image bytes remain
+    /// stored to match Jellyfin's upload behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns unsupported-type, missing-item, file-system, or persistence errors.
+    pub async fn upload(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        extension: &str,
+        bytes: &[u8],
+    ) -> Result<(), ItemImageError> {
+        let image_type = persisted_image_type(image_type);
+        if image_type == BaseItemImageType::Chapter {
+            return Err(ItemImageError::UnsupportedImageType);
+        }
+        let directory = self.item_metadata_directory(item_id);
+        fs::create_dir_all(&directory).await?;
+        let stem = upload_file_stem(image_type);
+        let unique = Uuid::new_v4().simple();
+        let target = directory.join(format!("{stem}-{unique}{extension}"));
+        let temporary = directory.join(format!(".{stem}-{unique}.tmp"));
+        let write_result = async {
+            let mut file = fs::File::create(&temporary).await?;
+            file.write_all(bytes).await?;
+            file.sync_all().await?;
+            drop(file);
+            fs::rename(&temporary, &target).await
+        }
+        .await;
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary).await;
+        }
+        write_result?;
+
+        let modified = match fs::metadata(&target)
+            .await
+            .and_then(|metadata| metadata.modified())
+        {
+            Ok(modified) => DateTime::<Utc>::from(modified),
+            Err(error) => {
+                let _ = fs::remove_file(&target).await;
+                return Err(ItemImageError::Io(error));
+            }
+        };
+        let dimensions = inspect_dimensions(&target).await.ok();
+        let image = NewBaseItemImage {
+            image_type,
+            image_index: 0,
+            path: target.to_string_lossy().into_owned(),
+            date_modified: modified,
+            width: dimensions.map(|(width, _)| width),
+            height: dimensions.map(|(_, height)| height),
+            blurhash: None,
+        };
+        let mutation = match self.images.set_or_append(item_id, image).await {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                let _ = fs::remove_file(&target).await;
+                return Err(match error {
+                    BaseItemImageStoreError::BaseItemNotFound { .. } => ItemImageError::NotFound,
+                    BaseItemImageStoreError::UnsupportedUploadImageType { .. } => {
+                        ItemImageError::UnsupportedImageType
+                    }
+                    error => ItemImageError::Store(error),
+                });
+            }
+        };
+        if let Some(previous) = mutation.replaced {
+            let previous_path = Path::new(&previous.path);
+            if previous_path != target && previous_path.parent() == Some(directory.as_path()) {
+                match fs::remove_file(previous_path).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => tracing::warn!(
+                        path = %previous.path,
+                        %error,
+                        "item image was replaced but its previous managed file could not be removed"
+                    ),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn item_metadata_directory(&self, item_id: Uuid) -> PathBuf {
+        let id = item_id.simple().to_string();
+        self.internal_metadata_directory
+            .join("library")
+            .join(&id[..2])
+            .join(id)
     }
 
     async fn materialize_remote(
@@ -287,6 +402,24 @@ const fn allows_multiple_images(image_type: BaseItemImageType) -> bool {
         image_type,
         BaseItemImageType::Backdrop | BaseItemImageType::Chapter
     )
+}
+
+const fn upload_file_stem(image_type: BaseItemImageType) -> &'static str {
+    match image_type {
+        BaseItemImageType::Primary => "poster",
+        BaseItemImageType::Art => "clearart",
+        BaseItemImageType::BoxRear => "back",
+        BaseItemImageType::Thumb => "landscape",
+        BaseItemImageType::Disc => "disc",
+        BaseItemImageType::Backdrop => "backdrop",
+        BaseItemImageType::Banner => "banner",
+        BaseItemImageType::Logo => "logo",
+        BaseItemImageType::Box => "box",
+        BaseItemImageType::Screenshot => "screenshot",
+        BaseItemImageType::Menu => "menu",
+        BaseItemImageType::Profile => "profile",
+        BaseItemImageType::Chapter => "chapter",
+    }
 }
 
 async fn project_image(

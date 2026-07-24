@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, OpenOptions},
-    io::{BufWriter, Write},
+    io::{BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -142,6 +142,65 @@ pub enum ImageProcessingError {
     },
     #[error("image processing task failed: {0}")]
     ProcessingTask(#[from] tokio::task::JoinError),
+}
+
+/// Typed failures produced while inspecting an uploaded image's dimensions.
+#[derive(Debug, Error)]
+pub enum ImageInspectionError {
+    #[error("could not access image file {path}: {source}")]
+    FileAccess {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("source image format could not be determined: {0}")]
+    UnknownFormat(PathBuf),
+    #[error("could not inspect image file {path}: {source}")]
+    Inspect {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
+    #[error("image inspection task failed: {0}")]
+    InspectionTask(#[from] tokio::task::JoinError),
+}
+
+/// Reads an image's dimensions from its encoded data without decoding its pixel buffer.
+///
+/// The file contents, rather than its extension, determine the decoder. Upload callers can treat
+/// an error as a best-effort probe failure and retain the original file for Jellyfin compatibility.
+///
+/// # Errors
+///
+/// Returns [`ImageInspectionError`] when the file cannot be accessed, its format is unknown, its
+/// header is invalid or unsupported, or the blocking inspection task fails.
+pub async fn inspect_dimensions(
+    path: impl AsRef<Path>,
+) -> Result<(u32, u32), ImageInspectionError> {
+    let path = path.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || inspect_dimensions_blocking(&path)).await?
+}
+
+fn inspect_dimensions_blocking(path: &Path) -> Result<(u32, u32), ImageInspectionError> {
+    let file = fs::File::open(path).map_err(|source| ImageInspectionError::FileAccess {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let reader = ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|source| ImageInspectionError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if reader.format().is_none() {
+        return Err(ImageInspectionError::UnknownFormat(path.to_path_buf()));
+    }
+    reader
+        .into_dimensions()
+        .map_err(|source| ImageInspectionError::Inspect {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// Processes images into a stable on-disk cache while bounding memory-heavy work.
