@@ -65,6 +65,7 @@ mod live_tv;
 mod localization;
 mod media_info;
 mod media_segments;
+mod movies;
 mod music_genre;
 mod openapi;
 mod packages;
@@ -815,6 +816,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Items/{item_id}/Similar", get(library::similar))
         .route("/Albums/{item_id}/Similar", get(library::similar))
         .route("/Shows/{item_id}/Similar", get(library::similar))
+        .route("/Movies/Recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
         .route("/Trailers/{item_id}/Similar", get(library::similar))
 }
