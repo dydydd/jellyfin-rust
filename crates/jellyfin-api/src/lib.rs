@@ -86,6 +86,7 @@ mod subtitles;
 mod system;
 mod time_sync;
 mod trailers;
+mod tv_shows;
 mod user_data;
 mod user_library;
 mod user_views;
@@ -820,6 +821,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Shows/{item_id}/Similar", get(library::similar))
         .route("/Movies/Recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
+        .route("/Shows/{series_id}/Seasons", get(tv_shows::seasons))
         .route("/Trailers/{item_id}/Similar", get(library::similar))
 }
 
