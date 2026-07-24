@@ -2,8 +2,9 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    FromQueryResult, QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr,
+    EntityTrait, FromQueryResult, QueryFilter, QueryOrder, QuerySelect, Statement,
+    TransactionTrait,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -115,6 +116,54 @@ pub struct StoredImageMutation {
     pub replaced: Option<BaseItemImage>,
 }
 
+/// Locked pair of images selected by their public ordinals.
+pub struct BaseItemImageSwap {
+    pub first: BaseItemImage,
+    pub second: BaseItemImage,
+    transaction: DatabaseTransaction,
+}
+
+impl BaseItemImageSwap {
+    /// Refreshes metadata for the two fixed paths and commits the item-row lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when either update or the commit fails.
+    pub async fn commit(
+        self,
+        first_modified: DateTime<Utc>,
+        second_modified: DateTime<Utc>,
+    ) -> Result<(), BaseItemImageStoreError> {
+        for (image, modified) in [
+            (&self.first, first_modified),
+            (&self.second, second_modified),
+        ] {
+            self.transaction
+                .execute(Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    r"
+                    UPDATE jellyfin.base_item_images
+                    SET date_modified = $4, width = NULL, height = NULL
+                    WHERE item_id = $1 AND image_type = $2 AND image_index = $3
+                    ",
+                    [
+                        image.item_id.into(),
+                        image.image_type.as_i16().into(),
+                        i32::try_from(image.image_index)
+                            .map_err(|_| BaseItemImageStoreError::ImageIndexOutOfRange {
+                                value: image.image_index,
+                            })?
+                            .into(),
+                        modified.into(),
+                    ],
+                ))
+                .await?;
+        }
+        self.transaction.commit().await?;
+        Ok(())
+    }
+}
+
 /// Base-item image persistence or input validation failure.
 #[derive(Debug, Error)]
 pub enum BaseItemImageStoreError {
@@ -133,6 +182,8 @@ pub enum BaseItemImageStoreError {
     InvalidDimension { field: &'static str, value: u32 },
     #[error("{image_type:?} images cannot be uploaded through the item image endpoint")]
     UnsupportedUploadImageType { image_type: BaseItemImageType },
+    #[error("{image_type:?} images do not support index changes")]
+    UnsupportedSwapImageType { image_type: BaseItemImageType },
     #[error(transparent)]
     InvalidImageType(#[from] InvalidBaseItemImageType),
     #[error("invalid persisted base-item image {field}: {value}")]
@@ -316,6 +367,81 @@ impl BaseItemImageRepository {
             .transpose()?;
         transaction.commit().await?;
         Ok(deleted)
+    }
+
+    /// Locks and selects two images by public ordinal for a file-content swap.
+    ///
+    /// A missing ordinal is an intentional no-op. The returned guard retains
+    /// the owning item row lock until [`BaseItemImageSwap::commit`] or drop.
+    ///
+    /// # Errors
+    ///
+    /// Returns unsupported-type, missing-item, corrupt-row, or database errors.
+    pub async fn begin_swap(
+        &self,
+        item_id: Uuid,
+        image_type: BaseItemImageType,
+        first_ordinal: i64,
+        second_ordinal: i64,
+    ) -> Result<Option<BaseItemImageSwap>, BaseItemImageStoreError> {
+        let transaction = self.database.begin().await?;
+        let owner = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT id FROM jellyfin.base_items WHERE id = $1 FOR UPDATE",
+                [item_id.into()],
+            ))
+            .await?;
+        if owner.is_none() {
+            return Err(BaseItemImageStoreError::BaseItemNotFound { item_id });
+        }
+        if !matches!(
+            image_type,
+            BaseItemImageType::Backdrop | BaseItemImageType::Chapter
+        ) {
+            return Err(BaseItemImageStoreError::UnsupportedSwapImageType { image_type });
+        }
+        if first_ordinal < 0 {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        if second_ordinal < 0 {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let select = |ordinal: i64| {
+            Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                SELECT item_id, image_type, image_index, path, date_modified,
+                       width, height, blurhash
+                FROM jellyfin.base_item_images
+                WHERE item_id = $1 AND image_type = $2
+                ORDER BY image_index
+                OFFSET $3 LIMIT 1
+                ",
+                [item_id.into(), image_type.as_i16().into(), ordinal.into()],
+            )
+        };
+        let first = base_item_image::Model::find_by_statement(select(first_ordinal))
+            .one(&transaction)
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()?;
+        let second = base_item_image::Model::find_by_statement(select(second_ordinal))
+            .one(&transaction)
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()?;
+        let (Some(first), Some(second)) = (first, second) else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        Ok(Some(BaseItemImageSwap {
+            first,
+            second,
+            transaction,
+        }))
     }
 
     /// Replaces a remote image path after it has been materialized locally.

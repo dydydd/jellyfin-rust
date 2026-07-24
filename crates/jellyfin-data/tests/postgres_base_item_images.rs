@@ -73,6 +73,7 @@ async fn exercise_base_item_images(database_name: &str) {
     assert_replace_reload_and_clear(&database, &items, &images).await;
     assert_delete_by_public_ordinal(&items, &images).await;
     assert_upload_mutations(&items, &images).await;
+    assert_swap_selection_and_commit(&items, &images).await;
     assert_all_image_types_and_list_many(&items, &images).await;
     assert_validation_is_typed(&items, &images).await;
     assert_database_constraints(&database, &items, &images).await;
@@ -86,6 +87,69 @@ async fn exercise_base_item_images(database_name: &str) {
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_swap_selection_and_commit(
+    items: &BaseItemRepository,
+    images: &BaseItemImageRepository,
+) {
+    let item = create_item(items, "swap-selection").await;
+    images
+        .replace(
+            item.id,
+            &[
+                image(BaseItemImageType::Backdrop, 4, "swap-4.jpg", 30),
+                image(BaseItemImageType::Backdrop, 9, "swap-9.jpg", 31),
+            ],
+        )
+        .await
+        .unwrap();
+    let swap = images
+        .begin_swap(item.id, BaseItemImageType::Backdrop, 0, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(swap.first.image_index, 4);
+    assert_eq!(swap.second.image_index, 9);
+    let first_modified = timestamp(1_800_000_001);
+    let second_modified = timestamp(1_800_000_002);
+    swap.commit(first_modified, second_modified).await.unwrap();
+    let stored = images.list(item.id).await.unwrap();
+    assert_eq!(stored[0].path, "swap-4.jpg");
+    assert_eq!(stored[0].date_modified, first_modified);
+    assert_eq!((stored[0].width, stored[0].height), (None, None));
+    assert_eq!(stored[1].path, "swap-9.jpg");
+    assert_eq!(stored[1].date_modified, second_modified);
+    assert_eq!((stored[1].width, stored[1].height), (None, None));
+    assert!(
+        images
+            .begin_swap(item.id, BaseItemImageType::Backdrop, -1, 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        images
+            .begin_swap(item.id, BaseItemImageType::Backdrop, 0, 99)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        images
+            .begin_swap(item.id, BaseItemImageType::Primary, 0, 0)
+            .await,
+        Err(BaseItemImageStoreError::UnsupportedSwapImageType {
+            image_type: BaseItemImageType::Primary
+        })
+    ));
+    let missing = Uuid::new_v4();
+    assert!(matches!(
+        images
+            .begin_swap(missing, BaseItemImageType::Backdrop, 0, 1)
+            .await,
+        Err(BaseItemImageStoreError::BaseItemNotFound { item_id }) if item_id == missing
+    ));
 }
 
 async fn assert_upload_mutations(items: &BaseItemRepository, images: &BaseItemImageRepository) {

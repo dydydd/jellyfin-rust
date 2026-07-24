@@ -65,6 +65,12 @@ pub(crate) struct DeleteItemImageQuery {
     image_index: Option<i32>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UpdateItemImageIndexQuery {
+    #[serde(default, rename = "newIndex", alias = "NewIndex")]
+    new_index: Option<i32>,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -146,6 +152,30 @@ pub(crate) async fn upload_by_index(
     request: Request<Body>,
 ) -> Result<StatusCode, ApiError> {
     upload_internal(state, uri, headers, item_id, image_type, request).await
+}
+
+pub(crate) async fn update_index(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((item_id, image_type, image_index)): Path<(Uuid, String, i32)>,
+    Query(query): Query<UpdateItemImageIndexQuery>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    let image_type = parse_image_type(&image_type)?;
+    let new_index = query.new_index.ok_or(ApiError::InvalidRequest)?;
+    state
+        .item_images
+        .swap(
+            item_id,
+            image_type,
+            i64::from(image_index),
+            i64::from(new_index),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn upload_internal(

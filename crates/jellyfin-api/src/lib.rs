@@ -378,6 +378,10 @@ pub fn router(state: AppState) -> Router {
                 .post(item_images::upload_by_index)
                 .delete(item_images::delete_by_index),
         )
+        .route(
+            "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
+            post(item_images::update_index),
+        )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",
@@ -1474,6 +1478,10 @@ impl IntoResponse for ApiError {
             Self::ItemImage(ItemImageError::UnsupportedImageType) => {
                 (StatusCode::BAD_REQUEST, "Unsupported item image type")
             }
+            Self::ItemImage(ItemImageError::UnsupportedIndexChange) => (
+                StatusCode::BAD_REQUEST,
+                "Item image type does not support index changes",
+            ),
             Self::ItemImage(
                 ItemImageError::InvalidRemoteUrl
                 | ItemImageError::RemoteImageTooLarge

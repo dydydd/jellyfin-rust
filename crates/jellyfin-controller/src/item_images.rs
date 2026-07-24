@@ -35,6 +35,8 @@ pub enum ItemImageError {
     Io(#[from] std::io::Error),
     #[error("the requested item image type cannot be uploaded")]
     UnsupportedImageType,
+    #[error("the requested item image type does not support index changes")]
+    UnsupportedIndexChange,
     #[error(transparent)]
     Store(#[from] BaseItemImageStoreError),
 }
@@ -288,6 +290,100 @@ impl ItemImageService {
         Ok(())
     }
 
+    /// Swaps the file contents addressed by two public image ordinals.
+    ///
+    /// Missing images and remote paths are official-compatible no-ops. Local
+    /// replacements are staged beside each destination, so the operation also
+    /// works when the two images reside on different file systems.
+    ///
+    /// # Errors
+    ///
+    /// Returns unsupported-type, missing-item, file-system, or persistence errors.
+    pub async fn swap(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        first_ordinal: i64,
+        second_ordinal: i64,
+    ) -> Result<(), ItemImageError> {
+        let swap = self
+            .images
+            .begin_swap(
+                item_id,
+                persisted_image_type(image_type),
+                first_ordinal,
+                second_ordinal,
+            )
+            .await
+            .map_err(|error| match error {
+                BaseItemImageStoreError::BaseItemNotFound { .. } => ItemImageError::NotFound,
+                BaseItemImageStoreError::UnsupportedSwapImageType { .. } => {
+                    ItemImageError::UnsupportedIndexChange
+                }
+                error => ItemImageError::Store(error),
+            })?;
+        let Some(swap) = swap else {
+            return Ok(());
+        };
+        if is_remote_path(&swap.first.path) || is_remote_path(&swap.second.path) {
+            return Ok(());
+        }
+        let first_path = PathBuf::from(&swap.first.path);
+        let second_path = PathBuf::from(&swap.second.path);
+        let first = first_path.as_path();
+        let second = second_path.as_path();
+        if first == second {
+            return Err(ItemImageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cannot swap an image file with itself",
+            )));
+        }
+        let token = Uuid::new_v4().simple();
+        let first_stage = sibling_temporary(first, "swap-in", token)?;
+        let second_stage = sibling_temporary(second, "swap-in", token)?;
+        let first_backup = sibling_temporary(first, "swap-backup", token)?;
+        let second_backup = sibling_temporary(second, "swap-backup", token)?;
+        let staged = async {
+            copy_and_sync(second, &first_stage).await?;
+            copy_and_sync(first, &second_stage).await?;
+            copy_and_sync(first, &first_backup).await?;
+            copy_and_sync(second, &second_backup).await
+        }
+        .await;
+        if let Err(error) = staged {
+            cleanup_files([&first_stage, &second_stage, &first_backup, &second_backup]).await;
+            return Err(ItemImageError::Io(error));
+        }
+
+        if let Err(error) = copy_and_sync(&first_stage, first).await {
+            cleanup_files([&first_stage, &second_stage, &first_backup, &second_backup]).await;
+            return Err(ItemImageError::Io(error));
+        }
+        if let Err(error) = copy_and_sync(&second_stage, second).await {
+            let _ = copy_and_sync(&first_backup, first).await;
+            cleanup_files([&first_stage, &second_stage, &first_backup, &second_backup]).await;
+            return Err(ItemImageError::Io(error));
+        }
+        cleanup_files([&first_stage, &second_stage]).await;
+
+        let metadata = async {
+            let first_modified = fs::metadata(first).await?.modified()?;
+            let second_modified = fs::metadata(second).await?.modified()?;
+            swap.commit(first_modified.into(), second_modified.into())
+                .await
+                .map_err(ItemImageError::Store)
+        }
+        .await;
+        if let Err(error) = metadata {
+            let _ = copy_and_sync(&first_backup, first).await;
+            let _ = copy_and_sync(&second_backup, second).await;
+            cleanup_files([&first_backup, &second_backup]).await;
+            return Err(error);
+        }
+        cleanup_files([&first_backup, &second_backup]).await;
+        Ok(())
+    }
+
     fn item_metadata_directory(&self, item_id: Uuid) -> PathBuf {
         let id = item_id.simple().to_string();
         self.internal_metadata_directory
@@ -389,6 +485,39 @@ impl ItemImageService {
             .get(image.item_id, image.image_type, image.image_index)
             .await?
             .ok_or(ItemImageError::NotFound)
+    }
+}
+
+fn sibling_temporary(
+    path: &Path,
+    purpose: &str,
+    token: impl std::fmt::Display,
+) -> Result<PathBuf, ItemImageError> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            ItemImageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "image path has no UTF-8 file name",
+            ))
+        })?;
+    Ok(path.with_file_name(format!(".{name}-{purpose}-{token}.tmp")))
+}
+
+async fn copy_and_sync(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::copy(source, target).await?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(target)
+        .await?
+        .sync_all()
+        .await
+}
+
+async fn cleanup_files<const N: usize>(paths: [&PathBuf; N]) {
+    for path in paths {
+        let _ = fs::remove_file(path).await;
     }
 }
 

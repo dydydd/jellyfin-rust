@@ -157,6 +157,154 @@ async fn item_image_uploads_match_official_authorization_and_storage_contract() 
     }
 }
 
+#[tokio::test]
+async fn item_image_index_updates_match_official_file_swap_contract() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_item_image_index_updates(&task_database_name).await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_item_image_index_updates(database_name: &str) {
+    let fixture = Fixture::new(database_name).await;
+    let route = format!(
+        "/Items/{}/Images/Backdrop/0/Index?newIndex=1",
+        fixture.item_id
+    );
+    assert_eq!(
+        fixture.request(Method::POST, &route, &[]).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request_with_token(Method::POST, &route, &fixture.ordinary_token)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request_with_token(
+                Method::POST,
+                &format!("/Items/{}/Images/Backdrop/0/Index", fixture.item_id),
+                &fixture.token,
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let first_path = fixture.path("backdrop.png");
+    let second_path = fixture.path("remote-backdrop.png");
+    let first_bytes = fs::read(&first_path).unwrap();
+    let second_bytes = fs::read(&second_path).unwrap();
+    assert_eq!(
+        fixture
+            .request_with_token(Method::POST, &route, &fixture.token)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(fs::read(&first_path).unwrap(), second_bytes);
+    assert_eq!(fs::read(&second_path).unwrap(), first_bytes);
+    let repository = BaseItemImageRepository::new(fixture.database.clone());
+    let swapped = repository
+        .list(fixture.item_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|image| image.image_type == BaseItemImageType::Backdrop)
+        .collect::<Vec<_>>();
+    assert_eq!(swapped[0].path, first_path);
+    assert_eq!(swapped[1].path, second_path);
+    assert_eq!((swapped[0].width, swapped[0].height), (None, None));
+    assert_eq!((swapped[1].width, swapped[1].height), (None, None));
+
+    fixture
+        .database
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE jellyfin.base_item_images SET path = $4 \
+             WHERE item_id = $1 AND image_type = $2 AND image_index = $3",
+            [
+                fixture.item_id.into(),
+                BaseItemImageType::Backdrop.as_i16().into(),
+                4_i32.into(),
+                "https://images.example.invalid/remote.png".into(),
+            ],
+        ))
+        .await
+        .unwrap();
+    let before_remote_noop = fs::read(&second_path).unwrap();
+    assert_eq!(
+        fixture
+            .request_with_token(Method::POST, &route, &fixture.token)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(fs::read(&second_path).unwrap(), before_remote_noop);
+
+    for (image_type, index, new_index, expected) in [
+        ("Backdrop", -1, 0, StatusCode::NO_CONTENT),
+        ("Backdrop", 0, 99, StatusCode::NO_CONTENT),
+        ("Primary", 0, 0, StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(
+            fixture
+                .request_with_token(
+                    Method::POST,
+                    &format!(
+                        "/Items/{}/Images/{image_type}/{index}/Index?newIndex={new_index}",
+                        fixture.item_id
+                    ),
+                    &fixture.token,
+                )
+                .await
+                .status(),
+            expected
+        );
+    }
+    assert_eq!(
+        fixture
+            .request_with_token(
+                Method::POST,
+                &format!(
+                    "/Items/{}/Images/Backdrop/0/Index?newIndex=1",
+                    Uuid::new_v4()
+                ),
+                &fixture.token,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    fixture.cleanup().await;
+}
+
 async fn exercise_item_image_uploads(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
     let primary = format!("/Items/{}/Images/Primary", fixture.item_id);

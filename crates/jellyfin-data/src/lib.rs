@@ -28,8 +28,8 @@ pub use authentication_repository::{
     DeviceRepository, NewDevice,
 };
 pub use base_item_image_repository::{
-    BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
-    InvalidBaseItemImageType, NewBaseItemImage, StoredImageMutation,
+    BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageSwap,
+    BaseItemImageType, InvalidBaseItemImageType, NewBaseItemImage, StoredImageMutation,
 };
 pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
