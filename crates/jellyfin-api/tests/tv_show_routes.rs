@@ -165,7 +165,224 @@ async fn exercise_seasons_route(database_name: &str) {
         ]
     );
 
+    assert_episodes_route(&fixture).await;
     fixture.cleanup().await;
+}
+
+async fn assert_episodes_route(fixture: &Fixture) {
+    assert_eq!(
+        fixture
+            .get(&format!("/Shows/{}/Episodes", fixture.series_id), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/{}/Episodes?userId={}",
+                    fixture.series_id, fixture.admin_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes", Uuid::new_v4()),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes", fixture.movie_id),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/{}/Episodes?seasonId={}",
+                    fixture.series_id, fixture.movie_id
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let episodes = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(episodes["StartIndex"], 0);
+    assert_eq!(episodes["TotalRecordCount"], 5);
+    let items = episodes["Items"].as_array().expect("episode items");
+    assert_eq!(items.len(), 5);
+    assert!(items.iter().all(|item| item["Type"] == "Episode"));
+    assert_eq!(
+        item_ids(&episodes),
+        vec![
+            fixture.special_episode_id.simple().to_string(),
+            fixture.first_episode_id.simple().to_string(),
+            fixture.second_episode_id.simple().to_string(),
+            fixture.third_episode_id.simple().to_string(),
+            fixture.missing_episode_id.simple().to_string(),
+        ]
+    );
+    assert_eq!(items[1]["SeriesId"], fixture.series_id.simple().to_string());
+    assert_eq!(
+        items[1]["SeasonId"],
+        fixture.first_season_id.simple().to_string()
+    );
+    assert_eq!(items[1]["ParentIndexNumber"], 1);
+
+    let first_season = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes?season=1", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(first_season["TotalRecordCount"], 2);
+    assert_eq!(
+        item_ids(&first_season),
+        vec![
+            fixture.first_episode_id.simple().to_string(),
+            fixture.second_episode_id.simple().to_string(),
+        ]
+    );
+
+    let by_season_id = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/{}/Episodes?seasonId={}",
+                    fixture.series_id, fixture.second_season_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(by_season_id["TotalRecordCount"], 2);
+    assert_eq!(
+        item_ids(&by_season_id),
+        vec![
+            fixture.third_episode_id.simple().to_string(),
+            fixture.missing_episode_id.simple().to_string(),
+        ]
+    );
+
+    let no_such_season = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes?season=99", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(no_such_season["TotalRecordCount"], 0);
+    assert_eq!(no_such_season["Items"].as_array().unwrap().len(), 0);
+
+    let missing = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes?isMissing=true", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(missing["TotalRecordCount"], 1);
+    assert_eq!(
+        missing["Items"][0]["Id"],
+        fixture.missing_episode_id.simple().to_string()
+    );
+
+    let started = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/{}/Episodes?startItemId={}",
+                    fixture.series_id, fixture.second_episode_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(started["TotalRecordCount"], 3);
+    assert_eq!(
+        item_ids(&started),
+        vec![
+            fixture.second_episode_id.simple().to_string(),
+            fixture.third_episode_id.simple().to_string(),
+            fixture.missing_episode_id.simple().to_string(),
+        ]
+    );
+
+    let adjacent = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/{}/Episodes?adjacentTo={}",
+                    fixture.series_id, fixture.second_episode_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(adjacent["TotalRecordCount"], 3);
+    assert_eq!(
+        item_ids(&adjacent),
+        vec![
+            fixture.first_episode_id.simple().to_string(),
+            fixture.second_episode_id.simple().to_string(),
+            fixture.third_episode_id.simple().to_string(),
+        ]
+    );
+
+    let paged = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes?startIndex=1&limit=2", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(paged["StartIndex"], 1);
+    assert_eq!(paged["TotalRecordCount"], 5);
+    assert_eq!(
+        item_ids(&paged),
+        vec![
+            fixture.first_episode_id.simple().to_string(),
+            fixture.second_episode_id.simple().to_string(),
+        ]
+    );
 }
 
 struct Fixture {
@@ -180,6 +397,11 @@ struct Fixture {
     first_season_id: Uuid,
     second_season_id: Uuid,
     missing_season_id: Uuid,
+    special_episode_id: Uuid,
+    first_episode_id: Uuid,
+    second_episode_id: Uuid,
+    third_episode_id: Uuid,
+    missing_episode_id: Uuid,
 }
 
 impl Fixture {
@@ -249,11 +471,61 @@ impl Fixture {
             Some(json!({ "IsMissing": true })),
         )
         .await;
+        let special_episode = create_episode(
+            &items,
+            "00 Special Episode",
+            special_season.id,
+            series.id,
+            0,
+            1,
+            None,
+        )
+        .await;
+        let first_episode = create_episode(
+            &items,
+            "01 Episode One",
+            first_season.id,
+            series.id,
+            1,
+            1,
+            None,
+        )
+        .await;
+        let second_episode = create_episode(
+            &items,
+            "02 Episode Two",
+            first_season.id,
+            series.id,
+            1,
+            2,
+            None,
+        )
+        .await;
+        let third_episode = create_episode(
+            &items,
+            "03 Episode Three",
+            second_season.id,
+            series.id,
+            2,
+            1,
+            None,
+        )
+        .await;
+        let missing_episode = create_episode(
+            &items,
+            "04 Missing Episode",
+            second_season.id,
+            series.id,
+            2,
+            2,
+            Some(json!({ "IsMissing": true })),
+        )
+        .await;
         create_item(
             &items,
             "Episode",
             "Ignored Episode",
-            Some(first_season.id),
+            Some(root.id),
             Some(1),
             None,
         )
@@ -285,6 +557,11 @@ impl Fixture {
             first_season_id: first_season.id,
             second_season_id: second_season.id,
             missing_season_id: missing_season.id,
+            special_episode_id: special_episode.id,
+            first_episode_id: first_episode.id,
+            second_episode_id: second_episode.id,
+            third_episode_id: third_episode.id,
+            missing_episode_id: missing_episode.id,
         }
     }
 
@@ -324,6 +601,28 @@ async fn create_item(
     item.data = data;
     item.is_folder = item_type == "Series" || item_type == "Season";
     repository.create(item).await.expect("item creation")
+}
+
+async fn create_episode(
+    repository: &BaseItemRepository,
+    name: &str,
+    season_id: Uuid,
+    series_id: Uuid,
+    parent_index_number: i32,
+    index_number: i32,
+    data: Option<Value>,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.parent_id = Some(season_id);
+    item.parent_index_number = Some(parent_index_number);
+    item.index_number = Some(index_number);
+    item.series_id = Some(series_id);
+    item.season_id = Some(season_id);
+    item.media_type = Some("Video".to_owned());
+    item.data = data;
+    repository.create(item).await.expect("episode creation")
 }
 
 async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) -> String {

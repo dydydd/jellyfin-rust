@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -44,6 +44,181 @@ pub(crate) struct SeasonsQuery {
     enable_image_types: Vec<String>,
     #[serde(rename = "enableUserData", alias = "EnableUserData")]
     enable_user_data: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct EpisodesQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    season: Option<i32>,
+    #[serde(rename = "seasonId", alias = "SeasonId")]
+    season_id: Option<Uuid>,
+    #[serde(rename = "isMissing", alias = "IsMissing")]
+    is_missing: Option<bool>,
+    #[serde(rename = "adjacentTo", alias = "AdjacentTo")]
+    adjacent_to: Option<Uuid>,
+    #[serde(rename = "startItemId", alias = "StartItemId")]
+    start_item_id: Option<Uuid>,
+    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+    #[serde(rename = "enableImages", alias = "EnableImages")]
+    enable_images: Option<bool>,
+    #[serde(rename = "imageTypeLimit", alias = "ImageTypeLimit")]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(rename = "enableUserData", alias = "EnableUserData")]
+    enable_user_data: Option<bool>,
+    #[serde(rename = "sortBy", alias = "SortBy")]
+    sort_by: Option<String>,
+}
+
+pub(crate) async fn episodes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(series_id): Path<Uuid>,
+    Query(query): Query<EpisodesQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
+    let order = if query
+        .sort_by
+        .as_deref()
+        .is_some_and(|sort| sort.eq_ignore_ascii_case("Random"))
+    {
+        BaseItemOrder::Random
+    } else {
+        BaseItemOrder::SortName
+    };
+
+    let _ = (
+        query.enable_images,
+        query.image_type_limit,
+        query.enable_image_types,
+        query.enable_user_data,
+    );
+
+    let mut episodes = if let Some(season_id) = query.season_id {
+        let season = state
+            .user_library
+            .item(&authenticated.user, target_user_id, season_id)
+            .await?;
+        if !season.item_type.eq_ignore_ascii_case("Season") {
+            return Err(UserLibraryError::ItemNotFound.into());
+        }
+        query_episodes_under(
+            state.as_ref(),
+            &authenticated.user,
+            target_user_id,
+            season_id,
+            false,
+            order,
+        )
+        .await?
+    } else if let Some(season_number) = query.season {
+        validate_series(
+            state.as_ref(),
+            &authenticated.user,
+            target_user_id,
+            series_id,
+        )
+        .await?;
+        let seasons = state
+            .user_library
+            .query_items(
+                &authenticated.user,
+                target_user_id,
+                BaseItemQuery {
+                    parent_id: Some(series_id),
+                    recursive: false,
+                    include_item_types: vec!["Season".to_owned()],
+                    order: BaseItemOrder::SortName,
+                    enable_total_record_count: Some(false),
+                    ..BaseItemQuery::default()
+                },
+            )
+            .await?;
+        let Some(season) = seasons
+            .items
+            .into_iter()
+            .find(|item| item.index_number == Some(season_number))
+        else {
+            return Ok(Json(user_library::BaseItemQueryResult {
+                items: Vec::new(),
+                total_record_count: 0,
+                start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
+            }));
+        };
+        query_episodes_under(
+            state.as_ref(),
+            &authenticated.user,
+            target_user_id,
+            season.id,
+            false,
+            order,
+        )
+        .await?
+    } else {
+        validate_series(
+            state.as_ref(),
+            &authenticated.user,
+            target_user_id,
+            series_id,
+        )
+        .await?;
+        query_episodes_under(
+            state.as_ref(),
+            &authenticated.user,
+            target_user_id,
+            series_id,
+            true,
+            order,
+        )
+        .await?
+    };
+
+    if let Some(expected) = query.is_missing {
+        episodes.retain(|item| is_missing(item) == expected);
+    }
+    if let Some(start_item_id) = query.start_item_id {
+        let start_id = state
+            .user_library
+            .item(&authenticated.user, target_user_id, start_item_id)
+            .await
+            .ok()
+            .and_then(|item| item.primary_version_id)
+            .unwrap_or(start_item_id);
+        episodes = episodes
+            .into_iter()
+            .skip_while(|item| item.id != start_id)
+            .collect();
+    }
+    if let Some(adjacent_to) = query.adjacent_to {
+        episodes = filter_for_adjacency(episodes, adjacent_to);
+    }
+
+    let total_record_count = episodes.len();
+    let return_items = apply_paging(episodes, query.start_index, query.limit);
+    let items = project_items_to_dtos(state.as_ref(), return_items, fields, target_user_id).await?;
+    Ok(Json(user_library::BaseItemQueryResult {
+        items,
+        total_record_count,
+        start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
+    }))
 }
 
 pub(crate) async fn seasons(
@@ -112,6 +287,95 @@ pub(crate) async fn seasons(
         start_index: 0,
         items,
     }))
+}
+
+async fn validate_series(
+    state: &AppState,
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    target_user_id: Uuid,
+    series_id: Uuid,
+) -> Result<(), ApiError> {
+    let series = state
+        .user_library
+        .item(authenticated_user, target_user_id, series_id)
+        .await?;
+    if series.item_type.eq_ignore_ascii_case("Series") {
+        Ok(())
+    } else {
+        Err(UserLibraryError::ItemNotFound.into())
+    }
+}
+
+async fn query_episodes_under(
+    state: &AppState,
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    target_user_id: Uuid,
+    parent_id: Uuid,
+    recursive: bool,
+    order: BaseItemOrder,
+) -> Result<Vec<base_item::Model>, ApiError> {
+    Ok(state
+        .user_library
+        .query_items(
+            authenticated_user,
+            target_user_id,
+            BaseItemQuery {
+                parent_id: Some(parent_id),
+                recursive,
+                include_item_types: vec!["Episode".to_owned()],
+                order,
+                enable_total_record_count: Some(false),
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?
+        .items)
+}
+
+async fn project_items_to_dtos(
+    state: &AppState,
+    items: Vec<base_item::Model>,
+    fields: user_library::BaseItemDtoFields,
+    target_user_id: Uuid,
+) -> Result<Vec<user_library::BaseItemDto>, ApiError> {
+    let defaults =
+        user_library::media_stream_defaults_for_user(state, target_user_id, fields).await?;
+    let mut remembered_user_data = if fields.wants_media_streams() {
+        state
+            .user_data
+            .get_preferred_for_items(target_user_id, &items)
+            .await?
+    } else {
+        HashMap::new()
+    };
+
+    let mut dtos = Vec::with_capacity(items.len());
+    for item in items {
+        let remembered = remembered_user_data.remove(&item.id);
+        dtos.push(
+            user_library::project_item_to_dto(
+                state,
+                item,
+                fields,
+                defaults.as_ref(),
+                remembered.as_ref(),
+            )
+            .await?,
+        );
+    }
+    Ok(dtos)
+}
+
+fn apply_paging(
+    items: Vec<base_item::Model>,
+    start_index: u64,
+    limit: Option<u64>,
+) -> Vec<base_item::Model> {
+    let start_index = usize::try_from(start_index).unwrap_or(usize::MAX);
+    let limit = limit
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
+        .unwrap_or(usize::MAX);
+    items.into_iter().skip(start_index).take(limit).collect()
 }
 
 fn is_special_season(item: &base_item::Model) -> bool {
