@@ -47,6 +47,7 @@ mod authentication;
 mod authorization;
 mod backup;
 mod branding;
+mod channels;
 mod client_log;
 mod configuration;
 mod dashboard;
@@ -344,6 +345,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
+        .route("/Channels", get(channels::list))
         .route("/Search/Hints", get(search::hints))
         .route("/Backup", get(backup::list))
         .route("/Backup/Manifest", get(backup::manifest))
