@@ -1,12 +1,14 @@
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewPerson,
-    NewUserData, PersonRepository, UserDataRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson, NewUserData,
+    PersonRepository, UserDataRepository,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
@@ -16,6 +18,7 @@ use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Persons Tests\", DeviceId=\"persons-tests\", Device=\"Test\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_persons_routes_";
+const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 
 #[tokio::test]
 async fn official_missing_person_is_not_found() {
@@ -286,6 +289,90 @@ async fn persons_list_matches_official_persons_contract() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn person_image_routes_resolve_public_base_item_ordinals() {
+    let fixture = Fixture::new().await;
+    assert_ne!(fixture.person_item_id, fixture.person_id);
+    let first_path = std::env::temp_dir().join(format!("person-{}.png", Uuid::new_v4().simple()));
+    let second_path = std::env::temp_dir().join(format!("person-{}.png", Uuid::new_v4().simple()));
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([220, 30, 30, 255]))
+        .save(&first_path)
+        .unwrap();
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([30, 30, 220, 255]))
+        .save(&second_path)
+        .unwrap();
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            fixture.person_item_id,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 4,
+                    path: first_path.to_string_lossy().into_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(4),
+                    height: Some(2),
+                    blurhash: None,
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 9,
+                    path: second_path.to_string_lossy().into_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(4),
+                    height: Some(2),
+                    blurhash: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    let base = format!("{}/Images/Backdrop", person_route(&fixture.person_name));
+    for route in [format!("{base}?imageIndex=1"), format!("{base}/1")] {
+        let response = fixture.request(&route, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
+    }
+
+    let head = fixture
+        .request_method(Method::HEAD, &format!("{base}/0"), None)
+        .await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(
+        to_bytes(head.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture.request(&format!("{base}/99"), None).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request(
+                &format!("/Persons/{}/Images/Backdrop/0", encoded("missing person")),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture.request(&base, Some("invalid-token")).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let _ = std::fs::remove_file(first_path);
+    let _ = std::fs::remove_file(second_path);
+    fixture.cleanup().await;
+}
+
 fn assert_people(
     body: &Value,
     expected_names: &[&str],
@@ -317,6 +404,7 @@ struct Fixture {
     item_id: Uuid,
     parent_id: Uuid,
     person_id: Uuid,
+    person_item_id: Uuid,
     person_name: String,
     director_name: String,
     nested_person_name: String,
@@ -454,6 +542,7 @@ impl Fixture {
             item_id: item.id,
             parent_id: parent.id,
             person_id: person.id,
+            person_item_id: person_item.id,
             person_name,
             director_name,
             nested_person_name,
@@ -463,7 +552,16 @@ impl Fixture {
     }
 
     async fn request(&self, uri: &str, token: Option<&str>) -> axum::response::Response {
-        let mut request = Request::get(uri);
+        self.request_method(Method::GET, uri, token).await
+    }
+
+    async fn request_method(
+        &self,
+        method: Method,
+        uri: &str,
+        token: Option<&str>,
+    ) -> axum::response::Response {
+        let mut request = Request::builder().method(method).uri(uri);
         if let Some(token) = token {
             request = request.header(
                 header::AUTHORIZATION,

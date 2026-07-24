@@ -513,6 +513,14 @@ pub fn router(state: AppState) -> Router {
         .route("/Persons", get(persons::list))
         .route("/Persons/{name}", get(persons::get))
         .route(
+            "/Persons/{name}/Images/{image_type}",
+            get(persons::get_image),
+        )
+        .route(
+            "/Persons/{name}/Images/{image_type}/{image_index}",
+            get(persons::get_image_by_index),
+        )
+        .route(
             "/Library/VirtualFolders",
             get(virtual_folders::list)
                 .post(virtual_folders::create)
@@ -1485,7 +1493,8 @@ impl IntoResponse for ApiError {
             Self::Person(
                 PersonError::NotFound
                 | PersonError::UserNotFound
-                | PersonError::User(UserError::NotFound),
+                | PersonError::User(UserError::NotFound)
+                | PersonError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Person or user not found"),
             Self::Person(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

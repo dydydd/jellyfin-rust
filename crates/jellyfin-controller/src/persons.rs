@@ -1,6 +1,7 @@
 use jellyfin_data::{
-    PersonError as PersonRepositoryError, PersonQuery, PersonRepository,
-    entities::{person, user},
+    BaseItemError, BaseItemRepository, PersonError as PersonRepositoryError, PersonQuery,
+    PersonRepository,
+    entities::{base_item, person, user},
 };
 use sea_orm::DatabaseConnection;
 use thiserror::Error;
@@ -32,11 +33,14 @@ pub enum PersonError {
     User(#[from] UserError),
     #[error(transparent)]
     Repository(#[from] PersonRepositoryError),
+    #[error(transparent)]
+    BaseItem(#[from] BaseItemError),
 }
 
 #[derive(Clone)]
 pub struct PersonService {
     users: UserService,
+    items: BaseItemRepository,
     people: PersonRepository,
 }
 
@@ -45,6 +49,7 @@ impl PersonService {
     pub fn new(database: DatabaseConnection) -> Self {
         Self {
             users: UserService::new(database.clone()),
+            items: BaseItemRepository::new(database.clone()),
             people: PersonRepository::new(database),
         }
     }
@@ -75,6 +80,15 @@ impl PersonService {
             Err(error) => return Err(error.into()),
         };
         Ok(Person { model: person })
+    }
+
+    /// Resolves the persisted `Person` item that owns image metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the item lookup fails.
+    pub async fn image_item(&self, name: &str) -> Result<Option<base_item::Model>, PersonError> {
+        Ok(self.items.get_by_type_and_name("Person", name).await?)
     }
 
     /// Lists people credited to filtered library items.
