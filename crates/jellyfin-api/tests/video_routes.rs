@@ -1,11 +1,12 @@
 use axum::{
-    body::Body,
+    body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, entities::user};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -161,6 +162,76 @@ async fn merge_versions_route_enforces_official_contract_and_persists_group() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn additional_parts_route_reads_official_path_metadata() {
+    let fixture = Fixture::new().await;
+    let route = format!("/Videos/{}/AdditionalParts", fixture.additional_main_id);
+
+    assert_eq!(
+        fixture.send(Method::GET, &route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &format!("{route}?userId={}", fixture.admin_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &format!("/Videos/{}/AdditionalParts", Uuid::new_v4()),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let non_video = body_json(
+        fixture
+            .send(
+                Method::GET,
+                &format!("/Videos/{}/AdditionalParts", fixture.non_video_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(non_video["TotalRecordCount"], 0);
+    assert!(non_video["Items"].as_array().unwrap().is_empty());
+
+    let body = body_json(
+        fixture
+            .send(Method::GET, &route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(body["TotalRecordCount"], 2);
+    assert_eq!(body["StartIndex"], 0);
+    assert_eq!(body["Items"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        body["Items"][0]["Id"],
+        fixture.additional_parts[0].simple().to_string()
+    );
+    assert_eq!(body["Items"][0]["Name"], "A Additional Part");
+    assert_eq!(body["Items"][0]["Type"], "Video");
+    assert_eq!(
+        body["Items"][1]["Id"],
+        fixture.additional_parts[1].simple().to_string()
+    );
+    assert_eq!(body["Items"][1]["Name"], "B Additional Part");
+    assert_eq!(body["Items"][1]["Type"], "Movie");
+
+    fixture.cleanup().await;
+}
+
 struct Fixture {
     database: DatabaseConnection,
     repository: BaseItemRepository,
@@ -172,6 +243,9 @@ struct Fixture {
     group_a: VersionGroup,
     group_b: VersionGroup,
     non_video_id: Uuid,
+    additional_main_id: Uuid,
+    additional_parts: [Uuid; 2],
+    additional_non_video_id: Uuid,
 }
 
 impl Fixture {
@@ -212,6 +286,59 @@ impl Fixture {
             None,
         )
         .await;
+        let additional_main_id = Uuid::new_v4();
+        let additional_parts = [Uuid::new_v4(), Uuid::new_v4()];
+        let additional_non_video_id = Uuid::new_v4();
+        let part_a_path = format!("/media/{suffix}/additional-a.mkv");
+        let part_b_path = format!("/media/{suffix}/additional-b.mkv");
+        let non_video_path = format!("/media/{suffix}/additional-folder");
+        create_item_with(
+            &repository,
+            additional_main_id,
+            "Stacked Movie",
+            "Movie",
+            Some(json!({
+                "AdditionalParts": [
+                    part_b_path,
+                    "/media/missing-additional-part.mkv",
+                    non_video_path,
+                    part_a_path
+                ]
+            })),
+            Some(format!("/media/{suffix}/stacked-main.mkv")),
+            None,
+        )
+        .await;
+        create_item_with(
+            &repository,
+            additional_parts[0],
+            "A Additional Part",
+            "Video",
+            None,
+            Some(part_a_path),
+            None,
+        )
+        .await;
+        create_item_with(
+            &repository,
+            additional_parts[1],
+            "B Additional Part",
+            "Movie",
+            None,
+            Some(part_b_path),
+            None,
+        )
+        .await;
+        create_item_with(
+            &repository,
+            additional_non_video_id,
+            "Ignored Additional Folder",
+            "Folder",
+            None,
+            Some(non_video_path),
+            None,
+        )
+        .await;
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Video Test Server".to_owned(),
@@ -228,6 +355,9 @@ impl Fixture {
             group_a,
             group_b,
             non_video_id,
+            additional_main_id,
+            additional_parts,
+            additional_non_video_id,
         }
     }
 
@@ -278,7 +408,13 @@ impl Fixture {
             .ids()
             .into_iter()
             .chain(self.group_b.ids())
-            .chain([self.non_video_id])
+            .chain([
+                self.non_video_id,
+                self.additional_main_id,
+                self.additional_parts[0],
+                self.additional_parts[1],
+                self.additional_non_video_id,
+            ])
             .collect::<Vec<_>>();
         self.repository
             .delete_many(&ids)
@@ -325,14 +461,37 @@ async fn create_item(
     label: &str,
     item_type: &str,
     primary_version_id: Option<Uuid>,
-) {
+) -> jellyfin_data::entities::base_item::Model {
+    create_item_with(
+        repository,
+        id,
+        label,
+        item_type,
+        None,
+        Some(format!("/media/{label}/{id}.mkv")),
+        primary_version_id,
+    )
+    .await
+}
+
+async fn create_item_with(
+    repository: &BaseItemRepository,
+    id: Uuid,
+    name: &str,
+    item_type: &str,
+    data: Option<Value>,
+    path: Option<String>,
+    primary_version_id: Option<Uuid>,
+) -> jellyfin_data::entities::base_item::Model {
     let mut item = NewBaseItem::new(id, item_type);
-    item.name = Some(label.to_owned());
-    item.path = Some(format!("/media/{label}/{id}.mkv"));
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.path = path;
+    item.data = data;
     item.media_type = Some("Video".to_owned());
-    item.presentation_unique_key = Some(label.to_owned());
+    item.presentation_unique_key = Some(name.to_owned());
     item.primary_version_id = primary_version_id;
-    repository.create(item).await.expect("video item creation");
+    repository.create(item).await.expect("video item creation")
 }
 
 async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) -> String {
@@ -347,4 +506,13 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
         .await
         .expect("session creation")
         .access_token
+}
+
+async fn body_json(response: axum::response::Response) -> Value {
+    serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body"),
+    )
+    .expect("JSON response")
 }

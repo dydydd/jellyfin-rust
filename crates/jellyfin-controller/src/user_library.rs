@@ -168,6 +168,43 @@ impl UserLibraryService {
             .collect())
     }
 
+    /// Loads additional video parts referenced by a stacked-video item.
+    ///
+    /// Jellyfin persists additional parts as paths on the primary video. The
+    /// persisted Rust model stores that compatible contract in item metadata
+    /// under `AdditionalParts`.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn additional_parts(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Vec<base_item::Model>, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        let item = self.load_item(item_id).await?;
+        let Some(item_type) = self.item_types.resolve(&item.item_type) else {
+            return Ok(Vec::new());
+        };
+        if !is_video_item_type(item_type.name()) {
+            return Ok(Vec::new());
+        }
+
+        let paths = additional_part_paths(item.data.as_ref());
+        Ok(self
+            .items
+            .by_paths(&paths)
+            .await?
+            .into_iter()
+            .filter_map(|item| self.item_types.hydrate(item))
+            .filter(|item| is_video_item_type(item.item_type().name()))
+            .map(HydratedBaseItem::into_model)
+            .collect())
+    }
+
     /// Loads embedded lyric data after validating the user and item.
     ///
     /// # Errors
@@ -364,6 +401,27 @@ fn is_display_extra_type(value: &str) -> bool {
     .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
+fn is_video_item_type(value: &str) -> bool {
+    ["Video", "Movie", "Episode", "MusicVideo", "Trailer"]
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
+fn additional_part_paths(data: Option<&Value>) -> Vec<String> {
+    metadata_value(data, &["AdditionalParts", "additional_parts"])
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn metadata_value<'a>(data: Option<&'a Value>, keys: &[&str]) -> Option<&'a Value> {
     let object = data?.as_object()?;
     keys.iter().find_map(|key| object.get(*key))
@@ -423,5 +481,21 @@ mod tests {
             &item_with_data(json!({ "ExtraType": "ThemeVideo" })),
             RelatedItemKind::SpecialFeature
         ));
+    }
+
+    #[test]
+    fn additional_part_paths_use_official_metadata_key() {
+        assert_eq!(
+            additional_part_paths(Some(&json!({
+                "AdditionalParts": [" /media/part2.mkv ", "", null, "/media/part3.mkv"]
+            }))),
+            ["/media/part2.mkv", "/media/part3.mkv"]
+        );
+        assert_eq!(
+            additional_part_paths(Some(&json!({
+                "additional_parts": ["/media/lowercase.mkv"]
+            }))),
+            ["/media/lowercase.mkv"]
+        );
     }
 }

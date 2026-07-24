@@ -338,6 +338,27 @@ impl BaseItemRepository {
         Ok(self.get(id).await?.is_some())
     }
 
+    /// Loads items whose stored path exactly matches one of the supplied paths.
+    ///
+    /// Results use stable Jellyfin-style sort-name ordering and omit missing
+    /// paths. Callers that need to preserve the source list can join by `path`
+    /// afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn by_paths(&self, paths: &[String]) -> Result<Vec<base_item::Model>, BaseItemError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(base_item::Entity::find()
+            .filter(base_item::Column::Path.is_in(paths.iter().cloned()))
+            .order_by_asc(base_item::Column::SortName)
+            .order_by_asc(base_item::Column::Id)
+            .all(&self.database)
+            .await?)
+    }
+
     /// Detaches every member of the version group containing `item_id`.
     ///
     /// `PostgreSQL` resolves the primary identifier and clears the complete group

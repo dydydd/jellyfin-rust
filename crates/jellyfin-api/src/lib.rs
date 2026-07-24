@@ -923,6 +923,10 @@ fn video_routes() -> Router<Arc<AppState>> {
             axum::routing::delete(videos::delete_alternate_sources),
         )
         .route(
+            "/Videos/{item_id}/AdditionalParts",
+            get(videos::additional_parts),
+        )
+        .route(
             "/Videos/{item_id}/Subtitles/{index}",
             axum::routing::delete(subtitles::delete_subtitle),
         )

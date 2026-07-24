@@ -26,7 +26,7 @@ use crate::{ApiError, AppState, authentication};
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UserIdQuery {
     #[serde(default, rename = "userId", alias = "UserId")]
-    user_id: Option<Uuid>,
+    pub(crate) user_id: Option<Uuid>,
     #[serde(
         default,
         rename = "fields",
