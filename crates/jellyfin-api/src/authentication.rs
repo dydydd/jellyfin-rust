@@ -294,13 +294,23 @@ pub(crate) async fn optional_authenticated_user_id(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<Option<Uuid>, ApiError> {
+    match optional_authenticated_identity(state, headers, uri).await? {
+        Some(AuthenticatedIdentity::Device(session)) => Ok(Some(session.user.id)),
+        Some(AuthenticatedIdentity::ApiKey(_)) | None => Ok(None),
+    }
+}
+
+pub(crate) async fn optional_authenticated_identity(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Result<Option<AuthenticatedIdentity>, ApiError> {
     if access_token(headers, uri.query()).is_none() {
         return Ok(None);
     }
-    match authenticated_identity(state, headers, Some(uri)).await? {
-        AuthenticatedIdentity::Device(session) => Ok(Some(session.user.id)),
-        AuthenticatedIdentity::ApiKey(_) => Ok(None),
-    }
+    authenticated_identity(state, headers, Some(uri))
+        .await
+        .map(Some)
 }
 
 pub(crate) async fn authenticated_identity(

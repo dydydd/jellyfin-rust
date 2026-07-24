@@ -361,6 +361,12 @@ pub fn router(state: AppState) -> Router {
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
+        .route(
+            "/Branding/Splashscreen",
+            get(branding::get_splashscreen)
+                .post(branding::upload_splashscreen)
+                .delete(branding::delete_splashscreen),
+        )
         .route("/Channels", get(channels::list))
         .route(
             "/Artists/{name}/Images/{image_type}/{image_index}",
@@ -1137,6 +1143,7 @@ pub(crate) enum ApiError {
     InvalidRequest,
     UnsupportedMediaType,
     PayloadTooLarge,
+    NotFound,
     Unauthorized,
     Forbidden,
     Internal,
@@ -1369,6 +1376,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Unsupported media type")
             }
             Self::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "Payload too large"),
+            Self::NotFound => (StatusCode::NOT_FOUND, "Not found"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             Self::Forbidden
             | Self::Playstate(PlaystateError::Forbidden)

@@ -238,7 +238,16 @@ async fn upload_internal(
     if image_type == ImageType::Chapter {
         return Err(jellyfin_controller::ItemImageError::UnsupportedImageType.into());
     }
-    let encoded = to_bytes(request.into_body(), usize::MAX)
+    let image = decode_base64_image_body(request.into_body()).await?;
+    state
+        .item_images
+        .upload(item_id, image_type, &extension, &image)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn decode_base64_image_body(body: Body) -> Result<Vec<u8>, ApiError> {
+    let encoded = to_bytes(body, usize::MAX)
         .await
         .map_err(|_| ApiError::Internal)?;
     let mut encoded = encoded
@@ -247,14 +256,9 @@ async fn upload_internal(
         .filter(|byte| !byte.is_ascii_whitespace())
         .collect::<Vec<_>>();
     encoded.truncate(encoded.len() / 4 * 4);
-    let image = BASE64_STANDARD
+    BASE64_STANDARD
         .decode(encoded)
-        .map_err(|_| ApiError::Internal)?;
-    state
-        .item_images
-        .upload(item_id, image_type, &extension, &image)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+        .map_err(|_| ApiError::Internal)
 }
 
 async fn delete_internal(
