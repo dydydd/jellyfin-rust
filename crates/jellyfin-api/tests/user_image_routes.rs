@@ -1,10 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
@@ -98,6 +103,8 @@ async fn exercise_user_image_routes(database_name: &str) {
     let admin_token = session(&devices, administrator.id, &format!("admin-{suffix}")).await;
     let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
     let other_token = session(&devices, other.id, &format!("other-{suffix}")).await;
+    let png = png_fixture();
+    let encoded_png = BASE64_STANDARD.encode(&png);
 
     assert_eq!(
         post_image(&app, "/UserImage", None, "image/png", "Zmlyc3Q=")
@@ -135,7 +142,7 @@ async fn exercise_user_image_routes(database_name: &str) {
         "/UserImage",
         Some(&user_token),
         "image/png; charset=utf-8",
-        "Zmlyc3Q=",
+        &encoded_png,
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -150,7 +157,129 @@ async fn exercise_user_image_routes(database_name: &str) {
         tokio::fs::read(&first.path)
             .await
             .expect("stored PNG bytes"),
-        b"first"
+        png
+    );
+
+    assert_eq!(
+        get_image(&app, axum::http::Method::GET, "/UserImage", None, &[])
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        get_image(
+            &app,
+            axum::http::Method::GET,
+            &format!("/UserImage?userId={}", Uuid::nil()),
+            None,
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        get_image(
+            &app,
+            axum::http::Method::GET,
+            "/UserImage",
+            Some("invalid-token"),
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let anonymous = get_image(
+        &app,
+        axum::http::Method::GET,
+        &format!("/UserImage?userId={}", user.id),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(anonymous.status(), StatusCode::OK);
+    assert_eq!(anonymous.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        to_bytes(anonymous.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap(),
+        png.as_slice()
+    );
+
+    let head = get_image(
+        &app,
+        axum::http::Method::HEAD,
+        "/UserImage",
+        Some(&user_token),
+        &[],
+    )
+    .await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        head.headers()[header::CONTENT_LENGTH],
+        png.len().to_string().as_str()
+    );
+    assert!(
+        to_bytes(head.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let jpeg = get_image(
+        &app,
+        axum::http::Method::GET,
+        &format!(
+            "/Users/{}/Images/not-a-real-type/-999?format=jpg&width=1&quality=1",
+            user.id
+        ),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(jpeg.status(), StatusCode::OK);
+    assert_eq!(jpeg.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert!(
+        !to_bytes(jpeg.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let tagged = get_image(
+        &app,
+        axum::http::Method::GET,
+        &format!("/Users/{}/Images/Primary?tag=profile-tag", user.id),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(tagged.status(), StatusCode::OK);
+    assert_eq!(tagged.headers()[header::ETAG], "\"profile-tag\"");
+    let not_modified = get_image(
+        &app,
+        axum::http::Method::GET,
+        &format!("/UserImage?userId={}&tag=profile-tag", user.id),
+        None,
+        &[(header::IF_NONE_MATCH.as_str(), "\"profile-tag\"")],
+    )
+    .await;
+    assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+    assert_empty(not_modified).await;
+
+    assert_eq!(
+        get_image(
+            &app,
+            axum::http::Method::GET,
+            &format!("/UserImage?userId={}", other.id),
+            None,
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
     );
 
     let response = post_image(
@@ -262,7 +391,7 @@ async fn post_image(
     uri: &str,
     token: Option<&str>,
     content_type: &'static str,
-    body: &'static str,
+    body: &str,
 ) -> axum::response::Response {
     let mut request = Request::post(uri).header(header::CONTENT_TYPE, content_type);
     if let Some(token) = token {
@@ -272,7 +401,30 @@ async fn post_image(
         );
     }
     app.clone()
-        .oneshot(request.body(Body::from(body)).unwrap())
+        .oneshot(request.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn get_image(
+    app: &Router,
+    method: axum::http::Method,
+    uri: &str,
+    token: Option<&str>,
+    headers: &[(&str, &str)],
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(token) = token {
+        request = request.header(
+            header::AUTHORIZATION,
+            format!("{AUTHORIZATION}, Token=\"{token}\""),
+        );
+    }
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    app.clone()
+        .oneshot(request.body(Body::empty()).unwrap())
         .await
         .unwrap()
 }
@@ -327,4 +479,13 @@ fn assert_temporary_database_name(name: &str) {
         .expect("temporary database prefix");
     assert_eq!(suffix.len(), 32);
     assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+}
+
+fn png_fixture() -> Vec<u8> {
+    let image = RgbaImage::from_pixel(3, 2, Rgba([20, 100, 200, 255]));
+    let mut bytes = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image)
+        .write_to(&mut bytes, ImageFormat::Png)
+        .expect("PNG fixture encoding");
+    bytes.into_inner()
 }

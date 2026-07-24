@@ -8,6 +8,7 @@ use axum::{
         rejection::QueryRejection,
     },
     http::{HeaderMap, Request, StatusCode, header},
+    response::Response,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::Utc;
@@ -146,6 +147,99 @@ pub(crate) async fn get(
 pub struct UpdateUserQuery {
     #[serde(rename = "userId", alias = "UserId")]
     pub user_id: Option<Uuid>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct GetUserImageQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(default, rename = "tag", alias = "Tag")]
+    tag: Option<String>,
+    #[serde(default, rename = "format", alias = "Format")]
+    format: Option<String>,
+}
+
+pub(crate) async fn get_user_image(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<GetUserImageQuery>,
+) -> Result<Response, ApiError> {
+    let authenticated_user_id =
+        authentication::optional_authenticated_user_id(&state, &headers, &uri).await?;
+    let user_id = query
+        .user_id
+        .or(authenticated_user_id)
+        .filter(|user_id| !user_id.is_nil())
+        .ok_or(ApiError::InvalidRequest)?;
+    get_user_image_for(
+        &state,
+        &headers,
+        user_id,
+        query.tag.as_deref(),
+        query.format.as_deref(),
+    )
+    .await
+}
+
+pub(crate) async fn get_user_image_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((user_id, _image_type)): Path<(Uuid, String)>,
+    Query(query): Query<GetUserImageQuery>,
+) -> Result<Response, ApiError> {
+    get_user_image_for(
+        &state,
+        &headers,
+        user_id,
+        query.tag.as_deref(),
+        query.format.as_deref(),
+    )
+    .await
+}
+
+pub(crate) async fn get_user_image_index_legacy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((user_id, _image_type, _index)): Path<(Uuid, String, i32)>,
+    Query(query): Query<GetUserImageQuery>,
+) -> Result<Response, ApiError> {
+    get_user_image_for(
+        &state,
+        &headers,
+        user_id,
+        query.tag.as_deref(),
+        query.format.as_deref(),
+    )
+    .await
+}
+
+async fn get_user_image_for(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: Uuid,
+    tag: Option<&str>,
+    format: Option<&str>,
+) -> Result<Response, ApiError> {
+    if user_id.is_nil() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let image = state
+        .users
+        .profile_image(user_id)
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .ok_or(jellyfin_controller::UserError::NotFound)?;
+    crate::item_images::render_simple_image(
+        state,
+        headers,
+        PathBuf::from(image.path),
+        image.last_modified,
+        tag,
+        format,
+        90,
+    )
+    .await
 }
 
 pub(crate) async fn post_user_image(

@@ -307,6 +307,34 @@ async fn get_internal(
     build_response(&headers, query.tag.as_deref(), processed).await
 }
 
+pub(crate) async fn render_simple_image(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: std::path::PathBuf,
+    date_modified: DateTime<Utc>,
+    tag: Option<&str>,
+    format: Option<&str>,
+    quality: u8,
+) -> Result<Response, ApiError> {
+    let format = format.map(parse_image_format).transpose()?;
+    let supported_formats =
+        format.map_or_else(|| negotiated_formats(headers, None), |format| vec![format]);
+    let source = ImageSource {
+        path,
+        date_modified: SystemTime::from(date_modified),
+        width: None,
+        height: None,
+    };
+    let request = ImageProcessingRequest {
+        quality,
+        format,
+        supported_formats,
+        ..ImageProcessingRequest::default()
+    };
+    let processed = state.image_processor.process(&source, &request).await?;
+    build_response(headers, tag, processed).await
+}
+
 async fn ensure_visible_item(
     state: &AppState,
     headers: &HeaderMap,
