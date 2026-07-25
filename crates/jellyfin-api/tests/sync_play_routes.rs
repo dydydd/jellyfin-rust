@@ -522,7 +522,7 @@ async fn exercise_sync_play_routes(database_name: &str) {
         json!([])
     );
 
-    exercise_websocket_disconnect(&app, &creator_token).await;
+    exercise_websocket_commands_and_disconnect(&app, &creator_token, first_item.id).await;
 
     user::Entity::delete_many()
         .exec(&database)
@@ -531,7 +531,11 @@ async fn exercise_sync_play_routes(database_name: &str) {
     database.close().await.unwrap();
 }
 
-async fn exercise_websocket_disconnect(app: &Router, creator_token: &str) {
+async fn exercise_websocket_commands_and_disconnect(
+    app: &Router,
+    creator_token: &str,
+    item_id: Uuid,
+) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server_app = app.clone();
@@ -558,6 +562,29 @@ async fn exercise_websocket_disconnect(app: &Router, creator_token: &str) {
     )
     .await;
     assert_eq!(created["Participants"].as_array().unwrap().len(), 1);
+    assert_no_content(
+        request(
+            app,
+            "POST",
+            "/SyncPlay/SetNewQueue",
+            Some(creator_token),
+            Some(json!({
+                "PlayingQueue": [item_id],
+                "PlayingItemPosition": 0,
+                "StartPositionTicks": 0
+            })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(request(app, "POST", "/SyncPlay/Unpause", Some(creator_token), None).await)
+        .await;
+    let command = socket.next().await.unwrap().unwrap();
+    let command: Value = serde_json::from_str(command.to_text().unwrap()).unwrap();
+    assert_eq!(command["MessageType"], "SyncPlayCommand");
+    assert_eq!(command["Data"]["Command"], "Unpause");
+    assert_eq!(command["Data"]["GroupId"], created["GroupId"]);
+    assert_eq!(command["Data"]["PositionTicks"], 0);
 
     socket.close(None).await.unwrap();
     for _ in 0..100 {

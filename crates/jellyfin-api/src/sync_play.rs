@@ -7,7 +7,7 @@ use axum::{
 };
 use jellyfin_model::{
     BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
-    IgnoreWaitRequestDto, PingRequestDto, ReadyRequestDto,
+    IgnoreWaitRequestDto, PingRequestDto, ReadyRequestDto, SendCommandType,
 };
 use jellyfin_server_implementations::SyncPlaySession;
 use serde::Deserialize;
@@ -297,7 +297,9 @@ pub(crate) async fn unpause(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    state.sync_play.unpause(&session.session_id).await;
+    if state.sync_play.unpause(&session.session_id).await {
+        broadcast_playback_command(&state, &session.session_id, SendCommandType::Unpause).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -306,7 +308,9 @@ pub(crate) async fn pause(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    state.sync_play.pause(&session.session_id).await;
+    if state.sync_play.pause(&session.session_id).await {
+        broadcast_playback_command(&state, &session.session_id, SendCommandType::Pause).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -315,7 +319,9 @@ pub(crate) async fn stop(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    state.sync_play.stop(&session.session_id).await;
+    if state.sync_play.stop(&session.session_id).await {
+        broadcast_playback_command(&state, &session.session_id, SendCommandType::Stop).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -327,10 +333,13 @@ pub(crate) async fn seek(
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let runtime_ticks = current_item_runtime(&state, &session).await?;
-    state
+    if state
         .sync_play
         .seek(&session.session_id, request.position_ticks, runtime_ticks)
-        .await;
+        .await
+    {
+        broadcast_playback_command(&state, &session.session_id, SendCommandType::Seek).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -473,6 +482,19 @@ async fn current_item_runtime(
         .await?
         .runtime_ticks
         .unwrap_or(0))
+}
+
+async fn broadcast_playback_command(state: &AppState, session_id: &str, command: SendCommandType) {
+    if let Some((sessions, payload)) = state
+        .sync_play
+        .playback_command_for_session(session_id, command)
+        .await
+    {
+        state
+            .web_sockets
+            .send(&sessions, "SyncPlayCommand", &payload)
+            .await;
+    }
 }
 
 async fn require_active_user(

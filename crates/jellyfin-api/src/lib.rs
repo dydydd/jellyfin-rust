@@ -117,6 +117,7 @@ pub struct AppState {
     pub(crate) display_preferences: DisplayPreferenceRepository,
     pub(crate) session_commands: SessionCommandRepository,
     pub(crate) sync_play: SyncPlayManager,
+    pub(crate) web_sockets: Arc<websocket::WebSocketHub>,
     pub(crate) quick_connect:
         QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
     pub(crate) playstate: PlaystateService,
@@ -179,6 +180,7 @@ impl AppState {
             display_preferences: DisplayPreferenceRepository::new(database.clone()),
             session_commands: SessionCommandRepository::new(database.clone()),
             sync_play: SyncPlayManager::new(),
+            web_sockets: Arc::new(websocket::WebSocketHub::new()),
             quick_connect: QuickConnectManager::new(
                 QuickConnectRepository::new(database.clone()),
                 SystemQuickConnectCapability::new(true),

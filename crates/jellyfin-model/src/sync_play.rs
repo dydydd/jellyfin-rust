@@ -33,6 +33,29 @@ pub enum GroupShuffleMode {
     Shuffle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SendCommandType {
+    Unpause,
+    Pause,
+    Stop,
+    Seek,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct SendCommandDto {
+    #[serde(with = "crate::serde_guid::single")]
+    pub group_id: Uuid,
+    #[serde(with = "crate::serde_guid::single")]
+    pub playlist_item_id: Uuid,
+    #[serde(with = "crate::serde_datetime::required")]
+    pub when: DateTime<Utc>,
+    pub position_ticks: Option<i64>,
+    pub command: SendCommandType,
+    #[serde(with = "crate::serde_datetime::required")]
+    pub emitted_at: DateTime<Utc>,
+}
+
 /// Playback position reported by a member that has started buffering.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]

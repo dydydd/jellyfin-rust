@@ -1,7 +1,7 @@
 use chrono::Utc;
 use jellyfin_model::{
     BufferRequestDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
-    ReadyRequestDto,
+    ReadyRequestDto, SendCommandType,
 };
 use jellyfin_server_implementations::{SyncPlayManager, SyncPlaySession};
 use uuid::Uuid;
@@ -370,4 +370,34 @@ async fn sync_play_manager_leaves_only_after_the_last_websocket_disconnects() {
     assert!(manager.websocket_disconnected("1").await);
     assert!(manager.get_group(group.group_id).await.is_none());
     assert!(!manager.websocket_disconnected("1").await);
+}
+
+#[tokio::test]
+async fn sync_play_manager_builds_commands_for_every_group_session() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(session(2, Uuid::new_v4(), "alice"), "Commands".to_owned())
+        .await;
+    assert!(
+        manager
+            .join_group(session(1, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 42).await);
+
+    let (sessions, command) = manager
+        .playback_command_for_session("1", SendCommandType::Seek)
+        .await
+        .unwrap();
+    assert_eq!(sessions, ["1", "2"]);
+    assert_eq!(command.group_id, group.group_id);
+    assert_eq!(command.command, SendCommandType::Seek);
+    assert_eq!(command.position_ticks, Some(42));
+    assert!(!command.playlist_item_id.is_nil());
+    assert!(
+        manager
+            .playback_command_for_session("missing", SendCommandType::Stop)
+            .await
+            .is_none()
+    );
 }

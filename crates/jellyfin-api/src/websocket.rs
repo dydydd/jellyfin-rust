@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::{OriginalUri, State, WebSocketUpgrade, ws::Message},
@@ -7,13 +7,69 @@ use axum::{
 };
 use jellyfin_server_implementations::{WebSocketMessageType, deserialize_websocket_message};
 use serde_json::json;
-use tokio::time::{Duration, Instant, MissedTickBehavior};
+use tokio::{
+    sync::{RwLock, broadcast},
+    time::{Duration, Instant, MissedTickBehavior},
+};
+use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, session::jellyfin_session_id};
 
 const LOST_TIMEOUT: Duration = Duration::from_secs(60);
 const FORCE_KEEP_ALIVE_AFTER: Duration = Duration::from_secs(45);
 const WATCH_INTERVAL: Duration = Duration::from_secs(12);
+
+#[derive(Debug, Default)]
+pub(crate) struct WebSocketHub {
+    sessions: RwLock<HashMap<String, broadcast::Sender<String>>>,
+}
+
+impl WebSocketHub {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    async fn subscribe(&self, session_id: &str) -> broadcast::Receiver<String> {
+        let mut sessions = self.sessions.write().await;
+        sessions
+            .entry(session_id.to_owned())
+            .or_insert_with(|| broadcast::channel(64).0)
+            .subscribe()
+    }
+
+    async fn unsubscribe(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        if sessions
+            .get(session_id)
+            .is_some_and(|sender| sender.receiver_count() == 0)
+        {
+            sessions.remove(session_id);
+        }
+    }
+
+    pub(crate) async fn send<T: serde::Serialize>(
+        &self,
+        session_ids: &[String],
+        message_type: &str,
+        data: &T,
+    ) {
+        let Ok(data) = serde_json::to_value(data) else {
+            return;
+        };
+        let message = json!({
+            "MessageType": message_type,
+            "MessageId": Uuid::new_v4().simple().to_string(),
+            "Data": data
+        })
+        .to_string();
+        let sessions = self.sessions.read().await;
+        for session_id in session_ids {
+            if let Some(sender) = sessions.get(session_id) {
+                let _ = sender.send(message.clone());
+            }
+        }
+    }
+}
 
 pub(crate) async fn connect(
     State(state): State<Arc<AppState>>,
@@ -32,8 +88,11 @@ pub(crate) async fn connect(
 }
 
 async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, session_id: String) {
+    let mut outbound = state.web_sockets.subscribe(&session_id).await;
     state.sync_play.websocket_connected(&session_id).await;
     if send_force_keep_alive(&mut socket).await.is_err() {
+        drop(outbound);
+        state.web_sockets.unsubscribe(&session_id).await;
         state.sync_play.websocket_disconnected(&session_id).await;
         return;
     }
@@ -57,7 +116,7 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
                     forced = true;
                 }
             }
-            message = socket.recv() => match message {
+            message = socket.recv() => { match message {
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 Some(Ok(Message::Ping(payload))) => {
                     last_keep_alive = Instant::now();
@@ -79,9 +138,20 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
                     forced = false;
                 }
                 Some(Ok(Message::Text(_) | Message::Binary(_))) => {}
-            }
+            } }
+            message = outbound.recv() => { match message {
+                Ok(message) => {
+                    if socket.send(Message::Text(message.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            } }
         }
     }
+    drop(outbound);
+    state.web_sockets.unsubscribe(&session_id).await;
     state.sync_play.websocket_disconnected(&session_id).await;
 }
 

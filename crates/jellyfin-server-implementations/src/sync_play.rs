@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use chrono::Utc;
 use jellyfin_model::{
     BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
-    GroupStateType, ReadyRequestDto,
+    GroupStateType, ReadyRequestDto, SendCommandDto, SendCommandType,
 };
 use rand::seq::SliceRandom;
 use tokio::sync::RwLock;
@@ -228,6 +228,30 @@ impl SyncPlayManager {
         user_ids.sort_unstable();
         user_ids.dedup();
         Some(user_ids)
+    }
+
+    pub async fn playback_command_for_session(
+        &self,
+        session_id: &str,
+        command: SendCommandType,
+    ) -> Option<(Vec<String>, SendCommandDto)> {
+        let state = self.state.read().await;
+        let group_id = *state.session_groups.get(session_id)?;
+        let group = state.groups.get(&group_id)?;
+        let emitted_at = Utc::now();
+        let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
+        sessions.sort_unstable();
+        Some((
+            sessions,
+            SendCommandDto {
+                group_id,
+                playlist_item_id: group.play_queue.playing_item_playlist_id(),
+                when: emitted_at,
+                position_ticks: Some(group.position_ticks),
+                command,
+                emitted_at,
+            },
+        ))
     }
 
     pub async fn set_new_queue(

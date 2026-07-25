@@ -8,8 +8,8 @@ use jellyfin_model::{
     MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
     PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
     RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint,
-    SearchHintResult, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
-    UserDto, UserPolicy, UtcTimeResponse,
+    SearchHintResult, SendCommandDto, SendCommandType, ServerConfiguration, SessionInfoDto,
+    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -761,6 +761,31 @@ fn sync_play_buffer_request_matches_official_wire_contract() {
             "PositionTicks": 42,
             "IsPlaying": true,
             "PlaylistItemId": "f9c1ad0c820f44df8db852fbfc0d3d93"
+        })
+    );
+}
+
+#[test]
+fn sync_play_send_command_matches_official_wire_contract() {
+    let timestamp = Utc.with_ymd_and_hms(2026, 7, 25, 8, 30, 0).unwrap();
+    let command = SendCommandDto {
+        group_id: Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+        playlist_item_id: Uuid::parse_str("3b59d8eb-a878-4b7f-bdcb-c59a3320b881").unwrap(),
+        when: timestamp,
+        position_ticks: Some(42),
+        command: SendCommandType::Seek,
+        emitted_at: timestamp,
+    };
+
+    assert_eq!(
+        serde_json::to_value(command).unwrap(),
+        json!({
+            "GroupId": "f9c1ad0c820f44df8db852fbfc0d3d93",
+            "PlaylistItemId": "3b59d8eba8784b7fbdcbc59a3320b881",
+            "When": "2026-07-25T08:30:00.0000000Z",
+            "PositionTicks": 42,
+            "Command": "Seek",
+            "EmittedAt": "2026-07-25T08:30:00.0000000Z"
         })
     );
 }
