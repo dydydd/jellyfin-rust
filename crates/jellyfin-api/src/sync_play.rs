@@ -147,12 +147,12 @@ pub(crate) async fn leave_group(
         return Err(ApiError::Forbidden);
     }
     let sync_play_session = sync_play_session(&session);
-    if let Some(updates) = state
+    if let Some(departure) = state
         .sync_play
-        .leave_group_with_updates(&sync_play_session)
+        .leave_group_with_departure(&sync_play_session)
         .await
     {
-        broadcast_group_updates(&state, updates).await;
+        crate::websocket::broadcast_sync_play_departure(&state, departure).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }

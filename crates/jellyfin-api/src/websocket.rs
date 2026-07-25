@@ -5,7 +5,9 @@ use axum::{
     http::HeaderMap,
     response::Response,
 };
-use jellyfin_server_implementations::{WebSocketMessageType, deserialize_websocket_message};
+use jellyfin_server_implementations::{
+    SyncPlayDeparture, WebSocketMessageType, deserialize_websocket_message,
+};
 use serde_json::json;
 use tokio::{
     sync::{RwLock, broadcast},
@@ -155,14 +157,30 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
 
 async fn disconnect(state: &AppState, session_id: &str) {
     state.web_sockets.unsubscribe(&session_id).await;
-    let Some(updates) = state
+    let Some(departure) = state
         .sync_play
-        .websocket_disconnected_with_updates(session_id)
+        .websocket_disconnected_with_departure(session_id)
         .await
     else {
         return;
     };
-    for update in updates {
+    broadcast_sync_play_departure(state, departure).await;
+}
+
+pub(crate) async fn broadcast_sync_play_departure(state: &AppState, departure: SyncPlayDeparture) {
+    if let Some((session_ids, command)) = departure.playback_command {
+        state
+            .web_sockets
+            .send(&session_ids, "SyncPlayCommand", &command)
+            .await;
+    }
+    if let Some(update) = departure.state_update {
+        state
+            .web_sockets
+            .send(&update.session_ids, "SyncPlayGroupUpdate", &update.payload)
+            .await;
+    }
+    for update in departure.membership_updates {
         state
             .web_sockets
             .send(&update.session_ids, "SyncPlayGroupUpdate", &update.payload)

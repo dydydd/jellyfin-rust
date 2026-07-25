@@ -440,6 +440,91 @@ async fn sync_play_manager_leaves_only_after_the_last_websocket_disconnects() {
 }
 
 #[tokio::test]
+async fn sync_play_manager_resumes_when_the_last_buffering_member_leaves() {
+    let manager = SyncPlayManager::new();
+    let alice = session(1, Uuid::new_v4(), "alice");
+    let bob = session(2, Uuid::new_v4(), "bob");
+    let group = manager
+        .create_group(alice.clone(), "Departure".to_owned())
+        .await;
+    assert!(manager.join_group(bob.clone(), group.group_id).await);
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 42).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+    assert!(
+        manager
+            .ready(
+                "1",
+                ReadyRequestDto {
+                    when: Utc::now(),
+                    position_ticks: 42,
+                    is_playing: false,
+                    playlist_item_id,
+                },
+                100,
+            )
+            .await
+    );
+
+    let departure = manager.leave_group_with_departure(&bob).await.unwrap();
+    let (sessions, command) = departure.playback_command.unwrap();
+    assert_eq!(sessions, ["1", "2"]);
+    assert_eq!(command.command, SendCommandType::Unpause);
+    assert_eq!(command.group_id, group.group_id);
+    assert_state_update(
+        departure.state_update.as_ref().unwrap(),
+        "Playing",
+        "Unpause",
+    );
+    assert_eq!(departure.membership_updates.len(), 2);
+    assert_eq!(update_type(&departure.membership_updates[0]), "GroupLeft");
+    assert_eq!(update_type(&departure.membership_updates[1]), "UserLeft");
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Playing
+    );
+}
+
+#[tokio::test]
+async fn sync_play_manager_settles_paused_without_an_update_when_a_member_leaves() {
+    let manager = SyncPlayManager::new();
+    let alice = session(1, Uuid::new_v4(), "alice");
+    let bob = session(2, Uuid::new_v4(), "bob");
+    let group = manager
+        .create_group(alice, "Paused Departure".to_owned())
+        .await;
+    assert!(manager.join_group(bob.clone(), group.group_id).await);
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 42).await);
+    assert!(manager.unpause("1").await);
+    assert!(manager.pause("1").await);
+    assert!(manager.seek("1", 42, 100).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+    assert!(
+        manager
+            .ready(
+                "1",
+                ReadyRequestDto {
+                    when: Utc::now(),
+                    position_ticks: 42,
+                    is_playing: false,
+                    playlist_item_id,
+                },
+                100,
+            )
+            .await
+    );
+
+    let departure = manager.leave_group_with_departure(&bob).await.unwrap();
+    assert!(departure.playback_command.is_none());
+    assert!(departure.state_update.is_none());
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Paused
+    );
+}
+
+#[tokio::test]
 async fn sync_play_manager_builds_commands_for_every_group_session() {
     let manager = SyncPlayManager::new();
     let group = manager

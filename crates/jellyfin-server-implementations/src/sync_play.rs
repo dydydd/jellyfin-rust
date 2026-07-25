@@ -26,6 +26,13 @@ pub struct SyncPlayGroupUpdate {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncPlayDeparture {
+    pub playback_command: Option<(Vec<String>, SendCommandDto)>,
+    pub state_update: Option<SyncPlayGroupUpdate>,
+    pub membership_updates: Vec<SyncPlayGroupUpdate>,
+}
+
 #[derive(Debug, Clone)]
 struct SyncPlayParticipant {
     user_id: Uuid,
@@ -204,8 +211,17 @@ impl SyncPlayManager {
         &self,
         session: &SyncPlaySession,
     ) -> Option<Vec<SyncPlayGroupUpdate>> {
+        self.leave_group_with_departure(session)
+            .await
+            .map(|departure| departure.membership_updates)
+    }
+
+    pub async fn leave_group_with_departure(
+        &self,
+        session: &SyncPlaySession,
+    ) -> Option<SyncPlayDeparture> {
         let mut state = self.state.write().await;
-        remove_session_with_updates(&mut state, session)
+        remove_session_with_departure(&mut state, session)
     }
 
     pub async fn websocket_connected(&self, session_id: &str) {
@@ -217,7 +233,7 @@ impl SyncPlayManager {
     }
 
     pub async fn websocket_disconnected(&self, session_id: &str) -> bool {
-        self.websocket_disconnected_with_updates(session_id)
+        self.websocket_disconnected_with_departure(session_id)
             .await
             .is_some()
     }
@@ -226,6 +242,15 @@ impl SyncPlayManager {
         &self,
         session_id: &str,
     ) -> Option<Vec<SyncPlayGroupUpdate>> {
+        self.websocket_disconnected_with_departure(session_id)
+            .await
+            .map(|departure| departure.membership_updates)
+    }
+
+    pub async fn websocket_disconnected_with_departure(
+        &self,
+        session_id: &str,
+    ) -> Option<SyncPlayDeparture> {
         let mut state = self.state.write().await;
         let Some(connections) = state.websocket_connections.get_mut(session_id) else {
             return None;
@@ -242,7 +267,7 @@ impl SyncPlayManager {
             user_id: participant.user_id,
             user_name: participant.user_name.clone(),
         };
-        remove_session_with_updates(&mut state, &session)
+        remove_session_with_departure(&mut state, &session)
     }
 
     pub async fn list_groups(&self) -> Vec<GroupInfoDto> {
@@ -328,20 +353,7 @@ impl SyncPlayManager {
         let state = self.state.read().await;
         let group_id = *state.session_groups.get(session_id)?;
         let group = state.groups.get(&group_id)?;
-        let emitted_at = Utc::now();
-        let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
-        sessions.sort_unstable();
-        Some((
-            sessions,
-            SendCommandDto {
-                group_id,
-                playlist_item_id: group.play_queue.playing_item_playlist_id(),
-                when: emitted_at,
-                position_ticks: Some(group.position_ticks),
-                command,
-                emitted_at,
-            },
-        ))
+        Some(playback_command(group, command))
     }
 
     pub async fn queue_update_for_session(
@@ -865,6 +877,19 @@ fn remove_session_with_updates(
     state: &mut SyncPlayManagerState,
     session: &SyncPlaySession,
 ) -> Option<Vec<SyncPlayGroupUpdate>> {
+    remove_session_with_departure(state, session).map(|departure| departure.membership_updates)
+}
+
+fn remove_session_with_departure(
+    state: &mut SyncPlayManagerState,
+    session: &SyncPlaySession,
+) -> Option<SyncPlayDeparture> {
+    let group_id = *state.session_groups.get(&session.session_id)?;
+    let (playback_command, state_update) = {
+        let group = state.groups.get_mut(&group_id)?;
+        departure_state_events(group, &session.session_id)
+    };
+
     let group_id = state.session_groups.remove(&session.session_id)?;
     let group = state.groups.get_mut(&group_id)?;
     group.participants.remove(&session.session_id);
@@ -891,7 +916,64 @@ fn remove_session_with_updates(
             GroupUpdateType::UserLeft,
         ));
     }
-    Some(updates)
+    Some(SyncPlayDeparture {
+        playback_command,
+        state_update,
+        membership_updates: updates,
+    })
+}
+
+fn departure_state_events(
+    group: &mut ManagedSyncPlayGroup,
+    session_id: &str,
+) -> (
+    Option<(Vec<String>, SendCommandDto)>,
+    Option<SyncPlayGroupUpdate>,
+) {
+    if group.state != GroupStateType::Waiting {
+        return (None, None);
+    }
+    let Some(participant) = group.participants.get_mut(session_id) else {
+        return (None, None);
+    };
+    participant.is_buffering = false;
+    if group
+        .participants
+        .values()
+        .any(|participant| participant.is_buffering && !participant.ignore_wait)
+    {
+        return (None, None);
+    }
+    if !group.resume_playing {
+        group.state = GroupStateType::Paused;
+        return (None, None);
+    }
+
+    group.state = GroupStateType::Playing;
+    (
+        Some(playback_command(group, SendCommandType::Unpause)),
+        Some(state_group_update(group, PlaybackRequestType::Unpause)),
+    )
+}
+
+fn playback_command(
+    group: &ManagedSyncPlayGroup,
+    command: SendCommandType,
+) -> (Vec<String>, SendCommandDto) {
+    let emitted_at = Utc::now();
+    let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
+    sessions.sort_unstable();
+    (
+        sessions,
+        SendCommandDto {
+            group_id: group.id,
+            playlist_item_id: group.play_queue.playing_item_playlist_id(),
+            when: emitted_at,
+            position_ticks: Some(group.position_ticks),
+            command,
+            emitted_at,
+        },
+    )
 }
 
 fn group_update<T: Serialize>(

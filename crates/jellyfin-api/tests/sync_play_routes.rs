@@ -640,7 +640,51 @@ async fn exercise_websocket_commands_and_disconnect(
     assert_eq!(state_update["Data"]["Data"]["Reason"], "Unpause");
     assert_eq!(websocket_json(&mut joiner_socket).await, state_update);
 
+    assert_no_content(
+        request(
+            app,
+            "POST",
+            "/SyncPlay/Seek",
+            Some(creator_token),
+            Some(json!({ "PositionTicks": 0 })),
+        )
+        .await,
+    )
+    .await;
+    let seek = websocket_json(&mut creator_socket).await;
+    assert_eq!(seek["MessageType"], "SyncPlayCommand");
+    assert_eq!(seek["Data"]["Command"], "Seek");
+    assert_eq!(websocket_json(&mut joiner_socket).await, seek);
+    let waiting = websocket_json(&mut creator_socket).await;
+    assert_eq!(waiting["Data"]["Type"], "StateUpdate");
+    assert_eq!(waiting["Data"]["Data"]["State"], "Waiting");
+    assert_eq!(waiting["Data"]["Data"]["Reason"], "Seek");
+    assert_eq!(websocket_json(&mut joiner_socket).await, waiting);
+    assert_no_content(
+        request(
+            app,
+            "POST",
+            "/SyncPlay/Ready",
+            Some(creator_token),
+            Some(json!({
+                "When": "2026-07-25T08:30:00Z",
+                "PositionTicks": 0,
+                "IsPlaying": false,
+                "PlaylistItemId": queue_update["Data"]["Data"]["Playlist"][0]["PlaylistItemId"]
+            })),
+        )
+        .await,
+    )
+    .await;
+
     joiner_socket.close(None).await.unwrap();
+    let resumed = websocket_json(&mut creator_socket).await;
+    assert_eq!(resumed["MessageType"], "SyncPlayCommand");
+    assert_eq!(resumed["Data"]["Command"], "Unpause");
+    let resumed_state = websocket_json(&mut creator_socket).await;
+    assert_eq!(resumed_state["Data"]["Type"], "StateUpdate");
+    assert_eq!(resumed_state["Data"]["Data"]["State"], "Playing");
+    assert_eq!(resumed_state["Data"]["Data"]["Reason"], "Unpause");
     let user_left = websocket_json(&mut creator_socket).await;
     assert_eq!(user_left["MessageType"], "SyncPlayGroupUpdate");
     assert_eq!(user_left["Data"]["Type"], "UserLeft");
