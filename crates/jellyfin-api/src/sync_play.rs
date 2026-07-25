@@ -7,7 +7,7 @@ use axum::{
 };
 use jellyfin_model::{
     BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
-    IgnoreWaitRequestDto, PingRequestDto, ReadyRequestDto, SendCommandType,
+    IgnoreWaitRequestDto, PingRequestDto, PlayQueueUpdateReason, ReadyRequestDto, SendCommandType,
 };
 use jellyfin_server_implementations::SyncPlaySession;
 use serde::Deserialize;
@@ -102,12 +102,12 @@ pub(crate) async fn create_group(
         return Err(ApiError::InvalidRequest);
     }
 
-    Ok(Json(
-        state
-            .sync_play
-            .create_group(sync_play_session(&session), group_name)
-            .await,
-    ))
+    let (group, updates) = state
+        .sync_play
+        .create_group_with_updates(sync_play_session(&session), group_name)
+        .await;
+    broadcast_group_updates(&state, updates).await;
+    Ok(Json(group))
 }
 
 pub(crate) async fn join_group(
@@ -128,10 +128,13 @@ pub(crate) async fn join_group(
     if !user_can_access_items(&state, &session.user, &item_ids).await? {
         return Ok(StatusCode::NO_CONTENT);
     }
-    state
+    if let Some(updates) = state
         .sync_play
-        .join_group(sync_play_session(&session), request.group_id)
-        .await;
+        .join_group_with_updates(sync_play_session(&session), request.group_id)
+        .await
+    {
+        broadcast_group_updates(&state, updates).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -143,13 +146,14 @@ pub(crate) async fn leave_group(
     if !state.sync_play.is_user_active(session.user.id).await {
         return Err(ApiError::Forbidden);
     }
-    state
+    let sync_play_session = sync_play_session(&session);
+    if let Some(updates) = state
         .sync_play
-        .leave_group(&crate::session::jellyfin_session_id(
-            &session.device.app_name,
-            &session.device.device_id,
-        ))
-        .await;
+        .leave_group_with_updates(&sync_play_session)
+        .await
+    {
+        broadcast_group_updates(&state, updates).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -209,7 +213,7 @@ pub(crate) async fn set_new_queue(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     if queue_position_is_valid(&request.playing_queue, request.playing_item_position) {
         if group_can_access_items(&state, &session, &request.playing_queue).await? {
-            state
+            if state
                 .sync_play
                 .set_new_queue(
                     &session.session_id,
@@ -217,7 +221,15 @@ pub(crate) async fn set_new_queue(
                     request.playing_item_position,
                     request.start_position_ticks,
                 )
+                .await
+            {
+                broadcast_queue_update(
+                    &state,
+                    &session.session_id,
+                    PlayQueueUpdateReason::NewPlaylist,
+                )
                 .await;
+            }
         }
     }
     Ok(StatusCode::NO_CONTENT)
@@ -230,10 +242,18 @@ pub(crate) async fn set_playlist_item(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    if state
         .sync_play
         .set_playlist_item(&session.session_id, request.playlist_item_id)
+        .await
+    {
+        broadcast_queue_update(
+            &state,
+            &session.session_id,
+            PlayQueueUpdateReason::SetCurrentItem,
+        )
         .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -244,7 +264,7 @@ pub(crate) async fn remove_from_playlist(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    if state
         .sync_play
         .remove_from_playlist(
             &session.session_id,
@@ -252,7 +272,15 @@ pub(crate) async fn remove_from_playlist(
             request.clear_playlist,
             request.clear_playing_item,
         )
+        .await
+    {
+        broadcast_queue_update(
+            &state,
+            &session.session_id,
+            PlayQueueUpdateReason::RemoveItems,
+        )
         .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -263,14 +291,17 @@ pub(crate) async fn move_playlist_item(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    if state
         .sync_play
         .move_playlist_item(
             &session.session_id,
             request.playlist_item_id,
             request.new_index,
         )
-        .await;
+        .await
+    {
+        broadcast_queue_update(&state, &session.session_id, PlayQueueUpdateReason::MoveItem).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -283,10 +314,17 @@ pub(crate) async fn queue_items(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     if !request.item_ids.is_empty() {
         if group_can_access_items(&state, &session, &request.item_ids).await? {
-            state
+            if state
                 .sync_play
                 .queue_items(&session.session_id, &request.item_ids, request.mode)
-                .await;
+                .await
+            {
+                let reason = match request.mode {
+                    GroupQueueMode::Queue => PlayQueueUpdateReason::Queue,
+                    GroupQueueMode::QueueNext => PlayQueueUpdateReason::QueueNext,
+                };
+                broadcast_queue_update(&state, &session.session_id, reason).await;
+            }
         }
     }
     Ok(StatusCode::NO_CONTENT)
@@ -409,10 +447,13 @@ pub(crate) async fn next_item(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    if state
         .sync_play
         .next_item(&session.session_id, request.playlist_item_id)
-        .await;
+        .await
+    {
+        broadcast_queue_update(&state, &session.session_id, PlayQueueUpdateReason::NextItem).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -423,10 +464,18 @@ pub(crate) async fn previous_item(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    if state
         .sync_play
         .previous_item(&session.session_id, request.playlist_item_id)
+        .await
+    {
+        broadcast_queue_update(
+            &state,
+            &session.session_id,
+            PlayQueueUpdateReason::PreviousItem,
+        )
         .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -437,10 +486,18 @@ pub(crate) async fn set_repeat_mode(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    if state
         .sync_play
         .set_repeat_mode(&session.session_id, request.mode)
+        .await
+    {
+        broadcast_queue_update(
+            &state,
+            &session.session_id,
+            PlayQueueUpdateReason::RepeatMode,
+        )
         .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -451,10 +508,18 @@ pub(crate) async fn set_shuffle_mode(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    if state
         .sync_play
         .set_shuffle_mode(&session.session_id, request.mode)
+        .await
+    {
+        broadcast_queue_update(
+            &state,
+            &session.session_id,
+            PlayQueueUpdateReason::ShuffleMode,
+        )
         .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -493,6 +558,31 @@ async fn broadcast_playback_command(state: &AppState, session_id: &str, command:
         state
             .web_sockets
             .send(&sessions, "SyncPlayCommand", &payload)
+            .await;
+    }
+}
+
+async fn broadcast_queue_update(state: &AppState, session_id: &str, reason: PlayQueueUpdateReason) {
+    if let Some((sessions, payload)) = state
+        .sync_play
+        .queue_update_for_session(session_id, reason)
+        .await
+    {
+        state
+            .web_sockets
+            .send(&sessions, "SyncPlayGroupUpdate", &payload)
+            .await;
+    }
+}
+
+async fn broadcast_group_updates(
+    state: &AppState,
+    updates: Vec<jellyfin_server_implementations::SyncPlayGroupUpdate>,
+) {
+    for update in updates {
+        state
+            .web_sockets
+            .send(&update.session_ids, "SyncPlayGroupUpdate", &update.payload)
             .await;
     }
 }

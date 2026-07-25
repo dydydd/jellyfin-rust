@@ -60,7 +60,7 @@ pub use sorting::{
     compare_parent_index_number, compare_premiere_date,
 };
 pub use sync_play::{
-    GroupLibrary, PlayQueue, PlayQueueItem, SyncPlayGroup, SyncPlayManager,
+    GroupLibrary, PlayQueue, PlayQueueItem, SyncPlayGroup, SyncPlayGroupUpdate, SyncPlayManager,
     SyncPlayParticipantState, SyncPlayQueueState, SyncPlaySession,
 };
 pub use user_manager_lock::{

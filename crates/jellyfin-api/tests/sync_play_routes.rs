@@ -522,7 +522,8 @@ async fn exercise_sync_play_routes(database_name: &str) {
         json!([])
     );
 
-    exercise_websocket_commands_and_disconnect(&app, &creator_token, first_item.id).await;
+    exercise_websocket_commands_and_disconnect(&app, &creator_token, &joiner_token, first_item.id)
+        .await;
 
     user::Entity::delete_many()
         .exec(&database)
@@ -534,21 +535,30 @@ async fn exercise_sync_play_routes(database_name: &str) {
 async fn exercise_websocket_commands_and_disconnect(
     app: &Router,
     creator_token: &str,
+    joiner_token: &str,
     item_id: Uuid,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server_app = app.clone();
     let server = tokio::spawn(async move { axum::serve(listener, server_app).await });
-    let (mut socket, response) = tokio_tungstenite::connect_async(format!(
+    let (mut creator_socket, response) = tokio_tungstenite::connect_async(format!(
         "ws://{address}/websocket?api_key={creator_token}"
     ))
     .await
     .unwrap();
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
-    let keep_alive = socket.next().await.unwrap().unwrap();
-    let keep_alive: Value = serde_json::from_str(keep_alive.to_text().unwrap()).unwrap();
+    let keep_alive = websocket_json(&mut creator_socket).await;
     assert_eq!(keep_alive["MessageType"], "ForceKeepAlive");
+    let (mut joiner_socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/websocket?api_key={joiner_token}"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        websocket_json(&mut joiner_socket).await["MessageType"],
+        "ForceKeepAlive"
+    );
 
     let created = response_json(
         request(
@@ -562,6 +572,26 @@ async fn exercise_websocket_commands_and_disconnect(
     )
     .await;
     assert_eq!(created["Participants"].as_array().unwrap().len(), 1);
+    let creator_joined = websocket_json(&mut creator_socket).await;
+    assert_eq!(creator_joined["MessageType"], "SyncPlayGroupUpdate");
+    assert_eq!(creator_joined["Data"]["Type"], "GroupJoined");
+    assert_eq!(creator_joined["Data"]["GroupId"], created["GroupId"]);
+    assert_no_content(
+        request(
+            app,
+            "POST",
+            "/SyncPlay/Join",
+            Some(joiner_token),
+            Some(json!({ "GroupId": created["GroupId"] })),
+        )
+        .await,
+    )
+    .await;
+    let joiner_joined = websocket_json(&mut joiner_socket).await;
+    assert_eq!(joiner_joined["Data"]["Type"], "GroupJoined");
+    assert_eq!(joiner_joined["Data"]["GroupId"], created["GroupId"]);
+    let user_joined = websocket_json(&mut creator_socket).await;
+    assert_eq!(user_joined["Data"]["Type"], "UserJoined");
     assert_no_content(
         request(
             app,
@@ -577,16 +607,27 @@ async fn exercise_websocket_commands_and_disconnect(
         .await,
     )
     .await;
+    let queue_update = websocket_json(&mut creator_socket).await;
+    assert_eq!(queue_update["MessageType"], "SyncPlayGroupUpdate");
+    assert_eq!(queue_update["Data"]["Type"], "PlayQueue");
+    assert_eq!(queue_update["Data"]["Data"]["Reason"], "NewPlaylist");
+    assert_eq!(
+        queue_update["Data"]["Data"]["Playlist"][0]["ItemId"],
+        item_id.simple().to_string()
+    );
+    assert_eq!(queue_update["Data"]["Data"]["PlayingItemIndex"], 0);
+    assert_eq!(websocket_json(&mut joiner_socket).await, queue_update);
     assert_no_content(request(app, "POST", "/SyncPlay/Unpause", Some(creator_token), None).await)
         .await;
-    let command = socket.next().await.unwrap().unwrap();
-    let command: Value = serde_json::from_str(command.to_text().unwrap()).unwrap();
+    let command = websocket_json(&mut creator_socket).await;
     assert_eq!(command["MessageType"], "SyncPlayCommand");
     assert_eq!(command["Data"]["Command"], "Unpause");
     assert_eq!(command["Data"]["GroupId"], created["GroupId"]);
     assert_eq!(command["Data"]["PositionTicks"], 0);
+    assert_eq!(websocket_json(&mut joiner_socket).await, command);
 
-    socket.close(None).await.unwrap();
+    joiner_socket.close(None).await.unwrap();
+    creator_socket.close(None).await.unwrap();
     for _ in 0..100 {
         let groups =
             response_json(request(app, "GET", "/SyncPlay/List", Some(creator_token), None).await)
@@ -599,6 +640,15 @@ async fn exercise_websocket_commands_and_disconnect(
     }
     server.abort();
     panic!("last WebSocket disconnect did not remove the empty SyncPlay group");
+}
+
+async fn websocket_json(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Value {
+    let message = socket.next().await.unwrap().unwrap();
+    serde_json::from_str(message.to_text().unwrap()).unwrap()
 }
 
 async fn set_sync_play_access(users: &UserService, user_id: Uuid, access: SyncPlayUserAccessType) {

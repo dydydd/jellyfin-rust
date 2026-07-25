@@ -3,9 +3,12 @@ use std::{collections::HashMap, sync::Arc};
 use chrono::Utc;
 use jellyfin_model::{
     BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
-    GroupStateType, ReadyRequestDto, SendCommandDto, SendCommandType,
+    GroupStateType, GroupUpdateDto, GroupUpdateType, PlayQueueUpdateDto, PlayQueueUpdateReason,
+    ReadyRequestDto, SendCommandDto, SendCommandType, SyncPlayQueueItemDto,
 };
 use rand::seq::SliceRandom;
+use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -14,6 +17,12 @@ pub struct SyncPlaySession {
     pub session_id: String,
     pub user_id: Uuid,
     pub user_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncPlayGroupUpdate {
+    pub session_ids: Vec<String>,
+    pub payload: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -75,8 +84,16 @@ impl SyncPlayManager {
     }
 
     pub async fn create_group(&self, session: SyncPlaySession, group_name: String) -> GroupInfoDto {
+        self.create_group_with_updates(session, group_name).await.0
+    }
+
+    pub async fn create_group_with_updates(
+        &self,
+        session: SyncPlaySession,
+        group_name: String,
+    ) -> (GroupInfoDto, Vec<SyncPlayGroupUpdate>) {
         let mut state = self.state.write().await;
-        remove_session(&mut state, &session.session_id);
+        let mut updates = remove_session_with_updates(&mut state, &session).unwrap_or_default();
 
         let id = Uuid::new_v4();
         let participant = SyncPlayParticipant {
@@ -97,41 +114,97 @@ impl SyncPlayManager {
         };
         let info = group.info();
         state.groups.insert(id, group);
-        state.session_groups.insert(session.session_id, id);
-        info
+        state.session_groups.insert(session.session_id.clone(), id);
+        updates.push(group_update(
+            vec![session.session_id],
+            id,
+            info.clone(),
+            GroupUpdateType::GroupJoined,
+        ));
+        (info, updates)
     }
 
     pub async fn join_group(&self, session: SyncPlaySession, group_id: Uuid) -> bool {
+        self.join_group_with_updates(session, group_id)
+            .await
+            .is_some()
+    }
+
+    pub async fn join_group_with_updates(
+        &self,
+        session: SyncPlaySession,
+        group_id: Uuid,
+    ) -> Option<Vec<SyncPlayGroupUpdate>> {
         let mut state = self.state.write().await;
         if !state.groups.contains_key(&group_id) {
-            return false;
+            return None;
         }
         if state.session_groups.get(&session.session_id) == Some(&group_id) {
-            return true;
+            return Some(Vec::new());
         }
 
-        remove_session(&mut state, &session.session_id);
+        let mut updates = Vec::new();
+        if state
+            .session_groups
+            .get(&session.session_id)
+            .is_some_and(|id| *id != group_id)
+        {
+            updates.extend(remove_session_with_updates(&mut state, &session).unwrap_or_default());
+        }
+
         let mut participant = SyncPlayParticipant {
             user_id: session.user_id,
-            user_name: session.user_name,
+            user_name: session.user_name.clone(),
             ping: 500,
             is_buffering: false,
             ignore_wait: false,
         };
         let Some(group) = state.groups.get_mut(&group_id) else {
-            return false;
+            return None;
         };
         participant.is_buffering = group.state == GroupStateType::Waiting;
         group
             .participants
             .insert(session.session_id.clone(), participant);
-        state.session_groups.insert(session.session_id, group_id);
-        true
+        let info = group.info();
+        let mut other_sessions = group
+            .participants
+            .keys()
+            .filter(|id| *id != &session.session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        other_sessions.sort_unstable();
+        state
+            .session_groups
+            .insert(session.session_id.clone(), group_id);
+        updates.push(group_update(
+            vec![session.session_id],
+            group_id,
+            info,
+            GroupUpdateType::GroupJoined,
+        ));
+        if !other_sessions.is_empty() {
+            updates.push(group_update(
+                other_sessions,
+                group_id,
+                session.user_name,
+                GroupUpdateType::UserJoined,
+            ));
+        }
+        Some(updates)
     }
 
     pub async fn leave_group(&self, session_id: &str) -> bool {
         let mut state = self.state.write().await;
         remove_session(&mut state, session_id)
+    }
+
+    pub async fn leave_group_with_updates(
+        &self,
+        session: &SyncPlaySession,
+    ) -> Option<Vec<SyncPlayGroupUpdate>> {
+        let mut state = self.state.write().await;
+        remove_session_with_updates(&mut state, session)
     }
 
     pub async fn websocket_connected(&self, session_id: &str) {
@@ -250,6 +323,44 @@ impl SyncPlayManager {
                 position_ticks: Some(group.position_ticks),
                 command,
                 emitted_at,
+            },
+        ))
+    }
+
+    pub async fn queue_update_for_session(
+        &self,
+        session_id: &str,
+        reason: PlayQueueUpdateReason,
+    ) -> Option<(Vec<String>, GroupUpdateDto<PlayQueueUpdateDto>)> {
+        let state = self.state.read().await;
+        let group_id = *state.session_groups.get(session_id)?;
+        let group = state.groups.get(&group_id)?;
+        let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
+        sessions.sort_unstable();
+        let playlist = group
+            .play_queue
+            .get_playlist()
+            .iter()
+            .map(|item| SyncPlayQueueItemDto {
+                item_id: item.item_id,
+                playlist_item_id: item.playlist_item_id,
+            })
+            .collect();
+        Some((
+            sessions,
+            GroupUpdateDto {
+                group_id,
+                data: PlayQueueUpdateDto {
+                    reason,
+                    last_update: Utc::now(),
+                    playlist,
+                    playing_item_index: group.play_queue.playing_item_index(),
+                    start_position_ticks: group.position_ticks,
+                    is_playing: group.state == GroupStateType::Playing,
+                    shuffle_mode: group.play_queue.shuffle_mode(),
+                    repeat_mode: group.play_queue.repeat_mode(),
+                },
+                update_type: GroupUpdateType::PlayQueue,
             },
         ))
     }
@@ -616,6 +727,57 @@ fn remove_session(state: &mut SyncPlayManagerState, session_id: &str) -> bool {
         state.groups.remove(&group_id);
     }
     true
+}
+
+fn remove_session_with_updates(
+    state: &mut SyncPlayManagerState,
+    session: &SyncPlaySession,
+) -> Option<Vec<SyncPlayGroupUpdate>> {
+    let group_id = state.session_groups.remove(&session.session_id)?;
+    let group = state.groups.get_mut(&group_id)?;
+    group.participants.remove(&session.session_id);
+    finish_wait_if_ready(group);
+
+    let mut remaining_sessions = group.participants.keys().cloned().collect::<Vec<_>>();
+    remaining_sessions.sort_unstable();
+    let remove_group = remaining_sessions.is_empty();
+    if remove_group {
+        state.groups.remove(&group_id);
+    }
+
+    let mut updates = vec![group_update(
+        vec![session.session_id.clone()],
+        group_id,
+        group_id.to_string(),
+        GroupUpdateType::GroupLeft,
+    )];
+    if !remaining_sessions.is_empty() {
+        updates.push(group_update(
+            remaining_sessions,
+            group_id,
+            session.user_name.clone(),
+            GroupUpdateType::UserLeft,
+        ));
+    }
+    Some(updates)
+}
+
+fn group_update<T: Serialize>(
+    session_ids: Vec<String>,
+    group_id: Uuid,
+    data: T,
+    update_type: GroupUpdateType,
+) -> SyncPlayGroupUpdate {
+    let payload = serde_json::to_value(GroupUpdateDto {
+        group_id,
+        data,
+        update_type,
+    })
+    .expect("SyncPlay group updates contain only serializable wire DTOs");
+    SyncPlayGroupUpdate {
+        session_ids,
+        payload,
+    }
 }
 
 /// A media item occurrence in a `SyncPlay` queue.

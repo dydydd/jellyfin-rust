@@ -3,13 +3,14 @@ use jellyfin_model::{
     AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BufferRequestDto,
     ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo, FontFile,
     ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, GroupInfoDto,
-    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, ImageInfo,
-    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
-    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
-    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
-    RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint,
-    SearchHintResult, SendCommandDto, SendCommandType, ServerConfiguration, SessionInfoDto,
-    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, GroupUpdateDto,
+    GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto,
+    MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult,
+    PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason, PlayRequest, PlayerStateInfo,
+    PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult,
+    RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult,
+    SendCommandDto, SendCommandType, ServerConfiguration, SessionInfoDto, SessionUserInfo,
+    SyncPlayQueueItemDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -786,6 +787,52 @@ fn sync_play_send_command_matches_official_wire_contract() {
             "PositionTicks": 42,
             "Command": "Seek",
             "EmittedAt": "2026-07-25T08:30:00.0000000Z"
+        })
+    );
+}
+
+#[test]
+fn sync_play_queue_update_matches_official_wire_contract() {
+    let timestamp = Utc.with_ymd_and_hms(2026, 7, 25, 8, 30, 0).unwrap();
+    let group_id = Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap();
+    let item_id = Uuid::parse_str("3b59d8eb-a878-4b7f-bdcb-c59a3320b881").unwrap();
+    let playlist_item_id = Uuid::parse_str("ff923a1d-b258-4190-a5f1-5603b1bd1e58").unwrap();
+    let update = GroupUpdateDto {
+        group_id,
+        data: PlayQueueUpdateDto {
+            reason: PlayQueueUpdateReason::QueueNext,
+            last_update: timestamp,
+            playlist: vec![SyncPlayQueueItemDto {
+                item_id,
+                playlist_item_id,
+            }],
+            playing_item_index: 0,
+            start_position_ticks: 42,
+            is_playing: false,
+            shuffle_mode: GroupShuffleMode::Sorted,
+            repeat_mode: GroupRepeatMode::RepeatNone,
+        },
+        update_type: GroupUpdateType::PlayQueue,
+    };
+
+    assert_eq!(
+        serde_json::to_value(update).unwrap(),
+        json!({
+            "GroupId": "f9c1ad0c820f44df8db852fbfc0d3d93",
+            "Data": {
+                "Reason": "QueueNext",
+                "LastUpdate": "2026-07-25T08:30:00.0000000Z",
+                "Playlist": [{
+                    "ItemId": "3b59d8eba8784b7fbdcbc59a3320b881",
+                    "PlaylistItemId": "ff923a1db2584190a5f15603b1bd1e58"
+                }],
+                "PlayingItemIndex": 0,
+                "StartPositionTicks": 42,
+                "IsPlaying": false,
+                "ShuffleMode": "Sorted",
+                "RepeatMode": "RepeatNone"
+            },
+            "Type": "PlayQueue"
         })
     );
 }

@@ -56,6 +56,66 @@ pub struct SendCommandDto {
     pub emitted_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupUpdateType {
+    UserJoined,
+    UserLeft,
+    GroupJoined,
+    GroupLeft,
+    StateUpdate,
+    PlayQueue,
+    NotInGroup,
+    GroupDoesNotExist,
+    LibraryAccessDenied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct GroupUpdateDto<T> {
+    #[serde(with = "crate::serde_guid::single")]
+    pub group_id: Uuid,
+    pub data: T,
+    #[serde(rename = "Type")]
+    pub update_type: GroupUpdateType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlayQueueUpdateReason {
+    NewPlaylist,
+    SetCurrentItem,
+    RemoveItems,
+    MoveItem,
+    Queue,
+    QueueNext,
+    NextItem,
+    PreviousItem,
+    RepeatMode,
+    ShuffleMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct SyncPlayQueueItemDto {
+    #[serde(with = "crate::serde_guid::single")]
+    pub item_id: Uuid,
+    #[serde(with = "crate::serde_guid::single")]
+    pub playlist_item_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PlayQueueUpdateDto {
+    pub reason: PlayQueueUpdateReason,
+    #[serde(with = "crate::serde_datetime::required")]
+    pub last_update: DateTime<Utc>,
+    pub playlist: Vec<SyncPlayQueueItemDto>,
+    pub playing_item_index: i32,
+    pub start_position_ticks: i64,
+    pub is_playing: bool,
+    pub shuffle_mode: GroupShuffleMode,
+    pub repeat_mode: GroupRepeatMode,
+}
+
 /// Playback position reported by a member that has started buffering.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]

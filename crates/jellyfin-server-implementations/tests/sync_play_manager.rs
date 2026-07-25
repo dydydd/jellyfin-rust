@@ -1,9 +1,9 @@
 use chrono::Utc;
 use jellyfin_model::{
     BufferRequestDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
-    ReadyRequestDto, SendCommandType,
+    PlayQueueUpdateReason, ReadyRequestDto, SendCommandType,
 };
-use jellyfin_server_implementations::{SyncPlayManager, SyncPlaySession};
+use jellyfin_server_implementations::{SyncPlayGroupUpdate, SyncPlayManager, SyncPlaySession};
 use uuid::Uuid;
 
 fn session(session_id: i64, user_id: Uuid, user_name: &str) -> SyncPlaySession {
@@ -12,6 +12,10 @@ fn session(session_id: i64, user_id: Uuid, user_name: &str) -> SyncPlaySession {
         user_id,
         user_name: user_name.to_owned(),
     }
+}
+
+fn update_type(update: &SyncPlayGroupUpdate) -> &str {
+    update.payload["Type"].as_str().unwrap()
 }
 
 #[tokio::test]
@@ -75,6 +79,43 @@ async fn sync_play_manager_rejects_unknown_groups_without_moving_session() {
     );
     assert!(manager.get_group(created.group_id).await.is_some());
     assert!(manager.is_session_active("1").await);
+}
+
+#[tokio::test]
+async fn sync_play_manager_emits_official_membership_updates() {
+    let manager = SyncPlayManager::new();
+    let alice = session(1, Uuid::new_v4(), "alice");
+    let bob = session(2, Uuid::new_v4(), "bob");
+    let (group, created) = manager
+        .create_group_with_updates(alice.clone(), "Members".to_owned())
+        .await;
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].session_ids, ["1"]);
+    assert_eq!(update_type(&created[0]), "GroupJoined");
+
+    let joined = manager
+        .join_group_with_updates(bob.clone(), group.group_id)
+        .await
+        .unwrap();
+    assert_eq!(joined.len(), 2);
+    assert_eq!(joined[0].session_ids, ["2"]);
+    assert_eq!(update_type(&joined[0]), "GroupJoined");
+    assert_eq!(joined[1].session_ids, ["1"]);
+    assert_eq!(update_type(&joined[1]), "UserJoined");
+    assert_eq!(joined[1].payload["Data"], "bob");
+    assert!(
+        manager
+            .join_group_with_updates(bob.clone(), group.group_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let left = manager.leave_group_with_updates(&bob).await.unwrap();
+    assert_eq!(update_type(&left[0]), "GroupLeft");
+    assert_eq!(left[0].session_ids, ["2"]);
+    assert_eq!(update_type(&left[1]), "UserLeft");
+    assert_eq!(left[1].session_ids, ["1"]);
 }
 
 #[tokio::test]
@@ -399,5 +440,33 @@ async fn sync_play_manager_builds_commands_for_every_group_session() {
             .playback_command_for_session("missing", SendCommandType::Stop)
             .await
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn sync_play_manager_builds_official_queue_updates() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Queue Updates".to_owned(),
+        )
+        .await;
+    let items = [Uuid::new_v4(), Uuid::new_v4()];
+    assert!(manager.set_new_queue("1", &items, 1, 42).await);
+
+    let (sessions, update) = manager
+        .queue_update_for_session("1", PlayQueueUpdateReason::NewPlaylist)
+        .await
+        .unwrap();
+    assert_eq!(sessions, ["1"]);
+    assert_eq!(update.group_id, group.group_id);
+    assert_eq!(update.data.reason, PlayQueueUpdateReason::NewPlaylist);
+    assert_eq!(update.data.playing_item_index, 1);
+    assert_eq!(update.data.start_position_ticks, 42);
+    assert_eq!(update.data.playlist[0].item_id, items[0]);
+    assert_ne!(
+        update.data.playlist[0].playlist_item_id,
+        update.data.playlist[1].playlist_item_id
     );
 }
