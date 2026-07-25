@@ -103,6 +103,28 @@ impl LibraryControllerService {
             .collect())
     }
 
+    /// Returns visible collections containing one item, ordered like Jellyfin.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn collections_containing_item(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        start_index: u64,
+        limit: Option<u64>,
+    ) -> Result<BaseItemPage, LibraryControllerError> {
+        self.item(authenticated_user, target_user_id, item_id)
+            .await?;
+        let page = self
+            .items
+            .collections_containing_item(item_id, start_index, limit)
+            .await?;
+        Ok(self.hydrate_page(page))
+    }
+
     /// Resolves the persisted file path for a downloadable item.
     ///
     /// # Errors

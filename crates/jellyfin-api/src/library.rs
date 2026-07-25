@@ -191,15 +191,17 @@ pub(crate) async fn collections(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    state
+    let page = state
         .library_controller
-        .item(&authenticated.user, target_user_id, item_id)
+        .collections_containing_item(
+            &authenticated.user,
+            target_user_id,
+            item_id,
+            query.start_index,
+            query.limit,
+        )
         .await?;
-    Ok(Json(user_library::BaseItemQueryResult {
-        items: Vec::new(),
-        total_record_count: 0,
-        start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
-    }))
+    Ok(Json(page_to_dto(page, state.server_id())))
 }
 
 pub(crate) async fn similar(

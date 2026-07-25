@@ -1293,6 +1293,82 @@ impl BaseItemRepository {
             .await?;
         hierarchy_entries(closure, true, &self.database).await
     }
+
+    /// Loads `BoxSet` items containing a specific child via manual linked children.
+    ///
+    /// `PostgreSQL` performs the relationship lookup and stable Jellyfin sort
+    /// in one indexed join. The source child is not loaded here; callers can
+    /// first validate item visibility in the appropriate user context.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the relationship query fails.
+    pub async fn collections_containing_item(
+        &self,
+        item_id: Uuid,
+        start_index: u64,
+        limit: Option<u64>,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let total_record_count = self
+            .database
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                SELECT COUNT(*)::bigint AS total_record_count
+                FROM jellyfin.base_items AS collection
+                WHERE collection.item_type = 'BoxSet'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM jellyfin.linked_children AS link
+                        WHERE link.parent_id = collection.id
+                            AND link.child_id = $1
+                            AND link.child_type = 0
+                    )
+                ",
+                [item_id.into()],
+            ))
+            .await?
+            .map(|row| row.try_get::<i64>("", "total_record_count"))
+            .transpose()?
+            .unwrap_or(0);
+
+        let mut values = vec![item_id.into(), (start_index as i64).into()];
+        let mut sql = format!(
+            r"
+            SELECT {BASE_ITEM_COLUMNS}
+            FROM jellyfin.base_items AS item
+            WHERE item.item_type = 'BoxSet'
+                AND EXISTS (
+                    SELECT 1
+                    FROM jellyfin.linked_children AS link
+                    WHERE link.parent_id = item.id
+                        AND link.child_id = $1
+                        AND link.child_type = 0
+                )
+            ORDER BY lower(COALESCE(item.sort_name, item.name, '')) ASC,
+                lower(COALESCE(item.name, '')) ASC,
+                item.id ASC
+            OFFSET $2
+            "
+        );
+        if let Some(limit) = limit {
+            values.push((limit as i64).into());
+            sql.push_str(" LIMIT $3");
+        }
+
+        let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(&self.database)
+        .await?;
+        Ok(BaseItemPage {
+            items,
+            total_record_count: u64::try_from(total_record_count).unwrap_or(0),
+            start_index,
+        })
+    }
 }
 
 const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \

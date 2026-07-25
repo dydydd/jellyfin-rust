@@ -5,8 +5,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, NewUserData, UserDataRepository,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository,
+    LinkedChildRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
     entities::item_value,
     entities::{user, user_data},
 };
@@ -76,7 +76,7 @@ async fn ancestors_download_similar_and_empty_relationships_have_real_success_se
     assert_ancestors(&fixture).await;
     assert_streamed_downloads(&fixture).await;
     assert_similar_items(&fixture).await;
-    assert_empty_relationships(&fixture).await;
+    assert_relationships(&fixture).await;
     assert_item_counts(&fixture).await;
     assert_instant_mix(&fixture).await;
     assert_audio_stream(&fixture).await;
@@ -406,7 +406,7 @@ async fn assert_similar_items(fixture: &Fixture) {
     );
 }
 
-async fn assert_empty_relationships(fixture: &Fixture) {
+async fn assert_relationships(fixture: &Fixture) {
     for route in [
         format!("/Items/{}/ThemeSongs", fixture.child_id),
         format!("/Items/{}/ThemeVideos", fixture.child_id),
@@ -419,12 +419,43 @@ async fn assert_empty_relationships(fixture: &Fixture) {
     let collections = fixture
         .json(
             "GET",
-            &format!("/Items/{}/Collections?startIndex=3", fixture.child_id),
+            &format!("/Items/{}/Collections", fixture.child_id),
             &fixture.user_token,
         )
         .await;
-    assert_eq!(collections["TotalRecordCount"], 0);
-    assert_eq!(collections["StartIndex"], 3);
+    let all_collection_items = collections["Items"].as_array().unwrap();
+    assert_eq!(collections["TotalRecordCount"], 2);
+    assert_eq!(all_collection_items.len(), 2);
+    assert_eq!(
+        all_collection_items
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        [
+            fixture.first_collection_id.simple().to_string(),
+            fixture.second_collection_id.simple().to_string()
+        ],
+    );
+
+    let collections = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Items/{}/Collections?startIndex=1&limit=1",
+                fixture.child_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(collections["TotalRecordCount"], 2);
+    assert_eq!(collections["StartIndex"], 1);
+    let collection_items = collections["Items"].as_array().unwrap();
+    assert_eq!(collection_items.len(), 1);
+    assert_eq!(
+        collection_items[0]["Id"],
+        fixture.second_collection_id.simple().to_string()
+    );
+    assert_eq!(collection_items[0]["Type"], "BoxSet");
 }
 
 async fn assert_item_counts(fixture: &Fixture) {
@@ -561,6 +592,8 @@ struct Fixture {
     other_genre_song_id: Uuid,
     instant_genre_id: Uuid,
     stream_audio_id: Uuid,
+    first_collection_id: Uuid,
+    second_collection_id: Uuid,
     single_delete_id: Uuid,
     missing_file_id: Uuid,
     io_error_id: Uuid,
@@ -653,6 +686,18 @@ impl Fixture {
             count_items.push(create_item(&items, item_type, name, parent.id, None).await);
         }
         let similar = create_item(&items, "Movie", "Similar Movie", root.id, None).await;
+        let second_collection =
+            create_item(&items, "BoxSet", "Zulu Collection", root.id, None).await;
+        let first_collection =
+            create_item(&items, "BoxSet", "Alpha Collection", root.id, None).await;
+        LinkedChildRepository::new(database.clone())
+            .add_manual(second_collection.id, &[child.id])
+            .await
+            .expect("second collection link");
+        LinkedChildRepository::new(database.clone())
+            .add_manual(first_collection.id, &[child.id])
+            .await
+            .expect("first collection link");
         let song = create_item(&items, "Audio", "Instant Seed", root.id, None).await;
         let song_two = create_item(&items, "Audio", "Instant Two", root.id, None).await;
         let song_three = create_item(&items, "Audio", "Instant Three", root.id, None).await;
@@ -727,6 +772,8 @@ impl Fixture {
             other_genre_song_id: other_genre_song.id,
             instant_genre_id,
             stream_audio_id: stream_audio.id,
+            first_collection_id: first_collection.id,
+            second_collection_id: second_collection.id,
             single_delete_id: single_delete.id,
             missing_file_id: missing_file.id,
             io_error_id: io_error.id,
