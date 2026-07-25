@@ -1,14 +1,15 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    AuthenticationInfo, BackupManifestDto, BackupOptionsDto, ClientCapabilitiesDto, DeviceInfoDto,
-    DeviceOptionsDto, EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult,
-    GeneralCommand, GeneralCommandType, GroupInfoDto, GroupQueueMode, GroupRepeatMode,
-    GroupShuffleMode, GroupStateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
-    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
-    PinRedeemResult, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
-    RepositoryInfo, SearchHint, SearchHintResult, ServerConfiguration, SessionInfoDto,
-    SessionUserInfo, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BufferRequestDto,
+    ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo, FontFile,
+    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, GroupInfoDto,
+    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, ImageInfo,
+    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
+    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayRequest,
+    PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult,
+    RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint,
+    SearchHintResult, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayUserAccessType,
+    UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -741,6 +742,26 @@ fn sync_play_playback_modes_use_official_string_values() {
     assert_eq!(
         serde_json::from_value::<GroupShuffleMode>(json!("Shuffle")).unwrap(),
         GroupShuffleMode::Shuffle
+    );
+}
+
+#[test]
+fn sync_play_buffer_request_matches_official_wire_contract() {
+    let request = BufferRequestDto {
+        when: Utc.with_ymd_and_hms(2026, 7, 25, 8, 30, 0).unwrap(),
+        position_ticks: 42,
+        is_playing: true,
+        playlist_item_id: Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        json!({
+            "When": "2026-07-25T08:30:00.0000000Z",
+            "PositionTicks": 42,
+            "IsPlaying": true,
+            "PlaylistItemId": "f9c1ad0c820f44df8db852fbfc0d3d93"
+        })
     );
 }
 

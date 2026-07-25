@@ -649,6 +649,9 @@ fn sync_play_routes() -> Router<Arc<AppState>> {
         .route("/SyncPlay/Pause", post(sync_play::pause))
         .route("/SyncPlay/Stop", post(sync_play::stop))
         .route("/SyncPlay/Seek", post(sync_play::seek))
+        .route("/SyncPlay/Buffering", post(sync_play::buffering))
+        .route("/SyncPlay/Ready", post(sync_play::ready))
+        .route("/SyncPlay/SetIgnoreWait", post(sync_play::set_ignore_wait))
         .route("/SyncPlay/NextItem", post(sync_play::next_item))
         .route("/SyncPlay/PreviousItem", post(sync_play::previous_item))
         .route("/SyncPlay/SetRepeatMode", post(sync_play::set_repeat_mode))
@@ -656,6 +659,7 @@ fn sync_play_routes() -> Router<Arc<AppState>> {
             "/SyncPlay/SetShuffleMode",
             post(sync_play::set_shuffle_mode),
         )
+        .route("/SyncPlay/Ping", post(sync_play::ping))
         .route("/SyncPlay/{id}", get(sync_play::get_group))
 }
 

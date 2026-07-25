@@ -33,6 +33,42 @@ pub enum GroupShuffleMode {
     Shuffle,
 }
 
+/// Playback position reported by a member that has started buffering.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct BufferRequestDto {
+    #[serde(with = "crate::serde_datetime::required")]
+    pub when: DateTime<Utc>,
+    pub position_ticks: i64,
+    pub is_playing: bool,
+    #[serde(with = "crate::serde_guid::single")]
+    pub playlist_item_id: Uuid,
+}
+
+/// Playback position reported by a member that is ready to rejoin playback.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct ReadyRequestDto {
+    #[serde(with = "crate::serde_datetime::required")]
+    pub when: DateTime<Utc>,
+    pub position_ticks: i64,
+    pub is_playing: bool,
+    #[serde(with = "crate::serde_guid::single")]
+    pub playlist_item_id: Uuid,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct IgnoreWaitRequestDto {
+    pub ignore_wait: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PingRequestDto {
+    pub ping: i64,
+}
+
 /// Public summary of a `SyncPlay` group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]

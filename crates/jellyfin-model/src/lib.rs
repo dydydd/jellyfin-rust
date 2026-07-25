@@ -86,8 +86,8 @@ pub use session::{
 };
 pub use subtitles::FontFile;
 pub use sync_play::{
-    GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
-    UtcTimeResponse,
+    BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
+    GroupStateType, IgnoreWaitRequestDto, PingRequestDto, ReadyRequestDto, UtcTimeResponse,
 };
 pub use system::{
     CastReceiverApplication, FolderStorageDto, InstallationInfo, LibraryStorageDto, PackageInfo,

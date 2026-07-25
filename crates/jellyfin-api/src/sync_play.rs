@@ -5,7 +5,10 @@ use axum::{
     extract::{Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_model::{GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode};
+use jellyfin_model::{
+    BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
+    IgnoreWaitRequestDto, PingRequestDto, ReadyRequestDto,
+};
 use jellyfin_server_implementations::SyncPlaySession;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -327,6 +330,65 @@ pub(crate) async fn seek(
     state
         .sync_play
         .seek(&session.session_id, request.position_ticks, runtime_ticks)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn buffering(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<BufferRequestDto>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let runtime_ticks = current_item_runtime(&state, &session).await?;
+    state
+        .sync_play
+        .buffering(&session.session_id, request, runtime_ticks)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn ready(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<ReadyRequestDto>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let runtime_ticks = current_item_runtime(&state, &session).await?;
+    state
+        .sync_play
+        .ready(&session.session_id, request, runtime_ticks)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_ignore_wait(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<IgnoreWaitRequestDto>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let session = require_active_user(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .sync_play
+        .set_ignore_wait(&session.session_id, request.ignore_wait)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn ping(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Result<Json<PingRequestDto>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let session = sync_play_session(&authenticated);
+    state
+        .sync_play
+        .update_ping(&session.session_id, request.ping)
         .await;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,4 +1,8 @@
-use jellyfin_model::{GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType};
+use chrono::Utc;
+use jellyfin_model::{
+    BufferRequestDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
+    ReadyRequestDto,
+};
 use jellyfin_server_implementations::{SyncPlayManager, SyncPlaySession};
 use uuid::Uuid;
 
@@ -217,4 +221,137 @@ async fn sync_play_manager_controls_playback_state_and_navigation() {
         0
     );
     assert!(!manager.seek("1", 10, 300).await);
+}
+
+#[tokio::test]
+async fn sync_play_manager_waits_for_every_following_participant() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Coordination".to_owned(),
+        )
+        .await;
+    assert!(
+        manager
+            .join_group(session(2, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 50).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+    assert!(
+        manager
+            .participant_state_for_session("1")
+            .await
+            .unwrap()
+            .is_buffering
+    );
+
+    let ready = ReadyRequestDto {
+        when: Utc::now(),
+        position_ticks: 50,
+        is_playing: false,
+        playlist_item_id,
+    };
+    assert!(manager.ready("1", ready, 1_000).await);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Waiting
+    );
+    assert!(manager.ready("2", ready, 1_000).await);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Playing
+    );
+
+    assert!(manager.pause("1").await);
+    assert!(manager.seek("1", 100, 10_000_000).await);
+    assert!(manager.ready("1", ready, 10_000_000).await);
+    assert!(
+        manager
+            .ready(
+                "2",
+                ReadyRequestDto {
+                    position_ticks: 6_000_101,
+                    ..ready
+                },
+                10_000_000,
+            )
+            .await
+    );
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Waiting
+    );
+    assert!(manager.set_ignore_wait("2", true).await);
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Paused
+    );
+}
+
+#[tokio::test]
+async fn sync_play_manager_tracks_buffering_and_ping_per_session() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Diagnostics".to_owned(),
+        )
+        .await;
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 10).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+    assert!(
+        manager
+            .ready(
+                "1",
+                ReadyRequestDto {
+                    when: Utc::now(),
+                    position_ticks: 10,
+                    is_playing: false,
+                    playlist_item_id,
+                },
+                100,
+            )
+            .await
+    );
+    assert!(manager.update_ping("1", 37).await);
+    assert!(!manager.update_ping("missing", 1).await);
+    assert_eq!(
+        manager
+            .participant_state_for_session("1")
+            .await
+            .unwrap()
+            .ping,
+        37
+    );
+
+    assert!(
+        manager
+            .buffering(
+                "1",
+                BufferRequestDto {
+                    when: Utc::now(),
+                    position_ticks: 80,
+                    is_playing: true,
+                    playlist_item_id,
+                },
+                100,
+            )
+            .await
+    );
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Waiting
+    );
+    assert_eq!(
+        manager
+            .queue_state_for_session("1")
+            .await
+            .unwrap()
+            .position_ticks,
+        80
+    );
 }

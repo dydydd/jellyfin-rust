@@ -250,6 +250,94 @@ async fn exercise_sync_play_routes(database_name: &str) {
         "Waiting"
     );
 
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/Ping",
+            None,
+            Some(json!({ "Ping": 12 })),
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/Ping",
+            Some(&blocked_token),
+            Some(json!({ "Ping": 12 })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/Buffering",
+            Some(&blocked_token),
+            Some(json!({
+                "When": "2026-07-25T08:30:00Z",
+                "PositionTicks": 10,
+                "IsPlaying": false,
+                "PlaylistItemId": Uuid::new_v4()
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/Buffering",
+            Some(&creator_token),
+            Some(json!({
+                "When": "2026-07-25T08:30:00Z",
+                "PositionTicks": 10,
+                "IsPlaying": false,
+                "PlaylistItemId": Uuid::new_v4()
+            })),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        request(
+            &app,
+            "POST",
+            "/SyncPlay/Ready",
+            Some(&creator_token),
+            Some(json!({
+                "When": "2026-07-25T08:30:00Z",
+                "PositionTicks": 10,
+                "IsPlaying": false,
+                "PlaylistItemId": Uuid::new_v4()
+            })),
+        )
+        .await,
+    )
+    .await;
+    assert_group_state(&app, &group_id, &creator_token, "Waiting").await;
+    for token in [&creator_token, &joiner_token] {
+        assert_no_content(
+            request(
+                &app,
+                "POST",
+                "/SyncPlay/SetIgnoreWait",
+                Some(token),
+                Some(json!({ "IgnoreWait": true })),
+            )
+            .await,
+        )
+        .await;
+    }
+    assert_group_state(&app, &group_id, &creator_token, "Playing").await;
+
     assert_no_content(
         request(
             &app,

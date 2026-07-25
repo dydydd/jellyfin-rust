@@ -2,7 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
 use jellyfin_model::{
-    GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
+    BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
+    GroupStateType, ReadyRequestDto,
 };
 use rand::seq::SliceRandom;
 use tokio::sync::RwLock;
@@ -19,6 +20,9 @@ pub struct SyncPlaySession {
 struct SyncPlayParticipant {
     user_id: Uuid,
     user_name: String,
+    ping: i64,
+    is_buffering: bool,
+    ignore_wait: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +33,7 @@ struct ManagedSyncPlayGroup {
     participants: HashMap<String, SyncPlayParticipant>,
     play_queue: PlayQueue,
     position_ticks: i64,
+    resume_playing: bool,
 }
 
 impl ManagedSyncPlayGroup {
@@ -76,6 +81,9 @@ impl SyncPlayManager {
         let participant = SyncPlayParticipant {
             user_id: session.user_id,
             user_name: session.user_name,
+            ping: 500,
+            is_buffering: false,
+            ignore_wait: false,
         };
         let group = ManagedSyncPlayGroup {
             id,
@@ -84,6 +92,7 @@ impl SyncPlayManager {
             participants: HashMap::from([(session.session_id.clone(), participant)]),
             play_queue: PlayQueue::new(),
             position_ticks: 0,
+            resume_playing: false,
         };
         let info = group.info();
         state.groups.insert(id, group);
@@ -101,13 +110,17 @@ impl SyncPlayManager {
         }
 
         remove_session(&mut state, &session.session_id);
-        let participant = SyncPlayParticipant {
+        let mut participant = SyncPlayParticipant {
             user_id: session.user_id,
             user_name: session.user_name,
+            ping: 500,
+            is_buffering: false,
+            ignore_wait: false,
         };
         let Some(group) = state.groups.get_mut(&group_id) else {
             return false;
         };
+        participant.is_buffering = group.state == GroupStateType::Waiting;
         group
             .participants
             .insert(session.session_id.clone(), participant);
@@ -218,7 +231,7 @@ impl SyncPlayManager {
             .play_queue
             .set_playing_item_by_index(playing_item_position);
         group.position_ticks = start_position_ticks;
-        group.state = GroupStateType::Waiting;
+        begin_wait(group, true);
         true
     }
 
@@ -234,7 +247,7 @@ impl SyncPlayManager {
             return false;
         }
         group.position_ticks = 0;
-        group.state = GroupStateType::Waiting;
+        begin_wait(group, true);
         true
     }
 
@@ -304,12 +317,15 @@ impl SyncPlayManager {
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
             return false;
         };
-        group.state = match group.state {
-            GroupStateType::Idle => GroupStateType::Waiting,
+        match group.state {
+            GroupStateType::Idle => begin_wait(group, true),
+            GroupStateType::Waiting if !group.resume_playing => group.resume_playing = true,
             GroupStateType::Waiting | GroupStateType::Paused | GroupStateType::Playing => {
-                GroupStateType::Playing
+                group.state = GroupStateType::Playing;
+                group.resume_playing = true;
+                set_all_buffering(group, false);
             }
-        };
+        }
         true
     }
 
@@ -318,8 +334,10 @@ impl SyncPlayManager {
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
             return false;
         };
-        if group.state == GroupStateType::Playing {
-            group.state = GroupStateType::Paused;
+        match group.state {
+            GroupStateType::Playing => group.state = GroupStateType::Paused,
+            GroupStateType::Waiting => group.resume_playing = false,
+            GroupStateType::Idle | GroupStateType::Paused => {}
         }
         true
     }
@@ -331,6 +349,8 @@ impl SyncPlayManager {
         };
         group.state = GroupStateType::Idle;
         group.position_ticks = 0;
+        group.resume_playing = false;
+        set_all_buffering(group, false);
         true
     }
 
@@ -342,8 +362,14 @@ impl SyncPlayManager {
         if group.state == GroupStateType::Idle {
             return false;
         }
+        let resume_playing = match group.state {
+            GroupStateType::Playing => true,
+            GroupStateType::Paused => false,
+            GroupStateType::Waiting => group.resume_playing,
+            GroupStateType::Idle => return false,
+        };
         group.position_ticks = position_ticks.clamp(0, runtime_ticks.max(0));
-        group.state = GroupStateType::Waiting;
+        begin_wait(group, resume_playing);
         true
     }
 
@@ -372,6 +398,103 @@ impl SyncPlayManager {
         group.play_queue.set_shuffle_mode(mode);
         true
     }
+
+    pub async fn buffering(
+        &self,
+        session_id: &str,
+        request: BufferRequestDto,
+        runtime_ticks: i64,
+    ) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        let resume_playing = match group.state {
+            GroupStateType::Playing => true,
+            GroupStateType::Paused => false,
+            GroupStateType::Waiting => group.resume_playing,
+            GroupStateType::Idle => return true,
+        };
+        group.state = GroupStateType::Waiting;
+        group.resume_playing = resume_playing;
+        let current_item = group.play_queue.playing_item_playlist_id();
+        let Some(participant) = group.participants.get_mut(session_id) else {
+            return false;
+        };
+        participant.is_buffering = true;
+        if request.playlist_item_id == current_item {
+            group.position_ticks = request.position_ticks.clamp(0, runtime_ticks.max(0));
+        }
+        true
+    }
+
+    pub async fn ready(
+        &self,
+        session_id: &str,
+        request: ReadyRequestDto,
+        runtime_ticks: i64,
+    ) -> bool {
+        const MAX_PLAYBACK_OFFSET_TICKS: i64 = 5_000_000;
+
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        let current_item = group.play_queue.playing_item_playlist_id();
+        let request_ticks = request.position_ticks.clamp(0, runtime_ticks.max(0));
+        let correct_position = request.is_playing
+            || group.position_ticks.abs_diff(request_ticks) <= MAX_PLAYBACK_OFFSET_TICKS as u64;
+        let correct_position = if group.resume_playing {
+            correct_position
+        } else {
+            group.position_ticks.abs_diff(request_ticks) <= MAX_PLAYBACK_OFFSET_TICKS as u64
+        };
+        let Some(participant) = group.participants.get_mut(session_id) else {
+            return false;
+        };
+        participant.is_buffering = request.playlist_item_id != current_item || !correct_position;
+        finish_wait_if_ready(group);
+        true
+    }
+
+    pub async fn set_ignore_wait(&self, session_id: &str, ignore_wait: bool) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        let Some(participant) = group.participants.get_mut(session_id) else {
+            return false;
+        };
+        participant.ignore_wait = ignore_wait;
+        finish_wait_if_ready(group);
+        true
+    }
+
+    pub async fn update_ping(&self, session_id: &str, ping: i64) -> bool {
+        let mut state = self.state.write().await;
+        let Some(group) = group_for_session_mut(&mut state, session_id) else {
+            return false;
+        };
+        let Some(participant) = group.participants.get_mut(session_id) else {
+            return false;
+        };
+        participant.ping = ping;
+        true
+    }
+
+    pub async fn participant_state_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<SyncPlayParticipantState> {
+        let state = self.state.read().await;
+        let group_id = state.session_groups.get(session_id)?;
+        let participant = state.groups.get(group_id)?.participants.get(session_id)?;
+        Some(SyncPlayParticipantState {
+            ping: participant.ping,
+            is_buffering: participant.is_buffering,
+            ignore_wait: participant.ignore_wait,
+        })
+    }
 }
 
 async fn navigate_queue(
@@ -394,9 +517,36 @@ async fn navigate_queue(
     };
     if changed {
         group.position_ticks = 0;
-        group.state = GroupStateType::Waiting;
+        begin_wait(group, true);
     }
     changed
+}
+
+fn begin_wait(group: &mut ManagedSyncPlayGroup, resume_playing: bool) {
+    group.state = GroupStateType::Waiting;
+    group.resume_playing = resume_playing;
+    set_all_buffering(group, true);
+}
+
+fn set_all_buffering(group: &mut ManagedSyncPlayGroup, is_buffering: bool) {
+    for participant in group.participants.values_mut() {
+        participant.is_buffering = is_buffering;
+    }
+}
+
+fn finish_wait_if_ready(group: &mut ManagedSyncPlayGroup) {
+    if group.state == GroupStateType::Waiting
+        && !group
+            .participants
+            .values()
+            .any(|participant| participant.is_buffering && !participant.ignore_wait)
+    {
+        group.state = if group.resume_playing {
+            GroupStateType::Playing
+        } else {
+            GroupStateType::Paused
+        };
+    }
 }
 
 fn group_for_session_mut<'a>(
@@ -413,6 +563,7 @@ fn remove_session(state: &mut SyncPlayManagerState, session_id: &str) -> bool {
     };
     let remove_group = state.groups.get_mut(&group_id).is_some_and(|group| {
         group.participants.remove(session_id);
+        finish_wait_if_ready(group);
         group.participants.is_empty()
     });
     if remove_group {
@@ -724,6 +875,13 @@ pub struct SyncPlayQueueState {
     pub position_ticks: i64,
     pub repeat_mode: GroupRepeatMode,
     pub shuffle_mode: GroupShuffleMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncPlayParticipantState {
+    pub ping: i64,
+    pub is_buffering: bool,
+    pub ignore_wait: bool,
 }
 
 /// Library lookup and standalone visibility boundary used by `SyncPlay` groups.
