@@ -1,7 +1,7 @@
 use chrono::Utc;
 use jellyfin_model::{
     BufferRequestDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
-    PlayQueueUpdateReason, ReadyRequestDto, SendCommandType,
+    PlayQueueUpdateReason, PlaybackRequestType, ReadyRequestDto, SendCommandType,
 };
 use jellyfin_server_implementations::{SyncPlayGroupUpdate, SyncPlayManager, SyncPlaySession};
 use uuid::Uuid;
@@ -469,4 +469,133 @@ async fn sync_play_manager_builds_official_queue_updates() {
         update.data.playlist[0].playlist_item_id,
         update.data.playlist[1].playlist_item_id
     );
+}
+
+#[tokio::test]
+async fn sync_play_manager_builds_official_state_updates() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(2, Uuid::new_v4(), "alice"),
+            "State Updates".to_owned(),
+        )
+        .await;
+    assert!(
+        manager
+            .join_group(session(1, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 42).await);
+
+    let (sessions, update) = manager
+        .state_update_for_session("1", PlaybackRequestType::Play)
+        .await
+        .unwrap();
+    assert_eq!(sessions, ["1", "2"]);
+    assert_eq!(update.group_id, group.group_id);
+    assert_eq!(
+        update.update_type,
+        jellyfin_model::GroupUpdateType::StateUpdate
+    );
+    assert_eq!(update.data.state, GroupStateType::Waiting);
+    assert_eq!(update.data.reason, PlaybackRequestType::Play);
+    assert!(
+        manager
+            .state_update_for_session("missing", PlaybackRequestType::Stop)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn sync_play_manager_emits_state_updates_only_for_official_transitions() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Transitions".to_owned(),
+        )
+        .await;
+    assert!(
+        manager
+            .join_group(session(2, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 42).await);
+
+    let (applied, update) = manager.unpause_with_update("1").await;
+    assert!(applied);
+    assert_state_update(update.as_ref().unwrap(), "Playing", "Unpause");
+    let (_, update) = manager.unpause_with_update("1").await;
+    assert!(update.is_none());
+
+    let (_, update) = manager.pause_with_update("1").await;
+    assert_state_update(update.as_ref().unwrap(), "Paused", "Pause");
+    let (_, update) = manager.pause_with_update("1").await;
+    assert!(update.is_none());
+
+    let (_, update) = manager.seek_with_update("1", 20, 100).await;
+    assert_state_update(update.as_ref().unwrap(), "Waiting", "Seek");
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+    let (_, update) = manager
+        .ready_with_update(
+            "1",
+            ReadyRequestDto {
+                when: Utc::now(),
+                position_ticks: 20,
+                is_playing: false,
+                playlist_item_id,
+            },
+            100,
+        )
+        .await;
+    assert!(update.is_none());
+
+    let (_, update) = manager.set_ignore_wait_with_update("2", true).await;
+    assert!(update.is_none());
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Paused
+    );
+
+    assert!(manager.set_ignore_wait("2", false).await);
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 10).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+    let (_, update) = manager
+        .ready_with_update(
+            "1",
+            ReadyRequestDto {
+                when: Utc::now(),
+                position_ticks: 10,
+                is_playing: false,
+                playlist_item_id,
+            },
+            100,
+        )
+        .await;
+    assert!(update.is_none());
+    let (_, update) = manager.set_ignore_wait_with_update("2", true).await;
+    assert_state_update(update.as_ref().unwrap(), "Playing", "Unpause");
+
+    let (_, update) = manager
+        .buffering_with_update(
+            "1",
+            BufferRequestDto {
+                when: Utc::now(),
+                position_ticks: 15,
+                is_playing: true,
+                playlist_item_id,
+            },
+            100,
+        )
+        .await;
+    assert_state_update(update.as_ref().unwrap(), "Waiting", "Buffer");
+}
+
+fn assert_state_update(update: &SyncPlayGroupUpdate, state: &str, reason: &str) {
+    assert_eq!(update.payload["Type"], "StateUpdate");
+    assert_eq!(update.payload["Data"]["State"], state);
+    assert_eq!(update.payload["Data"]["Reason"], reason);
 }

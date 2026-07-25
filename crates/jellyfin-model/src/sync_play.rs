@@ -69,6 +69,27 @@ pub enum GroupUpdateType {
     LibraryAccessDenied,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlaybackRequestType {
+    Play,
+    SetPlaylistItem,
+    RemoveFromPlaylist,
+    MovePlaylistItem,
+    Queue,
+    Unpause,
+    Pause,
+    Stop,
+    Seek,
+    Buffer,
+    Ready,
+    NextItem,
+    PreviousItem,
+    SetRepeatMode,
+    SetShuffleMode,
+    Ping,
+    IgnoreWait,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct GroupUpdateDto<T> {
@@ -77,6 +98,13 @@ pub struct GroupUpdateDto<T> {
     pub data: T,
     #[serde(rename = "Type")]
     pub update_type: GroupUpdateType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct GroupStateUpdateDto {
+    pub state: GroupStateType,
+    pub reason: PlaybackRequestType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

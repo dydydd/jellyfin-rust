@@ -625,6 +625,13 @@ async fn exercise_websocket_commands_and_disconnect(
     assert_eq!(command["Data"]["GroupId"], created["GroupId"]);
     assert_eq!(command["Data"]["PositionTicks"], 0);
     assert_eq!(websocket_json(&mut joiner_socket).await, command);
+    let state_update = websocket_json(&mut creator_socket).await;
+    assert_eq!(state_update["MessageType"], "SyncPlayGroupUpdate");
+    assert_eq!(state_update["Data"]["Type"], "StateUpdate");
+    assert_eq!(state_update["Data"]["GroupId"], created["GroupId"]);
+    assert_eq!(state_update["Data"]["Data"]["State"], "Playing");
+    assert_eq!(state_update["Data"]["Data"]["Reason"], "Unpause");
+    assert_eq!(websocket_json(&mut joiner_socket).await, state_update);
 
     joiner_socket.close(None).await.unwrap();
     creator_socket.close(None).await.unwrap();

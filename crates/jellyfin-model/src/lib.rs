@@ -87,9 +87,9 @@ pub use session::{
 pub use subtitles::FontFile;
 pub use sync_play::{
     BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
-    GroupStateType, GroupUpdateDto, GroupUpdateType, IgnoreWaitRequestDto, PingRequestDto,
-    PlayQueueUpdateDto, PlayQueueUpdateReason, ReadyRequestDto, SendCommandDto, SendCommandType,
-    SyncPlayQueueItemDto, UtcTimeResponse,
+    GroupStateType, GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, IgnoreWaitRequestDto,
+    PingRequestDto, PlayQueueUpdateDto, PlayQueueUpdateReason, PlaybackRequestType,
+    ReadyRequestDto, SendCommandDto, SendCommandType, SyncPlayQueueItemDto, UtcTimeResponse,
 };
 pub use system::{
     CastReceiverApplication, FolderStorageDto, InstallationInfo, LibraryStorageDto, PackageInfo,

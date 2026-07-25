@@ -335,8 +335,13 @@ pub(crate) async fn unpause(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    if state.sync_play.unpause(&session.session_id).await {
+    let (applied, update) = state
+        .sync_play
+        .unpause_with_update(&session.session_id)
+        .await;
+    if applied {
         broadcast_playback_command(&state, &session.session_id, SendCommandType::Unpause).await;
+        broadcast_optional_group_update(&state, update).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -346,8 +351,10 @@ pub(crate) async fn pause(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    if state.sync_play.pause(&session.session_id).await {
+    let (applied, update) = state.sync_play.pause_with_update(&session.session_id).await;
+    if applied {
         broadcast_playback_command(&state, &session.session_id, SendCommandType::Pause).await;
+        broadcast_optional_group_update(&state, update).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -371,12 +378,13 @@ pub(crate) async fn seek(
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let runtime_ticks = current_item_runtime(&state, &session).await?;
-    if state
+    let (applied, update) = state
         .sync_play
-        .seek(&session.session_id, request.position_ticks, runtime_ticks)
-        .await
-    {
+        .seek_with_update(&session.session_id, request.position_ticks, runtime_ticks)
+        .await;
+    if applied {
         broadcast_playback_command(&state, &session.session_id, SendCommandType::Seek).await;
+        broadcast_optional_group_update(&state, update).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -389,10 +397,11 @@ pub(crate) async fn buffering(
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let runtime_ticks = current_item_runtime(&state, &session).await?;
-    state
+    let (_, update) = state
         .sync_play
-        .buffering(&session.session_id, request, runtime_ticks)
+        .buffering_with_update(&session.session_id, request, runtime_ticks)
         .await;
+    broadcast_optional_group_update(&state, update).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -404,10 +413,11 @@ pub(crate) async fn ready(
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let runtime_ticks = current_item_runtime(&state, &session).await?;
-    state
+    let (_, update) = state
         .sync_play
-        .ready(&session.session_id, request, runtime_ticks)
+        .ready_with_update(&session.session_id, request, runtime_ticks)
         .await;
+    broadcast_optional_group_update(&state, update).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -418,10 +428,14 @@ pub(crate) async fn set_ignore_wait(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    state
+    let (_, update) = state
         .sync_play
-        .set_ignore_wait(&session.session_id, request.ignore_wait)
+        .set_ignore_wait_with_update(&session.session_id, request.ignore_wait)
         .await;
+    if update.is_some() {
+        broadcast_playback_command(&state, &session.session_id, SendCommandType::Unpause).await;
+    }
+    broadcast_optional_group_update(&state, update).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -571,6 +585,18 @@ async fn broadcast_queue_update(state: &AppState, session_id: &str, reason: Play
         state
             .web_sockets
             .send(&sessions, "SyncPlayGroupUpdate", &payload)
+            .await;
+    }
+}
+
+async fn broadcast_optional_group_update(
+    state: &AppState,
+    update: Option<jellyfin_server_implementations::SyncPlayGroupUpdate>,
+) {
+    if let Some(update) = update {
+        state
+            .web_sockets
+            .send(&update.session_ids, "SyncPlayGroupUpdate", &update.payload)
             .await;
     }
 }

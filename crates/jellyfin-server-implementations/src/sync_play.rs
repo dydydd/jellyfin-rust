@@ -3,8 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use chrono::Utc;
 use jellyfin_model::{
     BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
-    GroupStateType, GroupUpdateDto, GroupUpdateType, PlayQueueUpdateDto, PlayQueueUpdateReason,
-    ReadyRequestDto, SendCommandDto, SendCommandType, SyncPlayQueueItemDto,
+    GroupStateType, GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, PlayQueueUpdateDto,
+    PlayQueueUpdateReason, PlaybackRequestType, ReadyRequestDto, SendCommandDto, SendCommandType,
+    SyncPlayQueueItemDto,
 };
 use rand::seq::SliceRandom;
 use serde::Serialize;
@@ -365,6 +366,29 @@ impl SyncPlayManager {
         ))
     }
 
+    pub async fn state_update_for_session(
+        &self,
+        session_id: &str,
+        reason: PlaybackRequestType,
+    ) -> Option<(Vec<String>, GroupUpdateDto<GroupStateUpdateDto>)> {
+        let state = self.state.read().await;
+        let group_id = *state.session_groups.get(session_id)?;
+        let group = state.groups.get(&group_id)?;
+        let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
+        sessions.sort_unstable();
+        Some((
+            sessions,
+            GroupUpdateDto {
+                group_id,
+                data: GroupStateUpdateDto {
+                    state: group.state,
+                    reason,
+                },
+                update_type: GroupUpdateType::StateUpdate,
+            },
+        ))
+    }
+
     pub async fn set_new_queue(
         &self,
         session_id: &str,
@@ -470,33 +494,64 @@ impl SyncPlayManager {
     }
 
     pub async fn unpause(&self, session_id: &str) -> bool {
+        self.unpause_with_update(session_id).await.0
+    }
+
+    pub async fn unpause_with_update(
+        &self,
+        session_id: &str,
+    ) -> (bool, Option<SyncPlayGroupUpdate>) {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return false;
+            return (false, None);
         };
-        match group.state {
-            GroupStateType::Idle => begin_wait(group, true),
-            GroupStateType::Waiting if !group.resume_playing => group.resume_playing = true,
+        let send_update = match group.state {
+            GroupStateType::Idle => {
+                begin_wait(group, true);
+                false
+            }
+            GroupStateType::Waiting if !group.resume_playing => {
+                group.resume_playing = true;
+                true
+            }
             GroupStateType::Waiting | GroupStateType::Paused | GroupStateType::Playing => {
+                let send_update = group.state != GroupStateType::Playing;
                 group.state = GroupStateType::Playing;
                 group.resume_playing = true;
                 set_all_buffering(group, false);
+                send_update
             }
-        }
-        true
+        };
+        (
+            true,
+            send_update.then(|| state_group_update(group, PlaybackRequestType::Unpause)),
+        )
     }
 
     pub async fn pause(&self, session_id: &str) -> bool {
+        self.pause_with_update(session_id).await.0
+    }
+
+    pub async fn pause_with_update(&self, session_id: &str) -> (bool, Option<SyncPlayGroupUpdate>) {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return false;
+            return (false, None);
         };
-        match group.state {
-            GroupStateType::Playing => group.state = GroupStateType::Paused,
-            GroupStateType::Waiting => group.resume_playing = false,
-            GroupStateType::Idle | GroupStateType::Paused => {}
-        }
-        true
+        let send_update = match group.state {
+            GroupStateType::Playing => {
+                group.state = GroupStateType::Paused;
+                true
+            }
+            GroupStateType::Waiting => {
+                group.resume_playing = false;
+                true
+            }
+            GroupStateType::Idle | GroupStateType::Paused => false,
+        };
+        (
+            true,
+            send_update.then(|| state_group_update(group, PlaybackRequestType::Pause)),
+        )
     }
 
     pub async fn stop(&self, session_id: &str) -> bool {
@@ -512,22 +567,36 @@ impl SyncPlayManager {
     }
 
     pub async fn seek(&self, session_id: &str, position_ticks: i64, runtime_ticks: i64) -> bool {
+        self.seek_with_update(session_id, position_ticks, runtime_ticks)
+            .await
+            .0
+    }
+
+    pub async fn seek_with_update(
+        &self,
+        session_id: &str,
+        position_ticks: i64,
+        runtime_ticks: i64,
+    ) -> (bool, Option<SyncPlayGroupUpdate>) {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return false;
+            return (false, None);
         };
         if group.state == GroupStateType::Idle {
-            return false;
+            return (false, None);
         }
         let resume_playing = match group.state {
             GroupStateType::Playing => true,
             GroupStateType::Paused => false,
             GroupStateType::Waiting => group.resume_playing,
-            GroupStateType::Idle => return false,
+            GroupStateType::Idle => return (false, None),
         };
         group.position_ticks = position_ticks.clamp(0, runtime_ticks.max(0));
         begin_wait(group, resume_playing);
-        true
+        (
+            true,
+            Some(state_group_update(group, PlaybackRequestType::Seek)),
+        )
     }
 
     pub async fn next_item(&self, session_id: &str, playlist_item_id: Uuid) -> bool {
@@ -562,27 +631,42 @@ impl SyncPlayManager {
         request: BufferRequestDto,
         runtime_ticks: i64,
     ) -> bool {
+        self.buffering_with_update(session_id, request, runtime_ticks)
+            .await
+            .0
+    }
+
+    pub async fn buffering_with_update(
+        &self,
+        session_id: &str,
+        request: BufferRequestDto,
+        runtime_ticks: i64,
+    ) -> (bool, Option<SyncPlayGroupUpdate>) {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return false;
+            return (false, None);
         };
         let resume_playing = match group.state {
             GroupStateType::Playing => true,
             GroupStateType::Paused => false,
             GroupStateType::Waiting => group.resume_playing,
-            GroupStateType::Idle => return true,
+            GroupStateType::Idle => return (true, None),
         };
         group.state = GroupStateType::Waiting;
         group.resume_playing = resume_playing;
         let current_item = group.play_queue.playing_item_playlist_id();
         let Some(participant) = group.participants.get_mut(session_id) else {
-            return false;
+            return (false, None);
         };
         participant.is_buffering = true;
         if request.playlist_item_id == current_item {
             group.position_ticks = request.position_ticks.clamp(0, runtime_ticks.max(0));
+            return (
+                true,
+                Some(state_group_update(group, PlaybackRequestType::Buffer)),
+            );
         }
-        true
+        (true, None)
     }
 
     pub async fn ready(
@@ -591,12 +675,24 @@ impl SyncPlayManager {
         request: ReadyRequestDto,
         runtime_ticks: i64,
     ) -> bool {
+        self.ready_with_update(session_id, request, runtime_ticks)
+            .await
+            .0
+    }
+
+    pub async fn ready_with_update(
+        &self,
+        session_id: &str,
+        request: ReadyRequestDto,
+        runtime_ticks: i64,
+    ) -> (bool, Option<SyncPlayGroupUpdate>) {
         const MAX_PLAYBACK_OFFSET_TICKS: i64 = 5_000_000;
 
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return false;
+            return (false, None);
         };
+        let was_waiting = group.state == GroupStateType::Waiting;
         let current_item = group.play_queue.playing_item_playlist_id();
         let request_ticks = request.position_ticks.clamp(0, runtime_ticks.max(0));
         let correct_position = request.is_playing
@@ -607,24 +703,44 @@ impl SyncPlayManager {
             group.position_ticks.abs_diff(request_ticks) <= MAX_PLAYBACK_OFFSET_TICKS as u64
         };
         let Some(participant) = group.participants.get_mut(session_id) else {
-            return false;
+            return (false, None);
         };
         participant.is_buffering = request.playlist_item_id != current_item || !correct_position;
+        let invalid_report = participant.is_buffering;
         finish_wait_if_ready(group);
-        true
+        let send_update = was_waiting
+            && request.playlist_item_id == current_item
+            && (invalid_report || group.state != GroupStateType::Waiting);
+        (
+            true,
+            send_update.then(|| state_group_update(group, PlaybackRequestType::Ready)),
+        )
     }
 
     pub async fn set_ignore_wait(&self, session_id: &str, ignore_wait: bool) -> bool {
+        self.set_ignore_wait_with_update(session_id, ignore_wait)
+            .await
+            .0
+    }
+
+    pub async fn set_ignore_wait_with_update(
+        &self,
+        session_id: &str,
+        ignore_wait: bool,
+    ) -> (bool, Option<SyncPlayGroupUpdate>) {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return false;
+            return (false, None);
         };
+        let was_waiting = group.state == GroupStateType::Waiting;
         let Some(participant) = group.participants.get_mut(session_id) else {
-            return false;
+            return (false, None);
         };
         participant.ignore_wait = ignore_wait;
         finish_wait_if_ready(group);
-        true
+        let update = (was_waiting && group.state == GroupStateType::Playing)
+            .then(|| state_group_update(group, PlaybackRequestType::Unpause));
+        (true, update)
     }
 
     pub async fn update_ping(&self, session_id: &str, ping: i64) -> bool {
@@ -778,6 +894,23 @@ fn group_update<T: Serialize>(
         session_ids,
         payload,
     }
+}
+
+fn state_group_update(
+    group: &ManagedSyncPlayGroup,
+    reason: PlaybackRequestType,
+) -> SyncPlayGroupUpdate {
+    let mut session_ids = group.participants.keys().cloned().collect::<Vec<_>>();
+    session_ids.sort_unstable();
+    group_update(
+        session_ids,
+        group.id,
+        GroupStateUpdateDto {
+            state: group.state,
+            reason,
+        },
+        GroupUpdateType::StateUpdate,
+    )
 }
 
 /// A media item occurrence in a `SyncPlay` queue.

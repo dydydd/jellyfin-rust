@@ -3,14 +3,15 @@ use jellyfin_model::{
     AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BufferRequestDto,
     ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo, FontFile,
     ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, GroupInfoDto,
-    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, GroupUpdateDto,
-    GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto,
-    MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo, PinRedeemResult,
-    PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason, PlayRequest, PlayerStateInfo,
-    PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult,
-    RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult,
-    SendCommandDto, SendCommandType, ServerConfiguration, SessionInfoDto, SessionUserInfo,
-    SyncPlayQueueItemDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, GroupStateUpdateDto,
+    GroupUpdateDto, GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
+    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
+    PinRedeemResult, PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason, PlayRequest,
+    PlaybackRequestType, PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo,
+    QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo,
+    SearchHint, SearchHintResult, SendCommandDto, SendCommandType, ServerConfiguration,
+    SessionInfoDto, SessionUserInfo, SyncPlayQueueItemDto, SyncPlayUserAccessType, UserDto,
+    UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -833,6 +834,30 @@ fn sync_play_queue_update_matches_official_wire_contract() {
                 "RepeatMode": "RepeatNone"
             },
             "Type": "PlayQueue"
+        })
+    );
+}
+
+#[test]
+fn sync_play_state_update_matches_official_wire_contract() {
+    let update = GroupUpdateDto {
+        group_id: Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),
+        data: GroupStateUpdateDto {
+            state: GroupStateType::Waiting,
+            reason: PlaybackRequestType::Seek,
+        },
+        update_type: GroupUpdateType::StateUpdate,
+    };
+
+    assert_eq!(
+        serde_json::to_value(update).unwrap(),
+        json!({
+            "GroupId": "f9c1ad0c820f44df8db852fbfc0d3d93",
+            "Data": {
+                "State": "Waiting",
+                "Reason": "Seek"
+            },
+            "Type": "StateUpdate"
         })
     );
 }
