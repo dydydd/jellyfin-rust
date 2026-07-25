@@ -3,6 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use futures_util::StreamExt;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
@@ -521,11 +522,56 @@ async fn exercise_sync_play_routes(database_name: &str) {
         json!([])
     );
 
+    exercise_websocket_disconnect(&app, &creator_token).await;
+
     user::Entity::delete_many()
         .exec(&database)
         .await
         .expect("test user cleanup");
     database.close().await.unwrap();
+}
+
+async fn exercise_websocket_disconnect(app: &Router, creator_token: &str) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_app = app.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, server_app).await });
+    let (mut socket, response) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/websocket?api_key={creator_token}"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let keep_alive = socket.next().await.unwrap().unwrap();
+    let keep_alive: Value = serde_json::from_str(keep_alive.to_text().unwrap()).unwrap();
+    assert_eq!(keep_alive["MessageType"], "ForceKeepAlive");
+
+    let created = response_json(
+        request(
+            app,
+            "POST",
+            "/SyncPlay/New",
+            Some(creator_token),
+            Some(json!({ "GroupName": "Socket Group" })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(created["Participants"].as_array().unwrap().len(), 1);
+
+    socket.close(None).await.unwrap();
+    for _ in 0..100 {
+        let groups =
+            response_json(request(app, "GET", "/SyncPlay/List", Some(creator_token), None).await)
+                .await;
+        if groups.as_array().unwrap().is_empty() {
+            server.abort();
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    server.abort();
+    panic!("last WebSocket disconnect did not remove the empty SyncPlay group");
 }
 
 async fn set_sync_play_access(users: &UserService, user_id: Uuid, access: SyncPlayUserAccessType) {

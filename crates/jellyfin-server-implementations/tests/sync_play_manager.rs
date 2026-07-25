@@ -355,3 +355,19 @@ async fn sync_play_manager_tracks_buffering_and_ping_per_session() {
         80
     );
 }
+
+#[tokio::test]
+async fn sync_play_manager_leaves_only_after_the_last_websocket_disconnects() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(session(1, Uuid::new_v4(), "alice"), "Sockets".to_owned())
+        .await;
+    manager.websocket_connected("1").await;
+    manager.websocket_connected("1").await;
+
+    assert!(!manager.websocket_disconnected("1").await);
+    assert!(manager.get_group(group.group_id).await.is_some());
+    assert!(manager.websocket_disconnected("1").await);
+    assert!(manager.get_group(group.group_id).await.is_none());
+    assert!(!manager.websocket_disconnected("1").await);
+}

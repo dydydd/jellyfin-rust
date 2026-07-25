@@ -59,6 +59,7 @@ impl ManagedSyncPlayGroup {
 struct SyncPlayManagerState {
     groups: HashMap<Uuid, ManagedSyncPlayGroup>,
     session_groups: HashMap<String, Uuid>,
+    websocket_connections: HashMap<String, usize>,
 }
 
 /// Coordinates the process-local lifecycle of `SyncPlay` groups.
@@ -130,6 +131,27 @@ impl SyncPlayManager {
 
     pub async fn leave_group(&self, session_id: &str) -> bool {
         let mut state = self.state.write().await;
+        remove_session(&mut state, session_id)
+    }
+
+    pub async fn websocket_connected(&self, session_id: &str) {
+        let mut state = self.state.write().await;
+        *state
+            .websocket_connections
+            .entry(session_id.to_owned())
+            .or_default() += 1;
+    }
+
+    pub async fn websocket_disconnected(&self, session_id: &str) -> bool {
+        let mut state = self.state.write().await;
+        let Some(connections) = state.websocket_connections.get_mut(session_id) else {
+            return false;
+        };
+        *connections -= 1;
+        if *connections != 0 {
+            return false;
+        }
+        state.websocket_connections.remove(session_id);
         remove_session(&mut state, session_id)
     }
 

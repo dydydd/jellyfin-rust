@@ -102,6 +102,7 @@ mod users;
 mod video_attachments;
 mod videos;
 mod virtual_folders;
+mod websocket;
 mod years;
 
 pub use branding::BrandingOptions;
@@ -380,6 +381,7 @@ pub fn router(state: AppState) -> Router {
     openapi::documented_routes()
         .merge(system_routes())
         .merge(sync_play_routes())
+        .route("/websocket", get(websocket::connect))
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))

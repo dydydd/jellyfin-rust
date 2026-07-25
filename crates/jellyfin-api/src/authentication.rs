@@ -304,6 +304,18 @@ pub(crate) async fn authenticated_session(
     }
 }
 
+pub(crate) async fn authenticated_session_for_uri(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Result<AuthenticatedSession, ApiError> {
+    let identity = authenticated_identity(state, headers, Some(uri)).await?;
+    match identity {
+        AuthenticatedIdentity::Device(session) => Ok(*session),
+        AuthenticatedIdentity::ApiKey(_) => Err(ApiError::Unauthorized),
+    }
+}
+
 pub(crate) async fn optional_authenticated_user_id(
     state: &AppState,
     headers: &HeaderMap,
