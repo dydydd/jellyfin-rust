@@ -217,16 +217,32 @@ impl SyncPlayManager {
     }
 
     pub async fn websocket_disconnected(&self, session_id: &str) -> bool {
+        self.websocket_disconnected_with_updates(session_id)
+            .await
+            .is_some()
+    }
+
+    pub async fn websocket_disconnected_with_updates(
+        &self,
+        session_id: &str,
+    ) -> Option<Vec<SyncPlayGroupUpdate>> {
         let mut state = self.state.write().await;
         let Some(connections) = state.websocket_connections.get_mut(session_id) else {
-            return false;
+            return None;
         };
         *connections -= 1;
         if *connections != 0 {
-            return false;
+            return None;
         }
         state.websocket_connections.remove(session_id);
-        remove_session(&mut state, session_id)
+        let group_id = *state.session_groups.get(session_id)?;
+        let participant = state.groups.get(&group_id)?.participants.get(session_id)?;
+        let session = SyncPlaySession {
+            session_id: session_id.to_owned(),
+            user_id: participant.user_id,
+            user_name: participant.user_name.clone(),
+        };
+        remove_session_with_updates(&mut state, &session)
     }
 
     pub async fn list_groups(&self) -> Vec<GroupInfoDto> {

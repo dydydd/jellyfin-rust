@@ -92,8 +92,7 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
     state.sync_play.websocket_connected(&session_id).await;
     if send_force_keep_alive(&mut socket).await.is_err() {
         drop(outbound);
-        state.web_sockets.unsubscribe(&session_id).await;
-        state.sync_play.websocket_disconnected(&session_id).await;
+        disconnect(&state, &session_id).await;
         return;
     }
 
@@ -151,8 +150,24 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
         }
     }
     drop(outbound);
+    disconnect(&state, &session_id).await;
+}
+
+async fn disconnect(state: &AppState, session_id: &str) {
     state.web_sockets.unsubscribe(&session_id).await;
-    state.sync_play.websocket_disconnected(&session_id).await;
+    let Some(updates) = state
+        .sync_play
+        .websocket_disconnected_with_updates(session_id)
+        .await
+    else {
+        return;
+    };
+    for update in updates {
+        state
+            .web_sockets
+            .send(&update.session_ids, "SyncPlayGroupUpdate", &update.payload)
+            .await;
+    }
 }
 
 async fn send_force_keep_alive(

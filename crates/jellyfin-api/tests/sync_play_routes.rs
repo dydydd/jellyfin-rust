@@ -522,8 +522,14 @@ async fn exercise_sync_play_routes(database_name: &str) {
         json!([])
     );
 
-    exercise_websocket_commands_and_disconnect(&app, &creator_token, &joiner_token, first_item.id)
-        .await;
+    exercise_websocket_commands_and_disconnect(
+        &app,
+        &creator_token,
+        &joiner_token,
+        &joiner.username,
+        first_item.id,
+    )
+    .await;
 
     user::Entity::delete_many()
         .exec(&database)
@@ -536,6 +542,7 @@ async fn exercise_websocket_commands_and_disconnect(
     app: &Router,
     creator_token: &str,
     joiner_token: &str,
+    joiner_username: &str,
     item_id: Uuid,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -634,6 +641,11 @@ async fn exercise_websocket_commands_and_disconnect(
     assert_eq!(websocket_json(&mut joiner_socket).await, state_update);
 
     joiner_socket.close(None).await.unwrap();
+    let user_left = websocket_json(&mut creator_socket).await;
+    assert_eq!(user_left["MessageType"], "SyncPlayGroupUpdate");
+    assert_eq!(user_left["Data"]["Type"], "UserLeft");
+    assert_eq!(user_left["Data"]["GroupId"], created["GroupId"]);
+    assert_eq!(user_left["Data"]["Data"], joiner_username);
     creator_socket.close(None).await.unwrap();
     for _ in 0..100 {
         let groups =

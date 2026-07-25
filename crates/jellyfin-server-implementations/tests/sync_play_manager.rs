@@ -403,13 +403,39 @@ async fn sync_play_manager_leaves_only_after_the_last_websocket_disconnects() {
     let group = manager
         .create_group(session(1, Uuid::new_v4(), "alice"), "Sockets".to_owned())
         .await;
+    assert!(
+        manager
+            .join_group(session(2, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
     manager.websocket_connected("1").await;
     manager.websocket_connected("1").await;
 
-    assert!(!manager.websocket_disconnected("1").await);
+    assert!(
+        manager
+            .websocket_disconnected_with_updates("1")
+            .await
+            .is_none()
+    );
     assert!(manager.get_group(group.group_id).await.is_some());
-    assert!(manager.websocket_disconnected("1").await);
-    assert!(manager.get_group(group.group_id).await.is_none());
+    let updates = manager
+        .websocket_disconnected_with_updates("1")
+        .await
+        .unwrap();
+    assert_eq!(updates.len(), 2);
+    assert_eq!(update_type(&updates[0]), "GroupLeft");
+    assert_eq!(updates[0].session_ids, ["1"]);
+    assert_eq!(update_type(&updates[1]), "UserLeft");
+    assert_eq!(updates[1].session_ids, ["2"]);
+    assert_eq!(updates[1].payload["Data"], "alice");
+    assert_eq!(
+        manager
+            .get_group(group.group_id)
+            .await
+            .unwrap()
+            .participants,
+        ["bob"]
+    );
     assert!(!manager.websocket_disconnected("1").await);
 }
 
