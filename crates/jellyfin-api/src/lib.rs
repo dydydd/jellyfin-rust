@@ -469,6 +469,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
         .route(
+            "/Items/{item_id}/PlaybackInfo",
+            get(media_info::get_playback_info).post(media_info::post_playback_info),
+        )
+        .route(
             "/MediaSegments/{item_id}",
             get(media_segments::get_item_segments),
         )

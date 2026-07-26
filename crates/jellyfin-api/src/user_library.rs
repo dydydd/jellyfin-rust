@@ -51,6 +51,15 @@ pub(crate) struct BaseItemDtoFields {
 
 impl BaseItemDtoFields {
     #[must_use]
+    pub(crate) const fn media_sources() -> Self {
+        Self {
+            media_sources: true,
+            media_streams: false,
+            trickplay: false,
+        }
+    }
+
+    #[must_use]
     pub(crate) fn from_names(fields: &[String]) -> Self {
         let mut result = Self::default();
         for field in fields {

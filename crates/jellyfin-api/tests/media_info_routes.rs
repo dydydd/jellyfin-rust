@@ -1,11 +1,16 @@
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
-use jellyfin_data::{DeviceRepository, NewDevice, entities::user};
+use jellyfin_controller::{MediaStreamService, UserService};
+use jellyfin_data::{
+    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice,
+    entities::{base_item, user},
+};
+use jellyfin_model::{MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -80,6 +85,105 @@ async fn bitrate_test_authentication_and_inclusive_bounds() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn playback_info_routes_return_postgres_media_sources_with_official_auth_shape() {
+    let fixture = Fixture::new().await;
+    let route = format!("/Items/{}/PlaybackInfo", fixture.item_id);
+
+    assert_eq!(
+        fixture.get(&route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!(
+                    "/Items/{}/PlaybackInfo",
+                    Uuid::from_u128(0xdddd_dddd_dddd_dddd_dddd_dddd_dddd_dddd)
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("{route}?userId={}", fixture.admin_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let response = fixture.get(&route, Some(&fixture.user_token)).await;
+    let playback = body_json(response).await;
+    assert_playback_info(&playback, &fixture);
+
+    let empty_post = fixture.post(&route, Some(&fixture.user_token), None).await;
+    assert_playback_info(&body_json(empty_post).await, &fixture);
+
+    let post_with_body_and_query = fixture
+        .post(
+            &format!("{route}?mediaSourceId={}", fixture.item_id),
+            Some(&fixture.user_token),
+            Some(&json!({
+                "UserId": fixture.user_id,
+                "MediaSourceId": "ignored-by-query"
+            })),
+        )
+        .await;
+    assert_playback_info(&body_json(post_with_body_and_query).await, &fixture);
+
+    fixture.cleanup().await;
+}
+
+async fn body_json(response: axum::response::Response) -> Value {
+    assert_eq!(response.status(), StatusCode::OK);
+    serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+}
+
+fn assert_playback_info(playback: &Value, fixture: &Fixture) {
+    assert_eq!(
+        playback["PlaySessionId"]
+            .as_str()
+            .expect("play session id")
+            .len(),
+        32
+    );
+    assert!(playback.get("ErrorCode").is_none());
+    let sources = playback["MediaSources"]
+        .as_array()
+        .expect("media sources array");
+    assert_eq!(sources.len(), 1);
+    let source = &sources[0];
+    assert_eq!(source["Id"], fixture.item_id.simple().to_string());
+    assert_eq!(source["Protocol"], "File");
+    assert_eq!(source["Path"], fixture.item_path);
+    assert!(
+        source["Name"]
+            .as_str()
+            .expect("media source name")
+            .starts_with("playback-info-movie-")
+    );
+    assert_eq!(source["Container"], "mkv");
+    assert_eq!(source["RunTimeTicks"], 12_345_000_000_i64);
+    assert_eq!(source["SupportsDirectPlay"], true);
+    assert_eq!(source["SupportsDirectStream"], true);
+    assert_eq!(source["SupportsTranscoding"], true);
+    assert_eq!(source["MediaStreams"][0]["Index"], 0);
+    assert_eq!(source["MediaStreams"][0]["Type"], 1);
+    assert_eq!(source["MediaStreams"][0]["Codec"], "h264");
+    assert_eq!(source["MediaStreams"][0]["Width"], 1920);
+    assert_eq!(source["MediaStreams"][0]["Height"], 1080);
+    assert_eq!(source["MediaStreams"][1]["Index"], 1);
+    assert_eq!(source["MediaStreams"][1]["Type"], 0);
+    assert_eq!(source["MediaStreams"][1]["Codec"], "aac");
+    assert_eq!(source["MediaStreams"][1]["Language"], "eng");
+}
+
 fn assert_bitrate_headers(response: &axum::response::Response, expected_size: usize) {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -98,6 +202,8 @@ struct Fixture {
     app: axum::Router,
     admin_id: Uuid,
     user_id: Uuid,
+    item_id: Uuid,
+    item_path: String,
     admin_token: String,
     user_token: String,
 }
@@ -123,6 +229,42 @@ impl Fixture {
         let devices = DeviceRepository::new(database.clone());
         let admin_token = session(&devices, admin.id, &format!("media-info-admin-{suffix}")).await;
         let user_token = session(&devices, user.id, &format!("media-info-user-{suffix}")).await;
+        let item_path = format!("/media/playback-info-movie-{suffix}.mkv");
+        let item_id = Uuid::new_v4();
+        let mut item = NewBaseItem::new(item_id, "Movie");
+        item.name = Some("playback-info-movie".to_owned());
+        item.path = Some(item_path.clone());
+        item.runtime_ticks = Some(12_345_000_000);
+        BaseItemRepository::new(database.clone())
+            .create(item)
+            .await
+            .expect("playback info item creation");
+        MediaStreamService::new(database.clone())
+            .save_media_streams(
+                item_id,
+                &[
+                    MediaStream {
+                        index: 0,
+                        stream_type: MediaStreamType::Video,
+                        codec: Some("h264".to_owned()),
+                        width: Some(1920),
+                        height: Some(1080),
+                        is_default: true,
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 1,
+                        stream_type: MediaStreamType::Audio,
+                        codec: Some("aac".to_owned()),
+                        language: Some("eng".to_owned()),
+                        channels: Some(2),
+                        is_default: true,
+                        ..MediaStream::default()
+                    },
+                ],
+            )
+            .await
+            .expect("playback info media stream creation");
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Media Info Test Server".to_owned(),
@@ -133,27 +275,58 @@ impl Fixture {
             app,
             admin_id: admin.id,
             user_id: user.id,
+            item_id,
+            item_path,
             admin_token,
             user_token,
         }
     }
 
     async fn get(&self, uri: &str, token: Option<&str>) -> axum::response::Response {
-        let mut request = Request::builder().uri(uri);
+        self.request(Method::GET, uri, token, None).await
+    }
+
+    async fn post(
+        &self,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+    ) -> axum::response::Response {
+        self.request(Method::POST, uri, token, body).await
+    }
+
+    async fn request(
+        &self,
+        method: Method,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+    ) -> axum::response::Response {
+        let mut request = Request::builder().method(method).uri(uri);
         if let Some(token) = token {
             request = request.header(
                 header::AUTHORIZATION,
                 format!("{AUTHORIZATION}, Token=\"{token}\""),
             );
         }
+        let body = if let Some(body) = body {
+            request = request.header(header::CONTENT_TYPE, "application/json");
+            Body::from(serde_json::to_vec(body).unwrap())
+        } else {
+            Body::empty()
+        };
         self.app
             .clone()
-            .oneshot(request.body(Body::empty()).unwrap())
+            .oneshot(request.body(body).unwrap())
             .await
             .unwrap()
     }
 
     async fn cleanup(self) {
+        base_item::Entity::delete_by_id(self.item_id)
+            .exec(&self.database)
+            .await
+            .expect("media info item cleanup");
         user::Entity::delete_many()
             .filter(user::Column::Id.is_in([self.admin_id, self.user_id]))
             .exec(&self.database)
