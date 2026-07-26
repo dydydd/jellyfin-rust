@@ -523,6 +523,10 @@ pub fn router(state: AppState) -> Router {
             get(hls_segment::video_hls1_segment),
         )
         .route(
+            "/Videos/ActiveEncodings",
+            axum::routing::delete(hls_segment::stop_active_encoding),
+        )
+        .route(
             "/Videos/{item_id}/stream",
             get(videos::stream).head(videos::stream),
         )

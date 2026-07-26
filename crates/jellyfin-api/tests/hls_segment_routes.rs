@@ -414,6 +414,55 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn active_encoding_cleanup_matches_official_auth_and_required_query_contract() {
+    let fixture = Fixture::new().await;
+    let route = "/Videos/ActiveEncodings?deviceId=hls-tests&playSessionId=play-session";
+
+    assert_eq!(
+        fixture.delete(route, HeaderMap::new()).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .delete(
+                "/Videos/ActiveEncodings?deviceId=hls-tests",
+                fixture.device_headers()
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .delete(
+                "/Videos/ActiveEncodings?deviceId=%20&playSessionId=play-session",
+                fixture.device_headers(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .delete(route, fixture.device_headers())
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    fixture.block_ordinary_user().await;
+    assert_eq!(
+        fixture
+            .delete(route, fixture.device_headers())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    fixture.cleanup().await;
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
@@ -492,6 +541,10 @@ impl Fixture {
         raw_get(&self.app, uri, headers).await
     }
 
+    async fn delete(&self, uri: &str, headers: HeaderMap) -> axum::response::Response {
+        raw_request(&self.app, "DELETE", uri, headers).await
+    }
+
     async fn block_ordinary_user(&self) {
         let policy = UserPolicy {
             access_schedules: vec![AccessSchedule {
@@ -528,7 +581,20 @@ impl Fixture {
 }
 
 async fn raw_get(app: &axum::Router, uri: &str, headers: HeaderMap) -> axum::response::Response {
-    let mut request = Request::get(uri).body(Body::empty()).unwrap();
+    raw_request(app, "GET", uri, headers).await
+}
+
+async fn raw_request(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
     *request.headers_mut() = headers;
     app.clone().oneshot(request).await.unwrap()
 }

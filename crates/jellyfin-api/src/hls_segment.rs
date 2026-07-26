@@ -17,6 +17,14 @@ use uuid::Uuid;
 
 use crate::{ApiError, AppState, authorization};
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ActiveEncodingQuery {
+    #[serde(rename = "deviceId", alias = "DeviceId")]
+    device_id: String,
+    #[serde(rename = "playSessionId", alias = "PlaySessionId")]
+    play_session_id: String,
+}
+
 pub(crate) async fn audio(
     State(state): State<Arc<AppState>>,
     Path((_item_id, legacy_path)): Path<(String, String)>,
@@ -127,6 +135,20 @@ pub(crate) async fn video_hls1_segment(
         query,
     )
     .await
+}
+
+pub(crate) async fn stop_active_encoding(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<ActiveEncodingQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<StatusCode, ApiError> {
+    authorization::require_default(&state, &headers, &uri).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    if query.device_id.trim().is_empty() || query.play_session_id.trim().is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize)]
