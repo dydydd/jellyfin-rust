@@ -1,6 +1,7 @@
 use std::{fmt, marker::PhantomData, str::FromStr};
 
 use jellyfin_data::ItemValueOrder;
+use jellyfin_model::SortOrder;
 use serde::{Deserializer, de::SeqAccess};
 
 use crate::ApiError;
@@ -59,6 +60,48 @@ pub(crate) fn item_value_order(sort_by: &[String]) -> Result<ItemValueOrder, Api
         Ok(ItemValueOrder::CleanValue)
     } else if order.eq_ignore_ascii_case("Random") {
         Ok(ItemValueOrder::Random)
+    } else {
+        Err(ApiError::InvalidRequest)
+    }
+}
+
+/// Pairs each sort field with its requested direction.
+///
+/// Jellyfin applies the first provided sort direction to every remaining field
+/// when fewer sort directions than fields are specified. With no requested
+/// directions, all fields sort ascending.
+pub(crate) fn get_order_by<T>(
+    sort_by: &[T],
+    requested_sort_order: &[SortOrder],
+) -> Vec<(T, SortOrder)>
+where
+    T: Clone,
+{
+    if sort_by.is_empty() {
+        return Vec::new();
+    }
+
+    let default_order = requested_sort_order.first().copied().unwrap_or_default();
+    sort_by
+        .iter()
+        .enumerate()
+        .map(|(index, sort)| {
+            (
+                sort.clone(),
+                requested_sort_order
+                    .get(index)
+                    .copied()
+                    .unwrap_or(default_order),
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn parse_sort_order(order: &str) -> Result<SortOrder, ApiError> {
+    if order.eq_ignore_ascii_case("Ascending") {
+        Ok(SortOrder::Ascending)
+    } else if order.eq_ignore_ascii_case("Descending") {
+        Ok(SortOrder::Descending)
     } else {
         Err(ApiError::InvalidRequest)
     }
@@ -156,11 +199,12 @@ mod tests {
 
     use axum::{Json, Router, body::Body, http::Request, routing::get};
     use axum_extra::extract::Query;
+    use jellyfin_model::SortOrder;
     use serde::Deserialize;
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use super::{comma, pipe};
+    use super::{comma, get_order_by, parse_sort_order, pipe};
 
     #[derive(Debug, Deserialize)]
     struct CommaStrings {
@@ -320,6 +364,46 @@ mod tests {
             query::<PipeEnums>("test=How&test=Much").test,
             [TestType::How, TestType::Much]
         );
+    }
+
+    #[test]
+    fn get_order_by_matches_official_empty_case() {
+        assert_eq!(
+            get_order_by::<TestType>(&[], &[]),
+            Vec::<(TestType, SortOrder)>::new()
+        );
+    }
+
+    #[test]
+    fn get_order_by_defaults_every_field_to_ascending() {
+        assert_eq!(
+            get_order_by(&[TestType::How, TestType::Much], &[]),
+            [
+                (TestType::How, SortOrder::Ascending),
+                (TestType::Much, SortOrder::Ascending),
+            ]
+        );
+    }
+
+    #[test]
+    fn get_order_by_reuses_first_requested_order_for_remaining_fields() {
+        assert_eq!(
+            get_order_by(&[TestType::How, TestType::Much], &[SortOrder::Descending],),
+            [
+                (TestType::How, SortOrder::Descending),
+                (TestType::Much, SortOrder::Descending),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_sort_order_accepts_official_names_case_insensitively() {
+        assert_eq!(
+            parse_sort_order("descending").unwrap(),
+            SortOrder::Descending
+        );
+        assert_eq!(parse_sort_order("Ascending").unwrap(), SortOrder::Ascending);
+        assert!(parse_sort_order("sideways").is_err());
     }
 
     #[test]

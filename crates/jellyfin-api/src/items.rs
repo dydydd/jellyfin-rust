@@ -7,7 +7,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery};
-use jellyfin_model::UserConfiguration;
+use jellyfin_model::{SortOrder, UserConfiguration};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -378,11 +378,17 @@ impl ItemsQuery {
 }
 
 pub(crate) fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemOrder {
-    let descending = sort_order
+    let requested_sort_order: Vec<_> = sort_order
         .first()
-        .is_some_and(|order| order.eq_ignore_ascii_case("Descending"));
+        .and_then(|order| crate::query::parse_sort_order(order).ok())
+        .into_iter()
+        .collect();
+    let order_by = crate::query::get_order_by(sort_by, &requested_sort_order);
+    let descending = order_by
+        .first()
+        .is_some_and(|(_, order)| *order == SortOrder::Descending);
 
-    match sort_by.first().map(String::as_str) {
+    match order_by.first().map(|(sort, _)| sort.as_str()) {
         Some(sort) if sort.eq_ignore_ascii_case("DateCreated") => {
             if descending {
                 BaseItemOrder::DateCreatedDescending
