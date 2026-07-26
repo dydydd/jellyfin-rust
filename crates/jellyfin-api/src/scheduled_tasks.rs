@@ -54,6 +54,10 @@ pub(crate) async fn start(
     Path(task_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
+    let task = state.scheduled_tasks.get(&task_id).await?;
+    if task.key.as_deref() == Some("RefreshLibrary") {
+        state.library_scan.scan_all().await?;
+    }
     state.scheduled_tasks.start(&task_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

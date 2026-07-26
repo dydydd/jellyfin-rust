@@ -12,15 +12,15 @@ use jellyfin_controller::{
     DashboardService, EnvironmentError, EnvironmentService, GenreError, GenreService,
     InstalledPlugin, ItemImageError, ItemImageService, ItemLookupError, ItemLookupService,
     ItemUpdateError, ItemUpdateService, LibraryControllerError, LibraryControllerService,
-    LocalizationService, MediaAttachmentService, MediaAttachmentServiceError, MediaStreamService,
-    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
-    MusicGenreService, PackageError, PackageService, PersonError, PersonService, PlaylistError,
-    PlaylistService, PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError,
-    ScheduledTaskService, StudioError, StudioService, SystemLogError, SystemLogService,
-    SystemStorageService, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
-    client_event::ClientEventLogger,
+    LibraryScanError, LibraryScanService, LocalizationService, MediaAttachmentService,
+    MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
+    MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
+    PersonError, PersonService, PlaylistError, PlaylistService, PlaystateError, PlaystateService,
+    PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
+    SystemLogError, SystemLogService, SystemStorageService, TrickplayError, TrickplayService,
+    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
+    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
+    YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -149,6 +149,7 @@ pub struct AppState {
     pub(crate) plugins: PluginRegistry,
     pub(crate) packages: PackageService,
     pub(crate) scheduled_tasks: ScheduledTaskService,
+    pub(crate) library_scan: LibraryScanService,
     pub(crate) system_logs: SystemLogService,
     pub(crate) system_storage: SystemStorageService,
     pub(crate) trickplay: TrickplayService,
@@ -216,6 +217,7 @@ impl AppState {
             plugins: PluginRegistry::default(),
             packages: PackageService::default(),
             scheduled_tasks: ScheduledTaskService::default(),
+            library_scan: LibraryScanService::new(database.clone()),
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
             trickplay: TrickplayService::new(
@@ -1333,6 +1335,7 @@ pub(crate) enum ApiError {
     Environment(EnvironmentError),
     QuickConnect(QuickConnectError),
     ScheduledTask(ScheduledTaskError),
+    LibraryScan(LibraryScanError),
     Package(PackageError),
     Trickplay(TrickplayError),
     Collection(CollectionError),
@@ -1550,6 +1553,12 @@ impl From<QuickConnectError> for ApiError {
 impl From<ScheduledTaskError> for ApiError {
     fn from(error: ScheduledTaskError) -> Self {
         Self::ScheduledTask(error)
+    }
+}
+
+impl From<LibraryScanError> for ApiError {
+    fn from(error: LibraryScanError) -> Self {
+        Self::LibraryScan(error)
     }
 }
 
@@ -1786,6 +1795,7 @@ impl IntoResponse for ApiError {
             Self::ScheduledTask(ScheduledTaskError::NotFound) => {
                 (StatusCode::NOT_FOUND, "Scheduled task not found")
             }
+            Self::LibraryScan(error) => library_scan_error_response(&error),
             Self::Package(PackageError::NotFound) => (StatusCode::NOT_FOUND, "Package not found"),
             Self::Trickplay(error) => trickplay_error_response(&error),
             Self::Collection(error) => collection_error_response(&error),
@@ -1800,6 +1810,29 @@ fn trickplay_error_response(_error: &TrickplayError) -> (StatusCode, &'static st
         StatusCode::INTERNAL_SERVER_ERROR,
         "Trickplay persistence failed",
     )
+}
+
+fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'static str) {
+    match error {
+        LibraryScanError::BaseItem(BaseItemError::ParentNotFound | BaseItemError::NotFound)
+        | LibraryScanError::VirtualFolder(
+            jellyfin_data::VirtualFolderError::NotFound
+            | jellyfin_data::VirtualFolderError::PathNotFound,
+        ) => (StatusCode::NOT_FOUND, "Library scan target not found"),
+        LibraryScanError::VirtualFolder(
+            jellyfin_data::VirtualFolderError::InvalidName
+            | jellyfin_data::VirtualFolderError::DuplicateName
+            | jellyfin_data::VirtualFolderError::PathOverlap,
+        ) => (
+            StatusCode::BAD_REQUEST,
+            "Library scan configuration is invalid",
+        ),
+        LibraryScanError::Io(_)
+        | LibraryScanError::BaseItem(_)
+        | LibraryScanError::VirtualFolder(jellyfin_data::VirtualFolderError::Database(_)) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Library scan failed")
+        }
+    }
 }
 
 fn collection_error_response(error: &CollectionError) -> (StatusCode, &'static str) {

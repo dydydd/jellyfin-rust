@@ -10,6 +10,7 @@ mod item_types;
 mod item_update;
 pub mod library;
 mod library_controller;
+mod library_scan;
 mod localization;
 mod media_attachments;
 pub mod media_encoding;
@@ -46,6 +47,7 @@ pub use item_types::{
 };
 pub use item_update::{ItemUpdateError, ItemUpdateInput, ItemUpdateService};
 pub use library_controller::{LibraryControllerError, LibraryControllerService};
+pub use library_scan::{LibraryScanError, LibraryScanService, LibraryScanSummary};
 pub use localization::LocalizationService;
 pub use media_attachments::{
     MediaAttachmentFilter, MediaAttachmentMapper, MediaAttachmentService,

@@ -1,3 +1,5 @@
+use std::{fs, path::PathBuf};
+
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -248,9 +250,148 @@ async fn scheduled_tasks_routes_match_official_elevated_contract() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
+    let fixture = Fixture::new().await;
+    let media_root = temporary_media_root();
+    fs::create_dir_all(&media_root).expect("temporary media directory");
+    let media_file = media_root.join("Playable Clip.mp4");
+    let media_file_path = media_file.to_string_lossy().into_owned();
+    let media_bytes = b"direct-play-test-payload";
+    fs::write(&media_file, media_bytes).expect("temporary media file");
+
+    let library_name = format!("LocalVideos{}", Uuid::new_v4().simple());
+    let create_uri = format!(
+        "/Library/VirtualFolders?name={library_name}&collectionType=homevideos&paths={}",
+        media_root.to_string_lossy()
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &create_uri,
+                Some(&fixture.admin_token),
+                Some(json!({ "LibraryOptions": { "Enabled": true } })),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let views = body_json(
+        fixture
+            .request(Method::GET, "/UserViews", Some(&fixture.user_token), None)
+            .await,
+    )
+    .await;
+    let view_id = views["Items"]
+        .as_array()
+        .expect("user views")
+        .iter()
+        .find(|view| view["Name"] == library_name)
+        .and_then(|view| view["Id"].as_str())
+        .expect("scanned library view")
+        .to_owned();
+
+    let task_id = refresh_library_task_id(&fixture).await;
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &format!("/ScheduledTasks/Running/{task_id}"),
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let items = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Items?parentId={view_id}&includeItemTypes=Video"),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(items["TotalRecordCount"], 1);
+    let item = &items["Items"][0];
+    assert_eq!(item["Name"], "Playable Clip");
+    assert_eq!(item["Type"], "Video");
+    assert_eq!(item["MediaType"], "Video");
+    assert_eq!(item["Path"], media_file_path);
+    let item_id = item["Id"].as_str().expect("scanned item id");
+
+    let playback = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Items/{item_id}/PlaybackInfo"),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(playback["MediaSources"][0]["Path"], media_file_path);
+    assert_eq!(playback["MediaSources"][0]["Container"], "mp4");
+
+    let response = fixture
+        .request(
+            Method::GET,
+            &format!("/Videos/{item_id}/stream.mp4"),
+            Some(&fixture.user_token),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .as_ref(),
+        media_bytes
+    );
+
+    fs::remove_dir_all(&media_root).expect("temporary media cleanup");
+    fixture.cleanup().await;
+}
+
 fn sorted(mut values: Vec<&str>) -> Vec<&str> {
     values.sort_unstable();
     values
+}
+
+async fn refresh_library_task_id(fixture: &Fixture) -> String {
+    let tasks = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/ScheduledTasks",
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    tasks
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|task| task["Key"] == "RefreshLibrary")
+        .and_then(|task| task["Id"].as_str())
+        .expect("RefreshLibrary task")
+        .to_owned()
+}
+
+fn temporary_media_root() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "jellyfin-rust-scheduled-task-scan-{}",
+        Uuid::new_v4().simple()
+    ))
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
