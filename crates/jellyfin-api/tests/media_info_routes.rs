@@ -140,9 +140,131 @@ async fn playback_info_routes_return_postgres_media_sources_with_official_auth_s
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn live_stream_routes_open_postgres_media_sources_and_close_by_required_id() {
+    let fixture = Fixture::new().await;
+
+    assert_eq!(
+        fixture.post("/LiveStreams/Open", None, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .post("/LiveStreams/Open", Some(&fixture.user_token), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .post(
+                &format!(
+                    "/LiveStreams/Open?itemId={}&userId={}",
+                    fixture.item_id, fixture.admin_id
+                ),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let open = body_json(
+        fixture
+            .post(
+                "/LiveStreams/Open",
+                Some(&fixture.user_token),
+                Some(&json!({
+                    "ItemId": fixture.item_id,
+                    "UserId": fixture.user_id,
+                    "PlaySessionId": "body-session",
+                    "OpenToken": "body-token"
+                })),
+            )
+            .await,
+    )
+    .await;
+    assert_live_stream(&open, &fixture, "body-session", "body-token");
+
+    let query_wins = body_json(
+        fixture
+            .post(
+                &format!(
+                    "/LiveStreams/Open?itemId={}&playSessionId=query-session&openToken=query-token",
+                    fixture.item_id
+                ),
+                Some(&fixture.user_token),
+                Some(&json!({
+                    "ItemId": Uuid::from_u128(0xeeee_eeee_eeee_eeee_eeee_eeee_eeee_eeee),
+                    "PlaySessionId": "ignored-session",
+                    "OpenToken": "ignored-token"
+                })),
+            )
+            .await,
+    )
+    .await;
+    assert_live_stream(&query_wins, &fixture, "query-session", "query-token");
+
+    assert_eq!(
+        fixture
+            .post("/LiveStreams/Close", Some(&fixture.user_token), None)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .post(
+                "/LiveStreams/Close?liveStreamId=%20",
+                Some(&fixture.user_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .post(
+                "/LiveStreams/Close?liveStreamId=body-session",
+                Some(&fixture.user_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    fixture.cleanup().await;
+}
+
 async fn body_json(response: axum::response::Response) -> Value {
     assert_eq!(response.status(), StatusCode::OK);
     serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+}
+
+fn assert_live_stream(
+    live_stream: &Value,
+    fixture: &Fixture,
+    play_session_id: &str,
+    open_token: &str,
+) {
+    let source = &live_stream["MediaSource"];
+    assert_eq!(source["Id"], fixture.item_id.simple().to_string());
+    assert_eq!(source["Protocol"], "File");
+    assert_eq!(source["Path"], fixture.item_path);
+    assert_eq!(source["RequiresOpening"], false);
+    assert_eq!(source["RequiresClosing"], true);
+    assert_eq!(
+        source["LiveStreamId"],
+        format!(
+            "{}:{play_session_id}:{open_token}",
+            fixture.item_id.simple()
+        )
+    );
+    assert_eq!(source["MediaStreams"][0]["Codec"], "h264");
+    assert_eq!(source["MediaStreams"][1]["Codec"], "aac");
 }
 
 fn assert_playback_info(playback: &Value, fixture: &Fixture) {

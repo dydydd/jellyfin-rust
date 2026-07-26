@@ -472,6 +472,8 @@ pub fn router(state: AppState) -> Router {
             "/Items/{item_id}/PlaybackInfo",
             get(media_info::get_playback_info).post(media_info::post_playback_info),
         )
+        .route("/LiveStreams/Open", post(media_info::open_live_stream))
+        .route("/LiveStreams/Close", post(media_info::close_live_stream))
         .route(
             "/MediaSegments/{item_id}",
             get(media_segments::get_item_segments),

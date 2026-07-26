@@ -49,6 +49,33 @@ pub(crate) struct PlaybackInfoDto {
     media_source_id: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct OpenLiveStreamQuery {
+    #[serde(rename = "openToken", alias = "OpenToken")]
+    open_token: Option<String>,
+    #[serde(rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(rename = "playSessionId", alias = "PlaySessionId")]
+    play_session_id: Option<String>,
+    #[serde(rename = "itemId", alias = "ItemId")]
+    item_id: Option<Uuid>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub(crate) struct OpenLiveStreamDto {
+    open_token: Option<String>,
+    user_id: Option<Uuid>,
+    play_session_id: Option<String>,
+    item_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct CloseLiveStreamQuery {
+    #[serde(rename = "liveStreamId", alias = "LiveStreamId")]
+    live_stream_id: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PlaybackInfoResponse {
@@ -56,6 +83,12 @@ pub(crate) struct PlaybackInfoResponse {
     play_session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_code: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct LiveStreamResponse {
+    media_source: MediaSourceInfo,
 }
 
 pub(crate) async fn bitrate_test(
@@ -126,9 +159,66 @@ pub(crate) async fn post_playback_info(
     .map(Json)
 }
 
+pub(crate) async fn open_live_stream(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    query: Result<Query<OpenLiveStreamQuery>, QueryRejection>,
+    body: Result<Option<Json<OpenLiveStreamDto>>, JsonRejection>,
+) -> Result<Json<LiveStreamResponse>, ApiError> {
+    let identity = authentication::authenticated_session(&state, &headers).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let body = optional_open_live_stream_body(body)?;
+    let target_user_id = query
+        .user_id
+        .or_else(|| body.as_ref().and_then(|body| body.user_id))
+        .unwrap_or(identity.user.id);
+    let item_id = query
+        .item_id
+        .or_else(|| body.as_ref().and_then(|body| body.item_id))
+        .ok_or(ApiError::NotFound)?;
+    let open_token = query
+        .open_token
+        .as_deref()
+        .or_else(|| body.as_ref().and_then(|body| body.open_token.as_deref()));
+    let play_session_id = query.play_session_id.as_deref().or_else(|| {
+        body.as_ref()
+            .and_then(|body| body.play_session_id.as_deref())
+    });
+    let mut media_source =
+        media_source(&state, &identity.user, target_user_id, item_id, None).await?;
+    media_source.requires_opening = false;
+    media_source.requires_closing = true;
+    media_source.live_stream_id = Some(live_stream_id(item_id, play_session_id, open_token));
+    Ok(Json(LiveStreamResponse { media_source }))
+}
+
+pub(crate) async fn close_live_stream(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    query: Result<Query<CloseLiveStreamQuery>, QueryRejection>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    authentication::authenticated_session(&state, &headers).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    if query.live_stream_id.trim().is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 fn optional_playback_body(
     body: Result<Option<Json<PlaybackInfoDto>>, JsonRejection>,
 ) -> Result<Option<PlaybackInfoDto>, ApiError> {
+    match body {
+        Ok(Some(Json(body))) => Ok(Some(body)),
+        Ok(None) => Ok(None),
+        Err(JsonRejection::MissingJsonContentType(_)) => Ok(None),
+        Err(_) => Err(ApiError::InvalidRequest),
+    }
+}
+
+fn optional_open_live_stream_body(
+    body: Result<Option<Json<OpenLiveStreamDto>>, JsonRejection>,
+) -> Result<Option<OpenLiveStreamDto>, ApiError> {
     match body {
         Ok(Some(Json(body))) => Ok(Some(body)),
         Ok(None) => Ok(None),
@@ -144,6 +234,48 @@ async fn playback_info(
     item_id: Uuid,
     media_source_id: Option<&str>,
 ) -> Result<PlaybackInfoResponse, ApiError> {
+    let media_sources = media_sources(
+        state,
+        authenticated_user,
+        target_user_id,
+        item_id,
+        media_source_id,
+    )
+    .await?;
+    Ok(PlaybackInfoResponse {
+        media_sources,
+        play_session_id: Uuid::new_v4().simple().to_string(),
+        error_code: None,
+    })
+}
+
+async fn media_source(
+    state: &AppState,
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    target_user_id: Uuid,
+    item_id: Uuid,
+    media_source_id: Option<&str>,
+) -> Result<MediaSourceInfo, ApiError> {
+    media_sources(
+        state,
+        authenticated_user,
+        target_user_id,
+        item_id,
+        media_source_id,
+    )
+    .await?
+    .into_iter()
+    .next()
+    .ok_or(ApiError::NotFound)
+}
+
+async fn media_sources(
+    state: &AppState,
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    target_user_id: Uuid,
+    item_id: Uuid,
+    media_source_id: Option<&str>,
+) -> Result<Vec<MediaSourceInfo>, ApiError> {
     let item = state
         .library_controller
         .item(authenticated_user, target_user_id, item_id)
@@ -166,11 +298,21 @@ async fn playback_info(
                 .is_some_and(|source_id| source_id.replace('-', "") == media_source_id)
         });
     }
-    Ok(PlaybackInfoResponse {
-        media_sources,
-        play_session_id: Uuid::new_v4().simple().to_string(),
-        error_code: None,
-    })
+    Ok(media_sources)
+}
+
+fn live_stream_id(
+    item_id: Uuid,
+    play_session_id: Option<&str>,
+    open_token: Option<&str>,
+) -> String {
+    let play_session_id = play_session_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("default");
+    let open_token = open_token
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("source");
+    format!("{}:{play_session_id}:{open_token}", item_id.simple())
 }
 
 struct RepeatingChunkReader {
