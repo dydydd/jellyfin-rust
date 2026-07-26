@@ -4,7 +4,7 @@ use axum::{
     Router,
     body::{Body, to_bytes},
     extract::ConnectInfo,
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
@@ -90,6 +90,73 @@ async fn endpoint_info_uses_configured_network_manager() {
         )
         .await;
     assert_eq!(body_json(response).await, endpoint(false, false));
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn restart_and_shutdown_match_official_local_and_elevated_policy() {
+    let fixture = Fixture::new().await;
+
+    let local_restart = fixture
+        .request_method(Method::POST, None, None, "/System/Restart")
+        .await;
+    assert_eq!(local_restart.status(), StatusCode::NO_CONTENT);
+
+    let remote_restart = fixture
+        .request_method(
+            Method::POST,
+            None,
+            Some("203.0.113.8:5000"),
+            "/System/Restart",
+        )
+        .await;
+    assert_eq!(remote_restart.status(), StatusCode::UNAUTHORIZED);
+
+    let regular_remote_restart = fixture
+        .request_method(
+            Method::POST,
+            Some(&fixture.user_token),
+            Some("203.0.113.8:5000"),
+            "/System/Restart",
+        )
+        .await;
+    assert_eq!(regular_remote_restart.status(), StatusCode::FORBIDDEN);
+
+    let api_key_restart = fixture
+        .request_method(
+            Method::POST,
+            None,
+            Some("203.0.113.8:5000"),
+            &format!("/System/Restart?api_key={}", fixture.api_key_token),
+        )
+        .await;
+    assert_eq!(api_key_restart.status(), StatusCode::NO_CONTENT);
+
+    let local_shutdown = fixture
+        .request_method(Method::POST, None, None, "/System/Shutdown")
+        .await;
+    assert_eq!(local_shutdown.status(), StatusCode::UNAUTHORIZED);
+
+    let regular_shutdown = fixture
+        .request_method(
+            Method::POST,
+            Some(&fixture.user_token),
+            None,
+            "/System/Shutdown",
+        )
+        .await;
+    assert_eq!(regular_shutdown.status(), StatusCode::FORBIDDEN);
+
+    let api_key_shutdown = fixture
+        .request_method(
+            Method::POST,
+            None,
+            None,
+            &format!("/System/Shutdown?api_key={}", fixture.api_key_token),
+        )
+        .await;
+    assert_eq!(api_key_shutdown.status(), StatusCode::NO_CONTENT);
 
     fixture.cleanup().await;
 }
@@ -201,7 +268,18 @@ impl Fixture {
         remote_address: Option<&str>,
         uri: &str,
     ) -> axum::response::Response {
-        let mut builder = Request::get(uri);
+        self.request_method(Method::GET, token, remote_address, uri)
+            .await
+    }
+
+    async fn request_method(
+        &self,
+        method: Method,
+        token: Option<&str>,
+        remote_address: Option<&str>,
+        uri: &str,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder().method(method).uri(uri);
         if let Some(token) = token {
             builder = builder.header(
                 header::AUTHORIZATION,

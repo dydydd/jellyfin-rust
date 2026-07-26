@@ -643,6 +643,8 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/Info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
+        .route("/System/Restart", post(system::restart))
+        .route("/System/Shutdown", post(system::shutdown))
         .route("/Document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
         .route("/ScheduledTasks", get(scheduled_tasks::list))

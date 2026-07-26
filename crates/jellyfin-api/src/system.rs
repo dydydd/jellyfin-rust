@@ -7,7 +7,7 @@ use axum::{
     Json,
     body::Body,
     extract::{ConnectInfo, OriginalUri, Query, Request, State, rejection::QueryRejection},
-    http::{HeaderMap, HeaderValue, Response, header},
+    http::{HeaderMap, HeaderValue, Response, StatusCode, header},
 };
 use chrono::{DateTime, Utc};
 use jellyfin_controller::SystemLogFile;
@@ -159,6 +159,30 @@ pub(crate) async fn endpoint_info(
     }))
 }
 
+pub(crate) async fn restart(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    request: Request,
+) -> Result<StatusCode, ApiError> {
+    require_local_access_or_elevated(
+        &state,
+        request.headers(),
+        &uri,
+        request.extensions().get::<ConnectInfo<SocketAddr>>(),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn shutdown(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 impl From<SystemLogFile> for LogFileDto {
     fn from(log: SystemLogFile) -> Self {
         Self {
@@ -208,6 +232,24 @@ async fn require_elevated(
     headers: &HeaderMap,
     uri: &axum::http::Uri,
 ) -> Result<(), ApiError> {
+    authentication::authenticated_identity(state, headers, Some(uri))
+        .await?
+        .require_administrator()
+}
+
+async fn require_local_access_or_elevated(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+    connect_info: Option<&ConnectInfo<SocketAddr>>,
+) -> Result<(), ApiError> {
+    if state
+        .network_manager
+        .is_in_local_network(remote_ip(connect_info))
+    {
+        return Ok(());
+    }
+
     authentication::authenticated_identity(state, headers, Some(uri))
         .await?
         .require_administrator()
