@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use axum::{Json, extract::State, http::HeaderMap};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::HeaderMap,
+};
 use axum_extra::extract::Query;
-use jellyfin_data::{BaseItemOrder, BaseItemQuery};
-use serde::Deserialize;
+use jellyfin_data::{BaseItemOrder, BaseItemQuery, BaseItemRepository, entities::base_item};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, user_library};
@@ -21,6 +25,23 @@ pub(crate) struct ChannelsQuery {
     supports_media_deletion: Option<bool>,
     #[serde(rename = "isFavorite", alias = "IsFavorite")]
     is_favorite: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ChannelFeaturesDto {
+    name: String,
+    id: Uuid,
+    can_search: bool,
+    media_types: Vec<String>,
+    content_types: Vec<String>,
+    max_page_size: Option<i32>,
+    auto_refresh_levels: Option<i32>,
+    default_sort_fields: Vec<String>,
+    supports_sort_order_toggle: bool,
+    supports_latest_media: bool,
+    can_filter: bool,
+    supports_content_downloading: bool,
 }
 
 pub(crate) async fn list(
@@ -61,4 +82,53 @@ pub(crate) async fn list(
         start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
         items,
     }))
+}
+
+pub(crate) async fn all_features(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ChannelFeaturesDto>>, ApiError> {
+    authentication::authenticated_session(&state, &headers).await?;
+    let page = BaseItemRepository::new(state.database.clone())
+        .query(&BaseItemQuery {
+            include_item_types: vec!["Channel".to_owned()],
+            order: BaseItemOrder::SortName,
+            enable_total_record_count: Some(false),
+            ..BaseItemQuery::default()
+        })
+        .await?;
+    Ok(Json(
+        page.items.into_iter().map(channel_features_dto).collect(),
+    ))
+}
+
+pub(crate) async fn features(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(channel_id): Path<Uuid>,
+) -> Result<Json<ChannelFeaturesDto>, ApiError> {
+    authentication::authenticated_session(&state, &headers).await?;
+    let channel = BaseItemRepository::new(state.database.clone())
+        .get(channel_id)
+        .await?
+        .filter(|item| item.item_type == "Channel")
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(channel_features_dto(channel)))
+}
+
+fn channel_features_dto(channel: base_item::Model) -> ChannelFeaturesDto {
+    ChannelFeaturesDto {
+        name: channel.name.unwrap_or_default(),
+        id: channel.id,
+        can_search: false,
+        media_types: Vec::new(),
+        content_types: Vec::new(),
+        max_page_size: None,
+        auto_refresh_levels: None,
+        default_sort_fields: Vec::new(),
+        supports_sort_order_toggle: false,
+        supports_latest_media: false,
+        can_filter: true,
+        supports_content_downloading: false,
+    }
 }

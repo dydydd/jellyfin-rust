@@ -107,6 +107,8 @@ async fn exercise_channels_route(database_name: &str) {
             .all(|item| item["Type"] == "Channel")
     );
 
+    assert_channel_features(&fixture).await;
+
     fixture.cleanup().await;
 }
 
@@ -116,7 +118,9 @@ struct Fixture {
     admin_id: Uuid,
     admin_token: String,
     user_token: String,
+    first_channel_id: Uuid,
     second_channel_id: Uuid,
+    movie_id: Uuid,
 }
 
 impl Fixture {
@@ -148,9 +152,9 @@ impl Fixture {
 
         let items = BaseItemRepository::new(database.clone());
         let root = items.ensure_user_root().await.expect("user root");
-        create_item(&items, "Channel", "A Channel", root.id).await;
+        let first_channel = create_item(&items, "Channel", "A Channel", root.id).await;
         let second_channel = create_item(&items, "Channel", "B Channel", root.id).await;
-        create_item(&items, "Movie", "Ignored Movie", root.id).await;
+        let movie = create_item(&items, "Movie", "Ignored Movie", root.id).await;
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -163,7 +167,9 @@ impl Fixture {
             admin_id: admin.id,
             admin_token,
             user_token,
+            first_channel_id: first_channel.id,
             second_channel_id: second_channel.id,
+            movie_id: movie.id,
         }
     }
 
@@ -216,6 +222,83 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
 
 async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body_bytes(response).await).expect("JSON response")
+}
+
+async fn assert_channel_features(fixture: &Fixture) {
+    assert_eq!(
+        fixture.get("/Channels/Features", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let all = body_json(
+        fixture
+            .get("/Channels/Features", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    let features = all.as_array().expect("channel features");
+    assert_eq!(features.len(), 2);
+    assert_eq!(features[0]["Name"], "A Channel");
+    assert_eq!(
+        features[0]["Id"],
+        fixture.first_channel_id.hyphenated().to_string()
+    );
+    assert_default_channel_features(&features[0]);
+    assert_eq!(features[1]["Name"], "B Channel");
+    assert_eq!(
+        features[1]["Id"],
+        fixture.second_channel_id.hyphenated().to_string()
+    );
+
+    let single = body_json(
+        fixture
+            .get(
+                &format!("/Channels/{}/Features", fixture.second_channel_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(single["Name"], "B Channel");
+    assert_eq!(
+        single["Id"],
+        fixture.second_channel_id.hyphenated().to_string()
+    );
+    assert_default_channel_features(&single);
+
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/{}/Features", Uuid::new_v4()),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/{}/Features", fixture.movie_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+fn assert_default_channel_features(features: &Value) {
+    assert_eq!(features["CanSearch"], false);
+    assert_eq!(features["MediaTypes"], Value::Array(Vec::new()));
+    assert_eq!(features["ContentTypes"], Value::Array(Vec::new()));
+    assert_eq!(features["MaxPageSize"], Value::Null);
+    assert_eq!(features["AutoRefreshLevels"], Value::Null);
+    assert_eq!(features["DefaultSortFields"], Value::Array(Vec::new()));
+    assert_eq!(features["SupportsSortOrderToggle"], false);
+    assert_eq!(features["SupportsLatestMedia"], false);
+    assert_eq!(features["CanFilter"], true);
+    assert_eq!(features["SupportsContentDownloading"], false);
 }
 
 async fn body_bytes(response: axum::response::Response) -> Bytes {

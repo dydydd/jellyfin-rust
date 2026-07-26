@@ -394,6 +394,11 @@ pub fn router(state: AppState) -> Router {
                 .delete(branding::delete_splashscreen),
         )
         .route("/Channels", get(channels::list))
+        .route("/Channels/Features", get(channels::all_features))
+        .route(
+            "/Channels/{channel_id}/Features",
+            get(channels::features),
+        )
         .route(
             "/Artists/{name}/Images/{image_type}/{image_index}",
             get(artists::get_image),
