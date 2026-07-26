@@ -108,6 +108,7 @@ async fn exercise_channels_route(database_name: &str) {
     );
 
     assert_channel_features(&fixture).await;
+    assert_channel_items(&fixture).await;
 
     fixture.cleanup().await;
 }
@@ -121,6 +122,9 @@ struct Fixture {
     first_channel_id: Uuid,
     second_channel_id: Uuid,
     movie_id: Uuid,
+    channel_folder_id: Uuid,
+    channel_folder_item_id: Uuid,
+    outside_folder_id: Uuid,
 }
 
 impl Fixture {
@@ -155,6 +159,14 @@ impl Fixture {
         let first_channel = create_item(&items, "Channel", "A Channel", root.id).await;
         let second_channel = create_item(&items, "Channel", "B Channel", root.id).await;
         let movie = create_item(&items, "Movie", "Ignored Movie", root.id).await;
+        let _first_channel_item =
+            create_item(&items, "Movie", "A Channel Movie", first_channel.id).await;
+        let _second_channel_item =
+            create_item(&items, "Video", "B Channel Video", first_channel.id).await;
+        let channel_folder = create_folder(&items, "Nested Channel Folder", first_channel.id).await;
+        let channel_folder_item =
+            create_item(&items, "Audio", "Folder Song", channel_folder.id).await;
+        let outside_folder = create_folder(&items, "Other Channel Folder", second_channel.id).await;
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -170,6 +182,9 @@ impl Fixture {
             first_channel_id: first_channel.id,
             second_channel_id: second_channel.id,
             movie_id: movie.id,
+            channel_folder_id: channel_folder.id,
+            channel_folder_item_id: channel_folder_item.id,
+            outside_folder_id: outside_folder.id,
         }
     }
 
@@ -204,6 +219,19 @@ async fn create_item(
     item.sort_name = Some(name.to_owned());
     item.parent_id = Some(parent_id);
     repository.create(item).await.expect("item creation")
+}
+
+async fn create_folder(
+    repository: &BaseItemRepository,
+    name: &str,
+    parent_id: Uuid,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.parent_id = Some(parent_id);
+    item.is_folder = true;
+    repository.create(item).await.expect("folder creation")
 }
 
 async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) -> String {
@@ -285,6 +313,127 @@ async fn assert_channel_features(fixture: &Fixture) {
             .await
             .status(),
         StatusCode::NOT_FOUND
+    );
+}
+
+async fn assert_channel_items(fixture: &Fixture) {
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/{}/Items", fixture.first_channel_id),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!(
+                    "/Channels/{}/Items?userId={}",
+                    fixture.first_channel_id, fixture.admin_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!(
+                    "/Channels/{}/Items?userId={}",
+                    fixture.first_channel_id,
+                    Uuid::new_v4()
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/{}/Items", Uuid::new_v4()),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/{}/Items", fixture.movie_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!(
+                    "/Channels/{}/Items?folderId={}",
+                    fixture.first_channel_id, fixture.outside_folder_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let page = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Channels/{}/Items?startIndex=1&limit=1",
+                    fixture.first_channel_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(page["TotalRecordCount"], 3);
+    assert_eq!(page["StartIndex"], 1);
+    let items = page["Items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["Name"], "B Channel Video");
+    assert_eq!(items[0]["Type"], "Video");
+    assert_eq!(
+        items[0]["ParentId"],
+        fixture.first_channel_id.simple().to_string()
+    );
+
+    let folder_page = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Channels/{}/Items?folderId={}",
+                    fixture.first_channel_id, fixture.channel_folder_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(folder_page["TotalRecordCount"], 1);
+    assert_eq!(folder_page["StartIndex"], 0);
+    let folder_items = folder_page["Items"].as_array().expect("folder items");
+    assert_eq!(folder_items.len(), 1);
+    assert_eq!(
+        folder_items[0]["Id"],
+        fixture.channel_folder_item_id.simple().to_string()
+    );
+    assert_eq!(
+        folder_items[0]["ParentId"],
+        fixture.channel_folder_id.simple().to_string()
     );
 }
 

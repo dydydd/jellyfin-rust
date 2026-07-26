@@ -377,7 +377,7 @@ impl ItemsQuery {
     }
 }
 
-fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemOrder {
+pub(crate) fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemOrder {
     let descending = sort_order
         .first()
         .is_some_and(|order| order.eq_ignore_ascii_case("Descending"));

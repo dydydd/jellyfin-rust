@@ -400,6 +400,10 @@ pub fn router(state: AppState) -> Router {
             get(channels::features),
         )
         .route(
+            "/Channels/{channel_id}/Items",
+            get(channels::channel_items),
+        )
+        .route(
             "/Artists/{name}/Images/{image_type}/{image_index}",
             get(artists::get_image),
         )

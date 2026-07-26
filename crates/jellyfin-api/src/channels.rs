@@ -10,7 +10,7 @@ use jellyfin_data::{BaseItemOrder, BaseItemQuery, BaseItemRepository, entities::
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, user_library};
+use crate::{ApiError, AppState, authentication, items, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ChannelsQuery {
@@ -25,6 +25,45 @@ pub(crate) struct ChannelsQuery {
     supports_media_deletion: Option<bool>,
     #[serde(rename = "isFavorite", alias = "IsFavorite")]
     is_favorite: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ChannelItemsQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(default, rename = "folderId", alias = "FolderId")]
+    folder_id: Option<Uuid>,
+    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+    #[serde(
+        default,
+        rename = "sortBy",
+        alias = "SortBy",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_by: Vec<String>,
+    #[serde(
+        default,
+        rename = "sortOrder",
+        alias = "SortOrder",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_order: Vec<String>,
+    #[serde(
+        default,
+        rename = "filters",
+        alias = "Filters",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    filters: Vec<String>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +155,60 @@ pub(crate) async fn features(
     Ok(Json(channel_features_dto(channel)))
 }
 
+pub(crate) async fn channel_items(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(channel_id): Path<Uuid>,
+    Query(query): Query<ChannelItemsQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let repository = BaseItemRepository::new(state.database.clone());
+    repository
+        .get(channel_id)
+        .await?
+        .filter(|item| item.item_type == "Channel")
+        .ok_or(ApiError::NotFound)?;
+
+    let parent_id = query.folder_id.unwrap_or(channel_id);
+    if parent_id != channel_id {
+        let folder = repository.get(parent_id).await?.ok_or(ApiError::NotFound)?;
+        if !folder.is_folder
+            || !is_descendant_of_channel(&repository, folder.id, channel_id).await?
+        {
+            return Err(ApiError::NotFound);
+        }
+    }
+
+    let _ = (query.filters, query.fields);
+    let page = state
+        .user_library
+        .query_items(
+            &authenticated.user,
+            target_user_id,
+            BaseItemQuery {
+                parent_id: Some(parent_id),
+                recursive: false,
+                order: items::item_order(&query.sort_by, &query.sort_order),
+                start_index: query.start_index,
+                limit: query.limit,
+                enable_total_record_count: Some(true),
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+    let items = page
+        .items
+        .into_iter()
+        .map(|item| user_library::item_to_dto(item, state.server_id()))
+        .collect::<Vec<_>>();
+    Ok(Json(user_library::BaseItemQueryResult {
+        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        items,
+    }))
+}
+
 fn channel_features_dto(channel: base_item::Model) -> ChannelFeaturesDto {
     ChannelFeaturesDto {
         name: channel.name.unwrap_or_default(),
@@ -131,4 +224,16 @@ fn channel_features_dto(channel: base_item::Model) -> ChannelFeaturesDto {
         can_filter: true,
         supports_content_downloading: false,
     }
+}
+
+async fn is_descendant_of_channel(
+    repository: &BaseItemRepository,
+    item_id: Uuid,
+    channel_id: Uuid,
+) -> Result<bool, ApiError> {
+    Ok(repository
+        .ancestors(item_id)
+        .await?
+        .into_iter()
+        .any(|entry| entry.item.id == channel_id))
 }
