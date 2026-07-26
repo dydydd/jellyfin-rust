@@ -1260,19 +1260,13 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn public_system_info(
-    State(state): State<Arc<AppState>>,
+    state: State<Arc<AppState>>,
 ) -> Result<Json<PublicSystemInfo>, ApiError> {
-    let startup = startup::snapshot(&state).await?;
-    let mut system_info = state.system_info.clone();
-    system_info
-        .server_name
-        .clone_from(&startup.configuration.server_name);
-    system_info.startup_wizard_completed = Some(startup.completed);
-    Ok(Json(system_info))
+    system::public_info(state).await
 }
 
-async fn ping() -> &'static str {
-    "Jellyfin Server"
+async fn ping(state: State<Arc<AppState>>) -> Response {
+    system::ping(state).await.into_response()
 }
 
 pub(crate) fn user_to_dto(user: user::Model) -> UserDto {

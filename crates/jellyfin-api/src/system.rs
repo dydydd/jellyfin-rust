@@ -117,12 +117,7 @@ pub(crate) async fn info(
 ) -> Result<Json<SystemInfo>, ApiError> {
     authorization::require_first_time_setup_or_ignore_parental_control(&state, &headers, &uri)
         .await?;
-    let startup = startup::snapshot(&state).await?;
-    let mut public_info = state.system_info.clone();
-    public_info
-        .server_name
-        .clone_from(&startup.configuration.server_name);
-    public_info.startup_wizard_completed = Some(startup.completed);
+    let public_info = public_system_info(&state).await?;
 
     Ok(Json(SystemInfo {
         web_socket_port_number: web_socket_port_number(&public_info),
@@ -143,6 +138,23 @@ pub(crate) async fn info(
         public_info,
         ..SystemInfo::default()
     }))
+}
+
+pub(crate) async fn public_info(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<PublicSystemInfo>, ApiError> {
+    Ok(Json(public_system_info(&state).await?))
+}
+
+pub(crate) async fn ping(State(state): State<Arc<AppState>>) -> Result<Response<Body>, ApiError> {
+    let server_name = public_system_info(&state)
+        .await?
+        .server_name
+        .unwrap_or_default();
+    Response::builder()
+        .header(header::CONTENT_TYPE, TEXT_UTF8)
+        .body(Body::from(server_name))
+        .map_err(|_| ApiError::Internal)
 }
 
 pub(crate) async fn endpoint_info(
@@ -215,6 +227,16 @@ fn normalize_ip(address: IpAddr) -> IpAddr {
 
 fn path_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+async fn public_system_info(state: &AppState) -> Result<PublicSystemInfo, ApiError> {
+    let startup = startup::snapshot(state).await?;
+    let mut public_info = state.system_info.clone();
+    public_info
+        .server_name
+        .clone_from(&startup.configuration.server_name);
+    public_info.startup_wizard_completed = Some(startup.completed);
+    Ok(public_info)
 }
 
 fn web_socket_port_number(system_info: &PublicSystemInfo) -> i32 {

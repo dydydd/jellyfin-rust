@@ -27,6 +27,33 @@ async fn system_info_matches_official_first_time_or_authenticated_contract() {
     .await;
     assert_system_info(&anonymous_before_setup, false);
 
+    let public_before_setup = body_json(
+        fixture
+            .request(Method::GET, "/System/Info/Public", Credential::None)
+            .await,
+    )
+    .await;
+    assert_public_system_info(&public_before_setup, false);
+
+    assert_eq!(
+        body_text(
+            fixture
+                .request(Method::GET, "/System/Ping", Credential::None)
+                .await,
+        )
+        .await,
+        "System Info Test Server"
+    );
+    assert_eq!(
+        body_text(
+            fixture
+                .request(Method::POST, "/System/Ping", Credential::None)
+                .await,
+        )
+        .await,
+        "System Info Test Server"
+    );
+
     assert_eq!(
         fixture
             .request(Method::POST, "/Startup/Complete", Credential::None)
@@ -41,6 +68,13 @@ async fn system_info_matches_official_first_time_or_authenticated_contract() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    let public_after_setup = body_json(
+        fixture
+            .request(Method::GET, "/System/Info/Public", Credential::None)
+            .await,
+    )
+    .await;
+    assert_public_system_info(&public_after_setup, true);
 
     let regular_user_info = body_json(
         fixture
@@ -68,6 +102,18 @@ async fn system_info_matches_official_first_time_or_authenticated_contract() {
 
     assert!(regular_user_info.get("server_name").is_none());
     fixture.cleanup().await;
+}
+
+fn assert_public_system_info(info: &Value, startup_completed: bool) {
+    assert_eq!(info["ServerName"], "System Info Test Server");
+    assert_eq!(info["LocalAddress"], "http://127.0.0.1:8096");
+    assert_eq!(info["ProductName"], "Jellyfin Server");
+    assert_eq!(info["StartupWizardCompleted"], startup_completed);
+    assert_eq!(info["Id"].as_str().expect("server id").len(), 32);
+    assert_eq!(info["OperatingSystem"], "");
+    assert!(info.get("OperatingSystemDisplayName").is_none());
+    assert!(info.get("ProgramDataPath").is_none());
+    assert!(info.get("WebSocketPortNumber").is_none());
 }
 
 fn assert_system_info(info: &Value, startup_completed: bool) {
@@ -111,6 +157,21 @@ async fn body_json(response: axum::response::Response) -> Value {
         &to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
             .await
             .unwrap(),
+    )
+    .unwrap()
+}
+
+async fn body_text(response: axum::response::Response) -> String {
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/plain; charset=utf-8"
+    );
+    String::from_utf8(
+        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .to_vec(),
     )
     .unwrap()
 }

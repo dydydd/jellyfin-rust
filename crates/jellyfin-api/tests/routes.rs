@@ -74,7 +74,7 @@ async fn system_routes_follow_the_public_contract() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_text(response).await, "Jellyfin Server");
+        assert_eq!(body_text(response).await, "Test Server");
     }
 
     let before_time_sync = Utc::now();
