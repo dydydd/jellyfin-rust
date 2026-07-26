@@ -257,8 +257,12 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
     fs::create_dir_all(&media_root).expect("temporary media directory");
     let media_file = media_root.join("Playable Clip.mp4");
     let media_file_path = media_file.to_string_lossy().into_owned();
+    let subtitle_file = media_root.join("Playable Clip.en.default.srt");
+    let subtitle_file_path = subtitle_file.to_string_lossy().into_owned();
     let media_bytes = b"direct-play-test-payload";
     fs::write(&media_file, media_bytes).expect("temporary media file");
+    fs::write(&subtitle_file, b"1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+        .expect("temporary subtitle file");
 
     let library_name = format!("LocalVideos{}", Uuid::new_v4().simple());
     let create_uri = format!(
@@ -344,6 +348,23 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
         "h264"
     );
     assert_eq!(playback["MediaSources"][0]["MediaStreams"][0]["Index"], 0);
+    assert_eq!(playback["MediaSources"][0]["MediaStreams"][1]["Type"], 2);
+    assert_eq!(
+        playback["MediaSources"][0]["MediaStreams"][1]["Codec"],
+        "srt"
+    );
+    assert_eq!(
+        playback["MediaSources"][0]["MediaStreams"][1]["Path"],
+        subtitle_file_path
+    );
+    assert_eq!(
+        playback["MediaSources"][0]["MediaStreams"][1]["Language"],
+        "eng"
+    );
+    assert_eq!(
+        playback["MediaSources"][0]["MediaStreams"][1]["IsDefault"],
+        true
+    );
 
     let response = fixture
         .request(

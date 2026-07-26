@@ -6,6 +6,7 @@ use std::{
 use jellyfin_model::{
     CountryInfo, CultureDto, LocalizationOption, ParentalRating, ParentalRatingScore,
 };
+use jellyfin_naming::{LanguageInfo, LocalizationManager};
 use serde::Deserialize;
 
 const COUNTRIES: &str = include_str!("../resources/localization/countries.json");
@@ -302,6 +303,16 @@ impl LocalizationService {
             configured_country_code,
             resolved_country_code,
         ))
+    }
+}
+
+impl LocalizationManager for LocalizationService {
+    fn find_language_info(&self, language: &str) -> Option<LanguageInfo> {
+        let culture = LocalizationService::find_language_info(self, language)?;
+        let three_letter_name = culture
+            .three_letter_iso_language_name
+            .or_else(|| culture.three_letter_iso_language_names.first().cloned());
+        Some(LanguageInfo::new(culture.display_name, three_letter_name))
     }
 }
 

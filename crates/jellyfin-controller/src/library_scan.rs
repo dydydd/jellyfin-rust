@@ -11,8 +11,13 @@ use jellyfin_data::{
 };
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
-    MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol, MediaStream,
-    MediaStreamType,
+    MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol,
+    MediaStream as ProbedMediaStream, MediaStreamType,
+};
+use jellyfin_model::{MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream};
+use jellyfin_naming::NamingOptions;
+use jellyfin_providers::media_info::{
+    MediaFileSystemEntry, SubtitleResolveRequest, SubtitleResolver,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -20,6 +25,8 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::fs;
 use uuid::Uuid;
+
+use crate::{LocalizationService, media_streams::MediaStreamMapper};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -283,25 +290,26 @@ impl LibraryScanService {
         if !existing.is_empty() && existing != [default_stream.clone()] {
             return Ok(None);
         }
-        if let Some(media_info) = self.probe_media_info(path, media_kind).await {
-            let probed = streams_from_media_info(&media_info);
+        let media_info = self.probe_media_info(path, media_kind).await;
+        let mut streams = media_info
+            .as_ref()
+            .map(streams_from_media_info)
+            .unwrap_or_default();
+        if let Some(media_info) = media_info.as_ref() {
             let probed_attachments = attachments_from_media_info(&media_info);
             self.attachments
                 .replace(item_id, &probed_attachments)
                 .await?;
-            if !probed.is_empty() {
-                self.streams.replace(item_id, &probed).await?;
-                return Ok(Some(media_info));
-            }
-            self.streams
-                .replace(item_id, std::slice::from_ref(&default_stream))
-                .await?;
-            return Ok(Some(media_info));
         }
-        self.streams
-            .replace(item_id, std::slice::from_ref(&default_stream))
+        if streams.is_empty() {
+            streams.push(default_stream);
+        }
+        let external_subtitles = self
+            .resolve_external_subtitle_streams(path, next_stream_index(&streams))
             .await?;
-        Ok(None)
+        streams.extend(external_subtitles);
+        self.streams.replace(item_id, &streams).await?;
+        Ok(media_info)
     }
 
     async fn probe_media_info(&self, path: &str, media_kind: MediaKind) -> Option<MediaInfo> {
@@ -321,6 +329,40 @@ impl LibraryScanService {
                 None
             }
         }
+    }
+
+    async fn resolve_external_subtitle_streams(
+        &self,
+        path: &str,
+        start_index: i32,
+    ) -> Result<Vec<PersistedMediaStream>, LibraryScanError> {
+        let Some(parent) = Path::new(path).parent() else {
+            return Ok(Vec::new());
+        };
+        let mut entries = match fs::read_dir(parent).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut directory_entries = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let metadata = entry.metadata().await?;
+            let entry_path = entry.path();
+            let Some(path) = entry_path.to_str() else {
+                continue;
+            };
+            let entry = if metadata.is_dir() {
+                MediaFileSystemEntry::directory(path)
+            } else {
+                MediaFileSystemEntry::file(path)
+            };
+            directory_entries.push(entry);
+        }
+        Ok(resolve_external_subtitle_streams_from_entries(
+            path,
+            &directory_entries,
+            start_index,
+        ))
     }
 }
 
@@ -532,6 +574,40 @@ fn attachments_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaAtta
         .collect()
 }
 
+fn resolve_external_subtitle_streams_from_entries(
+    path: &str,
+    directory_entries: &[MediaFileSystemEntry],
+    start_index: i32,
+) -> Vec<PersistedMediaStream> {
+    let localization = LocalizationService;
+    let resolver = SubtitleResolver::new(NamingOptions::default(), &localization);
+    let mapper = MediaStreamMapper::default();
+    resolver
+        .resolve(SubtitleResolveRequest {
+            media_path: path,
+            protocol: ModelMediaProtocol::File,
+            media_is_directory: false,
+            containing_directory_exists: true,
+            directory_entries,
+            metadata_directory_exists: false,
+            metadata_entries: &[],
+            start_index,
+        })
+        .into_iter()
+        .map(|resolved| external_stream_from_resolved(resolved.stream, &mapper))
+        .collect()
+}
+
+fn external_stream_from_resolved(
+    mut stream: ModelMediaStream,
+    mapper: &MediaStreamMapper,
+) -> PersistedMediaStream {
+    if stream.codec.as_deref().is_none_or(str::is_empty) {
+        stream.codec = stream.path.as_deref().and_then(path_extension);
+    }
+    mapper.to_persisted(&stream)
+}
+
 fn attachment_from_probe(attachment: &ProbedMediaAttachment) -> PersistedMediaAttachment {
     PersistedMediaAttachment {
         attachment_index: attachment.index,
@@ -544,7 +620,7 @@ fn attachment_from_probe(attachment: &ProbedMediaAttachment) -> PersistedMediaAt
     }
 }
 
-fn stream_from_probe(stream: &MediaStream) -> PersistedMediaStream {
+fn stream_from_probe(stream: &ProbedMediaStream) -> PersistedMediaStream {
     PersistedMediaStream {
         stream_index: stream.index,
         stream_type: stream_type_from_probe(stream.stream_type),
@@ -593,6 +669,14 @@ fn stream_from_probe(stream: &MediaStream) -> PersistedMediaStream {
         rotation: stream.rotation,
         hdr10_plus_present_flag: None,
     }
+}
+
+fn next_stream_index(streams: &[PersistedMediaStream]) -> i32 {
+    streams
+        .iter()
+        .filter_map(|stream| stream.stream_index.checked_add(1))
+        .max()
+        .unwrap_or_default()
 }
 
 const fn stream_type_from_probe(stream_type: MediaStreamType) -> PersistedMediaStreamType {
@@ -702,12 +786,13 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 mod tests {
     use super::{
         MediaKind, apply_probed_item_metadata, attachments_from_media_info, codec_from_extension,
-        default_stream, display_name, media_item_data, media_kind, stable_item_id,
-        streams_from_media_info,
+        default_stream, display_name, media_item_data, media_kind, next_stream_index,
+        resolve_external_subtitle_streams_from_entries, stable_item_id, streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
+    use jellyfin_providers::media_info::MediaFileSystemEntry;
     use serde_json::json;
     use std::path::Path;
 
@@ -858,6 +943,51 @@ mod tests {
         let streams = streams_from_media_info(&media_info);
 
         assert_eq!(streams[0].bit_rate, None);
+    }
+
+    #[test]
+    fn external_subtitle_sidecars_map_to_persisted_streams_after_probe_indexes() {
+        let entries = [
+            MediaFileSystemEntry::file("/media/Movie.eng.default.srt"),
+            MediaFileSystemEntry::file("/media/Movie.Commentary.forced.sdh.en.ass"),
+            MediaFileSystemEntry::file("/media/MovieSequel.en.srt"),
+            MediaFileSystemEntry::directory("/media/Movie.fra.srt"),
+        ];
+
+        let streams =
+            resolve_external_subtitle_streams_from_entries("/media/Movie.mkv", &entries, 2);
+
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0].stream_index, 2);
+        assert_eq!(streams[0].stream_type, PersistedMediaStreamType::Subtitle);
+        assert_eq!(streams[0].codec.as_deref(), Some("srt"));
+        assert_eq!(streams[0].language.as_deref(), Some("eng"));
+        assert!(streams[0].is_default);
+        assert!(!streams[0].is_forced);
+        assert!(!streams[0].is_hearing_impaired.unwrap_or_default());
+        assert_eq!(
+            streams[0].path.as_deref(),
+            Some("/media/Movie.eng.default.srt")
+        );
+
+        assert_eq!(streams[1].stream_index, 3);
+        assert_eq!(streams[1].codec.as_deref(), Some("ass"));
+        assert_eq!(streams[1].language.as_deref(), Some("eng"));
+        assert_eq!(streams[1].title.as_deref(), Some("Commentary"));
+        assert!(streams[1].is_forced);
+        assert!(streams[1].is_hearing_impaired.unwrap_or_default());
+    }
+
+    #[test]
+    fn next_stream_index_uses_one_after_highest_persisted_index() {
+        let mut streams = vec![
+            default_stream("/media/Movie.mkv", MediaKind::Video),
+            default_stream("/media/Movie.eng.srt", MediaKind::Video),
+        ];
+        streams[1].stream_index = 7;
+
+        assert_eq!(next_stream_index(&streams), 8);
+        assert_eq!(next_stream_index(&[]), 0);
     }
 
     #[test]

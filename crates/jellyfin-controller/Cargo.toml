@@ -12,6 +12,7 @@ jellyfin-drawing = { path = "../jellyfin-drawing" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-model = { path = "../jellyfin-model" }
+jellyfin-naming = { path = "../jellyfin-naming" }
 jellyfin-providers = { path = "../jellyfin-providers" }
 md-5 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

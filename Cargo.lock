@@ -1529,6 +1529,7 @@ dependencies = [
  "jellyfin-extensions",
  "jellyfin-media-encoding",
  "jellyfin-model",
+ "jellyfin-naming",
  "jellyfin-providers",
  "md-5",
  "reqwest",
