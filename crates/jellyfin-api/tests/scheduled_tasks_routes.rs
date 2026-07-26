@@ -366,6 +366,68 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn virtual_folder_refresh_query_scans_media_without_scheduled_task() {
+    let fixture = Fixture::new().await;
+    let media_root = temporary_media_root();
+    fs::create_dir_all(&media_root).expect("temporary media directory");
+    let media_file = media_root.join("Immediate Clip.mp4");
+    let media_file_path = media_file.to_string_lossy().into_owned();
+    fs::write(&media_file, b"refresh-query-test-payload").expect("temporary media file");
+
+    let library_name = format!("ImmediateVideos{}", Uuid::new_v4().simple());
+    let create_uri = format!(
+        "/Library/VirtualFolders?name={library_name}&collectionType=homevideos&paths={}&refreshLibrary=true",
+        media_root.to_string_lossy()
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &create_uri,
+                Some(&fixture.admin_token),
+                Some(json!({ "LibraryOptions": { "Enabled": true } })),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let views = body_json(
+        fixture
+            .request(Method::GET, "/UserViews", Some(&fixture.user_token), None)
+            .await,
+    )
+    .await;
+    let view_id = views["Items"]
+        .as_array()
+        .expect("user views")
+        .iter()
+        .find(|view| view["Name"] == library_name)
+        .and_then(|view| view["Id"].as_str())
+        .expect("refreshed library view")
+        .to_owned();
+
+    let items = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Items?parentId={view_id}&includeItemTypes=Video"),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+
+    assert_eq!(items["TotalRecordCount"], 1);
+    assert_eq!(items["Items"][0]["Name"], "Immediate Clip");
+    assert_eq!(items["Items"][0]["Path"], media_file_path);
+
+    fs::remove_dir_all(&media_root).expect("temporary media cleanup");
+    fixture.cleanup().await;
+}
+
 fn sorted(mut values: Vec<&str>) -> Vec<&str> {
     values.sort_unstable();
     values

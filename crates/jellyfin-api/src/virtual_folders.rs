@@ -124,6 +124,7 @@ pub(crate) async fn create(
         .paths
         .map(|paths| paths.split(',').map(str::to_owned).collect::<Vec<String>>())
         .unwrap_or_default();
+    let refresh_after_create = query.refresh_library && !paths.is_empty();
     state
         .virtual_folders
         .create(
@@ -134,6 +135,7 @@ pub(crate) async fn create(
             query.refresh_library,
         )
         .await?;
+    refresh_library_if_requested(&state, refresh_after_create).await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -188,6 +190,7 @@ pub(crate) async fn add_path(
         .virtual_folders
         .add_path(&body.name, path_info, query.refresh_library)
         .await?;
+    refresh_library_if_requested(&state, query.refresh_library).await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -195,6 +198,7 @@ pub(crate) async fn update_path(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
+    Query(query): Query<DeleteQuery>,
     request: Result<Json<UpdateMediaPathDto>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
@@ -206,6 +210,7 @@ pub(crate) async fn update_path(
         .virtual_folders
         .update_path(&body.name, body.path_info)
         .await?;
+    refresh_library_if_requested(&state, query.refresh_library).await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -249,6 +254,16 @@ fn required_query(value: Option<String>) -> Result<String, ApiError> {
         return Err(ApiError::InvalidRequest);
     }
     Ok(value)
+}
+
+async fn refresh_library_if_requested(
+    state: &AppState,
+    refresh_library: bool,
+) -> Result<(), ApiError> {
+    if refresh_library {
+        state.library_scan.scan_all().await?;
+    }
+    Ok(())
 }
 
 fn folder_info(folder: VirtualFolder) -> VirtualFolderInfo {
