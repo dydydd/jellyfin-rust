@@ -362,6 +362,32 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
         media_bytes
     );
 
+    fs::remove_file(&media_file).expect("remove scanned media file");
+    assert_eq!(
+        fixture
+            .request(
+                Method::POST,
+                &format!("/ScheduledTasks/Running/{task_id}"),
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let items = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Items?parentId={view_id}&includeItemTypes=Video"),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(items["TotalRecordCount"], 0);
+
     fs::remove_dir_all(&media_root).expect("temporary media cleanup");
     fixture.cleanup().await;
 }

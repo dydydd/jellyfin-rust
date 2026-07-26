@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, MediaStreamQuery, MediaStreamRepository,
@@ -20,6 +23,7 @@ use uuid::Uuid;
 pub struct LibraryScanSummary {
     pub folders_seen: usize,
     pub items_added: usize,
+    pub items_removed: usize,
     pub items_seen: usize,
 }
 
@@ -71,16 +75,117 @@ impl LibraryScanService {
         for folder in self.folders.list().await? {
             let collection = self.ensure_collection_folder(&folder).await?;
             summary.folders_seen += 1;
+            let mut seen_paths = HashSet::new();
+            let mut readable_roots = Vec::new();
             for path in folder.paths {
-                self.scan_path(
-                    Path::new(&path.normalized_path),
-                    collection.id,
-                    &mut summary,
-                )
-                .await?;
+                let root = Path::new(&path.normalized_path);
+                if self
+                    .scan_path(root, collection.id, &mut summary, &mut seen_paths)
+                    .await?
+                {
+                    readable_roots.push(root.to_path_buf());
+                }
             }
+            summary.items_removed += self
+                .remove_stale_media(collection.id, &seen_paths, &readable_roots)
+                .await?;
         }
         Ok(summary)
+    }
+
+    async fn remove_stale_media(
+        &self,
+        parent_id: Uuid,
+        seen_paths: &HashSet<String>,
+        readable_roots: &[PathBuf],
+    ) -> Result<usize, LibraryScanError> {
+        if readable_roots.is_empty() {
+            return Ok(0);
+        }
+        let stale_ids = self
+            .items
+            .children(parent_id)
+            .await?
+            .into_iter()
+            .filter(|item| is_scanned_media_type(&item.item_type))
+            .filter_map(|item| {
+                let path = item.path.as_deref()?;
+                let scanned_path = item.presentation_unique_key.as_deref() == Some(path);
+                let stale = scanned_path
+                    && !seen_paths.contains(path)
+                    && readable_roots
+                        .iter()
+                        .any(|root| Path::new(path).starts_with(root));
+                stale.then_some(item.id)
+            })
+            .collect::<Vec<_>>();
+        if stale_ids.is_empty() {
+            return Ok(0);
+        }
+        let removed = stale_ids.len();
+        self.items.delete_many(&stale_ids).await?;
+        Ok(removed)
+    }
+
+    async fn scan_path(
+        &self,
+        root: &Path,
+        parent_id: Uuid,
+        summary: &mut LibraryScanSummary,
+        seen_paths: &mut HashSet<String>,
+    ) -> Result<bool, LibraryScanError> {
+        let mut entries = match fs::read_dir(root).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let mut pending = Vec::new();
+        self.scan_entries(&mut entries, &mut pending, parent_id, summary, seen_paths)
+            .await?;
+        while let Some(directory) = pending.pop() {
+            let mut entries = match fs::read_dir(&directory).await {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            self.scan_entries(&mut entries, &mut pending, parent_id, summary, seen_paths)
+                .await?;
+        }
+        Ok(true)
+    }
+
+    async fn scan_entries(
+        &self,
+        entries: &mut tokio::fs::ReadDir,
+        pending: &mut Vec<PathBuf>,
+        parent_id: Uuid,
+        summary: &mut LibraryScanSummary,
+        seen_paths: &mut HashSet<String>,
+    ) -> Result<(), LibraryScanError> {
+        while let Some(entry) = entries.next_entry().await? {
+            let metadata = entry.metadata().await?;
+            let path = entry.path();
+            if metadata.is_dir() {
+                if !is_ignored_directory(&path) {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if !metadata.is_file() || is_ignored_file(&path) {
+                continue;
+            }
+            let Some(media_kind) = media_kind(&path) else {
+                continue;
+            };
+            summary.items_seen += 1;
+            if let Some(path) = path.to_str() {
+                seen_paths.insert(path.to_owned());
+            }
+            if self.ensure_media_item(&path, parent_id, media_kind).await? {
+                summary.items_added += 1;
+            }
+        }
+        Ok(())
     }
 
     async fn ensure_collection_folder(
@@ -112,43 +217,6 @@ impl LibraryScanService {
             "LibraryOptions": folder.folder.library_options,
         }));
         Ok(self.items.create(item).await?)
-    }
-
-    async fn scan_path(
-        &self,
-        root: &Path,
-        parent_id: Uuid,
-        summary: &mut LibraryScanSummary,
-    ) -> Result<(), LibraryScanError> {
-        let mut pending = vec![root.to_path_buf()];
-        while let Some(directory) = pending.pop() {
-            let mut entries = match fs::read_dir(&directory).await {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error.into()),
-            };
-            while let Some(entry) = entries.next_entry().await? {
-                let metadata = entry.metadata().await?;
-                let path = entry.path();
-                if metadata.is_dir() {
-                    if !is_ignored_directory(&path) {
-                        pending.push(path);
-                    }
-                    continue;
-                }
-                if !metadata.is_file() || is_ignored_file(&path) {
-                    continue;
-                }
-                let Some(media_kind) = media_kind(&path) else {
-                    continue;
-                };
-                summary.items_seen += 1;
-                if self.ensure_media_item(&path, parent_id, media_kind).await? {
-                    summary.items_added += 1;
-                }
-            }
-        }
-        Ok(())
     }
 
     async fn ensure_media_item(
@@ -277,6 +345,10 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
         .iter()
         .any(|supported| extension.eq_ignore_ascii_case(supported))
         .then_some(MediaKind::Video)
+}
+
+fn is_scanned_media_type(item_type: &str) -> bool {
+    matches!(item_type, "Audio" | "Video")
 }
 
 fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
