@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID, VirtualFolderError,
-    VirtualFolderRepository,
+    BaseItemError, BaseItemRepository, MediaStreamQuery, MediaStreamRepository,
+    MediaStreamStoreError, NewBaseItem, PersistedMediaStream, PersistedMediaStreamType,
+    USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -23,6 +24,8 @@ pub enum LibraryScanError {
     #[error(transparent)]
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
+    MediaStream(#[from] MediaStreamStoreError),
+    #[error(transparent)]
     VirtualFolder(#[from] VirtualFolderError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -32,6 +35,7 @@ pub enum LibraryScanError {
 pub struct LibraryScanService {
     folders: VirtualFolderRepository,
     items: BaseItemRepository,
+    streams: MediaStreamRepository,
 }
 
 impl LibraryScanService {
@@ -39,7 +43,8 @@ impl LibraryScanService {
     pub fn new(database: DatabaseConnection) -> Self {
         Self {
             folders: VirtualFolderRepository::new(database.clone()),
-            items: BaseItemRepository::new(database),
+            items: BaseItemRepository::new(database.clone()),
+            streams: MediaStreamRepository::new(database),
         }
     }
 
@@ -144,7 +149,9 @@ impl LibraryScanService {
         let Some(path) = path.to_str() else {
             return Ok(false);
         };
-        if self.items.exists_by_path(path).await? {
+        if let Some(existing) = self.items.by_paths(&[path.to_owned()]).await?.pop() {
+            self.ensure_default_streams(existing.id, path, media_kind)
+                .await?;
             return Ok(false);
         }
 
@@ -164,8 +171,33 @@ impl LibraryScanService {
                 .and_then(|extension| extension.to_str())
                 .map(str::to_ascii_lowercase),
         }));
-        self.items.create(item).await?;
+        let item = self.items.create(item).await?;
+        self.ensure_default_streams(item.id, path, media_kind)
+            .await?;
         Ok(true)
+    }
+
+    async fn ensure_default_streams(
+        &self,
+        item_id: Uuid,
+        path: &str,
+        media_kind: MediaKind,
+    ) -> Result<(), LibraryScanError> {
+        let existing = self
+            .streams
+            .query(MediaStreamQuery {
+                item_id,
+                stream_index: None,
+                stream_type: None,
+            })
+            .await?;
+        if !existing.is_empty() {
+            return Ok(());
+        }
+        self.streams
+            .replace(item_id, &[default_stream(path, media_kind)])
+            .await?;
+        Ok(())
     }
 }
 
@@ -203,6 +235,91 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
         .iter()
         .any(|supported| extension.eq_ignore_ascii_case(supported))
         .then_some(MediaKind::Video)
+}
+
+fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
+    PersistedMediaStream {
+        stream_index: 0,
+        stream_type: match media_kind {
+            MediaKind::Audio => PersistedMediaStreamType::Audio,
+            MediaKind::Video => PersistedMediaStreamType::Video,
+        },
+        codec: codec_from_extension(path),
+        language: None,
+        channel_layout: (media_kind == MediaKind::Audio).then(|| "stereo".to_owned()),
+        profile: None,
+        aspect_ratio: None,
+        path: None,
+        is_interlaced: Some(false),
+        bit_rate: None,
+        channels: (media_kind == MediaKind::Audio).then_some(2),
+        sample_rate: (media_kind == MediaKind::Audio).then_some(48_000),
+        is_default: true,
+        is_forced: false,
+        is_external: false,
+        is_original: false,
+        height: None,
+        width: None,
+        average_frame_rate: None,
+        real_frame_rate: None,
+        level: None,
+        pixel_format: None,
+        bit_depth: None,
+        is_anamorphic: None,
+        ref_frames: None,
+        codec_tag: None,
+        comment: None,
+        nal_length_size: None,
+        is_avc: None,
+        title: None,
+        time_base: None,
+        codec_time_base: None,
+        color_primaries: None,
+        color_space: None,
+        color_transfer: None,
+        dv_version_major: None,
+        dv_version_minor: None,
+        dv_profile: None,
+        dv_level: None,
+        rpu_present_flag: None,
+        el_present_flag: None,
+        bl_present_flag: None,
+        dv_bl_signal_compatibility_id: None,
+        is_hearing_impaired: Some(false),
+        rotation: None,
+        hdr10_plus_present_flag: None,
+    }
+}
+
+fn codec_from_extension(path: &str) -> Option<String> {
+    let extension = Path::new(path).extension()?.to_str()?;
+    let codec = if extension.eq_ignore_ascii_case("mp3") {
+        "mp3"
+    } else if extension.eq_ignore_ascii_case("flac") {
+        "flac"
+    } else if extension.eq_ignore_ascii_case("aac") {
+        "aac"
+    } else if extension.eq_ignore_ascii_case("opus") {
+        "opus"
+    } else if extension.eq_ignore_ascii_case("wav") {
+        "pcm_s16le"
+    } else if extension.eq_ignore_ascii_case("ogg") {
+        "vorbis"
+    } else if extension.eq_ignore_ascii_case("wma") {
+        "wmav2"
+    } else if ["mp4", "m4v", "mov"]
+        .iter()
+        .any(|value| extension.eq_ignore_ascii_case(value))
+    {
+        "h264"
+    } else if extension.eq_ignore_ascii_case("webm") {
+        "vp9"
+    } else if extension.eq_ignore_ascii_case("wmv") {
+        "wmv3"
+    } else {
+        return None;
+    };
+    Some(codec.to_owned())
 }
 
 fn display_name(path: &str) -> String {
@@ -252,7 +369,10 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaKind, display_name, media_kind, stable_item_id};
+    use super::{
+        MediaKind, codec_from_extension, default_stream, display_name, media_kind, stable_item_id,
+    };
+    use jellyfin_data::PersistedMediaStreamType;
     use std::path::Path;
 
     #[test]
@@ -277,5 +397,28 @@ mod tests {
     #[test]
     fn display_name_uses_file_stem() {
         assert_eq!(display_name("/media/Movie Name.mkv"), "Movie Name");
+    }
+
+    #[test]
+    fn default_streams_are_playback_visible_without_probe_data() {
+        let video = default_stream("/media/Movie.mp4", MediaKind::Video);
+        assert_eq!(video.stream_type, PersistedMediaStreamType::Video);
+        assert_eq!(video.codec.as_deref(), Some("h264"));
+        assert!(video.is_default);
+
+        let audio = default_stream("/media/Song.flac", MediaKind::Audio);
+        assert_eq!(audio.stream_type, PersistedMediaStreamType::Audio);
+        assert_eq!(audio.codec.as_deref(), Some("flac"));
+        assert_eq!(audio.channels, Some(2));
+        assert_eq!(audio.sample_rate, Some(48_000));
+    }
+
+    #[test]
+    fn codec_inference_is_conservative_for_container_only_formats() {
+        assert_eq!(codec_from_extension("/media/Movie.mkv"), None);
+        assert_eq!(
+            codec_from_extension("/media/Clip.webm").as_deref(),
+            Some("vp9")
+        );
     }
 }
