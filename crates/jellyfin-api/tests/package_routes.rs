@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
@@ -20,7 +20,7 @@ const DATABASE_PREFIX: &str = "jellyfin_package_routes_";
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 
 #[tokio::test]
-async fn package_routes_match_official_read_contract() {
+async fn package_routes_match_official_contract() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -140,6 +140,111 @@ async fn exercise_package_routes(database_name: &str) {
         StatusCode::NOT_FOUND
     );
 
+    assert_eq!(
+        mutation(&app, Method::POST, "/Packages/Installed/Bookshelf", None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        mutation(
+            &app,
+            Method::POST,
+            "/Packages/Installed/Bookshelf",
+            Some(&user_token),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_no_content(
+        mutation(
+            &app,
+            Method::POST,
+            "/Packages/Installed/Bookshelf",
+            Some(&admin_token),
+        )
+        .await,
+    )
+    .await;
+
+    assert_no_content(
+        mutation(
+            &app,
+            Method::POST,
+            &format!("/Packages/Installed/not-the-name?assemblyGuid={alternate_id}"),
+            Some(&admin_token),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        mutation(
+            &app,
+            Method::POST,
+            "/Packages/Installed/Bookshelf?version=1.0.0.0&repositoryUrl=https://repo.jellyfin.org/files/plugin/manifest.json",
+            Some(&admin_token),
+        )
+        .await,
+    )
+    .await;
+    assert_no_content(
+        mutation(
+            &app,
+            Method::POST,
+            "/Packages/Installed/Bookshelf?version=1.0.0.0&repositoryUrl=HTTPS://REPO.JELLYFIN.ORG/FILES/PLUGIN/MANIFEST.JSON",
+            Some(&admin_token),
+        )
+        .await,
+    )
+    .await;
+
+    for route in [
+        "/Packages/Installed/Missing",
+        "/Packages/Installed/Bookshelf?version=9.9.9.9",
+        "/Packages/Installed/Bookshelf?repositoryUrl=https://repo.example.test/manifest.json",
+    ] {
+        assert_eq!(
+            mutation(&app, Method::POST, route, Some(&admin_token))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    assert_eq!(
+        mutation(
+            &app,
+            Method::DELETE,
+            &format!("/Packages/Installing/{package_id}"),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        mutation(
+            &app,
+            Method::DELETE,
+            &format!("/Packages/Installing/{package_id}"),
+            Some(&user_token),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_no_content(
+        mutation(
+            &app,
+            Method::DELETE,
+            &format!("/Packages/Installing/{package_id}"),
+            Some(&admin_token),
+        )
+        .await,
+    )
+    .await;
+
     let repositories = body_json(request(&app, "/Repositories", Some(&admin_token)).await).await;
     assert_eq!(repositories, json!([]));
 
@@ -161,20 +266,16 @@ async fn exercise_package_routes(database_name: &str) {
         StatusCode::FORBIDDEN
     );
 
-    let response = post_repositories(
-        &app,
-        "/Repositories",
-        Some(&admin_token),
-        repositories_fixture(),
+    assert_no_content(
+        post_repositories(
+            &app,
+            "/Repositories",
+            Some(&admin_token),
+            repositories_fixture(),
+        )
+        .await,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(
-        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
-            .await
-            .unwrap()
-            .is_empty()
-    );
 
     let repositories = body_json(request(&app, "/Repositories", Some(&admin_token)).await).await;
     assert_eq!(
@@ -249,7 +350,26 @@ async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> Str
 }
 
 async fn request(app: &Router, uri: &str, token: Option<&str>) -> axum::response::Response {
-    let mut request = Request::get(uri);
+    raw_request(app, Method::GET, uri, token, Body::empty()).await
+}
+
+async fn mutation(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+) -> axum::response::Response {
+    raw_request(app, method, uri, token, Body::empty()).await
+}
+
+async fn raw_request(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+    body: Body,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         request = request.header(
             header::AUTHORIZATION,
@@ -257,7 +377,7 @@ async fn request(app: &Router, uri: &str, token: Option<&str>) -> axum::response
         );
     }
     app.clone()
-        .oneshot(request.body(Body::empty()).unwrap())
+        .oneshot(request.body(body).unwrap())
         .await
         .unwrap()
 }
@@ -279,6 +399,16 @@ async fn post_repositories(
         .oneshot(request.body(Body::from(body.to_string())).unwrap())
         .await
         .unwrap()
+}
+
+async fn assert_no_content(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 fn repositories_fixture() -> Value {

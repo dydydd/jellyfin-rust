@@ -761,6 +761,11 @@ fn api_key_routes() -> Router<Arc<AppState>> {
 fn package_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Packages", get(packages::list))
+        .route("/Packages/Installed/{name}", post(packages::install))
+        .route(
+            "/Packages/Installing/{package_id}",
+            axum::routing::delete(packages::cancel_installation),
+        )
         .route("/Packages/{name}", get(packages::get))
         .route(
             "/Repositories",

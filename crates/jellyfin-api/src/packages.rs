@@ -18,6 +18,16 @@ pub(crate) struct PackageQuery {
     assembly_guid: Option<Uuid>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct InstallPackageQuery {
+    #[serde(rename = "assemblyGuid", alias = "AssemblyGuid")]
+    assembly_guid: Option<Uuid>,
+    version: Option<String>,
+    #[serde(rename = "repositoryUrl", alias = "RepositoryUrl")]
+    repository_url: Option<String>,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -36,6 +46,33 @@ pub(crate) async fn get(
 ) -> Result<Json<PackageInfo>, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
     Ok(Json(state.packages.get(&name, query.assembly_guid)?))
+}
+
+pub(crate) async fn install(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<InstallPackageQuery>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    state.packages.install_candidate(
+        &name,
+        query.assembly_guid,
+        query.version.as_deref(),
+        query.repository_url.as_deref(),
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn cancel_installation(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(_package_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn repositories(
