@@ -337,32 +337,38 @@ async fn assert_postgres_query_plans(
         .expect("disable sequential scans");
     let queries = [
         (
-            "base_items_parent_sort_idx",
+            &["base_items_parent_sort_idx"][..],
             "EXPLAIN (FORMAT TEXT) SELECT * FROM jellyfin.base_items \
              WHERE parent_id = $1 ORDER BY sort_name, id",
             root.id,
         ),
         (
-            "base_items_path_hash_idx",
+            &["base_items_path_hash_idx"][..],
             "EXPLAIN (FORMAT TEXT) SELECT 1 FROM jellyfin.base_items WHERE path = $1::uuid::text",
             root.id,
         ),
         (
-            "ancestor_ids_item_depth_idx",
+            &[
+                "ancestor_ids_item_depth_idx",
+                "ancestor_ids_one_parent_per_depth",
+            ][..],
             "EXPLAIN (FORMAT TEXT) SELECT * FROM jellyfin.ancestor_ids \
              WHERE item_id = $1 ORDER BY depth",
             child.id,
         ),
         (
-            "ancestor_ids_parent_depth_idx",
+            &["ancestor_ids_parent_depth_idx"][..],
             "EXPLAIN (FORMAT TEXT) SELECT * FROM jellyfin.ancestor_ids \
              WHERE parent_item_id = $1 ORDER BY depth, item_id",
             root.id,
         ),
     ];
-    for (index, sql, id) in queries {
+    for (indexes, sql, id) in queries {
         let plan = explain(&transaction, sql, id).await;
-        assert!(plan.contains(index), "expected {index} in plan:\n{plan}");
+        assert!(
+            indexes.iter().any(|index| plan.contains(index)),
+            "expected one of {indexes:?} in plan:\n{plan}"
+        );
     }
     transaction.rollback().await.expect("explain rollback");
     repository.delete(root.id).await.expect("explain cleanup");
