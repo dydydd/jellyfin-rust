@@ -464,6 +464,18 @@ pub fn router(state: AppState) -> Router {
             get(hls_segment::audio),
         )
         .route(
+            "/Audio/{item_id}/master.m3u8",
+            get(hls_segment::audio_master_playlist).head(hls_segment::audio_master_playlist),
+        )
+        .route(
+            "/Audio/{item_id}/main.m3u8",
+            get(hls_segment::audio_main_playlist),
+        )
+        .route(
+            "/Audio/{item_id}/hls1/{playlist_id}/{segment_file}",
+            get(hls_segment::audio_hls1_segment),
+        )
+        .route(
             "/Audio/{item_id}/stream",
             get(audio::stream).head(audio::stream),
         )
@@ -478,6 +490,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/Videos/{item_id}/hls/{*legacy_path}",
             get(hls_segment::video),
+        )
+        .route(
+            "/Videos/{item_id}/live.m3u8",
+            get(hls_segment::video_live_playlist),
+        )
+        .route(
+            "/Videos/{item_id}/master.m3u8",
+            get(hls_segment::video_master_playlist).head(hls_segment::video_master_playlist),
+        )
+        .route(
+            "/Videos/{item_id}/main.m3u8",
+            get(hls_segment::video_main_playlist),
+        )
+        .route(
+            "/Videos/{item_id}/hls1/{playlist_id}/{segment_file}",
+            get(hls_segment::video_hls1_segment),
         )
         .route(
             "/Videos/{item_id}/stream",

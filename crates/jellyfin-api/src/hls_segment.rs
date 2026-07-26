@@ -2,16 +2,18 @@ use std::{path::Path as FilePath, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::{OriginalUri, Path, State},
-    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
+    extract::{OriginalUri, Path, Query, State},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use jellyfin_extensions::PathHelper;
 use jellyfin_model::MimeTypes;
+use serde::Deserialize;
 use tokio::fs;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
+use uuid::Uuid;
 
 use crate::{ApiError, AppState, authorization};
 
@@ -28,6 +30,44 @@ pub(crate) async fn audio(
     serve_file(path, &headers).await
 }
 
+pub(crate) async fn audio_master_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path(_item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    serve_authenticated_playlist(&state, &headers, &uri, "master.m3u8").await
+}
+
+pub(crate) async fn audio_main_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path(_item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    serve_authenticated_playlist(&state, &headers, &uri, "main.m3u8").await
+}
+
+pub(crate) async fn audio_hls1_segment(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path((_item_id, playlist_id, segment_file)): Path<(Uuid, String, String)>,
+    Query(query): Query<DynamicSegmentQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let (segment_id, container) = parse_hls1_segment_file(&segment_file)?;
+    serve_authenticated_hls1_segment(
+        &state,
+        &headers,
+        &uri,
+        &playlist_id,
+        segment_id,
+        container,
+        query,
+    )
+    .await
+}
+
 pub(crate) async fn video(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -40,6 +80,66 @@ pub(crate) async fn video(
     }
 
     serve_video_segment(&state, &headers, &legacy_path).await
+}
+
+pub(crate) async fn video_live_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path(_item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    serve_authenticated_playlist(&state, &headers, &uri, "live.m3u8").await
+}
+
+pub(crate) async fn video_master_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path(_item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    serve_authenticated_playlist(&state, &headers, &uri, "master.m3u8").await
+}
+
+pub(crate) async fn video_main_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path(_item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    serve_authenticated_playlist(&state, &headers, &uri, "main.m3u8").await
+}
+
+pub(crate) async fn video_hls1_segment(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path((_item_id, playlist_id, segment_file)): Path<(Uuid, String, String)>,
+    Query(query): Query<DynamicSegmentQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let (segment_id, container) = parse_hls1_segment_file(&segment_file)?;
+    serve_authenticated_hls1_segment(
+        &state,
+        &headers,
+        &uri,
+        &playlist_id,
+        segment_id,
+        container,
+        query,
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DynamicSegmentQuery {
+    #[serde(rename = "runtimeTicks", alias = "RuntimeTicks")]
+    runtime_ticks: i64,
+    #[serde(
+        rename = "actualSegmentLengthTicks",
+        alias = "ActualSegmentLengthTicks"
+    )]
+    actual_segment_length_ticks: i64,
+    #[serde(rename = "startTimeTicks", alias = "StartTimeTicks")]
+    start_time_ticks: Option<i64>,
 }
 
 fn parse_audio_path(path: &str) -> Result<(&str, &str), ApiError> {
@@ -61,6 +161,14 @@ fn parse_stream_path(path: &str) -> Option<(&str, &str)> {
         .get(.."stream.".len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("stream."))
         .then_some((playlist_id, stream_file))
+}
+
+fn parse_hls1_segment_file(path: &str) -> Result<(i32, &str), ApiError> {
+    let (segment_id, container) = path.rsplit_once('.').ok_or(ApiError::InvalidRequest)?;
+    let segment_id = segment_id
+        .parse::<i32>()
+        .map_err(|_| ApiError::InvalidRequest)?;
+    Ok((segment_id, container))
 }
 
 async fn serve_playlist(
@@ -112,6 +220,42 @@ async fn serve_video_segment(
     serve_file(segment_path, headers).await
 }
 
+async fn serve_authenticated_playlist(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    filename: &str,
+) -> Result<Response, ApiError> {
+    authorization::require_default(state, headers, uri).await?;
+    let path = resolve_transcode_file(&state.transcode_directory, filename)?;
+    serve_file(path, headers).await
+}
+
+async fn serve_authenticated_hls1_segment(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    playlist_id: &str,
+    segment_id: i32,
+    container: &str,
+    query: DynamicSegmentQuery,
+) -> Result<Response, ApiError> {
+    authorization::require_default(state, headers, uri).await?;
+    if query.runtime_ticks < 0
+        || query.actual_segment_length_ticks <= 0
+        || query.start_time_ticks.is_some_and(|ticks| ticks > 0)
+        || !is_hls_container(container)
+    {
+        return Err(ApiError::InvalidRequest);
+    }
+
+    let path = resolve_transcode_file(
+        &state.transcode_directory,
+        &format!("{playlist_id}{segment_id}.{container}"),
+    )?;
+    serve_file(path, headers).await
+}
+
 fn resolve_transcode_file(root: &FilePath, filename: &str) -> Result<std::path::PathBuf, ApiError> {
     let relative = FilePath::new(filename);
     if relative.is_absolute()
@@ -132,6 +276,10 @@ fn resolve_transcode_file(root: &FilePath, filename: &str) -> Result<std::path::
         return Err(ApiError::InvalidRequest);
     }
     Ok(candidate)
+}
+
+fn is_hls_container(container: &str) -> bool {
+    !container.is_empty() && container.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 async fn find_playlist(

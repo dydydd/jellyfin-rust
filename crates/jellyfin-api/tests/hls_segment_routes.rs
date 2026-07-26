@@ -291,6 +291,129 @@ async fn official_video_rows_validate_before_scan_and_gate_real_segments() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
+    let fixture = Fixture::new().await;
+    let item_id = Uuid::new_v4();
+    fs::write(
+        fixture.transcode_path().join("master.m3u8"),
+        b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000\nmain.m3u8\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.transcode_path().join("main.m3u8"),
+        b"#EXTM3U\n#EXTINF:4,\nhls1/main/0.ts\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.transcode_path().join("live.m3u8"),
+        b"#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n",
+    )
+    .unwrap();
+    fs::write(fixture.transcode_path().join("main0.ts"), b"dynamic-video").unwrap();
+    fs::write(
+        fixture.transcode_path().join("audio0.aac"),
+        b"dynamic-audio",
+    )
+    .unwrap();
+
+    for uri in [
+        format!("/Videos/{item_id}/master.m3u8"),
+        format!("/Videos/{item_id}/main.m3u8"),
+        format!("/Videos/{item_id}/live.m3u8"),
+        format!("/Audio/{item_id}/master.m3u8"),
+        format!("/Audio/{item_id}/main.m3u8"),
+        format!(
+            "/Videos/{item_id}/hls1/main/0.ts?runtimeTicks=0&actualSegmentLengthTicks=40000000"
+        ),
+        format!(
+            "/Audio/{item_id}/hls1/audio/0.aac?runtimeTicks=0&actualSegmentLengthTicks=40000000"
+        ),
+    ] {
+        assert_eq!(
+            fixture.get(&uri, HeaderMap::new()).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{uri}"
+        );
+    }
+
+    let response = fixture
+        .get(
+            &format!("/Videos/{item_id}/master.m3u8"),
+            fixture.device_headers(),
+        )
+        .await;
+    let playlist_mime = MimeTypes::get_mime_type("playlist.m3u8").unwrap();
+    assert_file_response(
+        response,
+        StatusCode::OK,
+        &playlist_mime,
+        b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000\nmain.m3u8\n",
+    )
+    .await;
+
+    let mut headers = fixture.device_headers();
+    headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-6"));
+    let response = fixture
+        .get(&format!("/Videos/{item_id}/main.m3u8"), headers)
+        .await;
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], playlist_mime);
+    assert_eq!(body(response).await, b"#EXTM3U");
+
+    let response = fixture
+        .get(
+            &format!(
+                "/Videos/{item_id}/hls1/main/0.ts?runtimeTicks=0&actualSegmentLengthTicks=40000000"
+            ),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_file_response(response, StatusCode::OK, "video/mp2t", b"dynamic-video").await;
+
+    let response = fixture
+        .get(
+            &format!(
+                "/Audio/{item_id}/hls1/audio/0.aac?runtimeTicks=0&actualSegmentLengthTicks=40000000"
+            ),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_file_response(response, StatusCode::OK, "audio/aac", b"dynamic-audio").await;
+
+    for uri in [
+        format!("/Videos/{item_id}/hls1/main/0.ts?actualSegmentLengthTicks=40000000"),
+        format!("/Videos/{item_id}/hls1/main/0.ts?runtimeTicks=0"),
+        format!("/Videos/{item_id}/hls1/main/0.ts?runtimeTicks=0&actualSegmentLengthTicks=0"),
+        format!(
+            "/Videos/{item_id}/hls1/main/0.ts?runtimeTicks=0&actualSegmentLengthTicks=40000000&startTimeTicks=1"
+        ),
+        format!(
+            "/Videos/{item_id}/hls1/%2E%2E%2Foutside/0.ts?runtimeTicks=0&actualSegmentLengthTicks=40000000"
+        ),
+    ] {
+        assert_eq!(
+            fixture.get(&uri, fixture.device_headers()).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{uri}"
+        );
+    }
+
+    fixture.block_ordinary_user().await;
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Videos/{item_id}/master.m3u8"),
+                fixture.device_headers()
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    fixture.cleanup().await;
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
