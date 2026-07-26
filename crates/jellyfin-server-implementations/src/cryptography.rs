@@ -109,6 +109,11 @@ impl CryptographyProvider {
         }
         salt
     }
+
+    #[must_use]
+    pub fn generate_default_salt(&self) -> Vec<u8> {
+        self.generate_salt(DEFAULT_SALT_LENGTH)
+    }
 }
 
 fn iterations(hash: &PasswordHash) -> Result<u32, CryptographyError> {
