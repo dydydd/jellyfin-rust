@@ -4,7 +4,8 @@ use jellyfin_data::{
 };
 use jellyfin_migration::{
     AddClientLogUploadConfigurationMigration, AddPlaystateResumeConfigurationMigration,
-    AddPluginRepositoriesMigration, CreateServerConfigurationMigration,
+    AddPluginRepositoriesMigration, AddRemoteAccessConfigurationMigration,
+    CreateServerConfigurationMigration,
 };
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -74,6 +75,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.min_audiobook_resume, 5);
     assert_eq!(seeded.max_audiobook_resume, 5);
     assert!(seeded.allow_client_log_upload);
+    assert!(seeded.enable_remote_access);
     assert_eq!(seeded.trickplay_options["Interval"], 10_000);
     assert_eq!(seeded.trickplay_options["ScanBehavior"], "NonBlocking");
     assert_eq!(seeded.row_version, 1);
@@ -102,6 +104,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_content_type_updates(&database, &first, &second).await;
     assert_plugin_repository_updates(&first, &second).await;
     assert_client_log_upload_updates(&first, &second).await;
+    assert_remote_access_updates(&first, &second).await;
     assert_server_configuration_update(&first, &second).await;
 
     let invalid_insert = database
@@ -144,6 +147,10 @@ async fn exercise_server_configuration(database_name: &str) {
     ));
     assert!(matches!(
         first.update_client_log_upload(true).await,
+        Err(ServerConfigurationStoreError::MissingSingleton)
+    ));
+    assert!(matches!(
+        first.update_remote_access(true).await,
         Err(ServerConfigurationStoreError::MissingSingleton)
     ));
     assert!(matches!(
@@ -192,6 +199,14 @@ async fn assert_configuration_migrations_are_idempotent(schema: &SchemaManager<'
         .up(schema)
         .await
         .expect("plugin-repositories DDL must remain idempotent");
+    AddRemoteAccessConfigurationMigration
+        .up(schema)
+        .await
+        .expect("reapplying remote-access configuration DDL must succeed");
+    AddRemoteAccessConfigurationMigration
+        .up(schema)
+        .await
+        .expect("remote-access configuration DDL must remain idempotent");
 }
 
 async fn assert_content_type_updates(
@@ -285,6 +300,24 @@ async fn assert_plugin_repository_updates(
     assert!(replaced.row_version > updated.row_version);
 }
 
+async fn assert_remote_access_updates(
+    first: &ServerConfigurationRepository,
+    second: &ServerConfigurationRepository,
+) {
+    let disabled = first
+        .update_remote_access(false)
+        .await
+        .expect("remote access disable");
+    assert!(!disabled.enable_remote_access);
+
+    let enabled = second
+        .update_remote_access(true)
+        .await
+        .expect("remote access enable");
+    assert!(enabled.enable_remote_access);
+    assert!(enabled.row_version > disabled.row_version);
+}
+
 async fn assert_server_configuration_update(
     first: &ServerConfigurationRepository,
     second: &ServerConfigurationRepository,
@@ -314,6 +347,7 @@ async fn assert_server_configuration_update(
     assert_eq!(updated.min_audiobook_resume, 6);
     assert_eq!(updated.max_audiobook_resume, 8);
     assert!(!updated.allow_client_log_upload);
+    assert!(updated.enable_remote_access);
     assert_eq!(updated.trickplay_options["Interval"], 2_500);
     assert_eq!(
         updated.trickplay_options["WidthResolutions"],
@@ -435,6 +469,7 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
 
     assert_playstate_resume_schema(database).await;
     assert_client_log_upload_schema(database).await;
+    assert_remote_access_schema(database).await;
     assert_plugin_repositories_schema(database).await;
     assert_trickplay_configuration_schema(database).await;
 
@@ -479,6 +514,31 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("plugin-repositories constraint catalog query")
         .expect("plugin-repositories constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_remote_access_schema(database: &sea_orm::DatabaseConnection) {
+    let column = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name = 'enable_remote_access'"
+                .to_owned(),
+        ))
+        .await
+        .expect("remote-access column catalog query")
+        .expect("remote-access column");
+    assert_eq!(
+        String::try_get(&column, "", "data_type").unwrap(),
+        "boolean"
+    );
+    assert_eq!(String::try_get(&column, "", "is_nullable").unwrap(), "NO");
+    assert_eq!(
+        String::try_get(&column, "", "column_default").unwrap(),
+        "true"
+    );
 }
 
 async fn assert_trickplay_configuration_schema(database: &sea_orm::DatabaseConnection) {

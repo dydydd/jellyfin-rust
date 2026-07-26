@@ -31,10 +31,17 @@ pub struct StartupUser {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct StartupRemoteAccess {
+    pub enable_remote_access: bool,
+}
+
 pub(crate) struct StartupState {
     pub(crate) configuration: StartupConfiguration,
     pub(crate) completed: bool,
     pub(crate) user_id: Option<Uuid>,
+    pub(crate) enable_remote_access: bool,
 }
 
 impl StartupState {
@@ -46,6 +53,7 @@ impl StartupState {
             },
             completed: false,
             user_id: None,
+            enable_remote_access: true,
         }
     }
 }
@@ -125,6 +133,24 @@ pub(crate) async fn update_configuration(
             .await?;
     } else {
         state.startup.lock().await.configuration = configuration;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn update_remote_access(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<StartupRemoteAccess>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    if let Some(repository) = &state.startup_repository {
+        repository
+            .update_remote_access(request.enable_remote_access)
+            .await?;
+    } else {
+        state.startup.lock().await.enable_remote_access = request.enable_remote_access;
     }
     Ok(StatusCode::NO_CONTENT)
 }

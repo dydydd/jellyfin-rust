@@ -763,6 +763,7 @@ fn startup_routes() -> Router<Arc<AppState>> {
             "/Startup/Configuration",
             get(startup::get_configuration).post(startup::update_configuration),
         )
+        .route("/Startup/RemoteAccess", post(startup::update_remote_access))
         .route(
             "/Startup/User",
             get(startup::get_user).post(startup::update_user),

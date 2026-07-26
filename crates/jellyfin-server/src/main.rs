@@ -2,6 +2,7 @@ use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{BaseItemRepository, DatabaseConfig, ServerConfigurationRepository};
+use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -30,6 +31,8 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to initialize the user library root")?;
 
     let initial_user = ensure_initial_user(&database).await?;
+    let mut network_configuration = NetworkConfiguration::default();
+    network_configuration.enable_remote_access = persisted_configuration.enable_remote_access;
 
     let bind_address =
         std::env::var("JELLYFIN_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1:8096".to_owned());
@@ -43,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
             format!("http://{bind_address}"),
         )
         .with_startup_user(initial_user.id)
+        .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
         .with_persistent_startup(startup_repository),
     );
 

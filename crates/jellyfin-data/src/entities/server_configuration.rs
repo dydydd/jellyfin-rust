@@ -21,6 +21,7 @@ pub struct Model {
     pub max_audiobook_resume: i32,
     pub allow_client_log_upload: bool,
     pub trickplay_options: Value,
+    pub enable_remote_access: bool,
     pub row_version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

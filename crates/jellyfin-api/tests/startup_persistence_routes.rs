@@ -69,6 +69,7 @@ async fn exercise_startup_routes(database_name: &str) {
 
     assert_official_user_rows(&database, &app_a, &app_b, administrator.id, &initial_name).await;
     assert_configuration_roundtrip(&app_a, &app_b).await;
+    assert_remote_access_roundtrip(&database, &app_a, &app_b).await;
 
     let session = DeviceRepository::new(database.clone())
         .create_session(NewDevice::new(
@@ -94,6 +95,22 @@ async fn exercise_startup_routes(database_name: &str) {
         let response = get(&app_b, uri, None).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+    let response = post_json(
+        &app_b,
+        "/Startup/RemoteAccess",
+        &json!({ "EnableRemoteAccess": true }),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = post_json(
+        &app_b,
+        "/Startup/RemoteAccess",
+        &json!({ "EnableRemoteAccess": true }),
+        Some(&session.access_token),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let app_after_restart = persistent_app(database.clone(), administrator.id).await;
     let response = get(
@@ -220,6 +237,49 @@ async fn assert_configuration_roundtrip(app_a: &axum::Router, app_b: &axum::Rout
     let response = get(app_b, "/Startup/Configuration", None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await, configured_startup());
+}
+
+async fn assert_remote_access_roundtrip(
+    database: &DatabaseConnection,
+    app_a: &axum::Router,
+    app_b: &axum::Router,
+) {
+    let response = post_json(
+        app_a,
+        "/Startup/RemoteAccess",
+        &json!({ "EnableRemoteAccess": false }),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let persisted = ServerConfigurationRepository::new(database.clone())
+        .load()
+        .await
+        .expect("server configuration after remote access update");
+    assert!(!persisted.enable_remote_access);
+
+    let response = post_json(
+        app_b,
+        "/Startup/RemoteAccess",
+        &json!({ "EnableRemoteAccess": true }),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let persisted = ServerConfigurationRepository::new(database.clone())
+        .load()
+        .await
+        .expect("server configuration after remote access re-enable");
+    assert!(persisted.enable_remote_access);
+
+    let response = post_json(app_a, "/Startup/RemoteAccess", &json!({}), None).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let persisted = ServerConfigurationRepository::new(database.clone())
+        .load()
+        .await
+        .expect("server configuration after default remote access");
+    assert!(!persisted.enable_remote_access);
 }
 
 fn configured_startup() -> Value {

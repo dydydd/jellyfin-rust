@@ -89,6 +89,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access,
                 row_version, created_at, updated_at
             ",
             [
@@ -124,6 +125,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access,
                 row_version, created_at, updated_at
             "
             .to_owned(),
@@ -180,6 +182,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access,
                 row_version, created_at, updated_at
             ",
             [
@@ -215,9 +218,43 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access,
                 row_version, created_at, updated_at
             ",
             [allow_client_log_upload.into()],
+        );
+        server_configuration::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or(ServerConfigurationStoreError::MissingSingleton)
+    }
+
+    /// Enables or disables network remote access during startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-singleton or database error. The boolean is updated
+    /// directly on the singleton row to keep startup API workers synchronized
+    /// through one `PostgreSQL` source of truth.
+    pub async fn update_remote_access(
+        &self,
+        enable_remote_access: bool,
+    ) -> Result<server_configuration::Model, ServerConfigurationStoreError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.server_configuration
+            SET enable_remote_access = $1
+            WHERE id = 1
+            RETURNING id, server_name, ui_culture, metadata_country_code,
+                preferred_metadata_language, is_startup_wizard_completed,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access,
+                row_version, created_at, updated_at
+            ",
+            [enable_remote_access.into()],
         );
         server_configuration::Model::find_by_statement(statement)
             .one(&self.database)
@@ -249,6 +286,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access,
                 row_version, created_at, updated_at
             ",
             [plugin_repositories.into()],
@@ -298,6 +336,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access,
                 row_version, created_at, updated_at
             ",
             [
