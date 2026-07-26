@@ -21,6 +21,7 @@ fn normalize(name: &str, path: &str, is_audio: bool) -> MediaInfo {
 fn media_metadata_success() {
     let result = normalize("video_metadata.json", "video_metadata.mkv", false);
     assert_eq!(result.container.as_deref(), Some("mkv"));
+    assert_eq!(result.runtime_ticks, Some(10_000_000));
     assert_eq!(result.media_streams.len(), 3);
     let video = result.video_stream().expect("video stream");
     assert_eq!(video.aspect_ratio.as_deref(), Some("4:3"));
@@ -147,6 +148,7 @@ fn transport_stream_success() {
 fn webm_success() {
     let result = normalize("video_webm.json", "video_metadata.webm", false);
     assert_eq!(result.container.as_deref(), Some("mkv,webm"));
+    assert_eq!(result.runtime_ticks, Some(1_177_010_000));
     assert_eq!(result.media_streams.len(), 2);
     assert_eq!(result.media_streams[0].width, Some(540));
     assert_eq!(result.media_streams[0].height, Some(360));

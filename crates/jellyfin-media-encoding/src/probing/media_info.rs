@@ -195,6 +195,7 @@ pub struct MediaInfo {
     pub media_attachments: Vec<MediaAttachment>,
     pub chapters: Vec<MediaChapter>,
     pub bitrate: Option<i64>,
+    pub runtime_ticks: Option<i64>,
     pub name: Option<String>,
     pub forced_sort_name: Option<String>,
     pub overview: Option<String>,
@@ -307,6 +308,7 @@ fn normalize_root(root: &Map<String, Value>, context: ProbeContext<'_>) -> Media
         media_attachments: attachments,
         chapters: normalize_chapters(root.get("chapters")),
         bitrate,
+        runtime_ticks: format.and_then(format_runtime_ticks),
         name: first_tag(&tags, &["title", "title-eng"]),
         forced_sort_name: first_tag(&tags, &["sort_name", "title-sort", "titlesort"]),
         overview: first_tag(&tags, &["synopsis", "description", "desc", "comment"]),
@@ -777,6 +779,14 @@ fn normalize_chapters(value: Option<&Value>) -> Vec<MediaChapter> {
             }
         })
         .collect()
+}
+
+fn format_runtime_ticks(format: &Map<String, Value>) -> Option<i64> {
+    string(format, "duration")
+        .as_deref()
+        .and_then(decimal_seconds_to_milliseconds)
+        .and_then(|milliseconds| milliseconds.checked_mul(TICKS_PER_MILLISECOND))
+        .filter(|ticks| *ticks > 0)
 }
 
 fn bitrate_from_tags(tags: &HashMap<String, String>) -> Option<i64> {

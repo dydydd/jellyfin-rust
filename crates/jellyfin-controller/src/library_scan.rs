@@ -14,7 +14,7 @@ use jellyfin_media_encoding::probing::{
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
-use serde_json::json;
+use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::fs;
 use uuid::Uuid;
@@ -228,9 +228,14 @@ impl LibraryScanService {
         let Some(path) = path.to_str() else {
             return Ok(false);
         };
-        if let Some(existing) = self.items.by_paths(&[path.to_owned()]).await?.pop() {
-            self.ensure_media_streams(existing.id, path, media_kind)
-                .await?;
+        if let Some(mut existing) = self.items.by_paths(&[path.to_owned()]).await?.pop() {
+            if let Some(media_info) = self
+                .ensure_media_streams(existing.id, path, media_kind)
+                .await?
+                && apply_probed_item_metadata(&mut existing, path, &media_info)
+            {
+                self.items.update(existing).await?;
+            }
             return Ok(false);
         }
 
@@ -244,14 +249,13 @@ impl LibraryScanService {
         item.is_folder = false;
         item.is_virtual_item = false;
         item.presentation_unique_key = Some(path.to_owned());
-        item.data = Some(json!({
-            "Container": Path::new(path)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .map(str::to_ascii_lowercase),
-        }));
-        let item = self.items.create(item).await?;
-        self.ensure_media_streams(item.id, path, media_kind).await?;
+        item.data = Some(media_item_data(path, None));
+        let mut item = self.items.create(item).await?;
+        if let Some(media_info) = self.ensure_media_streams(item.id, path, media_kind).await?
+            && apply_probed_item_metadata(&mut item, path, &media_info)
+        {
+            self.items.update(item).await?;
+        }
         Ok(true)
     }
 
@@ -260,7 +264,7 @@ impl LibraryScanService {
         item_id: Uuid,
         path: &str,
         media_kind: MediaKind,
-    ) -> Result<(), LibraryScanError> {
+    ) -> Result<Option<MediaInfo>, LibraryScanError> {
         let existing = self
             .streams
             .query(MediaStreamQuery {
@@ -271,34 +275,33 @@ impl LibraryScanService {
             .await?;
         let default_stream = default_stream(path, media_kind);
         if !existing.is_empty() && existing != [default_stream.clone()] {
-            return Ok(());
+            return Ok(None);
         }
-        if let Some(probed) = self.probe_media_streams(path, media_kind).await {
+        if let Some(media_info) = self.probe_media_info(path, media_kind).await {
+            let probed = streams_from_media_info(&media_info);
             if !probed.is_empty() {
                 self.streams.replace(item_id, &probed).await?;
-                return Ok(());
+                return Ok(Some(media_info));
             }
+            self.streams
+                .replace(item_id, std::slice::from_ref(&default_stream))
+                .await?;
+            return Ok(Some(media_info));
         }
         self.streams
             .replace(item_id, std::slice::from_ref(&default_stream))
             .await?;
-        Ok(())
+        Ok(None)
     }
 
-    async fn probe_media_streams(
-        &self,
-        path: &str,
-        media_kind: MediaKind,
-    ) -> Option<Vec<PersistedMediaStream>> {
+    async fn probe_media_info(&self, path: &str, media_kind: MediaKind) -> Option<MediaInfo> {
         let probe_path = self.probe_path.clone();
         let path = path.to_owned();
         let log_path = path.clone();
-        match tokio::task::spawn_blocking(move || {
-            probe_media_streams(&probe_path, &path, media_kind)
-        })
-        .await
+        match tokio::task::spawn_blocking(move || probe_media_info(&probe_path, &path, media_kind))
+            .await
         {
-            Ok(Ok(streams)) => Some(streams),
+            Ok(Ok(media_info)) => Some(media_info),
             Ok(Err(error)) => {
                 tracing::debug!(path = log_path, error = %error, "media probe failed during library scan");
                 None
@@ -349,6 +352,85 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
 
 fn is_scanned_media_type(item_type: &str) -> bool {
     matches!(item_type, "Audio" | "Video")
+}
+
+fn apply_probed_item_metadata(
+    item: &mut jellyfin_data::entities::base_item::Model,
+    path: &str,
+    media_info: &MediaInfo,
+) -> bool {
+    let mut changed = false;
+    let data = merged_media_item_data(item.data.as_ref(), path, Some(media_info));
+    if item.data.as_ref() != Some(&data) {
+        item.data = Some(data);
+        changed = true;
+    }
+    if let Some(runtime_ticks) = media_info.runtime_ticks
+        && item.runtime_ticks != Some(runtime_ticks)
+    {
+        item.runtime_ticks = Some(runtime_ticks);
+        changed = true;
+    }
+    if let Some(production_year) = media_info.production_year
+        && item.production_year != Some(production_year)
+    {
+        item.production_year = Some(production_year);
+        changed = true;
+    }
+    if let Some(premiere_date) = media_info.premiere_date
+        && item.premiere_date != Some(premiere_date)
+    {
+        item.premiere_date = Some(premiere_date);
+        changed = true;
+    }
+    if let Some(overview) = media_info.overview.as_ref()
+        && item.overview.as_deref() != Some(overview)
+    {
+        item.overview = Some(overview.clone());
+        changed = true;
+    }
+    if let Some(sort_name) = media_info.forced_sort_name.as_ref()
+        && item.sort_name.as_deref() != Some(sort_name)
+    {
+        item.sort_name = Some(sort_name.clone());
+        changed = true;
+    }
+    changed
+}
+
+fn media_item_data(path: &str, media_info: Option<&MediaInfo>) -> Value {
+    merged_media_item_data(None, path, media_info)
+}
+
+fn merged_media_item_data(
+    existing: Option<&Value>,
+    path: &str,
+    media_info: Option<&MediaInfo>,
+) -> Value {
+    let mut object = existing
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    object.insert(
+        "Container".to_owned(),
+        media_info
+            .and_then(|info| info.container.clone())
+            .or_else(|| path_extension(path))
+            .map_or(Value::Null, Value::String),
+    );
+    if let Some(bitrate) = media_info.and_then(|info| info.bitrate) {
+        object.insert("Bitrate".to_owned(), json!(bitrate));
+    } else {
+        object.remove("Bitrate");
+    }
+    Value::Object(object)
+}
+
+fn path_extension(path: &str) -> Option<String> {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
 }
 
 fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
@@ -405,13 +487,13 @@ fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
     }
 }
 
-fn probe_media_streams(
+fn probe_media_info(
     probe_path: &Path,
     path: &str,
     media_kind: MediaKind,
-) -> Result<Vec<PersistedMediaStream>, jellyfin_media_encoding::probing::ExternalProbeError> {
+) -> Result<MediaInfo, jellyfin_media_encoding::probing::ExternalProbeError> {
     let prober = ExternalSourceProber::new(probe_path, CommandProbeProcessRunner);
-    let media_info = prober.probe(
+    prober.probe(
         &ExternalMediaSource {
             path: path.to_owned(),
             protocol: MediaProtocol::File,
@@ -421,8 +503,7 @@ fn probe_media_streams(
             is_audio: media_kind == MediaKind::Audio,
             ..ExternalProbeOptions::default()
         },
-    )?;
-    Ok(streams_from_media_info(&media_info))
+    )
 }
 
 fn streams_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaStream> {
@@ -590,11 +671,13 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::{
-        MediaKind, codec_from_extension, default_stream, display_name, media_kind, stable_item_id,
-        streams_from_media_info,
+        MediaKind, apply_probed_item_metadata, codec_from_extension, default_stream, display_name,
+        media_item_data, media_kind, stable_item_id, streams_from_media_info,
     };
-    use jellyfin_data::PersistedMediaStreamType;
+    use chrono::Utc;
+    use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
+    use serde_json::json;
     use std::path::Path;
 
     #[test]
@@ -744,5 +827,108 @@ mod tests {
         let streams = streams_from_media_info(&media_info);
 
         assert_eq!(streams[0].bit_rate, None);
+    }
+
+    #[test]
+    fn media_item_data_prefers_probe_container_and_bitrate() {
+        let media_info = normalize_probe_json(
+            r#"{
+                "streams": [],
+                "format": {
+                    "format_name": "matroska,webm",
+                    "bit_rate": "5128000",
+                    "duration": "300.000000"
+                }
+            }"#,
+            ProbeContext {
+                path: "/media/Movie.webm",
+                is_audio: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            media_item_data("/media/Movie.mp4", Some(&media_info)),
+            json!({ "Container": "mkv,webm", "Bitrate": 5_128_000_i64 })
+        );
+        assert_eq!(
+            media_item_data("/media/Movie.mp4", None),
+            json!({ "Container": "mp4" })
+        );
+    }
+
+    #[test]
+    fn probed_item_metadata_updates_runtime_and_embedded_fields() {
+        let media_info = normalize_probe_json(
+            r#"{
+                "streams": [],
+                "format": {
+                    "format_name": "matroska,webm",
+                    "duration": "300.000000",
+                    "tags": {
+                        "title-sort": "Fixture Sort",
+                        "description": "Fixture overview",
+                        "date": "2020-01-02"
+                    }
+                }
+            }"#,
+            ProbeContext {
+                path: "/media/Movie.mkv",
+                is_audio: false,
+            },
+        )
+        .unwrap();
+        let now = Utc::now();
+        let mut item = base_item::Model {
+            id: stable_item_id("/media/Movie.mkv"),
+            item_type: "Video".to_owned(),
+            data: Some(json!({
+                "Container": "mkv",
+                "Bitrate": 1,
+                "OriginalLanguage": "eng"
+            })),
+            path: Some("/media/Movie.mkv".to_owned()),
+            parent_id: None,
+            top_parent_id: None,
+            name: Some("Movie".to_owned()),
+            clean_name: Some("movie".to_owned()),
+            sort_name: Some("Movie".to_owned()),
+            media_type: Some("Video".to_owned()),
+            overview: None,
+            official_rating: None,
+            index_number: None,
+            parent_index_number: None,
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: false,
+            is_virtual_item: false,
+            presentation_unique_key: Some("/media/Movie.mkv".to_owned()),
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: now,
+            date_modified: now,
+            row_version: 1,
+        };
+
+        assert!(apply_probed_item_metadata(
+            &mut item,
+            "/media/Movie.mkv",
+            &media_info
+        ));
+
+        assert_eq!(item.runtime_ticks, Some(3_000_000_000));
+        assert_eq!(item.production_year, Some(2020));
+        assert_eq!(item.overview.as_deref(), Some("Fixture overview"));
+        assert_eq!(item.sort_name.as_deref(), Some("Fixture Sort"));
+        assert_eq!(
+            item.data,
+            Some(json!({
+                "Container": "mkv,webm",
+                "OriginalLanguage": "eng"
+            }))
+        );
     }
 }
