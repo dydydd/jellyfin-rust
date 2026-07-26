@@ -640,6 +640,12 @@ async fn exercise_websocket_commands_and_disconnect(
     assert_eq!(state_update["Data"]["Data"]["Reason"], "Unpause");
     assert_eq!(websocket_json(&mut joiner_socket).await, state_update);
 
+    assert_no_content(request(app, "POST", "/SyncPlay/Unpause", Some(creator_token), None).await)
+        .await;
+    let current_session = websocket_json(&mut creator_socket).await;
+    assert_eq!(current_session["MessageType"], "SyncPlayCommand");
+    assert_eq!(current_session["Data"]["Command"], "Unpause");
+
     assert_no_content(
         request(
             app,

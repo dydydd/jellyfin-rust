@@ -61,7 +61,8 @@ pub use sorting::{
 };
 pub use sync_play::{
     GroupLibrary, PlayQueue, PlayQueueItem, SyncPlayDeparture, SyncPlayGroup, SyncPlayGroupUpdate,
-    SyncPlayManager, SyncPlayParticipantState, SyncPlayQueueState, SyncPlaySession,
+    SyncPlayManager, SyncPlayParticipantState, SyncPlayPlaybackEvents, SyncPlayQueueState,
+    SyncPlaySession,
 };
 pub use user_manager_lock::{
     UserManagerLockContext, UserManagerLockError, UserManagerLockHandle, UserManagerLockHelper,

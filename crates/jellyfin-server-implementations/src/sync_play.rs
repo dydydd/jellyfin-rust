@@ -33,6 +33,25 @@ pub struct SyncPlayDeparture {
     pub membership_updates: Vec<SyncPlayGroupUpdate>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncPlayPlaybackEvents {
+    pub applied: bool,
+    pub queue_update: Option<SyncPlayGroupUpdate>,
+    pub playback_command: Option<(Vec<String>, SendCommandDto)>,
+    pub state_update: Option<SyncPlayGroupUpdate>,
+}
+
+impl SyncPlayPlaybackEvents {
+    fn rejected() -> Self {
+        Self {
+            applied: false,
+            queue_update: None,
+            playback_command: None,
+            state_update: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SyncPlayParticipant {
     user_id: Uuid,
@@ -364,31 +383,11 @@ impl SyncPlayManager {
         let state = self.state.read().await;
         let group_id = *state.session_groups.get(session_id)?;
         let group = state.groups.get(&group_id)?;
-        let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
-        sessions.sort_unstable();
-        let playlist = group
-            .play_queue
-            .get_playlist()
-            .iter()
-            .map(|item| SyncPlayQueueItemDto {
-                item_id: item.item_id,
-                playlist_item_id: item.playlist_item_id,
-            })
-            .collect();
         Some((
-            sessions,
+            sorted_sessions(group),
             GroupUpdateDto {
                 group_id,
-                data: PlayQueueUpdateDto {
-                    reason,
-                    last_update: Utc::now(),
-                    playlist,
-                    playing_item_index: group.play_queue.playing_item_index(),
-                    start_position_ticks: group.position_ticks,
-                    is_playing: group.state == GroupStateType::Playing,
-                    shuffle_mode: group.play_queue.shuffle_mode(),
-                    repeat_mode: group.play_queue.repeat_mode(),
-                },
+                data: queue_update_dto(group, reason),
                 update_type: GroupUpdateType::PlayQueue,
             },
         ))
@@ -522,82 +521,147 @@ impl SyncPlayManager {
     }
 
     pub async fn unpause(&self, session_id: &str) -> bool {
-        self.unpause_with_update(session_id).await.0
+        self.unpause_with_events(session_id).await.applied
     }
 
     pub async fn unpause_with_update(
         &self,
         session_id: &str,
     ) -> (bool, Option<SyncPlayGroupUpdate>) {
+        let events = self.unpause_with_events(session_id).await;
+        (events.applied, events.state_update)
+    }
+
+    pub async fn unpause_with_events(&self, session_id: &str) -> SyncPlayPlaybackEvents {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return (false, None);
+            return SyncPlayPlaybackEvents::rejected();
         };
-        let send_update = match group.state {
+        let mut events = SyncPlayPlaybackEvents {
+            applied: true,
+            queue_update: None,
+            playback_command: None,
+            state_update: None,
+        };
+        match group.state {
             GroupStateType::Idle => {
+                group.position_ticks = 0;
                 begin_wait(group, true);
-                false
+                events.queue_update = Some(queue_group_update(
+                    group,
+                    PlayQueueUpdateReason::NewPlaylist,
+                ));
             }
             GroupStateType::Waiting if !group.resume_playing => {
                 group.resume_playing = true;
-                true
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Unpause));
             }
             GroupStateType::Waiting | GroupStateType::Paused | GroupStateType::Playing => {
-                let send_update = group.state != GroupStateType::Playing;
+                let previous_state = group.state;
                 group.state = GroupStateType::Playing;
                 group.resume_playing = true;
                 set_all_buffering(group, false);
-                send_update
+                events.playback_command = Some(if previous_state == GroupStateType::Playing {
+                    playback_command_for_sessions(
+                        group,
+                        vec![session_id.to_owned()],
+                        SendCommandType::Unpause,
+                    )
+                } else {
+                    playback_command(group, SendCommandType::Unpause)
+                });
+                if previous_state != GroupStateType::Playing {
+                    events.state_update =
+                        Some(state_group_update(group, PlaybackRequestType::Unpause));
+                }
             }
-        };
-        (
-            true,
-            send_update.then(|| state_group_update(group, PlaybackRequestType::Unpause)),
-        )
+        }
+        events
     }
 
     pub async fn pause(&self, session_id: &str) -> bool {
-        self.pause_with_update(session_id).await.0
+        self.pause_with_events(session_id).await.applied
     }
 
     pub async fn pause_with_update(&self, session_id: &str) -> (bool, Option<SyncPlayGroupUpdate>) {
+        let events = self.pause_with_events(session_id).await;
+        (events.applied, events.state_update)
+    }
+
+    pub async fn pause_with_events(&self, session_id: &str) -> SyncPlayPlaybackEvents {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return (false, None);
+            return SyncPlayPlaybackEvents::rejected();
         };
-        let send_update = match group.state {
+        let mut events = SyncPlayPlaybackEvents {
+            applied: true,
+            queue_update: None,
+            playback_command: None,
+            state_update: None,
+        };
+        match group.state {
+            GroupStateType::Idle => {
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Stop,
+                ));
+            }
             GroupStateType::Playing => {
                 group.state = GroupStateType::Paused;
-                true
+                events.playback_command = Some(playback_command(group, SendCommandType::Pause));
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Pause));
             }
             GroupStateType::Waiting => {
                 group.resume_playing = false;
-                true
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Pause));
             }
-            GroupStateType::Idle | GroupStateType::Paused => false,
-        };
-        (
-            true,
-            send_update.then(|| state_group_update(group, PlaybackRequestType::Pause)),
-        )
+            GroupStateType::Paused => {
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Pause,
+                ));
+            }
+        }
+        events
     }
 
     pub async fn stop(&self, session_id: &str) -> bool {
+        self.stop_with_events(session_id).await.applied
+    }
+
+    pub async fn stop_with_events(&self, session_id: &str) -> SyncPlayPlaybackEvents {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return false;
+            return SyncPlayPlaybackEvents::rejected();
         };
+        let previous_state = group.state;
         group.state = GroupStateType::Idle;
         group.position_ticks = 0;
         group.resume_playing = false;
         set_all_buffering(group, false);
-        true
+        let sessions = if previous_state == GroupStateType::Idle {
+            vec![session_id.to_owned()]
+        } else {
+            sorted_sessions(group)
+        };
+        SyncPlayPlaybackEvents {
+            applied: true,
+            queue_update: None,
+            playback_command: Some(playback_command_for_sessions(
+                group,
+                sessions,
+                SendCommandType::Stop,
+            )),
+            state_update: None,
+        }
     }
 
     pub async fn seek(&self, session_id: &str, position_ticks: i64, runtime_ticks: i64) -> bool {
-        self.seek_with_update(session_id, position_ticks, runtime_ticks)
+        self.seek_with_events(session_id, position_ticks, runtime_ticks)
             .await
-            .0
+            .applied
     }
 
     pub async fn seek_with_update(
@@ -606,25 +670,48 @@ impl SyncPlayManager {
         position_ticks: i64,
         runtime_ticks: i64,
     ) -> (bool, Option<SyncPlayGroupUpdate>) {
+        let events = self
+            .seek_with_events(session_id, position_ticks, runtime_ticks)
+            .await;
+        (events.applied, events.state_update)
+    }
+
+    pub async fn seek_with_events(
+        &self,
+        session_id: &str,
+        position_ticks: i64,
+        runtime_ticks: i64,
+    ) -> SyncPlayPlaybackEvents {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return (false, None);
+            return SyncPlayPlaybackEvents::rejected();
         };
         if group.state == GroupStateType::Idle {
-            return (false, None);
+            return SyncPlayPlaybackEvents {
+                applied: false,
+                queue_update: None,
+                playback_command: Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Stop,
+                )),
+                state_update: None,
+            };
         }
         let resume_playing = match group.state {
             GroupStateType::Playing => true,
             GroupStateType::Paused => false,
             GroupStateType::Waiting => group.resume_playing,
-            GroupStateType::Idle => return (false, None),
+            GroupStateType::Idle => return SyncPlayPlaybackEvents::rejected(),
         };
         group.position_ticks = position_ticks.clamp(0, runtime_ticks.max(0));
         begin_wait(group, resume_playing);
-        (
-            true,
-            Some(state_group_update(group, PlaybackRequestType::Seek)),
-        )
+        SyncPlayPlaybackEvents {
+            applied: true,
+            queue_update: None,
+            playback_command: Some(playback_command(group, SendCommandType::Seek)),
+            state_update: Some(state_group_update(group, PlaybackRequestType::Seek)),
+        }
     }
 
     pub async fn next_item(&self, session_id: &str, playlist_item_id: Uuid) -> bool {
@@ -960,9 +1047,15 @@ fn playback_command(
     group: &ManagedSyncPlayGroup,
     command: SendCommandType,
 ) -> (Vec<String>, SendCommandDto) {
+    playback_command_for_sessions(group, sorted_sessions(group), command)
+}
+
+fn playback_command_for_sessions(
+    group: &ManagedSyncPlayGroup,
+    sessions: Vec<String>,
+    command: SendCommandType,
+) -> (Vec<String>, SendCommandDto) {
     let emitted_at = Utc::now();
-    let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
-    sessions.sort_unstable();
     (
         sessions,
         SendCommandDto {
@@ -973,6 +1066,49 @@ fn playback_command(
             command,
             emitted_at,
         },
+    )
+}
+
+fn sorted_sessions(group: &ManagedSyncPlayGroup) -> Vec<String> {
+    let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
+    sessions.sort_unstable();
+    sessions
+}
+
+fn queue_update_dto(
+    group: &ManagedSyncPlayGroup,
+    reason: PlayQueueUpdateReason,
+) -> PlayQueueUpdateDto {
+    let playlist = group
+        .play_queue
+        .get_playlist()
+        .iter()
+        .map(|item| SyncPlayQueueItemDto {
+            item_id: item.item_id,
+            playlist_item_id: item.playlist_item_id,
+        })
+        .collect();
+    PlayQueueUpdateDto {
+        reason,
+        last_update: Utc::now(),
+        playlist,
+        playing_item_index: group.play_queue.playing_item_index(),
+        start_position_ticks: group.position_ticks,
+        is_playing: group.state == GroupStateType::Playing,
+        shuffle_mode: group.play_queue.shuffle_mode(),
+        repeat_mode: group.play_queue.repeat_mode(),
+    }
+}
+
+fn queue_group_update(
+    group: &ManagedSyncPlayGroup,
+    reason: PlayQueueUpdateReason,
+) -> SyncPlayGroupUpdate {
+    group_update(
+        sorted_sessions(group),
+        group.id,
+        queue_update_dto(group, reason),
+        GroupUpdateType::PlayQueue,
     )
 }
 

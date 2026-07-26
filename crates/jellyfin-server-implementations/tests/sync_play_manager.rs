@@ -705,6 +705,79 @@ async fn sync_play_manager_emits_state_updates_only_for_official_transitions() {
     assert_state_update(update.as_ref().unwrap(), "Waiting", "Buffer");
 }
 
+#[tokio::test]
+async fn sync_play_manager_targets_playback_commands_like_official_states() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Command Targets".to_owned(),
+        )
+        .await;
+    assert!(
+        manager
+            .join_group(session(2, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
+
+    let events = manager.pause_with_events("1").await;
+    assert_command(&events, &["1"], SendCommandType::Stop);
+    assert!(events.state_update.is_none());
+
+    let events = manager.unpause_with_events("1").await;
+    assert!(events.playback_command.is_none());
+    assert_eq!(
+        events.queue_update.as_ref().unwrap().payload["Type"],
+        "PlayQueue"
+    );
+    assert_eq!(
+        events.queue_update.as_ref().unwrap().payload["Data"]["Reason"],
+        "NewPlaylist"
+    );
+
+    let events = manager.unpause_with_events("1").await;
+    assert_command(&events, &["1", "2"], SendCommandType::Unpause);
+    assert_state_update(events.state_update.as_ref().unwrap(), "Playing", "Unpause");
+    let events = manager.unpause_with_events("2").await;
+    assert_command(&events, &["2"], SendCommandType::Unpause);
+    assert!(events.state_update.is_none());
+
+    let events = manager.pause_with_events("1").await;
+    assert_command(&events, &["1", "2"], SendCommandType::Pause);
+    assert_state_update(events.state_update.as_ref().unwrap(), "Paused", "Pause");
+    let events = manager.pause_with_events("2").await;
+    assert_command(&events, &["2"], SendCommandType::Pause);
+    assert!(events.state_update.is_none());
+
+    let events = manager.seek_with_events("1", 10, 100).await;
+    assert_command(&events, &["1", "2"], SendCommandType::Seek);
+    assert_state_update(events.state_update.as_ref().unwrap(), "Waiting", "Seek");
+    let events = manager.pause_with_events("1").await;
+    assert!(events.playback_command.is_none());
+    assert_state_update(events.state_update.as_ref().unwrap(), "Waiting", "Pause");
+    let events = manager.unpause_with_events("1").await;
+    assert!(events.playback_command.is_none());
+    assert_state_update(events.state_update.as_ref().unwrap(), "Waiting", "Unpause");
+
+    let events = manager.stop_with_events("1").await;
+    assert_command(&events, &["1", "2"], SendCommandType::Stop);
+    let events = manager.stop_with_events("2").await;
+    assert_command(&events, &["2"], SendCommandType::Stop);
+    let events = manager.seek_with_events("1", 10, 100).await;
+    assert!(!events.applied);
+    assert_command(&events, &["1"], SendCommandType::Stop);
+}
+
+fn assert_command(
+    events: &jellyfin_server_implementations::SyncPlayPlaybackEvents,
+    sessions: &[&str],
+    command: SendCommandType,
+) {
+    let (actual_sessions, actual_command) = events.playback_command.as_ref().unwrap();
+    assert_eq!(actual_sessions, sessions);
+    assert_eq!(actual_command.command, command);
+}
+
 fn assert_state_update(update: &SyncPlayGroupUpdate, state: &str, reason: &str) {
     assert_eq!(update.payload["Type"], "StateUpdate");
     assert_eq!(update.payload["Data"]["State"], state);

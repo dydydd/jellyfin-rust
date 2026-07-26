@@ -335,14 +335,11 @@ pub(crate) async fn unpause(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    let (applied, update) = state
+    let events = state
         .sync_play
-        .unpause_with_update(&session.session_id)
+        .unpause_with_events(&session.session_id)
         .await;
-    if applied {
-        broadcast_playback_command(&state, &session.session_id, SendCommandType::Unpause).await;
-        broadcast_optional_group_update(&state, update).await;
-    }
+    broadcast_playback_events(&state, events).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -351,11 +348,8 @@ pub(crate) async fn pause(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    let (applied, update) = state.sync_play.pause_with_update(&session.session_id).await;
-    if applied {
-        broadcast_playback_command(&state, &session.session_id, SendCommandType::Pause).await;
-        broadcast_optional_group_update(&state, update).await;
-    }
+    let events = state.sync_play.pause_with_events(&session.session_id).await;
+    broadcast_playback_events(&state, events).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -364,9 +358,8 @@ pub(crate) async fn stop(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
-    if state.sync_play.stop(&session.session_id).await {
-        broadcast_playback_command(&state, &session.session_id, SendCommandType::Stop).await;
-    }
+    let events = state.sync_play.stop_with_events(&session.session_id).await;
+    broadcast_playback_events(&state, events).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -378,14 +371,11 @@ pub(crate) async fn seek(
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let runtime_ticks = current_item_runtime(&state, &session).await?;
-    let (applied, update) = state
+    let events = state
         .sync_play
-        .seek_with_update(&session.session_id, request.position_ticks, runtime_ticks)
+        .seek_with_events(&session.session_id, request.position_ticks, runtime_ticks)
         .await;
-    if applied {
-        broadcast_playback_command(&state, &session.session_id, SendCommandType::Seek).await;
-        broadcast_optional_group_update(&state, update).await;
-    }
+    broadcast_playback_events(&state, events).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -599,6 +589,20 @@ async fn broadcast_optional_group_update(
             .send(&update.session_ids, "SyncPlayGroupUpdate", &update.payload)
             .await;
     }
+}
+
+async fn broadcast_playback_events(
+    state: &AppState,
+    events: jellyfin_server_implementations::SyncPlayPlaybackEvents,
+) {
+    broadcast_optional_group_update(state, events.queue_update).await;
+    if let Some((session_ids, command)) = events.playback_command {
+        state
+            .web_sockets
+            .send(&session_ids, "SyncPlayCommand", &command)
+            .await;
+    }
+    broadcast_optional_group_update(state, events.state_update).await;
 }
 
 async fn broadcast_group_updates(
