@@ -1,20 +1,22 @@
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use axum::{
     Json,
+    extract::rejection::JsonRejection,
     extract::{OriginalUri, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use jellyfin_model::{BackupManifestDto, BackupOptionsDto};
+use jellyfin_model::{BackupManifestDto, BackupOptionsDto, BackupRestoreRequestDto};
 use serde::Deserialize;
-use zip::ZipArchive;
+use uuid::Uuid;
+use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{ApiError, AppState, authorization};
 
@@ -84,6 +86,49 @@ pub(crate) async fn list(
     Ok(Json(manifests))
 }
 
+pub(crate) async fn create(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<BackupOptionsDto>, JsonRejection>,
+) -> Result<Json<BackupManifestDto>, ApiError> {
+    authorization::require_default(&state, &headers, &uri)
+        .await?
+        .require_administrator()?;
+
+    let options = request.map_or_else(|_| BackupOptionsDto::default(), |Json(options)| options);
+    let backup_directory = state.program_data_directory.join("backups");
+    tokio::fs::create_dir_all(&backup_directory)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    let date_created = Utc::now();
+    let file_name = format!(
+        "jellyfin-backup-{}-{}.zip",
+        date_created.format("%Y%m%d%H%M%S"),
+        Uuid::new_v4().simple()
+    );
+    let archive_path = backup_directory.join(file_name);
+    let manifest = BackupManifestDto {
+        server_version: state
+            .system_info
+            .version
+            .clone()
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned()),
+        backup_engine_version: "1.0".to_owned(),
+        date_created,
+        path: archive_path.to_string_lossy().into_owned(),
+        options,
+    };
+    let manifest_for_archive = manifest.clone();
+    tokio::task::spawn_blocking(move || {
+        create_backup_archive_blocking(&archive_path, &manifest_for_archive)
+    })
+    .await
+    .map_err(|_| ApiError::Internal)?
+    .map_err(|_| ApiError::Internal)?;
+    Ok(Json(manifest))
+}
+
 pub(crate) async fn manifest(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -106,6 +151,26 @@ pub(crate) async fn manifest(
     Ok(Json(manifest).into_response())
 }
 
+pub(crate) async fn restore(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<BackupRestoreRequestDto>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    authorization::require_default(&state, &headers, &uri)
+        .await?
+        .require_administrator()?;
+
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let Some(archive_path) = sanitized_backup_path(&state, &request.archive_file_name) else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    if !archive_path.is_file() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn load_manifest(path: PathBuf) -> Result<Option<BackupManifestDto>, ApiError> {
     tokio::task::spawn_blocking(move || load_manifest_blocking(path))
         .await
@@ -126,6 +191,19 @@ fn load_manifest_blocking(path: PathBuf) -> Option<BackupManifestDto> {
         path: path.to_string_lossy().into_owned(),
         options: manifest.options,
     })
+}
+
+fn create_backup_archive_blocking(
+    path: &Path,
+    manifest: &BackupManifestDto,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file = File::create(path)?;
+    let mut archive = ZipWriter::new(file);
+    archive.start_file(MANIFEST_ENTRY_NAME, SimpleFileOptions::default())?;
+    let manifest_json = serde_json::to_vec(manifest)?;
+    archive.write_all(&manifest_json)?;
+    archive.finish()?;
+    Ok(())
 }
 
 fn sanitized_backup_path(state: &AppState, path: &str) -> Option<PathBuf> {

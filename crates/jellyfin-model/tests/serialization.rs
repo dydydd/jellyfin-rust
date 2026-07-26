@@ -1,17 +1,17 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BufferRequestDto,
-    ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo, FontFile,
-    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, GroupInfoDto,
-    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, GroupStateUpdateDto,
-    GroupUpdateDto, GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
-    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair, PackageInfo,
-    PinRedeemResult, PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason, PlayRequest,
-    PlaybackRequestType, PlayerStateInfo, PlaystateCommand, PlaystateRequest, PublicSystemInfo,
-    QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo,
-    SearchHint, SearchHintResult, SendCommandDto, SendCommandType, ServerConfiguration,
-    SessionInfoDto, SessionUserInfo, SyncPlayQueueItemDto, SyncPlayUserAccessType, UserDto,
-    UserPolicy, UtcTimeResponse,
+    AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BackupRestoreRequestDto,
+    BufferRequestDto, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
+    FontFile, ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType,
+    GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
+    GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType,
+    ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair,
+    PackageInfo, PinRedeemResult, PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason,
+    PlayRequest, PlaybackRequestType, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
+    RepositoryInfo, SearchHint, SearchHintResult, SendCommandDto, SendCommandType,
+    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayQueueItemDto,
+    SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -251,6 +251,17 @@ fn backup_manifest_uses_official_system_backup_contract() {
     assert_eq!(value["Options"]["Subtitles"], true);
     assert_eq!(value["Options"]["Database"], true);
     assert!(value.get("server_version").is_none());
+}
+
+#[test]
+fn backup_restore_request_uses_official_system_backup_contract() {
+    let value = serde_json::to_value(BackupRestoreRequestDto {
+        archive_file_name: "jellyfin-backup.zip".to_owned(),
+    })
+    .unwrap();
+
+    assert_eq!(value["ArchiveFileName"], "jellyfin-backup.zip");
+    assert!(value.get("archive_file_name").is_none());
 }
 
 #[test]

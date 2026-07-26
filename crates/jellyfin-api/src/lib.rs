@@ -413,7 +413,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Search/Hints", get(search::hints))
         .route("/Backup", get(backup::list))
+        .route("/Backup/Create", post(backup::create))
         .route("/Backup/Manifest", get(backup::manifest))
+        .route("/Backup/Restore", post(backup::restore))
         .route("/Items/{item_id}/Images", get(item_images::list))
         .route(
             "/Items/{item_id}/Images/{image_type}",

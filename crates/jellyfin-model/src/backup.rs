@@ -32,6 +32,12 @@ pub struct BackupManifestDto {
     pub options: BackupOptionsDto,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct BackupRestoreRequestDto {
+    pub archive_file_name: String,
+}
+
 impl Default for BackupManifestDto {
     fn default() -> Self {
         Self {

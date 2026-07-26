@@ -154,6 +154,8 @@ async fn exercise_backup_routes(database_name: &str) {
     assert_eq!(backups[0]["Options"]["Subtitles"], true);
     assert_eq!(backups[0]["Options"]["Database"], true);
 
+    assert_backup_create_and_restore(&fixture, &archive_path).await;
+
     fixture.cleanup().await;
 }
 
@@ -237,6 +239,30 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn post_json(
+        &self,
+        uri: &str,
+        token: Option<&str>,
+        body: &Value,
+    ) -> axum::response::Response {
+        let mut request = Request::post(uri).header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(
+                header::AUTHORIZATION,
+                format!("{AUTHORIZATION}, Token=\"{token}\""),
+            );
+        }
+        self.app
+            .clone()
+            .oneshot(
+                request
+                    .body(Body::from(body.to_string().into_bytes()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     async fn cleanup(self) {
         user::Entity::delete_many()
             .filter(user::Column::Id.is_in([self.admin_id, self.user_id]))
@@ -260,6 +286,108 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
         .await
         .expect("session creation")
         .access_token
+}
+
+async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_path: &Path) {
+    let create_body = json!({
+        "Metadata": true,
+        "Trickplay": true,
+        "Subtitles": false,
+        "Database": true
+    });
+    assert_eq!(
+        fixture
+            .post_json("/Backup/Create", None, &create_body)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .post_json("/Backup/Create", Some(&fixture.user_token), &create_body)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let created = fixture
+        .post_json("/Backup/Create", Some(&fixture.admin_token), &create_body)
+        .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created = body_json(created).await;
+    assert_eq!(created["ServerVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(created["BackupEngineVersion"], "1.0");
+    assert_eq!(created["Options"]["Metadata"], true);
+    assert_eq!(created["Options"]["Trickplay"], true);
+    assert_eq!(created["Options"]["Subtitles"], false);
+    assert_eq!(created["Options"]["Database"], true);
+    let created_path = Path::new(created["Path"].as_str().expect("created backup path"));
+    assert!(created_path.starts_with(fixture.program_data.join("backups")));
+    assert_eq!(
+        created_path.extension().and_then(|value| value.to_str()),
+        Some("zip")
+    );
+
+    let created_manifest = fixture
+        .get(
+            &format!(
+                "/Backup/Manifest?path={}",
+                created_path.file_name().unwrap().to_string_lossy()
+            ),
+            Some(&fixture.admin_token),
+        )
+        .await;
+    assert_eq!(created_manifest.status(), StatusCode::OK);
+    let created_manifest = body_json(created_manifest).await;
+    assert_eq!(created_manifest["Path"], created["Path"]);
+    assert_eq!(created_manifest["Options"], created["Options"]);
+
+    let listed = fixture.get("/Backup", Some(&fixture.admin_token)).await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    let listed_backups = listed.as_array().expect("backup list");
+    assert_eq!(listed_backups.len(), 2);
+    assert!(
+        listed_backups
+            .iter()
+            .any(|backup| backup["Path"] == created["Path"])
+    );
+
+    let restore_body = json!({
+        "ArchiveFileName": existing_archive_path.to_string_lossy()
+    });
+    assert_eq!(
+        fixture
+            .post_json("/Backup/Restore", None, &restore_body)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .post_json("/Backup/Restore", Some(&fixture.user_token), &restore_body)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .post_json(
+                "/Backup/Restore",
+                Some(&fixture.admin_token),
+                &json!({ "ArchiveFileName": "missing-backup.zip" }),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .post_json("/Backup/Restore", Some(&fixture.admin_token), &restore_body)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
 }
 
 fn create_backup_archive(path: &Path, manifest: &Value) {

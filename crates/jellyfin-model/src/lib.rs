@@ -37,7 +37,7 @@ mod user_data;
 pub mod users;
 
 pub use authentication::{AuthenticationInfo, QueryResult};
-pub use backup::{BackupManifestDto, BackupOptionsDto};
+pub use backup::{BackupManifestDto, BackupOptionsDto, BackupRestoreRequestDto};
 pub use configuration::{
     ImageOption, ImageResolution, ImageSavingConvention, MetadataOptions, PathSubstitution,
     ServerConfiguration, TrickplayOptions, TrickplayScanBehavior, UserConfiguration,
