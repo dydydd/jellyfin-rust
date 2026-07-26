@@ -1821,7 +1821,10 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
         ) => (StatusCode::NOT_FOUND, "Library scan target not found"),
         LibraryScanError::MediaStream(jellyfin_data::MediaStreamStoreError::BaseItemNotFound {
             ..
-        }) => (StatusCode::NOT_FOUND, "Library scan target not found"),
+        })
+        | LibraryScanError::MediaAttachment(
+            jellyfin_data::MediaAttachmentStoreError::BaseItemNotFound { .. },
+        ) => (StatusCode::NOT_FOUND, "Library scan target not found"),
         LibraryScanError::VirtualFolder(
             jellyfin_data::VirtualFolderError::InvalidName
             | jellyfin_data::VirtualFolderError::DuplicateName
@@ -1833,13 +1836,19 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
         LibraryScanError::MediaStream(
             jellyfin_data::MediaStreamStoreError::DuplicateStreamIndex { .. }
             | jellyfin_data::MediaStreamStoreError::InvalidStreamType(_),
+        )
+        | LibraryScanError::MediaAttachment(
+            jellyfin_data::MediaAttachmentStoreError::DuplicateAttachmentIndex { .. },
         ) => (
             StatusCode::BAD_REQUEST,
-            "Library scan stream metadata is invalid",
+            "Library scan media metadata is invalid",
         ),
         LibraryScanError::Io(_)
         | LibraryScanError::BaseItem(_)
         | LibraryScanError::MediaStream(jellyfin_data::MediaStreamStoreError::Database(_))
+        | LibraryScanError::MediaAttachment(jellyfin_data::MediaAttachmentStoreError::Database(
+            _,
+        ))
         | LibraryScanError::VirtualFolder(jellyfin_data::VirtualFolderError::Database(_)) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "Library scan failed")
         }

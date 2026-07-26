@@ -4,13 +4,15 @@ use std::{
 };
 
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, MediaStreamQuery, MediaStreamRepository,
-    MediaStreamStoreError, NewBaseItem, PersistedMediaStream, PersistedMediaStreamType,
-    USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository,
+    BaseItemError, BaseItemRepository, MediaAttachmentRepository, MediaAttachmentStoreError,
+    MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError, NewBaseItem,
+    PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType, USER_ROOT_FOLDER_ID,
+    VirtualFolderError, VirtualFolderRepository,
 };
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
-    MediaInfo, MediaProtocol, MediaStream, MediaStreamType,
+    MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol, MediaStream,
+    MediaStreamType,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -34,6 +36,8 @@ pub enum LibraryScanError {
     #[error(transparent)]
     MediaStream(#[from] MediaStreamStoreError),
     #[error(transparent)]
+    MediaAttachment(#[from] MediaAttachmentStoreError),
+    #[error(transparent)]
     VirtualFolder(#[from] VirtualFolderError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -44,6 +48,7 @@ pub struct LibraryScanService {
     folders: VirtualFolderRepository,
     items: BaseItemRepository,
     streams: MediaStreamRepository,
+    attachments: MediaAttachmentRepository,
     probe_path: PathBuf,
 }
 
@@ -58,7 +63,8 @@ impl LibraryScanService {
         Self {
             folders: VirtualFolderRepository::new(database.clone()),
             items: BaseItemRepository::new(database.clone()),
-            streams: MediaStreamRepository::new(database),
+            streams: MediaStreamRepository::new(database.clone()),
+            attachments: MediaAttachmentRepository::new(database),
             probe_path: probe_path.into(),
         }
     }
@@ -279,6 +285,10 @@ impl LibraryScanService {
         }
         if let Some(media_info) = self.probe_media_info(path, media_kind).await {
             let probed = streams_from_media_info(&media_info);
+            let probed_attachments = attachments_from_media_info(&media_info);
+            self.attachments
+                .replace(item_id, &probed_attachments)
+                .await?;
             if !probed.is_empty() {
                 self.streams.replace(item_id, &probed).await?;
                 return Ok(Some(media_info));
@@ -514,6 +524,26 @@ fn streams_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaStream> 
         .collect()
 }
 
+fn attachments_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaAttachment> {
+    media_info
+        .media_attachments
+        .iter()
+        .map(attachment_from_probe)
+        .collect()
+}
+
+fn attachment_from_probe(attachment: &ProbedMediaAttachment) -> PersistedMediaAttachment {
+    PersistedMediaAttachment {
+        attachment_index: attachment.index,
+        codec: Some(attachment.codec.clone()),
+        codec_tag: attachment.codec_tag.clone(),
+        comment: attachment.comment.clone(),
+        file_name: attachment.file_name.clone(),
+        mime_type: attachment.mime_type.clone(),
+        delivery_url: None,
+    }
+}
+
 fn stream_from_probe(stream: &MediaStream) -> PersistedMediaStream {
     PersistedMediaStream {
         stream_index: stream.index,
@@ -671,8 +701,9 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::{
-        MediaKind, apply_probed_item_metadata, codec_from_extension, default_stream, display_name,
-        media_item_data, media_kind, stable_item_id, streams_from_media_info,
+        MediaKind, apply_probed_item_metadata, attachments_from_media_info, codec_from_extension,
+        default_stream, display_name, media_item_data, media_kind, stable_item_id,
+        streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
@@ -827,6 +858,41 @@ mod tests {
         let streams = streams_from_media_info(&media_info);
 
         assert_eq!(streams[0].bit_rate, None);
+    }
+
+    #[test]
+    fn probed_attachments_map_to_persisted_rows() {
+        let media_info = normalize_probe_json(
+            r#"{
+                "streams": [{
+                    "index": 4,
+                    "codec_name": "ttf",
+                    "codec_type": "attachment",
+                    "codec_tag_string": "[0][0][0][0]",
+                    "tags": {
+                        "filename": "font.ttf",
+                        "mimetype": "font/ttf",
+                        "comment": "Font"
+                    }
+                }]
+            }"#,
+            ProbeContext {
+                path: "/media/Movie.mkv",
+                is_audio: false,
+            },
+        )
+        .unwrap();
+
+        let attachments = attachments_from_media_info(&media_info);
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].attachment_index, 4);
+        assert_eq!(attachments[0].codec.as_deref(), Some("ttf"));
+        assert_eq!(attachments[0].codec_tag.as_deref(), Some("[0][0][0][0]"));
+        assert_eq!(attachments[0].file_name.as_deref(), Some("font.ttf"));
+        assert_eq!(attachments[0].mime_type.as_deref(), Some("font/ttf"));
+        assert_eq!(attachments[0].comment.as_deref(), Some("Font"));
+        assert_eq!(attachments[0].delivery_url, None);
     }
 
     #[test]
