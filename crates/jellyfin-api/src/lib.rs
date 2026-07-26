@@ -669,6 +669,7 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/Restart", post(system::restart))
         .route("/System/Shutdown", post(system::shutdown))
         .route("/Document", post(client_log::document))
+        .route("/ClientLog/Document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
         .route("/ScheduledTasks", get(scheduled_tasks::list))
         .route(
