@@ -432,7 +432,7 @@ async fn assert_root_missing_and_visibility(fixture: &FavoriteFixture) {
     assert_eq!(response.status(), StatusCode::OK);
     let root = body_json(response).await;
     assert_eq!(root["ItemId"], fixture.root_id.simple().to_string());
-    assert_eq!(root["Key"], fixture.root_id.to_string());
+    assert_eq!(root["Key"], fixture.root_id.simple().to_string());
     assert_eq!(root["IsFavorite"], true);
     assert!(root.get("Rating").is_none());
     assert!(root.get("Likes").is_none());
@@ -473,7 +473,7 @@ async fn assert_atomic_field_updates_and_idempotency(fixture: &FavoriteFixture) 
     let repository = UserDataRepository::new(fixture.database.clone());
     let item_id = fixture.allowed_item_id;
     let key = "movie-presentation-key".to_owned();
-    let keys = vec![key.clone(), item_id.to_string()];
+    let keys = vec![key.clone(), item_id.simple().to_string()];
     let mut seed = NewUserData::new(item_id, fixture.user_id, &key);
     seed.rating = Some(7.25);
     seed.likes = Some(true);

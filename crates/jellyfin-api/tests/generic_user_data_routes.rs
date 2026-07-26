@@ -602,7 +602,7 @@ async fn assert_concurrent_updates_preserve_unrelated_fields(fixture: &Fixture) 
     let repository = UserDataRepository::new(fixture.database.clone());
     let item_id = fixture.allowed_item_id;
     let key = "generic-presentation-key";
-    let keys = vec![key.to_owned(), item_id.to_string()];
+    let keys = vec![key.to_owned(), item_id.simple().to_string()];
     let mut seed = NewUserData::new(item_id, fixture.user_id, key);
     seed.rating = Some(8.0);
     seed.likes = Some(false);
@@ -647,7 +647,7 @@ async fn assert_concurrent_updates_preserve_unrelated_fields(fixture: &Fixture) 
 
 fn assert_default_body(body: &Value, item_id: Uuid) {
     assert_eq!(body["ItemId"], item_id.simple().to_string());
-    assert_eq!(body["Key"], item_id.to_string());
+    assert_eq!(body["Key"], item_id.simple().to_string());
     assert_eq!(body["PlaybackPositionTicks"], 0);
     assert_eq!(body["PlayCount"], 0);
     assert_eq!(body["IsFavorite"], false);

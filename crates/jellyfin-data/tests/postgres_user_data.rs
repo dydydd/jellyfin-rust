@@ -37,7 +37,7 @@ async fn assert_batch_preferred_resolution(
 ) {
     let current_item_id = Uuid::new_v4();
     let current_key = "batch-current-key";
-    let current_id_key = current_item_id.to_string();
+    let current_id_key = current_item_id.simple().to_string();
     let mut id_row = NewUserData::new(current_item_id, user_id, &current_id_key);
     id_row.audio_stream_index = Some(1);
     repository.upsert(id_row).await.expect("id-key row seed");
@@ -70,8 +70,12 @@ async fn assert_batch_preferred_resolution(
                 PreferredUserDataKey::new(current_item_id, current_key, 1),
                 PreferredUserDataKey::new(current_item_id, current_id_key, 2),
                 PreferredUserDataKey::new(retained_item_id, "missing-current-key", 1),
-                PreferredUserDataKey::new(retained_item_id, retained_item_id.to_string(), 2),
-                PreferredUserDataKey::new(missing_item_id, missing_item_id.to_string(), 1),
+                PreferredUserDataKey::new(
+                    retained_item_id,
+                    retained_item_id.simple().to_string(),
+                    2,
+                ),
+                PreferredUserDataKey::new(missing_item_id, missing_item_id.simple().to_string(), 1),
             ],
         )
         .await
@@ -91,7 +95,7 @@ async fn assert_batch_preferred_resolution(
 
 async fn assert_generic_preferred_patch(repository: &UserDataRepository, user_id: Uuid) {
     let item_id = Uuid::new_v4();
-    let keys = vec!["current-key".to_owned(), item_id.to_string()];
+    let keys = vec!["current-key".to_owned(), item_id.simple().to_string()];
     assert!(
         repository
             .resolve_preferred(item_id, user_id, &keys)
@@ -148,7 +152,7 @@ async fn assert_generic_preferred_patch(repository: &UserDataRepository, user_id
         .apply_generic_patch(
             default_item_id,
             user_id,
-            &[default_item_id.to_string()],
+            &[default_item_id.simple().to_string()],
             GenericUserDataPatch::default(),
         )
         .await

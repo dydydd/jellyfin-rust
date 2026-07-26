@@ -821,19 +821,20 @@ impl UserDataRepository {
                 SELECT item_id,
                     CASE
                         WHEN btrim(COALESCE(presentation_unique_key, '')) <> ''
+                            AND presentation_unique_key <> replace(item_id::text, '-', '')
                             AND presentation_unique_key <> item_id::text
                             THEN presentation_unique_key
-                        ELSE item_id::text
+                        ELSE replace(item_id::text, '-', '')
                     END AS custom_data_key
                 FROM target_items
             ), preferred_keys AS (
                 SELECT item_id, custom_data_key, 1 AS priority
                 FROM primary_keys
                 UNION ALL
-                SELECT target.item_id, target.item_id::text, 2 AS priority
+                SELECT target.item_id, replace(target.item_id::text, '-', ''), 2 AS priority
                 FROM target_items AS target
                 INNER JOIN primary_keys AS primary_key USING (item_id)
-                WHERE primary_key.custom_data_key <> target.item_id::text
+                WHERE primary_key.custom_data_key <> replace(target.item_id::text, '-', '')
             ), existing_keys AS (
                 SELECT DISTINCT ON (data.item_id)
                     data.item_id, data.custom_data_key
@@ -915,19 +916,20 @@ impl UserDataRepository {
                 SELECT item_id,
                     CASE
                         WHEN btrim(COALESCE(presentation_unique_key, '')) <> ''
+                            AND presentation_unique_key <> replace(item_id::text, '-', '')
                             AND presentation_unique_key <> item_id::text
                             THEN presentation_unique_key
-                        ELSE item_id::text
+                        ELSE replace(item_id::text, '-', '')
                     END AS custom_data_key
                 FROM target_items
             ), preferred_keys AS (
                 SELECT item_id, custom_data_key, 1 AS priority
                 FROM primary_keys
                 UNION ALL
-                SELECT target.item_id, target.item_id::text, 2 AS priority
+                SELECT target.item_id, replace(target.item_id::text, '-', ''), 2 AS priority
                 FROM target_items AS target
                 INNER JOIN primary_keys AS primary_key USING (item_id)
-                WHERE primary_key.custom_data_key <> target.item_id::text
+                WHERE primary_key.custom_data_key <> replace(target.item_id::text, '-', '')
             ), target_keys AS (
                 SELECT DISTINCT ON (data.item_id)
                     data.item_id, data.custom_data_key

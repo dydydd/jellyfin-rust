@@ -439,7 +439,7 @@ async fn assert_root_missing_and_visibility(fixture: &RatingFixture) {
     assert_eq!(response.status(), StatusCode::OK);
     let root = body_json(response).await;
     assert_rating_body(&root, fixture.root_id, Some(10.0), Some(true));
-    assert_eq!(root["Key"], fixture.root_id.to_string());
+    assert_eq!(root["Key"], fixture.root_id.simple().to_string());
     let root_delete = format!("{}?userId={}", modern_route(Uuid::nil()), fixture.user_id);
     let cleared =
         body_json(request(&fixture.app, "DELETE", &root_delete, &fixture.user_token).await).await;
@@ -479,7 +479,7 @@ async fn assert_atomic_updates_and_defaults(fixture: &RatingFixture) {
     let repository = UserDataRepository::new(fixture.database.clone());
     let item_id = fixture.allowed_item_id;
     let key = "rating-presentation-key".to_owned();
-    let keys = vec![key.clone(), item_id.to_string()];
+    let keys = vec![key.clone(), item_id.simple().to_string()];
     let mut seed = NewUserData::new(item_id, fixture.user_id, &key);
     seed.is_favorite = false;
     seed.played = true;

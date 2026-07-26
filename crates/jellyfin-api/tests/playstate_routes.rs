@@ -337,7 +337,7 @@ async fn playback_progress_legacy_route_uses_authenticated_user_and_missing_item
             .get(
                 fixture.runtime_item_id,
                 fixture.administrator_id,
-                &fixture.runtime_item_id.to_string()
+                &fixture.runtime_item_id.simple().to_string()
             )
             .await
             .expect("administrator progress lookup")
@@ -530,7 +530,7 @@ async fn playback_start_routes_increment_play_count_and_preserve_existing_state(
     let mut initial = NewUserData::new(
         fixture.item_id,
         fixture.user_id,
-        fixture.item_id.to_string(),
+        fixture.item_id.simple().to_string(),
     );
     initial.play_count = 2;
     initial.playback_position_ticks = 44_000;
@@ -578,7 +578,7 @@ async fn playback_start_routes_increment_play_count_and_preserve_existing_state(
             .get(
                 fixture.item_id,
                 fixture.administrator_id,
-                &fixture.item_id.to_string()
+                &fixture.item_id.simple().to_string()
             )
             .await
             .expect("administrator start lookup")
@@ -617,7 +617,7 @@ async fn playback_stopped_no_position_failed_negative_and_missing_items() {
     let mut initial = NewUserData::new(
         fixture.item_id,
         fixture.user_id,
-        fixture.item_id.to_string(),
+        fixture.item_id.simple().to_string(),
     );
     initial.play_count = 5;
     initial.playback_position_ticks = ticks(123);
@@ -717,7 +717,7 @@ async fn playback_stopped_position_routes_apply_thresholds_and_legacy_user() {
     let mut initial = NewUserData::new(
         fixture.runtime_item_id,
         fixture.user_id,
-        fixture.runtime_item_id.to_string(),
+        fixture.runtime_item_id.simple().to_string(),
     );
     initial.play_count = 2;
     initial.is_favorite = true;
@@ -821,7 +821,7 @@ async fn playback_stopped_position_routes_apply_thresholds_and_legacy_user() {
             .get(
                 fixture.runtime_item_id,
                 fixture.administrator_id,
-                &fixture.runtime_item_id.to_string()
+                &fixture.runtime_item_id.simple().to_string()
             )
             .await
             .expect("administrator stop lookup")
@@ -839,7 +839,7 @@ async fn playback_completion_propagates_to_alternate_versions() {
     let mut primary = NewUserData::new(
         fixture.runtime_item_id,
         fixture.user_id,
-        fixture.runtime_item_id.to_string(),
+        fixture.runtime_item_id.simple().to_string(),
     );
     primary.play_count = 4;
     primary.playback_position_ticks = ticks(120);
@@ -905,7 +905,7 @@ async fn playback_reports_use_media_source_id_alternate_version_for_user_data() 
         .get(
             fixture.alternate_item_id,
             fixture.user_id,
-            &fixture.alternate_item_id.to_string(),
+            &fixture.alternate_item_id.simple().to_string(),
         )
         .await
         .expect("alternate start lookup")
@@ -922,7 +922,7 @@ async fn playback_reports_use_media_source_id_alternate_version_for_user_data() 
             .get(
                 fixture.runtime_item_id,
                 fixture.user_id,
-                &fixture.runtime_item_id.to_string()
+                &fixture.runtime_item_id.simple().to_string()
             )
             .await
             .expect("primary start lookup")
@@ -953,7 +953,7 @@ async fn playback_reports_use_media_source_id_alternate_version_for_user_data() 
             .get(
                 fixture.runtime_item_id,
                 fixture.user_id,
-                &fixture.runtime_item_id.to_string()
+                &fixture.runtime_item_id.simple().to_string()
             )
             .await
             .expect("primary progress lookup")
@@ -1002,7 +1002,7 @@ async fn manual_played_unplayed_routes_propagate_to_alternate_versions() {
     let mut alternate = NewUserData::new(
         fixture.alternate_item_id,
         fixture.user_id,
-        fixture.alternate_item_id.to_string(),
+        fixture.alternate_item_id.simple().to_string(),
     );
     alternate.play_count = 7;
     alternate.playback_position_ticks = ticks(240);
@@ -1063,7 +1063,7 @@ async fn assert_progress(
     played: bool,
 ) {
     let persisted = repository
-        .get(item_id, user_id, &item_id.to_string())
+        .get(item_id, user_id, &item_id.simple().to_string())
         .await
         .expect("progress lookup")
         .expect("progress row");
@@ -1081,7 +1081,7 @@ async fn assert_started(
     not_before: chrono::DateTime<Utc>,
 ) {
     let persisted = repository
-        .get(item_id, user_id, &item_id.to_string())
+        .get(item_id, user_id, &item_id.simple().to_string())
         .await
         .expect("start lookup")
         .expect("start row");
@@ -1109,7 +1109,7 @@ async fn assert_stopped(
     played: bool,
 ) -> jellyfin_data::entities::user_data::Model {
     let persisted = repository
-        .get(item_id, user_id, &item_id.to_string())
+        .get(item_id, user_id, &item_id.simple().to_string())
         .await
         .expect("stop lookup")
         .expect("stop row");
@@ -1406,7 +1406,7 @@ async fn assert_played_and_unplayed(fixture: &PlaystateFixture) {
     let mut initial = NewUserData::new(
         fixture.item_id,
         fixture.user_id,
-        fixture.item_id.to_string(),
+        fixture.item_id.simple().to_string(),
     );
     initial.rating = Some(8.5);
     initial.is_favorite = true;
@@ -1418,7 +1418,7 @@ async fn assert_played_and_unplayed(fixture: &PlaystateFixture) {
     assert_eq!(response.status(), StatusCode::OK);
     let played = body_json(response).await;
     assert_eq!(played["ItemId"], fixture.item_id.simple().to_string());
-    assert_eq!(played["Key"], fixture.item_id.to_string());
+    assert_eq!(played["Key"], fixture.item_id.simple().to_string());
     assert_eq!(played["Played"], true);
     assert_eq!(played["PlayCount"], 1);
     assert_eq!(played["PlaybackPositionTicks"], 0);
@@ -1481,7 +1481,7 @@ async fn assert_concurrent_manual_play_is_idempotent(fixture: &PlaystateFixture)
         .get(
             fixture.item_id,
             fixture.user_id,
-            &fixture.item_id.to_string(),
+            &fixture.item_id.simple().to_string(),
         )
         .await
         .expect("playstate lookup")

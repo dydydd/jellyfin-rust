@@ -155,9 +155,10 @@ impl PlaystateService {
         let item = self
             .validate_request(authenticated_user, target_user_id, item_id)
             .await?;
+        let keys = current_user_data_keys(&item);
         let user_data = self
             .user_data
-            .mark_played(item_id, target_user_id, &item_id.to_string(), date_played)
+            .mark_played(item_id, target_user_id, &keys[0], date_played)
             .await?;
         if should_propagate_played_state(&item, &user_data) {
             self.user_data
@@ -185,9 +186,10 @@ impl PlaystateService {
         let item = self
             .validate_authorized_request(target_user_id, item_id)
             .await?;
+        let keys = current_user_data_keys(&item);
         let user_data = self
             .user_data
-            .mark_played(item_id, target_user_id, &item_id.to_string(), date_played)
+            .mark_played(item_id, target_user_id, &keys[0], date_played)
             .await?;
         if should_propagate_played_state(&item, &user_data) {
             self.user_data
@@ -212,9 +214,10 @@ impl PlaystateService {
         let item = self
             .validate_request(authenticated_user, target_user_id, item_id)
             .await?;
+        let keys = current_user_data_keys(&item);
         let user_data = self
             .user_data
-            .mark_unplayed(item_id, target_user_id, &item_id.to_string())
+            .mark_unplayed(item_id, target_user_id, &keys[0])
             .await?;
         if is_video_item(&item) {
             self.user_data
@@ -241,9 +244,10 @@ impl PlaystateService {
         let item = self
             .validate_authorized_request(target_user_id, item_id)
             .await?;
+        let keys = current_user_data_keys(&item);
         let user_data = self
             .user_data
-            .mark_unplayed(item_id, target_user_id, &item_id.to_string())
+            .mark_unplayed(item_id, target_user_id, &keys[0])
             .await?;
         if is_video_item(&item) {
             self.user_data

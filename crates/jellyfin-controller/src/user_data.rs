@@ -350,12 +350,13 @@ impl UserDataService {
 }
 
 pub(crate) fn current_user_data_keys(item: &base_item::Model) -> Vec<String> {
-    let id = item.id.to_string();
+    let id = item.id.simple().to_string();
+    let hyphenated_id = item.id.to_string();
     match item
         .presentation_unique_key
         .as_deref()
         .map(str::trim)
-        .filter(|key| !key.is_empty() && *key != id)
+        .filter(|key| !key.is_empty() && *key != id && *key != hyphenated_id)
     {
         Some(key) => vec![key.to_owned(), id],
         None => vec![id],
@@ -403,5 +404,83 @@ pub(crate) fn user_data_to_dto(
         played: data.played,
         key: data.custom_data_key,
         item_id: data.item_id.simple().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use jellyfin_data::entities::base_item;
+    use uuid::Uuid;
+
+    use super::current_user_data_keys;
+
+    #[test]
+    fn current_user_data_keys_use_official_compact_item_id_fallback() {
+        let item = test_item(None);
+
+        assert_eq!(
+            current_user_data_keys(&item),
+            vec![item.id.simple().to_string()]
+        );
+    }
+
+    #[test]
+    fn current_user_data_keys_ignore_presentation_key_when_it_is_item_id() {
+        let mut item = test_item(None);
+        item.presentation_unique_key = Some(item.id.to_string());
+        assert_eq!(
+            current_user_data_keys(&item),
+            vec![item.id.simple().to_string()]
+        );
+
+        item.presentation_unique_key = Some(item.id.simple().to_string());
+        assert_eq!(
+            current_user_data_keys(&item),
+            vec![item.id.simple().to_string()]
+        );
+    }
+
+    #[test]
+    fn current_user_data_keys_prefer_non_empty_presentation_key() {
+        let item = test_item(Some("presentation-key"));
+
+        assert_eq!(
+            current_user_data_keys(&item),
+            vec!["presentation-key".to_owned(), item.id.simple().to_string()]
+        );
+    }
+
+    fn test_item(presentation_unique_key: Option<&str>) -> base_item::Model {
+        let now = Utc::now();
+        base_item::Model {
+            id: Uuid::new_v4(),
+            item_type: "Movie".to_owned(),
+            data: None,
+            path: None,
+            parent_id: None,
+            top_parent_id: None,
+            name: None,
+            clean_name: None,
+            sort_name: None,
+            media_type: Some("Video".to_owned()),
+            overview: None,
+            official_rating: None,
+            index_number: None,
+            parent_index_number: None,
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: false,
+            is_virtual_item: false,
+            presentation_unique_key: presentation_unique_key.map(str::to_owned),
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: now,
+            date_modified: now,
+            row_version: 1,
+        }
     }
 }
