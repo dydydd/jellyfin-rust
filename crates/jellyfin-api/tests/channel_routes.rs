@@ -109,6 +109,7 @@ async fn exercise_channels_route(database_name: &str) {
 
     assert_channel_features(&fixture).await;
     assert_channel_items(&fixture).await;
+    assert_latest_channel_items(&fixture).await;
 
     fixture.cleanup().await;
 }
@@ -435,6 +436,96 @@ async fn assert_channel_items(fixture: &Fixture) {
         folder_items[0]["ParentId"],
         fixture.channel_folder_id.simple().to_string()
     );
+}
+
+async fn assert_latest_channel_items(fixture: &Fixture) {
+    assert_eq!(
+        fixture.get("/Channels/Items/Latest", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/Items/Latest?userId={}", fixture.admin_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/Items/Latest?userId={}", Uuid::new_v4()),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Channels/Items/Latest?channelIds={}", fixture.movie_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let latest = body_json(
+        fixture
+            .get(
+                "/Channels/Items/Latest?startIndex=1&limit=1",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(latest["TotalRecordCount"], 3);
+    assert_eq!(latest["StartIndex"], 1);
+    let items = latest["Items"].as_array().expect("latest items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["Type"], "Video");
+    assert_eq!(items[0]["Name"], "B Channel Video");
+
+    let scoped_latest = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Channels/Items/Latest?channelIds={}&limit=3",
+                    fixture.first_channel_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(scoped_latest["TotalRecordCount"], 3);
+    let scoped_items = scoped_latest["Items"].as_array().expect("scoped items");
+    assert_eq!(scoped_items.len(), 3);
+    assert!(scoped_items.iter().all(|item| item["Type"] != "Folder"));
+    assert!(
+        scoped_items
+            .iter()
+            .any(|item| item["Id"] == fixture.channel_folder_item_id.simple().to_string())
+    );
+
+    let empty_channel = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Channels/Items/Latest?channelIds={}",
+                    fixture.second_channel_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(empty_channel["TotalRecordCount"], 0);
+    assert_eq!(empty_channel["Items"].as_array().expect("items").len(), 0);
 }
 
 fn assert_default_channel_features(features: &Value) {

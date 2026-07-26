@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use axum::{
     Json,
@@ -64,6 +64,36 @@ pub(crate) struct ChannelItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct LatestChannelItemsQuery {
+    #[serde(default, rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    start_index: u64,
+    limit: Option<u64>,
+    #[serde(
+        default,
+        rename = "filters",
+        alias = "Filters",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    filters: Vec<String>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(
+        default,
+        rename = "channelIds",
+        alias = "ChannelIds",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    channel_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -209,6 +239,51 @@ pub(crate) async fn channel_items(
     }))
 }
 
+pub(crate) async fn latest_channel_items(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<LatestChannelItemsQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let repository = BaseItemRepository::new(state.database.clone());
+    let item_ids = channel_descendant_item_ids(&repository, &query.channel_ids).await?;
+    let ids = if item_ids.is_empty() {
+        vec![Uuid::nil()]
+    } else {
+        item_ids
+    };
+
+    let _ = (query.filters, query.fields);
+    let page = state
+        .user_library
+        .query_items(
+            &authenticated.user,
+            target_user_id,
+            BaseItemQuery {
+                ids,
+                exclude_item_types: vec!["Folder".to_owned()],
+                is_virtual_item: Some(false),
+                order: BaseItemOrder::DateCreatedDescending,
+                start_index: query.start_index,
+                limit: query.limit,
+                enable_total_record_count: Some(true),
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+    let items = page
+        .items
+        .into_iter()
+        .map(|item| user_library::item_to_dto(item, state.server_id()))
+        .collect::<Vec<_>>();
+    Ok(Json(user_library::BaseItemQueryResult {
+        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        items,
+    }))
+}
+
 fn channel_features_dto(channel: base_item::Model) -> ChannelFeaturesDto {
     ChannelFeaturesDto {
         name: channel.name.unwrap_or_default(),
@@ -224,6 +299,46 @@ fn channel_features_dto(channel: base_item::Model) -> ChannelFeaturesDto {
         can_filter: true,
         supports_content_downloading: false,
     }
+}
+
+async fn channel_descendant_item_ids(
+    repository: &BaseItemRepository,
+    requested_channel_ids: &[Uuid],
+) -> Result<Vec<Uuid>, ApiError> {
+    let channels = if requested_channel_ids.is_empty() {
+        repository
+            .query(&BaseItemQuery {
+                include_item_types: vec!["Channel".to_owned()],
+                order: BaseItemOrder::SortName,
+                enable_total_record_count: Some(false),
+                ..BaseItemQuery::default()
+            })
+            .await?
+            .items
+    } else {
+        let mut channels = Vec::with_capacity(requested_channel_ids.len());
+        for channel_id in requested_channel_ids {
+            channels.push(
+                repository
+                    .get(*channel_id)
+                    .await?
+                    .filter(|item| item.item_type == "Channel")
+                    .ok_or(ApiError::NotFound)?,
+            );
+        }
+        channels
+    };
+
+    let mut seen = HashSet::new();
+    let mut item_ids = Vec::new();
+    for channel in channels {
+        for descendant in repository.descendants(channel.id).await? {
+            if seen.insert(descendant.item.id) {
+                item_ids.push(descendant.item.id);
+            }
+        }
+    }
+    Ok(item_ids)
 }
 
 async fn is_descendant_of_channel(

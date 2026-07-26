@@ -396,6 +396,10 @@ pub fn router(state: AppState) -> Router {
         .route("/Channels", get(channels::list))
         .route("/Channels/Features", get(channels::all_features))
         .route(
+            "/Channels/Items/Latest",
+            get(channels::latest_channel_items),
+        )
+        .route(
             "/Channels/{channel_id}/Features",
             get(channels::features),
         )
