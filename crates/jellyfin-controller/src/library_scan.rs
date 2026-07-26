@@ -1,9 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, MediaStreamQuery, MediaStreamRepository,
     MediaStreamStoreError, NewBaseItem, PersistedMediaStream, PersistedMediaStreamType,
     USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository,
+};
+use jellyfin_media_encoding::probing::{
+    CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
+    MediaInfo, MediaProtocol, MediaStream, MediaStreamType,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -36,15 +40,22 @@ pub struct LibraryScanService {
     folders: VirtualFolderRepository,
     items: BaseItemRepository,
     streams: MediaStreamRepository,
+    probe_path: PathBuf,
 }
 
 impl LibraryScanService {
     #[must_use]
     pub fn new(database: DatabaseConnection) -> Self {
+        Self::with_probe_path(database, "ffprobe")
+    }
+
+    #[must_use]
+    pub fn with_probe_path(database: DatabaseConnection, probe_path: impl Into<PathBuf>) -> Self {
         Self {
             folders: VirtualFolderRepository::new(database.clone()),
             items: BaseItemRepository::new(database.clone()),
             streams: MediaStreamRepository::new(database),
+            probe_path: probe_path.into(),
         }
     }
 
@@ -150,7 +161,7 @@ impl LibraryScanService {
             return Ok(false);
         };
         if let Some(existing) = self.items.by_paths(&[path.to_owned()]).await?.pop() {
-            self.ensure_default_streams(existing.id, path, media_kind)
+            self.ensure_media_streams(existing.id, path, media_kind)
                 .await?;
             return Ok(false);
         }
@@ -172,12 +183,11 @@ impl LibraryScanService {
                 .map(str::to_ascii_lowercase),
         }));
         let item = self.items.create(item).await?;
-        self.ensure_default_streams(item.id, path, media_kind)
-            .await?;
+        self.ensure_media_streams(item.id, path, media_kind).await?;
         Ok(true)
     }
 
-    async fn ensure_default_streams(
+    async fn ensure_media_streams(
         &self,
         item_id: Uuid,
         path: &str,
@@ -191,13 +201,45 @@ impl LibraryScanService {
                 stream_type: None,
             })
             .await?;
-        if !existing.is_empty() {
+        let default_stream = default_stream(path, media_kind);
+        if !existing.is_empty() && existing != [default_stream.clone()] {
             return Ok(());
         }
+        if let Some(probed) = self.probe_media_streams(path, media_kind).await {
+            if !probed.is_empty() {
+                self.streams.replace(item_id, &probed).await?;
+                return Ok(());
+            }
+        }
         self.streams
-            .replace(item_id, &[default_stream(path, media_kind)])
+            .replace(item_id, std::slice::from_ref(&default_stream))
             .await?;
         Ok(())
+    }
+
+    async fn probe_media_streams(
+        &self,
+        path: &str,
+        media_kind: MediaKind,
+    ) -> Option<Vec<PersistedMediaStream>> {
+        let probe_path = self.probe_path.clone();
+        let path = path.to_owned();
+        let log_path = path.clone();
+        match tokio::task::spawn_blocking(move || {
+            probe_media_streams(&probe_path, &path, media_kind)
+        })
+        .await
+        {
+            Ok(Ok(streams)) => Some(streams),
+            Ok(Err(error)) => {
+                tracing::debug!(path = log_path, error = %error, "media probe failed during library scan");
+                None
+            }
+            Err(error) => {
+                tracing::debug!(path = log_path, error = %error, "media probe task failed during library scan");
+                None
+            }
+        }
     }
 }
 
@@ -291,6 +333,112 @@ fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
     }
 }
 
+fn probe_media_streams(
+    probe_path: &Path,
+    path: &str,
+    media_kind: MediaKind,
+) -> Result<Vec<PersistedMediaStream>, jellyfin_media_encoding::probing::ExternalProbeError> {
+    let prober = ExternalSourceProber::new(probe_path, CommandProbeProcessRunner);
+    let media_info = prober.probe(
+        &ExternalMediaSource {
+            path: path.to_owned(),
+            protocol: MediaProtocol::File,
+            ..ExternalMediaSource::default()
+        },
+        &ExternalProbeOptions {
+            is_audio: media_kind == MediaKind::Audio,
+            ..ExternalProbeOptions::default()
+        },
+    )?;
+    Ok(streams_from_media_info(&media_info))
+}
+
+fn streams_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaStream> {
+    media_info
+        .media_streams
+        .iter()
+        .map(stream_from_probe)
+        .collect()
+}
+
+fn stream_from_probe(stream: &MediaStream) -> PersistedMediaStream {
+    PersistedMediaStream {
+        stream_index: stream.index,
+        stream_type: stream_type_from_probe(stream.stream_type),
+        codec: non_empty_string(&stream.codec),
+        language: stream.language.clone(),
+        channel_layout: None,
+        profile: stream.profile.clone(),
+        aspect_ratio: stream.aspect_ratio.clone(),
+        path: None,
+        is_interlaced: Some(stream.is_interlaced()),
+        bit_rate: stream.bit_rate.and_then(i32_from_i64),
+        channels: stream.channels.and_then(i32_from_u32),
+        sample_rate: None,
+        is_default: stream.is_default(),
+        is_forced: stream.is_forced(),
+        is_external: stream.is_external(),
+        is_original: stream.is_original(),
+        height: stream.height,
+        width: stream.width,
+        average_frame_rate: stream.average_frame_rate,
+        real_frame_rate: stream.real_frame_rate,
+        level: stream.level.map(f64_to_f32),
+        pixel_format: stream.pixel_format.clone(),
+        bit_depth: stream.bit_depth,
+        is_anamorphic: Some(stream.is_anamorphic()),
+        ref_frames: stream.ref_frames,
+        codec_tag: None,
+        comment: None,
+        nal_length_size: stream.nal_length_size.clone(),
+        is_avc: Some(stream.is_avc()),
+        title: stream.title.clone(),
+        time_base: stream.time_base.clone(),
+        codec_time_base: stream.codec_time_base.clone(),
+        color_primaries: None,
+        color_space: None,
+        color_transfer: None,
+        dv_version_major: stream.dv_version_major,
+        dv_version_minor: stream.dv_version_minor,
+        dv_profile: stream.dv_profile,
+        dv_level: stream.dv_level,
+        rpu_present_flag: stream.rpu_present_flag,
+        el_present_flag: stream.el_present_flag,
+        bl_present_flag: stream.bl_present_flag,
+        dv_bl_signal_compatibility_id: stream.dv_bl_signal_compatibility_id,
+        is_hearing_impaired: Some(stream.is_hearing_impaired()),
+        rotation: stream.rotation,
+        hdr10_plus_present_flag: None,
+    }
+}
+
+const fn stream_type_from_probe(stream_type: MediaStreamType) -> PersistedMediaStreamType {
+    match stream_type {
+        MediaStreamType::Audio => PersistedMediaStreamType::Audio,
+        MediaStreamType::Video => PersistedMediaStreamType::Video,
+        MediaStreamType::Subtitle => PersistedMediaStreamType::Subtitle,
+        MediaStreamType::EmbeddedImage => PersistedMediaStreamType::EmbeddedImage,
+        MediaStreamType::Data => PersistedMediaStreamType::Data,
+    }
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn i32_from_i64(value: i64) -> Option<i32> {
+    i32::try_from(value).ok()
+}
+
+fn i32_from_u32(value: u32) -> Option<i32> {
+    i32::try_from(value).ok()
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn f64_to_f32(value: f64) -> f32 {
+    value as f32
+}
+
 fn codec_from_extension(path: &str) -> Option<String> {
     let extension = Path::new(path).extension()?.to_str()?;
     let codec = if extension.eq_ignore_ascii_case("mp3") {
@@ -371,8 +519,10 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 mod tests {
     use super::{
         MediaKind, codec_from_extension, default_stream, display_name, media_kind, stable_item_id,
+        streams_from_media_info,
     };
     use jellyfin_data::PersistedMediaStreamType;
+    use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
     use std::path::Path;
 
     #[test]
@@ -420,5 +570,107 @@ mod tests {
             codec_from_extension("/media/Clip.webm").as_deref(),
             Some("vp9")
         );
+    }
+
+    #[test]
+    fn probed_media_streams_map_to_persisted_streams() {
+        let media_info = normalize_probe_json(
+            r#"{
+                "streams": [
+                    {
+                        "index": 0,
+                        "codec_name": "h264",
+                        "codec_type": "video",
+                        "profile": "High",
+                        "width": 1920,
+                        "height": 1080,
+                        "display_aspect_ratio": "16:9",
+                        "avg_frame_rate": "24000/1001",
+                        "r_frame_rate": "24/1",
+                        "pix_fmt": "yuv420p",
+                        "bits_per_raw_sample": "8",
+                        "bit_rate": "5000000",
+                        "refs": 4,
+                        "level": 41,
+                        "disposition": {"default": 1, "forced": 0},
+                        "side_data_list": [{"side_data_type": "Display Matrix", "rotation": 90}]
+                    },
+                    {
+                        "index": 1,
+                        "codec_name": "aac",
+                        "codec_type": "audio",
+                        "channels": 2,
+                        "tags": {"language": "eng", "title": "Main"}
+                    },
+                    {
+                        "index": 2,
+                        "codec_name": "subrip",
+                        "codec_type": "subtitle",
+                        "disposition": {"hearing_impaired": 1},
+                        "tags": {"language": "spa"}
+                    }
+                ],
+                "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "bit_rate": "5500000"}
+            }"#,
+            ProbeContext {
+                path: "/media/Movie.mp4",
+                is_audio: false,
+            },
+        )
+        .unwrap();
+
+        let streams = streams_from_media_info(&media_info);
+
+        assert_eq!(streams.len(), 3);
+        let video = &streams[0];
+        assert_eq!(video.stream_index, 0);
+        assert_eq!(video.stream_type, PersistedMediaStreamType::Video);
+        assert_eq!(video.codec.as_deref(), Some("h264"));
+        assert_eq!(video.profile.as_deref(), Some("High"));
+        assert_eq!(video.width, Some(1920));
+        assert_eq!(video.height, Some(1080));
+        assert_eq!(video.aspect_ratio.as_deref(), Some("16:9"));
+        assert_eq!(video.bit_rate, Some(5_000_000));
+        assert_eq!(video.ref_frames, Some(4));
+        assert_eq!(video.level, Some(41.0));
+        assert!(video.is_default);
+        assert_eq!(video.rotation, Some(90));
+
+        let audio = &streams[1];
+        assert_eq!(audio.stream_type, PersistedMediaStreamType::Audio);
+        assert_eq!(audio.codec.as_deref(), Some("aac"));
+        assert_eq!(audio.language.as_deref(), Some("eng"));
+        assert_eq!(audio.channels, Some(2));
+        assert_eq!(audio.title.as_deref(), Some("Main"));
+
+        let subtitle = &streams[2];
+        assert_eq!(subtitle.stream_type, PersistedMediaStreamType::Subtitle);
+        assert_eq!(subtitle.codec.as_deref(), Some("subrip"));
+        assert_eq!(subtitle.language.as_deref(), Some("spa"));
+        assert_eq!(subtitle.is_hearing_impaired, Some(true));
+    }
+
+    #[test]
+    fn probed_streams_drop_persistence_values_that_do_not_fit() {
+        let media_info = normalize_probe_json(
+            r#"{
+                "streams": [{
+                    "index": 0,
+                    "codec_name": "h264",
+                    "codec_type": "video",
+                    "bit_rate": "3000000000"
+                }],
+                "format": {"format_name": "matroska,webm"}
+            }"#,
+            ProbeContext {
+                path: "/media/Huge.mkv",
+                is_audio: false,
+            },
+        )
+        .unwrap();
+
+        let streams = streams_from_media_info(&media_info);
+
+        assert_eq!(streams[0].bit_rate, None);
     }
 }

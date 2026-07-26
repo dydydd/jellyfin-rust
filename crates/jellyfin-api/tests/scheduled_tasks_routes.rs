@@ -338,10 +338,7 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
     .await;
     assert_eq!(playback["MediaSources"][0]["Path"], media_file_path);
     assert_eq!(playback["MediaSources"][0]["Container"], "mp4");
-    assert_eq!(
-        playback["MediaSources"][0]["MediaStreams"][0]["Type"],
-        1
-    );
+    assert_eq!(playback["MediaSources"][0]["MediaStreams"][0]["Type"], 1);
     assert_eq!(
         playback["MediaSources"][0]["MediaStreams"][0]["Codec"],
         "h264"

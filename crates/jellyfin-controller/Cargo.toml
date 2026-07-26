@@ -10,6 +10,7 @@ chrono.workspace = true
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-drawing = { path = "../jellyfin-drawing" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
+jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-providers = { path = "../jellyfin-providers" }
 md-5 = "0.10"

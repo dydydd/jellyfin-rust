@@ -1527,6 +1527,7 @@ dependencies = [
  "jellyfin-data",
  "jellyfin-drawing",
  "jellyfin-extensions",
+ "jellyfin-media-encoding",
  "jellyfin-model",
  "jellyfin-providers",
  "md-5",
