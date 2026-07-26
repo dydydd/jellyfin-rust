@@ -14,7 +14,7 @@ use axum::{
     },
     http::{HeaderValue, Response, header},
 };
-use jellyfin_model::MediaSourceInfo;
+use jellyfin_model::{MediaProtocol, MediaSourceInfo};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::io::ReaderStream;
@@ -40,6 +40,8 @@ pub(crate) struct PlaybackInfoQuery {
     user_id: Option<Uuid>,
     #[serde(rename = "mediaSourceId", alias = "MediaSourceId")]
     media_source_id: Option<String>,
+    #[serde(rename = "maxStreamingBitrate", alias = "MaxStreamingBitrate")]
+    max_streaming_bitrate: Option<i32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -47,6 +49,7 @@ pub(crate) struct PlaybackInfoQuery {
 pub(crate) struct PlaybackInfoDto {
     user_id: Option<Uuid>,
     media_source_id: Option<String>,
+    max_streaming_bitrate: Option<i32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -125,6 +128,7 @@ pub(crate) async fn get_playback_info(
         query.user_id.unwrap_or(identity.user.id),
         item_id,
         query.media_source_id.as_deref(),
+        None,
     )
     .await
     .map(Json)
@@ -148,12 +152,16 @@ pub(crate) async fn post_playback_info(
         body.as_ref()
             .and_then(|body| body.media_source_id.as_deref())
     });
+    let max_streaming_bitrate = query
+        .max_streaming_bitrate
+        .or_else(|| body.as_ref().and_then(|body| body.max_streaming_bitrate));
     playback_info(
         &state,
         &identity.user,
         target_user_id,
         item_id,
         media_source_id,
+        max_streaming_bitrate,
     )
     .await
     .map(Json)
@@ -233,8 +241,9 @@ async fn playback_info(
     target_user_id: Uuid,
     item_id: Uuid,
     media_source_id: Option<&str>,
+    max_streaming_bitrate: Option<i32>,
 ) -> Result<PlaybackInfoResponse, ApiError> {
-    let media_sources = media_sources(
+    let mut media_sources = media_sources(
         state,
         authenticated_user,
         target_user_id,
@@ -242,6 +251,7 @@ async fn playback_info(
         media_source_id,
     )
     .await?;
+    sort_media_sources(&mut media_sources, max_streaming_bitrate, item_id);
     Ok(PlaybackInfoResponse {
         media_sources,
         play_session_id: Uuid::new_v4().simple().to_string(),
@@ -299,6 +309,73 @@ async fn media_sources(
         });
     }
     Ok(media_sources)
+}
+
+fn sort_media_sources(
+    media_sources: &mut [MediaSourceInfo],
+    max_bitrate: Option<i32>,
+    preferred_item_id: Uuid,
+) {
+    let preferred_id =
+        (!preferred_item_id.is_nil()).then(|| preferred_item_id.simple().to_string());
+    media_sources.sort_by_key(|source| {
+        (
+            preferred_rank(source, preferred_id.as_deref()),
+            direct_file_rank(source),
+            direct_rank(source),
+            protocol_rank(source),
+            bitrate_rank(source, max_bitrate),
+        )
+    });
+}
+
+fn preferred_rank(source: &MediaSourceInfo, preferred_id: Option<&str>) -> u8 {
+    let Some(preferred_id) = preferred_id else {
+        return 1;
+    };
+    if source.id.as_deref().is_some_and(|source_id| {
+        source_id
+            .chars()
+            .filter(|character| *character != '-')
+            .collect::<String>()
+            .eq_ignore_ascii_case(preferred_id)
+    }) {
+        0
+    } else {
+        1
+    }
+}
+
+fn direct_file_rank(source: &MediaSourceInfo) -> u8 {
+    if source.supports_direct_play && source.protocol == MediaProtocol::File {
+        0
+    } else {
+        1
+    }
+}
+
+fn direct_rank(source: &MediaSourceInfo) -> u8 {
+    if source.supports_direct_play || source.supports_direct_stream {
+        0
+    } else {
+        1
+    }
+}
+
+fn protocol_rank(source: &MediaSourceInfo) -> u8 {
+    if source.protocol == MediaProtocol::File {
+        0
+    } else {
+        1
+    }
+}
+
+fn bitrate_rank(source: &MediaSourceInfo, max_bitrate: Option<i32>) -> u8 {
+    match (max_bitrate, source.bitrate) {
+        (Some(max_bitrate), Some(bitrate)) if bitrate <= max_bitrate => 0,
+        (Some(_), Some(_)) => 2,
+        _ => 1,
+    }
 }
 
 fn live_stream_id(
@@ -362,4 +439,63 @@ const fn bitrate_test_block() -> [u8; REPEATING_BLOCK_SIZE] {
         index += 1;
     }
     block
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MediaProtocol, MediaSourceInfo, sort_media_sources};
+    use uuid::Uuid;
+
+    #[test]
+    fn sort_media_sources_keeps_preferred_item_first_even_over_bitrate_limit() {
+        let preferred_item_id = Uuid::new_v4();
+        let preferred_source = source(preferred_item_id, 80_000_000, false);
+        let sibling_source = source(Uuid::new_v4(), 8_000_000, true);
+        let mut sources = vec![sibling_source, preferred_source];
+
+        sort_media_sources(&mut sources, Some(20_000_000), preferred_item_id);
+
+        assert_eq!(
+            sources[0].id.as_deref(),
+            Some(preferred_item_id.simple().to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn sort_media_sources_without_preferred_item_orders_by_playability() {
+        let direct_play = source(Uuid::new_v4(), 8_000_000, true);
+        let mut transcode_only = source(Uuid::new_v4(), 8_000_000, false);
+        transcode_only.supports_direct_stream = false;
+        let direct_play_id = direct_play.id.clone();
+        let mut sources = vec![transcode_only, direct_play];
+
+        sort_media_sources(&mut sources, Some(20_000_000), Uuid::nil());
+
+        assert_eq!(sources[0].id, direct_play_id);
+    }
+
+    #[test]
+    fn sort_media_sources_missing_preferred_id_keeps_playability_order() {
+        let direct_play = source(Uuid::new_v4(), 8_000_000, true);
+        let mut transcode_only = source(Uuid::new_v4(), 8_000_000, false);
+        transcode_only.supports_direct_stream = false;
+        let direct_play_id = direct_play.id.clone();
+        let mut sources = vec![transcode_only, direct_play];
+
+        sort_media_sources(&mut sources, Some(20_000_000), Uuid::new_v4());
+
+        assert_eq!(sources[0].id, direct_play_id);
+    }
+
+    fn source(item_id: Uuid, bitrate: i32, supports_direct_play: bool) -> MediaSourceInfo {
+        MediaSourceInfo {
+            id: Some(item_id.simple().to_string()),
+            protocol: MediaProtocol::File,
+            bitrate: Some(bitrate),
+            supports_direct_play,
+            supports_direct_stream: true,
+            supports_transcoding: true,
+            ..MediaSourceInfo::default()
+        }
+    }
 }
