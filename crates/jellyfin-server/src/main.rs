@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
@@ -21,6 +23,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to migrate PostgreSQL")?;
     let startup_repository = ServerConfigurationRepository::new(database.clone());
+    let server_id = startup_repository
+        .ensure_server_id()
+        .await
+        .context("failed to load or create the server id")?;
     let persisted_configuration = startup_repository
         .load()
         .await
@@ -39,15 +45,25 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind_address)
         .await
         .with_context(|| format!("failed to bind {bind_address}"))?;
+    let web_dir =
+        std::env::var("JELLYFIN_WEB_DIR").unwrap_or_else(|_| "jellyfin-web/dist".to_owned());
     let app = jellyfin_api::router(
         AppState::new(
             database,
             persisted_configuration.server_name,
             format!("http://{bind_address}"),
         )
+        .with_server_id(server_id)
         .with_startup_user(initial_user.id)
         .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
-        .with_persistent_startup(startup_repository),
+        .with_persistent_startup(startup_repository)
+        .with_storage_paths(
+            PathBuf::from("programdata"),
+            PathBuf::from(&web_dir),
+            PathBuf::from("cache").join("images"),
+            PathBuf::from("cache"),
+            PathBuf::from("metadata"),
+        ),
     );
 
     info!(address = %bind_address, "Jellyfin Rust server listening");

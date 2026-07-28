@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use tower_http::services::{ServeDir, ServeFile};
 use jellyfin_controller::{
     ArtistError, ArtistService, CollectionError, CollectionService, DashboardError, DashboardPage,
     DashboardService, EnvironmentError, EnvironmentService, GenreError, GenreService,
@@ -284,6 +285,16 @@ impl AppState {
         self
     }
 
+    /// Replaces the server instance identifier with a persisted value.
+    ///
+    /// The server id should be loaded from the database on startup so that
+    /// clients see a stable identity across restarts.
+    #[must_use]
+    pub fn with_server_id(mut self, server_id: String) -> Self {
+        self.system_info.id = Some(server_id);
+        self
+    }
+
     /// Replaces the branding configuration used by the public branding API.
     #[must_use]
     pub fn with_branding_options(mut self, branding: BrandingOptions) -> Self {
@@ -382,10 +393,14 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    let web_dir = state.web_directory.clone();
+    let index_path = web_dir.join("index.html");
+
     openapi::documented_routes()
         .merge(system_routes())
         .merge(sync_play_routes())
         .route("/websocket", get(websocket::connect))
+        .route("/socket", get(websocket::connect))
         .route("/Branding/Configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
@@ -658,6 +673,10 @@ pub fn router(state: AppState) -> Router {
             "/Library/VirtualFolders/LibraryOptions",
             post(virtual_folders::update_options),
         )
+        .nest_service(
+            "/web",
+            ServeDir::new(&web_dir).fallback(ServeFile::new(&index_path)),
+        )
         .fallback(robots::redirect_or_not_found)
         .with_state(Arc::new(state))
 }
@@ -745,8 +764,8 @@ fn environment_routes() -> Router<Arc<AppState>> {
 
 fn localization_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/Localization/Cultures", get(localization::cultures))
-        .route("/Localization/Countries", get(localization::countries))
+        .route("/Localization/cultures", get(localization::cultures))
+        .route("/Localization/countries", get(localization::countries))
         .route(
             "/Localization/ParentalRatings",
             get(localization::parental_ratings),
@@ -794,6 +813,10 @@ fn authentication_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
             "/Users/AuthenticateByName",
+            post(authentication::authenticate_by_name),
+        )
+        .route(
+            "/Users/authenticatebyname",
             post(authentication::authenticate_by_name),
         )
         .route(
@@ -1269,6 +1292,12 @@ async fn public_system_info(
 
 async fn ping(state: State<Arc<AppState>>) -> Response {
     system::ping(state).await.into_response()
+}
+
+pub(crate) fn user_to_dto_with_server_id(state: &AppState, user: user::Model) -> UserDto {
+    let mut dto = user_to_dto(user);
+    dto.server_id = Some(state.server_id().to_owned());
+    dto
 }
 
 pub(crate) fn user_to_dto(user: user::Model) -> UserDto {

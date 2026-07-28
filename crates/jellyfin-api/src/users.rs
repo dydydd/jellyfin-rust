@@ -21,7 +21,9 @@ use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, authorization, user_to_dto};
+use crate::{
+    ApiError, AppState, authentication, authorization, user_to_dto_with_server_id,
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -47,7 +49,12 @@ pub(crate) async fn list(
     for user in &users {
         authentication::stored_user_policy(user)?;
     }
-    Ok(Json(users.into_iter().map(user_to_dto).collect()))
+    Ok(Json(
+        users
+            .into_iter()
+            .map(|user| user_to_dto_with_server_id(&state, user))
+            .collect(),
+    ))
 }
 
 pub(crate) async fn list_public(
@@ -59,7 +66,7 @@ pub(crate) async fn list_public(
             .list_public()
             .await?
             .into_iter()
-            .map(user_to_dto)
+            .map(|user| user_to_dto_with_server_id(&state, user))
             .collect(),
     ))
 }
@@ -83,7 +90,7 @@ pub(crate) async fn create(
     if let Some(password) = request.password.filter(|password| !password.is_empty()) {
         user = hash_and_save_password(&state, user, password).await?;
     }
-    Ok(Json(user_to_dto(user)))
+    Ok(Json(user_to_dto_with_server_id(&state, user)))
 }
 
 pub(crate) async fn forgot_password(
@@ -140,7 +147,7 @@ pub(crate) async fn get(
     authorization::require_ignore_parental_control(&state, &headers, &uri).await?;
     let user = state.users.get(id).await?;
     authentication::stored_user_policy(&user)?;
-    Ok(Json(user_to_dto(user)))
+    Ok(Json(user_to_dto_with_server_id(&state, user)))
 }
 
 #[derive(Debug, Default, Deserialize)]

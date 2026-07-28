@@ -44,6 +44,7 @@ mod m20260725_000041_optimize_trickplay_manifests;
 mod m20260725_000042_add_trickplay_configuration;
 mod m20260725_000043_create_playlists;
 mod m20260725_000044_add_remote_access_configuration;
+mod m20260728_000045_add_server_id_configuration;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -133,6 +134,7 @@ pub use m20260725_000042_add_trickplay_configuration::Migration as AddTrickplayC
 pub use m20260725_000043_create_playlists::Migration as CreatePlaylistsMigration;
 #[doc(hidden)]
 pub use m20260725_000044_add_remote_access_configuration::Migration as AddRemoteAccessConfigurationMigration;
+pub use m20260728_000045_add_server_id_configuration::Migration as AddServerIdConfigurationMigration;
 
 pub struct Migrator;
 
@@ -184,6 +186,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260725_000042_add_trickplay_configuration::Migration),
             Box::new(m20260725_000043_create_playlists::Migration),
             Box::new(m20260725_000044_add_remote_access_configuration::Migration),
+            Box::new(m20260728_000045_add_server_id_configuration::Migration),
         ]
     }
 }

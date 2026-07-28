@@ -1,6 +1,7 @@
 use sea_orm::{DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
 use serde_json::Value;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::entities::server_configuration;
 
@@ -89,7 +90,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access,
+                enable_remote_access, server_id,
                 row_version, created_at, updated_at
             ",
             [
@@ -125,7 +126,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access,
+                enable_remote_access, server_id,
                 row_version, created_at, updated_at
             "
             .to_owned(),
@@ -236,6 +237,44 @@ impl ServerConfigurationRepository {
     /// Returns a missing-singleton or database error. The boolean is updated
     /// directly on the singleton row to keep startup API workers synchronized
     /// through one `PostgreSQL` source of truth.
+    /// Loads or generates a stable server instance identifier.
+    ///
+    /// Returns the persisted `server_id` if one exists; otherwise generates a
+    /// new UUID, persists it, and returns the new value. This ensures the
+    /// server identity survives restarts so clients can detect server changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the read or write fails.
+    pub async fn ensure_server_id(&self) -> Result<String, ServerConfigurationStoreError> {
+        let model = self.load().await?;
+        if !model.server_id.is_empty() {
+            return Ok(model.server_id);
+        }
+        let id = Uuid::new_v4().simple().to_string();
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            UPDATE jellyfin.server_configuration
+            SET server_id = $1
+            WHERE id = 1
+            RETURNING id, server_name, ui_culture, metadata_country_code,
+                preferred_metadata_language, is_startup_wizard_completed,
+                content_types, plugin_repositories, min_resume_pct, max_resume_pct,
+                min_resume_duration_seconds, min_audiobook_resume,
+                max_audiobook_resume, allow_client_log_upload, trickplay_options,
+                enable_remote_access, server_id,
+                row_version, created_at, updated_at
+            ",
+            [id.clone().into()],
+        );
+        server_configuration::Model::find_by_statement(statement)
+            .one(&self.database)
+            .await?
+            .ok_or(ServerConfigurationStoreError::MissingSingleton)?;
+        Ok(id)
+    }
+
     pub async fn update_remote_access(
         &self,
         enable_remote_access: bool,
