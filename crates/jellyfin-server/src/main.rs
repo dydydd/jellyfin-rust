@@ -4,6 +4,7 @@ use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{BaseItemRepository, DatabaseConfig, ServerConfigurationRepository};
+use sea_orm::ConnectionTrait;
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -79,9 +80,33 @@ async fn main() -> anyhow::Result<()> {
 async fn ensure_initial_user(
     database: &sea_orm::DatabaseConnection,
 ) -> anyhow::Result<jellyfin_data::entities::user::Model> {
+    use sea_orm::{DbBackend, Statement};
+
     let users = UserService::new(database.clone());
-    if let Some(user) = users.first().await? {
+    let admin = users
+        .list_filtered(None, Some(false))
+        .await?
+        .into_iter()
+        .find(|user| user.is_administrator);
+    if let Some(user) = admin {
         return Ok(user);
+    }
+    if let Some(user) = users.first().await? {
+        database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                UPDATE jellyfin.users
+                SET is_administrator = true,
+                    is_hidden = false,
+                    policy = jsonb_set(COALESCE(policy, '{}'::jsonb), '{is_administrator}', 'true')
+                WHERE id = $1::uuid
+                ",
+                [user.id.into()],
+            ))
+            .await?;
+        info!("promoted user {} to administrator", user.username);
+        return users.get(user.id).await.map_err(Into::into);
     }
     let name = std::env::var("JELLYFIN_INITIAL_USER").unwrap_or_else(|_| "jellyfin".to_owned());
     let user = users.create_initial_administrator(&name).await?;
