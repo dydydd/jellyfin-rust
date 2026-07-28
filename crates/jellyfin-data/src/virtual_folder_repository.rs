@@ -183,15 +183,30 @@ impl VirtualFolderRepository {
         _refresh_requested: bool,
     ) -> Result<(), VirtualFolderError> {
         let normalized = normalized_name(name)?;
-        let result = virtual_folder::Entity::delete_many()
+        let Some(folder) = virtual_folder::Entity::find()
             .filter(virtual_folder::Column::NormalizedName.eq(normalized))
-            .exec(&self.database)
+            .one(&self.database)
+            .await?
+        else {
+            return Err(VirtualFolderError::NotFound);
+        };
+        let transaction = self.database.begin().await?;
+        // Delete all media items belonging to this library.
+        // The collection folder shares the virtual folder's id as the base item id.
+        // ON DELETE CASCADE on parent_id handles all descendant items.
+        transaction
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "DELETE FROM jellyfin.base_items WHERE id = $1::uuid",
+                [folder.id.into()],
+            ))
             .await?;
-        if result.rows_affected == 0 {
-            Err(VirtualFolderError::NotFound)
-        } else {
-            Ok(())
-        }
+        // Delete the virtual folder (cascades to media_paths).
+        virtual_folder::Entity::delete_by_id(folder.id)
+            .exec(&transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
     }
 
     /// Replaces the JSONB library options of a folder.
