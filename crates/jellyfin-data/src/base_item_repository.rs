@@ -1196,6 +1196,88 @@ impl BaseItemRepository {
         Ok(updated)
     }
 
+    /// Batch-updates items in a single transaction. Stale-version errors for
+    /// individual items are silently skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or database error when the batch cannot be
+    /// processed. On failure the entire batch is rolled back.
+    pub async fn update_many(
+        &self,
+        items: Vec<base_item::Model>,
+    ) -> Result<Vec<base_item::Model>, BaseItemError> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        for item in &items {
+            validate_item_type(&item.item_type)?;
+        }
+        let transaction = self.database.begin().await?;
+        acquire_hierarchy_lock(&transaction).await?;
+        let mut result = Vec::with_capacity(items.len());
+        for item in items {
+            let current = base_item::Entity::find_by_id(item.id)
+                .one(&transaction)
+                .await?;
+            let Some(current) = current else {
+                continue;
+            };
+            if current.row_version != item.row_version {
+                continue;
+            }
+            match validate_parent(&transaction, item.id, item.parent_id).await {
+                Err(BaseItemError::ParentNotFound | BaseItemError::HierarchyCycle) => continue,
+                Err(error) => return Err(error),
+                Ok(()) => {}
+            }
+            let changes = base_item::ActiveModel {
+                item_type: Set(item.item_type),
+                data: Set(item.data),
+                path: Set(item.path),
+                parent_id: Set(item.parent_id),
+                name: Set(item.name),
+                sort_name: Set(item.sort_name),
+                media_type: Set(item.media_type),
+                overview: Set(item.overview),
+                official_rating: Set(item.official_rating),
+                index_number: Set(item.index_number),
+                parent_index_number: Set(item.parent_index_number),
+                production_year: Set(item.production_year),
+                premiere_date: Set(item.premiere_date),
+                runtime_ticks: Set(item.runtime_ticks),
+                is_folder: Set(item.is_folder),
+                is_virtual_item: Set(item.is_virtual_item),
+                presentation_unique_key: Set(item.presentation_unique_key),
+                primary_version_id: Set(item.primary_version_id),
+                series_id: Set(item.series_id),
+                season_id: Set(item.season_id),
+                series_presentation_unique_key: Set(item.series_presentation_unique_key),
+                ..Default::default()
+            };
+            let update_result = base_item::Entity::update_many()
+                .set(changes)
+                .filter(base_item::Column::Id.eq(item.id))
+                .filter(base_item::Column::RowVersion.eq(item.row_version))
+                .exec(&transaction)
+                .await
+                .map_err(map_database_error)?;
+            if update_result.rows_affected == 0 {
+                continue;
+            }
+            if let Ok(updated) = base_item::Entity::find_by_id(item.id)
+                .one(&transaction)
+                .await
+            {
+                if let Some(updated) = updated {
+                    result.push(updated);
+                }
+            }
+        }
+        transaction.commit().await?;
+        Ok(result)
+    }
+
     /// Moves an item while preserving optimistic-lock semantics.
     ///
     /// # Errors
