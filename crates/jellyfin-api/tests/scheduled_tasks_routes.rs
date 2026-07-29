@@ -310,6 +310,25 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
         StatusCode::NO_CONTENT
     );
 
+    // Wait for background scan to complete
+    for _ in 0..100 {
+        let task = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/ScheduledTasks/{task_id}"),
+                    Some(&fixture.admin_token),
+                    None,
+                )
+                .await,
+        )
+        .await;
+        if task["State"] == "Idle" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     let items = body_json(
         fixture
             .request(
@@ -396,6 +415,26 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
             .status(),
         StatusCode::NO_CONTENT
     );
+
+    // Wait for background scan to complete
+    for _ in 0..100 {
+        let task = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/ScheduledTasks/{task_id}"),
+                    Some(&fixture.admin_token),
+                    None,
+                )
+                .await,
+        )
+        .await;
+        if task["State"] == "Idle" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     let items = body_json(
         fixture
             .request(

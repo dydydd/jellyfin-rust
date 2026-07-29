@@ -56,7 +56,17 @@ pub(crate) async fn start(
     require_elevated(&state, &headers, &uri).await?;
     let task = state.scheduled_tasks.get(&task_id).await?;
     if task.key.as_deref() == Some("RefreshLibrary") {
-        state.library_scan.scan_all().await?;
+        state.scheduled_tasks.start(&task_id).await?;
+        let scan = state.library_scan.clone();
+        let tasks_svc = state.scheduled_tasks.clone();
+        let tid = task_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = scan.scan_all().await {
+                eprintln!("Library scan failed: {error}");
+            }
+            let _ = tasks_svc.stop(&tid).await;
+        });
+        return Ok(StatusCode::NO_CONTENT);
     }
     state.scheduled_tasks.start(&task_id).await?;
     Ok(StatusCode::NO_CONTENT)

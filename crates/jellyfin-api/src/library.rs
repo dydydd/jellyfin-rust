@@ -379,6 +379,7 @@ pub(crate) async fn refresh(
     authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
+    state.library_scan.scan_all().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -6,8 +6,8 @@ use std::{
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, MediaAttachmentRepository, MediaAttachmentStoreError,
     MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError, NewBaseItem,
-    PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType, USER_ROOT_FOLDER_ID,
-    VirtualFolderError, VirtualFolderRepository,
+    PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
+    USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
 };
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
@@ -86,24 +86,46 @@ impl LibraryScanService {
         self.items.ensure_user_root().await?;
         let mut summary = LibraryScanSummary::default();
         for folder in self.folders.list().await? {
-            let collection = self.ensure_collection_folder(&folder).await?;
-            summary.folders_seen += 1;
-            let mut seen_paths = HashSet::new();
-            let mut readable_roots = Vec::new();
-            for path in folder.paths {
-                let root = Path::new(&path.normalized_path);
-                if self
-                    .scan_path(root, collection.id, &mut summary, &mut seen_paths)
-                    .await?
-                {
-                    readable_roots.push(root.to_path_buf());
-                }
-            }
-            summary.items_removed += self
-                .remove_stale_media(collection.id, &seen_paths, &readable_roots)
-                .await?;
+            self.scan_one_folder(&folder, &mut summary).await?;
         }
         Ok(summary)
+    }
+
+    pub async fn scan_collection(
+        &self,
+        collection_id: Uuid,
+    ) -> Result<LibraryScanSummary, LibraryScanError> {
+        self.items.ensure_user_root().await?;
+        let mut summary = LibraryScanSummary::default();
+        let folders = self.folders.list().await?;
+        if let Some(folder) = folders.into_iter().find(|f| f.folder.id == collection_id) {
+            self.scan_one_folder(&folder, &mut summary).await?;
+        }
+        Ok(summary)
+    }
+
+    async fn scan_one_folder(
+        &self,
+        folder: &VirtualFolderWithPaths,
+        summary: &mut LibraryScanSummary,
+    ) -> Result<(), LibraryScanError> {
+        let collection = self.ensure_collection_folder(folder).await?;
+        summary.folders_seen += 1;
+        let mut seen_paths = HashSet::new();
+        let mut readable_roots = Vec::new();
+        for path in &folder.paths {
+            let root = Path::new(&path.normalized_path);
+            if self
+                .scan_path(root, collection.id, summary, &mut seen_paths)
+                .await?
+            {
+                readable_roots.push(root.to_path_buf());
+            }
+        }
+        summary.items_removed += self
+            .remove_stale_media(collection.id, &seen_paths, &readable_roots)
+            .await?;
+        Ok(())
     }
 
     async fn remove_stale_media(

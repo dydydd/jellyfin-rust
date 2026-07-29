@@ -124,7 +124,7 @@ pub(crate) async fn create(
         .paths
         .map(|paths| paths.split(',').map(str::to_owned).collect::<Vec<String>>())
         .unwrap_or_default();
-    let refresh_after_create = query.refresh_library && !paths.is_empty();
+    let refresh_after_create = query.refresh_library;
     state
         .virtual_folders
         .create(

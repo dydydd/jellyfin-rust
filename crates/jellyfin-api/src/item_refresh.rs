@@ -73,6 +73,12 @@ pub(crate) async fn refresh(
         }
     }
 
+    if item.item_type == "CollectionFolder"
+        && query.metadata_refresh_mode != MetadataRefreshMode::None
+    {
+        state.library_scan.scan_collection(item_id).await?;
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
