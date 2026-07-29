@@ -1,6 +1,8 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    sync::Arc,
+    thread::available_parallelism,
 };
 
 use jellyfin_data::{
@@ -23,7 +25,7 @@ use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::fs;
+use tokio::{fs, sync::Semaphore};
 use uuid::Uuid;
 
 use crate::{LocalizationService, media_streams::MediaStreamMapper};
@@ -57,6 +59,7 @@ pub struct LibraryScanService {
     streams: MediaStreamRepository,
     attachments: MediaAttachmentRepository,
     probe_path: PathBuf,
+    fanout_concurrency: usize,
 }
 
 impl LibraryScanService {
@@ -73,7 +76,16 @@ impl LibraryScanService {
             streams: MediaStreamRepository::new(database.clone()),
             attachments: MediaAttachmentRepository::new(database),
             probe_path: probe_path.into(),
+            fanout_concurrency: default_fanout_concurrency(),
         }
+    }
+
+    pub fn set_fanout_concurrency(&mut self, concurrency: usize) {
+        self.fanout_concurrency = concurrency;
+    }
+
+    fn fanout_concurrency(&self) -> usize {
+        self.fanout_concurrency.max(1)
     }
 
     /// Scans configured virtual-folder paths into directly playable base items.
@@ -197,6 +209,7 @@ impl LibraryScanService {
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
     ) -> Result<(), LibraryScanError> {
+        let mut files = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
             let metadata = entry.metadata().await?;
             let path = entry.path();
@@ -216,11 +229,59 @@ impl LibraryScanService {
             if let Some(path) = path.to_str() {
                 seen_paths.insert(path.to_owned());
             }
-            if self.ensure_media_item(&path, parent_id, media_kind).await? {
-                summary.items_added += 1;
+            files.push((path, media_kind));
+        }
+        summary.items_added += self.process_files(&files, parent_id).await?;
+        Ok(())
+    }
+
+    async fn process_files(
+        &self,
+        files: &[(PathBuf, MediaKind)],
+        parent_id: Uuid,
+    ) -> Result<usize, LibraryScanError> {
+        if files.is_empty() {
+            return Ok(0);
+        }
+        let concurrency = self.fanout_concurrency();
+        if concurrency <= 1 {
+            let mut added = 0;
+            for (path, media_kind) in files {
+                if self.ensure_media_item(path, parent_id, *media_kind).await? {
+                    added += 1;
+                }
+            }
+            return Ok(added);
+        }
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let mut handles = Vec::with_capacity(files.len());
+        for file in files {
+            let path = file.0.clone();
+            let media_kind = file.1;
+            let permit = Arc::clone(&semaphore)
+                .acquire_owned()
+                .await
+                .expect("semaphore closed");
+            let service = self.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = permit;
+                service.ensure_media_item(&path, parent_id, media_kind).await
+            }));
+        }
+        let mut added = 0;
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(true)) => added += 1,
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "concurrent media item processing failed");
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "concurrent media task join failed");
+                }
             }
         }
-        Ok(())
+        Ok(added)
     }
 
     async fn ensure_collection_folder(
@@ -386,6 +447,12 @@ impl LibraryScanService {
             start_index,
         ))
     }
+}
+
+fn default_fanout_concurrency() -> usize {
+    available_parallelism()
+        .map(|n| n.get().saturating_sub(3).max(1))
+        .unwrap_or(1)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
