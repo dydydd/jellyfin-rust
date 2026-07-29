@@ -169,6 +169,7 @@ pub struct AppState {
     pub(crate) startup: Arc<Mutex<startup::StartupState>>,
     pub(crate) startup_repository: Option<ServerConfigurationRepository>,
     pub(crate) database: DatabaseConnection,
+    pub(crate) tmdb_api_key: Arc<tokio::sync::RwLock<String>>,
 }
 
 impl AppState {
@@ -257,6 +258,7 @@ impl AppState {
             startup: Arc::new(Mutex::new(startup::StartupState::new(server_name))),
             startup_repository: None,
             database,
+            tmdb_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
         }
     }
 

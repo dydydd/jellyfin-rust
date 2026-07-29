@@ -298,6 +298,8 @@ pub struct ServerConfiguration {
     pub cast_receiver_applications: Vec<CastReceiverApplication>,
     pub trickplay_options: TrickplayOptions,
     pub enable_legacy_authorization: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tmdb_api_key: String,
 }
 
 impl Default for ServerConfiguration {
@@ -366,6 +368,7 @@ impl Default for ServerConfiguration {
             cast_receiver_applications: Vec::new(),
             trickplay_options: TrickplayOptions::default(),
             enable_legacy_authorization: false,
+            tmdb_api_key: String::new(),
         }
     }
 }

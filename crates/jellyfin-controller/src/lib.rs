@@ -18,6 +18,7 @@ mod media_attachments;
 pub mod media_encoding;
 mod media_streams;
 mod metadata_editor;
+pub mod metadata_providers;
 mod music_genre;
 mod packages;
 mod persons;

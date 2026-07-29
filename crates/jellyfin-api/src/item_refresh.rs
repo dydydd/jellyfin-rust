@@ -79,6 +79,24 @@ pub(crate) async fn refresh(
         state.library_scan.scan_collection(item_id).await?;
     }
 
+    if matches!(
+        query.metadata_refresh_mode,
+        MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
+    ) && matches!(item.item_type.as_str(), "Movie" | "Series")
+    {
+        let api_key = state.tmdb_api_key.read().await;
+        if !api_key.is_empty() {
+            let provider = jellyfin_controller::metadata_providers::TmdbMetadataProvider::new(
+                api_key.clone(),
+                BaseItemRepository::new(state.database.clone()),
+            );
+            drop(api_key);
+            if let Err(error) = provider.refresh_item(item_id).await {
+                eprintln!("TMDB metadata refresh failed: {error}");
+            }
+        }
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
