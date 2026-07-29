@@ -402,8 +402,9 @@ impl LibraryScanService {
             return Ok(false);
         }
 
+        let item_type = media_kind.item_type();
         let name = display_name(path);
-        let mut item = NewBaseItem::new(stable_item_id(path), media_kind.item_type());
+        let mut item = NewBaseItem::new(stable_item_id(path, item_type), item_type);
         item.path = Some(path.to_owned());
         item.parent_id = Some(parent_id);
         item.name = Some(name.clone());
@@ -903,8 +904,8 @@ fn display_name(path: &str) -> String {
         .to_owned()
 }
 
-fn stable_item_id(path: &str) -> Uuid {
-    let digest = Md5::digest(path.as_bytes());
+fn stable_item_id(path: &str, item_type: &str) -> Uuid {
+    let digest = Md5::digest(format!("{item_type}{path}"));
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest);
     bytes[6] = (bytes[6] & 0x0f) | 0x30;
@@ -962,12 +963,16 @@ mod tests {
     #[test]
     fn stable_ids_are_path_specific_and_repeatable() {
         assert_eq!(
-            stable_item_id("/media/movie.mkv"),
-            stable_item_id("/media/movie.mkv")
+            stable_item_id("/media/movie.mkv", "Video"),
+            stable_item_id("/media/movie.mkv", "Video")
         );
         assert_ne!(
-            stable_item_id("/media/a.mkv"),
-            stable_item_id("/media/b.mkv")
+            stable_item_id("/media/a.mkv", "Video"),
+            stable_item_id("/media/b.mkv", "Video")
+        );
+        assert_ne!(
+            stable_item_id("/media/file.mkv", "Video"),
+            stable_item_id("/media/file.mkv", "Audio")
         );
     }
 
@@ -1232,7 +1237,7 @@ mod tests {
         .unwrap();
         let now = Utc::now();
         let mut item = base_item::Model {
-            id: stable_item_id("/media/Movie.mkv"),
+            id: stable_item_id("/media/Movie.mkv", "Video"),
             item_type: "Video".to_owned(),
             data: Some(json!({
                 "Container": "mkv",
