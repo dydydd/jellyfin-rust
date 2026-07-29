@@ -57,9 +57,18 @@ pub(crate) async fn start(
     let task = state.scheduled_tasks.get(&task_id).await?;
     if task.key.as_deref() == Some("RefreshLibrary") {
         state.scheduled_tasks.start(&task_id).await?;
-        let scan = state.library_scan.clone();
+        let mut scan = state.library_scan.clone();
         let tasks_svc = state.scheduled_tasks.clone();
         let tid = task_id.clone();
+        let cb_tasks_svc = state.scheduled_tasks.clone();
+        let cb_tid = task_id.clone();
+        scan.set_on_progress(Some(Arc::new(move |progress| {
+            let tasks_svc = cb_tasks_svc.clone();
+            let tid = cb_tid.clone();
+            tokio::spawn(async move {
+                let _ = tasks_svc.set_progress(&tid, progress).await;
+            });
+        })));
         tokio::spawn(async move {
             if let Err(error) = scan.scan_all().await {
                 eprintln!("Library scan failed: {error}");

@@ -62,9 +62,13 @@ pub struct LibraryScanService {
     values: ItemValueRepository,
     probe_path: PathBuf,
     fanout_concurrency: usize,
+    on_progress: Option<Arc<dyn Fn(f64) + Send + Sync>>,
 }
 
 impl LibraryScanService {
+    pub fn set_on_progress(&mut self, callback: Option<Arc<dyn Fn(f64) + Send + Sync>>) {
+        self.on_progress = callback;
+    }
     #[must_use]
     pub fn new(database: DatabaseConnection) -> Self {
         Self::with_probe_path(database, "ffprobe")
@@ -80,6 +84,7 @@ impl LibraryScanService {
             values: ItemValueRepository::new(database),
             probe_path: probe_path.into(),
             fanout_concurrency: default_fanout_concurrency(),
+            on_progress: None,
         }
     }
 
@@ -99,12 +104,23 @@ impl LibraryScanService {
     /// reading configured paths or writing discovered media.
     pub async fn scan_all(&self) -> Result<LibraryScanSummary, LibraryScanError> {
         self.items.ensure_user_root().await?;
+        let folders = self.folders.list().await?;
+        let total = folders.len();
         let mut summary = LibraryScanSummary::default();
-        for folder in self.folders.list().await? {
-            self.scan_one_folder(&folder, &mut summary).await?;
+        for (i, folder) in folders.iter().enumerate() {
+            self.scan_one_folder(folder, &mut summary).await?;
+            if let Some(ref on_progress) = self.on_progress {
+                on_progress((i + 1) as f64 / total as f64 * 90.0);
+            }
+        }
+        if let Some(ref on_progress) = self.on_progress {
+            on_progress(95.0);
         }
         if let Err(error) = self.values.clear_inherited_tags().await {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
+        }
+        if let Some(ref on_progress) = self.on_progress {
+            on_progress(100.0);
         }
         Ok(summary)
     }
@@ -119,8 +135,14 @@ impl LibraryScanService {
         if let Some(folder) = folders.into_iter().find(|f| f.folder.id == collection_id) {
             self.scan_one_folder(&folder, &mut summary).await?;
         }
+        if let Some(ref on_progress) = self.on_progress {
+            on_progress(95.0);
+        }
         if let Err(error) = self.values.clear_inherited_tags().await {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
+        }
+        if let Some(ref on_progress) = self.on_progress {
+            on_progress(100.0);
         }
         Ok(summary)
     }

@@ -22,6 +22,7 @@ pub struct ScheduledTask {
     pub is_hidden: bool,
     pub is_enabled: bool,
     pub state: TaskState,
+    pub current_progress_percentage: Option<f64>,
     pub triggers: Vec<TaskTriggerInfo>,
 }
 
@@ -30,7 +31,7 @@ impl ScheduledTask {
         TaskInfo {
             name: Some(self.name.clone()),
             state: self.state,
-            current_progress_percentage: None,
+            current_progress_percentage: self.current_progress_percentage,
             id: Some(self.id.clone()),
             last_execution_result: None,
             triggers: self.triggers.clone(),
@@ -102,6 +103,21 @@ impl ScheduledTaskService {
             .find(|task| task.id.eq_ignore_ascii_case(task_id))
             .ok_or(ScheduledTaskError::NotFound)?;
         task.state = TaskState::Idle;
+        task.current_progress_percentage = None;
+        Ok(())
+    }
+
+    pub async fn set_progress(
+        &self,
+        task_id: &str,
+        progress: f64,
+    ) -> Result<(), ScheduledTaskError> {
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .iter_mut()
+            .find(|task| task.id.eq_ignore_ascii_case(task_id))
+            .ok_or(ScheduledTaskError::NotFound)?;
+        task.current_progress_percentage = Some(progress);
         Ok(())
     }
 
@@ -131,6 +147,7 @@ fn default_tasks() -> Vec<ScheduledTask> {
             is_hidden: false,
             is_enabled: true,
             state: TaskState::Idle,
+            current_progress_percentage: None,
             triggers: vec![interval_trigger(12)],
         },
         ScheduledTask {
@@ -142,6 +159,7 @@ fn default_tasks() -> Vec<ScheduledTask> {
             is_hidden: false,
             is_enabled: true,
             state: TaskState::Idle,
+            current_progress_percentage: None,
             triggers: vec![interval_trigger(24)],
         },
         ScheduledTask {
@@ -153,6 +171,7 @@ fn default_tasks() -> Vec<ScheduledTask> {
             is_hidden: false,
             is_enabled: true,
             state: TaskState::Idle,
+            current_progress_percentage: None,
             triggers: vec![interval_trigger(24)],
         },
         ScheduledTask {
@@ -164,6 +183,7 @@ fn default_tasks() -> Vec<ScheduledTask> {
             is_hidden: false,
             is_enabled: true,
             state: TaskState::Idle,
+            current_progress_percentage: None,
             triggers: vec![startup_trigger(), interval_trigger(24)],
         },
     ]
