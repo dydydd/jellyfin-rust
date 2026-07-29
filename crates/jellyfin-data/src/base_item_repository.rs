@@ -282,6 +282,64 @@ impl BaseItemRepository {
         Ok(inserted)
     }
 
+    /// Batch-inserts items in a single transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, hierarchy, or database error. On failure
+    /// the entire batch is rolled back.
+    pub async fn create_many(
+        &self,
+        items: Vec<NewBaseItem>,
+    ) -> Result<Vec<base_item::Model>, BaseItemError> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        for item in &items {
+            validate_item_type(&item.item_type)?;
+        }
+        let transaction = self.database.begin().await?;
+        acquire_hierarchy_lock(&transaction).await?;
+        for item in &items {
+            validate_parent(&transaction, item.id, item.parent_id).await?;
+        }
+        let mut result = Vec::with_capacity(items.len());
+        for item in items {
+            let model = base_item::ActiveModel {
+                id: Set(item.id),
+                item_type: Set(item.item_type),
+                data: Set(item.data),
+                path: Set(item.path),
+                parent_id: Set(item.parent_id),
+                name: Set(item.name),
+                sort_name: Set(item.sort_name),
+                media_type: Set(item.media_type),
+                overview: Set(item.overview),
+                official_rating: Set(item.official_rating),
+                index_number: Set(item.index_number),
+                parent_index_number: Set(item.parent_index_number),
+                production_year: Set(item.production_year),
+                premiere_date: Set(item.premiere_date),
+                runtime_ticks: Set(item.runtime_ticks),
+                is_folder: Set(item.is_folder),
+                is_virtual_item: Set(item.is_virtual_item),
+                presentation_unique_key: Set(item.presentation_unique_key),
+                primary_version_id: Set(item.primary_version_id),
+                series_id: Set(item.series_id),
+                season_id: Set(item.season_id),
+                series_presentation_unique_key: Set(item.series_presentation_unique_key),
+                ..Default::default()
+            };
+            let inserted = base_item::Entity::insert(model)
+                .exec_with_returning(&transaction)
+                .await
+                .map_err(map_database_error)?;
+            result.push(inserted);
+        }
+        transaction.commit().await?;
+        Ok(result)
+    }
+
     /// Loads an item by its stable identifier.
     ///
     /// # Errors

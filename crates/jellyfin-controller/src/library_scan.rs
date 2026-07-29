@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     thread::available_parallelism,
@@ -10,6 +10,7 @@ use jellyfin_data::{
     MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError, NewBaseItem,
     PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
     USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
+    entities::base_item,
 };
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
@@ -231,7 +232,23 @@ impl LibraryScanService {
             }
             files.push((path, media_kind));
         }
-        summary.items_added += self.process_files(&files, parent_id).await?;
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let paths: Vec<String> = files
+            .iter()
+            .filter_map(|(p, _)| p.to_str().map(String::from))
+            .collect();
+        let existing = self.items.by_paths(&paths).await?;
+        let existing_by_path: HashMap<String, base_item::Model> = existing
+            .into_iter()
+            .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+            .collect();
+
+        summary.items_added += self
+            .process_files(&files, parent_id, &existing_by_path)
+            .await?;
         Ok(())
     }
 
@@ -239,6 +256,7 @@ impl LibraryScanService {
         &self,
         files: &[(PathBuf, MediaKind)],
         parent_id: Uuid,
+        existing_by_path: &HashMap<String, base_item::Model>,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
             return Ok(0);
@@ -247,17 +265,33 @@ impl LibraryScanService {
         if concurrency <= 1 {
             let mut added = 0;
             for (path, media_kind) in files {
-                if self.ensure_media_item(path, parent_id, *media_kind).await? {
+                let existing = path
+                    .to_str()
+                    .and_then(|p| existing_by_path.get(p));
+                if self
+                    .ensure_media_item(path, parent_id, *media_kind, existing)
+                    .await?
+                {
                     added += 1;
                 }
             }
             return Ok(added);
         }
+        let existing_by_path = Arc::new(
+            existing_by_path
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<HashMap<_, _>>(),
+        );
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let mut handles = Vec::with_capacity(files.len());
         for file in files {
             let path = file.0.clone();
             let media_kind = file.1;
+            let existing = path
+                .to_str()
+                .and_then(|p| existing_by_path.get(p))
+                .cloned();
             let permit = Arc::clone(&semaphore)
                 .acquire_owned()
                 .await
@@ -265,7 +299,9 @@ impl LibraryScanService {
             let service = self.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
-                service.ensure_media_item(&path, parent_id, media_kind).await
+                service
+                    .ensure_media_item(&path, parent_id, media_kind, existing.as_ref())
+                    .await
             }));
         }
         let mut added = 0;
@@ -315,16 +351,17 @@ impl LibraryScanService {
         Ok(self.items.create(item).await?)
     }
 
-    async fn ensure_media_item(
+    async fn ensure_media_item<'a>(
         &self,
         path: &Path,
         parent_id: Uuid,
         media_kind: MediaKind,
+        existing: Option<&'a base_item::Model>,
     ) -> Result<bool, LibraryScanError> {
         let Some(path) = path.to_str() else {
             return Ok(false);
         };
-        if let Some(mut existing) = self.items.by_paths(&[path.to_owned()]).await?.pop() {
+        if let Some(mut existing) = existing.cloned() {
             if let Some(media_info) = self
                 .ensure_media_streams(existing.id, path, media_kind)
                 .await?
