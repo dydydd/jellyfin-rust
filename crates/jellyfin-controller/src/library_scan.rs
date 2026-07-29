@@ -6,9 +6,9 @@ use std::{
 };
 
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, MediaAttachmentRepository, MediaAttachmentStoreError,
-    MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError, NewBaseItem,
-    PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
+    BaseItemError, BaseItemRepository, ItemValueRepository, MediaAttachmentRepository,
+    MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError,
+    NewBaseItem, PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
     USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
     entities::base_item,
 };
@@ -59,6 +59,7 @@ pub struct LibraryScanService {
     items: BaseItemRepository,
     streams: MediaStreamRepository,
     attachments: MediaAttachmentRepository,
+    values: ItemValueRepository,
     probe_path: PathBuf,
     fanout_concurrency: usize,
 }
@@ -75,7 +76,8 @@ impl LibraryScanService {
             folders: VirtualFolderRepository::new(database.clone()),
             items: BaseItemRepository::new(database.clone()),
             streams: MediaStreamRepository::new(database.clone()),
-            attachments: MediaAttachmentRepository::new(database),
+            attachments: MediaAttachmentRepository::new(database.clone()),
+            values: ItemValueRepository::new(database),
             probe_path: probe_path.into(),
             fanout_concurrency: default_fanout_concurrency(),
         }
@@ -101,6 +103,9 @@ impl LibraryScanService {
         for folder in self.folders.list().await? {
             self.scan_one_folder(&folder, &mut summary).await?;
         }
+        if let Err(error) = self.values.clear_inherited_tags().await {
+            tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
+        }
         Ok(summary)
     }
 
@@ -113,6 +118,9 @@ impl LibraryScanService {
         let folders = self.folders.list().await?;
         if let Some(folder) = folders.into_iter().find(|f| f.folder.id == collection_id) {
             self.scan_one_folder(&folder, &mut summary).await?;
+        }
+        if let Err(error) = self.values.clear_inherited_tags().await {
+            tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
         }
         Ok(summary)
     }

@@ -301,6 +301,19 @@ impl ItemValueRepository {
         )
     }
 
+    /// Deletes all inherited tag associations (post-scan cleanup).
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the delete fails.
+    pub async fn clear_inherited_tags(&self) -> Result<(), ItemValueError> {
+        item_value::Entity::delete_many()
+            .filter(item_value::Column::ValueType.eq(item_value::ItemValueType::InheritedTags))
+            .exec(&self.database)
+            .await?;
+        Ok(())
+    }
+
     /// Lists item-by-name values that are attached to filtered base items.
     ///
     /// # Errors
