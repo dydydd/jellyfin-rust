@@ -437,12 +437,14 @@ impl LibraryScanService {
         };
         if let Some(mut existing) = existing.cloned() {
             if !is_tv {
-                if let Some(media_info) = self
-                    .ensure_media_streams(existing.id, path_str, media_kind)
-                    .await?
-                    && apply_probed_item_metadata(&mut existing, path_str, &media_info)
-                {
-                    self.items.update(existing).await?;
+                if media_kind.needs_probe() {
+                    if let Some(media_info) = self
+                        .ensure_media_streams(existing.id, path_str, media_kind)
+                        .await?
+                        && apply_probed_item_metadata(&mut existing, path_str, &media_info)
+                    {
+                        self.items.update(existing).await?;
+                    }
                 }
                 return Ok(false);
             }
@@ -470,10 +472,12 @@ impl LibraryScanService {
         item.presentation_unique_key = Some(path_str.to_owned());
         item.data = Some(media_item_data(path_str, None));
         let mut item = self.items.create(item).await?;
-        if let Some(media_info) = self.ensure_media_streams(item.id, path_str, media_kind).await?
-            && apply_probed_item_metadata(&mut item, path_str, &media_info)
-        {
-            self.items.update(item).await?;
+        if media_kind.needs_probe() {
+            if let Some(media_info) = self.ensure_media_streams(item.id, path_str, media_kind).await?
+                && apply_probed_item_metadata(&mut item, path_str, &media_info)
+            {
+                self.items.update(item).await?;
+            }
         }
         Ok(true)
     }
@@ -683,6 +687,8 @@ fn default_fanout_concurrency() -> usize {
 enum MediaKind {
     Audio,
     Video,
+    Photo,
+    Book,
 }
 
 impl MediaKind {
@@ -690,6 +696,8 @@ impl MediaKind {
         match self {
             Self::Audio => "Audio",
             Self::Video => "Video",
+            Self::Photo => "Photo",
+            Self::Book => "Book",
         }
     }
 
@@ -697,7 +705,13 @@ impl MediaKind {
         match self {
             Self::Audio => "Audio",
             Self::Video => "Video",
+            Self::Photo => "Photo",
+            Self::Book => "Book",
         }
+    }
+
+    const fn needs_probe(self) -> bool {
+        matches!(self, Self::Audio | Self::Video)
     }
 }
 
@@ -709,14 +723,29 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
     {
         return Some(MediaKind::Audio);
     }
-    VIDEO_EXTENSIONS
+    if VIDEO_EXTENSIONS
         .iter()
         .any(|supported| extension.eq_ignore_ascii_case(supported))
-        .then_some(MediaKind::Video)
+    {
+        return Some(MediaKind::Video);
+    }
+    if PHOTO_EXTENSIONS
+        .iter()
+        .any(|supported| extension.eq_ignore_ascii_case(supported))
+    {
+        return Some(MediaKind::Photo);
+    }
+    if BOOK_EXTENSIONS
+        .iter()
+        .any(|supported| extension.eq_ignore_ascii_case(supported))
+    {
+        return Some(MediaKind::Book);
+    }
+    None
 }
 
 fn is_scanned_media_type(item_type: &str) -> bool {
-    matches!(item_type, "Audio" | "Video")
+    matches!(item_type, "Audio" | "Video" | "Photo" | "Book")
 }
 
 fn apply_probed_item_metadata(
@@ -803,7 +832,9 @@ fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
         stream_index: 0,
         stream_type: match media_kind {
             MediaKind::Audio => PersistedMediaStreamType::Audio,
-            MediaKind::Video => PersistedMediaStreamType::Video,
+            MediaKind::Video | MediaKind::Photo | MediaKind::Book => {
+                PersistedMediaStreamType::Video
+            }
         },
         codec: codec_from_extension(path),
         language: None,
@@ -1095,6 +1126,14 @@ const VIDEO_EXTENSIONS: &[&str] = &[
     "wmv",
 ];
 
+const PHOTO_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "svg", "ico",
+];
+
+const BOOK_EXTENSIONS: &[&str] = &[
+    "pdf", "epub", "mobi", "cbr", "cbz", "cb7", "cbt", "djvu",
+];
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1113,7 +1152,9 @@ mod tests {
     fn media_kind_accepts_common_direct_play_extensions() {
         assert_eq!(media_kind(Path::new("movie.MKV")), Some(MediaKind::Video));
         assert_eq!(media_kind(Path::new("song.FlAc")), Some(MediaKind::Audio));
-        assert_eq!(media_kind(Path::new("poster.jpg")), None);
+        assert_eq!(media_kind(Path::new("photo.jpg")), Some(MediaKind::Photo));
+        assert_eq!(media_kind(Path::new("book.pdf")), Some(MediaKind::Book));
+        assert_eq!(media_kind(Path::new("data.nfo")), None);
     }
 
     #[test]
