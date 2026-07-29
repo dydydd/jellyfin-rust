@@ -1,0 +1,136 @@
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use tracing;
+
+use crate::LibraryScanService;
+
+const DEBOUNCE_SECS: u64 = 5;
+
+pub struct LibraryWatcher {
+    scan: LibraryScanService,
+    paths: Vec<PathBuf>,
+}
+
+impl LibraryWatcher {
+    #[must_use]
+    pub fn new(scan: LibraryScanService, paths: Vec<PathBuf>) -> Self {
+        Self { scan, paths }
+    }
+
+    /// Starts watching library directories. Runs the watcher in a
+    /// background thread; new/changed files trigger a full scan after
+    /// a 5-second debounce window.
+    pub fn start(self) -> Result<(), LibraryWatcherError> {
+        if self.paths.is_empty() {
+            return Ok(());
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
+        let mut watcher = RecommendedWatcher::new(tx, Config::default())
+            .map_err(LibraryWatcherError::Notify)?;
+
+        for path in &self.paths {
+            watcher
+                .watch(path, RecursiveMode::Recursive)
+                .map_err(|e| LibraryWatcherError::Watch(path.clone(), e))?;
+            tracing::info!(path = %path.display(), "watching library directory");
+        }
+
+        let scan = self.scan;
+
+        // Spawn a thread for the blocking event loop
+        std::thread::Builder::new()
+            .name("jellyfin-library-watcher".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Handle::current();
+                let mut pending: Vec<PathBuf> = Vec::new();
+                let mut last_event = std::time::Instant::now();
+
+                loop {
+                    match rx.recv_timeout(Duration::from_millis(500)) {
+                        Ok(Ok(event)) => {
+                            if let Some(path) = relevant_event_path(&event) {
+                                pending.push(path);
+                                last_event = std::time::Instant::now();
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            tracing::debug!(error = %e, "file watcher error");
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            tracing::warn!("file watcher channel closed");
+                            break;
+                        }
+                    }
+
+                    if !pending.is_empty() && last_event.elapsed() >= Duration::from_secs(DEBOUNCE_SECS) {
+                        let dirs = deduplicate_parents(&pending);
+                        pending.clear();
+
+                        tracing::debug!(directories = dirs.len(), "file change detected, triggering scan");
+                        runtime.block_on(async {
+                            if let Err(error) = scan.scan_all().await {
+                                tracing::error!(%error, "file-watch triggered library scan failed");
+                            } else {
+                                tracing::debug!("file-watch scan completed");
+                            }
+                        });
+                    }
+                }
+            })
+            .map_err(LibraryWatcherError::Thread)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LibraryWatcherError {
+    #[error("file system watcher error: {0}")]
+    Notify(#[from] notify::Error),
+    #[error("cannot watch {0}: {1}")]
+    Watch(PathBuf, notify::Error),
+    #[error("cannot spawn watcher thread: {0}")]
+    Thread(std::io::Error),
+}
+
+fn relevant_event_path(event: &Event) -> Option<PathBuf> {
+    match event.kind {
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_) => {}
+        _ => return None,
+    }
+    event.paths.first().and_then(|p| {
+        if is_library_media_path(p) { Some(p.clone()) } else { None }
+    })
+}
+
+fn is_library_media_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mkv" | "mp4" | "avi" | "mov" | "m4v" | "wmv" | "flv" | "webm"
+            | "mp3" | "flac" | "aac" | "ogg" | "wav" | "m4a" | "opus" | "wma" | "dsf" | "aiff"
+            | "srt" | "ass" | "ssa" | "sub"
+            | "jpg" | "jpeg" | "png" | "tbn"
+    )
+}
+
+fn deduplicate_parents(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut result: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if let Some(parent) = path.parent() {
+            if !result.iter().any(|p| path.starts_with(p)) {
+                result.retain(|p| !p.starts_with(parent));
+                result.push(parent.to_path_buf());
+            }
+        }
+    }
+    result
+}

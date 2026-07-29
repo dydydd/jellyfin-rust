@@ -12,6 +12,7 @@ mod item_update;
 pub mod library;
 mod library_controller;
 mod library_scan;
+pub mod library_watcher;
 mod localization;
 mod media_attachments;
 pub mod media_encoding;

@@ -35,6 +35,7 @@ blurhash = "0.2.3"
 chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25.8", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = "2"
+notify = "7"
 regex = "1.11"
 schemars = { version = "0.9", features = ["chrono04", "preserve_order", "uuid1"] }
 sea-orm = { version = "1.1", features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json", "with-uuid"] }
