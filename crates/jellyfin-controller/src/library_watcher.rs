@@ -6,24 +6,33 @@ use std::{
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing;
 
-use crate::LibraryScanService;
+use crate::{LibraryScanService, VirtualFolderService};
 
 const DEBOUNCE_SECS: u64 = 5;
 
 pub struct LibraryWatcher {
     scan: LibraryScanService,
+    folders: VirtualFolderService,
     paths: Vec<PathBuf>,
 }
 
 impl LibraryWatcher {
     #[must_use]
-    pub fn new(scan: LibraryScanService, paths: Vec<PathBuf>) -> Self {
-        Self { scan, paths }
+    pub fn new(
+        scan: LibraryScanService,
+        folders: VirtualFolderService,
+        paths: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            scan,
+            folders,
+            paths,
+        }
     }
 
     /// Starts watching library directories. Runs the watcher in a
-    /// background thread; new/changed files trigger a full scan after
-    /// a 5-second debounce window.
+    /// background thread; file changes trigger a scan of only the
+    /// affected virtual folder after a 5-second debounce window.
     pub fn start(self) -> Result<(), LibraryWatcherError> {
         if self.paths.is_empty() {
             return Ok(());
@@ -41,6 +50,7 @@ impl LibraryWatcher {
         }
 
         let scan = self.scan;
+        let folders = self.folders;
 
         // Spawn a thread for the blocking event loop
         std::thread::Builder::new()
@@ -68,16 +78,58 @@ impl LibraryWatcher {
                         }
                     }
 
-                    if !pending.is_empty() && last_event.elapsed() >= Duration::from_secs(DEBOUNCE_SECS) {
+                    if !pending.is_empty()
+                        && last_event.elapsed() >= Duration::from_secs(DEBOUNCE_SECS)
+                    {
                         let dirs = deduplicate_parents(&pending);
                         pending.clear();
 
-                        tracing::debug!(directories = dirs.len(), "file change detected, triggering scan");
+                        tracing::debug!(
+                            directories = dirs.len(),
+                            "file change detected, triggering incremental scan"
+                        );
                         runtime.block_on(async {
-                            if let Err(error) = scan.scan_all().await {
-                                tracing::error!(%error, "file-watch triggered library scan failed");
-                            } else {
-                                tracing::debug!("file-watch scan completed");
+                            // Find which virtual folders contain the changed paths
+                            let all_virtual =
+                                match folders.list().await {
+                                    Ok(v) => v,
+                                    Err(error) => {
+                                        tracing::error!(%error,
+                                            "cannot list virtual folders for incremental scan");
+                                        return;
+                                    }
+                                };
+
+                            for path in &dirs {
+                                let canonical = match tokio::fs::canonicalize(path).await {
+                                    Ok(p) => p,
+                                    Err(_) => continue,
+                                };
+                                let canonical_str = canonical.to_string_lossy();
+
+                                for vf in &all_virtual {
+                                    // Check if the changed path is under this virtual
+                                    // folder's configured media paths
+                                    let matches = vf.locations.iter().any(|loc| {
+                                        canonical_str.starts_with(loc)
+                                    });
+                                    if matches {
+                                        if let Err(error) =
+                                            scan.scan_collection(vf.id).await
+                                        {
+                                            tracing::error!(
+                                                %error, folder = %vf.name,
+                                                "incremental scan failed",
+                                            );
+                                        } else {
+                                            tracing::debug!(
+                                                folder = %vf.name,
+                                                "incremental scan completed",
+                                            );
+                                        }
+                                        break;
+                                    }
+                                }
                             }
                         });
                     }
@@ -105,7 +157,11 @@ fn relevant_event_path(event: &Event) -> Option<PathBuf> {
         _ => return None,
     }
     event.paths.first().and_then(|p| {
-        if is_library_media_path(p) { Some(p.clone()) } else { None }
+        if is_library_media_path(p) {
+            Some(p.clone())
+        } else {
+            None
+        }
     })
 }
 
@@ -118,7 +174,8 @@ fn is_library_media_path(path: &Path) -> bool {
         "mkv" | "mp4" | "avi" | "mov" | "m4v" | "wmv" | "flv" | "webm"
             | "mp3" | "flac" | "aac" | "ogg" | "wav" | "m4a" | "opus" | "wma" | "dsf" | "aiff"
             | "srt" | "ass" | "ssa" | "sub"
-            | "jpg" | "jpeg" | "png" | "tbn"
+            | "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "tif"
+            | "pdf" | "epub" | "mobi" | "cbr" | "cbz" | "djvu"
     )
 }
 
