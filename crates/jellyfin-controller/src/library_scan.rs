@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::available_parallelism,
 };
 
@@ -51,6 +54,8 @@ pub enum LibraryScanError {
     VirtualFolder(#[from] VirtualFolderError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("a library scan is already in progress")]
+    AlreadyScanning,
 }
 
 #[derive(Clone)]
@@ -63,6 +68,7 @@ pub struct LibraryScanService {
     probe_path: PathBuf,
     fanout_concurrency: usize,
     on_progress: Option<Arc<dyn Fn(f64) + Send + Sync>>,
+    is_scanning: Arc<AtomicBool>,
 }
 
 impl LibraryScanService {
@@ -85,6 +91,7 @@ impl LibraryScanService {
             probe_path: probe_path.into(),
             fanout_concurrency: default_fanout_concurrency(),
             on_progress: None,
+            is_scanning: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -102,7 +109,25 @@ impl LibraryScanService {
     ///
     /// Returns persistence or file-system errors that prevent the scan from
     /// reading configured paths or writing discovered media.
+    fn try_start_scan(&self) -> Result<(), LibraryScanError> {
+        self.is_scanning
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| LibraryScanError::AlreadyScanning)
+    }
+
+    fn end_scan(&self) {
+        self.is_scanning.store(false, Ordering::Release);
+    }
+
     pub async fn scan_all(&self) -> Result<LibraryScanSummary, LibraryScanError> {
+        self.try_start_scan()?;
+        let result = self.scan_all_inner().await;
+        self.end_scan();
+        result
+    }
+
+    async fn scan_all_inner(&self) -> Result<LibraryScanSummary, LibraryScanError> {
         self.items.ensure_user_root().await?;
         let folders = self.folders.list().await?;
         let total = folders.len();
@@ -126,6 +151,16 @@ impl LibraryScanService {
     }
 
     pub async fn scan_collection(
+        &self,
+        collection_id: Uuid,
+    ) -> Result<LibraryScanSummary, LibraryScanError> {
+        self.try_start_scan()?;
+        let result = self.scan_collection_inner(collection_id).await;
+        self.end_scan();
+        result
+    }
+
+    async fn scan_collection_inner(
         &self,
         collection_id: Uuid,
     ) -> Result<LibraryScanSummary, LibraryScanError> {

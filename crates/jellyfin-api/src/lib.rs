@@ -1843,6 +1843,9 @@ fn trickplay_error_response(_error: &TrickplayError) -> (StatusCode, &'static st
 
 fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'static str) {
     match error {
+        LibraryScanError::AlreadyScanning => {
+            (StatusCode::CONFLICT, "Library scan is already in progress")
+        }
         LibraryScanError::BaseItem(BaseItemError::ParentNotFound | BaseItemError::NotFound)
         | LibraryScanError::VirtualFolder(
             jellyfin_data::VirtualFolderError::NotFound
