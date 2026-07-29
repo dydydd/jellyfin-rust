@@ -3,6 +3,7 @@ pub mod client_event;
 mod collections;
 mod dashboard;
 mod environment;
+mod episode_parser;
 mod genres;
 mod item_images;
 mod item_lookup;

@@ -187,6 +187,11 @@ impl LibraryScanService {
         folder: &VirtualFolderWithPaths,
         summary: &mut LibraryScanSummary,
     ) -> Result<(), LibraryScanError> {
+        let is_tv = folder
+            .folder
+            .collection_type
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case("tvshows"));
         let collection = self.ensure_collection_folder(folder).await?;
         summary.folders_seen += 1;
         let mut seen_paths = HashSet::new();
@@ -194,7 +199,7 @@ impl LibraryScanService {
         for path in &folder.paths {
             let root = Path::new(&path.normalized_path);
             if self
-                .scan_path(root, collection.id, summary, &mut seen_paths)
+                .scan_path(root, collection.id, is_tv, summary, &mut seen_paths)
                 .await?
             {
                 readable_roots.push(root.to_path_buf());
@@ -244,6 +249,7 @@ impl LibraryScanService {
         &self,
         root: &Path,
         parent_id: Uuid,
+        is_tv: bool,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
     ) -> Result<bool, LibraryScanError> {
@@ -253,7 +259,7 @@ impl LibraryScanService {
             Err(error) => return Err(error.into()),
         };
         let mut pending = Vec::new();
-        self.scan_entries(&mut entries, &mut pending, parent_id, summary, seen_paths)
+        self.scan_entries(&mut entries, &mut pending, parent_id, is_tv, summary, seen_paths)
             .await?;
         while let Some(directory) = pending.pop() {
             let mut entries = match fs::read_dir(&directory).await {
@@ -261,7 +267,7 @@ impl LibraryScanService {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            self.scan_entries(&mut entries, &mut pending, parent_id, summary, seen_paths)
+            self.scan_entries(&mut entries, &mut pending, parent_id, is_tv, summary, seen_paths)
                 .await?;
         }
         Ok(true)
@@ -272,6 +278,7 @@ impl LibraryScanService {
         entries: &mut tokio::fs::ReadDir,
         pending: &mut Vec<PathBuf>,
         parent_id: Uuid,
+        is_tv: bool,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
     ) -> Result<(), LibraryScanError> {
@@ -312,7 +319,7 @@ impl LibraryScanService {
             .collect();
 
         summary.items_added += self
-            .process_files(&files, parent_id, &existing_by_path)
+            .process_files(&files, parent_id, is_tv, &existing_by_path)
             .await?;
         Ok(())
     }
@@ -321,6 +328,7 @@ impl LibraryScanService {
         &self,
         files: &[(PathBuf, MediaKind)],
         parent_id: Uuid,
+        is_tv: bool,
         existing_by_path: &HashMap<String, base_item::Model>,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
@@ -334,7 +342,7 @@ impl LibraryScanService {
                     .to_str()
                     .and_then(|p| existing_by_path.get(p));
                 if self
-                    .ensure_media_item(path, parent_id, *media_kind, existing)
+                    .ensure_media_item(path, parent_id, *media_kind, is_tv, existing)
                     .await?
                 {
                     added += 1;
@@ -365,7 +373,7 @@ impl LibraryScanService {
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
                 service
-                    .ensure_media_item(&path, parent_id, media_kind, existing.as_ref())
+                    .ensure_media_item(&path, parent_id, media_kind, is_tv, existing.as_ref())
                     .await
             }));
         }
@@ -421,37 +429,150 @@ impl LibraryScanService {
         path: &Path,
         parent_id: Uuid,
         media_kind: MediaKind,
+        is_tv: bool,
         existing: Option<&'a base_item::Model>,
     ) -> Result<bool, LibraryScanError> {
-        let Some(path) = path.to_str() else {
+        let Some(path_str) = path.to_str() else {
             return Ok(false);
         };
         if let Some(mut existing) = existing.cloned() {
-            if let Some(media_info) = self
-                .ensure_media_streams(existing.id, path, media_kind)
-                .await?
-                && apply_probed_item_metadata(&mut existing, path, &media_info)
-            {
-                self.items.update(existing).await?;
+            if !is_tv {
+                if let Some(media_info) = self
+                    .ensure_media_streams(existing.id, path_str, media_kind)
+                    .await?
+                    && apply_probed_item_metadata(&mut existing, path_str, &media_info)
+                {
+                    self.items.update(existing).await?;
+                }
+                return Ok(false);
             }
-            return Ok(false);
+            return self
+                .ensure_episode_item(Some(existing), path, parent_id, media_kind, path_str)
+                .await;
+        }
+
+        if is_tv && media_kind == MediaKind::Video {
+            return self
+                .ensure_episode_item(None, path, parent_id, media_kind, path_str)
+                .await;
         }
 
         let item_type = media_kind.item_type();
-        let name = display_name(path);
-        let mut item = NewBaseItem::new(stable_item_id(path, item_type), item_type);
-        item.path = Some(path.to_owned());
+        let name = display_name(path_str);
+        let mut item = NewBaseItem::new(stable_item_id(path_str, item_type), item_type);
+        item.path = Some(path_str.to_owned());
         item.parent_id = Some(parent_id);
         item.name = Some(name.clone());
         item.sort_name = Some(name);
         item.media_type = Some(media_kind.media_type().to_owned());
         item.is_folder = false;
         item.is_virtual_item = false;
-        item.presentation_unique_key = Some(path.to_owned());
-        item.data = Some(media_item_data(path, None));
+        item.presentation_unique_key = Some(path_str.to_owned());
+        item.data = Some(media_item_data(path_str, None));
         let mut item = self.items.create(item).await?;
-        if let Some(media_info) = self.ensure_media_streams(item.id, path, media_kind).await?
-            && apply_probed_item_metadata(&mut item, path, &media_info)
+        if let Some(media_info) = self.ensure_media_streams(item.id, path_str, media_kind).await?
+            && apply_probed_item_metadata(&mut item, path_str, &media_info)
+        {
+            self.items.update(item).await?;
+        }
+        Ok(true)
+    }
+
+    async fn ensure_episode_item(
+        &self,
+        existing: Option<base_item::Model>,
+        path: &Path,
+        parent_id: Uuid,
+        media_kind: MediaKind,
+        path_str: &str,
+    ) -> Result<bool, LibraryScanError> {
+        let ep_result = crate::episode_parser::parse_episode(path);
+        let season_number = ep_result.season_number;
+        let episode_number = ep_result.episode_number;
+        let series_name = ep_result.series_name;
+
+        let mut series_id = None;
+        let mut season_id = None;
+        let mut series_puk = None;
+
+        if let Some(ref name) = series_name {
+            let series_item_type = "Series";
+            let series_item_id = stable_item_id(name, series_item_type);
+            let series_exists = self.items.get(series_item_id).await?.is_some();
+            if !series_exists {
+                let mut series = NewBaseItem::new(series_item_id, series_item_type);
+                series.name = Some(name.clone());
+                series.sort_name = Some(name.clone());
+                series.is_folder = true;
+                series.is_virtual_item = false;
+                series.data = Some(json!({ "CollectionType": "tvshows" }));
+                self.items.create(series).await?;
+            }
+            series_id = Some(series_item_id);
+            series_puk = Some(series_item_id.simple().to_string());
+
+            if let Some(sn) = season_number {
+                let season_key = format!("{}_{}", series_item_id.simple(), sn);
+                let season_item_id = stable_item_id(&season_key, "Season");
+                let season_exists = self.items.get(season_item_id).await?.is_some();
+                if !season_exists {
+                    let mut season = NewBaseItem::new(season_item_id, "Season");
+                    season.name = Some(format!("Season {sn}"));
+                    season.sort_name = season.name.clone();
+                    season.parent_id = Some(series_item_id);
+                    season.index_number = Some(sn);
+                    season.is_folder = true;
+                    season.is_virtual_item = false;
+                    season.series_id = Some(series_item_id);
+                    season.series_presentation_unique_key = series_puk.clone();
+                    self.items.create(season).await?;
+                }
+                season_id = Some(season_item_id);
+            }
+        }
+
+        let item_type = media_kind.item_type();
+        let name = display_name(path_str);
+        let stable_id = stable_item_id(path_str, item_type);
+
+        if let Some(mut existing) = existing {
+            existing.index_number = episode_number;
+            existing.parent_index_number = season_number;
+            if let Some(sid) = series_id {
+                existing.series_id = Some(sid);
+            }
+            if let Some(sid) = season_id {
+                existing.season_id = Some(sid);
+            }
+            existing.series_presentation_unique_key = series_puk.clone();
+            if let Some(media_info) = self
+                .ensure_media_streams(existing.id, path_str, media_kind)
+                .await?
+                && apply_probed_item_metadata(&mut existing, path_str, &media_info)
+            {
+                self.items.update(existing).await?;
+            }
+            return Ok(false);
+        }
+
+        let mut item = NewBaseItem::new(stable_id, item_type);
+        item.path = Some(path_str.to_owned());
+        item.parent_id = Some(parent_id);
+        item.name = Some(name.clone());
+        item.sort_name = Some(name);
+        item.media_type = Some(media_kind.media_type().to_owned());
+        item.is_folder = false;
+        item.is_virtual_item = false;
+        item.presentation_unique_key = Some(path_str.to_owned());
+        item.index_number = episode_number;
+        item.parent_index_number = season_number;
+        item.series_id = series_id;
+        item.season_id = season_id;
+        item.series_presentation_unique_key = series_puk;
+        item.data = Some(media_item_data(path_str, None));
+        let mut item = self.items.create(item).await?;
+        if let Some(media_info) = self.ensure_media_streams(item.id, path_str, media_kind).await?
+            && apply_probed_item_metadata(&mut item, path_str, &media_info)
         {
             self.items.update(item).await?;
         }
