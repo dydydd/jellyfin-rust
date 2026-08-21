@@ -218,6 +218,9 @@ impl ItemLookupService {
             .get(item_id)
             .await?
             .ok_or(ItemLookupError::NotFound)?;
+        if let Some(item_type) = identified_item_type(&item.item_type, result.r#type.as_deref()) {
+            item.item_type = item_type.to_owned();
+        }
         if let Some(name) = result
             .name
             .as_deref()
@@ -263,6 +266,15 @@ fn empty_remote_images() -> RemoteImageResult {
     }
 }
 
+fn identified_item_type<'a>(current: &str, identified: Option<&'a str>) -> Option<&'a str> {
+    match identified {
+        Some(identified @ ("Movie" | "Series")) if current != identified => {
+            matches!(current, "Video" | "Movie" | "Series").then_some(identified)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -298,5 +310,21 @@ mod tests {
         assert_eq!(request.search_info.year, Some(1998));
         assert_eq!(request.search_info.provider_ids["Imdb"], "tt0119094");
         assert_eq!(request.search_provider_name.as_deref(), Some("TheMovieDb"));
+    }
+
+    #[test]
+    fn identified_item_type_only_upgrades_video_items_to_movie_or_series() {
+        assert_eq!(
+            identified_item_type("Video", Some("Movie")),
+            Some("Movie")
+        );
+        assert_eq!(
+            identified_item_type("Video", Some("Series")),
+            Some("Series")
+        );
+        assert_eq!(identified_item_type("Movie", Some("Movie")), None);
+        assert_eq!(identified_item_type("Audio", Some("Movie")), None);
+        assert_eq!(identified_item_type("Video", None), None);
+        assert_eq!(identified_item_type("Video", Some("BoxSet")), None);
     }
 }

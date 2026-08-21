@@ -77,6 +77,10 @@ async fn exercise_route(database_name: &str) {
         .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
         .await
         .expect("movie creation");
+    let scanned_video = BaseItemRepository::new(database.clone())
+        .create(NewBaseItem::new(Uuid::new_v4(), "Video"))
+        .await
+        .expect("scanned video creation");
     let route_app = app(database.clone());
 
     assert_eq!(
@@ -109,6 +113,7 @@ async fn exercise_route(database_name: &str) {
         &route_app,
         &database,
         movie.id,
+        scanned_video.id,
         &ordinary_token,
         &administrator_token,
     )
@@ -129,6 +134,7 @@ async fn assert_remote_search_contract(
     app: &Router,
     database: &sea_orm::DatabaseConnection,
     item_id: Uuid,
+    scanned_video_id: Uuid,
     ordinary_token: &str,
     administrator_token: &str,
 ) {
@@ -194,6 +200,7 @@ async fn assert_remote_search_contract(
 
     let apply_body = json!({
         "Name": "Applied Candidate",
+        "Type": "Movie",
         "ProviderIds": {
             "Imdb": "tt7654321",
             "Tmdb": "98765"
@@ -229,6 +236,20 @@ async fn assert_remote_search_contract(
     let metadata = stored.data.expect("metadata after apply");
     assert_eq!(metadata["ProviderIds"]["Imdb"], "tt7654321");
     assert_eq!(metadata["ProviderIds"]["Tmdb"], "98765");
+
+    let apply_route = format!("/Items/RemoteSearch/Apply/{scanned_video_id}?replaceAllImages=false");
+    assert_eq!(
+        post_json(app, &apply_route, Some(administrator_token), &apply_body)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let stored = base_item::Entity::find_by_id(scanned_video_id)
+        .one(database)
+        .await
+        .expect("item lookup")
+        .expect("scanned video exists after apply");
+    assert_eq!(stored.item_type, "Movie");
 }
 
 fn app(database: sea_orm::DatabaseConnection) -> Router {

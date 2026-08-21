@@ -177,6 +177,7 @@ fn remote_search_result_uses_official_provider_contract() {
     provider_ids.insert("Imdb".to_owned(), "tt7654321".to_owned());
     let value = serde_json::to_value(RemoteSearchResult {
         name: Some("Applied Candidate".to_owned()),
+        r#type: Some("Movie".to_owned()),
         provider_ids,
         production_year: Some(2026),
         search_provider_name: Some("Example".to_owned()),
@@ -190,6 +191,7 @@ fn remote_search_result_uses_official_provider_contract() {
     assert_eq!(value["ProductionYear"], 2026);
     assert_eq!(value["SearchProviderName"], "Example");
     assert_eq!(value["Artists"], json!([]));
+    assert_eq!(value["Type"], "Movie");
     assert!(value.get("provider_ids").is_none());
 }
 

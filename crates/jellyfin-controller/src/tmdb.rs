@@ -259,6 +259,7 @@ fn movie_search_to_remote_result(result: TmdbSearchMovie) -> RemoteSearchResult 
             .title
             .clone()
             .or_else(|| result.original_title.clone()),
+        r#type: Some("Movie".to_owned()),
         provider_ids: HashMap::from([("Tmdb".to_owned(), result.id.to_string())]),
         production_year: parse_year(result.release_date.as_deref()),
         premiere_date: parse_tmdb_date(result.release_date.as_deref()),
@@ -272,6 +273,7 @@ fn movie_search_to_remote_result(result: TmdbSearchMovie) -> RemoteSearchResult 
 fn tv_search_to_remote_result(result: TmdbSearchTv) -> RemoteSearchResult {
     RemoteSearchResult {
         name: result.name.clone().or_else(|| result.original_name.clone()),
+        r#type: Some("Series".to_owned()),
         provider_ids: HashMap::from([("Tmdb".to_owned(), result.id.to_string())]),
         production_year: parse_year(result.first_air_date.as_deref()),
         premiere_date: parse_tmdb_date(result.first_air_date.as_deref()),

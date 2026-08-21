@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -20,7 +21,9 @@ use jellyfin_media_encoding::probing::{
     MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol,
     MediaStream as ProbedMediaStream, MediaStreamType,
 };
-use jellyfin_model::{MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream};
+use jellyfin_model::{
+    CollectionType, MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream,
+};
 use jellyfin_naming::NamingOptions;
 use jellyfin_providers::media_info::{
     MediaFileSystemEntry, SubtitleResolveRequest, SubtitleResolver,
@@ -187,11 +190,7 @@ impl LibraryScanService {
         folder: &VirtualFolderWithPaths,
         summary: &mut LibraryScanSummary,
     ) -> Result<(), LibraryScanError> {
-        let is_tv = folder
-            .folder
-            .collection_type
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case("tvshows"));
+        let kind = ScanLibraryKind::from_collection_type(folder.folder.collection_type.as_deref());
         let collection = self.ensure_collection_folder(folder).await?;
         summary.folders_seen += 1;
         let mut seen_paths = HashSet::new();
@@ -199,7 +198,7 @@ impl LibraryScanService {
         for path in &folder.paths {
             let root = Path::new(&path.normalized_path);
             if self
-                .scan_path(root, collection.id, is_tv, summary, &mut seen_paths)
+                .scan_path(root, collection.id, kind, summary, &mut seen_paths)
                 .await?
             {
                 readable_roots.push(root.to_path_buf());
@@ -249,7 +248,7 @@ impl LibraryScanService {
         &self,
         root: &Path,
         parent_id: Uuid,
-        is_tv: bool,
+        kind: ScanLibraryKind,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
     ) -> Result<bool, LibraryScanError> {
@@ -259,7 +258,7 @@ impl LibraryScanService {
             Err(error) => return Err(error.into()),
         };
         let mut pending = Vec::new();
-        self.scan_entries(&mut entries, &mut pending, parent_id, is_tv, summary, seen_paths)
+        self.scan_entries(&mut entries, &mut pending, parent_id, kind, summary, seen_paths)
             .await?;
         while let Some(directory) = pending.pop() {
             let mut entries = match fs::read_dir(&directory).await {
@@ -267,7 +266,7 @@ impl LibraryScanService {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            self.scan_entries(&mut entries, &mut pending, parent_id, is_tv, summary, seen_paths)
+            self.scan_entries(&mut entries, &mut pending, parent_id, kind, summary, seen_paths)
                 .await?;
         }
         Ok(true)
@@ -278,7 +277,7 @@ impl LibraryScanService {
         entries: &mut tokio::fs::ReadDir,
         pending: &mut Vec<PathBuf>,
         parent_id: Uuid,
-        is_tv: bool,
+        kind: ScanLibraryKind,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
     ) -> Result<(), LibraryScanError> {
@@ -319,7 +318,7 @@ impl LibraryScanService {
             .collect();
 
         summary.items_added += self
-            .process_files(&files, parent_id, is_tv, &existing_by_path)
+            .process_files(&files, parent_id, kind, &existing_by_path)
             .await?;
         Ok(())
     }
@@ -328,7 +327,7 @@ impl LibraryScanService {
         &self,
         files: &[(PathBuf, MediaKind)],
         parent_id: Uuid,
-        is_tv: bool,
+        kind: ScanLibraryKind,
         existing_by_path: &HashMap<String, base_item::Model>,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
@@ -342,7 +341,7 @@ impl LibraryScanService {
                     .to_str()
                     .and_then(|p| existing_by_path.get(p));
                 if self
-                    .ensure_media_item(path, parent_id, *media_kind, is_tv, existing)
+                    .ensure_media_item(path, parent_id, *media_kind, kind, existing)
                     .await?
                 {
                     added += 1;
@@ -373,7 +372,7 @@ impl LibraryScanService {
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
                 service
-                    .ensure_media_item(&path, parent_id, media_kind, is_tv, existing.as_ref())
+                    .ensure_media_item(&path, parent_id, media_kind, kind, existing.as_ref())
                     .await
             }));
         }
@@ -429,22 +428,35 @@ impl LibraryScanService {
         path: &Path,
         parent_id: Uuid,
         media_kind: MediaKind,
-        is_tv: bool,
+        kind: ScanLibraryKind,
         existing: Option<&'a base_item::Model>,
     ) -> Result<bool, LibraryScanError> {
         let Some(path_str) = path.to_str() else {
             return Ok(false);
         };
         if let Some(mut existing) = existing.cloned() {
-            if !is_tv {
+            if !kind.is_tv() {
+                let desired_type = if media_kind == MediaKind::Video {
+                    kind.video_item_type()
+                } else {
+                    media_kind.item_type()
+                };
+                let mut changed = false;
+                if existing.item_type != desired_type {
+                    existing.item_type = desired_type.to_owned();
+                    changed = true;
+                }
                 if media_kind.needs_probe() {
                     if let Some(media_info) = self
                         .ensure_media_streams(existing.id, path_str, media_kind)
                         .await?
                         && apply_probed_item_metadata(&mut existing, path_str, &media_info)
                     {
-                        self.items.update(existing).await?;
+                        changed = true;
                     }
+                }
+                if changed {
+                    self.items.update(existing).await?;
                 }
                 return Ok(false);
             }
@@ -453,13 +465,17 @@ impl LibraryScanService {
                 .await;
         }
 
-        if is_tv && media_kind == MediaKind::Video {
+        if kind.is_tv() && media_kind == MediaKind::Video {
             return self
                 .ensure_episode_item(None, path, parent_id, media_kind, path_str)
                 .await;
         }
 
-        let item_type = media_kind.item_type();
+        let item_type = if media_kind == MediaKind::Video {
+            kind.video_item_type()
+        } else {
+            media_kind.item_type()
+        };
         let name = display_name(path_str);
         let mut item = NewBaseItem::new(stable_item_id(path_str, item_type), item_type);
         item.path = Some(path_str.to_owned());
@@ -691,6 +707,37 @@ enum MediaKind {
     Book,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanLibraryKind {
+    Movies,
+    TvShows,
+    Generic,
+}
+
+impl ScanLibraryKind {
+    fn from_collection_type(collection_type: Option<&str>) -> Self {
+        match collection_type
+            .and_then(|value| CollectionType::from_str(value).ok())
+            .unwrap_or(CollectionType::Unknown)
+        {
+            CollectionType::Movies | CollectionType::BoxSets => Self::Movies,
+            CollectionType::TvShows => Self::TvShows,
+            _ => Self::Generic,
+        }
+    }
+
+    const fn is_tv(self) -> bool {
+        matches!(self, Self::TvShows)
+    }
+
+    const fn video_item_type(self) -> &'static str {
+        match self {
+            Self::Movies => "Movie",
+            Self::TvShows | Self::Generic => "Video",
+        }
+    }
+}
+
 impl MediaKind {
     const fn item_type(self) -> &'static str {
         match self {
@@ -745,7 +792,7 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
 }
 
 fn is_scanned_media_type(item_type: &str) -> bool {
-    matches!(item_type, "Audio" | "Video" | "Photo" | "Book")
+    matches!(item_type, "Audio" | "Video" | "Movie" | "Photo" | "Book")
 }
 
 fn apply_probed_item_metadata(
@@ -1137,9 +1184,10 @@ const BOOK_EXTENSIONS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::{
-        MediaKind, apply_probed_item_metadata, attachments_from_media_info, codec_from_extension,
-        default_stream, display_name, media_item_data, media_kind, next_stream_index,
-        resolve_external_subtitle_streams_from_entries, stable_item_id, streams_from_media_info,
+        MediaKind, ScanLibraryKind, apply_probed_item_metadata, attachments_from_media_info,
+        codec_from_extension, default_stream, display_name, media_item_data, media_kind,
+        next_stream_index, resolve_external_subtitle_streams_from_entries, stable_item_id,
+        streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
@@ -1155,6 +1203,32 @@ mod tests {
         assert_eq!(media_kind(Path::new("photo.jpg")), Some(MediaKind::Photo));
         assert_eq!(media_kind(Path::new("book.pdf")), Some(MediaKind::Book));
         assert_eq!(media_kind(Path::new("data.nfo")), None);
+    }
+
+    #[test]
+    fn video_library_kind_matches_official_jellyfin_type_resolution() {
+        assert_eq!(
+            ScanLibraryKind::from_collection_type(Some("movies")).video_item_type(),
+            "Movie"
+        );
+        assert_eq!(
+            ScanLibraryKind::from_collection_type(Some("boxsets")).video_item_type(),
+            "Movie"
+        );
+        assert_eq!(
+            ScanLibraryKind::from_collection_type(Some("homevideos")).video_item_type(),
+            "Video"
+        );
+        assert_eq!(
+            ScanLibraryKind::from_collection_type(Some("musicvideos")).video_item_type(),
+            "Video"
+        );
+        assert_eq!(
+            ScanLibraryKind::from_collection_type(None).video_item_type(),
+            "Video"
+        );
+        assert!(ScanLibraryKind::from_collection_type(Some("tvshows")).is_tv());
+        assert!(!ScanLibraryKind::from_collection_type(Some("movies")).is_tv());
     }
 
     #[test]

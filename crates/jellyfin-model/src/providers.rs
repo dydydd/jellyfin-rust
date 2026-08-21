@@ -106,6 +106,8 @@ pub struct RemoteSubtitleInfo {
 #[serde(default, rename_all = "PascalCase")]
 pub struct RemoteSearchResult {
     pub name: Option<String>,
+    #[serde(rename = "Type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
     pub provider_ids: HashMap<String, String>,
     pub production_year: Option<i32>,
     pub index_number: Option<i32>,
