@@ -47,21 +47,20 @@ pub(crate) async fn images(
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
 
-    // Remote image providers are not wired yet. The query is still parsed so
-    // clients can rely on the official parameter surface while receiving the
-    // provider aggregate's empty result.
-    let RemoteImagesQuery {
-        image_type: _image_type,
-        start_index: _start_index,
-        limit: _limit,
-        provider_name: _provider_name,
-        include_all_languages: _include_all_languages,
-    } = query;
-    Ok(Json(RemoteImageResult {
-        images: Vec::new(),
-        total_record_count: 0,
-        providers: Vec::new(),
-    }))
+    let api_key = state.tmdb_api_key.read().await.clone();
+    let result = state
+        .item_lookup
+        .remote_images(
+            item_id,
+            query.image_type,
+            query.provider_name.as_deref(),
+            query.include_all_languages,
+            query.start_index.unwrap_or(0),
+            query.limit,
+            &api_key,
+        )
+        .await?;
+    Ok(Json(result))
 }
 
 pub(crate) async fn providers(
@@ -74,7 +73,13 @@ pub(crate) async fn providers(
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
-    Ok(Json(Vec::new()))
+    let api_key = state.tmdb_api_key.read().await.clone();
+    Ok(Json(
+        state
+            .item_lookup
+            .remote_image_providers(item_id, &api_key)
+            .await?,
+    ))
 }
 
 pub(crate) async fn download(
@@ -87,13 +92,19 @@ pub(crate) async fn download(
     authorization::require_default(&state, &headers, &uri)
         .await?
         .require_administrator()?;
-    let _image_type = query.image_type.ok_or(ApiError::InvalidRequest)?;
-    let _image_url = query.image_url;
+    let image_type = query.image_type.ok_or(ApiError::InvalidRequest)?;
+    let image_url = query.image_url.ok_or(ApiError::NotFound)?;
     ensure_item_exists(&state, item_id).await?;
 
-    // No remote image providers are available yet, so there is nothing to
-    // download after the official authorization and item validation gates.
-    Err(BaseItemError::NotFound.into())
+    let api_key = state.tmdb_api_key.read().await.clone();
+    if api_key.is_empty() {
+        return Err(BaseItemError::NotFound.into());
+    }
+    state
+        .item_images
+        .download_remote_image(item_id, image_type, &image_url)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ensure_item_exists(state: &AppState, item_id: Uuid) -> Result<(), ApiError> {

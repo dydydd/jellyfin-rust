@@ -30,6 +30,7 @@ mod scheduled_tasks;
 mod studios;
 mod system_logs;
 mod system_storage;
+mod tmdb;
 mod trickplay;
 mod user_data;
 mod user_library;
@@ -44,7 +45,7 @@ pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
 pub use genres::{Genre, GenreError, GenreKind, GenrePage, GenreService};
 pub use item_images::{ItemImageError, ItemImageResource, ItemImageService};
-pub use item_lookup::{ItemLookupError, ItemLookupService};
+pub use item_lookup::{ItemLookupError, ItemLookupService, RemoteSearchInfo, RemoteSearchRequest};
 pub use item_types::{
     HydratedBaseItem, ItemTypeRegistrationError, ItemTypeRegistry, KnownItemType,
 };

@@ -4,7 +4,9 @@ use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_data::{BaseItemError, BaseItemRepository};
+use jellyfin_data::{
+    BaseItemError, BaseItemRepository, ItemUpdateRepository, ItemValueRepository, PersonRepository,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -89,6 +91,10 @@ pub(crate) async fn refresh(
             let provider = jellyfin_controller::metadata_providers::TmdbMetadataProvider::new(
                 api_key.clone(),
                 BaseItemRepository::new(state.database.clone()),
+                ItemValueRepository::new(state.database.clone()),
+                PersonRepository::new(state.database.clone()),
+                ItemUpdateRepository::new(state.database.clone()),
+                Some(state.item_images.clone()),
             );
             drop(api_key);
             if let Err(error) = provider.refresh_item(item_id).await {

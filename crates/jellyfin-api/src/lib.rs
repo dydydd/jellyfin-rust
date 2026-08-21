@@ -7,7 +7,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use tower_http::services::{ServeDir, ServeFile};
 use jellyfin_controller::{
     ArtistError, ArtistService, CollectionError, CollectionService, DashboardError, DashboardPage,
     DashboardService, EnvironmentError, EnvironmentService, GenreError, GenreService,
@@ -41,6 +40,7 @@ use jellyfin_server_implementations::{
 };
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
+use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 mod activity_log;
@@ -284,6 +284,13 @@ impl AppState {
     #[must_use]
     pub fn with_persistent_startup(mut self, repository: ServerConfigurationRepository) -> Self {
         self.startup_repository = Some(repository);
+        self
+    }
+
+    /// Replaces the in-memory TMDB API key used by metadata providers.
+    #[must_use]
+    pub fn with_tmdb_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.tmdb_api_key = Arc::new(tokio::sync::RwLock::new(api_key.into()));
         self
     }
 
@@ -2050,6 +2057,10 @@ fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static 
         ItemLookupError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Item lookup data could not be loaded",
+        ),
+        ItemLookupError::Metadata(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "TMDB metadata provider failed",
         ),
     }
 }

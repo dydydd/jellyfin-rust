@@ -45,6 +45,7 @@ mod m20260725_000042_add_trickplay_configuration;
 mod m20260725_000043_create_playlists;
 mod m20260725_000044_add_remote_access_configuration;
 mod m20260728_000045_add_server_id_configuration;
+mod m20260804_000046_add_tmdb_api_key_configuration;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -135,6 +136,8 @@ pub use m20260725_000043_create_playlists::Migration as CreatePlaylistsMigration
 #[doc(hidden)]
 pub use m20260725_000044_add_remote_access_configuration::Migration as AddRemoteAccessConfigurationMigration;
 pub use m20260728_000045_add_server_id_configuration::Migration as AddServerIdConfigurationMigration;
+#[doc(hidden)]
+pub use m20260804_000046_add_tmdb_api_key_configuration::Migration as AddTmdbApiKeyConfigurationMigration;
 
 pub struct Migrator;
 
@@ -187,6 +190,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260725_000043_create_playlists::Migration),
             Box::new(m20260725_000044_add_remote_access_configuration::Migration),
             Box::new(m20260728_000045_add_server_id_configuration::Migration),
+            Box::new(m20260804_000046_add_tmdb_api_key_configuration::Migration),
         ]
     }
 }

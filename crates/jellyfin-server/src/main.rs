@@ -4,8 +4,8 @@ use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{BaseItemRepository, DatabaseConfig, ServerConfigurationRepository};
-use sea_orm::ConnectionTrait;
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
+use sea_orm::ConnectionTrait;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -32,6 +32,8 @@ async fn main() -> anyhow::Result<()> {
         .load()
         .await
         .context("failed to load the PostgreSQL server configuration")?;
+    let tmdb_api_key = std::env::var("JELLYFIN_TMDB_API_KEY")
+        .unwrap_or_else(|_| persisted_configuration.tmdb_api_key.clone());
     BaseItemRepository::new(database.clone())
         .ensure_user_root()
         .await
@@ -55,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
             format!("http://{bind_address}"),
         )
         .with_server_id(server_id)
+        .with_tmdb_api_key(tmdb_api_key)
         .with_startup_user(initial_user.id)
         .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
         .with_persistent_startup(startup_repository)

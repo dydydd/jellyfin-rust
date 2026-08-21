@@ -353,6 +353,7 @@ async fn assert_server_configuration_update(
         updated.trickplay_options["WidthResolutions"],
         json!([320, 640])
     );
+    assert_eq!(updated.tmdb_api_key, "tmdb-test-key");
     assert_eq!(updated.created_at, before.created_at);
     assert!(updated.row_version > before.row_version);
     assert_eq!(second.load().await.expect("reloaded full update"), updated);
@@ -422,6 +423,7 @@ fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
             "JpegQuality": 85,
             "ProcessThreads": 2
         }),
+        tmdb_api_key: "tmdb-test-key".to_owned(),
     }
 }
 

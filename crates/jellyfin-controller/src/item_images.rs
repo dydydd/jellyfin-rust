@@ -290,6 +290,22 @@ impl ItemImageService {
         Ok(())
     }
 
+    /// Downloads a remote image URL and persists it as an item image.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-URL, download, size, unsupported-type, file-system, or
+    /// persistence errors.
+    pub async fn download_remote_image(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        url: &str,
+    ) -> Result<(), ItemImageError> {
+        let (bytes, extension) = self.download_image_bytes(url).await?;
+        self.upload(item_id, image_type, &extension, &bytes).await
+    }
+
     /// Swaps the file contents addressed by two public image ordinals.
     ///
     /// Missing images and remote paths are official-compatible no-ops. Local
@@ -392,17 +408,14 @@ impl ItemImageService {
             .join(id)
     }
 
-    async fn materialize_remote(
-        &self,
-        image: BaseItemImage,
-    ) -> Result<BaseItemImage, ItemImageError> {
-        let url = reqwest::Url::parse(&image.path).map_err(|_| ItemImageError::InvalidRemoteUrl)?;
+    async fn download_image_bytes(&self, url: &str) -> Result<(Vec<u8>, String), ItemImageError> {
+        let url = reqwest::Url::parse(url).map_err(|_| ItemImageError::InvalidRemoteUrl)?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(ItemImageError::InvalidRemoteUrl);
         }
         let mut response = self
             .http
-            .get(url)
+            .get(url.clone())
             .send()
             .await
             .map_err(ItemImageError::RemoteDownload)?
@@ -436,15 +449,22 @@ impl ItemImageService {
             }
             bytes.extend_from_slice(&chunk);
         }
-
         let extension = jellyfin_model::MimeTypes::try_get_image_extension(content_type.as_deref())
             .or_else(|| {
-                Path::new(image.path.split('?').next().unwrap_or_default())
+                Path::new(url.path())
                     .extension()
                     .and_then(|extension| extension.to_str())
                     .map(|extension| format!(".{extension}"))
             })
             .unwrap_or_else(|| ".img".to_owned());
+        Ok((bytes, extension))
+    }
+
+    async fn materialize_remote(
+        &self,
+        image: BaseItemImage,
+    ) -> Result<BaseItemImage, ItemImageError> {
+        let (bytes, extension) = self.download_image_bytes(&image.path).await?;
         let target_directory = self.cache_directory.join("remote");
         fs::create_dir_all(&target_directory).await?;
         let source_key = format!("{:x}", Md5::digest(image.path.as_bytes()));

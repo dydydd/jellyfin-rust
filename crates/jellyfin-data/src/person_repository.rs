@@ -214,6 +214,21 @@ impl PersonRepository {
         Ok(person)
     }
 
+    /// Removes every persisted credit for one item.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the delete fails.
+    pub async fn clear_credits(&self, item_id: Uuid) -> Result<usize, PersonError> {
+        Ok(person_base_item_map::Entity::delete_many()
+            .filter(person_base_item_map::Column::ItemId.eq(item_id))
+            .exec(&self.database)
+            .await?
+            .rows_affected
+            .try_into()
+            .unwrap_or(usize::MAX))
+    }
+
     /// Loads an item's credits in official list order.
     ///
     /// # Errors
