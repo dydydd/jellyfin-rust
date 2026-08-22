@@ -9,6 +9,7 @@ use axum_extra::extract::Query;
 use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery};
 use jellyfin_model::{SortOrder, UserConfiguration};
 use serde::Deserialize;
+use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, user_library};
@@ -27,6 +28,42 @@ pub(crate) struct ItemsQuery {
     parent_id: Option<Uuid>,
     #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
     is_played: Option<bool>,
+    #[serde(
+        default,
+        rename = "filters",
+        alias = "Filters",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    filters: Vec<ItemFilter>,
+    #[serde(
+        default,
+        rename = "genres",
+        alias = "Genres",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    genres: Vec<String>,
+    #[serde(
+        default,
+        rename = "years",
+        alias = "Years",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    years: Vec<i32>,
+    #[serde(
+        default,
+        rename = "tags",
+        alias = "Tags",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    tags: Vec<String>,
+    #[serde(default, rename = "person", alias = "Person")]
+    person: Option<String>,
+    #[serde(
+        default,
+        rename = "minCommunityRating",
+        alias = "MinCommunityRating"
+    )]
+    min_community_rating: Option<f64>,
     #[serde(default, rename = "isMovie", alias = "IsMovie")]
     is_movie: Option<bool>,
     #[serde(default, rename = "isSeries", alias = "IsSeries")]
@@ -87,6 +124,38 @@ pub(crate) struct ItemsQuery {
         alias = "EnableTotalRecordCount"
     )]
     enable_total_record_count: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemFilter {
+    IsFolder,
+    IsNotFolder,
+    IsUnplayed,
+    IsPlayed,
+    IsFavorite,
+    IsResumable,
+    Likes,
+    Dislikes,
+    IsFavoriteOrLikes,
+}
+
+impl FromStr for ItemFilter {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "isfolder" => Ok(Self::IsFolder),
+            "isnotfolder" => Ok(Self::IsNotFolder),
+            "isunplayed" => Ok(Self::IsUnplayed),
+            "isplayed" => Ok(Self::IsPlayed),
+            "isfavorite" => Ok(Self::IsFavorite),
+            "isresumable" => Ok(Self::IsResumable),
+            "likes" => Ok(Self::Likes),
+            "dislikes" => Ok(Self::Dislikes),
+            "isfavoriteorlikes" => Ok(Self::IsFavoriteOrLikes),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -343,9 +412,37 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
     type Error = ApiError;
 
     fn try_from(query: ItemsQuery) -> Result<Self, Self::Error> {
+        let mut is_favorite = None;
+        let mut is_resumable = None;
+        let mut is_played = query.is_played;
+        let mut is_folder = None;
+        let mut is_liked = None;
+        let mut is_favorite_or_liked = None;
+        for filter in query.filters {
+            match filter {
+                ItemFilter::IsFolder => is_folder = Some(true),
+                ItemFilter::IsNotFolder => is_folder = Some(false),
+                ItemFilter::Likes => is_liked = Some(true),
+                ItemFilter::Dislikes => is_liked = Some(false),
+                ItemFilter::IsFavoriteOrLikes => is_favorite_or_liked = Some(true),
+                ItemFilter::IsUnplayed => is_played = Some(false),
+                ItemFilter::IsPlayed => is_played = Some(true),
+                ItemFilter::IsFavorite => is_favorite = Some(true),
+                ItemFilter::IsResumable => is_resumable = Some(true),
+            }
+        }
         Ok(Self {
             ids: query.ids,
             exclude_ids: Vec::new(),
+            genres: query.genres,
+            years: query.years,
+            tags: query.tags,
+            person: query.person,
+            min_community_rating: query.min_community_rating,
+            is_favorite,
+            is_folder,
+            is_liked,
+            is_favorite_or_liked,
             parent_id: query.parent_id,
             recursive: query.recursive.unwrap_or(false),
             search_term: query.search_term,
@@ -360,8 +457,8 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             is_virtual_item: None,
             group_versions_by_presentation_key: false,
             user_id: query.user_id,
-            is_resumable: None,
-            is_played: query.is_played,
+            is_resumable,
+            is_played,
             min_premiere_date: None,
             order: item_order(&query.sort_by, &query.sort_order),
             start_index: query.start_index,
@@ -405,7 +502,39 @@ pub(crate) fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemO
         }
         Some(sort) if sort.eq_ignore_ascii_case("Random") => BaseItemOrder::Random,
         Some(sort) if sort.eq_ignore_ascii_case("PremiereDate") => {
-            BaseItemOrder::PremiereDateAscending
+            if descending {
+                BaseItemOrder::PremiereDateDescending
+            } else {
+                BaseItemOrder::PremiereDateAscending
+            }
+        }
+        Some(sort) if sort.eq_ignore_ascii_case("PlayCount") => {
+            if descending {
+                BaseItemOrder::PlayCountDescending
+            } else {
+                BaseItemOrder::PlayCountAscending
+            }
+        }
+        Some(sort) if sort.eq_ignore_ascii_case("CommunityRating") => {
+            if descending {
+                BaseItemOrder::CommunityRatingDescending
+            } else {
+                BaseItemOrder::CommunityRatingAscending
+            }
+        }
+        Some(sort) if sort.eq_ignore_ascii_case("CriticRating") => {
+            if descending {
+                BaseItemOrder::CriticRatingDescending
+            } else {
+                BaseItemOrder::CriticRatingAscending
+            }
+        }
+        Some(sort) if sort.eq_ignore_ascii_case("Runtime") => {
+            if descending {
+                BaseItemOrder::RuntimeTicksDescending
+            } else {
+                BaseItemOrder::RuntimeTicksAscending
+            }
         }
         Some(sort)
             if sort.eq_ignore_ascii_case("SortName") || sort.eq_ignore_ascii_case("Name") =>
@@ -417,6 +546,62 @@ pub(crate) fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemO
             }
         }
         _ => BaseItemOrder::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_parse_official_names_case_insensitively() {
+        assert_eq!("IsFavorite".parse::<ItemFilter>(), Ok(ItemFilter::IsFavorite));
+        assert_eq!("IsPlayed".parse::<ItemFilter>(), Ok(ItemFilter::IsPlayed));
+        assert_eq!("isunplayed".parse::<ItemFilter>(), Ok(ItemFilter::IsUnplayed));
+        assert_eq!("likes".parse::<ItemFilter>(), Ok(ItemFilter::Likes));
+        assert!("UnknownFilter".parse::<ItemFilter>().is_err());
+    }
+
+    #[test]
+    fn item_order_maps_official_extended_sort_fields() {
+        assert_eq!(
+            item_order(&["PlayCount".to_owned()], &[]),
+            BaseItemOrder::PlayCountAscending
+        );
+        assert_eq!(
+            item_order(
+                &["PlayCount".to_owned()],
+                &["Descending".to_owned()]
+            ),
+            BaseItemOrder::PlayCountDescending
+        );
+        assert_eq!(
+            item_order(&["CommunityRating".to_owned()], &[]),
+            BaseItemOrder::CommunityRatingAscending
+        );
+        assert_eq!(
+            item_order(
+                &["CriticRating".to_owned()],
+                &["Descending".to_owned()]
+            ),
+            BaseItemOrder::CriticRatingDescending
+        );
+        assert_eq!(
+            item_order(&["Runtime".to_owned()], &[]),
+            BaseItemOrder::RuntimeTicksAscending
+        );
+        assert_eq!(
+            item_order(&["Runtime".to_owned()], &["Descending".to_owned()]),
+            BaseItemOrder::RuntimeTicksDescending
+        );
+    }
+
+    #[test]
+    fn item_order_keeps_premiere_direction() {
+        assert_eq!(
+            item_order(&["PremiereDate".to_owned()], &["Descending".to_owned()]),
+            BaseItemOrder::PremiereDateDescending
+        );
     }
 }
 

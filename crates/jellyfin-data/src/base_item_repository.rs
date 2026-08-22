@@ -17,7 +17,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::entities::{ancestor_id, base_item, linked_child, user_data};
+use crate::entities::{ancestor_id, base_item, item_value, linked_child, user_data};
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
 pub const USER_ROOT_FOLDER_ID: Uuid = Uuid::from_u128(2);
@@ -96,13 +96,31 @@ pub enum BaseItemOrder {
     DatePlayedAscending,
     DatePlayedDescending,
     PremiereDateAscending,
+    PremiereDateDescending,
     Random,
+    PlayCountAscending,
+    PlayCountDescending,
+    CommunityRatingAscending,
+    CommunityRatingDescending,
+    CriticRatingAscending,
+    CriticRatingDescending,
+    RuntimeTicksAscending,
+    RuntimeTicksDescending,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BaseItemQuery {
     pub ids: Vec<Uuid>,
     pub exclude_ids: Vec<Uuid>,
+    pub genres: Vec<String>,
+    pub years: Vec<i32>,
+    pub tags: Vec<String>,
+    pub person: Option<String>,
+    pub min_community_rating: Option<f64>,
+    pub is_favorite: Option<bool>,
+    pub is_folder: Option<bool>,
+    pub is_liked: Option<bool>,
+    pub is_favorite_or_liked: Option<bool>,
     pub parent_id: Option<Uuid>,
     pub recursive: bool,
     pub search_term: Option<String>,
@@ -747,6 +765,19 @@ impl BaseItemRepository {
             let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
             return self.query_by_date_played(user_id, query).await;
         }
+        if matches!(
+            query.order,
+            BaseItemOrder::PlayCountAscending
+                | BaseItemOrder::PlayCountDescending
+                | BaseItemOrder::CommunityRatingAscending
+                | BaseItemOrder::CommunityRatingDescending
+                | BaseItemOrder::CriticRatingAscending
+                | BaseItemOrder::CriticRatingDescending
+                | BaseItemOrder::RuntimeTicksAscending
+                | BaseItemOrder::RuntimeTicksDescending
+        ) {
+            return self.query_by_extended_sort(query).await;
+        }
         if query.group_versions_by_presentation_key {
             return self.query_grouped_versions(query).await;
         }
@@ -833,6 +864,80 @@ impl BaseItemRepository {
                 select.filter(base_item::Column::Id.not_in_subquery(played_items))
             };
         }
+        if let Some(is_favorite) = query.is_favorite {
+            let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
+            let favorite_items = Query::select()
+                .column(user_data::Column::ItemId)
+                .from((Alias::new("jellyfin"), user_data::Entity))
+                .and_where(user_data::Column::UserId.eq(user_id))
+                .and_where(user_data::Column::IsFavorite.eq(true))
+                .to_owned();
+            select = if is_favorite {
+                select.filter(base_item::Column::Id.in_subquery(favorite_items))
+            } else {
+                select.filter(base_item::Column::Id.not_in_subquery(favorite_items))
+            };
+        }
+        if let Some(is_folder) = query.is_folder {
+            select = select.filter(base_item::Column::IsFolder.eq(is_folder));
+        }
+        if let Some(is_liked) = query.is_liked {
+            let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
+            let liked_items = Query::select()
+                .column(user_data::Column::ItemId)
+                .from((Alias::new("jellyfin"), user_data::Entity))
+                .and_where(user_data::Column::UserId.eq(user_id))
+                .and_where(user_data::Column::Likes.eq(is_liked))
+                .to_owned();
+            select = if is_liked {
+                select.filter(base_item::Column::Id.in_subquery(liked_items))
+            } else {
+                select.filter(base_item::Column::Id.not_in_subquery(liked_items))
+            };
+        }
+        if let Some(is_favorite_or_liked) = query.is_favorite_or_liked {
+            let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
+            let favorite_or_liked_items = Query::select()
+                .column(user_data::Column::ItemId)
+                .from((Alias::new("jellyfin"), user_data::Entity))
+                .and_where(user_data::Column::UserId.eq(user_id))
+                .and_where(
+                    user_data::Column::IsFavorite
+                        .eq(true)
+                        .or(user_data::Column::Likes.eq(true)),
+                )
+                .to_owned();
+            select = if is_favorite_or_liked {
+                select.filter(base_item::Column::Id.in_subquery(favorite_or_liked_items))
+            } else {
+                select.filter(base_item::Column::Id.not_in_subquery(favorite_or_liked_items))
+            };
+        }
+        if !query.genres.is_empty() {
+            select = select.filter(item_value_exists_expression(
+                "base_items",
+                "id",
+                item_value::ItemValueType::Genre,
+                &query.genres,
+            ));
+        }
+        if !query.tags.is_empty() {
+            select = select.filter(item_value_exists_expression(
+                "base_items",
+                "id",
+                item_value::ItemValueType::Tags,
+                &query.tags,
+            ));
+        }
+        if !query.years.is_empty() {
+            select = select.filter(base_item::Column::ProductionYear.is_in(query.years.iter().copied()));
+        }
+        if let Some(person) = query.person.as_deref().filter(|value| !value.trim().is_empty()) {
+            select = select.filter(person_exists_expression(person));
+        }
+        if let Some(min_community_rating) = query.min_community_rating {
+            select = select.filter(community_rating_expression(min_community_rating));
+        }
         if let Some(min_premiere_date) = query.min_premiere_date {
             select = select.filter(base_item::Column::PremiereDate.gte(min_premiere_date));
         }
@@ -857,6 +962,10 @@ impl BaseItemRepository {
             BaseItemOrder::PremiereDateAscending => {
                 select.order_by_asc(base_item::Column::PremiereDate)
             }
+            BaseItemOrder::PremiereDateDescending => {
+                select.order_by_desc(base_item::Column::PremiereDate)
+            }
+            _ => select.order_by_asc(base_item::Column::SortName),
         }
         .order_by_asc(base_item::Column::Id)
         .offset(query.start_index);
@@ -1060,12 +1169,186 @@ impl BaseItemRepository {
             BaseItemOrder::DateCreatedAscending => "date_created ASC, id",
             BaseItemOrder::DateCreatedDescending => "date_created DESC, id",
             BaseItemOrder::PremiereDateAscending => "premiere_date ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::PremiereDateDescending => {
+                "premiere_date DESC NULLS LAST, sort_name, id"
+            }
             BaseItemOrder::SortName => "sort_name, id",
             BaseItemOrder::SortNameDescending => "sort_name DESC, id",
             BaseItemOrder::Random => "random(), id",
+            _ => "sort_name, id",
         };
         self.query_raw_page(cte, values, "dated", order, "DatePlayed", query)
             .await
+    }
+
+    async fn query_by_extended_sort(
+        &self,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let (cte, values) = extended_sort_cte(query);
+        let order = match query.order {
+            BaseItemOrder::PlayCountAscending => "play_count ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::PlayCountDescending => "play_count DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::CommunityRatingAscending => {
+                "community_rating ASC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::CommunityRatingDescending => {
+                "community_rating DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::CriticRatingAscending => "critic_rating ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::CriticRatingDescending => {
+                "critic_rating DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::RuntimeTicksAscending => "runtime_ticks ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::RuntimeTicksDescending => "runtime_ticks DESC NULLS LAST, sort_name, id",
+            _ => unreachable!("extended-sort query only handles extended orders"),
+        };
+        self.query_raw_page(cte, values, "filtered", order, "ExtendedSort", query)
+            .await
+    }
+
+    /// Queries the next unwatched episode for each eligible series.
+    ///
+    /// A series is eligible when it has at least one unwatched episode and
+    /// either the user has already started watching it (`enable_rewatching`
+    /// false) or rewatching is enabled. Each series contributes at most its
+    /// earliest unwatched episode.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub async fn next_up(
+        &self,
+        user_id: Uuid,
+        parent_id: Option<Uuid>,
+        enable_rewatching: bool,
+        enable_resumable: bool,
+        next_up_date_cutoff: Option<DateTime<Utc>>,
+        start_index: u64,
+        limit: Option<u64>,
+        enable_total_record_count: bool,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let mut values = vec![user_id.into()];
+        let mut sql = String::from(
+            "WITH watched AS (\
+                 SELECT DISTINCT data.item_id, data.played \
+                 FROM jellyfin.user_data AS data \
+                 WHERE data.user_id = $1 \
+             ), eligible AS (\
+                 SELECT episode.id AS episode_id, episode.series_id, \
+                        episode.parent_index_number AS season_number, \
+                        episode.index_number AS episode_number, \
+                        episode.sort_name, \
+                        EXISTS (SELECT 1 FROM watched WHERE watched.item_id = episode.id AND watched.played) AS is_watched, \
+                        EXISTS (SELECT 1 FROM watched WHERE watched.item_id = episode.id AND watched.played = false) AS is_unwatched \
+                 FROM jellyfin.base_items AS episode \
+                 WHERE episode.item_type = 'Episode' \
+                   AND episode.is_virtual_item = false \
+                   AND episode.series_id IS NOT NULL",
+        );
+        if let Some(parent_id) = parent_id {
+            values.push(parent_id.into());
+            let _ = write!(sql, " AND episode.id IN (\
+                SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
+                WHERE closure.parent_item_id = ${}\
+            )", values.len());
+        }
+        if !enable_resumable {
+            sql.push_str(
+                " AND NOT EXISTS (\
+                    SELECT 1 FROM jellyfin.user_data AS resume \
+                    WHERE resume.item_id = episode.id \
+                      AND resume.user_id = $1 \
+                      AND resume.playback_position_ticks > 0\
+                )",
+            );
+        }
+        if let Some(cutoff) = next_up_date_cutoff {
+            values.push(cutoff.into());
+            let _ = write!(sql, " AND episode.premiere_date >= ${}", values.len());
+        }
+        sql.push_str(
+            "), ranked AS (\
+                 SELECT eligible.*, \
+                        ROW_NUMBER() OVER (\
+                            PARTITION BY eligible.series_id \
+                            ORDER BY eligible.season_number NULLS LAST, \
+                                     eligible.episode_number NULLS LAST, \
+                                     eligible.sort_name, eligible.episode_id\
+                        ) AS episode_rank, \
+                        SUM(CASE WHEN eligible.is_watched THEN 1 ELSE 0 END) \
+                            OVER (PARTITION BY eligible.series_id) AS watched_count \
+                 FROM eligible\
+             ), next_episodes AS (\
+                 SELECT ranked.* FROM ranked \
+                 WHERE ranked.episode_rank = 1 \
+                   AND ranked.is_unwatched \
+                   AND (",
+        );
+        if enable_rewatching {
+            sql.push_str("1 = 1");
+        } else {
+            sql.push_str("ranked.watched_count > 0");
+        }
+        sql.push_str(
+            ")\
+             ), selected AS (\
+                 SELECT item.* FROM next_episodes AS next_episode \
+                 JOIN jellyfin.base_items AS item ON item.id = next_episode.episode_id\
+             )",
+        );
+        let total = if enable_total_record_count {
+            Some(
+                self.database
+                    .query_one(Statement::from_sql_and_values(
+                        DbBackend::Postgres,
+                        format!("{sql} SELECT COUNT(*) AS total_record_count FROM selected"),
+                        values.clone(),
+                    ))
+                    .await?
+                    .ok_or_else(|| {
+                        DbErr::RecordNotFound("next-up count returned no row".to_owned())
+                    })?
+                    .try_get::<i64>("", "total_record_count")?,
+            )
+        } else {
+            None
+        };
+        let mut page_values = values;
+        let mut page_sql = format!(
+            "{sql} SELECT {BASE_ITEM_COLUMNS} FROM selected \
+             ORDER BY sort_name, id"
+        );
+        push_bind(
+            &mut page_sql,
+            &mut page_values,
+            i64::try_from(start_index).unwrap_or(i64::MAX),
+            " OFFSET ",
+        );
+        if let Some(limit) = limit {
+            push_bind(
+                &mut page_sql,
+                &mut page_values,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                " LIMIT ",
+            );
+        }
+        let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            page_sql,
+            page_values,
+        ))
+        .all(&self.database)
+        .await?;
+        Ok(BaseItemPage {
+            total_record_count: total.map_or_else(
+                || u64::try_from(items.len()).unwrap_or(u64::MAX),
+                |count| u64::try_from(count).unwrap_or_default(),
+            ),
+            items,
+            start_index,
+        })
     }
 
     async fn query_raw_page(
@@ -1610,6 +1893,34 @@ fn date_played_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Ve
     (sql, values)
 }
 
+fn extended_sort_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = Vec::new();
+    let mut sql = String::from(
+        "WITH filtered AS (\
+             SELECT item.*, \
+                    COALESCE((
+                        SELECT MAX(progress.play_count) \
+                        FROM jellyfin.user_data AS progress \
+                        WHERE progress.item_id = item.id \
+                          AND progress.user_id = ",
+    );
+    let Some(user_id) = query.user_id else {
+        unreachable!("extended-sort queries require a user id");
+    };
+    values.push(user_id.into());
+    let _ = write!(sql, "${}", values.len());
+    sql.push_str(
+        "), 0)::bigint AS play_count, \
+         COALESCE((item.data ->> 'CommunityRating')::double precision, 0.0) AS community_rating, \
+         COALESCE((item.data ->> 'CriticRating')::double precision, 0.0) AS critic_rating \
+         FROM jellyfin.base_items AS item \
+         WHERE item.item_type <> 'PLACEHOLDER'",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query);
+    sql.push(')');
+    (sql, values)
+}
+
 fn production_years_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = Vec::new();
     let mut sql = String::from(
@@ -1647,6 +1958,7 @@ fn official_ratings_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     (sql, values)
 }
 
+#[allow(clippy::too_many_lines)]
 fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &BaseItemQuery) {
     if !query.ids.is_empty() {
         append_uuid_list_filter(sql, values, "item.id", &query.ids);
@@ -1729,6 +2041,127 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
             );
         }
         sql.push(')');
+    }
+    if let Some(is_favorite) = query.is_favorite {
+        let Some(user_id) = query.user_id else {
+            return;
+        };
+        if is_favorite {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.is_favorite = true AND data.user_id = ",
+            );
+        } else {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id NOT IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.is_favorite = true AND data.user_id = ",
+            );
+        }
+        sql.push(')');
+    }
+    if let Some(is_folder) = query.is_folder {
+        push_bind(sql, values, is_folder, " AND item.is_folder = ");
+    }
+    if let Some(is_liked) = query.is_liked {
+        let Some(user_id) = query.user_id else {
+            return;
+        };
+        if is_liked {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.likes = true AND data.user_id = ",
+            );
+        } else {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id NOT IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE data.likes = true AND data.user_id = ",
+            );
+        }
+        sql.push(')');
+    }
+    if let Some(is_favorite_or_liked) = query.is_favorite_or_liked {
+        let Some(user_id) = query.user_id else {
+            return;
+        };
+        if is_favorite_or_liked {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE (data.is_favorite = true OR data.likes = true)
+                      AND data.user_id = ",
+            );
+        } else {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                " AND item.id NOT IN (
+                    SELECT data.item_id FROM jellyfin.user_data AS data
+                    WHERE (data.is_favorite = true OR data.likes = true)
+                      AND data.user_id = ",
+            );
+        }
+        sql.push(')');
+    }
+    if !query.genres.is_empty() {
+        sql.push_str(" AND EXISTS (");
+        sql.push_str(&item_value_exists_sql(
+            item_value::ItemValueType::Genre,
+            &query.genres,
+            values,
+        ));
+        sql.push(')');
+    }
+    if !query.tags.is_empty() {
+        sql.push_str(" AND EXISTS (");
+        sql.push_str(&item_value_exists_sql(
+            item_value::ItemValueType::Tags,
+            &query.tags,
+            values,
+        ));
+        sql.push(')');
+    }
+    if !query.years.is_empty() {
+        append_i32_list_filter(sql, values, "item.production_year", &query.years);
+    }
+    if let Some(person) = query.person.as_deref().filter(|value| !value.trim().is_empty()) {
+        push_bind(
+            sql,
+            values,
+            person,
+            " AND EXISTS (
+                SELECT 1 FROM jellyfin.people_base_item_map AS person_map
+                JOIN jellyfin.people AS person ON person.id = person_map.person_id
+                WHERE person_map.item_id = item.id AND person.name = ",
+        );
+        sql.push(')');
+    }
+    if let Some(min_community_rating) = query.min_community_rating {
+        push_bind(
+            sql,
+            values,
+            min_community_rating,
+            " AND COALESCE((item.data ->> 'CommunityRating')::double precision, 0.0) >= ",
+        );
     }
     if let Some(min_premiere_date) = query.min_premiere_date {
         push_bind(
@@ -1828,6 +2261,95 @@ fn tag_class_expression(item_id_expression: &'static str, clean_tag: &'static st
               AND tag_value.clean_value = '{clean_tag}'\
         )"
     )
+}
+
+fn item_value_exists_expression(
+    table: &'static str,
+    item_column: &'static str,
+    value_type: item_value::ItemValueType,
+    values: &[String],
+) -> sea_orm::sea_query::SimpleExpr {
+    let type_code = item_value_type_code(value_type);
+    let mut placeholders = String::new();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            placeholders.push_str(", ");
+        }
+        placeholders.push('\'');
+        placeholders.push_str(&value.replace('\'', "''"));
+        placeholders.push('\'');
+    }
+    Expr::cust(format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.item_value_map AS value_map \
+            JOIN jellyfin.item_values AS item_value \
+              ON item_value.item_value_id = value_map.item_value_id \
+            WHERE value_map.item_id = {table}.{item_column} \
+              AND item_value.type = {type_code} \
+              AND item_value.value IN ({placeholders})\
+        )"
+    ))
+}
+
+fn item_value_exists_sql(
+    value_type: item_value::ItemValueType,
+    values: &[String],
+    bind_values: &mut Vec<SeaValue>,
+) -> String {
+    let type_code = item_value_type_code(value_type);
+    let mut sql = String::from(
+        "SELECT 1 FROM jellyfin.item_value_map AS value_map \
+         JOIN jellyfin.item_values AS item_value \
+           ON item_value.item_value_id = value_map.item_value_id \
+         WHERE value_map.item_id = item.id \
+           AND item_value.type = ",
+    );
+    let _ = write!(sql, "{type_code} AND item_value.value IN (");
+    append_bind_list(&mut sql, bind_values, values.iter().cloned());
+    sql.push(')');
+    sql
+}
+
+fn person_exists_expression(name: &str) -> sea_orm::sea_query::SimpleExpr {
+    Expr::cust(format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.people_base_item_map AS person_map \
+            JOIN jellyfin.people AS person ON person.id = person_map.person_id \
+            WHERE person_map.item_id = base_items.id AND person.name = '{}'\
+        )",
+        name.replace('\'', "''")
+    ))
+}
+
+fn community_rating_expression(minimum: f64) -> sea_orm::sea_query::SimpleExpr {
+    Expr::cust(format!(
+        "COALESCE((base_items.data ->> 'CommunityRating')::double precision, 0.0) >= {minimum}"
+    ))
+}
+
+fn item_value_type_code(value_type: item_value::ItemValueType) -> i16 {
+    match value_type {
+        item_value::ItemValueType::Artist => 0,
+        item_value::ItemValueType::AlbumArtist => 1,
+        item_value::ItemValueType::Genre => 2,
+        item_value::ItemValueType::Studios => 3,
+        item_value::ItemValueType::Tags => 4,
+        item_value::ItemValueType::InheritedTags => 6,
+    }
+}
+
+fn append_i32_list_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    column: &str,
+    items: &[i32],
+) {
+    if items.is_empty() {
+        return;
+    }
+    let _ = write!(sql, " AND {column} IN (");
+    append_bind_list(sql, values, items.iter().copied());
+    sql.push(')');
 }
 
 fn append_uuid_list_filter(

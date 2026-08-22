@@ -440,15 +440,10 @@ async fn assert_next_up_route(fixture: &Fixture) {
     )
     .await;
     assert_eq!(next_up["StartIndex"], 0);
-    assert_eq!(next_up["TotalRecordCount"], 4);
+    assert_eq!(next_up["TotalRecordCount"], 1);
     assert_eq!(
         item_ids(&next_up),
-        vec![
-            fixture.special_episode_id.simple().to_string(),
-            fixture.first_episode_id.simple().to_string(),
-            fixture.third_episode_id.simple().to_string(),
-            fixture.missing_episode_id.simple().to_string(),
-        ]
+        vec![fixture.special_episode_id.simple().to_string()]
     );
 
     let with_rewatching = body_json(
@@ -463,8 +458,11 @@ async fn assert_next_up_route(fixture: &Fixture) {
             .await,
     )
     .await;
-    assert_eq!(with_rewatching["TotalRecordCount"], 5);
-    assert!(item_ids(&with_rewatching).contains(&fixture.second_episode_id.simple().to_string()));
+    assert_eq!(with_rewatching["TotalRecordCount"], 1);
+    assert_eq!(
+        item_ids(&with_rewatching),
+        vec![fixture.special_episode_id.simple().to_string()]
+    );
 
     let parent_scoped = body_json(
         fixture
@@ -498,14 +496,8 @@ async fn assert_next_up_route(fixture: &Fixture) {
     )
     .await;
     assert_eq!(paged["StartIndex"], 1);
-    assert_eq!(paged["TotalRecordCount"], 4);
-    assert_eq!(
-        item_ids(&paged),
-        vec![
-            fixture.first_episode_id.simple().to_string(),
-            fixture.third_episode_id.simple().to_string(),
-        ]
-    );
+    assert_eq!(paged["TotalRecordCount"], 1);
+    assert_eq!(paged["Items"].as_array().expect("items").len(), 0);
 }
 
 async fn assert_upcoming_route(fixture: &Fixture) {

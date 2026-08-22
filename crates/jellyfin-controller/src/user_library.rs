@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository,
     entities::{base_item, user},
@@ -142,6 +143,41 @@ impl UserLibraryService {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
         Ok(self.hydrate_page(self.items.query_resumable(target_user_id, &query).await?))
+    }
+
+    /// Queries the next unwatched episode for each eligible series.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn next_up(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        parent_id: Option<Uuid>,
+        enable_rewatching: bool,
+        enable_resumable: bool,
+        next_up_date_cutoff: Option<DateTime<Utc>>,
+        start_index: u64,
+        limit: Option<u64>,
+        enable_total_record_count: bool,
+    ) -> Result<BaseItemPage, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        let page = self
+            .items
+            .next_up(
+                target_user_id,
+                parent_id,
+                enable_rewatching,
+                enable_resumable,
+                next_up_date_cutoff,
+                start_index,
+                limit,
+                enable_total_record_count,
+            )
+            .await?;
+        Ok(self.hydrate_page(page))
     }
 
     /// Loads related items from the persisted closure-table subtree.

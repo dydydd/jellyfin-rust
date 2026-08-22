@@ -6,7 +6,7 @@ use axum::{
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use jellyfin_controller::UserLibraryError;
 use jellyfin_data::{BaseItemOrder, BaseItemQuery, entities::base_item};
 use serde::Deserialize;
@@ -236,27 +236,24 @@ pub(crate) async fn next_up(
         query.image_type_limit,
         query.enable_image_types,
         query.enable_user_data,
-        query.next_up_date_cutoff,
-        query.enable_resumable,
     );
+    let next_up_date_cutoff = query
+        .next_up_date_cutoff
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok().map(DateTime::<Utc>::from));
 
     let page = state
         .user_library
-        .query_items(
+        .next_up(
             &authenticated.user,
             target_user_id,
-            BaseItemQuery {
-                parent_id,
-                recursive: true,
-                include_item_types: vec!["Episode".to_owned()],
-                is_virtual_item: Some(false),
-                is_played: (!query.enable_rewatching).then_some(false),
-                order: BaseItemOrder::SortName,
-                start_index: query.start_index,
-                limit: query.limit,
-                enable_total_record_count: Some(query.enable_total_record_count),
-                ..BaseItemQuery::default()
-            },
+            parent_id,
+            query.enable_rewatching,
+            query.enable_resumable,
+            next_up_date_cutoff,
+            query.start_index,
+            query.limit,
+            query.enable_total_record_count,
         )
         .await?;
     let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
