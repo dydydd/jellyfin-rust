@@ -14,7 +14,10 @@ use axum::{
     },
     http::{HeaderValue, Response, header},
 };
-use jellyfin_model::{MediaProtocol, MediaSourceInfo};
+use jellyfin_model::{
+    DeviceProfile, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo, PlayMethod,
+    StreamBuilder,
+};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::io::ReaderStream;
@@ -50,6 +53,7 @@ pub(crate) struct PlaybackInfoDto {
     user_id: Option<Uuid>,
     media_source_id: Option<String>,
     max_streaming_bitrate: Option<i32>,
+    device_profile: Option<DeviceProfile>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -129,6 +133,9 @@ pub(crate) async fn get_playback_info(
         item_id,
         query.media_source_id.as_deref(),
         None,
+        None,
+        &identity.device.device_id,
+        &identity.access_token,
     )
     .await
     .map(Json)
@@ -162,6 +169,9 @@ pub(crate) async fn post_playback_info(
         item_id,
         media_source_id,
         max_streaming_bitrate,
+        body.as_ref().and_then(|body| body.device_profile.as_ref()),
+        &identity.device.device_id,
+        &identity.access_token,
     )
     .await
     .map(Json)
@@ -242,6 +252,9 @@ async fn playback_info(
     item_id: Uuid,
     media_source_id: Option<&str>,
     max_streaming_bitrate: Option<i32>,
+    device_profile: Option<&DeviceProfile>,
+    device_id: &str,
+    access_token: &str,
 ) -> Result<PlaybackInfoResponse, ApiError> {
     let mut media_sources = media_sources(
         state,
@@ -251,6 +264,15 @@ async fn playback_info(
         media_source_id,
     )
     .await?;
+    apply_stream_builder(
+        &mut media_sources,
+        item_id,
+        device_profile,
+        max_streaming_bitrate,
+        device_id,
+        access_token,
+        state.system_info.local_address.as_deref(),
+    );
     sort_media_sources(&mut media_sources, max_streaming_bitrate, item_id);
     Ok(PlaybackInfoResponse {
         media_sources,
@@ -327,6 +349,63 @@ fn sort_media_sources(
             bitrate_rank(source, max_bitrate),
         )
     });
+}
+
+fn apply_stream_builder(
+    media_sources: &mut [MediaSourceInfo],
+    item_id: Uuid,
+    device_profile: Option<&DeviceProfile>,
+    max_streaming_bitrate: Option<i32>,
+    device_id: &str,
+    access_token: &str,
+    base_url: Option<&str>,
+) {
+    let Some(profile) = device_profile else {
+        return;
+    };
+    let is_video = media_sources
+        .first()
+        .is_some_and(|source| source.video_stream().is_some());
+    let options = MediaOptions {
+        item_id,
+        media_sources: media_sources.to_vec(),
+        profile: profile.clone(),
+        media_source_id: media_sources
+            .first()
+            .and_then(|source| source.id.as_deref())
+            .map(str::to_owned),
+        device_id: Some(device_id.to_owned()),
+        max_bitrate: max_streaming_bitrate,
+        audio_transcoding_bitrate: max_streaming_bitrate,
+        context: EncodingContext::Streaming,
+        ..MediaOptions::default()
+    };
+    let builder = StreamBuilder::with_encodable_audio_codecs([
+        "aac", "mp3", "opus", "flac", "ac3", "eac3",
+    ]);
+    let stream = if is_video {
+        builder.get_optimal_video_stream(&options)
+    } else {
+        builder.get_optimal_audio_stream(&options)
+    };
+    let Ok(Some(stream)) = stream else {
+        return;
+    };
+    if stream.play_method == PlayMethod::DirectPlay {
+        return;
+    }
+    let url = stream.to_url(base_url, Some(access_token), None);
+    if !url.is_empty()
+        && let Some(source_id) = stream.media_source_id()
+        && let Some(source) = media_sources.iter_mut().find(|source| {
+            source
+                .id
+                .as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case(source_id))
+        })
+    {
+        source.transcoding_url = Some(url);
+    }
 }
 
 fn preferred_rank(source: &MediaSourceInfo, preferred_id: Option<&str>) -> u8 {
@@ -443,7 +522,12 @@ const fn bitrate_test_block() -> [u8; REPEATING_BLOCK_SIZE] {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaProtocol, MediaSourceInfo, sort_media_sources};
+    use jellyfin_model::{
+        DeviceProfile, DlnaProfileType, EncodingContext, MediaStream, MediaStreamProtocol,
+        MediaStreamType, TranscodingProfile,
+    };
+
+    use super::{MediaProtocol, MediaSourceInfo, apply_stream_builder, sort_media_sources};
     use uuid::Uuid;
 
     #[test]
@@ -485,6 +569,73 @@ mod tests {
         sort_media_sources(&mut sources, Some(20_000_000), Uuid::new_v4());
 
         assert_eq!(sources[0].id, direct_play_id);
+    }
+
+    #[test]
+    fn playback_info_uses_client_profile_and_exposes_transcoding_url() {
+        let item_id = Uuid::new_v4();
+        let source = MediaSourceInfo {
+            id: Some(item_id.simple().to_string()),
+            protocol: MediaProtocol::File,
+            container: Some("mkv".to_owned()),
+            run_time_ticks: Some(60_000_000_0),
+            media_streams: vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    width: Some(1920),
+                    height: Some(1080),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    channels: Some(2),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+            ],
+            ..MediaSourceInfo::default()
+        };
+        let profile = DeviceProfile {
+            max_streaming_bitrate: Some(8_000_000),
+            direct_play_profiles: Vec::new(),
+            transcoding_profiles: vec![TranscodingProfile {
+                container: "ts".to_owned(),
+                profile_type: DlnaProfileType::Video,
+                video_codec: "h264".to_owned(),
+                audio_codec: "aac".to_owned(),
+                protocol: MediaStreamProtocol::Hls,
+                context: EncodingContext::Streaming,
+                segment_length: 6,
+                ..TranscodingProfile::default()
+            }],
+            ..DeviceProfile::default()
+        };
+        let mut sources = vec![source.clone()];
+
+        apply_stream_builder(
+            &mut sources,
+            item_id,
+            Some(&profile),
+            None,
+            "device-id",
+            "access-token",
+            Some("http://127.0.0.1:8096"),
+        );
+
+        let url = sources[0]
+            .transcoding_url
+            .as_deref()
+            .expect("transcoding url");
+        assert!(url.starts_with("http://127.0.0.1:8096/videos/"));
+        assert!(url.contains("/master.m3u8"));
+        assert!(url.contains("DeviceId=device-id"));
+        assert!(url.contains("MediaSourceId="));
+        assert!(url.contains("ApiKey=access-token"));
     }
 
     fn source(item_id: Uuid, bitrate: i32, supports_direct_play: bool) -> MediaSourceInfo {

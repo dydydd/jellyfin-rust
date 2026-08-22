@@ -77,6 +77,7 @@ cargo run -p jellyfin-server
 | `JELLYFIN_INITIAL_USER` | 首次启动创建的管理员用户名 | `jellyfin` |
 | `JELLYFIN_TMDB_API_KEY` | TMDB API Key，可覆盖数据库配置 | 数据库中的 `tmdb_api_key` |
 | `JELLYFIN_TMDB_PROXY` | TMDB HTTP 代理 | 未设置 |
+| `JELLYFIN_FFMPEG_PATH` | 转码用 `FFmpeg` 可执行文件路径 | `ffmpeg` |
 
 TMDB 请求也兼容标准的 `HTTPS_PROXY` / `ALL_PROXY`。例如：
 

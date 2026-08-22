@@ -59,6 +59,9 @@ async fn main() -> anyhow::Result<()> {
         .with_server_id(server_id)
         .with_tmdb_api_key(tmdb_api_key)
         .with_startup_user(initial_user.id)
+        .with_ffmpeg_path(
+            std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()),
+        )
         .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
         .with_persistent_startup(startup_repository)
         .with_storage_paths(

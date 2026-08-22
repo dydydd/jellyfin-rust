@@ -85,8 +85,21 @@ pub fn compute_equal_length_segments(
     desired_segment_length_ms: i32,
     total_runtime_ticks: i64,
 ) -> Result<Vec<f64>, HlsPlaylistError> {
-    compute_equal_length_segment_ticks(desired_segment_length_ms, total_runtime_ticks)
+    compute_equal_length_segment_ticks_inner(desired_segment_length_ms, total_runtime_ticks)
         .map(|segments| segments.into_iter().map(ticks_to_seconds).collect())
+}
+
+/// Splits a runtime into equal desired lengths and one optional remainder, in
+/// ticks.
+///
+/// # Errors
+///
+/// Returns the same error cases as [`compute_equal_length_segments`].
+pub fn compute_equal_length_segment_ticks(
+    desired_segment_length_ms: i32,
+    total_runtime_ticks: i64,
+) -> Result<Vec<i64>, HlsPlaylistError> {
+    compute_equal_length_segment_ticks_inner(desired_segment_length_ms, total_runtime_ticks)
 }
 
 /// Checks whether metadata keyframe extraction is allowed for a file suffix.
@@ -210,7 +223,7 @@ fn compute_segment_ticks(keyframe_data: &KeyframeData, desired_segment_length_ms
     segments
 }
 
-fn compute_equal_length_segment_ticks(
+fn compute_equal_length_segment_ticks_inner(
     desired_segment_length_ms: i32,
     total_runtime_ticks: i64,
 ) -> Result<Vec<i64>, HlsPlaylistError> {

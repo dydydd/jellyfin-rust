@@ -11,6 +11,7 @@ jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-drawing = { path = "../jellyfin-drawing" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
+jellyfin-media-encoding-hls = { path = "../jellyfin-media-encoding-hls" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-naming = { path = "../jellyfin-naming" }
 jellyfin-providers = { path = "../jellyfin-providers" }
@@ -22,7 +23,7 @@ serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "time"] }
 tracing.workspace = true
 uuid.workspace = true
 

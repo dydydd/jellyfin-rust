@@ -11,6 +11,8 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
+use jellyfin_controller::{audio_command, run_ffmpeg};
+
 use crate::{ApiError, AppState, authentication};
 
 #[derive(Debug, Default, Deserialize)]
@@ -92,10 +94,55 @@ pub(crate) async fn universal(
         || query.max_streaming_bitrate.is_some()
         || query.start_time_ticks.is_some_and(|ticks| ticks != 0)
         || query.transcoding_container.is_some();
-    if !supports_direct || requires_transcode {
-        return Err(ApiError::UnsupportedMediaType);
+    if supports_direct && !requires_transcode {
+        return serve_path(&headers, path, request).await;
     }
-    serve_path(&headers, path, request).await
+
+    let codec = query
+        .audio_codec
+        .as_deref()
+        .unwrap_or("aac")
+        .to_owned();
+    let container = query
+        .transcoding_container
+        .as_deref()
+        .map(|container| container.trim_start_matches('.').to_owned())
+        .unwrap_or_else(|| audio_container(&codec).to_owned());
+    let output = state
+        .transcode_directory
+        .join(format!("{item_id}-{codec}.{container}"));
+    tokio::fs::create_dir_all(&state.transcode_directory)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    let command = audio_command(
+        &state.ffmpeg_path,
+        std::path::Path::new(path),
+        &output,
+        &codec,
+        query.max_streaming_bitrate,
+        query.max_audio_channels,
+        None,
+        query.start_time_ticks,
+    );
+    let running = state
+        .transcode_jobs
+        .register(output.to_string_lossy().into_owned());
+    run_ffmpeg(&command, running)
+        .await
+        .map_err(|_| ApiError::UnsupportedMediaType)?;
+    serve_path(&headers, &output.to_string_lossy(), request).await
+}
+
+fn audio_container(codec: &str) -> &str {
+    match codec.to_ascii_lowercase().as_str() {
+        "mp3" => "mp3",
+        "flac" => "flac",
+        "opus" => "opus",
+        "aac" | "alac" => "m4a",
+        "ac3" | "eac3" => "ac3",
+        "wav" | "pcm_s16le" => "wav",
+        _ => codec,
+    }
 }
 
 async fn stream_file(

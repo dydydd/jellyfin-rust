@@ -1582,6 +1582,7 @@ dependencies = [
  "jellyfin-drawing",
  "jellyfin-extensions",
  "jellyfin-media-encoding",
+ "jellyfin-media-encoding-hls",
  "jellyfin-model",
  "jellyfin-naming",
  "jellyfin-providers",

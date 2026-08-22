@@ -17,10 +17,10 @@ use jellyfin_controller::{
     MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
     PersonError, PersonService, PlaylistError, PlaylistService, PlaystateError, PlaystateService,
     PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
-    SystemLogError, SystemLogService, SystemStorageService, TrickplayError, TrickplayService,
-    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
-    UserService, VideoError, VideoService, VirtualFolderService, VirtualFolderServiceError,
-    YearError, YearService, client_event::ClientEventLogger,
+    SystemLogError, SystemLogService, SystemStorageService, TranscodeJobRegistry, TrickplayError,
+    TrickplayService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
+    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -163,6 +163,8 @@ pub struct AppState {
     pub(crate) internal_metadata_directory: PathBuf,
     pub(crate) network_manager: Arc<NetworkManager>,
     pub(crate) transcode_directory: PathBuf,
+    pub(crate) ffmpeg_path: PathBuf,
+    pub(crate) transcode_jobs: TranscodeJobRegistry,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
@@ -244,6 +246,8 @@ impl AppState {
             transcode_directory: std::env::temp_dir()
                 .join("jellyfin-rust")
                 .join("transcodes"),
+            ffmpeg_path: PathBuf::from("ffmpeg"),
+            transcode_jobs: TranscodeJobRegistry::new(),
             authentication: DefaultAuthenticationProvider::new(),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
@@ -393,6 +397,13 @@ impl AppState {
         transcode_directory: impl Into<std::path::PathBuf>,
     ) -> Self {
         self.transcode_directory = transcode_directory.into();
+        self
+    }
+
+    /// Replaces the `FFmpeg` binary used for transcoding.
+    #[must_use]
+    pub fn with_ffmpeg_path(mut self, ffmpeg_path: impl Into<std::path::PathBuf>) -> Self {
+        self.ffmpeg_path = ffmpeg_path.into();
         self
     }
 

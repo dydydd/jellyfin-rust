@@ -16,6 +16,13 @@ pub mod library_watcher;
 mod localization;
 mod media_attachments;
 pub mod media_encoding;
+pub mod transcode;
+
+pub use transcode::{
+    FfmpegCommand, HlsSegmentSettings, TranscodeJobRegistry, TranscodeTarget, audio_command,
+    build_main_playlist, build_master_playlist, hls_command, hls_job_id, run_ffmpeg,
+    wait_for_segment,
+};
 mod media_streams;
 mod metadata_editor;
 pub mod metadata_providers;
