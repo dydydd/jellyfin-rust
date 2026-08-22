@@ -78,7 +78,7 @@ pub use playstate::{
     PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
 };
 pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry};
-pub use scheduled_tasks::{ScheduledTaskError, ScheduledTaskService};
+pub use scheduled_tasks::{ScheduledTaskError, ScheduledTaskPaths, ScheduledTaskService};
 pub use studios::{Studio, StudioError, StudioPage, StudioService};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
 pub use system_storage::SystemStorageService;

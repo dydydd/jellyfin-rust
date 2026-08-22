@@ -176,6 +176,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(database: DatabaseConnection, server_name: String, local_address: String) -> Self {
+        let library_scan = LibraryScanService::new(database.clone());
+        let scheduled_tasks = ScheduledTaskService::with_default_executors(library_scan.clone());
         Self {
             users: UserService::new(database.clone()),
             activity_logs: ActivityLogRepository::new(database.clone()),
@@ -220,8 +222,8 @@ impl AppState {
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
             packages: PackageService::default(),
-            scheduled_tasks: ScheduledTaskService::default(),
-            library_scan: LibraryScanService::new(database.clone()),
+            scheduled_tasks,
+            library_scan,
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
             trickplay: TrickplayService::new(
@@ -351,6 +353,8 @@ impl AppState {
         let log_directory = log_directory.into();
         self.system_logs = SystemLogService::new(log_directory.clone());
         self.client_event_logger = ClientEventLogger::new(log_directory);
+        self.scheduled_tasks
+            .set_log_directory(self.system_logs.directory().to_path_buf());
         self
     }
 
@@ -380,6 +384,8 @@ impl AppState {
             self.program_data_directory.join("trickplay"),
         );
         self.cache_directory = cache_directory.into();
+        self.scheduled_tasks
+            .set_cache_directory(self.cache_directory.clone());
         self
     }
 
@@ -397,6 +403,8 @@ impl AppState {
         transcode_directory: impl Into<std::path::PathBuf>,
     ) -> Self {
         self.transcode_directory = transcode_directory.into();
+        self.scheduled_tasks
+            .set_transcode_directory(self.transcode_directory.clone());
         self
     }
 
