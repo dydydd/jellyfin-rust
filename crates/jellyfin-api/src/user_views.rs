@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -168,6 +168,14 @@ pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,

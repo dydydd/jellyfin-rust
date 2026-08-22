@@ -24,19 +24,19 @@ use jellyfin_controller::{
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
-    BaseItemError, DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
-    DisplayPreferenceStoreError, ItemUpdateStoreError, NamedConfigurationRepository,
-    NamedConfigurationStoreError, QuickConnectRepository, ServerConfigurationRepository,
-    ServerConfigurationStoreError, SessionCommandRepository, SessionCommandStoreError,
-    entities::user,
+    BaseItemError, BaseItemImageRepository, BaseItemRepository, DeviceOptionsRepository,
+    DeviceRepository, DisplayPreferenceRepository, DisplayPreferenceStoreError,
+    ItemUpdateStoreError, NamedConfigurationRepository, NamedConfigurationStoreError,
+    QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
+    SessionCommandRepository, SessionCommandStoreError, entities::user,
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
 use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
-    AuthenticationError, DefaultAuthenticationProvider, QuickConnectError, QuickConnectManager,
-    SyncPlayManager, SystemQuickConnectCapability,
+    AuthenticationError, DefaultAuthenticationProvider, PersistedDtoImageProjectionService,
+    QuickConnectError, QuickConnectManager, SyncPlayManager, SystemQuickConnectCapability,
 };
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
@@ -131,6 +131,7 @@ pub struct AppState {
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_images: ItemImageService,
+    pub(crate) dto_images: PersistedDtoImageProjectionService<ItemImageService>,
     pub(crate) image_processor: ImageProcessor,
     pub(crate) item_lookup: ItemLookupService,
     pub(crate) item_update: ItemUpdateService,
@@ -178,7 +179,9 @@ impl AppState {
     pub fn new(database: DatabaseConnection, server_name: String, local_address: String) -> Self {
         let library_scan = LibraryScanService::new(database.clone());
         let scheduled_tasks = ScheduledTaskService::with_default_executors(library_scan.clone());
-        Self {
+        let item_images = ItemImageService::new(database.clone());
+        let web_sockets = Arc::new(websocket::WebSocketHub::new());
+        let state = Self {
             users: UserService::new(database.clone()),
             activity_logs: ActivityLogRepository::new(database.clone()),
             api_keys: ApiKeyRepository::new(database.clone()),
@@ -187,7 +190,7 @@ impl AppState {
             display_preferences: DisplayPreferenceRepository::new(database.clone()),
             session_commands: SessionCommandRepository::new(database.clone()),
             sync_play: SyncPlayManager::new(),
-            web_sockets: Arc::new(websocket::WebSocketHub::new()),
+            web_sockets: web_sockets.clone(),
             quick_connect: QuickConnectManager::new(
                 QuickConnectRepository::new(database.clone()),
                 SystemQuickConnectCapability::new(true),
@@ -201,7 +204,12 @@ impl AppState {
             studios: StudioService::new(database.clone()),
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
-            item_images: ItemImageService::new(database.clone()),
+            dto_images: PersistedDtoImageProjectionService::new(
+                BaseItemRepository::new(database.clone()),
+                BaseItemImageRepository::new(database.clone()),
+                item_images.clone(),
+            ),
+            item_images,
             image_processor: ImageProcessor::with_concurrency::<4>(
                 PathBuf::from("cache").join("images"),
             ),
@@ -222,7 +230,7 @@ impl AppState {
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
             packages: PackageService::default(),
-            scheduled_tasks,
+            scheduled_tasks: scheduled_tasks.clone(),
             library_scan,
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
@@ -265,7 +273,16 @@ impl AppState {
             startup_repository: None,
             database,
             tmdb_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
-        }
+        };
+        state.scheduled_tasks.add_change_listener(Arc::new(move || {
+            let tasks = scheduled_tasks.clone();
+            let sockets = web_sockets.clone();
+            tokio::spawn(async move {
+                let infos = tasks.list(None, None).await;
+                sockets.send_all("ScheduledTasksInfo", &infos).await;
+            });
+        }));
+        state
     }
 
     /// Selects the user managed by the startup wizard.
@@ -378,6 +395,11 @@ impl AppState {
             self.database.clone(),
             self.image_cache_directory.clone(),
             self.internal_metadata_directory.clone(),
+        );
+        self.dto_images = PersistedDtoImageProjectionService::new(
+            BaseItemRepository::new(self.database.clone()),
+            BaseItemImageRepository::new(self.database.clone()),
+            self.item_images.clone(),
         );
         self.image_processor =
             ImageProcessor::with_concurrency::<4>(self.image_cache_directory.clone());
@@ -2071,6 +2093,10 @@ fn item_update_error_response(error: &ItemUpdateError) -> (StatusCode, &'static 
         ItemUpdateError::ServerConfiguration(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Server configuration persistence failed",
+        ),
+        ItemUpdateError::VirtualFolder(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Library folder persistence failed",
         ),
     }
 }

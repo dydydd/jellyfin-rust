@@ -10,6 +10,7 @@ use jellyfin_data::{
 };
 use jellyfin_drawing::{generate_blur_hash, inspect_dimensions};
 use jellyfin_model::{ImageInfo, ImageType};
+use jellyfin_server_implementations::{DtoImage, DtoImageItem, ImageCacheTagProvider};
 use md5::{Digest, Md5};
 use thiserror::Error;
 use tokio::{fs, io::AsyncWriteExt};
@@ -505,6 +506,15 @@ impl ItemImageService {
             .get(image.item_id, image.image_type, image.image_index)
             .await?
             .ok_or(ItemImageError::NotFound)
+    }
+}
+
+impl ImageCacheTagProvider for ItemImageService {
+    fn get_image_cache_tag(&self, item: &DtoImageItem, image: &DtoImage) -> Option<String> {
+        Some(image_cache_tag(
+            item.path.as_deref().unwrap_or(&image.path),
+            image.date_modified,
+        ))
     }
 }
 

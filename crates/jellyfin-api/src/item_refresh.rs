@@ -53,6 +53,7 @@ pub(crate) async fn refresh(
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;
+    crate::websocket::broadcast_refresh_progress(&state, item_id, 0.0).await;
 
     if is_video_item(&item) {
         if query.regenerate_trickplay
@@ -78,7 +79,9 @@ pub(crate) async fn refresh(
     if item.item_type == "CollectionFolder"
         && query.metadata_refresh_mode != MetadataRefreshMode::None
     {
+        crate::websocket::broadcast_refresh_progress(&state, item_id, 30.0).await;
         state.library_scan.scan_collection(item_id).await?;
+        crate::websocket::broadcast_refresh_progress(&state, item_id, 80.0).await;
     }
 
     if matches!(
@@ -86,6 +89,7 @@ pub(crate) async fn refresh(
         MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
     ) && matches!(item.item_type.as_str(), "Movie" | "Series")
     {
+        crate::websocket::broadcast_refresh_progress(&state, item_id, 40.0).await;
         let api_key = state.tmdb_api_key.read().await;
         if !api_key.is_empty() {
             let provider = jellyfin_controller::metadata_providers::TmdbMetadataProvider::new(
@@ -101,6 +105,7 @@ pub(crate) async fn refresh(
                 eprintln!("TMDB metadata refresh failed: {error}");
             }
         }
+        crate::websocket::broadcast_refresh_progress(&state, item_id, 90.0).await;
     }
 
     crate::websocket::broadcast_refresh_progress(&state, item_id, 100.0).await;

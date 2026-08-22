@@ -194,7 +194,9 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
             } }
             message = outbound.recv() => { match message {
                 Ok(message) => {
-                    if socket.send(Message::Text(message.into())).await.is_err() {
+                    if should_deliver_message(&message, &subscriptions)
+                        && socket.send(Message::Text(message.into())).await.is_err()
+                    {
                         break;
                     }
                 }
@@ -277,18 +279,23 @@ pub(crate) async fn broadcast_scheduled_tasks_info(state: &AppState) {
 
 pub(crate) async fn broadcast_library_changed(
     state: &AppState,
-    added: &[String],
-    removed: &[String],
-    updated: &[String],
+    added: &[Uuid],
+    removed: &[Uuid],
+    updated: &[Uuid],
 ) {
+    let strings = |ids: &[Uuid]| {
+        ids.iter()
+            .map(|id| id.simple().to_string())
+            .collect::<Vec<_>>()
+    };
     state
         .web_sockets
         .send_all(
             "LibraryChanged",
             &json!({
-                "ItemsAdded": added,
-                "ItemsRemoved": removed,
-                "ItemsUpdated": updated,
+                "ItemsAdded": strings(added),
+                "ItemsRemoved": strings(removed),
+                "ItemsUpdated": strings(updated),
             }),
         )
         .await;
@@ -359,6 +366,23 @@ fn is_keep_alive(payload: &[u8]) -> bool {
         .is_ok_and(|parsed| parsed.message.message_type == WebSocketMessageType::KeepAlive)
 }
 
+const SUBSCRIPTION_MESSAGE_TYPES: &[&str] = &["Sessions", "ScheduledTasksInfo", "ActivityLogEntry"];
+
+fn should_deliver_message(message: &str, subscriptions: &HashSet<String>) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
+        return true;
+    };
+    let Some(message_type) = value.get("MessageType").and_then(serde_json::Value::as_str) else {
+        return true;
+    };
+    !SUBSCRIPTION_MESSAGE_TYPES
+        .iter()
+        .any(|subscribed| message_type.eq_ignore_ascii_case(subscribed))
+        || subscriptions
+            .iter()
+            .any(|subscribed| message_type.eq_ignore_ascii_case(subscribed))
+}
+
 async fn handle_inbound(
     payload: &[u8],
     subscriptions: &mut HashSet<String>,
@@ -395,11 +419,26 @@ async fn handle_inbound(
 #[cfg(test)]
 mod tests {
     use super::is_keep_alive;
+    use std::collections::HashSet;
+
+    use super::should_deliver_message;
 
     #[test]
     fn only_jellyfin_keep_alive_messages_refresh_the_watchdog() {
         assert!(is_keep_alive(br#"{"MessageType":"KeepAlive"}"#));
         assert!(!is_keep_alive(br#"{"MessageType":"Sessions"}"#));
         assert!(!is_keep_alive(b"not json"));
+    }
+
+    #[test]
+    fn subscription_gated_messages_respect_start_and_stop() {
+        let session_message = r#"{"MessageType":"Sessions","Data":[]}"#;
+        let mut subscriptions = HashSet::new();
+        assert!(!should_deliver_message(session_message, &subscriptions));
+        subscriptions.insert("Sessions".to_owned());
+        assert!(should_deliver_message(session_message, &subscriptions));
+
+        let library_message = r#"{"MessageType":"LibraryChanged","Data":{"ItemsAdded":[]}}"#;
+        assert!(should_deliver_message(library_message, &subscriptions));
     }
 }

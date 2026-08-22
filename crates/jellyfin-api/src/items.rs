@@ -657,6 +657,17 @@ async fn page_to_dto(
         let item_id = item.id;
         let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
+        if let Some(projection) = state
+            .dto_images
+            .project(
+                item_id,
+                jellyfin_server_implementations::DtoImageOptions::default(),
+            )
+            .await
+            .map_err(|_| ApiError::Internal)?
+        {
+            user_library::attach_dto_image_projection(&mut dto, projection);
+        }
         if requested_fields.wants_media_streams() {
             let streams = media_streams.remove(&item_id).unwrap_or_default();
             let attachments = media_attachments.remove(&item_id).unwrap_or_default();

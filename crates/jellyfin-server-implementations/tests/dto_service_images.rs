@@ -232,6 +232,34 @@ fn unavailable_cache_tags_do_not_replace_own_image_and_series_ratio_is_fallback(
     );
 }
 
+#[test]
+fn projection_exposes_all_image_tags_and_backdrop_tags() {
+    let item = DtoImageItem {
+        id: Uuid::new_v4(),
+        kind: DtoImageItemKind::Other,
+        images: vec![
+            image(ImageType::Primary, "poster.jpg"),
+            image(ImageType::Logo, "logo.png"),
+            image(ImageType::Thumb, "landscape.jpg"),
+            image(ImageType::Backdrop, "backdrop-1.jpg"),
+            image(ImageType::Backdrop, "backdrop-2.jpg"),
+        ],
+        path: Some("/media/title.mkv".to_owned()),
+        default_primary_image_aspect_ratio: Some(2.0 / 3.0),
+    };
+    let service = service([], []);
+
+    let projection = service.project(&item, DtoImageOptions::default());
+
+    assert_eq!(projection.image_tags["Primary"], "tag:poster.jpg");
+    assert_eq!(projection.image_tags["Logo"], "tag:logo.png");
+    assert_eq!(projection.image_tags["Thumb"], "tag:landscape.jpg");
+    assert_eq!(
+        projection.backdrop_image_tags,
+        ["tag:backdrop-1.jpg", "tag:backdrop-2.jpg"]
+    );
+}
+
 fn item(
     kind: DtoImageItemKind,
     primary_path: Option<&str>,
@@ -241,6 +269,7 @@ fn item(
         id: Uuid::new_v4(),
         kind,
         images: primary_path.into_iter().map(primary_image).collect(),
+        path: None,
         default_primary_image_aspect_ratio,
     }
 }
@@ -262,8 +291,12 @@ fn episode(
 }
 
 fn primary_image(path: &str) -> DtoImage {
+    image(ImageType::Primary, path)
+}
+
+fn image(image_type: ImageType, path: &str) -> DtoImage {
     DtoImage {
-        image_type: ImageType::Primary,
+        image_type,
         path: path.to_owned(),
         date_modified: Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap(),
         width: None,

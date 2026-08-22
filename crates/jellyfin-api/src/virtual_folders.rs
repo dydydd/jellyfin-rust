@@ -135,8 +135,8 @@ pub(crate) async fn create(
             query.refresh_library,
         )
         .await?;
-    refresh_library_if_requested(&state, refresh_after_create).await?;
-    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
+    let summary = refresh_library_if_requested(&state, refresh_after_create).await?;
+    broadcast_scan_summary(&state, summary.as_ref()).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -193,8 +193,8 @@ pub(crate) async fn add_path(
         .virtual_folders
         .add_path(&body.name, path_info, query.refresh_library)
         .await?;
-    refresh_library_if_requested(&state, query.refresh_library).await?;
-    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
+    let summary = refresh_library_if_requested(&state, query.refresh_library).await?;
+    broadcast_scan_summary(&state, summary.as_ref()).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -214,8 +214,8 @@ pub(crate) async fn update_path(
         .virtual_folders
         .update_path(&body.name, body.path_info)
         .await?;
-    refresh_library_if_requested(&state, query.refresh_library).await?;
-    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
+    let summary = refresh_library_if_requested(&state, query.refresh_library).await?;
+    broadcast_scan_summary(&state, summary.as_ref()).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -266,11 +266,29 @@ fn required_query(value: Option<String>) -> Result<String, ApiError> {
 async fn refresh_library_if_requested(
     state: &AppState,
     refresh_library: bool,
-) -> Result<(), ApiError> {
+) -> Result<Option<jellyfin_controller::LibraryScanSummary>, ApiError> {
     if refresh_library {
-        state.library_scan.scan_all().await?;
+        Ok(Some(state.library_scan.scan_all().await?))
+    } else {
+        Ok(None)
     }
-    Ok(())
+}
+
+async fn broadcast_scan_summary(
+    state: &AppState,
+    summary: Option<&jellyfin_controller::LibraryScanSummary>,
+) {
+    let (added, removed, updated) = summary.map_or_else(
+        || (Vec::new(), Vec::new(), Vec::new()),
+        |summary| {
+            (
+                summary.added_ids.clone(),
+                summary.removed_ids.clone(),
+                summary.changed_ids.clone(),
+            )
+        },
+    );
+    crate::websocket::broadcast_library_changed(&state, &added, &removed, &updated).await;
 }
 
 fn folder_info(folder: VirtualFolder) -> VirtualFolderInfo {

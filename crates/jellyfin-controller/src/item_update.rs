@@ -1,17 +1,19 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
     ItemUpdateStoreError, ServerConfigurationRepository, ServerConfigurationStoreError,
-    entities::base_item,
+    VirtualFolderError, VirtualFolderRepository, entities::base_item,
 };
 use jellyfin_xbmc_metadata::{
-    MovieNfo, MovieNfoLocation, MovieVideoType, movie_nfo_save_paths, save_movie_nfo,
+    MovieNfo, MovieNfoLocation, MovieVideoType, movie_nfo_save_paths, parse_movie_nfo_file,
+    save_movie_nfo,
 };
 use sea_orm::DatabaseConnection;
+use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -31,6 +33,8 @@ pub enum ItemUpdateError {
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     ServerConfiguration(#[from] ServerConfigurationStoreError),
+    #[error(transparent)]
+    VirtualFolder(#[from] VirtualFolderError),
 }
 
 /// Applies Jellyfin item-editor normalization before `PostgreSQL` persistence.
@@ -39,6 +43,7 @@ pub struct ItemUpdateService {
     repository: ItemUpdateRepository,
     items: BaseItemRepository,
     server_configuration: ServerConfigurationRepository,
+    virtual_folders: VirtualFolderRepository,
 }
 
 impl ItemUpdateService {
@@ -47,7 +52,8 @@ impl ItemUpdateService {
         Self {
             repository: ItemUpdateRepository::new(database.clone()),
             items: BaseItemRepository::new(database.clone()),
-            server_configuration: ServerConfigurationRepository::new(database),
+            server_configuration: ServerConfigurationRepository::new(database.clone()),
+            virtual_folders: VirtualFolderRepository::new(database),
         }
     }
 
@@ -65,10 +71,36 @@ impl ItemUpdateService {
             .repository
             .update(item_id, normalize_input(input))
             .await?;
-        if let Err(error) = Self::write_local_nfo(&updated) {
+        if self.save_local_metadata_enabled(&updated).await?
+            && let Err(error) = Self::write_local_nfo(&updated)
+        {
             tracing::warn!(%error, "local NFO writeback failed");
         }
         Ok(updated)
+    }
+
+    async fn save_local_metadata_enabled(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<bool, ItemUpdateError> {
+        let Some(item_path) = item.path.as_deref() else {
+            return Ok(false);
+        };
+        for folder in self.virtual_folders.list().await? {
+            let contained = folder
+                .paths
+                .iter()
+                .any(|path| Path::new(item_path).starts_with(Path::new(&path.path)));
+            if contained {
+                return Ok(folder
+                    .folder
+                    .library_options
+                    .get("SaveLocalMetadata")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false));
+            }
+        }
+        Ok(false)
     }
 
     /// Replaces or removes the content-type override for an item's containing
@@ -119,40 +151,63 @@ impl ItemUpdateService {
         if let Some(parent) = nfo_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        save_movie_nfo(&nfo_path, &movie_nfo_from_item(item))
+        let existing = parse_movie_nfo_file(&nfo_path).unwrap_or_default();
+        save_movie_nfo(&nfo_path, &movie_nfo_from_item(item, existing))
     }
 }
 
-fn movie_nfo_from_item(item: &base_item::Model) -> MovieNfo {
+fn movie_nfo_from_item(item: &base_item::Model, mut existing: MovieNfo) -> MovieNfo {
     let data = item.data.as_ref().and_then(serde_json::Value::as_object);
-    let genres = data
+    if let Some(name) = item.name.as_deref().filter(|name| !name.is_empty()) {
+        existing.name = Some(name.to_owned());
+    }
+    if let Some(overview) = item.overview.as_deref().filter(|value| !value.is_empty()) {
+        existing.overview = Some(overview.to_owned());
+    }
+    let original_title = data
+        .and_then(|data| data.get("OriginalTitle"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| existing.original_title.clone())
+        .or_else(|| item.name.clone());
+    existing.original_title = original_title;
+    if let Some(production_year) = item.production_year {
+        existing.production_year = Some(production_year);
+    }
+    if let Some(premiere_date) = item.premiere_date {
+        existing.premiere_date = Some(premiere_date.date_naive());
+    }
+    if let Some(runtime_ticks) = item.runtime_ticks {
+        existing.runtime_ticks = Some(runtime_ticks);
+    }
+    if let Some(official_rating) = item
+        .official_rating
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        existing.official_rating = Some(official_rating.to_owned());
+    }
+    if let Some(genres) = data
         .and_then(|data| data.get("Genres"))
-        .and_then(serde_json::Value::as_array)
+        .and_then(Value::as_array)
         .map(|values| {
             values
                 .iter()
-                .filter_map(serde_json::Value::as_str)
+                .filter_map(Value::as_str)
                 .map(str::to_owned)
                 .collect()
         })
-        .unwrap_or_default();
-    let provider_ids = data
+    {
+        existing.genres = genres;
+    }
+    if let Some(provider_ids) = data
         .and_then(|data| data.get("ProviderIds"))
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default();
-    MovieNfo {
-        name: item.name.clone(),
-        original_title: item.name.clone(),
-        overview: item.overview.clone(),
-        production_year: item.production_year,
-        premiere_date: item.premiere_date.map(|date| date.date_naive()),
-        runtime_ticks: item.runtime_ticks,
-        official_rating: item.official_rating.clone(),
-        genres,
-        provider_ids,
-        ..MovieNfo::default()
+    {
+        existing.provider_ids = provider_ids;
     }
+    existing
 }
 
 pub(crate) fn containing_folder_path(item: &base_item::Model) -> String {
@@ -307,5 +362,57 @@ mod tests {
         item.path = Some("/library/movies".to_owned());
         item.is_folder = true;
         assert_eq!(containing_folder_path(&item), "/library/movies");
+    }
+
+    #[test]
+    fn nfo_writer_merges_item_edits_without_dropping_existing_fields() {
+        let existing = MovieNfo {
+            original_title: Some("Old Original".to_owned()),
+            tagline: Some("Keep this tagline".to_owned()),
+            custom_rating: Some("Custom".to_owned()),
+            ..MovieNfo::default()
+        };
+        let item = base_item::Model {
+            id: Uuid::new_v4(),
+            item_type: "Movie".to_owned(),
+            data: Some(serde_json::json!({
+                "OriginalTitle": "New Original",
+                "Genres": ["Action"],
+                "ProviderIds": { "Imdb": "tt1234567" }
+            })),
+            path: Some("/media/movie.mkv".to_owned()),
+            parent_id: None,
+            top_parent_id: None,
+            name: Some("Movie".to_owned()),
+            clean_name: None,
+            sort_name: None,
+            media_type: None,
+            overview: Some("Overview".to_owned()),
+            official_rating: None,
+            index_number: None,
+            parent_index_number: None,
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: false,
+            is_virtual_item: false,
+            presentation_unique_key: None,
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: chrono::DateTime::UNIX_EPOCH,
+            date_modified: chrono::DateTime::UNIX_EPOCH,
+            row_version: 1,
+        };
+
+        let merged = movie_nfo_from_item(&item, existing);
+
+        assert_eq!(merged.name.as_deref(), Some("Movie"));
+        assert_eq!(merged.original_title.as_deref(), Some("New Original"));
+        assert_eq!(merged.tagline.as_deref(), Some("Keep this tagline"));
+        assert_eq!(merged.custom_rating.as_deref(), Some("Custom"));
+        assert_eq!(merged.genres, ["Action"]);
+        assert_eq!(merged.provider_ids["Imdb"], "tt1234567");
     }
 }

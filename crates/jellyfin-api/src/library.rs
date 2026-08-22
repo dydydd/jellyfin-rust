@@ -386,8 +386,14 @@ pub(crate) async fn refresh(
     authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
-    state.library_scan.scan_all().await?;
-    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
+    let summary = state.library_scan.scan_all().await?;
+    crate::websocket::broadcast_library_changed(
+        &state,
+        &summary.added_ids,
+        &summary.removed_ids,
+        &summary.changed_ids,
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

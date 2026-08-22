@@ -580,6 +580,40 @@ impl TmdbMetadataProvider {
             })
             .collect::<Vec<_>>();
         for season_item in season_items {
+            if let Some(name) = season.name.as_deref().filter(|name| !name.is_empty()) {
+                if season_item.name.as_deref() != Some(name) {
+                    let mut updated = season_item.clone();
+                    updated.name = Some(name.to_owned());
+                    updated.sort_name = Some(name.to_owned());
+                    self.items.update(updated).await?;
+                }
+            }
+            if let Some(overview) = season.overview.as_deref().filter(|value| !value.is_empty()) {
+                if season_item.overview.as_deref() != Some(overview) {
+                    let mut updated = season_item.clone();
+                    updated.overview = Some(overview.to_owned());
+                    self.items.update(updated).await?;
+                }
+            }
+            if let Some(images) = &self.images {
+                if let Some(url) =
+                    TmdbUtils::image_url(Some("original"), season.poster_path.as_deref())
+                {
+                    let existing = images.list(&season_item).await.ok();
+                    let has_primary = existing.as_ref().is_some_and(|images| {
+                        images
+                            .iter()
+                            .any(|image| image.image_type == ImageType::Primary)
+                    });
+                    if !has_primary
+                        && let Err(error) = images
+                            .download_remote_image(season_item.id, ImageType::Primary, &url)
+                            .await
+                    {
+                        tracing::warn!(%error, "TMDB season primary image download failed");
+                    }
+                }
+            }
             let episodes = self.items.children(season_item.id).await?;
             for remote in &season.episodes {
                 let Some(mut episode) = episodes
@@ -608,6 +642,25 @@ impl TmdbMetadataProvider {
                     remote.vote_average,
                     remote.vote_count,
                 ));
+                if let Some(images) = &self.images {
+                    if let Some(url) =
+                        TmdbUtils::image_url(Some("original"), remote.still_path.as_deref())
+                    {
+                        let existing = images.list(&episode).await.ok();
+                        let has_primary = existing.as_ref().is_some_and(|images| {
+                            images
+                                .iter()
+                                .any(|image| image.image_type == ImageType::Primary)
+                        });
+                        if !has_primary
+                            && let Err(error) = images
+                                .download_remote_image(episode.id, ImageType::Primary, &url)
+                                .await
+                        {
+                            tracing::warn!(%error, "TMDB episode primary image download failed");
+                        }
+                    }
+                }
                 self.items.update(episode).await?;
             }
         }
@@ -1141,6 +1194,9 @@ pub(crate) struct TmdbTvDetails {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbTvSeasonDetails {
+    pub(crate) name: Option<String>,
+    pub(crate) overview: Option<String>,
+    pub(crate) poster_path: Option<String>,
     pub(crate) episodes: Vec<TmdbEpisode>,
 }
 
@@ -1393,6 +1449,9 @@ mod tests {
     fn tv_season_details_deserialize_episode_fields() {
         let season: TmdbTvSeasonDetails = serde_json::from_str(
             r#"{
+                "name": "Season 1",
+                "overview": "The first season.",
+                "poster_path": "/season1.jpg",
                 "episodes": [{
                     "id": 1,
                     "name": "Pilot",
@@ -1401,6 +1460,7 @@ mod tests {
                     "episode_number": 1,
                     "season_number": 1,
                     "runtime": 45,
+                    "still_path": "/pilot.jpg",
                     "vote_average": 7.5,
                     "vote_count": 10
                 }]
@@ -1408,9 +1468,13 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(season.name.as_deref(), Some("Season 1"));
+        assert_eq!(season.overview.as_deref(), Some("The first season."));
+        assert_eq!(season.poster_path.as_deref(), Some("/season1.jpg"));
         assert_eq!(season.episodes.len(), 1);
         assert_eq!(season.episodes[0].name.as_deref(), Some("Pilot"));
         assert_eq!(season.episodes[0].episode_number, 1);
         assert_eq!(season.episodes[0].season_number, 1);
+        assert_eq!(season.episodes[0].still_path.as_deref(), Some("/pilot.jpg"));
     }
 }

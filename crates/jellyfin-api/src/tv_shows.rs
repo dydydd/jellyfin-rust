@@ -417,8 +417,8 @@ pub(crate) async fn seasons(
         return Err(UserLibraryError::ItemNotFound.into());
     }
 
+    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
     let _ = (
-        query.fields,
         query.enable_images,
         query.image_type_limit,
         query.enable_image_types,
@@ -458,10 +458,7 @@ pub(crate) async fn seasons(
         seasons = filter_for_adjacency(seasons, adjacent_to);
     }
 
-    let items = seasons
-        .into_iter()
-        .map(|item| user_library::item_to_dto(item, state.server_id()))
-        .collect::<Vec<_>>();
+    let items = project_items_to_dtos(state.as_ref(), seasons, fields, target_user_id).await?;
     Ok(Json(user_library::BaseItemQueryResult {
         total_record_count: items.len(),
         start_index: 0,

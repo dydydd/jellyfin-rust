@@ -40,6 +40,7 @@ pub struct DtoImageItem {
     pub id: Uuid,
     pub kind: DtoImageItemKind,
     pub images: Vec<DtoImage>,
+    pub path: Option<String>,
     pub default_primary_image_aspect_ratio: Option<f64>,
 }
 
@@ -84,6 +85,10 @@ pub struct DtoImageProjection {
     pub parent_primary_image_item_id: Option<Uuid>,
     pub parent_primary_image_tag: Option<String>,
     pub primary_image_aspect_ratio: Option<f64>,
+    pub image_tags: HashMap<String, String>,
+    pub backdrop_image_tags: Vec<String>,
+    pub parent_backdrop_image_item_id: Option<Uuid>,
+    pub parent_backdrop_image_tags: Vec<String>,
 }
 
 /// Item lookup boundary used when resolving display-parent, season, and series images.
@@ -194,6 +199,7 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
                     id,
                     kind: persisted_item_kind(&model, &metadata),
                     images: images_by_item.remove(&id).unwrap_or_default(),
+                    path: model.path,
                     default_primary_image_aspect_ratio: metadata.default_primary_image_aspect_ratio,
                 },
             );
@@ -348,9 +354,19 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
             .include_primary_image_aspect_ratio
             .then_some(item.default_primary_image_aspect_ratio)
             .flatten();
+        let mut image_tags = HashMap::new();
+        let mut backdrop_image_tags = Vec::new();
+        if let Some(tag) = primary_image_tag.clone() {
+            image_tags.insert("Primary".to_owned(), tag);
+        }
+        if options.enable_images {
+            self.attach_image_tags(item, options, &mut image_tags, &mut backdrop_image_tags);
+        }
         let mut projection = DtoImageProjection {
             primary_image_tag,
             primary_image_aspect_ratio,
+            image_tags,
+            backdrop_image_tags,
             ..DtoImageProjection::default()
         };
 
@@ -373,6 +389,28 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         projection
     }
 
+    fn attach_image_tags(
+        &self,
+        item: &DtoImageItem,
+        _options: DtoImageOptions,
+        image_tags: &mut HashMap<String, String>,
+        backdrop_image_tags: &mut Vec<String>,
+    ) {
+        for image in &item.images {
+            if image.image_type == ImageType::Primary {
+                continue;
+            }
+            let Some(tag) = self.cache_tags.get_image_cache_tag(item, image) else {
+                continue;
+            };
+            if image.image_type == ImageType::Backdrop {
+                backdrop_image_tags.push(tag);
+            } else {
+                image_tags.insert(image_type_name(image.image_type).to_owned(), tag);
+            }
+        }
+    }
+
     fn primary_image_tag(&self, item: &DtoImageItem) -> Option<String> {
         item.primary_image()
             .and_then(|image| self.cache_tags.get_image_cache_tag(item, image))
@@ -391,6 +429,7 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         };
 
         projection.primary_image_tag = None;
+        projection.image_tags.remove("Primary");
         projection.parent_primary_image_item_id = Some(parent.id);
         projection.parent_primary_image_tag = Some(tag);
     }
@@ -426,12 +465,51 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
             .as_ref()
             .and_then(|season| self.primary_image_tag(season));
 
-        if let (Some(season), Some(tag)) = (season, season_tag) {
+        if let (Some(season), Some(tag)) = (season.as_ref(), season_tag) {
             projection.parent_primary_image_item_id = Some(season.id);
             projection.parent_primary_image_tag = Some(tag);
-        } else if let (Some(series), Some(tag)) = (series, series_tag) {
+        } else if let (Some(series), Some(tag)) = (series.as_ref(), series_tag) {
             projection.parent_primary_image_item_id = Some(series.id);
             projection.parent_primary_image_tag = Some(tag);
         }
+
+        let backdrop_parent = season
+            .as_ref()
+            .filter(|season| !self.backdrop_image_tags(season).is_empty())
+            .or_else(|| {
+                series
+                    .as_ref()
+                    .filter(|series| !self.backdrop_image_tags(series).is_empty())
+            });
+        if let Some(parent) = backdrop_parent {
+            projection.parent_backdrop_image_item_id = Some(parent.id);
+            projection.parent_backdrop_image_tags = self.backdrop_image_tags(parent);
+        }
+    }
+
+    fn backdrop_image_tags(&self, item: &DtoImageItem) -> Vec<String> {
+        item.images
+            .iter()
+            .filter(|image| image.image_type == ImageType::Backdrop)
+            .filter_map(|image| self.cache_tags.get_image_cache_tag(item, image))
+            .collect()
+    }
+}
+
+const fn image_type_name(image_type: ImageType) -> &'static str {
+    match image_type {
+        ImageType::Primary => "Primary",
+        ImageType::Art => "Art",
+        ImageType::Backdrop => "Backdrop",
+        ImageType::Banner => "Banner",
+        ImageType::Logo => "Logo",
+        ImageType::Thumb => "Thumb",
+        ImageType::Disc => "Disc",
+        ImageType::Box => "Box",
+        ImageType::Screenshot => "Screenshot",
+        ImageType::Menu => "Menu",
+        ImageType::Chapter => "Chapter",
+        ImageType::BoxRear => "BoxRear",
+        ImageType::Profile => "Profile",
     }
 }

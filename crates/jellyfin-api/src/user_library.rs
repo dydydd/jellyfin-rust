@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -16,7 +16,7 @@ use jellyfin_model::{
     MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
     SubtitlePlaybackMode, UserConfiguration,
 };
-use jellyfin_server_implementations::MediaStreamSelector;
+use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -145,6 +145,22 @@ pub struct BaseItemDto {
     pub has_lyrics: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_ids: Option<Value>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub image_tags: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub backdrop_image_tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_primary_image_item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_primary_image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_image_aspect_ratio: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_primary_image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_backdrop_image_item_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parent_backdrop_image_tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_sources: Option<Vec<jellyfin_model::MediaSourceInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -737,6 +753,14 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         extra_type,
         has_lyrics,
         provider_ids: metadata_value(item.data.as_ref(), &["ProviderIds", "provider_ids"]),
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -753,6 +777,14 @@ pub(crate) async fn project_item_to_dto(
     let item_id = item.id;
     let original_language = original_language_from_item(&item);
     let mut dto = item_to_dto(item, state.server_id());
+    if let Some(projection) = state
+        .dto_images
+        .project(item_id, DtoImageOptions::default())
+        .await
+        .map_err(|_| ApiError::Internal)?
+    {
+        attach_dto_image_projection(&mut dto, projection);
+    }
     if fields.wants_trickplay() && is_video_item(&dto) {
         dto.trickplay = Some(
             state
@@ -793,6 +825,24 @@ pub(crate) async fn project_item_to_dto(
         original_language.as_deref(),
     );
     Ok(dto)
+}
+
+pub(crate) fn attach_dto_image_projection(
+    dto: &mut BaseItemDto,
+    projection: jellyfin_server_implementations::DtoImageProjection,
+) {
+    dto.image_tags = projection.image_tags;
+    dto.backdrop_image_tags = projection.backdrop_image_tags;
+    dto.parent_primary_image_item_id = projection
+        .parent_primary_image_item_id
+        .map(|id| id.simple().to_string());
+    dto.parent_primary_image_tag = projection.parent_primary_image_tag;
+    dto.primary_image_aspect_ratio = projection.primary_image_aspect_ratio;
+    dto.series_primary_image_tag = projection.series_primary_image_tag;
+    dto.parent_backdrop_image_item_id = projection
+        .parent_backdrop_image_item_id
+        .map(|id| id.simple().to_string());
+    dto.parent_backdrop_image_tags = projection.parent_backdrop_image_tags;
 }
 
 pub(crate) async fn trickplay_manifests_for_items(
@@ -1134,6 +1184,14 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -1172,6 +1230,14 @@ pub(crate) fn genre_to_dto(genre: &Genre, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -1206,6 +1272,14 @@ pub(crate) fn studio_to_dto(studio: &Studio, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -1240,6 +1314,14 @@ pub(crate) fn artist_to_dto(artist: &Artist, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -1274,6 +1356,14 @@ pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: Some(person.model.provider_ids.clone()),
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -1308,6 +1398,14 @@ pub(crate) fn year_to_dto(year: &Year, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,

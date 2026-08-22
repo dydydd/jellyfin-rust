@@ -80,6 +80,7 @@ impl Default for ScheduledTaskPaths {
 type ScheduledTaskFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 type ScheduledTaskHandler =
     Arc<dyn Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync>;
+type ScheduledTaskChangeListener = Arc<dyn Fn() + Send + Sync>;
 
 struct ScheduledTaskRunContext {
     task_id: String,
@@ -109,6 +110,7 @@ pub struct ScheduledTaskService {
     tasks: Arc<RwLock<Vec<ScheduledTask>>>,
     executors: Arc<std::sync::RwLock<HashMap<String, ScheduledTaskHandler>>>,
     paths: Arc<std::sync::RwLock<ScheduledTaskPaths>>,
+    change_listeners: Arc<std::sync::RwLock<Vec<ScheduledTaskChangeListener>>>,
 }
 
 impl Default for ScheduledTaskService {
@@ -124,6 +126,7 @@ impl ScheduledTaskService {
             tasks: Arc::new(RwLock::new(tasks)),
             executors: Arc::new(std::sync::RwLock::new(HashMap::new())),
             paths: Arc::new(std::sync::RwLock::new(ScheduledTaskPaths::default())),
+            change_listeners: Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -265,6 +268,7 @@ impl ScheduledTaskService {
             };
             tokio::spawn(async move { executor(context).await });
         }
+        self.notify_changed();
         Ok(())
     }
 
@@ -281,6 +285,7 @@ impl ScheduledTaskService {
             .ok_or(ScheduledTaskError::NotFound)?;
         task.state = TaskState::Idle;
         task.current_progress_percentage = None;
+        self.notify_changed();
         Ok(())
     }
 
@@ -300,7 +305,27 @@ impl ScheduledTaskService {
             .find(|task| task.id.eq_ignore_ascii_case(task_id))
             .ok_or(ScheduledTaskError::NotFound)?;
         task.current_progress_percentage = Some(progress);
+        self.notify_changed();
         Ok(())
+    }
+
+    /// Registers a callback invoked after task state or progress changes.
+    pub fn add_change_listener(&self, listener: ScheduledTaskChangeListener) {
+        self.change_listeners
+            .write()
+            .expect("scheduled task listener lock poisoned")
+            .push(listener);
+    }
+
+    fn notify_changed(&self) {
+        let listeners = self
+            .change_listeners
+            .read()
+            .expect("scheduled task listener lock poisoned")
+            .clone();
+        for listener in listeners {
+            listener();
+        }
     }
 
     /// Replaces the triggers for a task.
@@ -319,6 +344,7 @@ impl ScheduledTaskService {
             .find(|task| task.id.eq_ignore_ascii_case(task_id))
             .ok_or(ScheduledTaskError::NotFound)?;
         task.triggers = triggers;
+        self.notify_changed();
         Ok(())
     }
 }

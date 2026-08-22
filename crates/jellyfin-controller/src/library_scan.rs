@@ -33,11 +33,12 @@ use jellyfin_providers::media_info::{
 };
 use jellyfin_server_implementations::{
     CoreResolutionIgnoreRule, ExtraDirectoryReader, ExtraFileSystemEntry, ExtraMediaKind,
-    ExtraOwner, ExtraOwnerKind, LibraryExtrasResolver, ResolvedLibraryExtra,
-    ResolutionFileSystemEntry, ResolutionParentContext, ResolutionParentKind,
+    ExtraOwner, ExtraOwnerKind, LibraryExtrasResolver, ResolutionFileSystemEntry,
+    ResolutionParentContext, ResolutionParentKind, ResolvedLibraryExtra,
 };
 use jellyfin_xbmc_metadata::{
-    MovieNfoLocation, MovieVideoType, movie_nfo_save_paths, parse_movie_nfo_file,
+    MovieNfoLocation, MovieVideoType, NfoDocumentKind, NfoMetadata, movie_nfo_save_paths,
+    parse_movie_nfo_file,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -48,12 +49,15 @@ use uuid::Uuid;
 
 use crate::{LocalizationService, media_streams::MediaStreamMapper};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
     pub folders_seen: usize,
     pub items_added: usize,
     pub items_removed: usize,
     pub items_seen: usize,
+    pub added_ids: Vec<Uuid>,
+    pub changed_ids: Vec<Uuid>,
+    pub removed_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Error)]
@@ -239,9 +243,11 @@ impl LibraryScanService {
                 readable_roots.push(root.to_path_buf());
             }
         }
-        summary.items_removed += self
+        let removed = self
             .remove_stale_media(collection.id, &seen_paths, &readable_roots)
             .await?;
+        summary.items_removed += removed.len();
+        summary.removed_ids.extend(removed);
         Ok(())
     }
 
@@ -250,9 +256,9 @@ impl LibraryScanService {
         parent_id: Uuid,
         seen_paths: &HashSet<String>,
         readable_roots: &[PathBuf],
-    ) -> Result<usize, LibraryScanError> {
+    ) -> Result<Vec<Uuid>, LibraryScanError> {
         if readable_roots.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         let stale_ids = self
             .items
@@ -272,11 +278,10 @@ impl LibraryScanService {
             })
             .collect::<Vec<_>>();
         if stale_ids.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
-        let removed = stale_ids.len();
         self.items.delete_many(&stale_ids).await?;
-        Ok(removed)
+        Ok(stale_ids)
     }
 
     async fn scan_path(
@@ -293,16 +298,30 @@ impl LibraryScanService {
             Err(error) => return Err(error.into()),
         };
         let mut pending = Vec::new();
-        self.scan_entries(&mut entries, &mut pending, parent_id, kind, summary, seen_paths)
-            .await?;
+        self.scan_entries(
+            &mut entries,
+            &mut pending,
+            parent_id,
+            kind,
+            summary,
+            seen_paths,
+        )
+        .await?;
         while let Some(directory) = pending.pop() {
             let mut entries = match fs::read_dir(&directory).await {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            self.scan_entries(&mut entries, &mut pending, parent_id, kind, summary, seen_paths)
-                .await?;
+            self.scan_entries(
+                &mut entries,
+                &mut pending,
+                parent_id,
+                kind,
+                summary,
+                seen_paths,
+            )
+            .await?;
         }
         Ok(true)
     }
@@ -323,10 +342,8 @@ impl LibraryScanService {
             let metadata = entry.metadata().await?;
             let path = entry.path();
             if metadata.is_dir() {
-                let candidate = ResolutionFileSystemEntry::new(
-                    path.to_string_lossy().into_owned(),
-                    true,
-                );
+                let candidate =
+                    ResolutionFileSystemEntry::new(path.to_string_lossy().into_owned(), true);
                 if !ignore_rule.should_ignore(&candidate, parent_context)
                     && !is_extras_directory(&path)
                 {
@@ -337,10 +354,8 @@ impl LibraryScanService {
             if !metadata.is_file() {
                 continue;
             }
-            let candidate = ResolutionFileSystemEntry::new(
-                path.to_string_lossy().into_owned(),
-                false,
-            );
+            let candidate =
+                ResolutionFileSystemEntry::new(path.to_string_lossy().into_owned(), false);
             if ignore_rule.should_ignore(&candidate, parent_context) {
                 continue;
             }
@@ -367,18 +382,14 @@ impl LibraryScanService {
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect();
 
-        let extra_paths = self
-            .extra_paths_for_entries(&files)
-            .await?;
+        let extra_paths = self.extra_paths_for_entries(&files).await?;
         let regular_files = files
             .iter()
-            .filter(|(path, _)| {
-                !extra_paths.contains(&path.to_string_lossy().into_owned())
-            })
+            .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
             .cloned()
             .collect::<Vec<_>>();
         summary.items_added += self
-            .process_files(&regular_files, parent_id, kind, &existing_by_path)
+            .process_files(&regular_files, parent_id, kind, &existing_by_path, summary)
             .await?;
         self.ensure_extras(&files, kind, summary, seen_paths)
             .await?;
@@ -436,9 +447,7 @@ impl LibraryScanService {
         let entries = files
             .iter()
             .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
-            .map(|(path, _)| {
-                ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false)
-            })
+            .map(|(path, _)| ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false))
             .collect::<Vec<_>>();
         let reader = TokioExtraDirectoryReader;
         for entry in entries.iter().filter(|entry| {
@@ -464,8 +473,7 @@ impl LibraryScanService {
                     .next()
                     .map(|item| item.id);
                 if let Some(owner_id) = owner_id {
-                    self.ensure_extra_item(&extra, owner_id, summary)
-                        .await?;
+                    self.ensure_extra_item(&extra, owner_id, summary).await?;
                 }
             }
         }
@@ -484,7 +492,10 @@ impl LibraryScanService {
             ExtraMediaKind::Video => "Video",
         };
         let mut data = serde_json::Map::new();
-        data.insert("ExtraType".to_owned(), json!(extra_type_name(extra.extra_type)));
+        data.insert(
+            "ExtraType".to_owned(),
+            json!(extra_type_name(extra.extra_type)),
+        );
         let stable_id = stable_item_id(&extra.path, item_type);
         if let Some(existing) = self.items.get(stable_id).await? {
             let mut updated = existing.clone();
@@ -499,10 +510,13 @@ impl LibraryScanService {
         item.parent_id = Some(owner_id);
         item.name = Some(extra.name.clone());
         item.sort_name = Some(extra.name.clone());
-        item.media_type = Some(match extra.media_kind {
-            ExtraMediaKind::Audio => "Audio",
-            _ => "Video",
-        }.to_owned());
+        item.media_type = Some(
+            match extra.media_kind {
+                ExtraMediaKind::Audio => "Audio",
+                _ => "Video",
+            }
+            .to_owned(),
+        );
         item.is_folder = false;
         item.is_virtual_item = false;
         item.presentation_unique_key = Some(extra.path.clone());
@@ -518,6 +532,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         kind: ScanLibraryKind,
         existing_by_path: &HashMap<String, base_item::Model>,
+        summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
             return Ok(0);
@@ -526,14 +541,27 @@ impl LibraryScanService {
         if concurrency <= 1 {
             let mut added = 0;
             for (path, media_kind) in files {
-                let existing = path
-                    .to_str()
-                    .and_then(|p| existing_by_path.get(p));
-                if self
+                let existing = path.to_str().and_then(|p| existing_by_path.get(p));
+                let (item_added, item_id) = self
                     .ensure_media_item(path, parent_id, *media_kind, kind, existing)
-                    .await?
-                {
+                    .await?;
+                if item_added {
                     added += 1;
+                    summary.added_ids.push(item_id);
+                }
+                if let Some(path_str) = path.to_str() {
+                    let item_type = if kind.is_tv() {
+                        media_kind.item_type()
+                    } else if *media_kind == MediaKind::Video {
+                        kind.video_item_type()
+                    } else {
+                        media_kind.item_type()
+                    };
+                    let known_id = existing_by_path
+                        .get(path_str)
+                        .map(|item| item.id)
+                        .unwrap_or_else(|| stable_item_id(path_str, item_type));
+                    summary.changed_ids.push(known_id);
                 }
             }
             return Ok(added);
@@ -549,10 +577,7 @@ impl LibraryScanService {
         for file in files {
             let path = file.0.clone();
             let media_kind = file.1;
-            let existing = path
-                .to_str()
-                .and_then(|p| existing_by_path.get(p))
-                .cloned();
+            let existing = path.to_str().and_then(|p| existing_by_path.get(p)).cloned();
             let permit = Arc::clone(&semaphore)
                 .acquire_owned()
                 .await
@@ -568,8 +593,12 @@ impl LibraryScanService {
         let mut added = 0;
         for handle in handles {
             match handle.await {
-                Ok(Ok(true)) => added += 1,
-                Ok(Ok(false)) => {}
+                Ok(Ok((true, item_id))) => {
+                    added += 1;
+                    summary.added_ids.push(item_id);
+                    summary.changed_ids.push(item_id);
+                }
+                Ok(Ok((false, item_id))) => summary.changed_ids.push(item_id),
                 Ok(Err(error)) => {
                     tracing::debug!(%error, "concurrent media item processing failed");
                 }
@@ -619,12 +648,13 @@ impl LibraryScanService {
         media_kind: MediaKind,
         kind: ScanLibraryKind,
         existing: Option<&'a base_item::Model>,
-    ) -> Result<bool, LibraryScanError> {
+    ) -> Result<(bool, Uuid), LibraryScanError> {
         let Some(path_str) = path.to_str() else {
-            return Ok(false);
+            return Ok((false, Uuid::nil()));
         };
         if let Some(mut existing) = existing.cloned() {
             if !kind.is_tv() {
+                let existing_id = existing.id;
                 let desired_type = if media_kind == MediaKind::Video {
                     kind.video_item_type()
                 } else {
@@ -651,7 +681,7 @@ impl LibraryScanService {
                 if changed {
                     self.items.update(existing).await?;
                 }
-                return Ok(false);
+                return Ok((false, existing_id));
             }
             return self
                 .ensure_episode_item(Some(existing), path, parent_id, media_kind, path_str)
@@ -682,7 +712,9 @@ impl LibraryScanService {
         item.data = Some(media_item_data(path_str, None));
         let mut item = self.items.create(item).await?;
         if media_kind.needs_probe() {
-            if let Some(media_info) = self.ensure_media_streams(item.id, path_str, media_kind).await?
+            if let Some(media_info) = self
+                .ensure_media_streams(item.id, path_str, media_kind)
+                .await?
                 && apply_probed_item_metadata(&mut item, path_str, &media_info)
             {
                 item = self.items.update(item).await?;
@@ -692,7 +724,7 @@ impl LibraryScanService {
             item = self.items.update(item).await?;
         }
         self.discover_local_images(item.id, path_str).await?;
-        Ok(true)
+        Ok((true, item.id))
     }
 
     async fn ensure_episode_item(
@@ -702,7 +734,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         media_kind: MediaKind,
         path_str: &str,
-    ) -> Result<bool, LibraryScanError> {
+    ) -> Result<(bool, Uuid), LibraryScanError> {
         let ep_result = crate::episode_parser::parse_episode(path);
         let season_number = ep_result.season_number;
         let episode_number = ep_result.episode_number;
@@ -715,8 +747,7 @@ impl LibraryScanService {
         if let Some(ref name) = series_name {
             let series_item_type = "Series";
             let series_item_id = stable_item_id(name, series_item_type);
-            let series_exists = self.items.get(series_item_id).await?.is_some();
-            if !series_exists {
+            if self.items.get(series_item_id).await?.is_none() {
                 let mut series = NewBaseItem::new(series_item_id, series_item_type);
                 series.name = Some(name.clone());
                 series.sort_name = Some(name.clone());
@@ -725,14 +756,18 @@ impl LibraryScanService {
                 series.data = Some(json!({ "CollectionType": "tvshows" }));
                 self.items.create(series).await?;
             }
+            if let Some(mut series) = self.items.get(series_item_id).await?
+                && apply_series_nfo_metadata(&mut series, path)
+            {
+                self.items.update(series).await?;
+            }
             series_id = Some(series_item_id);
             series_puk = Some(series_item_id.simple().to_string());
 
             if let Some(sn) = season_number {
                 let season_key = format!("{}_{}", series_item_id.simple(), sn);
                 let season_item_id = stable_item_id(&season_key, "Season");
-                let season_exists = self.items.get(season_item_id).await?.is_some();
-                if !season_exists {
+                if self.items.get(season_item_id).await?.is_none() {
                     let mut season = NewBaseItem::new(season_item_id, "Season");
                     season.name = Some(format!("Season {sn}"));
                     season.sort_name = season.name.clone();
@@ -744,6 +779,11 @@ impl LibraryScanService {
                     season.series_presentation_unique_key = series_puk.clone();
                     self.items.create(season).await?;
                 }
+                if let Some(mut season) = self.items.get(season_item_id).await?
+                    && apply_season_nfo_metadata(&mut season, path, Some(sn))
+                {
+                    self.items.update(season).await?;
+                }
                 season_id = Some(season_item_id);
             }
         }
@@ -753,6 +793,7 @@ impl LibraryScanService {
         let stable_id = stable_item_id(path_str, item_type);
 
         if let Some(mut existing) = existing {
+            let existing_id = existing.id;
             existing.index_number = episode_number;
             existing.parent_index_number = season_number;
             if let Some(sid) = series_id {
@@ -762,14 +803,17 @@ impl LibraryScanService {
                 existing.season_id = Some(sid);
             }
             existing.series_presentation_unique_key = series_puk.clone();
+            let nfo_changed = apply_episode_nfo_metadata(&mut existing, path);
             if let Some(media_info) = self
                 .ensure_media_streams(existing.id, path_str, media_kind)
                 .await?
                 && apply_probed_item_metadata(&mut existing, path_str, &media_info)
             {
                 self.items.update(existing).await?;
+            } else if nfo_changed {
+                self.items.update(existing).await?;
             }
-            return Ok(false);
+            return Ok((false, existing_id));
         }
 
         let mut item = NewBaseItem::new(stable_id, item_type);
@@ -788,12 +832,20 @@ impl LibraryScanService {
         item.series_presentation_unique_key = series_puk;
         item.data = Some(media_item_data(path_str, None));
         let mut item = self.items.create(item).await?;
-        if let Some(media_info) = self.ensure_media_streams(item.id, path_str, media_kind).await?
+        if apply_episode_nfo_metadata(&mut item, path) {
+            item = self.items.update(item).await?;
+        }
+        if let Some(media_info) = self
+            .ensure_media_streams(item.id, path_str, media_kind)
+            .await?
             && apply_probed_item_metadata(&mut item, path_str, &media_info)
         {
+            let item_id = item.id;
             self.items.update(item).await?;
+            return Ok((true, item_id));
         }
-        Ok(true)
+        let item_id = item.id;
+        Ok((true, item_id))
     }
 
     async fn ensure_media_streams(
@@ -899,18 +951,18 @@ impl LibraryScanService {
             let path = entry.path();
             let path_string = path.to_string_lossy().into_owned();
             if existing.iter().any(|image| {
-                image.image_type == image_type
-                    && image.path.eq_ignore_ascii_case(&path_string)
+                image.image_type == image_type && image.path.eq_ignore_ascii_case(&path_string)
             }) {
                 continue;
             }
-            let modified =
-                match tokio::fs::metadata(&path).await.ok().and_then(|metadata| {
-                    metadata.modified().ok()
-                }) {
-                    Some(modified) => chrono::DateTime::<chrono::Utc>::from(modified),
-                    None => chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-                };
+            let modified = match tokio::fs::metadata(&path)
+                .await
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+            {
+                Some(modified) => chrono::DateTime::<chrono::Utc>::from(modified),
+                None => chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            };
             self.images
                 .set_or_append(
                     item_id,
@@ -976,10 +1028,7 @@ impl LibraryScanService {
             let output = self
                 .image_cache_directory
                 .join(format!("screenshot-{item_id}-{}.jpg", video_stream.index));
-            if self
-                .extract_video_frame(path, offset_ticks, &output)
-                .await
-            {
+            if self.extract_video_frame(path, offset_ticks, &output).await {
                 self.persist_generated_image(item_id, BaseItemImageType::Primary, &output)
                     .await?;
             }
@@ -1010,12 +1059,7 @@ impl LibraryScanService {
     }
 
     #[allow(clippy::cast_precision_loss)]
-    async fn extract_video_frame(
-        &self,
-        input: &str,
-        offset_ticks: i64,
-        output: &Path,
-    ) -> bool {
+    async fn extract_video_frame(&self, input: &str, offset_ticks: i64, output: &Path) -> bool {
         let seconds = format!("{:.6}", offset_ticks as f64 / 10_000_000.0);
         let status = tokio::process::Command::new(&self.ffmpeg_path)
             .args(["-y", "-ss", &seconds, "-i", input, "-frames:v", "1"])
@@ -1038,13 +1082,14 @@ impl LibraryScanService {
         }) {
             return Ok(());
         }
-        let modified =
-            match tokio::fs::metadata(output).await.ok().and_then(|metadata| {
-                metadata.modified().ok()
-            }) {
-                Some(modified) => chrono::DateTime::<chrono::Utc>::from(modified),
-                None => chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-            };
+        let modified = match tokio::fs::metadata(output)
+            .await
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+        {
+            Some(modified) => chrono::DateTime::<chrono::Utc>::from(modified),
+            None => chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        };
         self.images
             .set_or_append(
                 item_id,
@@ -1256,9 +1301,7 @@ fn local_image_type(file_name: &str) -> Option<BaseItemImageType> {
         .to_ascii_lowercase();
     let stem = stem.trim_end_matches(|character: char| character.is_ascii_digit());
     Some(match stem {
-        "poster" | "folder" | "cover" | "default" | "movie" | "show" => {
-            BaseItemImageType::Primary
-        }
+        "poster" | "folder" | "cover" | "default" | "movie" | "show" => BaseItemImageType::Primary,
         "backdrop" | "fanart" | "background" | "art" => BaseItemImageType::Backdrop,
         "logo" | "clearlogo" => BaseItemImageType::Logo,
         "banner" => BaseItemImageType::Banner,
@@ -1294,9 +1337,7 @@ fn attachment_image_type(attachment: &ProbedMediaAttachment) -> Option<BaseItemI
 }
 
 fn contains_any(value: &str, candidates: &[&str]) -> bool {
-    candidates
-        .iter()
-        .any(|candidate| value.contains(candidate))
+    candidates.iter().any(|candidate| value.contains(candidate))
 }
 
 fn is_scanned_media_type(item_type: &str) -> bool {
@@ -1350,24 +1391,24 @@ fn apply_probed_item_metadata(
     changed
 }
 
-fn apply_nfo_metadata(
-    item: &mut jellyfin_data::entities::base_item::Model,
-    path: &str,
-) -> bool {
-    if !matches!(
-        item.item_type.as_str(),
-        "Movie" | "Video" | "Trailer" | "MusicVideo"
-    ) {
-        return false;
+fn apply_nfo_metadata(item: &mut jellyfin_data::entities::base_item::Model, path: &str) -> bool {
+    match item.item_type.as_str() {
+        "Movie" | "Video" | "Trailer" | "MusicVideo" => apply_movie_nfo_metadata(item, path),
+        _ => false,
     }
+}
+
+fn apply_movie_nfo_metadata(
+    item: &mut jellyfin_data::entities::base_item::Model,
+    media_path: &str,
+) -> bool {
     let Some(nfo_path) = movie_nfo_save_paths(&MovieNfoLocation {
-        path: PathBuf::from(path),
+        path: PathBuf::from(media_path),
         is_in_mixed_folder: false,
         video_type: MovieVideoType::File,
     })
     .into_iter()
-    .find(|path| path.is_file())
-    else {
+    .find(|path| path.is_file()) else {
         return false;
     };
     let Ok(nfo) = parse_movie_nfo_file(nfo_path) else {
@@ -1388,58 +1429,357 @@ fn apply_nfo_metadata(
         item.overview = Some(overview.to_owned());
         changed = true;
     }
-    if nfo.production_year.is_some() && item.production_year != nfo.production_year {
-        item.production_year = nfo.production_year;
-        changed = true;
-    }
-    if nfo.premiere_date.is_some()
-        && item.premiere_date.is_none()
+    if let Some(production_year) = nfo.production_year
+        && item.production_year != Some(production_year)
     {
-        item.premiere_date = nfo.premiere_date.map(|date| {
-            chrono::DateTime::from_naive_utc_and_offset(
-                date.and_hms_opt(0, 0, 0).unwrap_or_default(),
-                chrono::Utc,
-            )
-        });
+        item.production_year = Some(production_year);
         changed = true;
     }
-    if nfo.runtime_ticks.is_some() && item.runtime_ticks != nfo.runtime_ticks {
-        item.runtime_ticks = nfo.runtime_ticks;
+    if let Some(premiere_date) = nfo.premiere_date
+        && item.premiere_date.map(|date| date.date_naive()) != Some(premiere_date)
+    {
+        item.premiere_date = Some(chrono::DateTime::from_naive_utc_and_offset(
+            premiere_date.and_hms_opt(0, 0, 0).unwrap_or_default(),
+            chrono::Utc,
+        ));
         changed = true;
     }
-    if nfo.official_rating.is_some() && item.official_rating != nfo.official_rating {
-        item.official_rating.clone_from(&nfo.official_rating);
+    if let Some(runtime_ticks) = nfo.runtime_ticks
+        && item.runtime_ticks != Some(runtime_ticks)
+    {
+        item.runtime_ticks = Some(runtime_ticks);
+        changed = true;
+    }
+    if let Some(official_rating) = nfo
+        .official_rating
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        && item.official_rating.as_deref() != Some(official_rating)
+    {
+        item.official_rating = Some(official_rating.to_owned());
         changed = true;
     }
 
-    let mut data = item
-        .data
-        .as_ref()
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if !nfo.genres.is_empty() {
-        data.insert(
-            "Genres".to_owned(),
-            serde_json::Value::Array(
-                nfo.genres
-                    .iter()
-                    .cloned()
-                    .map(serde_json::Value::String)
-                    .collect(),
-            ),
+    let mut data = metadata_data(item);
+    changed |= upsert_string(&mut data, "OriginalTitle", nfo.original_title.as_deref());
+    if let Some(tagline) = nfo.tagline.as_deref().filter(|tagline| !tagline.is_empty()) {
+        changed |= upsert_string(&mut data, "Tagline", Some(tagline));
+    }
+    changed |= upsert_f32(&mut data, "CommunityRating", nfo.community_rating);
+    changed |= upsert_f32(&mut data, "CriticRating", nfo.critic_rating);
+    changed |= upsert_string(&mut data, "CustomRating", nfo.custom_rating.as_deref());
+    changed |= upsert_string(
+        &mut data,
+        "PreferredMetadataLanguage",
+        nfo.preferred_metadata_language.as_deref(),
+    );
+    changed |= upsert_string(
+        &mut data,
+        "PreferredMetadataCountryCode",
+        nfo.preferred_metadata_country_code.as_deref(),
+    );
+    changed |= upsert_strings(&mut data, "ProductionLocations", &nfo.production_locations);
+    changed |= upsert_string(&mut data, "CollectionName", nfo.collection_name.as_deref());
+    changed |= upsert_string(&mut data, "AspectRatio", nfo.aspect_ratio.as_deref());
+    changed |= upsert_i32(&mut data, "Width", nfo.width);
+    changed |= upsert_i32(&mut data, "Height", nfo.height);
+    changed |= upsert_bool(&mut data, "HasSubtitles", nfo.has_subtitles);
+    changed |= upsert_strings(&mut data, "Genres", &nfo.genres);
+    changed |= upsert_strings(&mut data, "Studios", &nfo.studios);
+    changed |= upsert_strings(&mut data, "RemoteTrailers", &nfo.remote_trailers);
+    if let Some(date_created) = nfo.date_created {
+        changed |= upsert_string(&mut data, "DateCreated", Some(&date_created.to_string()));
+    }
+    if let Some(end_date) = nfo.end_date {
+        changed |= upsert_string(
+            &mut data,
+            "EndDate",
+            Some(&end_date.format("%Y-%m-%d").to_string()),
         );
-        changed = true;
     }
     if !nfo.provider_ids.is_empty() {
-        data.insert(
-            "ProviderIds".to_owned(),
+        changed |= upsert_value(
+            &mut data,
+            "ProviderIds",
             serde_json::to_value(&nfo.provider_ids).unwrap_or_default(),
         );
+    }
+    item.data = Some(Value::Object(data));
+    changed
+}
+
+fn apply_episode_nfo_metadata(
+    item: &mut jellyfin_data::entities::base_item::Model,
+    media_path: &Path,
+) -> bool {
+    let nfo_path = media_path.with_extension("nfo");
+    let Ok(input) = std::fs::read_to_string(&nfo_path) else {
+        return false;
+    };
+    let Ok(nfo) = jellyfin_xbmc_metadata::parse_nfo(&input, NfoDocumentKind::Episode) else {
+        return false;
+    };
+    apply_non_movie_nfo(item, &nfo)
+}
+
+fn apply_series_nfo_metadata(
+    item: &mut jellyfin_data::entities::base_item::Model,
+    episode_path: &Path,
+) -> bool {
+    let Some(directory) = series_directory(episode_path) else {
+        return false;
+    };
+    let Ok(input) = std::fs::read_to_string(directory.join("tvshow.nfo")) else {
+        return false;
+    };
+    let Ok(nfo) = jellyfin_xbmc_metadata::parse_nfo(&input, NfoDocumentKind::Series) else {
+        return false;
+    };
+    apply_non_movie_nfo(item, &nfo)
+}
+
+fn apply_season_nfo_metadata(
+    item: &mut jellyfin_data::entities::base_item::Model,
+    episode_path: &Path,
+    season_number: Option<i32>,
+) -> bool {
+    let Some(directory) = season_directory(episode_path, season_number) else {
+        return false;
+    };
+    let candidate = season_nfo_path(&directory, season_number);
+    let Ok(input) = std::fs::read_to_string(candidate) else {
+        return false;
+    };
+    let Ok(nfo) = jellyfin_xbmc_metadata::parse_nfo(&input, NfoDocumentKind::Season) else {
+        return false;
+    };
+    apply_non_movie_nfo(item, &nfo)
+}
+
+fn apply_non_movie_nfo(item: &mut base_item::Model, nfo: &NfoMetadata) -> bool {
+    let mut changed = false;
+    if let Some(name) = nfo.name.as_deref().filter(|name| !name.is_empty())
+        && item.name.as_deref() != Some(name)
+    {
+        item.name = Some(name.to_owned());
+        item.sort_name = Some(name.to_owned());
         changed = true;
     }
-    item.data = Some(serde_json::Value::Object(data));
+    if let Some(sort_name) = nfo.sort_name.as_deref().filter(|name| !name.is_empty())
+        && item.sort_name.as_deref() != Some(sort_name)
+    {
+        item.sort_name = Some(sort_name.to_owned());
+        changed = true;
+    }
+    if let Some(overview) = nfo.overview.as_deref().filter(|value| !value.is_empty())
+        && item.overview.as_deref() != Some(overview)
+    {
+        item.overview = Some(overview.to_owned());
+        changed = true;
+    }
+    if let Some(production_year) = nfo.production_year
+        && item.production_year != Some(production_year)
+    {
+        item.production_year = Some(production_year);
+        changed = true;
+    }
+    if let Some(premiere_date) = nfo.premiere_date
+        && item.premiere_date.map(|date| date.date_naive()) != Some(premiere_date)
+    {
+        item.premiere_date = Some(chrono::DateTime::from_naive_utc_and_offset(
+            premiere_date.and_hms_opt(0, 0, 0).unwrap_or_default(),
+            chrono::Utc,
+        ));
+        changed = true;
+    }
+    if let Some(index_number) = nfo.index_number
+        && item.index_number != Some(index_number)
+    {
+        item.index_number = Some(index_number);
+        changed = true;
+    }
+    if let Some(parent_index_number) = nfo.parent_index_number
+        && item.parent_index_number != Some(parent_index_number)
+    {
+        item.parent_index_number = Some(parent_index_number);
+        changed = true;
+    }
+    if nfo.runtime_ticks > 0 && item.runtime_ticks != Some(nfo.runtime_ticks) {
+        item.runtime_ticks = Some(nfo.runtime_ticks);
+        changed = true;
+    }
+    if let Some(official_rating) = nfo
+        .official_rating
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        && item.official_rating.as_deref() != Some(official_rating)
+    {
+        item.official_rating = Some(official_rating.to_owned());
+        changed = true;
+    }
+
+    let mut data = metadata_data(item);
+    changed |= upsert_string(&mut data, "OriginalTitle", nfo.original_title.as_deref());
+    if !nfo.tagline.is_empty() {
+        changed |= upsert_string(&mut data, "Tagline", Some(&nfo.tagline));
+    }
+    changed |= upsert_strings(&mut data, "Genres", &nfo.genres);
+    changed |= upsert_strings(&mut data, "Tags", &nfo.tags);
+    changed |= upsert_strings(&mut data, "Studios", &nfo.studios);
+    changed |= upsert_i32(&mut data, "IndexNumberEnd", nfo.index_number_end);
+    changed |= upsert_i32(
+        &mut data,
+        "AirsAfterSeasonNumber",
+        nfo.airs_after_season_number,
+    );
+    changed |= upsert_i32(
+        &mut data,
+        "AirsBeforeSeasonNumber",
+        nfo.airs_before_season_number,
+    );
+    changed |= upsert_i32(
+        &mut data,
+        "AirsBeforeEpisodeNumber",
+        nfo.airs_before_episode_number,
+    );
+    changed |= upsert_string(&mut data, "AirTime", nfo.air_time.as_deref());
+    changed |= upsert_string(
+        &mut data,
+        "Status",
+        nfo.status.as_ref().map(|status| match status {
+            jellyfin_xbmc_metadata::SeriesStatus::Continuing => "Continuing",
+            jellyfin_xbmc_metadata::SeriesStatus::Ended => "Ended",
+            jellyfin_xbmc_metadata::SeriesStatus::Other(value) => value,
+        }),
+    );
+    changed |= upsert_bool(&mut data, "IsLocked", nfo.is_locked);
+    if !nfo.air_days.is_empty() {
+        changed |= upsert_strings(
+            &mut data,
+            "AirDays",
+            &nfo.air_days
+                .iter()
+                .map(|day| weekday_name(*day).to_owned())
+                .collect::<Vec<_>>(),
+        );
+    }
+    if let Some(date_created) = nfo.date_created {
+        changed |= upsert_string(&mut data, "DateCreated", Some(&date_created.to_string()));
+    }
+    if !nfo.provider_ids.is_empty() {
+        changed |= upsert_value(
+            &mut data,
+            "ProviderIds",
+            serde_json::to_value(&nfo.provider_ids).unwrap_or_default(),
+        );
+    }
+    item.data = Some(Value::Object(data));
     changed
+}
+
+fn metadata_data(item: &base_item::Model) -> serde_json::Map<String, Value> {
+    item.data
+        .as_ref()
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn upsert_string(
+    data: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<&str>,
+) -> bool {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+    upsert_value(data, key, json!(value))
+}
+
+fn upsert_strings(data: &mut serde_json::Map<String, Value>, key: &str, values: &[String]) -> bool {
+    if values.is_empty() {
+        return false;
+    }
+    upsert_value(
+        data,
+        key,
+        Value::Array(values.iter().cloned().map(Value::String).collect()),
+    )
+}
+
+fn upsert_i32(data: &mut serde_json::Map<String, Value>, key: &str, value: Option<i32>) -> bool {
+    value.is_some_and(|value| upsert_value(data, key, json!(value)))
+}
+
+fn upsert_f32(data: &mut serde_json::Map<String, Value>, key: &str, value: Option<f32>) -> bool {
+    value.is_some_and(|value| upsert_value(data, key, json!(value)))
+}
+
+fn upsert_bool(data: &mut serde_json::Map<String, Value>, key: &str, value: bool) -> bool {
+    upsert_value(data, key, json!(value))
+}
+
+fn upsert_value(data: &mut serde_json::Map<String, Value>, key: &str, value: Value) -> bool {
+    if data.get(key) == Some(&value) {
+        return false;
+    }
+    data.insert(key.to_owned(), value);
+    true
+}
+
+fn series_directory(episode_path: &Path) -> Option<PathBuf> {
+    let parent = episode_path.parent()?;
+    let season = parent.file_name()?.to_str()?;
+    if crate::episode_parser::parse_season_directory(season).is_some() {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
+fn season_directory(episode_path: &Path, season_number: Option<i32>) -> Option<PathBuf> {
+    let parent = episode_path.parent()?;
+    let season = parent.file_name()?.to_str()?;
+    if crate::episode_parser::parse_season_directory(season).is_some() {
+        Some(parent.to_path_buf())
+    } else {
+        let series = series_directory(episode_path)?;
+        let Some(season_number) = season_number else {
+            return None;
+        };
+        let candidate = series.join(format!("Season {season_number}"));
+        candidate.is_dir().then_some(candidate)
+    }
+}
+
+fn season_nfo_path(directory: &Path, season_number: Option<i32>) -> PathBuf {
+    let Some(season_number) = season_number else {
+        return directory.join("season0.nfo");
+    };
+    let candidates = [
+        format!("Season {season_number:02}.nfo"),
+        format!("Season {season_number}.nfo"),
+        format!("season{season_number}.nfo"),
+    ];
+    for name in candidates {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    directory.join(format!("Season {season_number:02}.nfo"))
+}
+
+const fn weekday_name(day: chrono::Weekday) -> &'static str {
+    match day {
+        chrono::Weekday::Mon => "Monday",
+        chrono::Weekday::Tue => "Tuesday",
+        chrono::Weekday::Wed => "Wednesday",
+        chrono::Weekday::Thu => "Thursday",
+        chrono::Weekday::Fri => "Friday",
+        chrono::Weekday::Sat => "Saturday",
+        chrono::Weekday::Sun => "Sunday",
+    }
 }
 
 fn media_item_data(path: &str, media_info: Option<&MediaInfo>) -> Value {
@@ -1797,24 +2137,23 @@ const PHOTO_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "svg", "ico",
 ];
 
-const BOOK_EXTENSIONS: &[&str] = &[
-    "pdf", "epub", "mobi", "cbr", "cbz", "cb7", "cbt", "djvu",
-];
+const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "cbt", "djvu"];
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MediaKind, ScanLibraryKind, apply_probed_item_metadata, attachments_from_media_info,
-        attachment_image_type, codec_from_extension, default_stream, display_name,
-        extra_type_name, is_extras_directory, local_image_type, media_item_data, media_kind,
-        next_stream_index,
-        resolve_external_subtitle_streams_from_entries, stable_item_id, streams_from_media_info,
+        MediaKind, ScanLibraryKind, apply_non_movie_nfo, apply_probed_item_metadata,
+        attachment_image_type, attachments_from_media_info, codec_from_extension, default_stream,
+        display_name, extra_type_name, is_extras_directory, local_image_type, media_item_data,
+        media_kind, next_stream_index, resolve_external_subtitle_streams_from_entries,
+        stable_item_id, streams_from_media_info,
     };
-    use jellyfin_naming::ExtraType;
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
+    use jellyfin_naming::ExtraType;
     use jellyfin_providers::media_info::MediaFileSystemEntry;
+    use jellyfin_xbmc_metadata::NfoMetadata;
     use serde_json::json;
     use std::path::Path;
 
@@ -1825,6 +2164,66 @@ mod tests {
         assert_eq!(media_kind(Path::new("photo.jpg")), Some(MediaKind::Photo));
         assert_eq!(media_kind(Path::new("book.pdf")), Some(MediaKind::Book));
         assert_eq!(media_kind(Path::new("data.nfo")), None);
+    }
+
+    #[test]
+    fn non_movie_nfo_applies_series_and_episode_fields() {
+        let nfo = NfoMetadata {
+            name: Some("Show Name".to_owned()),
+            original_title: Some("Original Show".to_owned()),
+            overview: Some("Overview".to_owned()),
+            genres: vec!["Drama".to_owned()],
+            tags: vec!["Rewatch".to_owned()],
+            studios: vec!["Studio".to_owned()],
+            provider_ids: std::collections::HashMap::from([(
+                "Tmdb".to_owned(),
+                "12345".to_owned(),
+            )]),
+            status: Some(jellyfin_xbmc_metadata::SeriesStatus::Ended),
+            is_locked: true,
+            ..NfoMetadata::default()
+        };
+        let mut item = base_item::Model {
+            id: uuid::Uuid::new_v4(),
+            item_type: "Series".to_owned(),
+            data: None,
+            path: None,
+            parent_id: None,
+            top_parent_id: None,
+            name: None,
+            clean_name: None,
+            sort_name: None,
+            media_type: None,
+            overview: None,
+            official_rating: None,
+            index_number: None,
+            parent_index_number: None,
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: true,
+            is_virtual_item: false,
+            presentation_unique_key: None,
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: Utc::now(),
+            date_modified: Utc::now(),
+            row_version: 1,
+        };
+
+        assert!(apply_non_movie_nfo(&mut item, &nfo));
+        assert_eq!(item.name.as_deref(), Some("Show Name"));
+        assert_eq!(item.overview.as_deref(), Some("Overview"));
+        let data = item.data.as_ref().unwrap();
+        assert_eq!(data["OriginalTitle"], "Original Show");
+        assert_eq!(data["Genres"][0], "Drama");
+        assert_eq!(data["Tags"][0], "Rewatch");
+        assert_eq!(data["Studios"][0], "Studio");
+        assert_eq!(data["ProviderIds"]["Tmdb"], "12345");
+        assert_eq!(data["Status"], "Ended");
+        assert_eq!(data["IsLocked"], true);
     }
 
     #[test]
@@ -1843,10 +2242,7 @@ mod tests {
             local_image_type("fanart1.jpg"),
             Some(BaseItemImageType::Backdrop)
         );
-        assert_eq!(
-            local_image_type("logo.png"),
-            Some(BaseItemImageType::Logo)
-        );
+        assert_eq!(local_image_type("logo.png"), Some(BaseItemImageType::Logo));
         assert_eq!(
             local_image_type("landscape.jpg"),
             Some(BaseItemImageType::Thumb)
@@ -1914,10 +2310,18 @@ mod tests {
 
     #[test]
     fn extras_directories_and_types_follow_official_naming_rules() {
-        assert!(is_extras_directory(std::path::Path::new("/movies/Up/extras")));
-        assert!(is_extras_directory(std::path::Path::new("/movies/Up/TRAILERS")));
-        assert!(is_extras_directory(std::path::Path::new("/movies/Up/behind the scenes")));
-        assert!(!is_extras_directory(std::path::Path::new("/movies/Up/regular-folder")));
+        assert!(is_extras_directory(std::path::Path::new(
+            "/movies/Up/extras"
+        )));
+        assert!(is_extras_directory(std::path::Path::new(
+            "/movies/Up/TRAILERS"
+        )));
+        assert!(is_extras_directory(std::path::Path::new(
+            "/movies/Up/behind the scenes"
+        )));
+        assert!(!is_extras_directory(std::path::Path::new(
+            "/movies/Up/regular-folder"
+        )));
         assert_eq!(extra_type_name(ExtraType::ThemeSong), "ThemeSong");
         assert_eq!(extra_type_name(ExtraType::ThemeVideo), "ThemeVideo");
         assert_eq!(extra_type_name(ExtraType::Trailer), "Trailer");

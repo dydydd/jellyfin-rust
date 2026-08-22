@@ -48,13 +48,7 @@ pub(crate) async fn update(
             },
         )
         .await?;
-    crate::websocket::broadcast_library_changed(
-        &state,
-        &[],
-        &[],
-        &[item_id.simple().to_string()],
-    )
-    .await;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[item_id]).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
