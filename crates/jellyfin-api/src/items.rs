@@ -460,6 +460,12 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             is_resumable,
             is_played,
             min_premiere_date: None,
+            allowed_official_ratings: Vec::new(),
+            blocked_tags: Vec::new(),
+            allowed_tags: Vec::new(),
+            enabled_folders: Vec::new(),
+            enable_all_folders: true,
+            blocked_media_folders: None,
             order: item_order(&query.sort_by, &query.sort_order),
             start_index: query.start_index,
             limit: query.limit,
@@ -651,12 +657,23 @@ async fn page_to_dto(
     };
     let mut trickplay_manifests =
         user_library::trickplay_manifests_for_items(state, &page.items, requested_fields).await?;
+    let mut user_dtos = state
+        .user_data
+        .preferred_dto_map(target_user_id, &page.items)
+        .await?;
+    let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
         let item_id = item.id;
         let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
+        if let Some(user_data) = user_dtos.remove(&item_id) {
+            user_library::attach_user_data_dto(&mut dto, user_data);
+        }
+        if let Some(metadata) = relations.remove(&item_id) {
+            user_library::attach_relation_metadata(&mut dto, metadata);
+        }
         if let Some(projection) = state
             .dto_images
             .project(

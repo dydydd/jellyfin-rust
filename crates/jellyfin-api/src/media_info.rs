@@ -315,6 +315,7 @@ async fn media_sources(
     let dto = user_library::project_item_to_dto(
         state,
         item,
+        target_user_id,
         user_library::BaseItemDtoFields::media_sources(),
         None,
         None,

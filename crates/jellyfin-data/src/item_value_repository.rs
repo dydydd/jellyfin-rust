@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr,
@@ -214,6 +216,52 @@ impl ItemValueRepository {
             .order_by_asc(item_value::Column::ItemValueId)
             .all(&self.database)
             .await?)
+    }
+
+    /// Loads normalized values of one type for many items in one query.
+    ///
+    /// Values are ordered by clean name, matching the single-item projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn values_for_items(
+        &self,
+        item_ids: &[Uuid],
+        value_type: item_value::ItemValueType,
+    ) -> Result<HashMap<Uuid, Vec<String>>, ItemValueError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut values = vec![item_value_type_code(value_type).into()];
+        let placeholders = (2..=item_ids.len() + 1)
+            .map(|index| format!("${index}::uuid"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        values.extend(item_ids.iter().copied().map(SeaValue::from));
+        let rows = self
+            .database
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "SELECT map.item_id, value.value \
+                     FROM jellyfin.item_value_map AS map \
+                     INNER JOIN jellyfin.item_values AS value \
+                       ON value.item_value_id = map.item_value_id \
+                     WHERE value.type = $1 \
+                       AND map.item_id IN ({placeholders}) \
+                     ORDER BY map.item_id, value.clean_value, value.item_value_id"
+                ),
+                values,
+            ))
+            .await?;
+        let mut result = HashMap::<Uuid, Vec<String>>::new();
+        for row in rows {
+            let item_id = row.try_get("", "item_id")?;
+            let value = row.try_get("", "value")?;
+            result.entry(item_id).or_default().push(value);
+        }
+        Ok(result)
     }
 
     /// Loads base items attached to a normalized value in stable sort order.

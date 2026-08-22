@@ -4,11 +4,14 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
     time::SystemTime,
 };
 
 use chrono::{DateTime, Duration, Utc};
-use jellyfin_model::{TaskInfo, TaskState, TaskTriggerInfo, TaskTriggerInfoType};
+use jellyfin_model::{
+    TaskCompletionStatus, TaskInfo, TaskResult, TaskState, TaskTriggerInfo, TaskTriggerInfoType,
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -36,6 +39,8 @@ pub struct ScheduledTask {
     pub state: TaskState,
     pub current_progress_percentage: Option<f64>,
     pub triggers: Vec<TaskTriggerInfo>,
+    pub last_run: Option<DateTime<Utc>>,
+    pub last_execution_result: Option<TaskResult>,
 }
 
 impl ScheduledTask {
@@ -45,7 +50,7 @@ impl ScheduledTask {
             state: self.state,
             current_progress_percentage: self.current_progress_percentage,
             id: Some(self.id.clone()),
-            last_execution_result: None,
+            last_execution_result: self.last_execution_result.clone(),
             triggers: self.triggers.clone(),
             description: Some(self.description.clone()),
             category: Some(self.category.clone()),
@@ -93,6 +98,18 @@ impl ScheduledTaskRunContext {
     }
 
     async fn complete(&self) {
+        let _ = self
+            .tasks
+            .record_completion(&self.task_id, TaskCompletionStatus::Completed)
+            .await;
+        let _ = self.tasks.stop(&self.task_id).await;
+    }
+
+    async fn fail(&self) {
+        let _ = self
+            .tasks
+            .record_completion(&self.task_id, TaskCompletionStatus::Failed)
+            .await;
         let _ = self.tasks.stop(&self.task_id).await;
     }
 
@@ -111,6 +128,7 @@ pub struct ScheduledTaskService {
     executors: Arc<std::sync::RwLock<HashMap<String, ScheduledTaskHandler>>>,
     paths: Arc<std::sync::RwLock<ScheduledTaskPaths>>,
     change_listeners: Arc<std::sync::RwLock<Vec<ScheduledTaskChangeListener>>>,
+    scheduler_running: Arc<AtomicBool>,
 }
 
 impl Default for ScheduledTaskService {
@@ -127,6 +145,7 @@ impl ScheduledTaskService {
             executors: Arc::new(std::sync::RwLock::new(HashMap::new())),
             paths: Arc::new(std::sync::RwLock::new(ScheduledTaskPaths::default())),
             change_listeners: Arc::new(std::sync::RwLock::new(Vec::new())),
+            scheduler_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -250,6 +269,7 @@ impl ScheduledTaskService {
             }
             task.state = TaskState::Running;
             task.current_progress_percentage = None;
+            task.last_run = Some(Utc::now());
             let task_id = task.id.clone();
             let task_key = task.key.clone();
             let executor = self
@@ -285,6 +305,38 @@ impl ScheduledTaskService {
             .ok_or(ScheduledTaskError::NotFound)?;
         task.state = TaskState::Idle;
         task.current_progress_percentage = None;
+        self.notify_changed();
+        Ok(())
+    }
+
+    /// Records the last execution result without changing the task state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScheduledTaskError::NotFound`] when the task id doesn't exist.
+    pub async fn record_completion(
+        &self,
+        task_id: &str,
+        status: TaskCompletionStatus,
+    ) -> Result<(), ScheduledTaskError> {
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .iter_mut()
+            .find(|task| task.id.eq_ignore_ascii_case(task_id))
+            .ok_or(ScheduledTaskError::NotFound)?;
+        let end_time = Utc::now();
+        let start_time = task.last_run.unwrap_or(end_time);
+        task.current_progress_percentage = Some(100.0);
+        task.last_execution_result = Some(TaskResult {
+            start_time_utc: start_time,
+            end_time_utc: end_time,
+            status,
+            name: Some(task.name.clone()),
+            key: Some(task.key.clone()),
+            id: Some(task.id.clone()),
+            error_message: None,
+            long_error_message: None,
+        });
         self.notify_changed();
         Ok(())
     }
@@ -347,6 +399,101 @@ impl ScheduledTaskService {
         self.notify_changed();
         Ok(())
     }
+
+    /// Starts the background trigger loop. Repeated calls are idempotent.
+    pub fn start_scheduler(&self) {
+        self.start_scheduler_with_delay(tokio::time::Duration::from_secs(5));
+    }
+
+    /// Starts the trigger loop with a custom initial delay.
+    pub fn start_scheduler_with_delay(&self, delay: tokio::time::Duration) {
+        if self
+            .scheduler_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let service = self.clone();
+        tokio::spawn(async move {
+            let now = Utc::now();
+            let mut tasks = service.tasks.write().await;
+            for task in tasks.iter_mut() {
+                let has_startup = task
+                    .triggers
+                    .iter()
+                    .any(|trigger| trigger.trigger_type == TaskTriggerInfoType::StartupTrigger);
+                if task.is_enabled && task.last_run.is_none() && !has_startup {
+                    task.last_run = Some(now);
+                }
+            }
+            drop(tasks);
+            let mut ticker = tokio::time::interval_at(
+                tokio::time::Instant::now() + delay,
+                tokio::time::Duration::from_secs(1),
+            );
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                let due = service.due_task_ids().await;
+                for task_id in due {
+                    let _ = service.start(&task_id).await;
+                }
+            }
+        });
+    }
+
+    async fn due_task_ids(&self) -> Vec<String> {
+        let now = Utc::now();
+        self.tasks
+            .read()
+            .await
+            .iter()
+            .filter(|task| task.is_enabled && task.state == TaskState::Idle)
+            .filter(|task| task.is_due(now))
+            .map(|task| task.id.clone())
+            .collect()
+    }
+}
+
+impl ScheduledTask {
+    fn is_due(&self, now: DateTime<Utc>) -> bool {
+        self.triggers.iter().any(|trigger| match trigger.trigger_type {
+            TaskTriggerInfoType::StartupTrigger => self.last_run.is_none(),
+            TaskTriggerInfoType::IntervalTrigger => {
+                let Some(interval_ticks) = trigger.interval_ticks.filter(|ticks| *ticks > 0) else {
+                    return false;
+                };
+                let interval = Duration::milliseconds(interval_ticks / 10_000);
+                self.last_run.is_none_or(|last_run| last_run + interval <= now)
+            }
+            TaskTriggerInfoType::DailyTrigger => {
+                let Some(time_of_day_ticks) = trigger.time_of_day_ticks else {
+                    return false;
+                };
+                self.last_run.is_none_or(|last_run| {
+                    next_daily_after(last_run, time_of_day_ticks, trigger.day_of_week) <= now
+                })
+            }
+            TaskTriggerInfoType::WeeklyTrigger => false,
+        })
+    }
+}
+
+fn next_daily_after(
+    last_run: DateTime<Utc>,
+    time_of_day_ticks: i64,
+    _day_of_week: Option<jellyfin_model::DayOfWeek>,
+) -> DateTime<Utc> {
+    let duration = Duration::milliseconds(time_of_day_ticks / 10_000);
+    let mut candidate = DateTime::from_naive_utc_and_offset(
+        last_run.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default() + duration,
+        Utc,
+    );
+    if candidate <= last_run {
+        candidate += Duration::days(1);
+    }
+    candidate
 }
 
 fn refresh_library_handler(
@@ -368,6 +515,8 @@ fn refresh_library_handler(
             })));
             if let Err(error) = scan.scan_all().await {
                 tracing::error!(%error, "library scan task failed");
+                context.fail().await;
+                return;
             }
             context.complete().await;
         })
@@ -485,6 +634,8 @@ fn default_tasks() -> Vec<ScheduledTask> {
             state: TaskState::Idle,
             current_progress_percentage: None,
             triggers: vec![interval_trigger(12)],
+            last_run: None,
+            last_execution_result: None,
         },
         ScheduledTask {
             id: "a85dcf2f4fb940098267cf9d539b47a4".to_owned(),
@@ -497,6 +648,8 @@ fn default_tasks() -> Vec<ScheduledTask> {
             state: TaskState::Idle,
             current_progress_percentage: None,
             triggers: vec![interval_trigger(24)],
+            last_run: None,
+            last_execution_result: None,
         },
         ScheduledTask {
             id: "bc9e8c3644044729a9d2f019593875db".to_owned(),
@@ -509,6 +662,8 @@ fn default_tasks() -> Vec<ScheduledTask> {
             state: TaskState::Idle,
             current_progress_percentage: None,
             triggers: vec![interval_trigger(24)],
+            last_run: None,
+            last_execution_result: None,
         },
         ScheduledTask {
             id: "e62de0bb4fdf4ef9932a5b6bbf09e0d4".to_owned(),
@@ -521,6 +676,8 @@ fn default_tasks() -> Vec<ScheduledTask> {
             state: TaskState::Idle,
             current_progress_percentage: None,
             triggers: vec![startup_trigger(), interval_trigger(24)],
+            last_run: None,
+            last_execution_result: None,
         },
     ]
 }
@@ -578,6 +735,43 @@ mod tests {
         let task = service.get("TestTask").await.unwrap();
         assert_eq!(task.state, TaskState::Idle);
         assert_eq!(task.current_progress_percentage, None);
+    }
+
+    #[tokio::test]
+    async fn scheduler_runs_interval_triggers_and_records_last_execution() {
+        let mut task = test_task("ScheduledTest");
+        task.triggers = vec![TaskTriggerInfo {
+            trigger_type: TaskTriggerInfoType::IntervalTrigger,
+            time_of_day_ticks: None,
+            interval_ticks: Some(500_000),
+            day_of_week: None,
+            max_runtime_ticks: None,
+        }];
+        let service = ScheduledTaskService::new(vec![task]);
+        service.register_executor("ScheduledTest", |context| {
+            Box::pin(async move {
+                context.complete().await;
+            })
+        });
+
+        service.start_scheduler_with_delay(tokio::time::Duration::from_millis(1));
+        for _ in 0..300 {
+            if service
+                .get("ScheduledTest")
+                .await
+                .unwrap()
+                .last_execution_result
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let task = service.get("ScheduledTest").await.unwrap();
+        let result = task.last_execution_result.expect("last execution result");
+        assert_eq!(result.status, TaskCompletionStatus::Completed);
+        assert!(result.end_time_utc >= result.start_time_utc);
     }
 
     #[tokio::test]
@@ -644,6 +838,8 @@ mod tests {
             state: TaskState::Idle,
             current_progress_percentage: None,
             triggers: Vec::new(),
+            last_run: None,
+            last_execution_result: None,
         }
     }
 

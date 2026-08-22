@@ -296,6 +296,7 @@ pub(crate) async fn get_items(
             crate::user_library::project_item_to_dto(
                 &state,
                 entry.item,
+                user_id,
                 fields,
                 defaults.as_ref(),
                 None,

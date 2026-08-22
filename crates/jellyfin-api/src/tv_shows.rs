@@ -535,6 +535,7 @@ async fn project_items_to_dtos(
         let mut dto = user_library::project_item_to_dto(
             state,
             item,
+            target_user_id,
             fields.without_trickplay(),
             defaults.as_ref(),
             remembered.as_ref(),

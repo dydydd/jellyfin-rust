@@ -269,6 +269,58 @@ impl PersonRepository {
             .collect())
     }
 
+    /// Loads credits for many items in one query, grouped by item id.
+    ///
+    /// Credits keep each item's official list order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn people_for_items(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<PersonCredit>>, PersonError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut mappings = person_base_item_map::Entity::find()
+            .filter(person_base_item_map::Column::ItemId.is_in(item_ids.iter().copied()))
+            .order_by_asc(person_base_item_map::Column::ListOrder)
+            .order_by_asc(person_base_item_map::Column::PersonId)
+            .all(&self.database)
+            .await?;
+        let person_ids = mappings
+            .iter()
+            .map(|mapping| mapping.person_id)
+            .collect::<HashSet<_>>();
+        let people = if person_ids.is_empty() {
+            Vec::new()
+        } else {
+            person::Entity::find()
+                .filter(person::Column::Id.is_in(person_ids))
+                .all(&self.database)
+                .await?
+        };
+        let by_id: HashMap<Uuid, person::Model> = people
+            .into_iter()
+            .map(|person| (person.id, person))
+            .collect();
+        let mut result = HashMap::<Uuid, Vec<PersonCredit>>::new();
+        for mapping in mappings.drain(..) {
+            let Some(person) = by_id.get(&mapping.person_id).cloned() else {
+                continue;
+            };
+            result.entry(mapping.item_id).or_default().push(PersonCredit {
+                person,
+                person_type: mapping.person_type,
+                role: mapping.role,
+                sort_order: mapping.sort_order,
+                list_order: mapping.list_order,
+            });
+        }
+        Ok(result)
+    }
+
     /// Loads distinct base items credited to a normalized person in stable
     /// item sort order.
     ///

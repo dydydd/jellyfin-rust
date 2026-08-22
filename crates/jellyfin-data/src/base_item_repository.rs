@@ -138,6 +138,12 @@ pub struct BaseItemQuery {
     pub is_resumable: Option<bool>,
     pub is_played: Option<bool>,
     pub min_premiere_date: Option<DateTime<Utc>>,
+    pub allowed_official_ratings: Vec<String>,
+    pub blocked_tags: Vec<String>,
+    pub allowed_tags: Vec<String>,
+    pub enabled_folders: Vec<Uuid>,
+    pub enable_all_folders: bool,
+    pub blocked_media_folders: Option<Vec<Uuid>>,
     pub order: BaseItemOrder,
     pub start_index: u64,
     pub limit: Option<u64>,
@@ -941,6 +947,9 @@ impl BaseItemRepository {
         if let Some(min_premiere_date) = query.min_premiere_date {
             select = select.filter(base_item::Column::PremiereDate.gte(min_premiere_date));
         }
+        if let Some(condition) = policy_filter_sql("\"base_items\"", query) {
+            select = select.filter(Expr::cust(condition));
+        }
         let total_record_count = if total_count_enabled(query) {
             Some(select.clone().count(&self.database).await?)
         } else {
@@ -1221,13 +1230,12 @@ impl BaseItemRepository {
     pub async fn next_up(
         &self,
         user_id: Uuid,
-        parent_id: Option<Uuid>,
+        query: &BaseItemQuery,
         enable_rewatching: bool,
         enable_resumable: bool,
         next_up_date_cutoff: Option<DateTime<Utc>>,
         start_index: u64,
         limit: Option<u64>,
-        enable_total_record_count: bool,
     ) -> Result<BaseItemPage, BaseItemError> {
         let mut values = vec![user_id.into()];
         let mut sql = String::from(
@@ -1247,12 +1255,17 @@ impl BaseItemRepository {
                    AND episode.is_virtual_item = false \
                    AND episode.series_id IS NOT NULL",
         );
-        if let Some(parent_id) = parent_id {
+        if let Some(parent_id) = query.parent_id {
             values.push(parent_id.into());
             let _ = write!(sql, " AND episode.id IN (\
                 SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
                 WHERE closure.parent_item_id = ${}\
             )", values.len());
+        }
+        if let Some(condition) = policy_filter_sql("episode", query) {
+            sql.push_str(" AND (");
+            sql.push_str(&condition);
+            sql.push(')');
         }
         if !enable_resumable {
             sql.push_str(
@@ -1298,7 +1311,7 @@ impl BaseItemRepository {
                  JOIN jellyfin.base_items AS item ON item.id = next_episode.episode_id\
              )",
         );
-        let total = if enable_total_record_count {
+        let total = if query.enable_total_record_count.unwrap_or(false) {
             Some(
                 self.database
                     .query_one(Statement::from_sql_and_values(
@@ -2171,6 +2184,127 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
             " AND item.premiere_date >= ",
         );
     }
+    if let Some(condition) = policy_filter_sql("item", query) {
+        sql.push_str(" AND (");
+        sql.push_str(&condition);
+        sql.push(')');
+    }
+}
+
+fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<String> {
+    let mut parts = Vec::new();
+    if !query.allowed_official_ratings.is_empty() {
+        parts.push(format!(
+            "({table}.official_rating IS NULL OR {table}.official_rating IN ({}))",
+            quoted_string_list(&query.allowed_official_ratings)
+        ));
+    }
+    if !query.blocked_tags.is_empty() {
+        parts.push(format!(
+            "NOT EXISTS (\
+                SELECT 1 FROM jellyfin.item_value_map AS blocked_map \
+                JOIN jellyfin.item_values AS blocked_value \
+                  ON blocked_value.item_value_id = blocked_map.item_value_id \
+                WHERE blocked_map.item_id = {table}.id \
+                  AND blocked_value.type = {} \
+                  AND blocked_value.value IN ({})\
+            )",
+            item_value_type_code(item_value::ItemValueType::Tags),
+            quoted_string_list(&query.blocked_tags)
+        ));
+    }
+    if !query.allowed_tags.is_empty() {
+        parts.push(format!(
+            "EXISTS (\
+                SELECT 1 FROM jellyfin.item_value_map AS allowed_map \
+                JOIN jellyfin.item_values AS allowed_value \
+                  ON allowed_value.item_value_id = allowed_map.item_value_id \
+                WHERE allowed_map.item_id = {table}.id \
+                  AND allowed_value.type = {} \
+                  AND allowed_value.value IN ({})\
+            )",
+            item_value_type_code(item_value::ItemValueType::Tags),
+            quoted_string_list(&query.allowed_tags)
+        ));
+    }
+    if let Some(blocked) = query
+        .blocked_media_folders
+        .as_ref()
+        .filter(|folders| !folders.is_empty())
+    {
+        parts.push(format!(
+            "NOT (\
+                ({table}.item_type = 'CollectionFolder' AND {table}.id IN ({})) \
+                OR EXISTS (\
+                    SELECT 1 FROM jellyfin.ancestor_ids AS blocked_closure \
+                    JOIN jellyfin.base_items AS blocked_folder \
+                      ON blocked_folder.id = blocked_closure.parent_item_id \
+                    WHERE blocked_closure.item_id = {table}.id \
+                      AND blocked_folder.item_type = 'CollectionFolder' \
+                      AND blocked_folder.id IN ({})\
+                )\
+            )",
+            quoted_uuid_list(blocked),
+            quoted_uuid_list(blocked)
+        ));
+    }
+    if !query.enable_all_folders {
+        if query.enabled_folders.is_empty() {
+            parts.push(format!(
+                "(\
+                    ({table}.item_type <> 'CollectionFolder' \
+                     AND NOT EXISTS (\
+                         SELECT 1 FROM jellyfin.ancestor_ids AS enabled_closure \
+                         JOIN jellyfin.base_items AS enabled_folder \
+                           ON enabled_folder.id = enabled_closure.parent_item_id \
+                         WHERE enabled_closure.item_id = {table}.id \
+                           AND enabled_folder.item_type = 'CollectionFolder'\
+                     ))\
+                )"
+            ));
+        } else {
+            parts.push(format!(
+                "(\
+                    ({table}.item_type <> 'CollectionFolder' \
+                     AND NOT EXISTS (\
+                         SELECT 1 FROM jellyfin.ancestor_ids AS enabled_closure \
+                         JOIN jellyfin.base_items AS enabled_folder \
+                           ON enabled_folder.id = enabled_closure.parent_item_id \
+                         WHERE enabled_closure.item_id = {table}.id \
+                           AND enabled_folder.item_type = 'CollectionFolder'\
+                     ))\
+                    OR {table}.id IN ({})\
+                    OR EXISTS (\
+                        SELECT 1 FROM jellyfin.ancestor_ids AS enabled_closure \
+                        JOIN jellyfin.base_items AS enabled_folder \
+                          ON enabled_folder.id = enabled_closure.parent_item_id \
+                        WHERE enabled_closure.item_id = {table}.id \
+                          AND enabled_folder.item_type = 'CollectionFolder' \
+                          AND enabled_folder.id IN ({})\
+                    )\
+                )",
+                quoted_uuid_list(&query.enabled_folders),
+                quoted_uuid_list(&query.enabled_folders)
+            ));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" AND "))
+}
+
+fn quoted_string_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn quoted_uuid_list(values: &[Uuid]) -> String {
+    values
+        .iter()
+        .map(|id| format!("'{}'", id.simple()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn tag_class_condition(expected: bool, clean_tag: &'static str) -> sea_orm::sea_query::SimpleExpr {

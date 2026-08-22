@@ -251,6 +251,29 @@ impl UserDataService {
             .await?)
     }
 
+    /// Projects preferred user data for many items, including default rows
+    /// when the user has not stored any state.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence errors unchanged.
+    pub async fn preferred_dto_map(
+        &self,
+        target_user_id: Uuid,
+        items: &[base_item::Model],
+    ) -> Result<HashMap<Uuid, UserItemDataDto>, UserDataServiceError> {
+        let rows = self.get_preferred_for_items(target_user_id, items).await?;
+        let mut result = HashMap::with_capacity(items.len());
+        for item in items {
+            let dto = rows.get(&item.id).cloned().map_or_else(
+                || default_user_data_dto(item, target_user_id),
+                |data| user_data_to_dto(data, item.runtime_ticks),
+            );
+            result.insert(item.id, dto);
+        }
+        Ok(result)
+    }
+
     async fn resolve_generic_target_item(
         &self,
         target_user_id: Uuid,
@@ -379,6 +402,12 @@ fn default_user_data(item_id: Uuid, user_id: Uuid, key: &str) -> user_data::Mode
         likes: None,
         retention_date: None,
     }
+}
+
+fn default_user_data_dto(item: &base_item::Model, user_id: Uuid) -> UserItemDataDto {
+    let keys = current_user_data_keys(item);
+    let data = default_user_data(item.id, user_id, keys.first().map(String::as_str).unwrap_or(""));
+    user_data_to_dto(data, item.runtime_ticks)
 }
 
 #[allow(

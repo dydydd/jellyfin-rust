@@ -3,12 +3,13 @@ use jellyfin_data::{
     BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository,
     entities::{base_item, user},
 };
+use jellyfin_model::UserPolicy;
 use sea_orm::DatabaseConnection;
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{HydratedBaseItem, ItemTypeRegistry, UserError, UserService};
+use crate::{HydratedBaseItem, ItemTypeRegistry, LocalizationService, UserError, UserService};
 
 #[derive(Debug, Error)]
 pub enum UserLibraryError {
@@ -20,6 +21,8 @@ pub enum UserLibraryError {
     Forbidden,
     #[error("lyrics not found")]
     LyricsNotFound,
+    #[error("stored user policy is invalid")]
+    InvalidPolicy(#[source] serde_json::Error),
     #[error(transparent)]
     User(#[from] UserError),
     #[error(transparent)]
@@ -42,6 +45,7 @@ pub struct UserLibraryService {
     users: UserService,
     items: BaseItemRepository,
     item_types: ItemTypeRegistry,
+    localization: LocalizationService,
 }
 
 impl UserLibraryService {
@@ -59,6 +63,7 @@ impl UserLibraryService {
             users: UserService::new(database.clone()),
             items: BaseItemRepository::new(database),
             item_types,
+            localization: LocalizationService,
         }
     }
 
@@ -101,7 +106,20 @@ impl UserLibraryService {
     ) -> Result<base_item::Model, UserLibraryError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        self.load_item(item_id).await
+        if item_id.is_nil() {
+            return self.ensure_user_root().await;
+        }
+        let mut query = BaseItemQuery {
+            ids: vec![item_id],
+            ..BaseItemQuery::default()
+        };
+        self.apply_user_policy(&mut query, target_user_id).await?;
+        let page = self.hydrate_page(self.items.query(&query).await?);
+        Ok(page
+            .items
+            .into_iter()
+            .next()
+            .ok_or(UserLibraryError::ItemNotFound)?)
     }
 
     /// Queries a target user's persisted library with PostgreSQL-side filters,
@@ -118,6 +136,7 @@ impl UserLibraryService {
     ) -> Result<BaseItemPage, UserLibraryError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        self.apply_user_policy(&mut query, target_user_id).await?;
         query.user_id = Some(target_user_id);
         if query.parent_id.is_none() && query.ids.is_empty() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
@@ -139,6 +158,7 @@ impl UserLibraryService {
     ) -> Result<BaseItemPage, UserLibraryError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        self.apply_user_policy(&mut query, target_user_id).await?;
         query.recursive = true;
         query.is_virtual_item = Some(false);
         if query.parent_id.is_none() {
@@ -166,17 +186,26 @@ impl UserLibraryService {
     ) -> Result<BaseItemPage, UserLibraryError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        let mut query = BaseItemQuery {
+            parent_id,
+            recursive: true,
+            include_item_types: vec!["Episode".to_owned()],
+            is_virtual_item: Some(false),
+            user_id: Some(target_user_id),
+            enable_total_record_count: Some(enable_total_record_count),
+            ..BaseItemQuery::default()
+        };
+        self.apply_user_policy(&mut query, target_user_id).await?;
         let page = self
             .items
             .next_up(
                 target_user_id,
-                parent_id,
+                &query,
                 enable_rewatching,
                 enable_resumable,
                 next_up_date_cutoff,
                 start_index,
                 limit,
-                enable_total_record_count,
             )
             .await?;
         Ok(self.hydrate_page(page))
@@ -377,6 +406,31 @@ impl UserLibraryService {
         }
         if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
             return Err(UserLibraryError::Forbidden);
+        }
+        Ok(())
+    }
+
+    async fn apply_user_policy(
+        &self,
+        query: &mut BaseItemQuery,
+        target_user_id: Uuid,
+    ) -> Result<(), UserLibraryError> {
+        let user = self.users.get(target_user_id).await?;
+        let policy: UserPolicy = serde_json::from_value(user.policy.clone())
+            .map_err(UserLibraryError::InvalidPolicy)?;
+        query.blocked_tags = policy.blocked_tags;
+        query.allowed_tags = policy.allowed_tags;
+        query.enabled_folders = policy.enabled_folders;
+        query.enable_all_folders = policy.enable_all_folders;
+        query.blocked_media_folders = policy.blocked_media_folders;
+        if let Some(maximum) = policy.max_parental_rating {
+            query.allowed_official_ratings = self
+                .localization
+                .parental_ratings("US")
+                .into_iter()
+                .filter(|rating| rating.value.is_none_or(|value| value <= maximum))
+                .map(|rating| rating.name)
+                .collect();
         }
         Ok(())
     }

@@ -7,6 +7,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_controller::VirtualFolder;
+use jellyfin_model::UserPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -89,7 +90,9 @@ async fn user_views_for(
     query: UserViewsQuery,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
     let target_user_id = target_user_id(&state, &headers, uri, requested_user_id).await?;
-    state.users.get(target_user_id).await?;
+    let user = state.users.get(target_user_id).await?;
+    let policy: UserPolicy =
+        serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
     let _ = query.include_external_content;
     let items = state
         .virtual_folders
@@ -98,6 +101,7 @@ async fn user_views_for(
         .into_iter()
         .filter(|folder| query.include_hidden || !is_hidden(folder))
         .filter(|folder| preset_matches(folder, &query.preset_views))
+        .filter(|folder| policy_allows_folder(&policy, folder.id))
         .map(|folder| view_to_dto(folder, state.server_id()))
         .collect::<Vec<_>>();
     Ok(Json(BaseItemQueryResult {
@@ -114,7 +118,9 @@ async fn grouping_options_for(
     requested_user_id: Option<Uuid>,
 ) -> Result<Json<Vec<SpecialViewOptionDto>>, ApiError> {
     let target_user_id = target_user_id(&state, &headers, uri, requested_user_id).await?;
-    state.users.get(target_user_id).await?;
+    let user = state.users.get(target_user_id).await?;
+    let policy: UserPolicy =
+        serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
     Ok(Json(
         state
             .virtual_folders
@@ -122,6 +128,7 @@ async fn grouping_options_for(
             .await?
             .into_iter()
             .filter(is_eligible_for_grouping)
+            .filter(|folder| policy_allows_folder(&policy, folder.id))
             .map(|folder| SpecialViewOptionDto {
                 name: folder.name,
                 id: folder.id.simple().to_string(),
@@ -138,6 +145,17 @@ async fn target_user_id(
 ) -> Result<Uuid, ApiError> {
     let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
     identity.target_user_id(requested_user_id)
+}
+
+fn policy_allows_folder(policy: &UserPolicy, folder_id: Uuid) -> bool {
+    if policy
+        .blocked_media_folders
+        .as_ref()
+        .is_some_and(|blocked| blocked.contains(&folder_id))
+    {
+        return false;
+    }
+    policy.enable_all_folders || policy.enabled_folders.contains(&folder_id)
 }
 
 pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto {
@@ -179,6 +197,7 @@ pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto
         media_sources: None,
         media_streams: None,
         trickplay: None,
+        ..BaseItemDto::default()
     }
 }
 

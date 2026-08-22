@@ -282,6 +282,7 @@ impl AppState {
                 sockets.send_all("ScheduledTasksInfo", &infos).await;
             });
         }));
+        state.scheduled_tasks.start_scheduler();
         state
     }
 
@@ -1758,6 +1759,10 @@ impl IntoResponse for ApiError {
             | Self::Studio(StudioError::Forbidden)
             | Self::MusicGenre(MusicGenreError::Forbidden)
             | Self::Person(PersonError::Forbidden) => (StatusCode::FORBIDDEN, "Forbidden"),
+            Self::UserLibrary(UserLibraryError::InvalidPolicy(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Stored user policy is invalid",
+            ),
             Self::Genre(
                 GenreError::NotFound
                 | GenreError::UserNotFound
