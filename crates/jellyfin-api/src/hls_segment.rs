@@ -1,9 +1,6 @@
 use std::{
     path::Path as FilePath,
-    sync::{
-        Arc,
-        atomic::Ordering,
-    },
+    sync::Arc,
 };
 
 use axum::{
@@ -34,6 +31,8 @@ pub(crate) struct TranscodeQuery {
     job_id: Option<String>,
     #[serde(rename = "deviceId", alias = "DeviceId")]
     device_id: Option<String>,
+    #[serde(rename = "playSessionId", alias = "PlaySessionId")]
+    play_session_id: Option<String>,
     #[serde(rename = "mediaSourceId", alias = "MediaSourceId")]
     media_source_id: Option<String>,
     #[serde(rename = "videoCodec", alias = "VideoCodec")]
@@ -223,6 +222,13 @@ pub(crate) async fn stop_active_encoding(
     if query.device_id.trim().is_empty() || query.play_session_id.trim().is_empty() {
         return Err(ApiError::InvalidRequest);
     }
+    let stopped = state
+        .transcode_jobs
+        .stop_for_session(&query.device_id, &query.play_session_id)
+        .await;
+    for job_id in &stopped {
+        cleanup_transcode_job(&state.transcode_directory, job_id).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -293,6 +299,13 @@ async fn start_hls_job(
     media_type: &str,
 ) -> Result<(), ApiError> {
     if state.transcode_jobs.is_running(job_id) {
+        if let (Some(device_id), Some(play_session_id)) =
+            (query.device_id.as_deref(), query.play_session_id.as_deref())
+        {
+            state
+                .transcode_jobs
+                .associate(job_id, device_id, play_session_id);
+        }
         return Ok(());
     }
     let user = match identity {
@@ -350,17 +363,56 @@ async fn start_hls_job(
         &target,
         &settings,
     );
-    let running = state.transcode_jobs.register(job_id);
-    running.store(true, Ordering::Release);
+    let job = match (query.device_id.as_deref(), query.play_session_id.as_deref()) {
+        (Some(device_id), Some(play_session_id)) => {
+            state
+                .transcode_jobs
+                .register_for_session(job_id, device_id, play_session_id)
+        }
+        _ => state.transcode_jobs.register(job_id),
+    };
+    let jobs = state.transcode_jobs.clone();
+    let finished_job_id = job_id.to_owned();
     tokio::spawn(async move {
-        if let Err(error) = run_ffmpeg(&command, running.clone()).await {
+        if let Err(error) = run_ffmpeg(&command, &job).await {
             eprintln!("HLS transcode failed: {error}");
         }
-        running.store(false, Ordering::Release);
+        jobs.remove(&finished_job_id);
     });
     wait_for_segment(&state.transcode_directory, job_id, settings.container.trim_start_matches('.'))
         .await
         .map_err(|_| ApiError::Internal)
+}
+
+async fn cleanup_transcode_job(root: &FilePath, job_id: &str) {
+    if job_id.is_empty() {
+        return;
+    }
+    let Ok(mut entries) = fs::read_dir(root).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let Ok(file_type) = entry.file_type().await else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let is_job_file = name.strip_prefix(job_id).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.starts_with('.')
+                || rest
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_digit())
+        });
+        if is_job_file {
+            let _ = fs::remove_file(entry.path()).await;
+        }
+    }
 }
 
 fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
@@ -683,4 +735,50 @@ fn strip_suffix_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> 
     let tail = value.get(split..)?;
     let head = value.get(..split)?;
     tail.eq_ignore_ascii_case(suffix).then_some(head)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use uuid::Uuid;
+
+    use super::cleanup_transcode_job;
+
+    #[tokio::test]
+    async fn cleanup_transcode_job_removes_only_job_prefixed_files() {
+        let root =
+            std::env::temp_dir().join(format!("jellyfin-hls-cleanup-{}", Uuid::new_v4().simple()));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let job_id = "abc12345-job";
+        for name in [
+            format!("{job_id}.m3u8"),
+            format!("{job_id}0.ts"),
+            format!("{job_id}.master.m3u8"),
+        ] {
+            tokio::fs::write(root.join(name), b"segment").await.unwrap();
+        }
+        let other = root.join("other.m3u8");
+        let prefix_cousin = root.join(format!("{job_id}-other.ts"));
+        tokio::fs::write(&other, b"other").await.unwrap();
+        tokio::fs::write(&prefix_cousin, b"cousin").await.unwrap();
+
+        cleanup_transcode_job(&root, job_id).await;
+
+        assert!(!root.join(format!("{job_id}.m3u8")).exists());
+        assert!(!root.join(format!("{job_id}0.ts")).exists());
+        assert!(!root.join(format!("{job_id}.master.m3u8")).exists());
+        assert!(other.exists());
+        assert!(prefix_cousin.exists());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleanup_transcode_job_tolerates_missing_directory() {
+        let root: PathBuf = std::env::temp_dir().join(format!(
+            "jellyfin-hls-cleanup-missing-{}",
+            Uuid::new_v4().simple()
+        ));
+        cleanup_transcode_job(&root, "job").await;
+    }
 }

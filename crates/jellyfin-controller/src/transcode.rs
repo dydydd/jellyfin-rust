@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
     sync::{
@@ -245,42 +245,67 @@ fn format_ticks_as_seconds(ticks: i64) -> String {
     )
 }
 
-/// Runs an `FFmpeg` job and reaps its process once it exits.
+/// A cancellable `FFmpeg` job shared between the spawning task and the API.
+#[derive(Debug, Clone)]
+pub struct TranscodeJobHandle {
+    running: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl TranscodeJobHandle {
+    #[must_use]
+    pub fn running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+
+    async fn cancel_and_wait(&self) {
+        self.cancel.store(true, Ordering::Release);
+        for _ in 0..100 {
+            if !self.running() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// Runs an `FFmpeg` job and reaps its process once it exits or is cancelled.
 ///
 /// # Errors
 ///
 /// Returns a process-spawn error when `FFmpeg` cannot be started.
 pub async fn run_ffmpeg(
     command: &FfmpegCommand,
-    running: Arc<AtomicBool>,
+    job: &TranscodeJobHandle,
 ) -> Result<(), String> {
-    let child = Command::new(&command.program)
+    let mut child = Command::new(&command.program)
         .args(&command.arguments)
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("failed to start {}: {error}", command.program.display()))?;
-    running.store(true, Ordering::Release);
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| error.to_string())?;
-    running.store(false, Ordering::Release);
-    if output.status.success() {
+    job.running.store(true, Ordering::Release);
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            break status;
+        }
+        if job.cancel.load(Ordering::Acquire) {
+            let _ = child.start_kill();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    job.running.store(false, Ordering::Release);
+    if status.success() || job.cancel.load(Ordering::Acquire) {
         Ok(())
     } else {
-        Err(format!(
-            "{} exited with {}: {}",
-            command.program.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ))
+        Err(format!("{} exited with {status}", command.program.display()))
     }
 }
 
-/// A registry of active HLS transcode jobs.
+/// A registry of active HLS transcode jobs keyed by job and playback session.
 #[derive(Debug, Clone, Default)]
 pub struct TranscodeJobRegistry {
-    jobs: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    jobs: Arc<Mutex<HashMap<String, TranscodeJobHandle>>>,
+    sessions: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 }
 
 impl TranscodeJobRegistry {
@@ -289,14 +314,44 @@ impl TranscodeJobRegistry {
         Self::default()
     }
 
-    /// Registers a job and returns the shared running flag.
-    pub fn register(&self, job_id: impl Into<String>) -> Arc<AtomicBool> {
-        let flag = Arc::new(AtomicBool::new(false));
+    /// Registers a job and returns its shared handle.
+    pub fn register(&self, job_id: impl Into<String>) -> TranscodeJobHandle {
+        let job_id = job_id.into();
+        let handle = TranscodeJobHandle {
+            running: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
         self.jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(job_id.into(), flag.clone());
-        flag
+            .insert(job_id, handle.clone());
+        handle
+    }
+
+    /// Registers a job and associates it with a playback session.
+    pub fn register_for_session(
+        &self,
+        job_id: impl Into<String>,
+        device_id: &str,
+        play_session_id: &str,
+    ) -> TranscodeJobHandle {
+        let job_id = job_id.into();
+        let handle = self.register(job_id.clone());
+        self.associate(&job_id, device_id, play_session_id);
+        handle
+    }
+
+    /// Associates an already running job with a playback session.
+    pub fn associate(&self, job_id: &str, device_id: &str, play_session_id: &str) {
+        if device_id.trim().is_empty() || play_session_id.trim().is_empty() {
+            return;
+        }
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session_key(device_id, play_session_id))
+            .or_default()
+            .insert(job_id.to_owned());
     }
 
     #[must_use]
@@ -305,7 +360,42 @@ impl TranscodeJobRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(job_id)
-            .is_some_and(|flag| flag.load(Ordering::Acquire))
+            .is_some_and(TranscodeJobHandle::running)
+    }
+
+    /// Cancels and removes a single transcode job.
+    pub async fn stop(&self, job_id: &str) {
+        let handle = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(job_id)
+            .cloned();
+        if let Some(handle) = handle {
+            handle.cancel_and_wait().await;
+        }
+        self.remove(job_id);
+    }
+
+    /// Cancels all jobs belonging to a playback session and returns their ids.
+    pub async fn stop_for_session(
+        &self,
+        device_id: &str,
+        play_session_id: &str,
+    ) -> Vec<String> {
+        let key = session_key(device_id, play_session_id);
+        let job_ids = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        for job_id in &job_ids {
+            self.stop(job_id).await;
+        }
+        job_ids
     }
 
     pub fn remove(&self, job_id: &str) {
@@ -314,6 +404,10 @@ impl TranscodeJobRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(job_id);
     }
+}
+
+fn session_key(device_id: &str, play_session_id: &str) -> String {
+    format!("{device_id}:{play_session_id}")
 }
 
 /// Generates a stable job identifier for one transcode URL.
@@ -577,5 +671,28 @@ mod tests {
         assert!(playlist.contains("#EXTM3U"));
         assert!(playlist.contains("/Videos/00000000-0000-0000-0000-000000000001/hls1/job1/0.ts?"));
         assert!(playlist.contains("runtimeTicks=0&actualSegmentLengthTicks=60000000"));
+    }
+
+    #[tokio::test]
+    async fn stop_for_session_kills_running_ffmpeg_job() {
+        let registry = TranscodeJobRegistry::new();
+        let job = registry.register_for_session("job-1", "device-1", "play-session-1");
+        let command = FfmpegCommand {
+            program: PathBuf::from("sleep"),
+            arguments: vec!["30".to_owned()],
+        };
+        let task_job = job.clone();
+        let running_job = tokio::spawn(async move { run_ffmpeg(&command, &task_job).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(job.running());
+
+        let stopped = registry
+            .stop_for_session("device-1", "play-session-1")
+            .await;
+
+        assert_eq!(stopped, vec!["job-1".to_owned()]);
+        assert!(running_job.await.unwrap().is_ok());
+        assert!(!job.running());
+        assert!(!registry.is_running("job-1"));
     }
 }
