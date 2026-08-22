@@ -3,6 +3,7 @@ pub mod ancestor_id;
 pub mod api_key;
 pub mod base_item;
 pub mod base_item_image;
+pub mod chapter;
 pub mod device;
 pub mod device_option;
 pub mod display_preference;

@@ -2,6 +2,7 @@ mod activity_log_repository;
 mod authentication_repository;
 mod base_item_image_repository;
 mod base_item_repository;
+mod chapter_repository;
 mod collection_repository;
 mod display_preference_repository;
 pub mod entities;
@@ -39,6 +40,9 @@ pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
     BaseItemQuery, BaseItemRepository, NewBaseItem, ProductionYearOrder, ProductionYearPage,
     USER_ROOT_FOLDER_ID,
+};
+pub use chapter_repository::{
+    ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter,
 };
 pub use collection_repository::{CollectionRepository, CollectionStoreError};
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};

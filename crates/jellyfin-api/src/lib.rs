@@ -372,6 +372,8 @@ impl AppState {
         self.web_directory = web_directory.into();
         self.image_cache_directory = image_cache_directory.into();
         self.internal_metadata_directory = internal_metadata_directory.into();
+        self.library_scan
+            .set_image_cache_directory(self.image_cache_directory.clone());
         self.item_images = ItemImageService::with_storage_directories(
             self.database.clone(),
             self.image_cache_directory.clone(),
@@ -412,6 +414,8 @@ impl AppState {
     #[must_use]
     pub fn with_ffmpeg_path(mut self, ffmpeg_path: impl Into<std::path::PathBuf>) -> Self {
         self.ffmpeg_path = ffmpeg_path.into();
+        self.library_scan
+            .set_ffmpeg_path(self.ffmpeg_path.clone());
         self
     }
 
@@ -1905,6 +1909,9 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
         ),
         LibraryScanError::Io(_)
         | LibraryScanError::BaseItem(_)
+        | LibraryScanError::Chapter(_)
+        | LibraryScanError::Keyframe(_)
+        | LibraryScanError::ItemImage(_)
         | LibraryScanError::MediaStream(jellyfin_data::MediaStreamStoreError::Database(_))
         | LibraryScanError::MediaAttachment(jellyfin_data::MediaAttachmentStoreError::Database(
             _,

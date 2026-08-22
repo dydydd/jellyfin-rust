@@ -12,10 +12,12 @@ jellyfin-drawing = { path = "../jellyfin-drawing" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-media-encoding-hls = { path = "../jellyfin-media-encoding-hls" }
+jellyfin-media-encoding-keyframes = { path = "../jellyfin-media-encoding-keyframes" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-naming = { path = "../jellyfin-naming" }
 jellyfin-providers = { path = "../jellyfin-providers" }
 jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }
+jellyfin-xbmc-metadata = { path = "../jellyfin-xbmc-metadata" }
 md-5 = "0.10"
 notify.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

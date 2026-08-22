@@ -10,17 +10,20 @@ use std::{
 };
 
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, ItemValueRepository, MediaAttachmentRepository,
+    BaseItemError, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
+    BaseItemRepository, ChapterRepository, ChapterStoreError, ItemValueRepository,
+    KeyframeDataRepository, KeyframeDataStoreError, MediaAttachmentRepository,
     MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError,
-    NewBaseItem, PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
-    USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
-    entities::base_item,
+    NewBaseItem, NewBaseItemImage, NewChapter, NewKeyframeData, PersistedMediaAttachment,
+    PersistedMediaStream, PersistedMediaStreamType, USER_ROOT_FOLDER_ID, VirtualFolderError,
+    VirtualFolderRepository, VirtualFolderWithPaths, entities::base_item,
 };
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
     MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol,
     MediaStream as ProbedMediaStream, MediaStreamType,
 };
+use jellyfin_media_encoding_keyframes::{KeyframeData, extract_keyframes};
 use jellyfin_model::{
     CollectionType, MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream,
 };
@@ -32,6 +35,9 @@ use jellyfin_server_implementations::{
     CoreResolutionIgnoreRule, ExtraDirectoryReader, ExtraFileSystemEntry, ExtraMediaKind,
     ExtraOwner, ExtraOwnerKind, LibraryExtrasResolver, ResolvedLibraryExtra,
     ResolutionFileSystemEntry, ResolutionParentContext, ResolutionParentKind,
+};
+use jellyfin_xbmc_metadata::{
+    MovieNfoLocation, MovieVideoType, movie_nfo_save_paths, parse_movie_nfo_file,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -59,6 +65,12 @@ pub enum LibraryScanError {
     #[error(transparent)]
     MediaAttachment(#[from] MediaAttachmentStoreError),
     #[error(transparent)]
+    Chapter(#[from] ChapterStoreError),
+    #[error(transparent)]
+    Keyframe(#[from] KeyframeDataStoreError),
+    #[error(transparent)]
+    ItemImage(#[from] BaseItemImageStoreError),
+    #[error(transparent)]
     VirtualFolder(#[from] VirtualFolderError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -72,8 +84,13 @@ pub struct LibraryScanService {
     items: BaseItemRepository,
     streams: MediaStreamRepository,
     attachments: MediaAttachmentRepository,
+    images: BaseItemImageRepository,
+    chapters: ChapterRepository,
+    keyframes: KeyframeDataRepository,
     values: ItemValueRepository,
     probe_path: PathBuf,
+    ffmpeg_path: PathBuf,
+    image_cache_directory: PathBuf,
     fanout_concurrency: usize,
     on_progress: Option<Arc<dyn Fn(f64) + Send + Sync>>,
     is_scanning: Arc<AtomicBool>,
@@ -95,8 +112,13 @@ impl LibraryScanService {
             items: BaseItemRepository::new(database.clone()),
             streams: MediaStreamRepository::new(database.clone()),
             attachments: MediaAttachmentRepository::new(database.clone()),
+            images: BaseItemImageRepository::new(database.clone()),
+            chapters: ChapterRepository::new(database.clone()),
+            keyframes: KeyframeDataRepository::new(database.clone()),
             values: ItemValueRepository::new(database),
             probe_path: probe_path.into(),
+            ffmpeg_path: PathBuf::from("ffmpeg"),
+            image_cache_directory: PathBuf::from("cache").join("images"),
             fanout_concurrency: default_fanout_concurrency(),
             on_progress: None,
             is_scanning: Arc::new(AtomicBool::new(false)),
@@ -105,6 +127,14 @@ impl LibraryScanService {
 
     pub fn set_fanout_concurrency(&mut self, concurrency: usize) {
         self.fanout_concurrency = concurrency;
+    }
+
+    pub fn set_ffmpeg_path(&mut self, ffmpeg_path: impl Into<PathBuf>) {
+        self.ffmpeg_path = ffmpeg_path.into();
+    }
+
+    pub fn set_image_cache_directory(&mut self, path: impl Into<PathBuf>) {
+        self.image_cache_directory = path.into();
     }
 
     fn fanout_concurrency(&self) -> usize {
@@ -614,6 +644,10 @@ impl LibraryScanService {
                         changed = true;
                     }
                 }
+                if apply_nfo_metadata(&mut existing, path_str) {
+                    changed = true;
+                }
+                self.discover_local_images(existing.id, path_str).await?;
                 if changed {
                     self.items.update(existing).await?;
                 }
@@ -651,9 +685,13 @@ impl LibraryScanService {
             if let Some(media_info) = self.ensure_media_streams(item.id, path_str, media_kind).await?
                 && apply_probed_item_metadata(&mut item, path_str, &media_info)
             {
-                self.items.update(item).await?;
+                item = self.items.update(item).await?;
             }
         }
+        if apply_nfo_metadata(&mut item, path_str) {
+            item = self.items.update(item).await?;
+        }
+        self.discover_local_images(item.id, path_str).await?;
         Ok(true)
     }
 
@@ -782,9 +820,27 @@ impl LibraryScanService {
             .map(streams_from_media_info)
             .unwrap_or_default();
         if let Some(media_info) = media_info.as_ref() {
-            let probed_attachments = attachments_from_media_info(&media_info);
+            let probed_attachments = attachments_from_media_info(media_info);
             self.attachments
                 .replace(item_id, &probed_attachments)
+                .await?;
+            self.chapters
+                .replace(item_id, chapters_from_media_info(media_info))
+                .await?;
+            self.discover_embedded_images(item_id, path, media_info)
+                .await?;
+        }
+        if media_kind == MediaKind::Video
+            && let Some(keyframes) = self.probe_keyframes(path).await
+        {
+            self.keyframes
+                .save(
+                    item_id,
+                    NewKeyframeData {
+                        total_duration: keyframes.total_duration,
+                        keyframe_ticks: keyframes.keyframe_ticks,
+                    },
+                )
                 .await?;
         }
         if streams.is_empty() {
@@ -796,6 +852,214 @@ impl LibraryScanService {
         streams.extend(external_subtitles);
         self.streams.replace(item_id, &streams).await?;
         Ok(media_info)
+    }
+
+    async fn probe_keyframes(&self, path: &str) -> Option<KeyframeData> {
+        let probe_path = self.probe_path.clone();
+        let path = path.to_owned();
+        let log_path = path.clone();
+        match tokio::task::spawn_blocking(move || extract_keyframes(&probe_path, &path)).await {
+            Ok(Ok(keyframes)) => Some(keyframes),
+            Ok(Err(error)) => {
+                tracing::debug!(path = log_path, error = %error, "keyframe extraction failed during library scan");
+                None
+            }
+            Err(error) => {
+                tracing::debug!(path = log_path, error = %error, "keyframe extraction task failed during library scan");
+                None
+            }
+        }
+    }
+
+    async fn discover_local_images(
+        &self,
+        item_id: Uuid,
+        path: &str,
+    ) -> Result<(), LibraryScanError> {
+        let Some(parent) = Path::new(path).parent() else {
+            return Ok(());
+        };
+        let Ok(mut entries) = fs::read_dir(parent).await else {
+            return Ok(());
+        };
+        let existing = self.images.list(item_id).await?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(image_type) = local_image_type(&name) else {
+                continue;
+            };
+            let path = entry.path();
+            let path_string = path.to_string_lossy().into_owned();
+            if existing.iter().any(|image| {
+                image.image_type == image_type
+                    && image.path.eq_ignore_ascii_case(&path_string)
+            }) {
+                continue;
+            }
+            let modified =
+                match tokio::fs::metadata(&path).await.ok().and_then(|metadata| {
+                    metadata.modified().ok()
+                }) {
+                    Some(modified) => chrono::DateTime::<chrono::Utc>::from(modified),
+                    None => chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                };
+            self.images
+                .set_or_append(
+                    item_id,
+                    NewBaseItemImage {
+                        image_type,
+                        image_index: 0,
+                        path: path_string,
+                        date_modified: modified,
+                        width: None,
+                        height: None,
+                        blurhash: None,
+                    },
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn discover_embedded_images(
+        &self,
+        item_id: Uuid,
+        path: &str,
+        media_info: &MediaInfo,
+    ) -> Result<(), LibraryScanError> {
+        tokio::fs::create_dir_all(&self.image_cache_directory).await?;
+        let mut has_primary = false;
+        for image in self.images.list(item_id).await? {
+            if image.image_type == BaseItemImageType::Primary {
+                has_primary = true;
+                break;
+            }
+        }
+
+        for attachment in &media_info.media_attachments {
+            let Some(image_type) = attachment_image_type(attachment) else {
+                continue;
+            };
+            let output = self
+                .image_cache_directory
+                .join(format!("embedded-{item_id}-{}.jpg", attachment.index));
+            if self
+                .extract_attachment_image(path, attachment.index, &output)
+                .await
+            {
+                self.persist_generated_image(item_id, image_type, &output)
+                    .await?;
+                if image_type == BaseItemImageType::Primary {
+                    has_primary = true;
+                }
+            }
+        }
+
+        if !has_primary
+            && let Some(video_stream) = media_info
+                .media_streams
+                .iter()
+                .find(|stream| stream.stream_type == MediaStreamType::Video)
+        {
+            let offset_ticks = media_info
+                .runtime_ticks
+                .filter(|runtime| *runtime > 0)
+                .map_or(10 * 10_000_000, |runtime| runtime / 10);
+            let output = self
+                .image_cache_directory
+                .join(format!("screenshot-{item_id}-{}.jpg", video_stream.index));
+            if self
+                .extract_video_frame(path, offset_ticks, &output)
+                .await
+            {
+                self.persist_generated_image(item_id, BaseItemImageType::Primary, &output)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn extract_attachment_image(
+        &self,
+        input: &str,
+        stream_index: i32,
+        output: &Path,
+    ) -> bool {
+        let status = tokio::process::Command::new(&self.ffmpeg_path)
+            .args([
+                "-y",
+                "-i",
+                input,
+                "-map",
+                &format!("0:{stream_index}"),
+                "-frames:v",
+                "1",
+            ])
+            .arg(output)
+            .output()
+            .await;
+        matches!(status, Ok(output) if output.status.success())
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    async fn extract_video_frame(
+        &self,
+        input: &str,
+        offset_ticks: i64,
+        output: &Path,
+    ) -> bool {
+        let seconds = format!("{:.6}", offset_ticks as f64 / 10_000_000.0);
+        let status = tokio::process::Command::new(&self.ffmpeg_path)
+            .args(["-y", "-ss", &seconds, "-i", input, "-frames:v", "1"])
+            .arg(output)
+            .output()
+            .await;
+        matches!(status, Ok(output) if output.status.success())
+    }
+
+    async fn persist_generated_image(
+        &self,
+        item_id: Uuid,
+        image_type: BaseItemImageType,
+        output: &Path,
+    ) -> Result<(), LibraryScanError> {
+        let output_path = output.to_string_lossy().into_owned();
+        let existing = self.images.list(item_id).await?;
+        if existing.iter().any(|image| {
+            image.image_type == image_type && image.path.eq_ignore_ascii_case(&output_path)
+        }) {
+            return Ok(());
+        }
+        let modified =
+            match tokio::fs::metadata(output).await.ok().and_then(|metadata| {
+                metadata.modified().ok()
+            }) {
+                Some(modified) => chrono::DateTime::<chrono::Utc>::from(modified),
+                None => chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            };
+        self.images
+            .set_or_append(
+                item_id,
+                NewBaseItemImage {
+                    image_type,
+                    image_index: 0,
+                    path: output_path,
+                    date_modified: modified,
+                    width: None,
+                    height: None,
+                    blurhash: None,
+                },
+            )
+            .await?;
+        Ok(())
     }
 
     async fn probe_media_info(&self, path: &str, media_kind: MediaKind) -> Option<MediaInfo> {
@@ -985,6 +1249,56 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
     None
 }
 
+fn local_image_type(file_name: &str) -> Option<BaseItemImageType> {
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())?
+        .to_ascii_lowercase();
+    let stem = stem.trim_end_matches(|character: char| character.is_ascii_digit());
+    Some(match stem {
+        "poster" | "folder" | "cover" | "default" | "movie" | "show" => {
+            BaseItemImageType::Primary
+        }
+        "backdrop" | "fanart" | "background" | "art" => BaseItemImageType::Backdrop,
+        "logo" | "clearlogo" => BaseItemImageType::Logo,
+        "banner" => BaseItemImageType::Banner,
+        "landscape" | "thumb" => BaseItemImageType::Thumb,
+        "clearart" => BaseItemImageType::Art,
+        "disc" | "discart" => BaseItemImageType::Disc,
+        "box" => BaseItemImageType::Box,
+        "menu" => BaseItemImageType::Menu,
+        "back" => BaseItemImageType::BoxRear,
+        _ => return None,
+    })
+}
+
+fn attachment_image_type(attachment: &ProbedMediaAttachment) -> Option<BaseItemImageType> {
+    let haystack = attachment
+        .file_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let haystack = format!(
+        "{haystack} {}",
+        attachment.comment.as_deref().unwrap_or_default()
+    );
+    if contains_any(&haystack, &["poster", "folder", "cover", "default"]) {
+        Some(BaseItemImageType::Primary)
+    } else if contains_any(&haystack, &["backdrop", "fanart", "background", "art"]) {
+        Some(BaseItemImageType::Backdrop)
+    } else if contains_any(&haystack, &["logo"]) {
+        Some(BaseItemImageType::Logo)
+    } else {
+        None
+    }
+}
+
+fn contains_any(value: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| value.contains(candidate))
+}
+
 fn is_scanned_media_type(item_type: &str) -> bool {
     matches!(
         item_type,
@@ -1033,6 +1347,98 @@ fn apply_probed_item_metadata(
         item.sort_name = Some(sort_name.clone());
         changed = true;
     }
+    changed
+}
+
+fn apply_nfo_metadata(
+    item: &mut jellyfin_data::entities::base_item::Model,
+    path: &str,
+) -> bool {
+    if !matches!(
+        item.item_type.as_str(),
+        "Movie" | "Video" | "Trailer" | "MusicVideo"
+    ) {
+        return false;
+    }
+    let Some(nfo_path) = movie_nfo_save_paths(&MovieNfoLocation {
+        path: PathBuf::from(path),
+        is_in_mixed_folder: false,
+        video_type: MovieVideoType::File,
+    })
+    .into_iter()
+    .find(|path| path.is_file())
+    else {
+        return false;
+    };
+    let Ok(nfo) = parse_movie_nfo_file(nfo_path) else {
+        return false;
+    };
+
+    let mut changed = false;
+    if let Some(name) = nfo.name.as_deref().filter(|name| !name.is_empty())
+        && item.name.as_deref() != Some(name)
+    {
+        item.name = Some(name.to_owned());
+        item.sort_name = Some(name.to_owned());
+        changed = true;
+    }
+    if let Some(overview) = nfo.overview.as_deref().filter(|value| !value.is_empty())
+        && item.overview.as_deref() != Some(overview)
+    {
+        item.overview = Some(overview.to_owned());
+        changed = true;
+    }
+    if nfo.production_year.is_some() && item.production_year != nfo.production_year {
+        item.production_year = nfo.production_year;
+        changed = true;
+    }
+    if nfo.premiere_date.is_some()
+        && item.premiere_date.is_none()
+    {
+        item.premiere_date = nfo.premiere_date.map(|date| {
+            chrono::DateTime::from_naive_utc_and_offset(
+                date.and_hms_opt(0, 0, 0).unwrap_or_default(),
+                chrono::Utc,
+            )
+        });
+        changed = true;
+    }
+    if nfo.runtime_ticks.is_some() && item.runtime_ticks != nfo.runtime_ticks {
+        item.runtime_ticks = nfo.runtime_ticks;
+        changed = true;
+    }
+    if nfo.official_rating.is_some() && item.official_rating != nfo.official_rating {
+        item.official_rating.clone_from(&nfo.official_rating);
+        changed = true;
+    }
+
+    let mut data = item
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if !nfo.genres.is_empty() {
+        data.insert(
+            "Genres".to_owned(),
+            serde_json::Value::Array(
+                nfo.genres
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+        changed = true;
+    }
+    if !nfo.provider_ids.is_empty() {
+        data.insert(
+            "ProviderIds".to_owned(),
+            serde_json::to_value(&nfo.provider_ids).unwrap_or_default(),
+        );
+        changed = true;
+    }
+    item.data = Some(serde_json::Value::Object(data));
     changed
 }
 
@@ -1159,6 +1565,27 @@ fn attachments_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaAtta
         .media_attachments
         .iter()
         .map(attachment_from_probe)
+        .collect()
+}
+
+fn chapters_from_media_info(media_info: &MediaInfo) -> Vec<NewChapter> {
+    let runtime_ticks = media_info.runtime_ticks.unwrap_or_default();
+    media_info
+        .chapters
+        .iter()
+        .enumerate()
+        .map(|(index, chapter)| {
+            let end_position_ticks = media_info
+                .chapters
+                .get(index + 1)
+                .map_or(runtime_ticks, |next| next.start_position_ticks);
+            NewChapter {
+                index_number: i32::try_from(index).unwrap_or(i32::MAX),
+                start_position_ticks: chapter.start_position_ticks,
+                end_position_ticks: end_position_ticks.max(chapter.start_position_ticks),
+                name: chapter.name.clone(),
+            }
+        })
         .collect()
 }
 
@@ -1378,9 +1805,10 @@ const BOOK_EXTENSIONS: &[&str] = &[
 mod tests {
     use super::{
         MediaKind, ScanLibraryKind, apply_probed_item_metadata, attachments_from_media_info,
-        codec_from_extension, default_stream, display_name, extra_type_name, is_extras_directory,
-        media_item_data, media_kind, next_stream_index, resolve_external_subtitle_streams_from_entries,
-        stable_item_id, streams_from_media_info,
+        attachment_image_type, codec_from_extension, default_stream, display_name,
+        extra_type_name, is_extras_directory, local_image_type, media_item_data, media_kind,
+        next_stream_index,
+        resolve_external_subtitle_streams_from_entries, stable_item_id, streams_from_media_info,
     };
     use jellyfin_naming::ExtraType;
     use chrono::Utc;
@@ -1397,6 +1825,65 @@ mod tests {
         assert_eq!(media_kind(Path::new("photo.jpg")), Some(MediaKind::Photo));
         assert_eq!(media_kind(Path::new("book.pdf")), Some(MediaKind::Book));
         assert_eq!(media_kind(Path::new("data.nfo")), None);
+    }
+
+    #[test]
+    fn local_image_names_map_to_official_image_types() {
+        use jellyfin_data::BaseItemImageType;
+
+        assert_eq!(
+            local_image_type("poster.jpg"),
+            Some(BaseItemImageType::Primary)
+        );
+        assert_eq!(
+            local_image_type("folder.png"),
+            Some(BaseItemImageType::Primary)
+        );
+        assert_eq!(
+            local_image_type("fanart1.jpg"),
+            Some(BaseItemImageType::Backdrop)
+        );
+        assert_eq!(
+            local_image_type("logo.png"),
+            Some(BaseItemImageType::Logo)
+        );
+        assert_eq!(
+            local_image_type("landscape.jpg"),
+            Some(BaseItemImageType::Thumb)
+        );
+        assert_eq!(
+            local_image_type("clearart.png"),
+            Some(BaseItemImageType::Art)
+        );
+        assert_eq!(local_image_type("unrelated.txt"), None);
+    }
+
+    #[test]
+    fn embedded_attachment_names_select_official_image_types() {
+        use jellyfin_data::BaseItemImageType;
+        use jellyfin_media_encoding::probing::MediaAttachment;
+
+        let attachment = |name: Option<&str>| MediaAttachment {
+            codec: "mjpeg".to_owned(),
+            index: 1,
+            codec_tag: None,
+            file_name: name.map(str::to_owned),
+            mime_type: Some("image/jpeg".to_owned()),
+            comment: None,
+        };
+        assert_eq!(
+            attachment_image_type(&attachment(Some("poster.jpg"))),
+            Some(BaseItemImageType::Primary)
+        );
+        assert_eq!(
+            attachment_image_type(&attachment(Some("fanart.jpg"))),
+            Some(BaseItemImageType::Backdrop)
+        );
+        assert_eq!(
+            attachment_image_type(&attachment(Some("logo.png"))),
+            Some(BaseItemImageType::Logo)
+        );
+        assert_eq!(attachment_image_type(&attachment(Some("other.bin"))), None);
     }
 
     #[test]

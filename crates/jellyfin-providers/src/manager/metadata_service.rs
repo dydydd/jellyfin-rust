@@ -1,5 +1,6 @@
 use jellyfin_model::ProviderIdMap;
 
+use crate::omdb::OmdbItem;
 use crate::tv::EpisodeMetadata;
 
 /// Metadata groups that can prevent an incoming field from being merged.
@@ -127,6 +128,64 @@ impl MetadataService {
             merge_metadata_settings_fields(source, target, replace_data);
         }
     }
+
+    /// Converts an OMDb response and merges it into an item's metadata.
+    pub fn merge_omdb_item<C: MetadataServiceCapability + ?Sized>(
+        omdb: &OmdbItem,
+        target: &mut MetadataResult,
+        locked_fields: &[MetadataField],
+        replace_data: bool,
+        capability: &C,
+    ) {
+        let source = MetadataResult {
+            item: metadata_item_from_omdb(omdb),
+            people: None,
+        };
+        Self::merge_base_item_data(
+            &source,
+            target,
+            locked_fields,
+            replace_data,
+            false,
+            capability,
+        );
+    }
+}
+
+fn metadata_item_from_omdb(item: &OmdbItem) -> MetadataItem {
+    let mut provider_ids = ProviderIdMap::new();
+    if let Some(imdb_id) = item.imdb_id.as_deref().filter(|id| !id.is_empty()) {
+        provider_ids.insert("Imdb".to_owned(), imdb_id.to_owned());
+    }
+    MetadataItem {
+        core: EpisodeMetadata {
+            name: item.title.clone(),
+            overview: item.plot.clone(),
+            index_number: item.episode,
+            parent_index_number: item.season,
+            provider_ids,
+            ..EpisodeMetadata::default()
+        },
+        original_title: item.title.clone(),
+        official_rating: item.rated.clone(),
+        tagline: None,
+        genres: split_omdb_list(item.genre.as_deref()),
+        studios: split_omdb_list(item.production.as_deref()),
+        production_year: item.production_year(),
+        community_rating: item.imdb_score(),
+        critic_rating: item.metascore(),
+        ..MetadataItem::default()
+    }
+}
+
+fn split_omdb_list(value: Option<&str>) -> Vec<String> {
+    value
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn merge_scalar_fields(

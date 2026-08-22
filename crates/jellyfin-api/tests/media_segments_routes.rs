@@ -5,7 +5,7 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice,
+    BaseItemRepository, ChapterRepository, DeviceRepository, NewBaseItem, NewChapter, NewDevice,
     entities::{base_item, user},
 };
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -16,7 +16,7 @@ use uuid::Uuid;
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Media Segment Tests\", Device=\"Test\", DeviceId=\"media-segments\", Version=\"1.0\"";
 
 #[tokio::test]
-async fn media_segments_route_matches_official_empty_provider_contract() {
+async fn media_segments_route_matches_official_contract_and_returns_chapters() {
     let fixture = Fixture::new().await;
     let route = format!(
         "/MediaSegments/{}?includeSegmentTypes=Intro,Commercial",
@@ -46,6 +46,19 @@ async fn media_segments_route_matches_official_empty_provider_contract() {
     assert_eq!(body["TotalRecordCount"], 0);
     assert_eq!(body["StartIndex"], 0);
     assert!(body.get("items").is_none());
+
+    let response = fixture
+        .get(
+            &format!("/MediaSegments/{}", fixture.item_id),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["TotalRecordCount"], 2);
+    assert_eq!(body["Items"][0]["StartTicks"], 0);
+    assert_eq!(body["Items"][0]["EndTicks"], 10_000_000);
+    assert_eq!(body["Items"][1]["StartTicks"], 10_000_000);
 
     fixture.cleanup().await;
 }
@@ -93,6 +106,26 @@ impl Fixture {
             .create(item)
             .await
             .expect("video item creation");
+        ChapterRepository::new(database.clone())
+            .replace(
+                item.id,
+                vec![
+                    NewChapter {
+                        index_number: 0,
+                        start_position_ticks: 0,
+                        end_position_ticks: 10_000_000,
+                        name: Some("Opening".to_owned()),
+                    },
+                    NewChapter {
+                        index_number: 1,
+                        start_position_ticks: 10_000_000,
+                        end_position_ticks: 20_000_000,
+                        name: Some("Credits".to_owned()),
+                    },
+                ],
+            )
+            .await
+            .expect("chapter persistence");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),

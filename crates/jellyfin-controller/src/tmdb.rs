@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
-    ItemUpdateStoreError, ItemValueError, ItemValueRepository, NewPerson, PersonError,
+    ItemUpdateStoreError, ItemValueError, ItemValueRepository, NewBaseItem, NewPerson, PersonError,
     PersonRepository,
     entities::{base_item, item_value::ItemValueType},
 };
@@ -541,7 +541,8 @@ impl TmdbMetadataProvider {
         self.people.clear_credits(item_id).await?;
         let mut order = 0;
         for actor in cast {
-            self.people
+            let person = self
+                .people
                 .link(
                     item_id,
                     NewPerson {
@@ -554,6 +555,8 @@ impl TmdbMetadataProvider {
                     order,
                 )
                 .await?;
+            self.ensure_person_image(&person.name, actor.profile_path.as_deref())
+                .await?;
             order += 1;
         }
         for member in crew {
@@ -562,7 +565,8 @@ impl TmdbMetadataProvider {
             else {
                 continue;
             };
-            self.people
+            let person = self
+                .people
                 .link(
                     item_id,
                     NewPerson {
@@ -575,7 +579,42 @@ impl TmdbMetadataProvider {
                     order,
                 )
                 .await?;
+            self.ensure_person_image(&person.name, member.profile_path.as_deref())
+                .await?;
             order += 1;
+        }
+        Ok(())
+    }
+
+    async fn ensure_person_image(
+        &self,
+        name: &str,
+        profile_path: Option<&str>,
+    ) -> Result<(), MetadataProviderError> {
+        let Some(images) = self.images.as_ref() else {
+            return Ok(());
+        };
+        let Some(profile_path) = profile_path.filter(|path| !path.is_empty()) else {
+            return Ok(());
+        };
+        let Some(image_url) = TmdbUtils::image_url(Some("original"), Some(profile_path)) else {
+            return Ok(());
+        };
+        let person_item = if let Some(item) = self.items.get_by_type_and_name("Person", name).await? {
+            item
+        } else {
+            let mut item = NewBaseItem::new(Uuid::new_v4(), "Person");
+            item.name = Some(name.to_owned());
+            item.sort_name = Some(name.to_owned());
+            item.is_virtual_item = true;
+            item.data = Some(json!({ "SourceType": "Library" }));
+            self.items.create(item).await?
+        };
+        if let Err(error) = images
+            .download_remote_image(person_item.id, ImageType::Profile, &image_url)
+            .await
+        {
+            tracing::warn!(name, %error, "person profile image download failed");
         }
         Ok(())
     }

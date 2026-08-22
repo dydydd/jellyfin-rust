@@ -1,9 +1,15 @@
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+};
 
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
     ItemUpdateStoreError, ServerConfigurationRepository, ServerConfigurationStoreError,
     entities::base_item,
+};
+use jellyfin_xbmc_metadata::{
+    MovieNfo, MovieNfoLocation, MovieVideoType, movie_nfo_save_paths, save_movie_nfo,
 };
 use sea_orm::DatabaseConnection;
 use thiserror::Error;
@@ -55,10 +61,14 @@ impl ItemUpdateService {
         item_id: Uuid,
         input: ItemUpdateInput,
     ) -> Result<base_item::Model, ItemUpdateError> {
-        Ok(self
+        let updated = self
             .repository
             .update(item_id, normalize_input(input))
-            .await?)
+            .await?;
+        if let Err(error) = Self::write_local_nfo(&updated) {
+            tracing::warn!(%error, "local NFO writeback failed");
+        }
+        Ok(updated)
     }
 
     /// Replaces or removes the content-type override for an item's containing
@@ -84,6 +94,64 @@ impl ItemUpdateService {
             .update_content_type_override(&path, content_type)
             .await?;
         Ok(())
+    }
+
+    fn write_local_nfo(item: &base_item::Model) -> std::io::Result<()> {
+        if !matches!(
+            item.item_type.as_str(),
+            "Movie" | "Video" | "Trailer" | "MusicVideo"
+        ) {
+            return Ok(());
+        }
+        let Some(path) = item.path.as_deref() else {
+            return Ok(());
+        };
+        let Some(nfo_path) = movie_nfo_save_paths(&MovieNfoLocation {
+            path: PathBuf::from(path),
+            is_in_mixed_folder: false,
+            video_type: MovieVideoType::File,
+        })
+        .into_iter()
+        .next()
+        else {
+            return Ok(());
+        };
+        if let Some(parent) = nfo_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        save_movie_nfo(&nfo_path, &movie_nfo_from_item(item))
+    }
+}
+
+fn movie_nfo_from_item(item: &base_item::Model) -> MovieNfo {
+    let data = item.data.as_ref().and_then(serde_json::Value::as_object);
+    let genres = data
+        .and_then(|data| data.get("Genres"))
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let provider_ids = data
+        .and_then(|data| data.get("ProviderIds"))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    MovieNfo {
+        name: item.name.clone(),
+        original_title: item.name.clone(),
+        overview: item.overview.clone(),
+        production_year: item.production_year,
+        premiere_date: item.premiere_date.map(|date| date.date_naive()),
+        runtime_ticks: item.runtime_ticks,
+        official_rating: item.official_rating.clone(),
+        genres,
+        provider_ids,
+        ..MovieNfo::default()
     }
 }
 

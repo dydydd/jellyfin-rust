@@ -1,6 +1,7 @@
 use std::cell::Cell;
 
 use jellyfin_model::ProviderIdMap;
+use jellyfin_providers::omdb::OmdbItem;
 use jellyfin_providers::manager::metadata_service::{
     MediaUrl, MetadataField, MetadataItem, MetadataResult, MetadataService,
     MetadataServiceCapability, PersonInfo, Video3dFormat,
@@ -651,4 +652,42 @@ fn merge_base_item_data_merge_people_merges_appropriately() {
     let (actual, _, _) = merge_people(Some(picture_1), Some(&picture_2), None, false);
     assert_eq!(actual.unwrap()[0].image_url.as_deref(), Some("URL 1"));
     assert!(merge_people(Some(old_people()), Some(&[]), None, true).1);
+}
+
+#[test]
+fn merge_omdb_item_passes_parsed_fields_through_official_merge_rules() {
+    let omdb = OmdbItem {
+        title: Some("The Matrix".to_owned()),
+        plot: Some("A hacker discovers reality.".to_owned()),
+        genre: Some("Action, Sci-Fi".to_owned()),
+        production: Some("Warner Bros.".to_owned()),
+        year: Some("1999".to_owned()),
+        rated: Some("R".to_owned()),
+        imdb_id: Some("tt0133093".to_owned()),
+        imdb_rating: Some("8.7".to_owned()),
+        metascore: Some("73".to_owned()),
+        ..OmdbItem::default()
+    };
+    let mut target = MetadataResult::default();
+    let capability = FixtureCapability::default();
+
+    MetadataService::merge_omdb_item(
+        &omdb,
+        &mut target,
+        &[],
+        false,
+        &capability,
+    );
+
+    assert_eq!(target.item.core.name.as_deref(), Some("The Matrix"));
+    assert_eq!(
+        target.item.core.overview.as_deref(),
+        Some("A hacker discovers reality.")
+    );
+    assert_eq!(target.item.genres, ["Action", "Sci-Fi"]);
+    assert_eq!(target.item.studios, ["Warner Bros."]);
+    assert_eq!(target.item.production_year, Some(1999));
+    assert_eq!(target.item.official_rating.as_deref(), Some("R"));
+    assert_eq!(target.item.core.provider_ids["Imdb"], "tt0133093");
+    assert_eq!(target.item.community_rating, Some(8.7));
 }

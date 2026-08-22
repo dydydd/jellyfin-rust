@@ -46,6 +46,7 @@ mod m20260725_000043_create_playlists;
 mod m20260725_000044_add_remote_access_configuration;
 mod m20260728_000045_add_server_id_configuration;
 mod m20260804_000046_add_tmdb_api_key_configuration;
+mod m20260822_000047_create_chapters;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -138,6 +139,7 @@ pub use m20260725_000044_add_remote_access_configuration::Migration as AddRemote
 pub use m20260728_000045_add_server_id_configuration::Migration as AddServerIdConfigurationMigration;
 #[doc(hidden)]
 pub use m20260804_000046_add_tmdb_api_key_configuration::Migration as AddTmdbApiKeyConfigurationMigration;
+pub use m20260822_000047_create_chapters::Migration as CreateChaptersMigration;
 
 pub struct Migrator;
 
@@ -191,6 +193,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260725_000044_add_remote_access_configuration::Migration),
             Box::new(m20260728_000045_add_server_id_configuration::Migration),
             Box::new(m20260804_000046_add_tmdb_api_key_configuration::Migration),
+            Box::new(m20260822_000047_create_chapters::Migration),
         ]
     }
 }
