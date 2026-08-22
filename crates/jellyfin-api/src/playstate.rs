@@ -397,6 +397,7 @@ async fn report_playback_progress_for_current_session(
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
         record_device_playback_progress(&state, &session, info).await?;
+        crate::websocket::broadcast_sessions(&state).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -410,6 +411,7 @@ async fn report_playback_start_for_current_session(
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
         record_device_playback_start(&state, &session, info).await?;
+        crate::websocket::broadcast_sessions(&state).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -423,6 +425,7 @@ async fn report_playback_stop_for_current_session(
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
         record_device_playback_stop(&state, &session, info).await?;
+        crate::websocket::broadcast_sessions(&state).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }

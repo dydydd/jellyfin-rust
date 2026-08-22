@@ -103,6 +103,7 @@ pub(crate) async fn refresh(
         }
     }
 
+    crate::websocket::broadcast_refresh_progress(&state, item_id, 100.0).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

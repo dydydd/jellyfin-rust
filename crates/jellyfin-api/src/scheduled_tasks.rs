@@ -55,6 +55,7 @@ pub(crate) async fn start(
 ) -> Result<StatusCode, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
     state.scheduled_tasks.start(&task_id).await?;
+    crate::websocket::broadcast_scheduled_tasks_info(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -66,6 +67,7 @@ pub(crate) async fn stop(
 ) -> Result<StatusCode, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
     state.scheduled_tasks.stop(&task_id).await?;
+    crate::websocket::broadcast_scheduled_tasks_info(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -82,6 +84,7 @@ pub(crate) async fn update_triggers(
         .scheduled_tasks
         .update_triggers(&task_id, triggers)
         .await?;
+    crate::websocket::broadcast_scheduled_tasks_info(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

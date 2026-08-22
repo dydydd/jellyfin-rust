@@ -60,6 +60,17 @@ async fn session_command_outbox_is_consumed_over_websocket() {
     assert_eq!(replayed_command["MessageType"], "GeneralCommand");
     assert_eq!(replayed_command["Data"]["Name"], "Mute");
     assert_queued_command_count(&fixture, 0).await;
+    let mut snapshots = std::collections::HashSet::new();
+    for _ in 0..2 {
+        snapshots.insert(
+            websocket_json(&mut target_socket).await["MessageType"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    assert!(snapshots.contains("Sessions"));
+    assert!(snapshots.contains("ScheduledTasksInfo"));
 
     fixture.post_command("Command/GoHome", Body::empty()).await;
     let general_command = websocket_json(&mut target_socket).await;
@@ -91,6 +102,44 @@ async fn session_command_outbox_is_consumed_over_websocket() {
 
     target_socket.close(None).await.unwrap();
 
+    server.abort();
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn websocket_connection_sends_sessions_and_scheduled_task_snapshots() {
+    let fixture = Fixture::new().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test WebSocket listener must bind");
+    let address = listener.local_addr().unwrap();
+    let app = fixture.app.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/websocket?api_key={}",
+        fixture.target_token
+    ))
+    .await
+    .expect("target WebSocket must connect");
+    assert_eq!(
+        websocket_json(&mut socket).await["MessageType"],
+        "ForceKeepAlive"
+    );
+
+    let mut snapshots = std::collections::HashSet::new();
+    for _ in 0..2 {
+        snapshots.insert(
+            websocket_json(&mut socket).await["MessageType"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    assert!(snapshots.contains("Sessions"));
+    assert!(snapshots.contains("ScheduledTasksInfo"));
+
+    socket.close(None).await.unwrap();
     server.abort();
     fixture.cleanup().await;
 }

@@ -387,6 +387,7 @@ pub(crate) async fn refresh(
         .await?
         .require_administrator()?;
     state.library_scan.scan_all().await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -90,7 +90,13 @@ pub(crate) async fn create(
     if let Some(password) = request.password.filter(|password| !password.is_empty()) {
         user = hash_and_save_password(&state, user, password).await?;
     }
-    Ok(Json(user_to_dto_with_server_id(&state, user)))
+    let dto = user_to_dto_with_server_id(&state, user);
+    crate::websocket::broadcast_user_updated(
+        &state,
+        &serde_json::to_value(&dto).unwrap_or_default(),
+    )
+    .await;
+    Ok(Json(dto))
 }
 
 pub(crate) async fn forgot_password(
@@ -435,6 +441,12 @@ async fn update_with_id(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let name = request.name.as_deref().ok_or(ApiError::InvalidRequest)?;
     state.users.rename(target_id, name).await?;
+    let dto = user_to_dto_with_server_id(state, state.users.get(target_id).await?);
+    crate::websocket::broadcast_user_updated(
+        state,
+        &serde_json::to_value(&dto).unwrap_or_default(),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -546,6 +558,7 @@ pub(crate) async fn delete(
 ) -> Result<StatusCode, ApiError> {
     require_administrator(&state, &headers).await?;
     state.users.delete(target_id).await?;
+    crate::websocket::broadcast_user_deleted(&state, target_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -567,6 +580,12 @@ pub(crate) async fn update_policy(
             .revoke_user_tokens(target_id, Some(&current_token))
             .await?;
     }
+    let dto = user_to_dto_with_server_id(&state, state.users.get(target_id).await?);
+    crate::websocket::broadcast_user_updated(
+        &state,
+        &serde_json::to_value(&dto).unwrap_or_default(),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

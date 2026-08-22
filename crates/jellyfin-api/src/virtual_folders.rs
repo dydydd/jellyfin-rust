@@ -136,6 +136,7 @@ pub(crate) async fn create(
         )
         .await?;
     refresh_library_if_requested(&state, refresh_after_create).await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -151,6 +152,7 @@ pub(crate) async fn delete(
         .virtual_folders
         .delete(&name, query.refresh_library)
         .await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -167,6 +169,7 @@ pub(crate) async fn rename(
         .virtual_folders
         .rename(&name, &new_name, query.refresh_library)
         .await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -191,6 +194,7 @@ pub(crate) async fn add_path(
         .add_path(&body.name, path_info, query.refresh_library)
         .await?;
     refresh_library_if_requested(&state, query.refresh_library).await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -211,6 +215,7 @@ pub(crate) async fn update_path(
         .update_path(&body.name, body.path_info)
         .await?;
     refresh_library_if_requested(&state, query.refresh_library).await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -227,6 +232,7 @@ pub(crate) async fn remove_path(
         .virtual_folders
         .remove_path(&name, &path, query.refresh_library)
         .await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -245,6 +251,7 @@ pub(crate) async fn update_options(
             body.library_options.ok_or(ApiError::InvalidRequest)?,
         )
         .await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[]).await;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 

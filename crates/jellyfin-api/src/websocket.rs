@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum::{
     extract::{OriginalUri, State, WebSocketUpgrade, ws::Message},
@@ -83,6 +86,21 @@ impl WebSocketHub {
         }
         sender.send(message).is_ok()
     }
+
+    pub(crate) async fn send_all<T: serde::Serialize>(
+        &self,
+        message_type: &str,
+        data: &T,
+    ) {
+        let Ok(data) = serde_json::to_value(data) else {
+            return;
+        };
+        let message = websocket_message(message_type, &data);
+        let sessions = self.sessions.read().await;
+        for sender in sessions.values() {
+            let _ = sender.send(message.clone());
+        }
+    }
 }
 
 fn websocket_message(message_type: &str, data: &serde_json::Value) -> String {
@@ -123,9 +141,12 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
         disconnect(&state, &session_id).await;
         return;
     }
+    broadcast_sessions(&state).await;
+    broadcast_scheduled_tasks_info(&state).await;
 
     let mut last_keep_alive = Instant::now();
     let mut forced = false;
+    let mut subscriptions = HashSet::new();
     let mut watchdog = tokio::time::interval(WATCH_INTERVAL);
     watchdog.set_missed_tick_behavior(MissedTickBehavior::Delay);
     watchdog.tick().await;
@@ -164,7 +185,12 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
                     last_keep_alive = Instant::now();
                     forced = false;
                 }
-                Some(Ok(Message::Text(_) | Message::Binary(_))) => {}
+                Some(Ok(Message::Text(payload))) => {
+                    handle_inbound(payload.as_bytes(), &mut subscriptions, &state).await;
+                }
+                Some(Ok(Message::Binary(payload))) => {
+                    handle_inbound(&payload, &mut subscriptions, &state).await;
+                }
             } }
             message = outbound.recv() => { match message {
                 Ok(message) => {
@@ -235,6 +261,88 @@ pub(crate) async fn broadcast_sync_play_departure(state: &AppState, departure: S
     }
 }
 
+pub(crate) async fn broadcast_sessions(state: &AppState) {
+    if let Ok(sessions) = crate::session::all_session_infos(state).await {
+        state.web_sockets.send_all("Sessions", &sessions).await;
+    }
+}
+
+pub(crate) async fn broadcast_scheduled_tasks_info(state: &AppState) {
+    let tasks = state.scheduled_tasks.list(None, None).await;
+    state
+        .web_sockets
+        .send_all("ScheduledTasksInfo", &tasks)
+        .await;
+}
+
+pub(crate) async fn broadcast_library_changed(
+    state: &AppState,
+    added: &[String],
+    removed: &[String],
+    updated: &[String],
+) {
+    state
+        .web_sockets
+        .send_all(
+            "LibraryChanged",
+            &json!({
+                "ItemsAdded": added,
+                "ItemsRemoved": removed,
+                "ItemsUpdated": updated,
+            }),
+        )
+        .await;
+}
+
+pub(crate) async fn broadcast_user_data_changed(
+    state: &AppState,
+    user_id: Uuid,
+    item_id: Uuid,
+    user_data: &serde_json::Value,
+) {
+    state
+        .web_sockets
+        .send_all(
+            "UserDataChanged",
+            &json!({
+                "UserId": user_id.simple().to_string(),
+                "ItemId": item_id.simple().to_string(),
+                "UserData": user_data,
+            }),
+        )
+        .await;
+}
+
+pub(crate) async fn broadcast_user_updated(state: &AppState, user: &serde_json::Value) {
+    state
+        .web_sockets
+        .send_all("UserUpdated", user)
+        .await;
+}
+
+pub(crate) async fn broadcast_user_deleted(state: &AppState, user_id: Uuid) {
+    state
+        .web_sockets
+        .send_all(
+            "UserDeleted",
+            &json!({ "Id": user_id.simple().to_string() }),
+        )
+        .await;
+}
+
+pub(crate) async fn broadcast_refresh_progress(state: &AppState, item_id: Uuid, progress: f64) {
+    state
+        .web_sockets
+        .send_all(
+            "RefreshProgress",
+            &json!({
+                "ItemId": item_id.simple().to_string(),
+                "Progress": progress,
+            }),
+        )
+        .await;
+}
+
 async fn send_force_keep_alive(
     socket: &mut axum::extract::ws::WebSocket,
 ) -> Result<(), axum::Error> {
@@ -249,6 +357,39 @@ async fn send_force_keep_alive(
 fn is_keep_alive(payload: &[u8]) -> bool {
     deserialize_websocket_message([payload])
         .is_ok_and(|parsed| parsed.message.message_type == WebSocketMessageType::KeepAlive)
+}
+
+async fn handle_inbound(
+    payload: &[u8],
+    subscriptions: &mut HashSet<String>,
+    state: &AppState,
+) {
+    let Ok(parsed) = deserialize_websocket_message([payload]) else {
+        return;
+    };
+    match parsed.message.message_type {
+        WebSocketMessageType::SessionsStart => {
+            subscriptions.insert("Sessions".to_owned());
+            broadcast_sessions(state).await;
+        }
+        WebSocketMessageType::SessionsStop => {
+            subscriptions.remove("Sessions");
+        }
+        WebSocketMessageType::ScheduledTasksInfoStart => {
+            subscriptions.insert("ScheduledTasksInfo".to_owned());
+            broadcast_scheduled_tasks_info(state).await;
+        }
+        WebSocketMessageType::ScheduledTasksInfoStop => {
+            subscriptions.remove("ScheduledTasksInfo");
+        }
+        WebSocketMessageType::ActivityLogEntryStart => {
+            subscriptions.insert("ActivityLogEntry".to_owned());
+        }
+        WebSocketMessageType::ActivityLogEntryStop => {
+            subscriptions.remove("ActivityLogEntry");
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

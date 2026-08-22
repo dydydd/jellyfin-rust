@@ -175,6 +175,15 @@ impl TmdbClient {
         .await
     }
 
+    pub(crate) async fn tv_season_details(
+        &self,
+        id: i64,
+        season_number: i32,
+    ) -> Result<TmdbTvSeasonDetails, MetadataProviderError> {
+        self.get_json(&format!("/tv/{id}/season/{season_number}"), &[])
+            .await
+    }
+
     pub(crate) async fn movie_images(&self, id: i64) -> Result<TmdbImages, MetadataProviderError> {
         self.get_json(
             &format!("/movie/{id}/images"),
@@ -367,6 +376,7 @@ impl TmdbMetadataProvider {
         };
         let details = self.client.tv_details(tmdb_id).await?;
         self.apply_tv_metadata(item.id, &details).await?;
+        self.refresh_season_metadata(item.id, &details).await?;
         self.save_remote_images(
             item.id,
             details.poster_path.as_deref(),
@@ -529,6 +539,78 @@ impl TmdbMetadataProvider {
 
         self.replace_people(item_id, &details.credits.cast, &details.credits.crew)
             .await?;
+        Ok(())
+    }
+
+    async fn refresh_season_metadata(
+        &self,
+        series_id: Uuid,
+        details: &TmdbTvDetails,
+    ) -> Result<(), MetadataProviderError> {
+        let Some(season_count) = details.number_of_seasons else {
+            return Ok(());
+        };
+        for season_number in 1..=season_count {
+            let Ok(season) = self
+                .client
+                .tv_season_details(details.id, season_number)
+                .await
+            else {
+                continue;
+            };
+            self.apply_season_metadata(series_id, season_number, &season)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_season_metadata(
+        &self,
+        series_id: Uuid,
+        season_number: i32,
+        season: &TmdbTvSeasonDetails,
+    ) -> Result<(), MetadataProviderError> {
+        let season_items = self
+            .items
+            .children(series_id)
+            .await?
+            .into_iter()
+            .filter(|item| {
+                item.item_type == "Season" && item.index_number == Some(season_number)
+            })
+            .collect::<Vec<_>>();
+        for season_item in season_items {
+            let episodes = self.items.children(season_item.id).await?;
+            for remote in &season.episodes {
+                let Some(mut episode) = episodes
+                    .iter()
+                    .find(|item| item.index_number == Some(remote.episode_number))
+                    .cloned()
+                else {
+                    continue;
+                };
+                if let Some(name) = remote.name.as_deref().filter(|name| !name.is_empty()) {
+                    episode.name = Some(name.to_owned());
+                    episode.sort_name = Some(name.to_owned());
+                }
+                if let Some(overview) = remote.overview.as_deref().filter(|value| !value.is_empty()) {
+                    episode.overview = Some(overview.to_owned());
+                }
+                if let Some(premiere_date) = parse_tmdb_date(remote.air_date.as_deref()) {
+                    episode.premiere_date = Some(premiere_date);
+                }
+                if let Some(runtime) = remote.runtime {
+                    episode.runtime_ticks = Some(i64::from(runtime) * 60 * 10_000_000);
+                }
+                episode.data = Some(episode_data_with_rating(
+                    episode.data.as_ref(),
+                    &remote.id.to_string(),
+                    remote.vote_average,
+                    remote.vote_count,
+                ));
+                self.items.update(episode).await?;
+            }
+        }
         Ok(())
     }
 
@@ -765,6 +847,30 @@ fn movie_extra_data(data: &Option<Value>, details: &TmdbMovieDetails) -> Value {
         "RemoteTrailers".to_owned(),
         json!(trailers(&details.videos)),
     );
+    Value::Object(object)
+}
+
+fn episode_data_with_rating(
+    existing: Option<&Value>,
+    tmdb_id: &str,
+    community_rating: f64,
+    vote_count: i32,
+) -> Value {
+    let mut object = existing
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut provider_ids = object
+        .get("ProviderIds")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    provider_ids.insert("Tmdb".to_owned(), Value::String(tmdb_id.to_owned()));
+    object.insert("ProviderIds".to_owned(), Value::Object(provider_ids));
+    if community_rating > 0.0 {
+        object.insert("CommunityRating".to_owned(), json!(community_rating));
+    }
+    object.insert("VoteCount".to_owned(), json!(vote_count));
     Value::Object(object)
 }
 
@@ -1032,6 +1138,27 @@ pub(crate) struct TmdbTvDetails {
     keywords: TmdbKeywordResults,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+pub(crate) struct TmdbTvSeasonDetails {
+    pub(crate) episodes: Vec<TmdbEpisode>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+pub(crate) struct TmdbEpisode {
+    id: i64,
+    name: Option<String>,
+    overview: Option<String>,
+    air_date: Option<String>,
+    episode_number: i32,
+    season_number: i32,
+    runtime: Option<i32>,
+    still_path: Option<String>,
+    vote_average: f64,
+    vote_count: i32,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct TmdbImages {
@@ -1249,5 +1376,41 @@ mod tests {
         assert_eq!(date.day(), 21);
         assert_eq!(parse_tmdb_date(Some("")), None);
         assert_eq!(parse_tmdb_date(None), None);
+    }
+
+    #[test]
+    fn episode_data_keeps_existing_fields_and_adds_tmdb_rating() {
+        let existing = json!({ "Container": "mkv" });
+        let data = episode_data_with_rating(Some(&existing), "12345", 8.4, 42);
+
+        assert_eq!(data["Container"], "mkv");
+        assert_eq!(data["ProviderIds"]["Tmdb"], "12345");
+        assert_eq!(data["CommunityRating"], 8.4);
+        assert_eq!(data["VoteCount"], 42);
+    }
+
+    #[test]
+    fn tv_season_details_deserialize_episode_fields() {
+        let season: TmdbTvSeasonDetails = serde_json::from_str(
+            r#"{
+                "episodes": [{
+                    "id": 1,
+                    "name": "Pilot",
+                    "overview": "The beginning.",
+                    "air_date": "2026-01-01",
+                    "episode_number": 1,
+                    "season_number": 1,
+                    "runtime": 45,
+                    "vote_average": 7.5,
+                    "vote_count": 10
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(season.episodes.len(), 1);
+        assert_eq!(season.episodes[0].name.as_deref(), Some("Pilot"));
+        assert_eq!(season.episodes[0].episode_number, 1);
+        assert_eq!(season.episodes[0].season_number, 1);
     }
 }

@@ -126,6 +126,24 @@ pub(crate) async fn list(
     Ok(Json(sessions))
 }
 
+pub(crate) async fn all_session_infos(
+    state: &AppState,
+) -> Result<Vec<SessionInfoDto>, ApiError> {
+    let page = state
+        .devices
+        .query(&DeviceQuery {
+            is_active: Some(true),
+            ..DeviceQuery::default()
+        })
+        .await?;
+    let mut sessions = Vec::with_capacity(page.items.len());
+    for device in page.items {
+        let user = state.users.get(device.user_id).await?;
+        sessions.push(session_info(device, user.username, state.server_id()));
+    }
+    Ok(sessions)
+}
+
 pub(crate) async fn authentication_providers(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -221,6 +239,7 @@ pub(crate) async fn report_viewing(
     {
         return Err(ApiError::SessionNotFound);
     }
+    crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -365,6 +384,7 @@ pub(crate) async fn add_user_to_session(
     {
         return Err(ApiError::SessionNotFound);
     }
+    crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -388,6 +408,7 @@ pub(crate) async fn remove_user_from_session(
     {
         return Err(ApiError::SessionNotFound);
     }
+    crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -408,6 +429,7 @@ pub(crate) async fn post_capabilities(
         ..ClientCapabilitiesDto::default()
     };
     persist_capabilities(&state, access_token, capabilities).await?;
+    crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -423,6 +445,7 @@ pub(crate) async fn post_full_capabilities(
     let Json(capabilities) = request.map_err(|_| ApiError::InvalidRequest)?;
     let access_token = current_session_access_token(&identity, query.id.as_deref())?;
     persist_capabilities(&state, access_token, capabilities).await?;
+    crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
