@@ -184,7 +184,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, tmdb_api_key,
+                enable_remote_access, server_id, tmdb_api_key,
                 row_version, created_at, updated_at
             ",
             [
@@ -220,7 +220,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, tmdb_api_key,
+                enable_remote_access, server_id, tmdb_api_key,
                 row_version, created_at, updated_at
             ",
             [allow_client_log_upload.into()],
@@ -291,7 +291,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, tmdb_api_key,
+                enable_remote_access, server_id, tmdb_api_key,
                 row_version, created_at, updated_at
             ",
             [enable_remote_access.into()],
@@ -326,7 +326,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, tmdb_api_key,
+                enable_remote_access, server_id, tmdb_api_key,
                 row_version, created_at, updated_at
             ",
             [plugin_repositories.into()],
@@ -377,7 +377,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, tmdb_api_key,
+                enable_remote_access, server_id, tmdb_api_key,
                 row_version, created_at, updated_at
             ",
             [

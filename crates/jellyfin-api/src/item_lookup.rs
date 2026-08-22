@@ -37,16 +37,16 @@ pub(crate) async fn remote_search(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    Path(kind): Path<String>,
     request: Result<Json<RemoteSearchRequest>, JsonRejection>,
 ) -> Result<Json<Vec<RemoteSearchResult>>, ApiError> {
     authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let kind = remote_search_kind(&uri);
     let api_key = state.tmdb_api_key.read().await.clone();
     Ok(Json(
         state
             .item_lookup
-            .remote_search(&kind, request, &api_key)
+            .remote_search(kind, request, &api_key)
             .await?,
     ))
 }
@@ -55,20 +55,27 @@ pub(crate) async fn remote_search_elevated(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    Path(kind): Path<String>,
     request: Result<Json<RemoteSearchRequest>, JsonRejection>,
 ) -> Result<Json<Vec<RemoteSearchResult>>, ApiError> {
     authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let kind = remote_search_kind(&uri);
     let api_key = state.tmdb_api_key.read().await.clone();
     Ok(Json(
         state
             .item_lookup
-            .remote_search(&kind, request, &api_key)
+            .remote_search(kind, request, &api_key)
             .await?,
     ))
+}
+
+fn remote_search_kind(uri: &axum::http::Uri) -> &str {
+    uri.path()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
 }
 
 pub(crate) async fn apply_remote_search(

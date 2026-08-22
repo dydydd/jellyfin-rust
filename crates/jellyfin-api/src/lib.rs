@@ -784,8 +784,8 @@ fn environment_routes() -> Router<Arc<AppState>> {
 
 fn localization_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/Localization/cultures", get(localization::cultures))
-        .route("/Localization/countries", get(localization::countries))
+        .route("/Localization/Cultures", get(localization::cultures))
+        .route("/Localization/Countries", get(localization::countries))
         .route(
             "/Localization/ParentalRatings",
             get(localization::parental_ratings),

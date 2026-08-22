@@ -1241,7 +1241,7 @@ impl BaseItemRepository {
                         episode.index_number AS episode_number, \
                         episode.sort_name, \
                         EXISTS (SELECT 1 FROM watched WHERE watched.item_id = episode.id AND watched.played) AS is_watched, \
-                        EXISTS (SELECT 1 FROM watched WHERE watched.item_id = episode.id AND watched.played = false) AS is_unwatched \
+                        NOT EXISTS (SELECT 1 FROM watched WHERE watched.item_id = episode.id AND watched.played) AS is_unwatched \
                  FROM jellyfin.base_items AS episode \
                  WHERE episode.item_type = 'Episode' \
                    AND episode.is_virtual_item = false \
