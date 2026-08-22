@@ -559,6 +559,20 @@ async fn test_session_command_outbox(database: &DatabaseConnection) {
         .await
         .expect("session command lookup must succeed");
     assert_eq!(commands, vec![command.clone()]);
+    assert_eq!(
+        repository
+            .delete(&[command.id])
+            .await
+            .expect("session command deletion must succeed"),
+        1
+    );
+    assert!(
+        repository
+            .list_for_session(&command.target_session_id)
+            .await
+            .expect("session command lookup must succeed")
+            .is_empty()
+    );
 
     let error = repository
         .enqueue(NewSessionCommand {

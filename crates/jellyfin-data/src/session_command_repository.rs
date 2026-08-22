@@ -79,6 +79,22 @@ impl SessionCommandRepository {
             .all(&self.database)
             .await?)
     }
+
+    /// Removes delivered commands from the outbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when deletion fails.
+    pub async fn delete(&self, ids: &[Uuid]) -> Result<u64, SessionCommandStoreError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        Ok(session_command::Entity::delete_many()
+            .filter(session_command::Column::Id.is_in(ids.iter().copied()))
+            .exec(&self.database)
+            .await?
+            .rows_affected)
+    }
 }
 
 fn validate_command(command: &NewSessionCommand) -> Result<(), SessionCommandStoreError> {

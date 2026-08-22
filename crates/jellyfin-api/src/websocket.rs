@@ -58,12 +58,7 @@ impl WebSocketHub {
         let Ok(data) = serde_json::to_value(data) else {
             return;
         };
-        let message = json!({
-            "MessageType": message_type,
-            "MessageId": Uuid::new_v4().simple().to_string(),
-            "Data": data
-        })
-        .to_string();
+        let message = websocket_message(message_type, &data);
         let sessions = self.sessions.read().await;
         for session_id in session_ids {
             if let Some(sender) = sessions.get(session_id) {
@@ -71,6 +66,32 @@ impl WebSocketHub {
             }
         }
     }
+
+    pub(crate) async fn send_command(
+        &self,
+        session_id: &str,
+        message_type: &str,
+        data: &serde_json::Value,
+    ) -> bool {
+        let message = websocket_message(message_type, data);
+        let sessions = self.sessions.read().await;
+        let Some(sender) = sessions.get(session_id) else {
+            return false;
+        };
+        if sender.receiver_count() == 0 {
+            return false;
+        }
+        sender.send(message).is_ok()
+    }
+}
+
+fn websocket_message(message_type: &str, data: &serde_json::Value) -> String {
+    json!({
+        "MessageType": message_type,
+        "MessageId": Uuid::new_v4().simple().to_string(),
+        "Data": data
+    })
+    .to_string()
 }
 
 pub(crate) async fn connect(
@@ -93,6 +114,11 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
     let mut outbound = state.web_sockets.subscribe(&session_id).await;
     state.sync_play.websocket_connected(&session_id).await;
     if send_force_keep_alive(&mut socket).await.is_err() {
+        drop(outbound);
+        disconnect(&state, &session_id).await;
+        return;
+    }
+    if !drain_session_commands(&mut socket, &state, &session_id).await {
         drop(outbound);
         disconnect(&state, &session_id).await;
         return;
@@ -153,6 +179,27 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
     }
     drop(outbound);
     disconnect(&state, &session_id).await;
+}
+
+async fn drain_session_commands(
+    socket: &mut axum::extract::ws::WebSocket,
+    state: &AppState,
+    session_id: &str,
+) -> bool {
+    let Ok(commands) = state.session_commands.list_for_session(session_id).await else {
+        return true;
+    };
+    if commands.is_empty() {
+        return true;
+    }
+    for command in commands {
+        let message = websocket_message(&command.message_type, &command.payload);
+        if socket.send(Message::Text(message.into())).await.is_err() {
+            return false;
+        }
+        let _ = state.session_commands.delete(&[command.id]).await;
+    }
+    true
 }
 
 async fn disconnect(state: &AppState, session_id: &str) {

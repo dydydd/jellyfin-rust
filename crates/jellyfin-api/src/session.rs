@@ -502,7 +502,7 @@ where
     T: Serialize,
 {
     find_active_session(state, target_session_id).await?;
-    state
+    let queued = state
         .session_commands
         .enqueue(NewSessionCommand {
             target_session_id: target_session_id.to_owned(),
@@ -514,6 +514,14 @@ where
             payload: serde_json::to_value(payload).map_err(|_| ApiError::Internal)?,
         })
         .await?;
+    // Deliver immediately when connected; otherwise the row stays for replay.
+    if state
+        .web_sockets
+        .send_command(target_session_id, message_type, &queued.payload)
+        .await
+    {
+        let _ = state.session_commands.delete(&[queued.id]).await;
+    }
     Ok(())
 }
 

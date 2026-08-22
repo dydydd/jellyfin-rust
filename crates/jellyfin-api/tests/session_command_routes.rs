@@ -3,6 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
+use futures_util::StreamExt;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
@@ -28,6 +29,69 @@ async fn session_command_routes_queue_official_commands_in_postgres() {
     enqueue_official_session_commands(&fixture).await;
     assert_queued_commands(&fixture).await;
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn session_command_outbox_is_consumed_over_websocket() {
+    let fixture = Fixture::new().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test WebSocket listener must bind");
+    let address = listener.local_addr().unwrap();
+    let app = fixture.app.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    fixture.post_command("Command/Mute", Body::empty()).await;
+    assert_eq!(queued_command_count(&fixture).await, 1);
+
+    let (mut target_socket, response) = tokio_tungstenite::connect_async(format!(
+        "ws://{address}/websocket?api_key={}",
+        fixture.target_token
+    ))
+    .await
+    .expect("target WebSocket must connect");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(
+        websocket_json(&mut target_socket).await["MessageType"],
+        "ForceKeepAlive"
+    );
+    let replayed_command = websocket_json(&mut target_socket).await;
+    assert_eq!(replayed_command["MessageType"], "GeneralCommand");
+    assert_eq!(replayed_command["Data"]["Name"], "Mute");
+    assert_queued_command_count(&fixture, 0).await;
+
+    fixture.post_command("Command/GoHome", Body::empty()).await;
+    let general_command = websocket_json(&mut target_socket).await;
+    assert_eq!(general_command["MessageType"], "GeneralCommand");
+    assert_eq!(general_command["Data"]["Name"], "GoHome");
+    assert_queued_command_count(&fixture, 0).await;
+
+    fixture
+        .post_command(
+            &format!(
+                "Playing?playCommand=PlayNow&itemIds={}",
+                play_item_ids()[0].simple()
+            ),
+            Body::empty(),
+        )
+        .await;
+    let play_command = websocket_json(&mut target_socket).await;
+    assert_eq!(play_command["MessageType"], "Play");
+    assert_eq!(
+        play_command["Data"]["ItemIds"],
+        json!([play_item_ids()[0].simple().to_string()])
+    );
+
+    fixture.post_command("Playing/Pause", Body::empty()).await;
+    let playstate_command = websocket_json(&mut target_socket).await;
+    assert_eq!(playstate_command["MessageType"], "Playstate");
+    assert_eq!(playstate_command["Data"]["Command"], "Pause");
+    assert_queued_command_count(&fixture, 0).await;
+
+    target_socket.close(None).await.unwrap();
+
+    server.abort();
     fixture.cleanup().await;
 }
 
@@ -271,6 +335,18 @@ async fn assert_queued_commands(fixture: &Fixture) {
     assert_eq!(queued[6].payload["Arguments"]["TimeoutMs"], "1500");
 }
 
+async fn queued_command_count(fixture: &Fixture) -> usize {
+    SessionCommandRepository::new(fixture.database.clone())
+        .list_for_session(&fixture.target_session_id)
+        .await
+        .expect("queued commands must load")
+        .len()
+}
+
+async fn assert_queued_command_count(fixture: &Fixture, expected: usize) {
+    assert_eq!(queued_command_count(fixture).await, expected);
+}
+
 fn assert_queued_play_command(command: &session_command::Model, controlling_user_id: Uuid) {
     let item_ids = play_item_ids();
     assert_eq!(command.payload["PlayCommand"], "PlayNow");
@@ -309,6 +385,7 @@ struct Fixture {
     user_token: String,
     api_key_id: i64,
     api_key_token: String,
+    target_token: String,
     controller_session_id: String,
     target_session_id: String,
 }
@@ -357,6 +434,7 @@ impl Fixture {
             .await
             .expect("API key creation");
         let user_token = controller.access_token.clone();
+        let target_token = target.access_token.clone();
         let controller_session_id =
             jellyfin_session_id(&controller.app_name, &controller.device_id);
         let target_session_id = jellyfin_session_id(&target.app_name, &target.device_id);
@@ -373,6 +451,7 @@ impl Fixture {
             user_token,
             api_key_id: api_key.id,
             api_key_token: api_key.access_token,
+            target_token,
             controller_session_id,
             target_session_id,
         }
@@ -436,6 +515,15 @@ impl Fixture {
             .await
             .expect("user cleanup");
     }
+}
+
+async fn websocket_json(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Value {
+    let message = socket.next().await.unwrap().unwrap();
+    serde_json::from_str(message.to_text().unwrap()).unwrap()
 }
 
 fn json_body(value: &Value) -> Body {
