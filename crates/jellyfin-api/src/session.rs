@@ -9,7 +9,9 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use chrono::{Duration, Utc};
-use jellyfin_data::{BaseItemRepository, DeviceQuery, NewSessionCommand, entities::device};
+use jellyfin_data::{
+    BaseItemRepository, DeviceQuery, NewActivityLog, NewSessionCommand, entities::device,
+};
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     NameIdPair, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
@@ -464,6 +466,19 @@ pub(crate) async fn logout(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    if let authentication::AuthenticatedIdentity::Device(session) = &identity {
+        authentication::log_activity(
+            &state,
+            NewActivityLog::new(
+                format!(
+                    "{} is offline from {}",
+                    session.user.username, session.device.device_name
+                ),
+                "SessionEnded",
+                session.user.id,
+            ),
+        );
+    }
     state
         .devices
         .delete_by_token(identity.access_token())

@@ -354,6 +354,8 @@ async fn assert_server_configuration_update(
         json!([320, 640])
     );
     assert_eq!(updated.tmdb_api_key, "tmdb-test-key");
+    assert!(updated.quick_connect_available);
+    assert_eq!(updated.omdb_api_key, "omdb-test-key");
     assert_eq!(updated.created_at, before.created_at);
     assert!(updated.row_version > before.row_version);
     assert_eq!(second.load().await.expect("reloaded full update"), updated);
@@ -424,6 +426,8 @@ fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
             "ProcessThreads": 2
         }),
         tmdb_api_key: "tmdb-test-key".to_owned(),
+        quick_connect_available: true,
+        omdb_api_key: "omdb-test-key".to_owned(),
     }
 }
 
@@ -474,6 +478,7 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
     assert_remote_access_schema(database).await;
     assert_plugin_repositories_schema(database).await;
     assert_trickplay_configuration_schema(database).await;
+    assert_provider_configuration_schema(database).await;
 
     let row = database
         .query_one(Statement::from_string(
@@ -516,6 +521,45 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("plugin-repositories constraint catalog query")
         .expect("plugin-repositories constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_provider_configuration_schema(database: &sea_orm::DatabaseConnection) {
+    let columns = database
+        .query_all(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT column_name, data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name IN ('quick_connect_available', 'omdb_api_key')"
+                .to_owned(),
+        ))
+        .await
+        .expect("provider configuration column catalog query")
+        .into_iter()
+        .map(|row| {
+            (
+                String::try_get(&row, "", "column_name").unwrap(),
+                (
+                    String::try_get(&row, "", "data_type").unwrap(),
+                    String::try_get(&row, "", "is_nullable").unwrap(),
+                    String::try_get(&row, "", "column_default").unwrap(),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        columns["quick_connect_available"],
+        ("boolean".to_owned(), "NO".to_owned(), "true".to_owned())
+    );
+    assert_eq!(
+        columns["omdb_api_key"],
+        (
+            "text".to_owned(),
+            "NO".to_owned(),
+            "'2c9d9507'::text".to_owned()
+        )
+    );
 }
 
 async fn assert_remote_access_schema(database: &sea_orm::DatabaseConnection) {

@@ -4,7 +4,9 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{DatabaseConfig, DeviceQuery, DeviceRepository};
+use jellyfin_data::{
+    ActivityLogQuery, ActivityLogRepository, DatabaseConfig, DeviceQuery, DeviceRepository,
+};
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use sea_orm::ConnectionTrait;
 use serde_json::Value;
@@ -102,6 +104,8 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    let failed = users.get(user.id).await.expect("failed login user reload");
+    assert_eq!(failed.policy["InvalidLoginAttemptCount"], 1);
     assert_eq!(
         devices
             .query(&DeviceQuery {
@@ -136,6 +140,26 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
         .expect("access token")
         .to_owned();
     assert!(!access_token.is_empty());
+    let succeeded = users.get(user.id).await.expect("successful login user reload");
+    assert_eq!(succeeded.policy["InvalidLoginAttemptCount"], 0);
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let logs = ActivityLogRepository::new(database.clone())
+        .query(&ActivityLogQuery::default())
+        .await
+        .expect("activity log query");
+    assert!(logs
+        .items
+        .iter()
+        .any(|entry| entry.activity_type == "AuthenticationFailed"));
+    assert!(logs
+        .items
+        .iter()
+        .any(|entry| entry.activity_type == "AuthenticationSucceeded"));
+    assert!(logs
+        .items
+        .iter()
+        .any(|entry| entry.activity_type == "SessionStarted"));
 
     assert_eq!(
         devices

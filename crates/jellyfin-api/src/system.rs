@@ -17,7 +17,7 @@ use jellyfin_model::{
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 
-use crate::{ApiError, AppState, authentication, authorization, startup};
+use crate::{ApiError, AppState, SystemCommand, authentication, authorization, startup};
 
 const STREAM_BUFFER_SIZE: usize = 64 * 1024;
 const TEXT_UTF8: HeaderValue = HeaderValue::from_static("text/plain; charset=utf-8");
@@ -183,6 +183,7 @@ pub(crate) async fn restart(
         request.extensions().get::<ConnectInfo<SocketAddr>>(),
     )
     .await?;
+    (state.system_command)(SystemCommand::Restart);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -192,6 +193,7 @@ pub(crate) async fn shutdown(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
+    (state.system_command)(SystemCommand::Shutdown);
     Ok(StatusCode::NO_CONTENT)
 }
 

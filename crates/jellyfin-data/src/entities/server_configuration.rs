@@ -27,6 +27,8 @@ pub struct Model {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub tmdb_api_key: String,
+    pub quick_connect_available: bool,
+    pub omdb_api_key: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -9,7 +9,10 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{HydratedBaseItem, ItemTypeRegistry, LocalizationService, UserError, UserService};
+use crate::{
+    HydratedBaseItem, ItemTypeRegistry, LocalizationService, LyricManager, LyricProvider,
+    LyricSearchRequest, UserError, UserService,
+};
 
 #[derive(Debug, Error)]
 pub enum UserLibraryError {
@@ -46,6 +49,7 @@ pub struct UserLibraryService {
     items: BaseItemRepository,
     item_types: ItemTypeRegistry,
     localization: LocalizationService,
+    lyrics: LyricManager,
 }
 
 impl UserLibraryService {
@@ -64,7 +68,18 @@ impl UserLibraryService {
             items: BaseItemRepository::new(database),
             item_types,
             localization: LocalizationService,
+            lyrics: LyricManager::default(),
         }
+    }
+
+    /// Replaces the remote lyric providers used by search and download.
+    #[must_use]
+    pub fn with_lyric_providers(
+        mut self,
+        providers: Vec<std::sync::Arc<dyn LyricProvider>>,
+    ) -> Self {
+        self.lyrics = LyricManager::new(providers);
+        self
     }
 
     /// Ensures that server initialization has exactly one stable user root.
@@ -293,9 +308,6 @@ impl UserLibraryService {
 
     /// Searches configured remote lyric providers for an audio item.
     ///
-    /// No remote lyric providers are wired yet, so validated requests return
-    /// the official empty result shape.
-    ///
     /// # Errors
     ///
     /// Returns not-found when the item is missing or is not an audio item.
@@ -311,13 +323,22 @@ impl UserLibraryService {
         if !item.item_type.eq_ignore_ascii_case("Audio") {
             return Err(UserLibraryError::ItemNotFound);
         }
-        Ok(Vec::new())
+        let request = LyricSearchRequest {
+            song_name: item.name.clone(),
+            album_name: metadata_string(item.data.as_ref(), &["Album"]),
+            artist_names: metadata_string_list(item.data.as_ref(), &["Artists"]),
+            album_artist_names: metadata_string_list(item.data.as_ref(), &["AlbumArtists"]),
+            duration_ticks: item.runtime_ticks,
+        };
+        Ok(self
+            .lyrics
+            .search(&request)
+            .into_iter()
+            .filter_map(|result| serde_json::to_value(result).ok())
+            .collect())
     }
 
-    /// Downloads a lyric from a configured remote provider.
-    ///
-    /// No remote lyric providers are wired yet, so validated requests return
-    /// [`UserLibraryError::LyricsNotFound`].
+    /// Downloads a lyric from a configured remote provider and stores it.
     ///
     /// # Errors
     ///
@@ -328,15 +349,57 @@ impl UserLibraryService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
-        _lyric_id: &str,
+        lyric_id: &str,
     ) -> Result<Value, UserLibraryError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let item = self.load_item(item_id).await?;
+        let mut item = self.load_item(item_id).await?;
         if !item.item_type.eq_ignore_ascii_case("Audio") {
             return Err(UserLibraryError::ItemNotFound);
         }
-        Err(UserLibraryError::LyricsNotFound)
+        let Some(lyric_file) = self.lyrics.get_lyrics(lyric_id) else {
+            return Err(UserLibraryError::LyricsNotFound);
+        };
+        let Some(format) = lyric_file
+            .name
+            .rsplit_once('.')
+            .map(|(_, extension)| extension)
+        else {
+            return Err(UserLibraryError::LyricsNotFound);
+        };
+        let Some(lyrics) = LyricManager::parse_lyrics(format, &lyric_file.content) else {
+            return Err(UserLibraryError::LyricsNotFound);
+        };
+        if !matches!(item.data, Some(Value::Object(_))) {
+            item.data = Some(Value::Object(Default::default()));
+        }
+        if let Some(Value::Object(object)) = item.data.as_mut() {
+            object.insert("Lyrics".to_owned(), lyrics.clone());
+            object.remove("lyrics");
+        }
+        self.items.update(item).await?;
+        Ok(lyrics)
+    }
+
+    /// Returns parsed remote lyrics without attaching them to the item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserLibraryError::LyricsNotFound`] when no provider can
+    /// resolve `lyric_id` or the payload cannot be parsed.
+    pub async fn get_remote_lyrics(&self, lyric_id: &str) -> Result<Value, UserLibraryError> {
+        let Some(lyric_file) = self.lyrics.get_lyrics(lyric_id) else {
+            return Err(UserLibraryError::LyricsNotFound);
+        };
+        let Some(format) = lyric_file
+            .name
+            .rsplit_once('.')
+            .map(|(_, extension)| extension)
+        else {
+            return Err(UserLibraryError::LyricsNotFound);
+        };
+        LyricManager::parse_lyrics(format, &lyric_file.content)
+            .ok_or(UserLibraryError::LyricsNotFound)
     }
 
     /// Saves parsed lyric metadata on an audio item.
@@ -523,6 +586,26 @@ fn additional_part_paths(data: Option<&Value>) -> Vec<String> {
 fn metadata_value<'a>(data: Option<&'a Value>, keys: &[&str]) -> Option<&'a Value> {
     let object = data?.as_object()?;
     keys.iter().find_map(|key| object.get(*key))
+}
+
+fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
+    metadata_value(data, keys)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn metadata_string_list(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
+    match metadata_value(data, keys) {
+        Some(Value::String(value)) if !value.is_empty() => vec![value.clone()],
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

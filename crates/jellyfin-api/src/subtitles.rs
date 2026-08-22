@@ -15,6 +15,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
 use jellyfin_data::{BaseItemError, BaseItemRepository, NamedConfigurationStoreError};
+use jellyfin_controller::SubtitleSearchRequest;
 use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -266,17 +267,19 @@ pub(crate) async fn search_remote_subtitles(
     if !authenticated.can_manage_subtitles() {
         return Err(ApiError::Forbidden);
     }
-    ensure_video_item(&state, &authenticated.user, item_id).await?;
-
-    // Remote subtitle providers are not wired yet. The query is parsed so the
-    // route keeps Jellyfin's official parameter surface while returning the
-    // empty provider aggregate clients expect on an installation without
-    // subtitle providers.
-    let RemoteSubtitleSearchQuery {
-        is_perfect_match: _is_perfect_match,
-    } = query;
-    let _language = language;
-    Ok(Json(Vec::new()))
+    let item = ensure_video_item(&state, &authenticated.user, item_id).await?;
+    let request = SubtitleSearchRequest {
+        language,
+        is_perfect_match: query.is_perfect_match.unwrap_or(false),
+        name: item.name,
+        series_name: None,
+        index_number: item.index_number,
+        parent_index_number: item.parent_index_number,
+        production_year: item.production_year,
+        media_type: item.item_type,
+    };
+    let results = state.subtitles.search(&request);
+    Ok(Json(results))
 }
 
 pub(crate) async fn download_remote_subtitles(
@@ -290,23 +293,25 @@ pub(crate) async fn download_remote_subtitles(
     }
     ensure_video_item(&state, &authenticated.user, item_id).await?;
 
-    // Jellyfin logs provider download failures and still returns NoContent.
-    // With no providers registered there is nothing to persist or refresh yet.
-    let _subtitle_id = subtitle_id;
+    let _response = state.subtitles.get_subtitles(&subtitle_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn get_remote_subtitles(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    AxumPath(_subtitle_id): AxumPath<String>,
+    AxumPath(subtitle_id): AxumPath<String>,
 ) -> Result<Response, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     if !authenticated.can_manage_subtitles() {
         return Err(ApiError::Forbidden);
     }
 
-    Ok(StatusCode::NOT_FOUND.into_response())
+    if state.subtitles.get_subtitles(&subtitle_id).is_some() {
+        Ok(StatusCode::OK.into_response())
+    } else {
+        Ok(StatusCode::NOT_FOUND.into_response())
+    }
 }
 
 pub(crate) async fn fallback_fonts(

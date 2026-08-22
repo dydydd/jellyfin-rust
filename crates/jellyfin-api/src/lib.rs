@@ -17,10 +17,11 @@ use jellyfin_controller::{
     MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
     PersonError, PersonService, PlaylistError, PlaylistService, PlaystateError, PlaystateService,
     PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
-    SystemLogError, SystemLogService, SystemStorageService, TranscodeJobRegistry, TrickplayError,
-    TrickplayService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
-    UserLibraryService, UserService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
+    SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
+    TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -108,6 +109,13 @@ mod years;
 
 pub use branding::BrandingOptions;
 
+/// Host lifecycle commands exposed by the system API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SystemCommand {
+    Restart,
+    Shutdown,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) users: UserService,
@@ -121,6 +129,7 @@ pub struct AppState {
     pub(crate) web_sockets: Arc<websocket::WebSocketHub>,
     pub(crate) quick_connect:
         QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
+    pub(crate) quick_connect_capability: SystemQuickConnectCapability,
     pub(crate) playstate: PlaystateService,
     pub(crate) playlists: PlaylistService,
     pub(crate) collections: CollectionService,
@@ -142,6 +151,7 @@ pub struct AppState {
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) media_attachments: MediaAttachmentService,
     pub(crate) media_streams: MediaStreamService,
+    pub(crate) subtitles: SubtitleManager,
     pub(crate) videos: VideoService,
     pub(crate) years: YearService,
     pub(crate) tuner_hosts: TunerHostManager,
@@ -173,6 +183,8 @@ pub struct AppState {
     pub(crate) startup_repository: Option<ServerConfigurationRepository>,
     pub(crate) database: DatabaseConnection,
     pub(crate) tmdb_api_key: Arc<tokio::sync::RwLock<String>>,
+    pub(crate) omdb_api_key: Arc<tokio::sync::RwLock<String>>,
+    pub(crate) system_command: Arc<dyn Fn(SystemCommand) + Send + Sync>,
 }
 
 impl AppState {
@@ -181,6 +193,7 @@ impl AppState {
         let scheduled_tasks = ScheduledTaskService::with_default_executors(library_scan.clone());
         let item_images = ItemImageService::new(database.clone());
         let web_sockets = Arc::new(websocket::WebSocketHub::new());
+        let quick_connect_capability = SystemQuickConnectCapability::new(true);
         let state = Self {
             users: UserService::new(database.clone()),
             activity_logs: ActivityLogRepository::new(database.clone()),
@@ -193,8 +206,9 @@ impl AppState {
             web_sockets: web_sockets.clone(),
             quick_connect: QuickConnectManager::new(
                 QuickConnectRepository::new(database.clone()),
-                SystemQuickConnectCapability::new(true),
+                quick_connect_capability.clone(),
             ),
+            quick_connect_capability,
             playstate: PlaystateService::new(database.clone()),
             playlists: PlaylistService::new(database.clone()),
             collections: CollectionService::new(database.clone()),
@@ -222,6 +236,7 @@ impl AppState {
             library_controller: LibraryControllerService::new(database.clone()),
             media_attachments: MediaAttachmentService::new(database.clone()),
             media_streams: MediaStreamService::new(database.clone()),
+            subtitles: SubtitleManager::default(),
             videos: VideoService::new(database.clone()),
             years: YearService::new(database.clone()),
             tuner_hosts: TunerHostManager::new(database.clone()),
@@ -273,6 +288,8 @@ impl AppState {
             startup_repository: None,
             database,
             tmdb_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
+            omdb_api_key: Arc::new(tokio::sync::RwLock::new("2c9d9507".to_owned())),
+            system_command: Arc::new(|_| {}),
         };
         state.scheduled_tasks.add_change_listener(Arc::new(move || {
             let tasks = scheduled_tasks.clone();
@@ -315,6 +332,53 @@ impl AppState {
     #[must_use]
     pub fn with_tmdb_api_key(mut self, api_key: impl Into<String>) -> Self {
         self.tmdb_api_key = Arc::new(tokio::sync::RwLock::new(api_key.into()));
+        self
+    }
+
+    /// Replaces the OMDb API key used by metadata providers.
+    #[must_use]
+    pub fn with_omdb_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.omdb_api_key = Arc::new(tokio::sync::RwLock::new(api_key.into()));
+        self
+    }
+
+    /// Replaces the Quick Connect availability used by authentication.
+    #[must_use]
+    pub fn with_quick_connect_available(self, available: bool) -> Self {
+        self.quick_connect_capability.set_enabled(available);
+        self
+    }
+
+    /// Replaces the remote subtitle providers exposed by the subtitle API.
+    #[must_use]
+    pub fn with_subtitle_providers(
+        mut self,
+        providers: Vec<Arc<dyn SubtitleProvider>>,
+    ) -> Self {
+        self.subtitles = SubtitleManager::new(providers);
+        self
+    }
+
+    /// Replaces the remote lyric providers exposed by the lyrics API.
+    #[must_use]
+    pub fn with_lyric_providers(
+        mut self,
+        providers: Vec<Arc<dyn jellyfin_controller::LyricProvider>>,
+    ) -> Self {
+        self.user_library = self.user_library.with_lyric_providers(providers);
+        self
+    }
+
+    /// Replaces the handler invoked by `/System/Restart` and `/System/Shutdown`.
+    ///
+    /// Route tests default to a no-op handler so they never terminate the test
+    /// process. The server binary replaces it with the real host command.
+    #[must_use]
+    pub fn with_system_commands(
+        mut self,
+        command: impl Fn(SystemCommand) + Send + Sync + 'static,
+    ) -> Self {
+        self.system_command = Arc::new(command);
         self
     }
 
@@ -439,6 +503,33 @@ impl AppState {
         self.ffmpeg_path = ffmpeg_path.into();
         self.library_scan
             .set_ffmpeg_path(self.ffmpeg_path.clone());
+        self
+    }
+
+    /// Starts the filesystem watcher over all configured library locations.
+    ///
+    /// The watcher is intentionally best-effort: an empty or unreadable folder
+    /// list leaves the server running and only emits a warning.
+    pub async fn start_library_watcher(self) -> Self {
+        let paths = match self.virtual_folders.list().await {
+            Ok(folders) => folders
+                .into_iter()
+                .flat_map(|folder| folder.locations.into_iter().map(PathBuf::from))
+                .collect(),
+            Err(error) => {
+                tracing::warn!(%error, "cannot list libraries for the watcher");
+                Vec::new()
+            }
+        };
+        if let Err(error) = jellyfin_controller::library_watcher::LibraryWatcher::new(
+            self.library_scan.clone(),
+            self.virtual_folders.clone(),
+            paths,
+        )
+        .start()
+        {
+            tracing::error!(%error, "library watcher failed to start");
+        }
         self
     }
 

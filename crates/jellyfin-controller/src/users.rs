@@ -458,6 +458,12 @@ impl UserService {
         authenticated_user: &user::Model,
     ) -> Result<user::Model, UserError> {
         let now = Utc::now();
+        let mut policy: UserPolicy =
+            serde_json::from_value(authenticated_user.policy.clone())
+                .map_err(UserError::PolicySerialization)?;
+        policy.invalid_login_attempt_count = 0;
+        let policy =
+            serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
         let result = user::Entity::update_many()
             .col_expr(
                 user::Column::PasswordHash,
@@ -465,6 +471,7 @@ impl UserService {
             )
             .col_expr(user::Column::LastLoginDate, Expr::value(now))
             .col_expr(user::Column::LastActivityDate, Expr::value(now))
+            .col_expr(user::Column::Policy, Expr::value(policy))
             .filter(user::Column::Id.eq(authenticated_user.id))
             .exec(&self.database)
             .await?;
@@ -472,6 +479,49 @@ impl UserService {
             return Err(UserError::NotFound);
         }
         self.get(authenticated_user.id).await
+    }
+
+    /// Persists one failed local authentication attempt and applies Jellyfin's
+    /// lockout policy when the configured threshold is reached.
+    ///
+    /// Administrator accounts are not disabled by the lockout path because
+    /// this port preserves the last-administrator invariant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UserError::NotFound`] when the user disappeared, or a
+    /// serialization or database error when the update fails.
+    pub async fn record_failed_authentication(
+        &self,
+        id: Uuid,
+    ) -> Result<user::Model, UserError> {
+        let transaction = self.database.begin().await?;
+        let target = user::Entity::find_by_id(id)
+            .lock_exclusive()
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+        let mut policy: UserPolicy =
+            serde_json::from_value(target.policy.clone()).map_err(UserError::PolicySerialization)?;
+        let attempts = policy.invalid_login_attempt_count.saturating_add(1);
+        policy.invalid_login_attempt_count = attempts;
+        let lockout = policy.login_attempts_before_lockout > 0
+            && attempts >= policy.login_attempts_before_lockout;
+        let is_disabled = if lockout && !target.is_administrator {
+            policy.is_disabled = true;
+            true
+        } else {
+            target.is_disabled
+        };
+        let policy = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+        user::Entity::update_many()
+            .col_expr(user::Column::Policy, Expr::value(policy))
+            .col_expr(user::Column::IsDisabled, Expr::value(is_disabled))
+            .filter(user::Column::Id.eq(id))
+            .exec(&transaction)
+            .await?;
+        transaction.commit().await?;
+        self.get(id).await
     }
 
     /// Renames a user while preserving case-insensitive uniqueness.

@@ -8,7 +8,7 @@ use axum::{
 use jellyfin_controller::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, parse_date_played,
 };
-use jellyfin_data::BaseItemRepository;
+use jellyfin_data::{BaseItemRepository, NewActivityLog};
 use jellyfin_model::{PlayMethod, PlaybackOrder, PlayerStateInfo, RepeatMode, UserItemDataDto};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     ApiError, AppState,
-    authentication::{AuthenticatedIdentity, AuthenticatedSession},
+    authentication::{self, AuthenticatedIdentity, AuthenticatedSession},
     authorization, user_library,
 };
 
@@ -449,12 +449,14 @@ async fn record_device_playback_start(
     session: &AuthenticatedSession,
     info: PlaybackStartInfo,
 ) -> Result<(), ApiError> {
+    let item_id = info.item_id;
     let update = PlaybackStartUpdate::from(info.clone());
     state
         .playstate
         .report_playback_start(&session.user, update)
         .await?;
     persist_session_playback_state(state, session, info).await?;
+    log_playback_activity(state, session, item_id, "start").await;
     Ok(())
 }
 
@@ -463,6 +465,7 @@ async fn record_device_playback_stop(
     session: &AuthenticatedSession,
     info: PlaybackStopInfo,
 ) -> Result<(), ApiError> {
+    let item_id = info.item_id;
     let update = PlaybackStopUpdate::from(info);
     state
         .playstate
@@ -472,7 +475,51 @@ async fn record_device_playback_stop(
         .devices
         .clear_playback_state(session.device.id)
         .await?;
+    log_playback_activity(state, session, item_id, "stop").await;
     Ok(())
+}
+
+async fn log_playback_activity(
+    state: &AppState,
+    session: &AuthenticatedSession,
+    item_id: Uuid,
+    action: &str,
+) {
+    let Ok(Some(item)) = BaseItemRepository::new(state.database.clone())
+        .get(item_id)
+        .await
+    else {
+        return;
+    };
+    let activity_type = match action {
+        "start" => match item.media_type.as_deref() {
+            Some(media_type) if media_type.eq_ignore_ascii_case("Audio") => "AudioPlayback",
+            Some(media_type) if media_type.eq_ignore_ascii_case("Video") => "VideoPlayback",
+            _ => "Playback",
+        },
+        _ => match item.media_type.as_deref() {
+            Some(media_type) if media_type.eq_ignore_ascii_case("Audio") => {
+                "AudioPlaybackStopped"
+            }
+            Some(media_type) if media_type.eq_ignore_ascii_case("Video") => {
+                "VideoPlaybackStopped"
+            }
+            _ => "PlaybackStopped",
+        },
+    };
+    let name = item.name.as_deref().unwrap_or("Unknown");
+    let mut entry = NewActivityLog::new(
+        format!(
+            "{} {} playing {}",
+            session.user.username,
+            if action == "start" { "started" } else { "stopped" },
+            name
+        ),
+        activity_type,
+        session.user.id,
+    );
+    entry.item_id = Some(item.id.simple().to_string());
+    authentication::log_activity(state, entry);
 }
 
 async fn persist_session_playback_state<T>(

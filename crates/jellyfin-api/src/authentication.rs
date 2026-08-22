@@ -7,8 +7,8 @@ use axum::{
 };
 use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike, Utc, Weekday};
 use jellyfin_data::{
-    NewDevice,
-    entities::{api_key, device, user},
+    NewActivityLog, NewDevice,
+    entities::{activity_log::LogSeverity, api_key, device, user},
 };
 use jellyfin_model::{DynamicDayOfWeek, SyncPlayUserAccessType, UserPolicy};
 use percent_encoding::percent_decode_str;
@@ -85,7 +85,20 @@ async fn authenticate_username_password(
         .users
         .get_by_name(&username)
         .await?
-        .ok_or(ApiError::Unauthorized)?;
+        .ok_or_else(|| {
+            log_activity(
+                state,
+                NewActivityLog {
+                    log_severity: LogSeverity::Error,
+                    ..NewActivityLog::new(
+                        format!("Failed login attempt for {username}"),
+                        "AuthenticationFailed",
+                        Uuid::nil(),
+                    )
+                },
+            );
+            ApiError::Unauthorized
+        })?;
     if user.is_disabled {
         return Err(ApiError::Forbidden);
     }
@@ -97,12 +110,32 @@ async fn authenticate_username_password(
     }
     let authentication = state.authentication;
     let username_for_authentication = username.clone();
-    let user = tokio::task::spawn_blocking(move || {
+    let user_id = user.id;
+    let authenticated = tokio::task::spawn_blocking(move || {
         authentication.authenticate(&username_for_authentication, &password, Some(&mut user))?;
         Ok::<_, jellyfin_server_implementations::AuthenticationError>(user)
     })
     .await
-    .map_err(|_| ApiError::Internal)??;
+    .map_err(|_| ApiError::Internal)?;
+    let user = match authenticated {
+        Ok(user) => user,
+        Err(jellyfin_server_implementations::AuthenticationError::InvalidCredentials) => {
+            let _ = state.users.record_failed_authentication(user_id).await;
+            log_activity(
+                state,
+                NewActivityLog {
+                    log_severity: LogSeverity::Error,
+                    ..NewActivityLog::new(
+                        format!("Failed login attempt for {username}"),
+                        "AuthenticationFailed",
+                        user_id,
+                    )
+                },
+            );
+            return Err(ApiError::Unauthorized);
+        }
+        Err(error) => return Err(error.into()),
+    };
     let policy = stored_user_policy(&user)?;
     if !is_parental_schedule_allowed(&policy, Local::now().fixed_offset()) {
         return Err(ApiError::Forbidden);
@@ -118,10 +151,35 @@ async fn authenticate_username_password(
             &client.device_id,
         ))
         .await?;
+    log_activity(
+        state,
+        NewActivityLog::new(
+            format!("Authentication succeeded for {username}"),
+            "AuthenticationSucceeded",
+            user.id,
+        ),
+    );
+    log_activity(
+        state,
+        NewActivityLog::new(
+            format!("{username} is online from {}", client.device),
+            "SessionStarted",
+            user.id,
+        ),
+    );
 
     Ok(Json(authentication_result_from_device(
         state, &user, session,
     )))
+}
+
+pub(crate) fn log_activity(state: &AppState, entry: NewActivityLog) {
+    let repository = state.activity_logs.clone();
+    tokio::spawn(async move {
+        if let Err(error) = repository.create(entry).await {
+            tracing::warn!(%error, "failed to write activity log entry");
+        }
+    });
 }
 
 pub(crate) async fn authenticate_with_quick_connect(
@@ -140,6 +198,14 @@ pub(crate) async fn authenticate_with_quick_connect(
         .await?
         .ok_or(ApiError::Unauthorized)?;
     let user = state.users.get(authorized.user_id).await?;
+    log_activity(
+        &state,
+        NewActivityLog::new(
+            format!("Authentication succeeded for {}", user.username),
+            "AuthenticationSucceeded",
+            user.id,
+        ),
+    );
     Ok(Json(authentication_result_from_device(
         &state, &user, session,
     )))

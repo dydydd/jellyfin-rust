@@ -397,6 +397,7 @@ async fn exercise_configuration_routes(database_name: &str) {
     updated.insert("MinAudiobookResume".to_owned(), json!(9));
     updated.insert("MaxAudiobookResume".to_owned(), json!(11));
     updated.insert("AllowClientLogUpload".to_owned(), json!(true));
+    updated.insert("QuickConnectAvailable".to_owned(), json!(false));
     updated["TrickplayOptions"]["Interval"] = json!(2_500);
     updated["TrickplayOptions"]["WidthResolutions"] = json!([320, 640]);
 
@@ -459,6 +460,7 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(saved["MinAudiobookResume"], 9);
     assert_eq!(saved["MaxAudiobookResume"], 11);
     assert_eq!(saved["AllowClientLogUpload"], true);
+    assert_eq!(saved["QuickConnectAvailable"], false);
     assert_eq!(saved["TrickplayOptions"]["Interval"], 2_500);
     assert_eq!(
         saved["TrickplayOptions"]["WidthResolutions"],
@@ -483,6 +485,11 @@ async fn exercise_configuration_routes(database_name: &str) {
         ])
     );
     assert_eq!(persisted.trickplay_options["Interval"], 2_500);
+    assert!(!persisted.quick_connect_available);
+    assert_eq!(
+        body_json(request(&app, "/QuickConnect/Enabled", None).await).await,
+        json!(false)
+    );
 
     user::Entity::delete_many()
         .exec(&database)

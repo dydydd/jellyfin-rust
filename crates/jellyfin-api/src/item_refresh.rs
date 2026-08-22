@@ -27,10 +27,13 @@ enum MetadataRefreshMode {
 pub(crate) struct RefreshItemQuery {
     #[serde(rename = "metadataRefreshMode", alias = "MetadataRefreshMode")]
     metadata_refresh_mode: MetadataRefreshMode,
+    /// Deprecated by Jellyfin clients; accepted for wire compatibility and ignored.
     #[serde(rename = "imageRefreshMode", alias = "ImageRefreshMode")]
     image_refresh_mode: MetadataRefreshMode,
+    /// Accepted for wire compatibility and ignored by this refresh pipeline.
     #[serde(rename = "replaceAllMetadata", alias = "ReplaceAllMetadata")]
     replace_all_metadata: bool,
+    /// Accepted for wire compatibility and ignored by this refresh pipeline.
     #[serde(rename = "replaceAllImages", alias = "ReplaceAllImages")]
     replace_all_images: bool,
     #[serde(rename = "regenerateTrickplay", alias = "RegenerateTrickplay")]
@@ -105,6 +108,31 @@ pub(crate) async fn refresh(
                 eprintln!("TMDB metadata refresh failed: {error}");
             }
         }
+
+        let omdb_api_key = state.omdb_api_key.read().await;
+        if !omdb_api_key.is_empty() {
+            let provider =
+                jellyfin_controller::metadata_providers::OmdbMetadataProvider::new(
+                    omdb_api_key.clone(),
+                    BaseItemRepository::new(state.database.clone()),
+                    ItemValueRepository::new(state.database.clone()),
+                    ItemUpdateRepository::new(state.database.clone()),
+                );
+            drop(omdb_api_key);
+            if let Err(error) = provider.refresh_item(item_id).await {
+                eprintln!("OMDb metadata refresh failed: {error}");
+            }
+        }
+
+        if matches!(item.item_type.as_str(), "MusicArtist" | "MusicAlbum") {
+            let provider = jellyfin_controller::metadata_providers::AudioDbMetadataProvider::new(
+                BaseItemRepository::new(state.database.clone()),
+                ItemUpdateRepository::new(state.database.clone()),
+            );
+            if let Err(error) = provider.refresh_item(item_id).await {
+                eprintln!("TheAudioDB metadata refresh failed: {error}");
+            }
+        }
         crate::websocket::broadcast_refresh_progress(&state, item_id, 90.0).await;
     }
 
@@ -120,4 +148,29 @@ fn is_video_item(item: &jellyfin_data::entities::base_item::Model) -> bool {
             item.item_type.as_str(),
             "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn refresh_query_accepts_official_deprecated_and_ignored_parameters() {
+        let query: RefreshItemQuery = serde_json::from_value(json!({
+            "MetadataRefreshMode": "Default",
+            "ImageRefreshMode": "FullRefresh",
+            "ReplaceAllMetadata": true,
+            "ReplaceAllImages": true,
+            "RegenerateTrickplay": false
+        }))
+        .expect("official refresh query parameters must parse");
+
+        assert_eq!(query.metadata_refresh_mode, MetadataRefreshMode::Default);
+        assert_eq!(query.image_refresh_mode, MetadataRefreshMode::FullRefresh);
+        assert!(query.replace_all_metadata);
+        assert!(query.replace_all_images);
+        assert!(!query.regenerate_trickplay);
+    }
 }

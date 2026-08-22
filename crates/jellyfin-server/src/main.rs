@@ -1,4 +1,8 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    process::Command,
+    time::Duration,
+};
 
 use anyhow::Context;
 use jellyfin_api::AppState;
@@ -34,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to load the PostgreSQL server configuration")?;
     let tmdb_api_key = std::env::var("JELLYFIN_TMDB_API_KEY")
         .unwrap_or_else(|_| persisted_configuration.tmdb_api_key.clone());
+    let omdb_api_key = std::env::var("JELLYFIN_OMDB_API_KEY")
+        .unwrap_or_else(|_| persisted_configuration.omdb_api_key.clone());
     BaseItemRepository::new(database.clone())
         .ensure_user_root()
         .await
@@ -50,18 +56,31 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {bind_address}"))?;
     let web_dir =
         std::env::var("JELLYFIN_WEB_DIR").unwrap_or_else(|_| "jellyfin-web/dist".to_owned());
-    let app = jellyfin_api::router(
-        AppState::new(
-            database,
-            persisted_configuration.server_name,
-            format!("http://{bind_address}"),
-        )
+    let state = AppState::new(
+        database,
+        persisted_configuration.server_name,
+        format!("http://{bind_address}"),
+    )
         .with_server_id(server_id)
         .with_tmdb_api_key(tmdb_api_key)
+        .with_omdb_api_key(omdb_api_key)
+        .with_quick_connect_available(persisted_configuration.quick_connect_available)
         .with_startup_user(initial_user.id)
         .with_ffmpeg_path(
             std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()),
         )
+        .with_system_commands(|command| {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                if let jellyfin_api::SystemCommand::Restart = command {
+                    if let Ok(executable) = std::env::current_exe() {
+                        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+                        let _ = Command::new(executable).args(arguments).spawn();
+                    }
+                }
+                std::process::exit(0);
+            });
+        })
         .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
         .with_persistent_startup(startup_repository)
         .with_storage_paths(
@@ -70,8 +89,9 @@ async fn main() -> anyhow::Result<()> {
             PathBuf::from("cache").join("images"),
             PathBuf::from("cache"),
             PathBuf::from("metadata"),
-        ),
-    );
+        );
+    let state = state.start_library_watcher().await;
+    let app = jellyfin_api::router(state);
 
     info!(address = %bind_address, "Jellyfin Rust server listening");
     axum::serve(

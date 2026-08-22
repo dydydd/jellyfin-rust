@@ -43,6 +43,66 @@ async fn concurrent_case_insensitive_user_creation_is_serialized() {
 }
 
 #[tokio::test]
+async fn failed_login_attempts_increment_and_lockout_disables_non_administrators() {
+    let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
+    let service = UserService::new(database.clone());
+    let name = format!("lockout-{}", Uuid::new_v4().simple());
+    let user = service
+        .create(&name)
+        .await
+        .expect("user creation must succeed");
+    service
+        .update_policy(
+            user.id,
+            &UserPolicy {
+                login_attempts_before_lockout: 3,
+                invalid_login_attempt_count: 0,
+                authentication_provider_id: Some(
+                    UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+                ),
+                password_reset_provider_id: Some(
+                    UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+                ),
+                ..UserPolicy::default()
+            },
+        )
+        .await
+        .expect("lockout policy update must succeed");
+
+    let first = service
+        .record_failed_authentication(user.id)
+        .await
+        .expect("first failed attempt");
+    assert_eq!(first.policy["InvalidLoginAttemptCount"], 1);
+    assert!(!first.is_disabled);
+
+    let second = service
+        .record_failed_authentication(user.id)
+        .await
+        .expect("second failed attempt");
+    assert_eq!(second.policy["InvalidLoginAttemptCount"], 2);
+    assert!(!second.is_disabled);
+
+    let third = service
+        .record_failed_authentication(user.id)
+        .await
+        .expect("third failed attempt");
+    assert_eq!(third.policy["InvalidLoginAttemptCount"], 3);
+    assert!(third.is_disabled);
+    assert_eq!(third.policy["IsDisabled"], true);
+
+    user::Entity::delete_by_id(user.id)
+        .exec(&database)
+        .await
+        .expect("test user cleanup must succeed");
+}
+
+#[tokio::test]
 async fn policy_updates_persist_canonical_provider_ids_and_projected_flags() {
     let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
         .await

@@ -34,11 +34,15 @@ pub(crate) async fn update(
         .require_administrator()?;
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
     let api_key = configuration.tmdb_api_key.clone();
+    let omdb_api_key = configuration.omdb_api_key.clone();
+    let quick_connect_available = configuration.quick_connect_available;
     state
         .server_configuration
         .update_server_configuration(server_configuration_update(configuration)?)
         .await?;
     *state.tmdb_api_key.write().await = api_key;
+    *state.omdb_api_key.write().await = omdb_api_key;
+    state.quick_connect_capability.set_enabled(quick_connect_available);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -114,6 +118,8 @@ fn server_configuration(
         trickplay_options: serde_json::from_value::<TrickplayOptions>(model.trickplay_options)
             .map_err(|_| ApiError::Internal)?,
         tmdb_api_key: model.tmdb_api_key,
+        omdb_api_key: model.omdb_api_key,
+        quick_connect_available: model.quick_connect_available,
         ..ServerConfiguration::default()
     })
 }
@@ -140,5 +146,7 @@ fn server_configuration_update(
         trickplay_options: serde_json::to_value(configuration.trickplay_options)
             .map_err(|_| ApiError::Internal)?,
         tmdb_api_key: configuration.tmdb_api_key,
+        quick_connect_available: configuration.quick_connect_available,
+        omdb_api_key: configuration.omdb_api_key,
     })
 }
