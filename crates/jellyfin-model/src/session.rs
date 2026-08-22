@@ -6,9 +6,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum MediaType {
+    #[default]
     Unknown,
     Video,
     Audio,

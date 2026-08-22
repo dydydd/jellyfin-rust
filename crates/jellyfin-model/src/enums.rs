@@ -1,5 +1,55 @@
 use serde::{Deserialize, Serialize};
 
+/// Jellyfin's public item-kind enum, generated from `BaseItem` subclasses.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BaseItemKind {
+    #[default]
+    AggregateFolder,
+    Audio,
+    AudioBook,
+    BasePluginFolder,
+    Book,
+    BoxSet,
+    Channel,
+    ChannelFolderItem,
+    CollectionFolder,
+    Episode,
+    Folder,
+    Genre,
+    ManualPlaylistsFolder,
+    Movie,
+    LiveTvChannel,
+    LiveTvProgram,
+    MusicAlbum,
+    MusicArtist,
+    MusicGenre,
+    MusicVideo,
+    Person,
+    Photo,
+    PhotoAlbum,
+    Playlist,
+    PlaylistsFolder,
+    Program,
+    Recording,
+    Season,
+    Series,
+    Studio,
+    Trailer,
+    TvChannel,
+    TvProgram,
+    UserRootFolder,
+    UserView,
+    Video,
+    Year,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlayAccess {
+    #[default]
+    Full,
+    None,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubtitlePlaybackMode {
     #[default]

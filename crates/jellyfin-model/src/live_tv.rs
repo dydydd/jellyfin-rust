@@ -3,6 +3,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::ProviderIdMap;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelType {
+    #[default]
+    TV,
+    Radio,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProgramAudio {
+    #[default]
+    Mono,
+    Stereo,
+    Dolby,
+    DolbyDigital,
+    Thx,
+    Atmos,
+}
+
 /// Internal timer data shared by Live TV recording services.
 ///
 /// This is the subset of Jellyfin's controller `TimerInfo` contract used to

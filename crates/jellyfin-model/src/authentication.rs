@@ -30,22 +30,3 @@ pub struct AuthenticationInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_name: Option<String>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct QueryResult<T> {
-    pub items: Vec<T>,
-    pub total_record_count: usize,
-    pub start_index: usize,
-}
-
-impl<T> QueryResult<T> {
-    #[must_use]
-    pub fn from_items(items: Vec<T>) -> Self {
-        Self {
-            total_record_count: items.len(),
-            items,
-            start_index: 0,
-        }
-    }
-}

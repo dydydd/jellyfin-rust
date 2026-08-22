@@ -20,11 +20,13 @@ mod globalization;
 pub mod io;
 mod library_options;
 pub mod live_tv;
+pub mod media_info;
 mod media_segments;
 mod metadata_editor;
 pub mod net;
 pub mod plugins;
 pub mod providers;
+pub mod querying;
 mod search;
 mod serde_datetime;
 mod serde_guid;
@@ -36,7 +38,7 @@ mod tasks;
 mod user_data;
 pub mod users;
 
-pub use authentication::{AuthenticationInfo, QueryResult};
+pub use authentication::AuthenticationInfo;
 pub use backup::{BackupManifestDto, BackupOptionsDto, BackupRestoreRequestDto};
 pub use configuration::{
     ImageOption, ImageResolution, ImageSavingConvention, MetadataOptions, PathSubstitution,
@@ -48,24 +50,35 @@ pub use display_preferences::{DisplayPreferencesDto, ScrollDirection, SortOrder}
 pub use dlna::{
     CodecProfile, CodecType, ContainerHelper, ContainerProfile, DeviceProfile, DirectPlayProfile,
     DlnaProfileType, EncodingContext, IsoType, MediaOptions, MediaProtocol, MediaSourceInfo,
-    MediaSourceType, MediaStreamProtocol, PlayMethod, ProfileCondition, ProfileConditionType,
-    ProfileConditionValue, StreamBuilder, StreamBuilderError, StreamInfo, SubtitleProfile,
-    TranscodeReason, TranscodeSeekInfo, TranscodingProfile, TransportStreamTimestamp,
-    Video3DFormat, VideoType,
+    MediaSourceType, MediaStreamProtocol, PlayMethod, PlaybackErrorCode, ProfileCondition,
+    ProfileConditionType, ProfileConditionValue, StreamBuilder, StreamBuilderError, StreamInfo,
+    SubtitleProfile, TranscodeReason, TranscodeSeekInfo, TranscodingProfile,
+    TransportStreamTimestamp, Video3DFormat, VideoType,
 };
-pub use drawing::{ImageFormat, InvalidImageFormat};
-pub use dto::{ItemCounts, NameIdPair, TrickplayInfoDto, UserDto};
+pub use drawing::{ImageFormat, ImageOrientation, InvalidImageFormat};
+pub use dto::{
+    BaseItemDto, BaseItemPerson, ItemCounts, NameGuidPair, NameIdPair, TrickplayInfoDto, UserDto,
+};
 pub use entities::{
-    AudioSpatialFormat, HasProviderIds, MediaAttachment, MediaStream, MediaStreamType,
-    MetadataProvider, ProviderIdError, ProviderIdMap, ProviderIdsExtensions,
-    SubtitleDeliveryMethod, VideoRange, VideoRangeType,
+    AudioSpatialFormat, ChapterInfo, ExtraType, HasProviderIds, LocationType, MediaAttachment,
+    MediaStream, MediaStreamType, MediaUrl, MetadataField, MetadataProvider, PersonKind,
+    ProviderIdError, ProviderIdMap, ProviderIdsExtensions, SubtitleDeliveryMethod, VideoRange,
+    VideoRangeType,
 };
-pub use enums::{DynamicDayOfWeek, SubtitlePlaybackMode, SyncPlayUserAccessType, UnratedItem};
+pub use enums::{
+    BaseItemKind, DynamicDayOfWeek, PlayAccess, SubtitlePlaybackMode, SyncPlayUserAccessType,
+    UnratedItem,
+};
 pub use extensions::first_to_upper;
 pub use globalization::LocalizationOption;
 pub use io::{FileSystemEntryInfo, FileSystemEntryType};
 pub use library_options::{LibraryOptionInfoDto, LibraryOptionsResultDto, LibraryTypeOptionsDto};
-pub use live_tv::{TimerInfo, TunerHostInfo};
+pub use live_tv::{ChannelType, ProgramAudio, TimerInfo, TunerHostInfo};
+pub use media_info::{
+    AudioCodec, AudioIndexSource, BlurayDiscInfo, BlurayExaminer, LiveStreamRequest,
+    LiveStreamResponse, MediaInfo, PlaybackInfoResponse, SubtitleFormat, SubtitleTrackEvent,
+    SubtitleTrackInfo,
+};
 pub use media_segments::{MediaSegmentDto, MediaSegmentType};
 pub use metadata_editor::{
     CollectionType, CountryInfo, CultureDto, ExternalIdInfo, ExternalIdMediaType,
@@ -75,8 +88,12 @@ pub use metadata_editor::{
 pub use net::{EndPointInfo, MimeTypeError, MimeTypes};
 pub use plugins::{PluginInfo, PluginStatus};
 pub use providers::{
-    ImageInfo, ImageProviderInfo, ImageType, RatingType, RemoteImageInfo, RemoteImageResult,
-    RemoteSearchResult, RemoteSubtitleInfo, order_by_language_descending,
+    ExternalUrl, ImageInfo, ImageProviderInfo, ImageType, RatingType, RemoteImageInfo,
+    RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo, order_by_language_descending,
+};
+pub use querying::{
+    AllThemeMediaResult, ItemFields, ItemFilter, LatestItemsQuery, NextUpQuery, QueryFilters,
+    QueryFiltersLegacy, QueryResult, ThemeMediaResult,
 };
 pub use search::{SearchHint, SearchHintResult};
 pub use session::{

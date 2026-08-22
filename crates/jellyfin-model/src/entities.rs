@@ -1,5 +1,8 @@
 use std::{collections::HashMap, error::Error, fmt};
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 mod media_attachment;
 mod media_stream;
 
@@ -10,6 +13,125 @@ pub use media_stream::{
 };
 
 pub type ProviderIdMap = HashMap<String, String>;
+
+/// Chapter metadata attached to an item or media source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ChapterInfo {
+    pub start_position_ticks: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
+    #[serde(with = "crate::serde_datetime::required")]
+    pub image_date_modified: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_tag: Option<String>,
+}
+
+impl Default for ChapterInfo {
+    fn default() -> Self {
+        Self {
+            start_position_ticks: 0,
+            name: None,
+            image_path: None,
+            image_date_modified: DateTime::<Utc>::UNIX_EPOCH,
+            image_tag: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct MediaUrl {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Default for MediaUrl {
+    fn default() -> Self {
+        Self {
+            url: None,
+            name: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum ExtraType {
+    #[default]
+    Unknown = 0,
+    Clip = 1,
+    Trailer = 2,
+    BehindTheScenes = 3,
+    DeletedScene = 4,
+    Interview = 5,
+    Scene = 6,
+    Sample = 7,
+    ThemeSong = 8,
+    ThemeVideo = 9,
+    Featurette = 10,
+    Short = 11,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum LocationType {
+    #[default]
+    FileSystem = 0,
+    Remote = 1,
+    Virtual = 2,
+    Offline = 3,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MetadataField {
+    #[default]
+    Cast,
+    Genres,
+    ProductionLocations,
+    Studios,
+    Tags,
+    Name,
+    Overview,
+    Runtime,
+    OfficialRating,
+}
+
+/// The official person-kind enum used by `BaseItemPerson`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PersonKind {
+    #[default]
+    Unknown,
+    Actor,
+    Director,
+    Composer,
+    Writer,
+    GuestStar,
+    Producer,
+    Conductor,
+    Lyricist,
+    Arranger,
+    Engineer,
+    Mixer,
+    Remixer,
+    Creator,
+    Artist,
+    AlbumArtist,
+    Author,
+    Illustrator,
+    Penciller,
+    Inker,
+    Colorist,
+    Letterer,
+    CoverArtist,
+    Editor,
+    Translator,
+    Narrator,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]

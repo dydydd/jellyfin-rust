@@ -33,7 +33,7 @@ pub struct UpdateUserItemDataDto {
 }
 
 /// API representation of per-user state for one library item.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserItemDataDto {
     #[serde(skip_serializing_if = "Option::is_none")]

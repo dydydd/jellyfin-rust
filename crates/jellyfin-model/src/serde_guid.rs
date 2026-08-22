@@ -60,6 +60,15 @@ pub(crate) mod option {
             None => serializer.serialize_none(),
         }
     }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Uuid>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer)?
+            .map(|value| Uuid::parse_str(&value).map_err(serde::de::Error::custom))
+            .transpose()
+    }
 }
 
 pub(crate) mod option_vec {

@@ -324,6 +324,16 @@ pub enum MediaProtocol {
     Ftp = 6,
 }
 
+/// Why playback of an item cannot be started.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum PlaybackErrorCode {
+    #[default]
+    NotAllowed = 0,
+    NoCompatibleStream = 1,
+    RateLimitExceeded = 2,
+}
+
 /// The type of a media source.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]

@@ -2,6 +2,20 @@ use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum ImageOrientation {
+    #[default]
+    TopLeft = 1,
+    TopRight = 2,
+    BottomRight = 3,
+    BottomLeft = 4,
+    LeftTop = 5,
+    RightTop = 6,
+    RightBottom = 7,
+    LeftBottom = 8,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum ImageFormat {
