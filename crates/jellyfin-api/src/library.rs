@@ -11,6 +11,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_data::{BaseItemCounts, BaseItemPage};
+use jellyfin_controller::RelatedItemKind;
 use jellyfin_model::{
     CollectionType, ImageOption, ImageType, ItemCounts, LibraryOptionsResultDto,
     LibraryTypeOptionsDto,
@@ -20,9 +21,11 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, authorization, user_library};
+use crate::{
+    ApiError, AppState, authentication, authorization, user_library,
+};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct LibraryQuery {
     #[serde(default, rename = "userId", alias = "UserId")]
     user_id: Option<Uuid>,
@@ -134,7 +137,7 @@ pub(crate) async fn theme_songs(
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
     Ok(Json(
-        empty_theme_result(state, headers, item_id, query).await?,
+        theme_result(state, headers, item_id, query, RelatedItemKind::ThemeSong).await?,
     ))
 }
 
@@ -145,7 +148,7 @@ pub(crate) async fn theme_videos(
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
     Ok(Json(
-        empty_theme_result(state, headers, item_id, query).await?,
+        theme_result(state, headers, item_id, query, RelatedItemKind::ThemeVideo).await?,
     ))
 }
 
@@ -155,11 +158,15 @@ pub(crate) async fn theme_media(
     Path(item_id): Path<Uuid>,
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<AllThemeMediaResult>, ApiError> {
-    let result = empty_theme_result(state, headers, item_id, query).await?;
+    let theme_songs =
+        theme_result(state.clone(), headers.clone(), item_id, query.clone(), RelatedItemKind::ThemeSong)
+            .await?;
+    let theme_videos =
+        theme_result(state, headers, item_id, query, RelatedItemKind::ThemeVideo).await?;
     Ok(Json(AllThemeMediaResult {
-        theme_songs: result.clone(),
-        theme_videos: result.clone(),
-        soundtrack_songs: result,
+        theme_songs: theme_songs.clone(),
+        theme_videos,
+        soundtrack_songs: theme_songs,
     }))
 }
 
@@ -447,21 +454,30 @@ pub(crate) async fn delete_items(
     delete_for(state, headers, ids).await
 }
 
-async fn empty_theme_result(
+async fn theme_result(
     state: Arc<AppState>,
     headers: HeaderMap,
     item_id: Uuid,
     query: LibraryQuery,
+    kind: RelatedItemKind,
 ) -> Result<ThemeMediaResult, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    state
+    let _owner = state
         .library_controller
         .item(&authenticated.user, target_user_id, item_id)
         .await?;
+    let items = state
+        .user_library
+        .related_items(&authenticated.user, target_user_id, item_id, kind)
+        .await?
+        .into_iter()
+        .map(|item| user_library::item_to_dto(item, state.server_id()))
+        .collect::<Vec<_>>();
+    let total_record_count = items.len();
     Ok(ThemeMediaResult {
-        items: Vec::new(),
-        total_record_count: 0,
+        items,
+        total_record_count,
         owner_id: item_id,
     })
 }

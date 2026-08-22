@@ -29,6 +29,8 @@ pub enum UserLibraryError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelatedItemKind {
     Intro,
+    ThemeSong,
+    ThemeVideo,
     LocalTrailer,
     SpecialFeature,
 }
@@ -416,6 +418,12 @@ fn related_item_matches(item: &base_item::Model, kind: RelatedItemKind) -> bool 
         }
         RelatedItemKind::LocalTrailer => {
             extra_type.is_some_and(|value| value.eq_ignore_ascii_case("Trailer"))
+        }
+        RelatedItemKind::ThemeSong => {
+            extra_type.is_some_and(|value| value.eq_ignore_ascii_case("ThemeSong"))
+        }
+        RelatedItemKind::ThemeVideo => {
+            extra_type.is_some_and(|value| value.eq_ignore_ascii_case("ThemeVideo"))
         }
         RelatedItemKind::SpecialFeature => extra_type.is_some_and(is_display_extra_type),
     }

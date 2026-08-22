@@ -24,9 +24,14 @@ use jellyfin_media_encoding::probing::{
 use jellyfin_model::{
     CollectionType, MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream,
 };
-use jellyfin_naming::NamingOptions;
+use jellyfin_naming::{ExtraResolver, NamingOptions};
 use jellyfin_providers::media_info::{
     MediaFileSystemEntry, SubtitleResolveRequest, SubtitleResolver,
+};
+use jellyfin_server_implementations::{
+    CoreResolutionIgnoreRule, ExtraDirectoryReader, ExtraFileSystemEntry, ExtraMediaKind,
+    ExtraOwner, ExtraOwnerKind, LibraryExtrasResolver, ResolvedLibraryExtra,
+    ResolutionFileSystemEntry, ResolutionParentContext, ResolutionParentKind,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -282,16 +287,31 @@ impl LibraryScanService {
         seen_paths: &mut HashSet<String>,
     ) -> Result<(), LibraryScanError> {
         let mut files = Vec::new();
+        let ignore_rule = CoreResolutionIgnoreRule::new(NamingOptions::default(), "");
+        let parent_context = ResolutionParentContext::item(ResolutionParentKind::Folder);
         while let Some(entry) = entries.next_entry().await? {
             let metadata = entry.metadata().await?;
             let path = entry.path();
             if metadata.is_dir() {
-                if !is_ignored_directory(&path) {
+                let candidate = ResolutionFileSystemEntry::new(
+                    path.to_string_lossy().into_owned(),
+                    true,
+                );
+                if !ignore_rule.should_ignore(&candidate, parent_context)
+                    && !is_extras_directory(&path)
+                {
                     pending.push(path);
                 }
                 continue;
             }
-            if !metadata.is_file() || is_ignored_file(&path) {
+            if !metadata.is_file() {
+                continue;
+            }
+            let candidate = ResolutionFileSystemEntry::new(
+                path.to_string_lossy().into_owned(),
+                false,
+            );
+            if ignore_rule.should_ignore(&candidate, parent_context) {
                 continue;
             }
             let Some(media_kind) = media_kind(&path) else {
@@ -317,9 +337,148 @@ impl LibraryScanService {
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect();
 
-        summary.items_added += self
-            .process_files(&files, parent_id, kind, &existing_by_path)
+        let extra_paths = self
+            .extra_paths_for_entries(&files)
             .await?;
+        let regular_files = files
+            .iter()
+            .filter(|(path, _)| {
+                !extra_paths.contains(&path.to_string_lossy().into_owned())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        summary.items_added += self
+            .process_files(&regular_files, parent_id, kind, &existing_by_path)
+            .await?;
+        self.ensure_extras(&files, kind, summary, seen_paths)
+            .await?;
+        Ok(())
+    }
+
+    async fn extra_paths_for_entries(
+        &self,
+        files: &[(PathBuf, MediaKind)],
+    ) -> Result<HashSet<String>, LibraryScanError> {
+        if files.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let options = NamingOptions::default();
+        let resolver = LibraryExtrasResolver::new(options.clone());
+        let entries = files
+            .iter()
+            .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
+            .map(|(path, _)| ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false))
+            .collect::<Vec<_>>();
+        let reader = TokioExtraDirectoryReader;
+        let mut extra_paths = HashSet::new();
+        for entry in entries.iter().filter(|entry| {
+            ExtraResolver::resolve(&entry.full_name, &options)
+                .extra_type
+                .is_none()
+        }) {
+            let owner = ExtraOwner::new(
+                entry.full_name.clone(),
+                display_name(&entry.full_name),
+                ExtraOwnerKind::Movie,
+            );
+            let extras = resolver
+                .find_extras(&owner, &entries, &reader)
+                .map_err(|error| LibraryScanError::Io(error.into()))?;
+            for extra in extras {
+                extra_paths.insert(extra.path);
+            }
+        }
+        Ok(extra_paths)
+    }
+
+    async fn ensure_extras(
+        &self,
+        files: &[(PathBuf, MediaKind)],
+        kind: ScanLibraryKind,
+        summary: &mut LibraryScanSummary,
+        seen_paths: &mut HashSet<String>,
+    ) -> Result<(), LibraryScanError> {
+        if kind.is_tv() {
+            return Ok(());
+        }
+        let options = NamingOptions::default();
+        let resolver = LibraryExtrasResolver::new(options.clone());
+        let entries = files
+            .iter()
+            .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
+            .map(|(path, _)| {
+                ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false)
+            })
+            .collect::<Vec<_>>();
+        let reader = TokioExtraDirectoryReader;
+        for entry in entries.iter().filter(|entry| {
+            ExtraResolver::resolve(&entry.full_name, &options)
+                .extra_type
+                .is_none()
+        }) {
+            let owner = ExtraOwner::new(
+                entry.full_name.clone(),
+                display_name(&entry.full_name),
+                ExtraOwnerKind::Movie,
+            );
+            let extras = resolver
+                .find_extras(&owner, &entries, &reader)
+                .map_err(|error| LibraryScanError::Io(error.into()))?;
+            for extra in extras {
+                seen_paths.insert(extra.path.clone());
+                let owner_id = self
+                    .items
+                    .by_paths(std::slice::from_ref(&entry.full_name))
+                    .await?
+                    .into_iter()
+                    .next()
+                    .map(|item| item.id);
+                if let Some(owner_id) = owner_id {
+                    self.ensure_extra_item(&extra, owner_id, summary)
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_extra_item(
+        &self,
+        extra: &ResolvedLibraryExtra,
+        owner_id: Uuid,
+        summary: &mut LibraryScanSummary,
+    ) -> Result<(), LibraryScanError> {
+        let item_type = match extra.media_kind {
+            ExtraMediaKind::Audio => "Audio",
+            ExtraMediaKind::Trailer => "Trailer",
+            ExtraMediaKind::Video => "Video",
+        };
+        let mut data = serde_json::Map::new();
+        data.insert("ExtraType".to_owned(), json!(extra_type_name(extra.extra_type)));
+        let stable_id = stable_item_id(&extra.path, item_type);
+        if let Some(existing) = self.items.get(stable_id).await? {
+            let mut updated = existing.clone();
+            updated.item_type = item_type.to_owned();
+            updated.parent_id = Some(owner_id);
+            updated.data = Some(serde_json::Value::Object(data));
+            self.items.update(updated).await?;
+            return Ok(());
+        }
+        let mut item = NewBaseItem::new(stable_id, item_type);
+        item.path = Some(extra.path.clone());
+        item.parent_id = Some(owner_id);
+        item.name = Some(extra.name.clone());
+        item.sort_name = Some(extra.name.clone());
+        item.media_type = Some(match extra.media_kind {
+            ExtraMediaKind::Audio => "Audio",
+            _ => "Video",
+        }.to_owned());
+        item.is_folder = false;
+        item.is_virtual_item = false;
+        item.presentation_unique_key = Some(extra.path.clone());
+        item.data = Some(serde_json::Value::Object(data));
+        self.items.create(item).await?;
+        summary.items_added += 1;
         Ok(())
     }
 
@@ -762,6 +921,41 @@ impl MediaKind {
     }
 }
 
+struct TokioExtraDirectoryReader;
+
+impl ExtraDirectoryReader for TokioExtraDirectoryReader {
+    fn get_files(&self, path: &str) -> std::io::Result<Vec<ExtraFileSystemEntry>> {
+        Ok(std::fs::read_dir(path)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let file_type = entry.file_type().ok()?;
+                Some(ExtraFileSystemEntry::new(
+                    entry.path().to_string_lossy().into_owned(),
+                    file_type.is_dir(),
+                ))
+            })
+            .collect())
+    }
+}
+
+fn extra_type_name(extra_type: jellyfin_naming::ExtraType) -> &'static str {
+    use jellyfin_naming::ExtraType;
+    match extra_type {
+        ExtraType::BehindTheScenes => "BehindTheScenes",
+        ExtraType::Clip => "Clip",
+        ExtraType::DeletedScene => "DeletedScene",
+        ExtraType::Featurette => "Featurette",
+        ExtraType::Interview => "Interview",
+        ExtraType::Sample => "Sample",
+        ExtraType::Scene => "Scene",
+        ExtraType::Short => "Short",
+        ExtraType::ThemeSong => "ThemeSong",
+        ExtraType::ThemeVideo => "ThemeVideo",
+        ExtraType::Trailer => "Trailer",
+        ExtraType::Unknown => "Unknown",
+    }
+}
+
 fn media_kind(path: &Path) -> Option<MediaKind> {
     let extension = path.extension()?.to_str()?;
     if AUDIO_EXTENSIONS
@@ -792,7 +986,10 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
 }
 
 fn is_scanned_media_type(item_type: &str) -> bool {
-    matches!(item_type, "Audio" | "Video" | "Movie" | "Photo" | "Book")
+    matches!(
+        item_type,
+        "Audio" | "Video" | "Movie" | "Trailer" | "Photo" | "Book"
+    )
 }
 
 fn apply_probed_item_metadata(
@@ -1147,21 +1344,17 @@ fn stable_item_id(path: &str, item_type: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-fn is_ignored_directory(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            matches!(
-                name.to_ascii_lowercase().as_str(),
-                ".git" | ".svn" | "@eadir" | "metadata" | "extrafanart" | "extrathumbs"
-            )
+fn is_extras_directory(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    NamingOptions::default()
+        .video_extra_rules
+        .iter()
+        .any(|rule| {
+            rule.rule_type == jellyfin_naming::ExtraRuleType::DirectoryName
+                && rule.token.eq_ignore_ascii_case(name)
         })
-}
-
-fn is_ignored_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with('.'))
 }
 
 const AUDIO_EXTENSIONS: &[&str] = &[
@@ -1185,10 +1378,11 @@ const BOOK_EXTENSIONS: &[&str] = &[
 mod tests {
     use super::{
         MediaKind, ScanLibraryKind, apply_probed_item_metadata, attachments_from_media_info,
-        codec_from_extension, default_stream, display_name, media_item_data, media_kind,
-        next_stream_index, resolve_external_subtitle_streams_from_entries, stable_item_id,
-        streams_from_media_info,
+        codec_from_extension, default_stream, display_name, extra_type_name, is_extras_directory,
+        media_item_data, media_kind, next_stream_index, resolve_external_subtitle_streams_from_entries,
+        stable_item_id, streams_from_media_info,
     };
+    use jellyfin_naming::ExtraType;
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
@@ -1229,6 +1423,18 @@ mod tests {
         );
         assert!(ScanLibraryKind::from_collection_type(Some("tvshows")).is_tv());
         assert!(!ScanLibraryKind::from_collection_type(Some("movies")).is_tv());
+    }
+
+    #[test]
+    fn extras_directories_and_types_follow_official_naming_rules() {
+        assert!(is_extras_directory(std::path::Path::new("/movies/Up/extras")));
+        assert!(is_extras_directory(std::path::Path::new("/movies/Up/TRAILERS")));
+        assert!(is_extras_directory(std::path::Path::new("/movies/Up/behind the scenes")));
+        assert!(!is_extras_directory(std::path::Path::new("/movies/Up/regular-folder")));
+        assert_eq!(extra_type_name(ExtraType::ThemeSong), "ThemeSong");
+        assert_eq!(extra_type_name(ExtraType::ThemeVideo), "ThemeVideo");
+        assert_eq!(extra_type_name(ExtraType::Trailer), "Trailer");
+        assert_eq!(extra_type_name(ExtraType::Featurette), "Featurette");
     }
 
     #[test]
