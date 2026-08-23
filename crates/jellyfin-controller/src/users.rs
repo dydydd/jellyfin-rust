@@ -496,8 +496,8 @@ impl UserService {
             .one(&transaction)
             .await?
             .ok_or(UserError::NotFound)?;
-        let mut policy: UserPolicy = serde_json::from_value(target.policy.clone())
-            .map_err(UserError::PolicySerialization)?;
+        let mut policy: UserPolicy =
+            serde_json::from_value(target.policy).map_err(UserError::PolicySerialization)?;
         let attempts = policy.invalid_login_attempt_count.saturating_add(1);
         policy.invalid_login_attempt_count = attempts;
         let lockout = policy.login_attempts_before_lockout > 0

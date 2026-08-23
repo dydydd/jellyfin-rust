@@ -77,12 +77,12 @@ impl DirectoryReader for FilesystemDirectoryReader {
 #[derive(Clone)]
 pub struct LibraryResolveArgs<'a> {
     pub collection_type: Option<CollectionType>,
-    pub path: String,
+    pub path: &'a str,
     pub is_directory: bool,
     pub children: Vec<ResolutionFileSystemEntry>,
     pub parent: LibraryParentKind,
     pub parent_is_root: bool,
-    pub parent_path: Option<String>,
+    pub parent_path: Option<&'a str>,
     pub directory_reader: &'a dyn DirectoryReader,
 }
 
@@ -257,7 +257,6 @@ impl LibraryItemResolver for MusicAlbumResolver {
         }
         if args
             .parent_path
-            .as_deref()
             .and_then(file_name)
             .is_some_and(is_artist_subfolder)
         {
@@ -300,7 +299,7 @@ impl LibraryItemResolver for AudioLibraryResolver {
             return resolver
                 .resolve(&AudioResolveArgs {
                     collection_type: args.collection_type,
-                    file_info: AudioFileSystemEntry::new(&args.path, true),
+                    file_info: AudioFileSystemEntry::new(args.path, true),
                     file_system_children: children,
                     parent: AudioParentContext::None,
                 })
@@ -310,13 +309,13 @@ impl LibraryItemResolver for AudioLibraryResolver {
                 });
         }
 
-        if !is_audio_file(&args.path, &self.naming_options) {
+        if !is_audio_file(args.path, &self.naming_options) {
             return None;
         }
-        if is_cue_file(&args.path) {
+        if is_cue_file(args.path) {
             return None;
         }
-        if args.collection_type.is_none() && is_video_file(&args.path, &self.naming_options) {
+        if args.collection_type.is_none() && is_video_file(args.path, &self.naming_options) {
             return None;
         }
         Some(resolved(args, ResolvedLibraryItemKind::Audio))
@@ -325,7 +324,7 @@ impl LibraryItemResolver for AudioLibraryResolver {
 
 fn resolved(args: &LibraryResolveArgs<'_>, kind: ResolvedLibraryItemKind) -> ResolvedLibraryItem {
     ResolvedLibraryItem {
-        path: args.path.clone(),
+        path: args.path.to_owned(),
         kind,
     }
 }
@@ -394,20 +393,20 @@ mod tests {
 
     fn args<'a>(
         reader: &'a dyn DirectoryReader,
-        path: &str,
+        path: &'a str,
         children: Vec<ResolutionFileSystemEntry>,
         parent: LibraryParentKind,
         parent_is_root: bool,
-        parent_path: Option<&str>,
+        parent_path: Option<&'a str>,
     ) -> LibraryResolveArgs<'a> {
         LibraryResolveArgs {
             collection_type: Some(CollectionType::Music),
-            path: path.to_owned(),
+            path,
             is_directory: true,
             children,
             parent,
             parent_is_root,
-            parent_path: parent_path.map(str::to_owned),
+            parent_path,
             directory_reader: reader,
         }
     }
@@ -447,12 +446,12 @@ mod tests {
         let audio = chain
             .resolve(&LibraryResolveArgs {
                 collection_type: Some(CollectionType::Music),
-                path: "/music/Artist/Album/song.mp3".to_owned(),
+                path: "/music/Artist/Album/song.mp3",
                 is_directory: false,
                 children: Vec::new(),
                 parent: LibraryParentKind::MusicAlbum,
                 parent_is_root: false,
-                parent_path: Some("/music/Artist/Album".to_owned()),
+                parent_path: Some("/music/Artist/Album"),
                 directory_reader: &reader,
             })
             .expect("audio file should resolve");

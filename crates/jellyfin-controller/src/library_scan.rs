@@ -417,12 +417,12 @@ impl LibraryScanService {
             } else {
                 resolver.resolve(&LibraryResolveArgs {
                     collection_type: Some(CollectionType::Music),
-                    path: directory_path.clone(),
+                    path: &directory_path,
                     is_directory: true,
                     children,
                     parent: directory.parent_kind,
                     parent_is_root: directory.is_root,
-                    parent_path: directory.parent_path,
+                    parent_path: directory.parent_path.as_deref(),
                     directory_reader: &reader,
                 })
             };

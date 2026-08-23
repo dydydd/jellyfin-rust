@@ -546,7 +546,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let web_dir = state.web_directory.clone();
     let index_path = web_dir.join("index.html");
-    let state = Arc::new(state.clone());
+    let state = Arc::new(state);
 
     let router = openapi::documented_routes()
         .merge(system_routes())

@@ -598,7 +598,7 @@ mod tests {
             }],
             ..DeviceProfile::default()
         };
-        let mut sources = vec![source.clone()];
+        let mut sources = vec![source];
 
         apply_stream_builder(
             &mut sources,

@@ -295,7 +295,8 @@ async fn get_for(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
-    let fields = query.fields.clone();
+    let mut query = query;
+    let fields = std::mem::take(&mut query.fields);
     let page = state
         .user_library
         .query_items(&authenticated.user, target_user_id, query.try_into()?)
@@ -347,7 +348,8 @@ async fn resume_for(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
-    let fields = query.fields.clone();
+    let mut query = query;
+    let fields = std::mem::take(&mut query.fields);
     let page = state
         .user_library
         .resume_items(&authenticated.user, target_user_id, query.try_into()?)
@@ -375,7 +377,8 @@ async fn latest_for(
             None
         }
     });
-    let fields = query.fields.clone();
+    let mut query = query;
+    let fields = std::mem::take(&mut query.fields);
     let _ = query.group_items;
     let page = state
         .user_library

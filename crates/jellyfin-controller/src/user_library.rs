@@ -354,12 +354,12 @@ impl UserLibraryService {
     ) -> Result<Vec<Value>, UserLibraryError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let item = self.load_item(item_id).await?;
+        let mut item = self.load_item(item_id).await?;
         if !item.item_type.eq_ignore_ascii_case("Audio") {
             return Err(UserLibraryError::ItemNotFound);
         }
         let request = LyricSearchRequest {
-            song_name: item.name.clone(),
+            song_name: item.name.take(),
             album_name: metadata_string(item.data.as_ref(), &["Album"]),
             artist_names: metadata_string_list(item.data.as_ref(), &["Artists"]),
             album_artist_names: metadata_string_list(item.data.as_ref(), &["AlbumArtists"]),
@@ -515,7 +515,7 @@ impl UserLibraryService {
     ) -> Result<(), UserLibraryError> {
         let user = self.users.get(target_user_id).await?;
         let policy: UserPolicy =
-            serde_json::from_value(user.policy.clone()).map_err(UserLibraryError::InvalidPolicy)?;
+            serde_json::from_value(user.policy).map_err(UserLibraryError::InvalidPolicy)?;
         query.blocked_tags = policy.blocked_tags;
         query.allowed_tags = policy.allowed_tags;
         query.enabled_folders = policy.enabled_folders;

@@ -109,7 +109,6 @@ impl OmdbClient {
         {
             return Err(OmdbMetadataProviderError::Omdb(
                 item.error
-                    .clone()
                     .unwrap_or_else(|| "OMDb returned no metadata".to_owned()),
             ));
         }

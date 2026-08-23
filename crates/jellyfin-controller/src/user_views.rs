@@ -84,8 +84,8 @@ impl UserViewManagerService {
         include_hidden: bool,
     ) -> Result<Vec<UserViewItem>, UserViewManagerError> {
         let user = self.users.get(user_id).await?;
-        let config = parse_config(&user.preferences)?;
-        let policy = parse_policy(&user.policy)?;
+        let config = parse_config(user.preferences)?;
+        let policy = parse_policy(user.policy)?;
         let folders = self.visible_folders(&policy, include_hidden).await?;
         let mut movies = Vec::new();
         let mut tvshows = Vec::new();
@@ -210,7 +210,7 @@ impl UserViewManagerService {
         user_id: Uuid,
     ) -> Result<Vec<UserViewGroupingOption>, UserViewManagerError> {
         let user = self.users.get(user_id).await?;
-        let policy = parse_policy(&user.policy)?;
+        let policy = parse_policy(user.policy)?;
         let mut options = self
             .folders
             .list()
@@ -252,12 +252,12 @@ impl UserViewManagerService {
     }
 }
 
-fn parse_config(value: &Value) -> Result<UserConfiguration, UserViewManagerError> {
-    serde_json::from_value(value.clone()).map_err(UserViewManagerError::InvalidUserData)
+fn parse_config(value: Value) -> Result<UserConfiguration, UserViewManagerError> {
+    serde_json::from_value(value).map_err(UserViewManagerError::InvalidUserData)
 }
 
-fn parse_policy(value: &Value) -> Result<UserPolicy, UserViewManagerError> {
-    serde_json::from_value(value.clone()).map_err(UserViewManagerError::InvalidUserData)
+fn parse_policy(value: Value) -> Result<UserPolicy, UserViewManagerError> {
+    serde_json::from_value(value).map_err(UserViewManagerError::InvalidUserData)
 }
 
 fn collection_folder_view(folder: &VirtualFolder) -> UserViewItem {

@@ -316,12 +316,9 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
     .and_then(|value| reqwest::Proxy::all(value.trim()).ok())
 }
 
-fn movie_search_to_remote_result(result: TmdbSearchMovie) -> RemoteSearchResult {
+fn movie_search_to_remote_result(mut result: TmdbSearchMovie) -> RemoteSearchResult {
     RemoteSearchResult {
-        name: result
-            .title
-            .clone()
-            .or_else(|| result.original_title.clone()),
+        name: result.title.take().or_else(|| result.original_title.take()),
         r#type: Some("Movie".to_owned()),
         provider_ids: HashMap::from([("Tmdb".to_owned(), result.id.to_string())]),
         production_year: parse_year(result.release_date.as_deref()),
@@ -333,9 +330,9 @@ fn movie_search_to_remote_result(result: TmdbSearchMovie) -> RemoteSearchResult 
     }
 }
 
-fn tv_search_to_remote_result(result: TmdbSearchTv) -> RemoteSearchResult {
+fn tv_search_to_remote_result(mut result: TmdbSearchTv) -> RemoteSearchResult {
     RemoteSearchResult {
-        name: result.name.clone().or_else(|| result.original_name.clone()),
+        name: result.name.take().or_else(|| result.original_name.take()),
         r#type: Some("Series".to_owned()),
         provider_ids: HashMap::from([("Tmdb".to_owned(), result.id.to_string())]),
         production_year: parse_year(result.first_air_date.as_deref()),

@@ -171,7 +171,7 @@ impl ItemTypeRegistry {
             .types
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut unique_names = names.clone();
+        let mut unique_names = names;
         unique_names.sort_unstable();
         unique_names.dedup();
         if let Some(duplicate) = unique_names

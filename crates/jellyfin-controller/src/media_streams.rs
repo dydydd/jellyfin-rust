@@ -151,7 +151,7 @@ where
             channel_layout: stream.channel_layout.clone(),
             profile: stream.profile.clone(),
             aspect_ratio: stream.aspect_ratio.clone(),
-            path: save_path(&self.path_mapper, stream.path.clone()),
+            path: save_path(&self.path_mapper, stream.path.as_deref()),
             is_interlaced: Some(stream.is_interlaced),
             bit_rate: stream.bit_rate,
             channels: stream.channels,
@@ -363,11 +363,11 @@ fn apply_localization(
     }
 }
 
-fn save_path<P>(mapper: &P, path: Option<String>) -> Option<String>
+fn save_path<P>(mapper: &P, path: Option<&str>) -> Option<String>
 where
     P: MediaStreamPathMapper,
 {
-    path.map(|path| mapper.path_to_save(&path).unwrap_or(path))
+    path.map(|path| mapper.path_to_save(path).unwrap_or_else(|| path.to_owned()))
 }
 
 fn restore_path<P>(mapper: &P, path: Option<String>) -> Option<String>

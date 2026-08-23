@@ -362,7 +362,7 @@ fn normalize_stream(
     let mut result = MediaStream {
         index: int32(stream, "index").unwrap_or_default(),
         stream_type,
-        codec: normalized_codec.clone(),
+        codec: normalized_codec,
         profile: profile.clone(),
         width,
         height,

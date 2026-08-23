@@ -710,7 +710,7 @@ async fn get_lyrics_for(
 
 #[allow(clippy::too_many_lines)]
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
-    let item_type = item.item_type.clone();
+    let is_user_view = item.item_type == "UserView";
     let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"]);
     let has_lyrics = item
         .data
@@ -729,7 +729,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         path: item.path,
         overview: item.overview,
         media_type: item.media_type,
-        collection_type: if item_type == "UserView" {
+        collection_type: if is_user_view {
             metadata_string(
                 item.data.as_ref(),
                 &["ViewType", "view_type", "CollectionType", "collection_type"],
@@ -761,7 +761,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             &["CommunityRating", "community_rating"],
         ),
         critic_rating: metadata_f64(item.data.as_ref(), &["CriticRating", "critic_rating"]),
-        official_rating: item.official_rating.clone(),
+        official_rating: item.official_rating,
         original_title: metadata_string(
             item.data.as_ref(),
             &["OriginalTitle", "original_title", "originalTitle"],
