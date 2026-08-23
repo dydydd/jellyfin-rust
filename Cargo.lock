@@ -1736,6 +1736,7 @@ dependencies = [
  "jellyfin-model",
  "jellyfin-naming",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

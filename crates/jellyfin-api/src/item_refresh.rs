@@ -4,9 +4,8 @@ use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_data::{
-    BaseItemError, BaseItemRepository, ItemUpdateRepository, ItemValueRepository, PersonRepository,
-};
+use jellyfin_controller::MetadataRefreshService;
+use jellyfin_data::{BaseItemError, BaseItemRepository};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -90,48 +89,14 @@ pub(crate) async fn refresh(
     if matches!(
         query.metadata_refresh_mode,
         MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
-    ) && matches!(item.item_type.as_str(), "Movie" | "Series")
-    {
+    ) {
         crate::websocket::broadcast_refresh_progress(&state, item_id, 40.0).await;
-        let api_key = state.tmdb_api_key.read().await;
-        if !api_key.is_empty() {
-            let provider = jellyfin_controller::metadata_providers::TmdbMetadataProvider::new(
-                api_key.clone(),
-                BaseItemRepository::new(state.database.clone()),
-                ItemValueRepository::new(state.database.clone()),
-                PersonRepository::new(state.database.clone()),
-                ItemUpdateRepository::new(state.database.clone()),
-                Some(state.item_images.clone()),
-            );
-            drop(api_key);
-            if let Err(error) = provider.refresh_item(item_id).await {
-                eprintln!("TMDB metadata refresh failed: {error}");
-            }
-        }
-
-        let omdb_api_key = state.omdb_api_key.read().await;
-        if !omdb_api_key.is_empty() {
-            let provider =
-                jellyfin_controller::metadata_providers::OmdbMetadataProvider::new(
-                    omdb_api_key.clone(),
-                    BaseItemRepository::new(state.database.clone()),
-                    ItemValueRepository::new(state.database.clone()),
-                    ItemUpdateRepository::new(state.database.clone()),
-                );
-            drop(omdb_api_key);
-            if let Err(error) = provider.refresh_item(item_id).await {
-                eprintln!("OMDb metadata refresh failed: {error}");
-            }
-        }
-
-        if matches!(item.item_type.as_str(), "MusicArtist" | "MusicAlbum") {
-            let provider = jellyfin_controller::metadata_providers::AudioDbMetadataProvider::new(
-                BaseItemRepository::new(state.database.clone()),
-                ItemUpdateRepository::new(state.database.clone()),
-            );
-            if let Err(error) = provider.refresh_item(item_id).await {
-                eprintln!("TheAudioDB metadata refresh failed: {error}");
-            }
+        let service =
+            MetadataRefreshService::new(state.database.clone(), Some(state.item_images.clone()));
+        let tmdb_api_key = state.tmdb_api_key.read().await.clone();
+        let omdb_api_key = state.omdb_api_key.read().await.clone();
+        if let Err(error) = service.refresh(item_id, &tmdb_api_key, &omdb_api_key).await {
+            tracing::error!(%error, "metadata refresh failed");
         }
         crate::websocket::broadcast_refresh_progress(&state, item_id, 90.0).await;
     }

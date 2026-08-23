@@ -13,5 +13,8 @@ jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-naming = { path = "../jellyfin-naming" }
 serde_json.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints.rust]
 unsafe_code = "forbid"

@@ -11,8 +11,8 @@ pub use movie::{
     PersonKind, Video3dFormat, parse_movie_nfo, parse_movie_nfo_file,
     parse_movie_nfo_with_file_lookup,
 };
-pub use writer::{movie_nfo_xml, save_movie_nfo};
 pub use nfo::{
     MetadataNfoError, NfoDocumentKind, NfoFetchError, NfoMetadata, SeriesStatus, fetch_nfo_file,
     parse_nfo,
 };
+pub use writer::{NfoSaveKind, movie_nfo_xml, nfo_save_path, nfo_xml, save_movie_nfo, save_nfo};

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use jellyfin_data::{
@@ -7,8 +10,13 @@ use jellyfin_data::{
     PersonRepository,
     entities::{base_item, item_value::ItemValueType},
 };
-use jellyfin_model::{ImageType, RatingType, RemoteImageInfo, RemoteSearchResult};
+use jellyfin_model::{ImageType, ProviderIdMap, RatingType, RemoteImageInfo, RemoteSearchResult};
 use jellyfin_providers::tmdb::TmdbUtils;
+use jellyfin_providers::tv::{
+    EpisodeLookupInfo, EpisodeMetadata, EpisodeMetadataCapability, EpisodeMetadataResult,
+    EpisodeMetadataService, EpisodeParentContext, EpisodeRefreshOptions, SeasonContext,
+    SeriesContext,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -180,8 +188,52 @@ impl TmdbClient {
         id: i64,
         season_number: i32,
     ) -> Result<TmdbTvSeasonDetails, MetadataProviderError> {
-        self.get_json(&format!("/tv/{id}/season/{season_number}"), &[])
+        self.get_json(
+            &format!("/tv/{id}/season/{season_number}"),
+            &[
+                ("language", "en-US"),
+                ("append_to_response", "credits,external_ids,videos"),
+            ],
+        )
+        .await
+    }
+
+    pub(crate) async fn episode_details(
+        &self,
+        series_id: i64,
+        season_number: i32,
+        episode_number: i32,
+    ) -> Result<TmdbEpisodeDetails, MetadataProviderError> {
+        self.get_json(
+            &format!("/tv/{series_id}/season/{season_number}/episode/{episode_number}"),
+            &[
+                ("language", "en-US"),
+                ("append_to_response", "credits,external_ids,videos"),
+            ],
+        )
+        .await
+    }
+
+    pub(crate) async fn collection_details(
+        &self,
+        id: i64,
+    ) -> Result<TmdbCollectionDetails, MetadataProviderError> {
+        self.get_json(&format!("/collection/{id}"), &[("language", "en-US")])
             .await
+    }
+
+    pub(crate) async fn person_details(
+        &self,
+        id: i64,
+    ) -> Result<TmdbPersonDetails, MetadataProviderError> {
+        self.get_json(
+            &format!("/person/{id}"),
+            &[
+                ("language", "en-US"),
+                ("append_to_response", "external_ids,images"),
+            ],
+        )
+        .await
     }
 
     pub(crate) async fn movie_images(&self, id: i64) -> Result<TmdbImages, MetadataProviderError> {
@@ -351,6 +403,10 @@ impl TmdbMetadataProvider {
         match item.item_type.as_str() {
             "Movie" => self.refresh_movie(&item).await,
             "Series" => self.refresh_series(&item).await,
+            "Season" => self.refresh_season_item(&item).await,
+            "Episode" => self.refresh_episode(&item).await,
+            "BoxSet" => self.refresh_box_set(&item).await,
+            "Person" => self.refresh_person(&item).await,
             _ => Ok(false),
         }
     }
@@ -383,6 +439,57 @@ impl TmdbMetadataProvider {
             details.backdrop_path.as_deref(),
         )
         .await;
+        Ok(true)
+    }
+
+    async fn refresh_season_item(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<bool, MetadataProviderError> {
+        let Some(series) = self.items.parent(item.id).await? else {
+            return Ok(false);
+        };
+        let Some(series_tmdb_id) = self.resolve_series_id(&series).await? else {
+            return Ok(false);
+        };
+        let Some(season_number) = item.index_number else {
+            return Ok(false);
+        };
+        let season = self
+            .client
+            .tv_season_details(series_tmdb_id, season_number)
+            .await?;
+        self.apply_season_metadata(series.id, season_number, &season)
+            .await?;
+        Ok(true)
+    }
+
+    async fn refresh_box_set(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<bool, MetadataProviderError> {
+        let Some(tmdb_id) = self.resolve_box_set_id(item).await? else {
+            return Ok(false);
+        };
+        let details = self.client.collection_details(tmdb_id).await?;
+        self.apply_box_set_metadata(item.id, &details).await?;
+        self.save_remote_images(
+            item.id,
+            details.poster_path.as_deref(),
+            details.backdrop_path.as_deref(),
+        )
+        .await;
+        Ok(true)
+    }
+
+    async fn refresh_person(&self, item: &base_item::Model) -> Result<bool, MetadataProviderError> {
+        let Some(tmdb_id) = self.resolve_person_id(item).await? else {
+            return Ok(false);
+        };
+        let details = self.client.person_details(tmdb_id).await?;
+        self.apply_person_metadata(item.id, &details).await?;
+        self.save_profile_image(item.id, details.profile_path.as_deref())
+            .await;
         Ok(true)
     }
 
@@ -424,6 +531,46 @@ impl TmdbMetadataProvider {
                 item.name.as_deref().unwrap_or_default(),
                 item.production_year,
             )
+            .await?;
+        Ok(results
+            .into_iter()
+            .next()
+            .and_then(|result| result.provider_ids.get("Tmdb").cloned())
+            .and_then(|id| id.parse::<i64>().ok()))
+    }
+
+    async fn resolve_box_set_id(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<Option<i64>, MetadataProviderError> {
+        if let Some(id) =
+            provider_id(item.data.as_ref(), "Tmdb").and_then(|id| id.parse::<i64>().ok())
+        {
+            return Ok(Some(id));
+        }
+        let results = self
+            .client
+            .search_collection(item.name.as_deref().unwrap_or_default())
+            .await?;
+        Ok(results
+            .into_iter()
+            .next()
+            .and_then(|result| result.provider_ids.get("Tmdb").cloned())
+            .and_then(|id| id.parse::<i64>().ok()))
+    }
+
+    async fn resolve_person_id(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<Option<i64>, MetadataProviderError> {
+        if let Some(id) =
+            provider_id(item.data.as_ref(), "Tmdb").and_then(|id| id.parse::<i64>().ok())
+        {
+            return Ok(Some(id));
+        }
+        let results = self
+            .client
+            .search_person(item.name.as_deref().unwrap_or_default())
             .await?;
         Ok(results
             .into_iter()
@@ -542,6 +689,278 @@ impl TmdbMetadataProvider {
         Ok(())
     }
 
+    async fn apply_box_set_metadata(
+        &self,
+        item_id: Uuid,
+        details: &TmdbCollectionDetails,
+    ) -> Result<(), MetadataProviderError> {
+        self.updates
+            .update(
+                item_id,
+                ItemMetadataPatch {
+                    tags: None,
+                    genres: None,
+                    provider_ids: Some(BTreeMap::from([(
+                        "Tmdb".to_owned(),
+                        details.id.to_string(),
+                    )])),
+                },
+            )
+            .await?;
+
+        let mut item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
+        if let Some(name) = details.name.as_deref().filter(|value| !value.is_empty()) {
+            item.name = Some(name.to_owned());
+            item.sort_name = Some(name.to_owned());
+        }
+        item.overview = details
+            .overview
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned);
+        self.items.update(item).await?;
+        Ok(())
+    }
+
+    async fn apply_person_metadata(
+        &self,
+        item_id: Uuid,
+        details: &TmdbPersonDetails,
+    ) -> Result<(), MetadataProviderError> {
+        let mut provider_ids = BTreeMap::from([("Tmdb".to_owned(), details.id.to_string())]);
+        if let Some(imdb_id) = details
+            .external_ids
+            .imdb_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            provider_ids.insert("Imdb".to_owned(), imdb_id.to_owned());
+        }
+        self.updates
+            .update(
+                item_id,
+                ItemMetadataPatch {
+                    tags: None,
+                    genres: None,
+                    provider_ids: Some(provider_ids),
+                },
+            )
+            .await?;
+
+        let mut item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
+        item.overview = details
+            .biography
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned);
+        if let Some(birthday) = parse_tmdb_date(details.birthday.as_deref()) {
+            item.premiere_date = Some(birthday);
+        }
+        item.data = Some(person_extra_data(item.data.as_ref(), details));
+        self.items.update(item).await?;
+        Ok(())
+    }
+
+    async fn save_profile_image(&self, item_id: Uuid, profile_path: Option<&str>) {
+        let Some(images) = self.images.as_ref() else {
+            return;
+        };
+        let Some(profile_path) = profile_path.filter(|path| !path.is_empty()) else {
+            return;
+        };
+        let Some(image_url) = TmdbUtils::image_url(Some("original"), Some(profile_path)) else {
+            return;
+        };
+        let Some(item) = self.items.get(item_id).await.ok().flatten() else {
+            return;
+        };
+        let existing = images.list(&item).await.ok();
+        let has_profile = existing.as_ref().is_some_and(|images| {
+            images
+                .iter()
+                .any(|image| image.image_type == ImageType::Profile)
+        });
+        if !has_profile
+            && let Err(error) = images
+                .download_remote_image(item_id, ImageType::Profile, &image_url)
+                .await
+        {
+            tracing::warn!(%error, "TMDB person profile image download failed");
+        }
+    }
+
+    async fn refresh_episode(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<bool, MetadataProviderError> {
+        let parents = self.episode_parents(item).await?;
+        let mut episode = episode_metadata_from_item(item);
+        let outcome = EpisodeMetadataService::refresh(
+            &mut episode,
+            EpisodeParentContext {
+                series: parents.series.as_ref(),
+                season: parents.season.as_ref(),
+            },
+            EpisodeRefreshOptions {
+                replace_data: false,
+                metadata_language: Some("en-US"),
+                metadata_country_code: None,
+            },
+            &TmdbEpisodeCapability {
+                client: &self.client,
+            },
+        )
+        .await?;
+        if outcome.metadata_changed || outcome.provider_returned_metadata {
+            self.apply_episode_metadata(item.id, &episode).await?;
+        }
+        Ok(outcome.provider_returned_metadata)
+    }
+
+    async fn episode_parents(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<EpisodeParents, MetadataProviderError> {
+        let season = self.items.parent(item.id).await?;
+        let series = if let Some(season_item) = &season {
+            self.items.parent(season_item.id).await?
+        } else {
+            None
+        };
+        let mut series_context = None;
+        if let Some(series_item) = &series {
+            let seasons = self
+                .items
+                .children(series_item.id)
+                .await?
+                .into_iter()
+                .filter(|item| item.item_type == "Season")
+                .map(|item| season_context_from_item(&item))
+                .collect::<Vec<_>>();
+            series_context = Some(series_context_from_item(series_item, seasons));
+        }
+        let season_context = season.as_ref().map(season_context_from_item);
+        Ok(EpisodeParents {
+            series: series_context,
+            season: season_context,
+        })
+    }
+
+    async fn apply_episode_metadata(
+        &self,
+        item_id: Uuid,
+        episode: &EpisodeMetadata,
+    ) -> Result<(), MetadataProviderError> {
+        let mut item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
+        if let Some(name) = episode.name.as_deref().filter(|value| !value.is_empty()) {
+            item.name = Some(name.to_owned());
+            item.sort_name = Some(name.to_owned());
+        }
+        item.overview = episode
+            .overview
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned);
+        if let Some(index_number) = episode.index_number {
+            item.index_number = Some(index_number);
+        }
+        if let Some(parent_index_number) = episode.parent_index_number {
+            item.parent_index_number = Some(parent_index_number);
+        }
+        if let Some(ticks) = episode.premiere_date
+            && let Some(date) = ticks_to_datetime(ticks)
+        {
+            item.premiere_date = Some(date);
+        }
+        if let Some(production_year) = episode.production_year {
+            item.production_year = Some(production_year);
+        }
+        if let Some(runtime_ticks) = episode.runtime_ticks {
+            item.runtime_ticks = Some(runtime_ticks);
+        }
+        if let Some(series_id) = episode
+            .series_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok())
+        {
+            item.series_id = Some(series_id);
+        }
+        if let Some(season_id) = episode
+            .season_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok())
+        {
+            item.season_id = Some(season_id);
+        }
+        if let Some(series_presentation_unique_key) = episode
+            .series_presentation_unique_key
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            item.series_presentation_unique_key = Some(series_presentation_unique_key.to_owned());
+        }
+
+        let mut data = metadata_object(&item.data);
+        upsert_i32(&mut data, "IndexNumberEnd", episode.index_number_end);
+        upsert_i32(
+            &mut data,
+            "AirsAfterSeasonNumber",
+            episode.airs_after_season_number,
+        );
+        upsert_i32(
+            &mut data,
+            "AirsBeforeSeasonNumber",
+            episode.airs_before_season_number,
+        );
+        upsert_i32(
+            &mut data,
+            "AirsBeforeEpisodeNumber",
+            episode.airs_before_episode_number,
+        );
+        if let Some(rating) = episode.community_rating {
+            data.insert("CommunityRating".to_owned(), json!(rating));
+        }
+        if !episode.provider_ids.is_empty() {
+            data.insert(
+                "ProviderIds".to_owned(),
+                serde_json::to_value(&episode.provider_ids).unwrap_or_default(),
+            );
+        }
+        if !episode.remote_trailers.is_empty() {
+            data.insert(
+                "RemoteTrailers".to_owned(),
+                Value::Array(
+                    episode
+                        .remote_trailers
+                        .iter()
+                        .map(|url| json!({ "Name": "", "Url": url }))
+                        .collect(),
+                ),
+            );
+        }
+        if let Some(series_name) = episode.series_name.as_deref() {
+            data.insert("SeriesName".to_owned(), json!(series_name));
+        }
+        if let Some(season_name) = episode.season_name.as_deref() {
+            data.insert("SeasonName".to_owned(), json!(season_name));
+        }
+        item.data = Some(Value::Object(data));
+        self.items.update(item).await?;
+        Ok(())
+    }
+
     async fn refresh_season_metadata(
         &self,
         series_id: Uuid,
@@ -575,9 +994,7 @@ impl TmdbMetadataProvider {
             .children(series_id)
             .await?
             .into_iter()
-            .filter(|item| {
-                item.item_type == "Season" && item.index_number == Some(season_number)
-            })
+            .filter(|item| item.item_type == "Season" && item.index_number == Some(season_number))
             .collect::<Vec<_>>();
         for season_item in season_items {
             if let Some(name) = season.name.as_deref().filter(|name| !name.is_empty()) {
@@ -594,6 +1011,31 @@ impl TmdbMetadataProvider {
                     updated.overview = Some(overview.to_owned());
                     self.items.update(updated).await?;
                 }
+            }
+            if let Some(premiere_date) = parse_tmdb_date(season.air_date.as_deref())
+                && season_item.premiere_date != Some(premiere_date)
+            {
+                let mut updated = season_item.clone();
+                updated.premiere_date = Some(premiere_date);
+                updated.production_year = Some(premiere_date.year());
+                self.items.update(updated).await?;
+            }
+            if let Some(tvdb_id) = season
+                .external_ids
+                .tvdb_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            {
+                let mut updated = season_item.clone();
+                let mut data = metadata_object(&updated.data);
+                let mut provider_ids = provider_ids_from_data(updated.data.as_ref());
+                provider_ids.insert("Tvdb".to_owned(), tvdb_id.to_owned());
+                data.insert(
+                    "ProviderIds".to_owned(),
+                    serde_json::to_value(&provider_ids).unwrap_or_default(),
+                );
+                updated.data = Some(Value::Object(data));
+                self.items.update(updated).await?;
             }
             if let Some(images) = &self.images {
                 if let Some(url) =
@@ -627,7 +1069,8 @@ impl TmdbMetadataProvider {
                     episode.name = Some(name.to_owned());
                     episode.sort_name = Some(name.to_owned());
                 }
-                if let Some(overview) = remote.overview.as_deref().filter(|value| !value.is_empty()) {
+                if let Some(overview) = remote.overview.as_deref().filter(|value| !value.is_empty())
+                {
                     episode.overview = Some(overview.to_owned());
                 }
                 if let Some(premiere_date) = parse_tmdb_date(remote.air_date.as_deref()) {
@@ -663,6 +1106,8 @@ impl TmdbMetadataProvider {
                 }
                 self.items.update(episode).await?;
             }
+            self.replace_people(season_item.id, &season.credits.cast, &season.credits.crew)
+                .await?;
         }
         Ok(())
     }
@@ -735,16 +1180,17 @@ impl TmdbMetadataProvider {
         let Some(image_url) = TmdbUtils::image_url(Some("original"), Some(profile_path)) else {
             return Ok(());
         };
-        let person_item = if let Some(item) = self.items.get_by_type_and_name("Person", name).await? {
-            item
-        } else {
-            let mut item = NewBaseItem::new(Uuid::new_v4(), "Person");
-            item.name = Some(name.to_owned());
-            item.sort_name = Some(name.to_owned());
-            item.is_virtual_item = true;
-            item.data = Some(json!({ "SourceType": "Library" }));
-            self.items.create(item).await?
-        };
+        let person_item =
+            if let Some(item) = self.items.get_by_type_and_name("Person", name).await? {
+                item
+            } else {
+                let mut item = NewBaseItem::new(Uuid::new_v4(), "Person");
+                item.name = Some(name.to_owned());
+                item.sort_name = Some(name.to_owned());
+                item.is_virtual_item = true;
+                item.data = Some(json!({ "SourceType": "Library" }));
+                self.items.create(item).await?
+            };
         if let Err(error) = images
             .download_remote_image(person_item.id, ImageType::Profile, &image_url)
             .await
@@ -793,6 +1239,271 @@ impl TmdbMetadataProvider {
                 tracing::warn!(%error, "TMDB backdrop download failed");
             }
         }
+    }
+}
+
+struct EpisodeParents {
+    series: Option<SeriesContext>,
+    season: Option<SeasonContext>,
+}
+
+struct TmdbEpisodeCapability<'a> {
+    client: &'a TmdbClient,
+}
+
+impl EpisodeMetadataCapability for TmdbEpisodeCapability<'_> {
+    type Error = MetadataProviderError;
+
+    async fn get_metadata(
+        &self,
+        lookup: &EpisodeLookupInfo,
+    ) -> Result<Option<EpisodeMetadataResult>, Self::Error> {
+        if lookup.is_missing_episode || lookup.index_number.is_none() {
+            return Ok(None);
+        }
+        let Some(first) =
+            fetch_episode_details(self.client, lookup, lookup.index_number.unwrap()).await?
+        else {
+            return Ok(None);
+        };
+        let details = if let Some(end) = lookup.index_number_end {
+            let mut combined = first;
+            let mut number = combined.episode_number + 1;
+            while number <= end {
+                if let Some(next) = fetch_episode_details(self.client, lookup, number).await? {
+                    combine_episode_details(&mut combined, &next);
+                }
+                number += 1;
+            }
+            combined
+        } else {
+            first
+        };
+        Ok(Some(EpisodeMetadataResult {
+            item: episode_metadata_from_details(&details, lookup),
+            has_metadata: true,
+        }))
+    }
+}
+
+async fn fetch_episode_details(
+    client: &TmdbClient,
+    lookup: &EpisodeLookupInfo,
+    episode_number: i32,
+) -> Result<Option<TmdbEpisodeDetails>, MetadataProviderError> {
+    let Some(series_id) = lookup
+        .tmdb_series_id
+        .as_deref()
+        .and_then(|value| value.parse::<i64>().ok())
+    else {
+        return Ok(None);
+    };
+    let season_number = lookup.parent_index_number.unwrap_or(1);
+    Ok(Some(
+        client
+            .episode_details(series_id, season_number, episode_number)
+            .await?,
+    ))
+}
+
+fn combine_episode_details(target: &mut TmdbEpisodeDetails, next: &TmdbEpisodeDetails) {
+    if let Some(name) = next.name.as_deref().filter(|value| !value.is_empty()) {
+        target
+            .name
+            .get_or_insert_with(String::new)
+            .push_str(&format!(" / {name}"));
+    }
+    if let Some(overview) = next.overview.as_deref().filter(|value| !value.is_empty()) {
+        target
+            .overview
+            .get_or_insert_with(String::new)
+            .push_str(&format!(" / {overview}"));
+    }
+}
+
+fn episode_metadata_from_item(item: &base_item::Model) -> EpisodeMetadata {
+    let data = metadata_object(&item.data);
+    EpisodeMetadata {
+        name: item.name.clone(),
+        overview: item.overview.clone(),
+        index_number: item.index_number,
+        parent_index_number: item.parent_index_number,
+        index_number_end: data_i32(&data, "IndexNumberEnd"),
+        airs_after_season_number: data_i32(&data, "AirsAfterSeasonNumber"),
+        airs_before_season_number: data_i32(&data, "AirsBeforeSeasonNumber"),
+        airs_before_episode_number: data_i32(&data, "AirsBeforeEpisodeNumber"),
+        provider_ids: provider_ids_from_data(item.data.as_ref()),
+        series_name: data_string(&data, "SeriesName"),
+        season_name: data_string(&data, "SeasonName"),
+        series_id: data_string(&data, "SeriesId")
+            .or_else(|| item.series_id.map(|id| id.simple().to_string())),
+        season_id: data_string(&data, "SeasonId")
+            .or_else(|| item.season_id.map(|id| id.simple().to_string())),
+        series_presentation_unique_key: item.series_presentation_unique_key.clone(),
+        is_missing_episode: item.is_virtual_item,
+        ..EpisodeMetadata::default()
+    }
+}
+
+fn episode_metadata_from_details(
+    details: &TmdbEpisodeDetails,
+    lookup: &EpisodeLookupInfo,
+) -> EpisodeMetadata {
+    let mut provider_ids = ProviderIdMap::new();
+    provider_ids.insert("Tmdb".to_owned(), details.id.to_string());
+    if let Some(tvdb_id) = details
+        .external_ids
+        .tvdb_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        provider_ids.insert("Tvdb".to_owned(), tvdb_id.to_owned());
+    }
+    if let Some(imdb_id) = details
+        .external_ids
+        .imdb_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        provider_ids.insert("Imdb".to_owned(), imdb_id.to_owned());
+    }
+    if let Some(tvrage_id) = details
+        .external_ids
+        .tvrage_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        provider_ids.insert("TvRage".to_owned(), tvrage_id.to_owned());
+    }
+    let premiere_date = parse_tmdb_date(details.air_date.as_deref());
+    EpisodeMetadata {
+        name: details.name.clone(),
+        overview: details.overview.clone(),
+        index_number: Some(details.episode_number),
+        index_number_end: lookup.index_number_end,
+        parent_index_number: Some(details.season_number),
+        provider_ids,
+        premiere_date: premiere_date.map(datetime_to_ticks),
+        production_year: premiere_date.map(|date| date.year()),
+        community_rating: (details.vote_average > 0.0).then_some(details.vote_average as f32),
+        runtime_ticks: details
+            .runtime
+            .map(|minutes| i64::from(minutes) * 60 * 10_000_000),
+        remote_trailers: trailer_urls(&details.videos),
+        ..EpisodeMetadata::default()
+    }
+}
+
+fn season_context_from_item(item: &base_item::Model) -> SeasonContext {
+    SeasonContext {
+        id: item.id.simple().to_string(),
+        name: item.name.clone().unwrap_or_default(),
+        index_number: item.index_number,
+        provider_ids: provider_ids_from_data(item.data.as_ref()),
+    }
+}
+
+fn series_context_from_item(item: &base_item::Model, seasons: Vec<SeasonContext>) -> SeriesContext {
+    let data = metadata_object(&item.data);
+    SeriesContext {
+        id: item.id.simple().to_string(),
+        name: item.name.clone().unwrap_or_default(),
+        presentation_unique_key: item
+            .series_presentation_unique_key
+            .clone()
+            .or_else(|| item.presentation_unique_key.clone()),
+        display_order: data_string(&data, "DisplayOrder"),
+        provider_ids: provider_ids_from_data(item.data.as_ref()),
+        seasons,
+    }
+}
+
+fn provider_ids_from_data(data: Option<&Value>) -> ProviderIdMap {
+    data.and_then(Value::as_object)
+        .and_then(|object| object.get("ProviderIds"))
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    value
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .map(|value| (key.clone(), value.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn person_extra_data(existing: Option<&Value>, details: &TmdbPersonDetails) -> Value {
+    let existing = existing.cloned();
+    let mut object = metadata_object(&existing);
+    set_string(&mut object, "HomePageUrl", details.homepage.as_deref());
+    set_string(&mut object, "EndDate", details.deathday.as_deref());
+    if let Some(place) = details
+        .place_of_birth
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        object.insert("ProductionLocations".to_owned(), json!([place]));
+    }
+    let mut provider_ids = serde_json::Map::new();
+    provider_ids.insert("Tmdb".to_owned(), json!(details.id));
+    if let Some(imdb_id) = details
+        .external_ids
+        .imdb_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        provider_ids.insert("Imdb".to_owned(), json!(imdb_id));
+    }
+    object.insert("ProviderIds".to_owned(), Value::Object(provider_ids));
+    Value::Object(object)
+}
+
+fn data_i32(data: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
+    data.get(key)
+        .and_then(Value::as_i64)
+        .map(|value| value as i32)
+}
+
+fn data_string(data: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    data.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn trailer_urls(videos: &TmdbVideos) -> Vec<String> {
+    videos
+        .results
+        .iter()
+        .filter(|video| {
+            video
+                .site
+                .as_deref()
+                .is_some_and(|site| site.eq_ignore_ascii_case("youtube"))
+                && video
+                    .video_type
+                    .as_deref()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("trailer"))
+        })
+        .filter_map(|video| video.key.as_deref().filter(|key| !key.is_empty()))
+        .map(|key| format!("https://www.youtube.com/watch?v={key}"))
+        .collect()
+}
+
+fn datetime_to_ticks(date: DateTime<Utc>) -> i64 {
+    date.timestamp() * 10_000_000 + i64::from(date.timestamp_subsec_nanos()) / 100
+}
+
+fn ticks_to_datetime(ticks: i64) -> Option<DateTime<Utc>> {
+    let seconds = ticks.div_euclid(10_000_000);
+    let subsec_nanos = (ticks.rem_euclid(10_000_000) as u32) * 100;
+    DateTime::<Utc>::from_timestamp(seconds, subsec_nanos)
+}
+
+fn upsert_i32(data: &mut serde_json::Map<String, Value>, key: &str, value: Option<i32>) {
+    if let Some(value) = value {
+        data.insert(key.to_owned(), json!(value));
     }
 }
 
@@ -1196,7 +1907,11 @@ pub(crate) struct TmdbTvDetails {
 pub(crate) struct TmdbTvSeasonDetails {
     pub(crate) name: Option<String>,
     pub(crate) overview: Option<String>,
+    pub(crate) air_date: Option<String>,
     pub(crate) poster_path: Option<String>,
+    external_ids: TmdbExternalIds,
+    credits: TmdbCredits,
+    videos: TmdbVideos,
     pub(crate) episodes: Vec<TmdbEpisode>,
 }
 
@@ -1213,6 +1928,49 @@ pub(crate) struct TmdbEpisode {
     still_path: Option<String>,
     vote_average: f64,
     vote_count: i32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct TmdbEpisodeDetails {
+    id: i64,
+    name: Option<String>,
+    overview: Option<String>,
+    air_date: Option<String>,
+    season_number: i32,
+    episode_number: i32,
+    runtime: Option<i32>,
+    still_path: Option<String>,
+    vote_average: f64,
+    vote_count: i32,
+    external_ids: TmdbExternalIds,
+    videos: TmdbVideos,
+    credits: TmdbCredits,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct TmdbCollectionDetails {
+    id: i64,
+    name: Option<String>,
+    overview: Option<String>,
+    poster_path: Option<String>,
+    backdrop_path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct TmdbPersonDetails {
+    id: i64,
+    name: Option<String>,
+    homepage: Option<String>,
+    biography: Option<String>,
+    birthday: Option<String>,
+    deathday: Option<String>,
+    place_of_birth: Option<String>,
+    profile_path: Option<String>,
+    external_ids: TmdbExternalIds,
+    images: TmdbImages,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1268,6 +2026,7 @@ struct TmdbCollection {
 struct TmdbCredits {
     cast: Vec<TmdbCast>,
     crew: Vec<TmdbCrew>,
+    guest_stars: Vec<TmdbCast>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1326,6 +2085,8 @@ struct TmdbContentRating {
 #[serde(rename_all = "camelCase", default)]
 struct TmdbExternalIds {
     imdb_id: Option<String>,
+    tvdb_id: Option<String>,
+    tvrage_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1476,5 +2237,69 @@ mod tests {
         assert_eq!(season.episodes[0].episode_number, 1);
         assert_eq!(season.episodes[0].season_number, 1);
         assert_eq!(season.episodes[0].still_path.as_deref(), Some("/pilot.jpg"));
+    }
+
+    #[test]
+    fn episode_metadata_from_details_maps_official_fields() {
+        let details = TmdbEpisodeDetails {
+            id: 42,
+            name: Some("Episode".to_owned()),
+            overview: Some("Overview".to_owned()),
+            air_date: Some("2020-01-02".to_owned()),
+            season_number: 2,
+            episode_number: 3,
+            runtime: Some(45),
+            still_path: None,
+            vote_average: 7.5,
+            vote_count: 10,
+            external_ids: TmdbExternalIds {
+                imdb_id: Some("tt123".to_owned()),
+                tvdb_id: Some("456".to_owned()),
+                tvrage_id: Some("789".to_owned()),
+            },
+            videos: TmdbVideos {
+                results: vec![TmdbVideo {
+                    key: Some("abc".to_owned()),
+                    name: None,
+                    site: Some("YouTube".to_owned()),
+                    video_type: Some("Trailer".to_owned()),
+                }],
+            },
+            credits: TmdbCredits::default(),
+        };
+        let lookup = EpisodeLookupInfo {
+            index_number: Some(3),
+            index_number_end: Some(4),
+            ..EpisodeLookupInfo::default()
+        };
+
+        let metadata = episode_metadata_from_details(&details, &lookup);
+        assert_eq!(metadata.name.as_deref(), Some("Episode"));
+        assert_eq!(metadata.parent_index_number, Some(2));
+        assert_eq!(metadata.index_number_end, Some(4));
+        assert_eq!(metadata.runtime_ticks, Some(45 * 60 * 10_000_000));
+        assert_eq!(metadata.provider_ids["Tmdb"], "42");
+        assert_eq!(metadata.provider_ids["Tvdb"], "456");
+        assert_eq!(
+            metadata.remote_trailers,
+            ["https://www.youtube.com/watch?v=abc"]
+        );
+    }
+
+    #[test]
+    fn person_extra_data_keeps_provider_and_place_of_birth() {
+        let details = TmdbPersonDetails {
+            id: 7,
+            place_of_birth: Some("Paris".to_owned()),
+            external_ids: TmdbExternalIds {
+                imdb_id: Some("nm123".to_owned()),
+                ..TmdbExternalIds::default()
+            },
+            ..TmdbPersonDetails::default()
+        };
+        let data = person_extra_data(None, &details);
+        assert_eq!(data["ProviderIds"]["Tmdb"], json!(7));
+        assert_eq!(data["ProviderIds"]["Imdb"], json!("nm123"));
+        assert_eq!(data["ProductionLocations"], json!(["Paris"]));
     }
 }

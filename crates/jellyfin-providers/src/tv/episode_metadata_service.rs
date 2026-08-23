@@ -3,7 +3,7 @@ use jellyfin_model::{MetadataProvider, ProviderIdMap};
 use crate::tmdb::TmdbUtils;
 
 /// Episode fields merged by the metadata service.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct EpisodeMetadata {
     pub name: Option<String>,
     pub overview: Option<String>,
@@ -20,6 +20,11 @@ pub struct EpisodeMetadata {
     pub season_id: Option<String>,
     pub series_presentation_unique_key: Option<String>,
     pub is_missing_episode: bool,
+    pub premiere_date: Option<i64>,
+    pub production_year: Option<i32>,
+    pub community_rating: Option<f32>,
+    pub runtime_ticks: Option<i64>,
+    pub remote_trailers: Vec<String>,
 }
 
 impl EpisodeMetadata {
@@ -45,7 +50,7 @@ impl EpisodeMetadata {
 }
 
 /// Metadata result returned by one external episode provider.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct EpisodeMetadataResult {
     pub item: EpisodeMetadata,
     pub has_metadata: bool,
@@ -105,6 +110,7 @@ pub struct EpisodeRefreshOptions<'a> {
 }
 
 /// External metadata lookup boundary.
+#[allow(async_fn_in_trait)]
 pub trait EpisodeMetadataCapability {
     type Error;
 
@@ -113,7 +119,7 @@ pub trait EpisodeMetadataCapability {
     /// # Errors
     ///
     /// Returns an implementation-defined error when the provider lookup fails.
-    fn get_metadata(
+    async fn get_metadata(
         &self,
         lookup: &EpisodeLookupInfo,
     ) -> Result<Option<EpisodeMetadataResult>, Self::Error>;
@@ -217,7 +223,7 @@ impl EpisodeMetadataService {
     /// # Errors
     ///
     /// Returns the capability's error when the provider lookup fails.
-    pub fn refresh<C: EpisodeMetadataCapability + ?Sized>(
+    pub async fn refresh<C: EpisodeMetadataCapability + ?Sized>(
         episode: &mut EpisodeMetadata,
         parents: EpisodeParentContext<'_>,
         options: EpisodeRefreshOptions<'_>,
@@ -225,7 +231,7 @@ impl EpisodeMetadataService {
     ) -> Result<EpisodeRefreshOutcome, C::Error> {
         let lookup = Self::lookup_info(episode, parents, options);
         let original = episode.clone();
-        let provider_result = capability.get_metadata(&lookup)?;
+        let provider_result = capability.get_metadata(&lookup).await?;
         let provider_returned_metadata = provider_result
             .as_ref()
             .is_some_and(|result| result.has_metadata);
@@ -266,6 +272,31 @@ fn merge_base_fields(source: &EpisodeMetadata, target: &mut EpisodeMetadata, rep
         &mut target.parent_index_number,
         replace_data,
     );
+    merge_optional(
+        source.premiere_date.as_ref(),
+        &mut target.premiere_date,
+        replace_data,
+    );
+    merge_optional(
+        source.production_year.as_ref(),
+        &mut target.production_year,
+        replace_data,
+    );
+    merge_optional(
+        source.community_rating.as_ref(),
+        &mut target.community_rating,
+        replace_data,
+    );
+    merge_optional(
+        source.runtime_ticks.as_ref(),
+        &mut target.runtime_ticks,
+        replace_data,
+    );
+    merge_string_array(
+        &source.remote_trailers,
+        &mut target.remote_trailers,
+        replace_data,
+    );
     for (key, value) in &source.provider_ids {
         merge_provider_id(&mut target.provider_ids, key, value, replace_data);
     }
@@ -301,6 +332,18 @@ fn merge_episode_fields(
 fn merge_optional<T: Clone>(source: Option<&T>, target: &mut Option<T>, replace_data: bool) {
     if replace_data || target.is_none() {
         *target = source.cloned();
+    }
+}
+
+fn merge_string_array(source: &[String], target: &mut Vec<String>, replace_data: bool) {
+    if replace_data || target.is_empty() {
+        target.clone_from(&source.to_vec());
+        return;
+    }
+    for value in source {
+        if !target.iter().any(|existing| existing == value) {
+            target.push(value.clone());
+        }
     }
 }
 

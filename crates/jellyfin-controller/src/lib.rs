@@ -28,6 +28,7 @@ pub use transcode::{
 mod media_streams;
 mod metadata_editor;
 pub mod metadata_providers;
+mod metadata_refresh;
 mod music_genre;
 mod omdb;
 mod packages;
@@ -38,9 +39,9 @@ mod plugins;
 pub mod providers;
 mod scheduled_tasks;
 mod studios;
+mod subtitles;
 mod system_logs;
 mod system_storage;
-mod subtitles;
 mod tmdb;
 mod trickplay;
 mod user_data;
@@ -74,6 +75,7 @@ pub use media_streams::{
     MediaStreamService, MediaStreamServiceError,
 };
 pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
+pub use metadata_refresh::{MetadataRefreshError, MetadataRefreshService};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};
 pub use packages::{PackageError, PackageService};
 pub use persons::{Person, PersonError, PersonPage, PersonService};

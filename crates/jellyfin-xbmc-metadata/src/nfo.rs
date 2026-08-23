@@ -51,6 +51,7 @@ pub struct NfoMetadata {
     pub overview: Option<String>,
     pub tagline: String,
     pub sort_name: Option<String>,
+    pub display_order: Option<String>,
     pub series_name: Option<String>,
     pub album: Option<String>,
     pub artists: Vec<String>,
@@ -71,6 +72,7 @@ pub struct NfoMetadata {
     pub official_rating: Option<String>,
     pub people: Vec<NfoPerson>,
     pub remote_images: Vec<NfoImage>,
+    pub remote_trailers: Vec<String>,
     pub air_time: Option<String>,
     pub air_days: Vec<Weekday>,
     pub status: Option<SeriesStatus>,
@@ -251,6 +253,7 @@ fn parse_node(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetad
         "plot" | "review" | "biography" => metadata.overview = text(node),
         "tagline" => metadata.tagline = text(node).unwrap_or_default(),
         "sorttitle" | "sortname" => metadata.sort_name = text(node),
+        "displayorder" => metadata.display_order = text(node),
         "showtitle" => metadata.series_name = text(node),
         "album" if kind == NfoDocumentKind::MusicVideo => metadata.album = text(node),
         "artist" if kind == NfoDocumentKind::MusicVideo => push_text(node, &mut metadata.artists),
@@ -300,6 +303,11 @@ fn parse_node(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetad
         "airs_time" => metadata.air_time = text(node),
         "airs_dayofweek" => parse_air_days(node, metadata),
         "status" => metadata.status = text(node).map(|value| parse_status(&value)),
+        "trailer" => {
+            if let Some(value) = text(node).filter(|value| !value.is_empty()) {
+                metadata.remote_trailers.push(value);
+            }
+        }
         "lockdata" => {
             metadata.is_locked = text(node).is_some_and(|value| value.eq_ignore_ascii_case("true"));
         }

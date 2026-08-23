@@ -16,7 +16,7 @@ struct FixtureCapability {
 impl EpisodeMetadataCapability for FixtureCapability {
     type Error = &'static str;
 
-    fn get_metadata(
+    async fn get_metadata(
         &self,
         lookup: &EpisodeLookupInfo,
     ) -> Result<Option<EpisodeMetadataResult>, Self::Error> {
@@ -241,8 +241,8 @@ fn lookup_info_carries_parent_provider_ids_and_normalizes_tmdb_language() {
     assert_eq!(lookup.series_display_order.as_deref(), Some("aired"));
 }
 
-#[test]
-fn refresh_merges_provider_result_and_then_synchronizes_parent_context() {
+#[tokio::test]
+async fn refresh_merges_provider_result_and_then_synchronizes_parent_context() {
     let series = series_context();
     let parents = EpisodeParentContext {
         series: Some(&series),
@@ -279,6 +279,7 @@ fn refresh_merges_provider_result_and_then_synchronizes_parent_context() {
         },
         &capability,
     )
+    .await
     .unwrap();
 
     assert!(outcome.provider_returned_metadata);
@@ -297,8 +298,8 @@ fn refresh_merges_provider_result_and_then_synchronizes_parent_context() {
     assert_eq!(outcome.lookup.metadata_language.as_deref(), Some("en-US"));
 }
 
-#[test]
-fn refresh_without_metadata_keeps_episode_but_still_syncs_parents() {
+#[tokio::test]
+async fn refresh_without_metadata_keeps_episode_but_still_syncs_parents() {
     let series = series_context();
     let mut episode = EpisodeMetadata {
         parent_index_number: Some(1),
@@ -318,14 +319,15 @@ fn refresh_without_metadata_keeps_episode_but_still_syncs_parents() {
         EpisodeRefreshOptions::default(),
         &capability,
     )
+    .await
     .unwrap();
     assert!(!outcome.provider_returned_metadata);
     assert_eq!(episode.parent_index_number, Some(1));
     assert_eq!(episode.season_name.as_deref(), Some("Season One"));
 }
 
-#[test]
-fn refresh_propagates_provider_error_without_mutating_episode() {
+#[tokio::test]
+async fn refresh_propagates_provider_error_without_mutating_episode() {
     let original = EpisodeMetadata {
         name: Some("Episode".to_owned()),
         parent_index_number: Some(1),
@@ -342,7 +344,8 @@ fn refresh_propagates_provider_error_without_mutating_episode() {
         EpisodeParentContext::default(),
         EpisodeRefreshOptions::default(),
         &capability,
-    );
+    )
+    .await;
     assert_eq!(result, Err("fixture metadata error"));
     assert_eq!(episode, original);
 }

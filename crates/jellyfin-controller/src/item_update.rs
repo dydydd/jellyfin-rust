@@ -128,7 +128,7 @@ impl ItemUpdateService {
         Ok(())
     }
 
-    fn write_local_nfo(item: &base_item::Model) -> std::io::Result<()> {
+    pub(crate) fn write_local_nfo(item: &base_item::Model) -> std::io::Result<()> {
         if !matches!(
             item.item_type.as_str(),
             "Movie" | "Video" | "Trailer" | "MusicVideo"
@@ -144,8 +144,7 @@ impl ItemUpdateService {
             video_type: MovieVideoType::File,
         })
         .into_iter()
-        .next()
-        else {
+        .next() else {
             return Ok(());
         };
         if let Some(parent) = nfo_path.parent() {
@@ -156,7 +155,7 @@ impl ItemUpdateService {
     }
 }
 
-fn movie_nfo_from_item(item: &base_item::Model, mut existing: MovieNfo) -> MovieNfo {
+pub(crate) fn movie_nfo_from_item(item: &base_item::Model, mut existing: MovieNfo) -> MovieNfo {
     let data = item.data.as_ref().and_then(serde_json::Value::as_object);
     if let Some(name) = item.name.as_deref().filter(|name| !name.is_empty()) {
         existing.name = Some(name.to_owned());

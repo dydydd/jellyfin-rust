@@ -200,6 +200,14 @@ impl ProviderManager {
         item: &ProviderItem,
         capability: &mut C,
     ) -> ProviderUpdateType {
+        self.select_metadata_service(item)
+            .map_or(ProviderUpdateType::None, |service| {
+                capability.refresh_metadata(service, item)
+            })
+    }
+
+    #[must_use]
+    pub fn select_metadata_service(&self, _item: &ProviderItem) -> Option<&MetadataService> {
         self.metadata_services
             .iter()
             .find(|service| service.can_refresh_primary)
@@ -207,9 +215,6 @@ impl ProviderManager {
                 self.metadata_services
                     .iter()
                     .find(|service| service.can_refresh)
-            })
-            .map_or(ProviderUpdateType::None, |service| {
-                capability.refresh_metadata(service, item)
             })
     }
 
