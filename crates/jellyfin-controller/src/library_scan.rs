@@ -33,8 +33,9 @@ use jellyfin_providers::media_info::{
 };
 use jellyfin_server_implementations::{
     CoreResolutionIgnoreRule, ExtraDirectoryReader, ExtraFileSystemEntry, ExtraMediaKind,
-    ExtraOwner, ExtraOwnerKind, LibraryExtrasResolver, ResolutionFileSystemEntry,
-    ResolutionParentContext, ResolutionParentKind, ResolvedLibraryExtra,
+    ExtraOwner, ExtraOwnerKind, FilesystemDirectoryReader, LibraryExtrasResolver,
+    LibraryParentKind, LibraryResolveArgs, LibraryResolverChain, ResolutionFileSystemEntry,
+    ResolutionParentContext, ResolutionParentKind, ResolvedLibraryExtra, ResolvedLibraryItemKind,
 };
 use jellyfin_xbmc_metadata::{
     MovieNfoLocation, MovieVideoType, NfoDocumentKind, NfoMetadata, movie_nfo_save_paths,
@@ -236,10 +237,15 @@ impl LibraryScanService {
         let mut readable_roots = Vec::new();
         for path in &folder.paths {
             let root = Path::new(&path.normalized_path);
-            if self
-                .scan_path(root, collection.id, kind, summary, &mut seen_paths)
-                .await?
-            {
+            let readable = if kind.is_music() {
+                self.scan_music_path(root, collection.id, kind, summary, &mut seen_paths)
+                    .await?;
+                true
+            } else {
+                self.scan_path(root, collection.id, kind, summary, &mut seen_paths)
+                    .await?
+            };
+            if readable {
                 readable_roots.push(root.to_path_buf());
             }
         }
@@ -324,6 +330,220 @@ impl LibraryScanService {
             .await?;
         }
         Ok(true)
+    }
+
+    async fn scan_music_path(
+        &self,
+        root: &Path,
+        parent_id: Uuid,
+        kind: ScanLibraryKind,
+        summary: &mut LibraryScanSummary,
+        seen_paths: &mut HashSet<String>,
+    ) -> Result<(), LibraryScanError> {
+        let resolver = LibraryResolverChain::default_music_chain();
+        let reader = FilesystemDirectoryReader;
+        let ignore_rule = CoreResolutionIgnoreRule::new(NamingOptions::default(), "");
+        let mut stack = vec![MusicScanEntry {
+            path: root.to_path_buf(),
+            parent_id,
+            parent_kind: LibraryParentKind::Folder,
+            parent_path: None,
+            is_root: true,
+        }];
+
+        while let Some(directory) = stack.pop() {
+            let mut entries = match fs::read_dir(&directory.path).await {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let mut children = Vec::new();
+            let mut subdirectories = Vec::new();
+            let mut files = Vec::new();
+            let parent_context = ResolutionParentContext::item(ResolutionParentKind::Folder);
+
+            while let Some(entry) = entries.next_entry().await? {
+                let metadata = entry.metadata().await?;
+                let path = entry.path();
+                if metadata.is_dir() {
+                    let candidate =
+                        ResolutionFileSystemEntry::new(path.to_string_lossy().into_owned(), true);
+                    if !ignore_rule.should_ignore(&candidate, parent_context)
+                        && !is_extras_directory(&path)
+                    {
+                        children.push(candidate.clone());
+                        subdirectories.push(candidate);
+                    }
+                    continue;
+                }
+                if !metadata.is_file() {
+                    continue;
+                }
+                let candidate =
+                    ResolutionFileSystemEntry::new(path.to_string_lossy().into_owned(), false);
+                if ignore_rule.should_ignore(&candidate, parent_context) {
+                    continue;
+                }
+                let Some(media_kind) = media_kind(&path) else {
+                    continue;
+                };
+                summary.items_seen += 1;
+                if let Some(path) = path.to_str() {
+                    seen_paths.insert(path.to_owned());
+                }
+                children.push(candidate.clone());
+                files.push((path, media_kind));
+            }
+
+            let directory_path = directory.path.to_string_lossy().into_owned();
+            if let Some(path) = directory.path.to_str() {
+                seen_paths.insert(path.to_owned());
+            }
+
+            let resolved = if directory.is_root {
+                None
+            } else {
+                resolver.resolve(&LibraryResolveArgs {
+                    collection_type: Some(CollectionType::Music),
+                    path: directory_path.clone(),
+                    is_directory: true,
+                    children,
+                    parent: directory.parent_kind,
+                    parent_is_root: directory.is_root,
+                    parent_path: directory.parent_path,
+                    directory_reader: &reader,
+                })
+            };
+
+            let (directory_id, child_parent_kind) = match resolved {
+                Some(item) => match item.kind {
+                    ResolvedLibraryItemKind::MusicArtist => (
+                        self.ensure_music_folder(
+                            &directory_path,
+                            "MusicArtist",
+                            directory.parent_id,
+                            summary,
+                        )
+                        .await?,
+                        LibraryParentKind::MusicArtist,
+                    ),
+                    ResolvedLibraryItemKind::MusicAlbum => (
+                        self.ensure_music_folder(
+                            &directory_path,
+                            "MusicAlbum",
+                            directory.parent_id,
+                            summary,
+                        )
+                        .await?,
+                        LibraryParentKind::MusicAlbum,
+                    ),
+                    _ => (directory.parent_id, LibraryParentKind::Folder),
+                },
+                None => (directory.parent_id, LibraryParentKind::Folder),
+            };
+
+            for subdirectory in subdirectories {
+                stack.push(MusicScanEntry {
+                    path: PathBuf::from(&subdirectory.full_name),
+                    parent_id: directory_id,
+                    parent_kind: child_parent_kind,
+                    parent_path: Some(directory_path.clone()),
+                    is_root: false,
+                });
+            }
+
+            let paths = files
+                .iter()
+                .filter_map(|(path, _)| path.to_str().map(String::from))
+                .collect::<Vec<_>>();
+            let existing = self.items.by_paths(&paths).await?;
+            let existing_by_path = existing
+                .into_iter()
+                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+                .collect::<HashMap<_, _>>();
+            let extra_paths = self.extra_paths_for_entries(&files).await?;
+            let regular_files = files
+                .iter()
+                .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
+                .cloned()
+                .collect::<Vec<_>>();
+            summary.items_added += self
+                .process_files(
+                    &regular_files,
+                    directory_id,
+                    kind,
+                    &existing_by_path,
+                    summary,
+                )
+                .await?;
+            self.ensure_extras(&files, kind, summary, seen_paths)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_music_folder(
+        &self,
+        path: &str,
+        item_type: &str,
+        parent_id: Uuid,
+        summary: &mut LibraryScanSummary,
+    ) -> Result<Uuid, LibraryScanError> {
+        let item_id = stable_item_id(path, item_type);
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path)
+            .to_owned();
+        if let Some(mut existing) = self.items.get(item_id).await? {
+            let mut changed = false;
+            if existing.item_type != item_type {
+                existing.item_type = item_type.to_owned();
+                changed = true;
+            }
+            if existing.parent_id != Some(parent_id) {
+                existing.parent_id = Some(parent_id);
+                changed = true;
+            }
+            if existing.name.as_deref() != Some(name.as_str()) {
+                existing.name = Some(name.clone());
+                changed = true;
+            }
+            if existing.sort_name.as_deref() != Some(name.as_str()) {
+                existing.sort_name = Some(name.clone());
+                changed = true;
+            }
+            if !existing.is_folder {
+                existing.is_folder = true;
+                changed = true;
+            }
+            if existing.is_virtual_item {
+                existing.is_virtual_item = false;
+                changed = true;
+            }
+            if existing.presentation_unique_key.as_deref() != Some(path) {
+                existing.presentation_unique_key = Some(path.to_owned());
+                changed = true;
+            }
+            if changed {
+                self.items.update(existing).await?;
+            }
+            return Ok(item_id);
+        }
+
+        let mut item = NewBaseItem::new(item_id, item_type);
+        item.path = Some(path.to_owned());
+        item.parent_id = Some(parent_id);
+        item.name = Some(name.clone());
+        item.sort_name = Some(name);
+        item.is_folder = true;
+        item.is_virtual_item = false;
+        item.presentation_unique_key = Some(path.to_owned());
+        item.data = Some(json!({ "CollectionType": "music" }));
+        self.items.create(item).await?;
+        summary.items_added += 1;
+        summary.added_ids.push(item_id);
+        Ok(item_id)
     }
 
     async fn scan_entries(
@@ -661,6 +881,10 @@ impl LibraryScanService {
                     media_kind.item_type()
                 };
                 let mut changed = false;
+                if existing.parent_id != Some(parent_id) {
+                    existing.parent_id = Some(parent_id);
+                    changed = true;
+                }
                 if existing.item_type != desired_type {
                     existing.item_type = desired_type.to_owned();
                     changed = true;
@@ -1175,10 +1399,20 @@ enum MediaKind {
     Book,
 }
 
+struct MusicScanEntry {
+    path: PathBuf,
+    parent_id: Uuid,
+    parent_kind: LibraryParentKind,
+    parent_path: Option<String>,
+    is_root: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScanLibraryKind {
     Movies,
     TvShows,
+    Music,
+    MusicVideos,
     Generic,
 }
 
@@ -1190,6 +1424,8 @@ impl ScanLibraryKind {
         {
             CollectionType::Movies | CollectionType::BoxSets => Self::Movies,
             CollectionType::TvShows => Self::TvShows,
+            CollectionType::Music => Self::Music,
+            CollectionType::MusicVideos => Self::MusicVideos,
             _ => Self::Generic,
         }
     }
@@ -1198,10 +1434,15 @@ impl ScanLibraryKind {
         matches!(self, Self::TvShows)
     }
 
+    const fn is_music(self) -> bool {
+        matches!(self, Self::Music)
+    }
+
     const fn video_item_type(self) -> &'static str {
         match self {
             Self::Movies => "Movie",
-            Self::TvShows | Self::Generic => "Video",
+            Self::MusicVideos => "MusicVideo",
+            Self::TvShows | Self::Music | Self::Generic => "Video",
         }
     }
 }
@@ -1343,7 +1584,7 @@ fn contains_any(value: &str, candidates: &[&str]) -> bool {
 fn is_scanned_media_type(item_type: &str) -> bool {
     matches!(
         item_type,
-        "Audio" | "Video" | "Movie" | "Trailer" | "Photo" | "Book"
+        "Audio" | "Video" | "Movie" | "Trailer" | "Photo" | "Book" | "MusicArtist" | "MusicAlbum"
     )
 }
 
@@ -2298,6 +2539,10 @@ mod tests {
         );
         assert_eq!(
             ScanLibraryKind::from_collection_type(Some("musicvideos")).video_item_type(),
+            "MusicVideo"
+        );
+        assert_eq!(
+            ScanLibraryKind::from_collection_type(Some("music")).video_item_type(),
             "Video"
         );
         assert_eq!(
@@ -2306,6 +2551,8 @@ mod tests {
         );
         assert!(ScanLibraryKind::from_collection_type(Some("tvshows")).is_tv());
         assert!(!ScanLibraryKind::from_collection_type(Some("movies")).is_tv());
+        assert!(ScanLibraryKind::from_collection_type(Some("music")).is_music());
+        assert!(!ScanLibraryKind::from_collection_type(None).is_music());
     }
 
     #[test]

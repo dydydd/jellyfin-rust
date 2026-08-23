@@ -783,6 +783,7 @@ async fn get_lyrics_for(
 }
 
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
+    let item_type = item.item_type.clone();
     let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"]);
     let has_lyrics = item
         .data
@@ -801,7 +802,14 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         path: item.path,
         overview: item.overview,
         media_type: item.media_type,
-        collection_type: None,
+        collection_type: if item_type == "UserView" {
+            metadata_string(
+                item.data.as_ref(),
+                &["ViewType", "view_type", "CollectionType", "collection_type"],
+            )
+        } else {
+            None
+        },
         is_folder: item.is_folder,
         is_virtual_item: item.is_virtual_item,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),

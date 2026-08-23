@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
-    BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository,
+    BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ScoredBaseItem,
+    ScoredBaseItemPage,
     entities::{base_item, user},
 };
 use jellyfin_model::UserPolicy;
@@ -157,6 +158,40 @@ impl UserLibraryService {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
         Ok(self.hydrate_page(self.items.query(&query).await?))
+    }
+
+    /// Searches a target user's library with official score ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or persistence errors.
+    pub async fn search_items(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        mut query: BaseItemQuery,
+    ) -> Result<ScoredBaseItemPage, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        self.apply_user_policy(&mut query, target_user_id).await?;
+        query.user_id = Some(target_user_id);
+        let page = self.items.search(&query).await?;
+        Ok(ScoredBaseItemPage {
+            items: page
+                .items
+                .into_iter()
+                .filter_map(|scored| {
+                    self.item_types
+                        .hydrate(scored.item)
+                        .map(|item| ScoredBaseItem {
+                            item: item.into_model(),
+                            score: scored.score,
+                        })
+                })
+                .collect(),
+            total_record_count: page.total_record_count,
+            start_index: page.start_index,
+        })
     }
 
     /// Queries resumable items using the target user's real `PostgreSQL`

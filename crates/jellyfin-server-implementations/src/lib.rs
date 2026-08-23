@@ -5,6 +5,7 @@ mod dot_ignore;
 mod dto_images;
 mod ignore_patterns;
 mod library_extras;
+mod library_resolver;
 mod managed_file_system;
 mod media_stream_selector;
 mod order_mapper;
@@ -39,6 +40,11 @@ pub use ignore_patterns::IgnorePatterns;
 pub use library_extras::{
     ExtraDirectoryReader, ExtraFileSystemEntry, ExtraMediaKind, ExtraOwner, ExtraOwnerKind,
     LibraryExtrasResolver, ResolvedLibraryExtra,
+};
+pub use library_resolver::{
+    AudioLibraryResolver, DirectoryReader, FilesystemDirectoryReader, LibraryItemResolver,
+    LibraryParentKind, LibraryResolveArgs, LibraryResolverChain, MusicAlbumResolver,
+    MusicArtistResolver, ResolvedLibraryItem, ResolvedLibraryItemKind, ResolverPriority,
 };
 pub use managed_file_system::{ManagedFileInfo, ManagedFileSystem, ManagedFileSystemError};
 pub use media_stream_selector::MediaStreamSelector;

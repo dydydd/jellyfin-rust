@@ -46,6 +46,7 @@ mod tmdb;
 mod trickplay;
 mod user_data;
 mod user_library;
+mod user_views;
 mod users;
 mod videos;
 mod virtual_folders;
@@ -93,6 +94,9 @@ pub use system_storage::SystemStorageService;
 pub use trickplay::{TrickplayError, TrickplayManifest, TrickplayManifests, TrickplayService};
 pub use user_data::{UserDataService, UserDataServiceError, UserDataUpdate};
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
+pub use user_views::{
+    UserViewGroupingOption, UserViewItem, UserViewManagerError, UserViewManagerService,
+};
 pub use users::{UserError, UserService, validate_username};
 pub use videos::{VideoError, VideoService};
 pub use virtual_folders::{VirtualFolder, VirtualFolderService, VirtualFolderServiceError};

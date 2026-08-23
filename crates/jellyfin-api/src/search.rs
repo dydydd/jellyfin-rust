@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::HeaderMap};
 use axum_extra::extract::Query;
 use jellyfin_controller::{Artist, ArtistValueKind, Genre, MusicGenre, Person, Studio};
 use jellyfin_data::{
-    BaseItemPage, BaseItemQuery, ItemValueQuery, PersonQuery, entities::base_item,
+    BaseItemQuery, ItemValueQuery, PersonQuery, ScoredBaseItemPage, entities::base_item,
 };
 use jellyfin_model::{MediaType, SearchHint, SearchHintResult};
 use serde::Deserialize;
@@ -89,7 +89,7 @@ pub(crate) async fn hints(
     if query.include_media.unwrap_or(true) {
         let page = state
             .user_library
-            .query_items(
+            .search_items(
                 &authenticated.user,
                 target_user_id,
                 BaseItemQuery {
@@ -345,13 +345,13 @@ fn excludes_hint_type(exclude_item_types: &[String], hint_types: &[&str]) -> boo
     })
 }
 
-fn media_search_hint_result(page: BaseItemPage, matched_term: &str) -> SearchHintResult {
+fn media_search_hint_result(page: ScoredBaseItemPage, matched_term: &str) -> SearchHintResult {
     SearchHintResult {
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         search_hints: page
             .items
             .into_iter()
-            .map(|item| search_hint(item, matched_term))
+            .map(|scored| search_hint(scored.item, matched_term))
             .collect(),
     }
 }

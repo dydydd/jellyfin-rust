@@ -6,8 +6,7 @@ use axum::{
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
-use jellyfin_controller::VirtualFolder;
-use jellyfin_model::UserPolicy;
+use jellyfin_controller::{UserViewGroupingOption, UserViewItem, VirtualFolder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -90,19 +89,13 @@ async fn user_views_for(
     query: UserViewsQuery,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
     let target_user_id = target_user_id(&state, &headers, uri, requested_user_id).await?;
-    let user = state.users.get(target_user_id).await?;
-    let policy: UserPolicy =
-        serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
     let _ = query.include_external_content;
     let items = state
-        .virtual_folders
-        .list()
+        .user_views
+        .list(target_user_id, &query.preset_views, query.include_hidden)
         .await?
         .into_iter()
-        .filter(|folder| query.include_hidden || !is_hidden(folder))
-        .filter(|folder| preset_matches(folder, &query.preset_views))
-        .filter(|folder| policy_allows_folder(&policy, folder.id))
-        .map(|folder| view_to_dto(folder, state.server_id()))
+        .map(|item| user_view_to_dto(item, state.server_id()))
         .collect::<Vec<_>>();
     Ok(Json(BaseItemQueryResult {
         total_record_count: items.len(),
@@ -118,20 +111,18 @@ async fn grouping_options_for(
     requested_user_id: Option<Uuid>,
 ) -> Result<Json<Vec<SpecialViewOptionDto>>, ApiError> {
     let target_user_id = target_user_id(&state, &headers, uri, requested_user_id).await?;
-    let user = state.users.get(target_user_id).await?;
-    let policy: UserPolicy =
-        serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
     Ok(Json(
         state
-            .virtual_folders
-            .list()
+            .user_views
+            .grouping_options(target_user_id)
             .await?
             .into_iter()
-            .filter(is_eligible_for_grouping)
-            .filter(|folder| policy_allows_folder(&policy, folder.id))
-            .map(|folder| SpecialViewOptionDto {
-                name: folder.name,
-                id: folder.id.simple().to_string(),
+            .map(|option| {
+                let UserViewGroupingOption { id, name } = option;
+                SpecialViewOptionDto {
+                    name,
+                    id: id.simple().to_string(),
+                }
             })
             .collect(),
     ))
@@ -145,17 +136,6 @@ async fn target_user_id(
 ) -> Result<Uuid, ApiError> {
     let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
     identity.target_user_id(requested_user_id)
-}
-
-fn policy_allows_folder(policy: &UserPolicy, folder_id: Uuid) -> bool {
-    if policy
-        .blocked_media_folders
-        .as_ref()
-        .is_some_and(|blocked| blocked.contains(&folder_id))
-    {
-        return false;
-    }
-    policy.enable_all_folders || policy.enabled_folders.contains(&folder_id)
 }
 
 pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto {
@@ -201,34 +181,47 @@ pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto
     }
 }
 
-fn preset_matches(folder: &VirtualFolder, preset_views: &[String]) -> bool {
-    preset_views.is_empty()
-        || folder
-            .collection_type
-            .as_deref()
-            .is_some_and(|collection_type| {
-                preset_views
-                    .iter()
-                    .any(|preset| preset.eq_ignore_ascii_case(collection_type))
-            })
-}
-
-fn is_eligible_for_grouping(folder: &VirtualFolder) -> bool {
-    folder
-        .collection_type
-        .as_deref()
-        .is_none_or(|collection_type| {
-            collection_type.eq_ignore_ascii_case("movies")
-                || collection_type.eq_ignore_ascii_case("tvshows")
-        })
-}
-
-fn is_hidden(folder: &VirtualFolder) -> bool {
-    bool_option(
-        &folder.library_options,
-        &["IsHidden", "isHidden", "Hidden", "hidden"],
-    )
-    .unwrap_or(false)
+pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemDto {
+    BaseItemDto {
+        name: Some(item.name.clone()),
+        server_id: server_id.to_owned(),
+        id: item.id.simple().to_string(),
+        playlist_item_id: None,
+        item_type: item.item_type,
+        etag: item.id.simple().to_string(),
+        date_created: None,
+        sort_name: Some(item.sort_name),
+        path: None,
+        overview: None,
+        media_type: None,
+        collection_type: item.collection_type,
+        is_folder: true,
+        is_virtual_item: item.is_virtual_item,
+        parent_id: item.parent_id.map(|id| id.simple().to_string()),
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        premiere_date: None,
+        run_time_ticks: None,
+        presentation_unique_key: None,
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
+        provider_ids: None,
+        image_tags: HashMap::new(),
+        backdrop_image_tags: Vec::new(),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
+        media_sources: None,
+        media_streams: None,
+        trickplay: None,
+        ..BaseItemDto::default()
+    }
 }
 
 pub(crate) fn bool_option(value: &Value, keys: &[&str]) -> Option<bool> {

@@ -157,6 +157,19 @@ pub struct BaseItemPage {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredBaseItem {
+    pub item: base_item::Model,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredBaseItemPage {
+    pub items: Vec<ScoredBaseItem>,
+    pub total_record_count: u64,
+    pub start_index: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, FromQueryResult)]
 pub struct BaseItemCounts {
     pub movie_count: i64,
@@ -1805,12 +1818,140 @@ impl BaseItemRepository {
             start_index,
         })
     }
+
+    /// Searches persisted items with Jellyfin's database-provider scoring.
+    ///
+    /// Exact clean-name matches score highest, followed by prefix, word-prefix,
+    /// and contains matches. Original-title matches fall back to the contains
+    /// tier, mirroring `SqlSearchProvider`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the scored query fails.
+    pub async fn search(&self, query: &BaseItemQuery) -> Result<ScoredBaseItemPage, BaseItemError> {
+        let raw_search_term = query
+            .search_term
+            .as_deref()
+            .map(str::trim)
+            .filter(|term| !term.is_empty())
+            .unwrap_or_default();
+        let clean_search_term = raw_search_term.clean_value();
+        if raw_search_term.is_empty() || clean_search_term.is_empty() {
+            return Ok(ScoredBaseItemPage {
+                items: Vec::new(),
+                total_record_count: 0,
+                start_index: query.start_index,
+            });
+        }
+
+        let clean_prefix = format!("{clean_search_term} ");
+        let like_original = format!("%{raw_search_term}%");
+        let (cte, count_values) =
+            scored_search_cte(query, &clean_search_term, &clean_prefix, &like_original);
+        let total_record_count = self
+            .database
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!("{cte} SELECT COUNT(*)::bigint AS total_record_count FROM filtered"),
+                count_values,
+            ))
+            .await?
+            .map(|row| row.try_get::<i64>("", "total_record_count"))
+            .transpose()?
+            .unwrap_or(0);
+
+        let limit = query.limit.unwrap_or(100);
+        let (cte, mut page_values) =
+            scored_search_cte(query, &clean_search_term, &clean_prefix, &like_original);
+        page_values.push((query.start_index as i64).into());
+        let mut page_sql = format!(
+            "{cte} SELECT {BASE_ITEM_COLUMNS} FROM filtered \
+             ORDER BY search_score DESC, id ASC OFFSET ${}",
+            page_values.len()
+        );
+        page_values.push((limit as i64).into());
+        let _ = page_sql.push_str(&format!(" LIMIT ${}", page_values.len()));
+
+        let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            page_sql,
+            page_values,
+        ))
+        .all(&self.database)
+        .await?;
+        Ok(ScoredBaseItemPage {
+            items: items
+                .into_iter()
+                .map(|item| {
+                    let score = search_score(
+                        item.clean_name.as_deref(),
+                        &clean_search_term,
+                        &clean_prefix,
+                    );
+                    ScoredBaseItem { item, score }
+                })
+                .collect(),
+            total_record_count: u64::try_from(total_record_count).unwrap_or(0),
+            start_index: query.start_index,
+        })
+    }
 }
 
 const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \
     clean_name, sort_name, media_type, overview, official_rating, index_number, parent_index_number, production_year, \
     premiere_date, runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, primary_version_id, series_id, season_id, \
     series_presentation_unique_key, date_created, date_modified, row_version";
+
+fn scored_search_cte(
+    query: &BaseItemQuery,
+    clean_search_term: &str,
+    clean_prefix: &str,
+    like_original: &str,
+) -> (String, Vec<SeaValue>) {
+    let mut values = vec![
+        clean_search_term.into(),
+        clean_prefix.into(),
+        clean_search_term.into(),
+        postgres_contains_pattern(clean_search_term).into(),
+        like_original.into(),
+    ];
+    let mut sql = String::from(
+        "WITH filtered AS (\
+             SELECT item.*, \
+                    CASE \
+                      WHEN item.clean_name = $1 THEN 100.0 \
+                      WHEN item.clean_name LIKE (concat($2, '%')) THEN 80.0 \
+                      WHEN item.clean_name LIKE (concat('%', $3, ' %')) THEN 75.0 \
+                      ELSE 50.0 \
+                    END AS search_score \
+             FROM jellyfin.base_items AS item \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND item.id <> '00000000-0000-0000-0000-000000000001'::uuid \
+               AND item.is_virtual_item = false \
+               AND (item.clean_name ILIKE $4 OR item.data ->> 'OriginalTitle' ILIKE $5)",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query, false);
+    sql.push(')');
+    (sql, values)
+}
+
+fn search_score(clean_name: Option<&str>, clean_search_term: &str, clean_prefix: &str) -> f32 {
+    let Some(clean_name) = clean_name else {
+        return 50.0;
+    };
+    if clean_name.eq_ignore_ascii_case(clean_search_term) {
+        100.0
+    } else if clean_name
+        .get(..clean_search_term.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(clean_search_term))
+    {
+        80.0
+    } else if clean_name.contains(clean_prefix) {
+        75.0
+    } else {
+        50.0
+    }
+}
 
 fn grouped_versions_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = Vec::new();
@@ -1819,7 +1960,7 @@ fn grouped_versions_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
              SELECT item.* FROM jellyfin.base_items AS item \
              WHERE item.item_type <> 'PLACEHOLDER'",
     );
-    append_raw_item_filters(&mut sql, &mut values, query);
+    append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push_str(
         "), version_groups AS (\
              (SELECT DISTINCT ON (presentation_unique_key) filtered.* \
@@ -1853,7 +1994,7 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
              SELECT item.* FROM resume_versions AS item \
              WHERE item.item_type <> 'PLACEHOLDER'",
     );
-    append_raw_item_filters(&mut sql, &mut values, query);
+    append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
     (sql, values)
 }
@@ -1875,7 +2016,7 @@ fn not_resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, 
                    WHERE resumable_groups.primary_id = item.id\
                )",
     );
-    append_raw_item_filters(&mut sql, &mut values, query);
+    append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
     (sql, values)
 }
@@ -1895,7 +2036,7 @@ fn date_played_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Ve
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.primary_version_id IS NULL",
     );
-    append_raw_item_filters(&mut sql, &mut values, query);
+    append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push_str(
         "), dated AS (\
              SELECT item.*, version_dates.date_played \
@@ -1929,7 +2070,7 @@ fn extended_sort_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
          FROM jellyfin.base_items AS item \
          WHERE item.item_type <> 'PLACEHOLDER'",
     );
-    append_raw_item_filters(&mut sql, &mut values, query);
+    append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
     (sql, values)
 }
@@ -1943,7 +2084,7 @@ fn production_years_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.production_year > 0",
     );
-    append_raw_item_filters(&mut sql, &mut values, query);
+    append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push_str(
         "), years AS (\
              SELECT DISTINCT production_year FROM filtered\
@@ -1962,7 +2103,7 @@ fn official_ratings_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
                AND item.official_rating IS NOT NULL \
                AND item.official_rating <> ''",
     );
-    append_raw_item_filters(&mut sql, &mut values, query);
+    append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push_str(
         "), ratings AS (\
              SELECT DISTINCT official_rating FROM filtered\
@@ -1972,7 +2113,12 @@ fn official_ratings_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &BaseItemQuery) {
+fn append_raw_item_filters(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    query: &BaseItemQuery,
+    include_search_term: bool,
+) {
     if !query.ids.is_empty() {
         append_uuid_list_filter(sql, values, "item.id", &query.ids);
     }
@@ -1993,19 +2139,21 @@ fn append_raw_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: 
             push_bind(sql, values, parent_id, " AND item.parent_id = ");
         }
     }
-    if let Some(search_term) = query
-        .search_term
-        .as_deref()
-        .map(str::trim)
-        .filter(|term| !term.is_empty())
-    {
-        let clean_search_term = search_term.clean_value();
-        push_bind(
-            sql,
-            values,
-            postgres_contains_pattern(&clean_search_term),
-            " AND item.clean_name ILIKE ",
-        );
+    if include_search_term {
+        if let Some(search_term) = query
+            .search_term
+            .as_deref()
+            .map(str::trim)
+            .filter(|term| !term.is_empty())
+        {
+            let clean_search_term = search_term.clean_value();
+            push_bind(
+                sql,
+                values,
+                postgres_contains_pattern(&clean_search_term),
+                " AND item.clean_name ILIKE ",
+            );
+        }
     }
     append_string_list_filter(
         sql,

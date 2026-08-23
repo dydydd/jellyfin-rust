@@ -13,7 +13,7 @@ pub mod tv_paths;
 pub mod video;
 pub mod video_list;
 
-pub use audio::AlbumParser;
+pub use audio::{AlbumParser, is_audio_file};
 pub use audiobook::{
     AudioBookFileInfo, AudioBookFilePathParser, AudioBookFilePathParserResult, AudioBookInfo,
     AudioBookListResolver, AudioBookNameParser, AudioBookNameParserResult, AudioBookResolver,

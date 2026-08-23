@@ -4,8 +4,11 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::{UserService, VirtualFolderService};
-use jellyfin_data::{DatabaseConfig, DeviceRepository, NewDevice};
-use sea_orm::{ConnectionTrait, DatabaseConnection};
+use jellyfin_data::{
+    DatabaseConfig, DeviceRepository, NewDevice,
+    entities::{user, user::Column as UserColumn},
+};
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -63,12 +66,14 @@ async fn exercise_user_view_routes(database_name: &str) {
     let fixture = Fixture::new(database.clone()).await;
     assert_auth_and_target_user_rules(&fixture).await;
     assert_user_views(&fixture).await;
+    assert_grouped_views(&fixture).await;
     assert_grouping_options(&fixture).await;
     database.close().await.expect("database pool cleanup");
 }
 
 struct Fixture {
     app: axum::Router,
+    database: DatabaseConnection,
     user_id: Uuid,
     other_user_id: Uuid,
     admin_token: String,
@@ -160,10 +165,11 @@ impl Fixture {
 
         Self {
             app: jellyfin_api::router(AppState::new(
-                database,
+                database.clone(),
                 "User View Test Server".to_owned(),
                 "http://127.0.0.1:8096".to_owned(),
             )),
+            database,
             user_id: user.id,
             other_user_id: other_user.id,
             admin_token,
@@ -221,11 +227,24 @@ async fn assert_user_views(fixture: &Fixture) {
         &fixture.admin_token,
     )
     .await;
-    assert_eq!(movie_views["TotalRecordCount"], 1);
-    assert_eq!(
-        movie_views["Items"][0]["Id"],
-        fixture.movie_view_id.simple().to_string()
-    );
+    assert_eq!(movie_views["TotalRecordCount"], 4);
+    let movie_view = movie_views["Items"]
+        .as_array()
+        .expect("movie preset view items")
+        .iter()
+        .find(|item| item["CollectionType"] == "movies")
+        .expect("movie preset view");
+    assert_eq!(movie_view["Type"], "UserView");
+    assert_ne!(movie_view["Id"], fixture.movie_view_id.simple().to_string());
+    let persisted = get_json(
+        &fixture.app,
+        &format!("/Items/{}", movie_view["Id"].as_str().unwrap()),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(persisted["Type"], "UserView");
+    assert_eq!(persisted["CollectionType"], "movies");
+    assert_eq!(persisted["IsVirtualItem"], true);
 
     let with_hidden = get_json(
         &fixture.app,
@@ -234,6 +253,35 @@ async fn assert_user_views(fixture: &Fixture) {
     )
     .await;
     assert_eq!(with_hidden["TotalRecordCount"], 5);
+}
+
+async fn assert_grouped_views(fixture: &Fixture) {
+    set_grouped_folders(
+        &fixture.database,
+        fixture.user_id,
+        &[
+            fixture.movie_view_id,
+            fixture.show_view_id,
+            fixture.mixed_view_id,
+        ],
+    )
+    .await;
+
+    let views = get_json(&fixture.app, "/UserViews", &fixture.user_token).await;
+    assert_eq!(views["TotalRecordCount"], 3);
+    let items = views["Items"].as_array().expect("grouped view items");
+    let movies = items
+        .iter()
+        .find(|item| item["CollectionType"] == "movies")
+        .expect("grouped movie view");
+    assert_eq!(movies["Type"], "UserView");
+    assert_eq!(movies["Name"], "Movies");
+    assert_eq!(movies["IsFolder"], true);
+    assert!(items.iter().any(|item| {
+        item["Id"] == fixture.show_view_id.simple().to_string()
+            && item["Type"] == "CollectionFolder"
+    }));
+    assert!(items.iter().any(|item| item["CollectionType"] == "music"));
 }
 
 async fn assert_grouping_options(fixture: &Fixture) {
@@ -307,6 +355,28 @@ async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> Str
         .await
         .expect("session creation")
         .access_token
+}
+
+async fn set_grouped_folders(database: &DatabaseConnection, user_id: Uuid, folder_ids: &[Uuid]) {
+    let preferences = serde_json::json!({
+        "GroupedFolders": folder_ids
+            .iter()
+            .map(|id| id.simple().to_string())
+            .collect::<Vec<_>>()
+    });
+    user::Entity::update_many()
+        .col_expr(
+            user::Column::Preferences,
+            sea_orm::sea_query::Expr::value(preferences),
+        )
+        .col_expr(
+            user::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(chrono::Utc::now()),
+        )
+        .filter(UserColumn::Id.eq(user_id))
+        .exec(database)
+        .await
+        .expect("grouped folders preference update");
 }
 
 fn assert_temporary_database_name(name: &str) {

@@ -19,9 +19,9 @@ use jellyfin_controller::{
     PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
     SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
     TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
-    client_event::ClientEventLogger,
+    UserError, UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
+    UserViewManagerService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -156,6 +156,7 @@ pub struct AppState {
     pub(crate) years: YearService,
     pub(crate) tuner_hosts: TunerHostManager,
     pub(crate) virtual_folders: VirtualFolderService,
+    pub(crate) user_views: UserViewManagerService,
     pub(crate) dashboard: DashboardService,
     pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
@@ -241,6 +242,7 @@ impl AppState {
             years: YearService::new(database.clone()),
             tuner_hosts: TunerHostManager::new(database.clone()),
             virtual_folders: VirtualFolderService::new(database.clone()),
+            user_views: UserViewManagerService::new(database.clone()),
             dashboard: DashboardService::default(),
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
@@ -1494,6 +1496,7 @@ pub(crate) enum ApiError {
     Video(VideoError),
     Year(YearError),
     VirtualFolder(VirtualFolderServiceError),
+    UserViewManager(UserViewManagerError),
     Dashboard(DashboardError),
     TunerHost(TunerHostError),
     ItemLookup(ItemLookupError),
@@ -1632,6 +1635,12 @@ impl From<YearError> for ApiError {
 impl From<VirtualFolderServiceError> for ApiError {
     fn from(error: VirtualFolderServiceError) -> Self {
         Self::VirtualFolder(error)
+    }
+}
+
+impl From<UserViewManagerError> for ApiError {
+    fn from(error: UserViewManagerError) -> Self {
+        Self::UserViewManager(error)
     }
 }
 
@@ -1920,6 +1929,13 @@ impl IntoResponse for ApiError {
                 "Person persistence failed",
             ),
             Self::VirtualFolder(error) => virtual_folder_error_response(&error),
+            Self::UserViewManager(UserViewManagerError::User(UserError::NotFound)) => {
+                (StatusCode::NOT_FOUND, "User not found")
+            }
+            Self::UserViewManager(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "User view persistence failed",
+            ),
             Self::Dashboard(error) => dashboard_error_response(&error),
             Self::TunerHost(error) => tuner_host_error_response(&error),
             Self::ItemLookup(error) => item_lookup_error_response(&error),

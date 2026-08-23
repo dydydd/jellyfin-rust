@@ -233,6 +233,8 @@ async fn exercise_search_routes(database_name: &str) {
     .await;
     assert_eq!(hints["TotalRecordCount"], 2);
     assert_eq!(hints["SearchHints"].as_array().unwrap().len(), 2);
+    assert_eq!(hints["SearchHints"][0]["Name"], "Matrix Reloaded");
+    assert_eq!(hints["SearchHints"][1]["Name"], "The Matrix");
     let hint = hints["SearchHints"]
         .as_array()
         .unwrap()
