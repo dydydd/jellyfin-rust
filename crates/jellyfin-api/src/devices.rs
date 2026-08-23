@@ -11,7 +11,9 @@ use jellyfin_data::{
     DeviceQuery,
     entities::{device, device_option},
 };
-use jellyfin_model::{ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, QueryResult};
+use jellyfin_model::{
+    ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, QueryResult, UserPolicy,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -43,11 +45,13 @@ pub(crate) async fn list(
     Query(query): Query<DevicesQuery>,
 ) -> Result<Json<QueryResult<DeviceInfoDto>>, ApiError> {
     let target_user_id = elevated_target_user_id(&state, &headers, &uri, query.user_id).await?;
-    let device_query = DeviceQuery {
-        user_id: target_user_id.filter(|user_id| !user_id.is_nil()),
-        ..DeviceQuery::default()
-    };
-    let mut devices = state.devices.query(&device_query).await?.items;
+    let mut devices = state.devices.query(&DeviceQuery::default()).await?.items;
+    if let Some(user_id) = target_user_id.filter(|user_id| !user_id.is_nil()) {
+        let user = state.users.get(user_id).await?;
+        let policy: UserPolicy =
+            serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
+        devices.retain(|device| can_access_device(&policy, device));
+    }
     devices.sort_by_key(|device| (Reverse(device.date_last_activity), device.device_id.clone()));
     let options = device_options_by_id(&state, &devices).await?;
 
@@ -234,4 +238,20 @@ fn device_options_dto(options: device_option::Model) -> DeviceOptionsDto {
         device_id: Some(options.device_id),
         custom_name: options.custom_name,
     }
+}
+
+fn can_access_device(policy: &UserPolicy, device: &device::Model) -> bool {
+    if policy.enable_all_devices || policy.is_administrator {
+        return true;
+    }
+    if policy
+        .enabled_devices
+        .iter()
+        .any(|enabled| enabled.eq_ignore_ascii_case(&device.device_id))
+    {
+        return true;
+    }
+    let capabilities: ClientCapabilitiesDto =
+        serde_json::from_value(device.capabilities.clone()).unwrap_or_default();
+    !capabilities.supports_persistent_identifier
 }

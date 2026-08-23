@@ -5,8 +5,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, ChapterRepository, DeviceRepository, NewBaseItem, NewChapter, NewDevice,
-    entities::{base_item, user},
+    BaseItemRepository, DeviceRepository, MediaSegmentRepository, NewBaseItem, NewDevice,
+    NewMediaSegment, entities::{base_item, user},
 };
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::Value;
@@ -16,7 +16,7 @@ use uuid::Uuid;
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Media Segment Tests\", Device=\"Test\", DeviceId=\"media-segments\", Version=\"1.0\"";
 
 #[tokio::test]
-async fn media_segments_route_matches_official_contract_and_returns_chapters() {
+async fn media_segments_route_matches_official_contract_and_returns_persisted_segments() {
     let fixture = Fixture::new().await;
     let route = format!(
         "/MediaSegments/{}?includeSegmentTypes=Intro,Commercial",
@@ -42,10 +42,11 @@ async fn media_segments_route_matches_official_contract_and_returns_chapters() {
     let response = fixture.get(&route, &fixture.user_token).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["Items"], Value::Array(Vec::new()));
-    assert_eq!(body["TotalRecordCount"], 0);
+    assert_eq!(body["TotalRecordCount"], 2);
     assert_eq!(body["StartIndex"], 0);
     assert!(body.get("items").is_none());
+    assert_eq!(body["Items"][0]["Type"], "Intro");
+    assert_eq!(body["Items"][1]["Type"], "Commercial");
 
     let response = fixture
         .get(
@@ -59,6 +60,29 @@ async fn media_segments_route_matches_official_contract_and_returns_chapters() {
     assert_eq!(body["Items"][0]["StartTicks"], 0);
     assert_eq!(body["Items"][0]["EndTicks"], 10_000_000);
     assert_eq!(body["Items"][1]["StartTicks"], 10_000_000);
+
+    let intro_only = body_json(
+        fixture
+            .get(
+                &format!("/MediaSegments/{}?includeSegmentTypes=Intro", fixture.item_id),
+                &fixture.user_token,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(intro_only["TotalRecordCount"], 1);
+    assert_eq!(intro_only["Items"][0]["Type"], "Intro");
+
+    let unknown_only = body_json(
+        fixture
+            .get(
+                &format!("/MediaSegments/{}?includeSegmentTypes=Unknown", fixture.item_id),
+                &fixture.user_token,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(unknown_only["TotalRecordCount"], 0);
 
     fixture.cleanup().await;
 }
@@ -106,26 +130,27 @@ impl Fixture {
             .create(item)
             .await
             .expect("video item creation");
-        ChapterRepository::new(database.clone())
-            .replace(
-                item.id,
-                vec![
-                    NewChapter {
-                        index_number: 0,
-                        start_position_ticks: 0,
-                        end_position_ticks: 10_000_000,
-                        name: Some("Opening".to_owned()),
-                    },
-                    NewChapter {
-                        index_number: 1,
-                        start_position_ticks: 10_000_000,
-                        end_position_ticks: 20_000_000,
-                        name: Some("Credits".to_owned()),
-                    },
-                ],
-            )
+        let segments = MediaSegmentRepository::new(database.clone());
+        segments
+            .create(NewMediaSegment {
+                item_id: item.id,
+                segment_type: 5,
+                start_ticks: 0,
+                end_ticks: 10_000_000,
+                segment_provider_id: "test-provider".to_owned(),
+            })
             .await
-            .expect("chapter persistence");
+            .expect("intro segment persistence");
+        segments
+            .create(NewMediaSegment {
+                item_id: item.id,
+                segment_type: 1,
+                start_ticks: 10_000_000,
+                end_ticks: 20_000_000,
+                segment_provider_id: "test-provider".to_owned(),
+            })
+            .await
+            .expect("commercial segment persistence");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),

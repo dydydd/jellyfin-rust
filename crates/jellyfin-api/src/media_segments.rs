@@ -6,7 +6,6 @@ use axum::{
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
-use jellyfin_data::ChapterRepository;
 use jellyfin_model::{MediaSegmentDto, MediaSegmentType, QueryResult};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -36,23 +35,9 @@ pub(crate) async fn get_item_segments(
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
 
-    let include_segment_types = query.include_segment_types;
-    let include_unknown = include_segment_types.is_empty()
-        || include_segment_types.contains(&MediaSegmentType::Unknown);
-    let chapters = ChapterRepository::new(state.database.clone())
-        .list_for_item(item_id)
-        .await
-        .map_err(|_| ApiError::Internal)?;
-    let items = chapters
-        .into_iter()
-        .filter(|_| include_unknown)
-        .map(|chapter| MediaSegmentDto {
-            id: chapter.id,
-            item_id: chapter.item_id,
-            segment_type: MediaSegmentType::Unknown,
-            start_ticks: chapter.start_position_ticks,
-            end_ticks: chapter.end_position_ticks,
-        })
-        .collect();
+    let items = state
+        .media_segments
+        .list(item_id, &query.include_segment_types)
+        .await?;
     Ok(Json(QueryResult::from_items(items)))
 }

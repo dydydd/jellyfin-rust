@@ -13,15 +13,16 @@ use jellyfin_controller::{
     InstalledPlugin, ItemImageError, ItemImageService, ItemLookupError, ItemLookupService,
     ItemUpdateError, ItemUpdateService, LibraryControllerError, LibraryControllerService,
     LibraryScanError, LibraryScanService, LocalizationService, MediaAttachmentService,
-    MediaAttachmentServiceError, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
-    MetadataEditorService, MusicGenreError, MusicGenreService, PackageError, PackageService,
-    PersonError, PersonService, PlaylistError, PlaylistService, PlaystateError, PlaystateService,
-    PluginRegistry, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
-    SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
-    TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
-    UserViewManagerService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
+    MediaAttachmentServiceError, MediaSegmentError, MediaSegmentManagerService, MediaStreamService,
+    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
+    MusicGenreService, PackageError, PackageService, PersonError, PersonService, PlaylistError,
+    PlaylistService, PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError,
+    ScheduledTaskService, StudioError, StudioService, SubtitleManager, SubtitleProvider,
+    SystemLogError, SystemLogService, SystemStorageService, TranscodeJobRegistry, TrickplayError,
+    TrickplayService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
+    UserLibraryService, UserService, UserViewManagerError, UserViewManagerService, VideoError,
+    VideoService, VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -150,6 +151,7 @@ pub struct AppState {
     pub(crate) user_library: UserLibraryService,
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) media_attachments: MediaAttachmentService,
+    pub(crate) media_segments: MediaSegmentManagerService,
     pub(crate) media_streams: MediaStreamService,
     pub(crate) subtitles: SubtitleManager,
     pub(crate) videos: VideoService,
@@ -236,6 +238,7 @@ impl AppState {
             user_library: UserLibraryService::new(database.clone()),
             library_controller: LibraryControllerService::new(database.clone()),
             media_attachments: MediaAttachmentService::new(database.clone()),
+            media_segments: MediaSegmentManagerService::new(database.clone()),
             media_streams: MediaStreamService::new(database.clone()),
             subtitles: SubtitleManager::default(),
             videos: VideoService::new(database.clone()),
@@ -1504,6 +1507,7 @@ pub(crate) enum ApiError {
     ItemImage(ItemImageError),
     ImageProcessing(ImageProcessingError),
     MediaAttachment(MediaAttachmentServiceError),
+    MediaSegment(MediaSegmentError),
     MediaStream(MediaStreamServiceError),
     MetadataEditor(MetadataEditorError),
     SystemLog(SystemLogError),
@@ -1677,6 +1681,12 @@ impl From<ImageProcessingError> for ApiError {
 impl From<MediaAttachmentServiceError> for ApiError {
     fn from(error: MediaAttachmentServiceError) -> Self {
         Self::MediaAttachment(error)
+    }
+}
+
+impl From<MediaSegmentError> for ApiError {
+    fn from(error: MediaSegmentError) -> Self {
+        Self::MediaSegment(error)
     }
 }
 
@@ -1977,6 +1987,13 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Image processing failed")
             }
             Self::MediaAttachment(error) => media_attachment_error_response(&error),
+            Self::MediaSegment(error) => {
+                let _ = error;
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Media segment persistence failed",
+                )
+            }
             Self::MediaStream(error) => media_stream_error_response(&error),
             Self::MetadataEditor(error) => metadata_editor_error_response(&error),
             Self::SystemLog(error) => system_log_error_response(&error),

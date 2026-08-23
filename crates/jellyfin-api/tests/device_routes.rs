@@ -10,6 +10,7 @@ use jellyfin_data::{
     ApiKeyRepository, DeviceOptionsRepository, DeviceQuery, DeviceRepository, NewDevice,
     entities::{api_key, device_option, user},
 };
+use jellyfin_model::UserPolicy;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -96,6 +97,23 @@ impl Fixture {
         .await;
 
         let user_device_id = format!("shared-device-{suffix}");
+        users
+            .update_policy(
+                user.id,
+                &UserPolicy {
+                    enable_all_devices: false,
+                    enabled_devices: vec![user_device_id.clone()],
+                    authentication_provider_id: Some(
+                        UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+                    ),
+                    password_reset_provider_id: Some(
+                        UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+                    ),
+                    ..UserPolicy::default()
+                },
+            )
+            .await
+            .expect("restricted device policy");
         create_stale_user_device(&devices, user.id, &user_device_id).await;
         let user_token = session_token(
             &devices,
@@ -236,7 +254,10 @@ async fn assert_admin_default_scope(fixture: &Fixture) {
             .await,
     )
     .await;
-    assert_device_ids(&devices, &[&fixture.admin_device_id]);
+    assert!(device_count(&devices, &fixture.admin_device_id) >= 1);
+    assert_eq!(device_count(&devices, &fixture.user_device_id), 2);
+    assert!(device_count(&devices, &fixture.other_device_id) >= 1);
+    assert_eq!(devices["StartIndex"], 0);
 }
 
 async fn assert_admin_target_user_scope(fixture: &Fixture) {

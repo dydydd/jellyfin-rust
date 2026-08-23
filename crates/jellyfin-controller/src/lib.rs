@@ -17,6 +17,7 @@ pub mod library_watcher;
 mod localization;
 mod lyrics;
 mod media_attachments;
+mod media_segments;
 pub mod media_encoding;
 pub mod transcode;
 
@@ -71,6 +72,7 @@ pub use media_attachments::{
     MediaAttachmentFilter, MediaAttachmentMapper, MediaAttachmentService,
     MediaAttachmentServiceError,
 };
+pub use media_segments::{MediaSegmentError, MediaSegmentManagerService};
 pub use media_streams::{
     IdentityMediaStreamPathMapper, MediaStreamFilter, MediaStreamMapper, MediaStreamPathMapper,
     MediaStreamService, MediaStreamServiceError,

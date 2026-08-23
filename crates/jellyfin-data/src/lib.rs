@@ -11,6 +11,7 @@ mod item_value_repository;
 mod keyframe_data_repository;
 mod linked_child_repository;
 mod media_attachment_repository;
+mod media_segment_repository;
 mod media_stream_repository;
 mod named_configuration_repository;
 mod person_repository;
@@ -61,6 +62,9 @@ pub use linked_child_repository::{
 pub use media_attachment_repository::{
     MediaAttachmentQuery, MediaAttachmentRepository, MediaAttachmentStoreError,
     PersistedMediaAttachment,
+};
+pub use media_segment_repository::{
+    MediaSegmentRecord, MediaSegmentRepository, MediaSegmentStoreError, NewMediaSegment,
 };
 pub use media_stream_repository::{
     InvalidPersistedMediaStreamType, MediaStreamQuery, MediaStreamRepository,
