@@ -94,6 +94,7 @@ impl<'de> Deserialize<'de> for MediaStreamType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum VideoRange {
     #[default]
@@ -115,6 +116,7 @@ impl VideoRange {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum VideoRangeType {
     #[default]
@@ -146,6 +148,7 @@ pub enum VideoRangeType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum AudioSpatialFormat {
     #[default]
@@ -156,6 +159,7 @@ pub enum AudioSpatialFormat {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum SubtitleDeliveryMethod {
     #[default]

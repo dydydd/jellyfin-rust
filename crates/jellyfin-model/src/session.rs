@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum MediaType {
     #[default]
@@ -26,6 +27,7 @@ impl std::str::FromStr for MediaType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum GeneralCommandType {
     MoveUp,
@@ -136,6 +138,7 @@ impl Default for GeneralCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum PlayCommand {
     PlayNow,
@@ -197,6 +200,7 @@ impl Default for PlayRequest {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum PlaystateCommand {
     #[default]
@@ -231,6 +235,7 @@ pub struct PlaystateRequest {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum RepeatMode {
     #[default]
@@ -240,6 +245,7 @@ pub enum RepeatMode {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum PlaybackOrder {
     #[default]

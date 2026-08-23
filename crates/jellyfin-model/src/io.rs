@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// The kind of an entry exposed by the server file-system browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum FileSystemEntryType {
     File,

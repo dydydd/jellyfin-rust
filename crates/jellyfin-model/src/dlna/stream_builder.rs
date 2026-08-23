@@ -47,6 +47,7 @@ impl DirectPlayProfile {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum CodecType {
     #[default]

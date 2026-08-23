@@ -3,6 +3,7 @@ use std::{error::Error, fmt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum ImageOrientation {
     #[default]
@@ -17,6 +18,7 @@ pub enum ImageOrientation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum ImageFormat {
     Bmp = 0,

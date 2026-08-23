@@ -79,6 +79,7 @@ impl Default for UserConfiguration {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum ImageSavingConvention {
     #[default]
@@ -87,6 +88,7 @@ pub enum ImageSavingConvention {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum ImageResolution {
     #[default]
@@ -110,6 +112,7 @@ pub enum ImageResolution {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum TrickplayScanBehavior {
     Blocking,

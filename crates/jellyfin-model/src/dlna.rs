@@ -126,6 +126,7 @@ fn split_negative_list(profile_containers: Option<&str>) -> (Option<&str>, bool)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum DlnaProfileType {
     #[default]
@@ -137,6 +138,7 @@ pub enum DlnaProfileType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum EncodingContext {
     #[default]
@@ -145,6 +147,7 @@ pub enum EncodingContext {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum MediaStreamProtocol {
     #[default]
@@ -155,6 +158,7 @@ pub enum MediaStreamProtocol {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum TranscodeSeekInfo {
     #[default]
@@ -172,6 +176,7 @@ impl TranscodeSeekInfo {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[repr(i32)]
 pub enum PlayMethod {
@@ -182,6 +187,7 @@ pub enum PlayMethod {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum VideoType {
     #[default]
@@ -192,6 +198,7 @@ pub enum VideoType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum IsoType {
     #[default]
@@ -200,6 +207,7 @@ pub enum IsoType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum Video3DFormat {
     #[default]
@@ -211,6 +219,7 @@ pub enum Video3DFormat {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum TransportStreamTimestamp {
     #[default]
@@ -220,6 +229,7 @@ pub enum TransportStreamTimestamp {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum ProfileConditionType {
     #[default]
@@ -231,6 +241,7 @@ pub enum ProfileConditionType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum ProfileConditionValue {
     #[default]
@@ -312,6 +323,7 @@ impl ContainerProfile {
 
 /// Media-source metadata required by stream selection and URL generation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum MediaProtocol {
     #[default]
@@ -326,6 +338,7 @@ pub enum MediaProtocol {
 
 /// Why playback of an item cannot be started.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum PlaybackErrorCode {
     #[default]
@@ -336,6 +349,7 @@ pub enum PlaybackErrorCode {
 
 /// The type of a media source.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum MediaSourceType {
     #[default]

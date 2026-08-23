@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum ScrollDirection {
     #[default]
@@ -11,6 +12,7 @@ pub enum ScrollDirection {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum SortOrder {
     #[default]

@@ -6,6 +6,7 @@ use crate::{BaseItemDto, BaseItemKind, ImageType, NameGuidPair, NameValuePair};
 
 /// Controls which optional fields are attached to a `BaseItemDto`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum ItemFields {
     AirTime,
     CanDelete,
@@ -59,6 +60,7 @@ pub enum ItemFields {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum ItemFilter {
     IsFolder = 1,

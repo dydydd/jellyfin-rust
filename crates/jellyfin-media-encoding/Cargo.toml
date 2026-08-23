@@ -9,6 +9,7 @@ description = "Media parsing and encoding primitives for Jellyfin"
 path = "src/lib.rs"
 
 [dependencies]
+chardetng = "1.0.0"
 chrono.workspace = true
 encoding_rs = "0.8"
 serde_json.workspace = true

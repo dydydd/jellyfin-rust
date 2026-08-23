@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum GroupStateType {
     #[default]
     Idle,
@@ -12,6 +13,7 @@ pub enum GroupStateType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum GroupQueueMode {
     #[default]
     Queue,
@@ -19,6 +21,7 @@ pub enum GroupQueueMode {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum GroupRepeatMode {
     RepeatOne,
     RepeatAll,
@@ -27,6 +30,7 @@ pub enum GroupRepeatMode {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum GroupShuffleMode {
     #[default]
     Sorted,
@@ -34,6 +38,7 @@ pub enum GroupShuffleMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum SendCommandType {
     Unpause,
     Pause,
@@ -57,6 +62,7 @@ pub struct SendCommandDto {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum GroupUpdateType {
     UserJoined,
     UserLeft,
@@ -70,6 +76,7 @@ pub enum GroupUpdateType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum PlaybackRequestType {
     Play,
     SetPlaylistItem,
@@ -108,6 +115,7 @@ pub struct GroupStateUpdateDto {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum PlayQueueUpdateReason {
     NewPlaylist,
     SetCurrentItem,

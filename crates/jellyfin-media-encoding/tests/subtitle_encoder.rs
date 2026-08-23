@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use encoding_rs::WINDOWS_1253;
+use encoding_rs::{SHIFT_JIS, WINDOWS_1251, WINDOWS_1252, WINDOWS_1253};
 use jellyfin_media_encoding::subtitles::{
     SubtitleEncoder, SubtitleEncoderError, SubtitleInfo, SubtitleMediaSource, SubtitleMediaStream,
     SubtitleProcessOutput, SubtitleProcessRequest, SubtitleProcessRunner, SubtitleProtocol,
@@ -15,6 +15,9 @@ use jellyfin_media_encoding::subtitles::{
 const STREAM_COUNT: usize = 8;
 const CUE_COUNT: usize = 500;
 const GREEK_TEXT: &str = "Καλημέρα κόσμε, αυτό είναι ένας υπότιτλος.";
+const LATIN_TEXT: &str = "Café déjà vu, c'est un sous-titre.";
+const CYRILLIC_TEXT: &str = "Привет мир, это субтитры.";
+const JAPANESE_TEXT: &str = "こんにちは、字幕です。";
 
 #[derive(Debug)]
 struct TempDirectory(PathBuf);
@@ -224,6 +227,35 @@ fn get_subtitle_stream_non_utf8_local_file_converted_to_utf8() {
         assert!(text.contains(GREEK_TEXT));
         assert!(!text.contains(char::REPLACEMENT_CHARACTER));
         assert!(!text.contains('?'));
+    }
+}
+
+#[test]
+fn get_subtitle_stream_detects_latin_cyrillic_and_shift_jis() {
+    let temp = TempDirectory::new();
+    for (name, encoding, expected) in [
+        ("windows-1252", WINDOWS_1252, LATIN_TEXT),
+        ("windows-1251", WINDOWS_1251, CYRILLIC_TEXT),
+        ("shift_jis", SHIFT_JIS, JAPANESE_TEXT),
+    ] {
+        let (bytes, _, had_errors) = encoding.encode(expected);
+        assert!(!had_errors, "{name} must encode the fixture");
+        let path = temp.path().join(format!("{name}.srt"));
+        fs::write(&path, bytes).unwrap();
+        let info = SubtitleInfo {
+            path,
+            protocol: SubtitleProtocol::File,
+            format: "srt".to_owned(),
+            is_external: true,
+        };
+        let encoder = SubtitleEncoder::new("ffmpeg", FixtureRunner::default());
+        let mut stream = encoder.get_subtitle_stream(&info).unwrap();
+        assert!(stream.is_memory_backed(), "{name}");
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        assert!(text.contains(expected), "{name}");
+        assert!(!text.contains(char::REPLACEMENT_CHARACTER), "{name}");
+        assert!(!text.contains('?'), "{name}");
     }
 }
 

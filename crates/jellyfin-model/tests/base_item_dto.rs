@@ -34,6 +34,7 @@ fn base_item_dto_uses_official_wire_contract() {
     assert_eq!(value["ServerId"], "server-1");
     assert_eq!(value["Id"], id.simple().to_string());
     assert_eq!(value["Type"], "Movie");
+    assert!(value.get("item_type").is_none());
     assert_eq!(value["MediaType"], "Video");
     assert_eq!(value["IsFolder"], false);
     assert_eq!(value["Genres"], json!(["Action"]));

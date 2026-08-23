@@ -60,6 +60,7 @@ impl Default for MediaUrl {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum ExtraType {
     #[default]
@@ -78,6 +79,7 @@ pub enum ExtraType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum LocationType {
     #[default]
@@ -88,6 +90,7 @@ pub enum LocationType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum MetadataField {
     #[default]
     Cast,
@@ -103,6 +106,7 @@ pub enum MetadataField {
 
 /// The official person-kind enum used by `BaseItemPerson`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum PersonKind {
     #[default]
     Unknown,

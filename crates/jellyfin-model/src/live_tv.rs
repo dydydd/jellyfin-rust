@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::ProviderIdMap;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum ChannelType {
     #[default]
     TV,
@@ -11,6 +12,7 @@ pub enum ChannelType {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum ProgramAudio {
     #[default]
     Mono,

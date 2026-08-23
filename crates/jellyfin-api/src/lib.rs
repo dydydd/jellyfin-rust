@@ -4,6 +4,7 @@ use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
+    middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -546,8 +547,9 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let web_dir = state.web_directory.clone();
     let index_path = web_dir.join("index.html");
+    let state = Arc::new(state.clone());
 
-    openapi::documented_routes()
+    let router = openapi::documented_routes()
         .merge(system_routes())
         .merge(sync_play_routes())
         .route("/websocket", get(websocket::connect))
@@ -829,7 +831,12 @@ pub fn router(state: AppState) -> Router {
             ServeDir::new(&web_dir).fallback(ServeFile::new(&index_path)),
         )
         .fallback(robots::redirect_or_not_found)
-        .with_state(Arc::new(state))
+        .with_state(state.clone());
+
+    router.layer(middleware::from_fn_with_state(
+        state,
+        authorization::require_route_auth,
+    ))
 }
 
 fn system_routes() -> Router<Arc<AppState>> {

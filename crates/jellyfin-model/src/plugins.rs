@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 /// The load state Jellyfin reports for an installed plugin.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 #[repr(i32)]
 pub enum PluginStatus {
     Restart = 1,

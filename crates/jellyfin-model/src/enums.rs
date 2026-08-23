@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Jellyfin's public item-kind enum, generated from `BaseItem` subclasses.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum BaseItemKind {
     #[default]
     AggregateFolder,
@@ -44,6 +45,7 @@ pub enum BaseItemKind {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum PlayAccess {
     #[default]
     Full,
@@ -51,6 +53,7 @@ pub enum PlayAccess {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum SubtitlePlaybackMode {
     #[default]
     Default,
@@ -61,6 +64,7 @@ pub enum SubtitlePlaybackMode {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum DynamicDayOfWeek {
     #[default]
     Sunday,
@@ -76,6 +80,7 @@ pub enum DynamicDayOfWeek {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum SyncPlayUserAccessType {
     #[default]
     CreateAndJoinGroups,
@@ -84,6 +89,7 @@ pub enum SyncPlayUserAccessType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum UnratedItem {
     Movie,
     Trailer,

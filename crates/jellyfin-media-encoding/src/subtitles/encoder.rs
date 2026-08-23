@@ -5,7 +5,8 @@ use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use encoding_rs::WINDOWS_1253;
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use encoding_rs::Encoding;
 use serde_json::json;
 
 use super::{SubtitleParseError, SubtitleTrack, parse_subtitle};
@@ -300,8 +301,8 @@ impl<R: SubtitleProcessRunner> SubtitleEncoder<R> {
 
     /// Opens a subtitle and transcodes legacy local text encodings to UTF-8.
     ///
-    /// UTF-8/ASCII input remains file-backed. UTF-16 and Greek legacy encodings
-    /// are returned from an owned UTF-8 buffer.
+    /// UTF-8/ASCII input remains file-backed. UTF-16 and legacy single-byte
+    /// or Shift-JIS encodings are returned from an owned UTF-8 buffer.
     ///
     /// # Errors
     ///
@@ -718,16 +719,20 @@ fn has_extension(path: &Path, expected: &str) -> bool {
 
 fn detected_charset(path: &Path) -> Result<Option<&'static str>, io::Error> {
     let bytes = fs::read(path)?;
+    Ok(detected_charset_from_bytes(&bytes))
+}
+
+fn detected_charset_from_bytes(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xff, 0xfe]) {
-        return Ok(Some("UTF-16LE"));
+        return Some("UTF-16LE");
     }
     if bytes.starts_with(&[0xfe, 0xff]) {
-        return Ok(Some("UTF-16BE"));
+        return Some("UTF-16BE");
     }
-    if std::str::from_utf8(strip_utf8_bom(&bytes)).is_ok() {
-        return Ok(None);
+    if std::str::from_utf8(strip_utf8_bom(bytes)).is_ok() {
+        return None;
     }
-    Ok(Some("windows-1253"))
+    Some(guess_encoding(bytes).name())
 }
 
 fn decode_to_utf8(bytes: &[u8]) -> Vec<u8> {
@@ -737,8 +742,14 @@ fn decode_to_utf8(bytes: &[u8]) -> Vec<u8> {
     if let Some(bytes) = bytes.strip_prefix(&[0xfe, 0xff]) {
         return decode_utf16(bytes, false).into_bytes();
     }
-    let (text, _) = WINDOWS_1253.decode_without_bom_handling(bytes);
+    let (text, _) = guess_encoding(bytes).decode_without_bom_handling(bytes);
     text.into_owned().into_bytes()
+}
+
+fn guess_encoding(bytes: &[u8]) -> &'static Encoding {
+    let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+    detector.feed(bytes, true);
+    detector.guess(None, Utf8Detection::Deny)
 }
 
 fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {

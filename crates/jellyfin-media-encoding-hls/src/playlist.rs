@@ -77,10 +77,11 @@ pub fn compute_segments(keyframe_data: &KeyframeData, desired_segment_length_ms:
 ///
 /// # Errors
 ///
-/// A zero runtime produces an empty segment list, matching the dynamic HLS
-/// controller contract. Negative runtimes and non-positive segment lengths
-/// return [`HlsPlaylistError::InvalidSegmentParameters`]. An overflow variant
-/// is returned when allocation dimensions cannot be safely represented.
+/// A zero runtime returns [`HlsPlaylistError::InvalidSegmentParameters`],
+/// matching the official controller's invalid-operation behavior. Negative
+/// runtimes and non-positive segment lengths are rejected the same way. An
+/// overflow variant is returned when allocation dimensions cannot be safely
+/// represented.
 pub fn compute_equal_length_segments(
     desired_segment_length_ms: i32,
     total_runtime_ticks: i64,
@@ -227,14 +228,11 @@ fn compute_equal_length_segment_ticks_inner(
     desired_segment_length_ms: i32,
     total_runtime_ticks: i64,
 ) -> Result<Vec<i64>, HlsPlaylistError> {
-    if desired_segment_length_ms <= 0 || total_runtime_ticks < 0 {
+    if desired_segment_length_ms <= 0 || total_runtime_ticks <= 0 {
         return Err(HlsPlaylistError::InvalidSegmentParameters {
             desired_segment_length_ms,
             total_runtime_ticks,
         });
-    }
-    if total_runtime_ticks == 0 {
-        return Ok(Vec::new());
     }
     let segment_length_ticks = i64::from(desired_segment_length_ms)
         .checked_mul(TICKS_PER_MILLISECOND)

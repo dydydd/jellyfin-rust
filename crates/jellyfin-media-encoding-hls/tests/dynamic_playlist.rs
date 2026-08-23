@@ -88,7 +88,6 @@ fn equal_length_segments_match_official_matrix() {
 #[test]
 fn equal_length_segments_match_dynamic_hls_controller_matrix() {
     for (runtime, expected) in [
-        (0, vec![]),
         (ms_to_ticks(3_000), vec![3.0]),
         (ms_to_ticks(6_000), vec![6.0]),
         (33_333_333, vec![3.333_333_3]),
@@ -103,7 +102,13 @@ fn equal_length_segments_match_dynamic_hls_controller_matrix() {
 
 #[test]
 fn invalid_equal_length_parameters_return_error() {
-    for (desired_length, runtime) in [(0, 1_000_000), (-1, 1_000_000), (0, 0), (1_000, -1)] {
+    for (desired_length, runtime) in [
+        (0, 1_000_000),
+        (-1, 1_000_000),
+        (0, 0),
+        (1_000, -1),
+        (1_000, 0),
+    ] {
         assert!(compute_equal_length_segments(desired_length, runtime).is_err());
     }
 }
@@ -177,21 +182,11 @@ fn creates_transport_stream_playlist() {
 }
 
 #[test]
-fn zero_runtime_creates_an_empty_vod_playlist() {
+fn zero_runtime_returns_invalid_operation_like_the_official_controller() {
     let mut request = request("ts", false);
     request.total_runtime_ticks = 0;
 
-    assert_eq!(
-        create_main_playlist(&request, None).unwrap(),
-        concat!(
-            "#EXTM3U\n",
-            "#EXT-X-PLAYLIST-TYPE:VOD\n",
-            "#EXT-X-VERSION:3\n",
-            "#EXT-X-TARGETDURATION:6\n",
-            "#EXT-X-MEDIA-SEQUENCE:0\n",
-            "#EXT-X-ENDLIST\n",
-        )
-    );
+    assert!(create_main_playlist(&request, None).is_err());
 }
 
 #[test]
