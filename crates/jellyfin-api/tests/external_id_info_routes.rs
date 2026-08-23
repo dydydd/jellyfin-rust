@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -237,7 +238,8 @@ async fn assert_remote_search_contract(
     assert_eq!(metadata["ProviderIds"]["Imdb"], "tt7654321");
     assert_eq!(metadata["ProviderIds"]["Tmdb"], "98765");
 
-    let apply_route = format!("/Items/RemoteSearch/Apply/{scanned_video_id}?replaceAllImages=false");
+    let apply_route =
+        format!("/Items/RemoteSearch/Apply/{scanned_video_id}?replaceAllImages=false");
     assert_eq!(
         post_json(app, &apply_route, Some(administrator_token), &apply_body)
             .await

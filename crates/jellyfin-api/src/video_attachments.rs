@@ -14,7 +14,7 @@ use crate::{ApiError, AppState};
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
-    Path((item_id, media_source_id, index)): Path<(Uuid, String, i32)>,
+    Path((item_id, _media_source_id, index)): Path<(Uuid, String, i32)>,
 ) -> Result<Response, ApiError> {
     BaseItemRepository::new(state.database.clone())
         .get(item_id)
@@ -49,6 +49,5 @@ pub(crate) async fn get(
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
-    let _media_source_id = media_source_id;
     Ok(response)
 }

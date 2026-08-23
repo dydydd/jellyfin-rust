@@ -498,12 +498,8 @@ async fn log_playback_activity(
             _ => "Playback",
         },
         _ => match item.media_type.as_deref() {
-            Some(media_type) if media_type.eq_ignore_ascii_case("Audio") => {
-                "AudioPlaybackStopped"
-            }
-            Some(media_type) if media_type.eq_ignore_ascii_case("Video") => {
-                "VideoPlaybackStopped"
-            }
+            Some(media_type) if media_type.eq_ignore_ascii_case("Audio") => "AudioPlaybackStopped",
+            Some(media_type) if media_type.eq_ignore_ascii_case("Video") => "VideoPlaybackStopped",
             _ => "PlaybackStopped",
         },
     };
@@ -512,7 +508,11 @@ async fn log_playback_activity(
         format!(
             "{} {} playing {}",
             session.user.username,
-            if action == "start" { "started" } else { "stopped" },
+            if action == "start" {
+                "started"
+            } else {
+                "stopped"
+            },
             name
         ),
         activity_type,

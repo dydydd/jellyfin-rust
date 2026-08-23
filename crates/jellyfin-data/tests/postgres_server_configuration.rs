@@ -45,6 +45,7 @@ async fn postgres_server_configuration_is_singleton_atomic_and_versioned() {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn exercise_server_configuration(database_name: &str) {
     let database = jellyfin_data::connect(&DatabaseConfig {
         url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),

@@ -247,8 +247,7 @@ fn web_socket_port_number(system_info: &PublicSystemInfo) -> i32 {
         .as_deref()
         .and_then(|address| address.parse::<axum::http::Uri>().ok())
         .and_then(|uri| uri.port_u16())
-        .map(i32::from)
-        .unwrap_or(8096)
+        .map_or(8096, i32::from)
 }
 
 async fn require_elevated(

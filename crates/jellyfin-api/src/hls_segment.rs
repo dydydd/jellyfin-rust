@@ -1,7 +1,4 @@
-use std::{
-    path::Path as FilePath,
-    sync::Arc,
-};
+use std::{path::Path as FilePath, sync::Arc};
 
 use axum::{
     body::Body,
@@ -53,7 +50,10 @@ pub(crate) struct TranscodeQuery {
     max_height: Option<i32>,
     #[serde(rename = "maxFramerate", alias = "MaxFramerate")]
     max_framerate: Option<f32>,
-    #[serde(rename = "transcodingMaxAudioChannels", alias = "TranscodingMaxAudioChannels")]
+    #[serde(
+        rename = "transcodingMaxAudioChannels",
+        alias = "TranscodingMaxAudioChannels"
+    )]
     max_audio_channels: Option<i32>,
     #[serde(rename = "segmentContainer", alias = "SegmentContainer")]
     segment_container: Option<String>,
@@ -249,20 +249,19 @@ async fn ensure_master_playlist(
         .job_id
         .as_deref()
         .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| compute_job_id(item_id, query, &media_type));
+        .map_or_else(|| compute_job_id(item_id, query, media_type), str::to_owned);
     let main_url = format!(
         "main.m3u8?{}&jobId={}",
         uri.query().unwrap_or_default(),
         job_id
     );
-    start_hls_job(state, query, item_id, &job_id, identity, &media_type).await?;
-    let path = resolve_transcode_file(
-        &state.transcode_directory,
-        &format!("{job_id}.master.m3u8"),
-    )?;
+    start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
+    let path =
+        resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.master.m3u8"))?;
     let content = build_master_playlist(&main_url);
-    tokio::fs::write(&path, content).await.map_err(|_| ApiError::Internal)?;
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|_| ApiError::Internal)?;
     serve_file(path, headers).await
 }
 
@@ -283,9 +282,8 @@ async fn ensure_main_playlist(
         .job_id
         .as_deref()
         .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| compute_job_id(item_id, query, &media_type));
-    start_hls_job(state, query, item_id, &job_id, identity, &media_type).await?;
+        .map_or_else(|| compute_job_id(item_id, query, media_type), str::to_owned);
+    start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
     let path = resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.m3u8"))?;
     serve_file_if_exists(path, headers).await
 }
@@ -316,7 +314,10 @@ async fn start_hls_job(
     };
     let target = TranscodeTarget {
         is_video: media_type == "Videos",
-        video_codec: query.video_codec.clone().or_else(|| Some("h264".to_owned())),
+        video_codec: query
+            .video_codec
+            .clone()
+            .or_else(|| Some("h264".to_owned())),
         audio_codec: query.audio_codec.clone().or_else(|| Some("aac".to_owned())),
         video_bitrate: query.video_bitrate,
         audio_bitrate: query.audio_bitrate,
@@ -329,7 +330,10 @@ async fn start_hls_job(
         start_time_ticks: query.start_time_ticks,
     };
     let settings = HlsSegmentSettings {
-        container: query.segment_container.clone().unwrap_or_else(|| "ts".to_owned()),
+        container: query
+            .segment_container
+            .clone()
+            .unwrap_or_else(|| "ts".to_owned()),
         segment_length_ms: query.segment_length.unwrap_or(6_000),
         min_segments: query.min_segments.unwrap_or(2),
     };
@@ -342,14 +346,8 @@ async fn start_hls_job(
         .await
         .map_err(|_| ApiError::Internal)?;
     let output_prefix = state.transcode_directory.join(job_id);
-    let main = build_main_playlist(
-        item_id,
-        job_id,
-        item.runtime_ticks,
-        &settings,
-        media_type,
-    )
-    .map_err(|_| ApiError::Internal)?;
+    let main = build_main_playlist(item_id, job_id, item.runtime_ticks, &settings, media_type)
+        .map_err(|_| ApiError::Internal)?;
     tokio::fs::write(
         state.transcode_directory.join(format!("{job_id}.m3u8")),
         main,
@@ -379,9 +377,13 @@ async fn start_hls_job(
         }
         jobs.remove(&finished_job_id);
     });
-    wait_for_segment(&state.transcode_directory, job_id, settings.container.trim_start_matches('.'))
-        .await
-        .map_err(|_| ApiError::Internal)
+    wait_for_segment(
+        &state.transcode_directory,
+        job_id,
+        settings.container.trim_start_matches('.'),
+    )
+    .await
+    .map_err(|_| ApiError::Internal)
 }
 
 async fn cleanup_transcode_job(root: &FilePath, job_id: &str) {
@@ -421,7 +423,11 @@ fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
         .iter()
         .position(|segment| *segment == "Videos" || *segment == "Audio")
         .map(|index| {
-            let media_type = if segments[index] == "Videos" { "Videos" } else { "Audio" };
+            let media_type = if segments[index] == "Videos" {
+                "Videos"
+            } else {
+                "Audio"
+            };
             (media_type, index + 1)
         })
         .ok_or(ApiError::InvalidRequest)?;
@@ -449,7 +455,10 @@ fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, media_type: &str) -> St
         start_time_ticks: query.start_time_ticks,
     };
     let settings = HlsSegmentSettings {
-        container: query.segment_container.clone().unwrap_or_else(|| "ts".to_owned()),
+        container: query
+            .segment_container
+            .clone()
+            .unwrap_or_else(|| "ts".to_owned()),
         segment_length_ms: query.segment_length.unwrap_or(6_000),
         min_segments: query.min_segments.unwrap_or(2),
     };
@@ -463,6 +472,7 @@ fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, media_type: &str) -> St
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct DynamicSegmentQuery {
     #[serde(rename = "runtimeTicks", alias = "RuntimeTicks")]
     runtime_ticks: i64,
@@ -597,11 +607,7 @@ async fn serve_file_if_exists(
         .await
         .map_err(|_| ApiError::Internal)?
     {
-        return Ok((
-            StatusCode::NOT_FOUND,
-            "Hls playlist not found.",
-        )
-            .into_response());
+        return Ok((StatusCode::NOT_FOUND, "Hls playlist not found.").into_response());
     }
     serve_file(path, headers).await
 }

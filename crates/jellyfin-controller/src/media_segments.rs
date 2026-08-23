@@ -42,10 +42,13 @@ impl MediaSegmentManagerService {
             .collect::<Vec<_>>();
         Ok(self
             .repository
-            .list_for_item(item_id, (!include_types.is_empty()).then_some(include_types.as_slice()))
+            .list_for_item(
+                item_id,
+                (!include_types.is_empty()).then_some(include_types.as_slice()),
+            )
             .await?
             .into_iter()
-            .map(media_segment_dto)
+            .map(|record| media_segment_dto(&record))
             .collect())
     }
 
@@ -72,7 +75,7 @@ impl MediaSegmentManagerService {
                 segment_provider_id: segment_provider_id.to_owned(),
             })
             .await?;
-        Ok(media_segment_dto(record))
+        Ok(media_segment_dto(&record))
     }
 
     /// Deletes all persisted segments for one item.
@@ -85,7 +88,7 @@ impl MediaSegmentManagerService {
     }
 }
 
-fn media_segment_dto(record: MediaSegmentRecord) -> MediaSegmentDto {
+fn media_segment_dto(record: &MediaSegmentRecord) -> MediaSegmentDto {
     MediaSegmentDto {
         id: record.id,
         item_id: record.item_id,

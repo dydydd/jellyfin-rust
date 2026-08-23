@@ -139,18 +139,18 @@ impl MetadataRefreshService {
                         .await?;
                 }
             }
-            "MusicArtistMetadataService" | "MusicAlbumMetadataService" => {
-                if provider_enabled("TheAudioDB") {
-                    refreshed |= self.audio_db_provider().refresh_item(item_id).await?;
-                }
+            "MusicArtistMetadataService" | "MusicAlbumMetadataService"
+                if provider_enabled("TheAudioDB") =>
+            {
+                refreshed |= self.audio_db_provider().refresh_item(item_id).await?;
             }
             _ => {}
         }
 
-        if let Some(updated) = self.items.get(item_id).await? {
-            if self.save_local_metadata_enabled(&updated).await? {
-                self.save_nfo(&updated).await?;
-            }
+        if let Some(updated) = self.items.get(item_id).await?
+            && self.save_local_metadata_enabled(&updated).await?
+        {
+            self.save_nfo(&updated).await?;
         }
         Ok(refreshed)
     }
@@ -239,6 +239,7 @@ impl MetadataRefreshService {
             .map_err(MetadataRefreshError::Nfo)
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     async fn nfo_metadata(
         &self,
         item: &base_item::Model,

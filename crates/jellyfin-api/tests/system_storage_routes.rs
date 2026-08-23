@@ -91,7 +91,7 @@ fn assert_library(libraries: &[Value], name: &str, expected_path: impl AsRef<Pat
         .iter()
         .find(|library| library["Name"] == name)
         .expect("library");
-    assert!(library["Id"].as_str().expect("library id").len() == 32);
+    assert_eq!(library["Id"].as_str().expect("library id").len(), 32);
     let folders = library["Folders"].as_array().expect("folders");
     assert_eq!(folders.len(), 1);
     assert_folder(&folders[0], expected_path);

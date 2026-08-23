@@ -211,26 +211,24 @@ pub(crate) async fn set_new_queue(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    if queue_position_is_valid(&request.playing_queue, request.playing_item_position) {
-        if group_can_access_items(&state, &session, &request.playing_queue).await? {
-            if state
-                .sync_play
-                .set_new_queue(
-                    &session.session_id,
-                    &request.playing_queue,
-                    request.playing_item_position,
-                    request.start_position_ticks,
-                )
-                .await
-            {
-                broadcast_queue_update(
-                    &state,
-                    &session.session_id,
-                    PlayQueueUpdateReason::NewPlaylist,
-                )
-                .await;
-            }
-        }
+    if queue_position_is_valid(&request.playing_queue, request.playing_item_position)
+        && group_can_access_items(&state, &session, &request.playing_queue).await?
+        && state
+            .sync_play
+            .set_new_queue(
+                &session.session_id,
+                &request.playing_queue,
+                request.playing_item_position,
+                request.start_position_ticks,
+            )
+            .await
+    {
+        broadcast_queue_update(
+            &state,
+            &session.session_id,
+            PlayQueueUpdateReason::NewPlaylist,
+        )
+        .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -312,20 +310,18 @@ pub(crate) async fn queue_items(
 ) -> Result<StatusCode, ApiError> {
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    if !request.item_ids.is_empty() {
-        if group_can_access_items(&state, &session, &request.item_ids).await? {
-            if state
-                .sync_play
-                .queue_items(&session.session_id, &request.item_ids, request.mode)
-                .await
-            {
-                let reason = match request.mode {
-                    GroupQueueMode::Queue => PlayQueueUpdateReason::Queue,
-                    GroupQueueMode::QueueNext => PlayQueueUpdateReason::QueueNext,
-                };
-                broadcast_queue_update(&state, &session.session_id, reason).await;
-            }
-        }
+    if !request.item_ids.is_empty()
+        && group_can_access_items(&state, &session, &request.item_ids).await?
+        && state
+            .sync_play
+            .queue_items(&session.session_id, &request.item_ids, request.mode)
+            .await
+    {
+        let reason = match request.mode {
+            GroupQueueMode::Queue => PlayQueueUpdateReason::Queue,
+            GroupQueueMode::QueueNext => PlayQueueUpdateReason::QueueNext,
+        };
+        broadcast_queue_update(&state, &session.session_id, reason).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }

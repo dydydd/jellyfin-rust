@@ -237,10 +237,11 @@ pub(crate) async fn next_up(
         query.enable_image_types,
         query.enable_user_data,
     );
-    let next_up_date_cutoff = query
-        .next_up_date_cutoff
-        .as_deref()
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok().map(DateTime::<Utc>::from));
+    let next_up_date_cutoff = query.next_up_date_cutoff.as_deref().and_then(|value| {
+        DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(DateTime::<Utc>::from)
+    });
 
     let page = state
         .user_library
@@ -266,6 +267,7 @@ pub(crate) async fn next_up(
     }))
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn episodes(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -557,9 +559,9 @@ fn apply_paging(
     limit: Option<u64>,
 ) -> Vec<base_item::Model> {
     let start_index = usize::try_from(start_index).unwrap_or(usize::MAX);
-    let limit = limit
-        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
-        .unwrap_or(usize::MAX);
+    let limit = limit.map_or(usize::MAX, |limit| {
+        usize::try_from(limit).unwrap_or(usize::MAX)
+    });
     items.into_iter().skip(start_index).take(limit).collect()
 }
 

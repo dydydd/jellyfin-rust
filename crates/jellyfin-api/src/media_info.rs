@@ -228,8 +228,7 @@ fn optional_playback_body(
 ) -> Result<Option<PlaybackInfoDto>, ApiError> {
     match body {
         Ok(Some(Json(body))) => Ok(Some(body)),
-        Ok(None) => Ok(None),
-        Err(JsonRejection::MissingJsonContentType(_)) => Ok(None),
+        Ok(None) | Err(JsonRejection::MissingJsonContentType(_)) => Ok(None),
         Err(_) => Err(ApiError::InvalidRequest),
     }
 }
@@ -239,12 +238,12 @@ fn optional_open_live_stream_body(
 ) -> Result<Option<OpenLiveStreamDto>, ApiError> {
     match body {
         Ok(Some(Json(body))) => Ok(Some(body)),
-        Ok(None) => Ok(None),
-        Err(JsonRejection::MissingJsonContentType(_)) => Ok(None),
+        Ok(None) | Err(JsonRejection::MissingJsonContentType(_)) => Ok(None),
         Err(_) => Err(ApiError::InvalidRequest),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn playback_info(
     state: &AppState,
     authenticated_user: &jellyfin_data::entities::user::Model,
@@ -381,9 +380,8 @@ fn apply_stream_builder(
         context: EncodingContext::Streaming,
         ..MediaOptions::default()
     };
-    let builder = StreamBuilder::with_encodable_audio_codecs([
-        "aac", "mp3", "opus", "flac", "ac3", "eac3",
-    ]);
+    let builder =
+        StreamBuilder::with_encodable_audio_codecs(["aac", "mp3", "opus", "flac", "ac3", "eac3"]);
     let stream = if is_video {
         builder.get_optimal_video_stream(&options)
     } else {
@@ -413,41 +411,25 @@ fn preferred_rank(source: &MediaSourceInfo, preferred_id: Option<&str>) -> u8 {
     let Some(preferred_id) = preferred_id else {
         return 1;
     };
-    if source.id.as_deref().is_some_and(|source_id| {
+    u8::from(!source.id.as_deref().is_some_and(|source_id| {
         source_id
             .chars()
             .filter(|character| *character != '-')
             .collect::<String>()
             .eq_ignore_ascii_case(preferred_id)
-    }) {
-        0
-    } else {
-        1
-    }
+    }))
 }
 
 fn direct_file_rank(source: &MediaSourceInfo) -> u8 {
-    if source.supports_direct_play && source.protocol == MediaProtocol::File {
-        0
-    } else {
-        1
-    }
+    u8::from(!(source.supports_direct_play && source.protocol == MediaProtocol::File))
 }
 
 fn direct_rank(source: &MediaSourceInfo) -> u8 {
-    if source.supports_direct_play || source.supports_direct_stream {
-        0
-    } else {
-        1
-    }
+    u8::from(!(source.supports_direct_play || source.supports_direct_stream))
 }
 
 fn protocol_rank(source: &MediaSourceInfo) -> u8 {
-    if source.protocol == MediaProtocol::File {
-        0
-    } else {
-        1
-    }
+    u8::from(source.protocol != MediaProtocol::File)
 }
 
 fn bitrate_rank(source: &MediaSourceInfo, max_bitrate: Option<i32>) -> u8 {
@@ -579,7 +561,7 @@ mod tests {
             id: Some(item_id.simple().to_string()),
             protocol: MediaProtocol::File,
             container: Some("mkv".to_owned()),
-            run_time_ticks: Some(60_000_000_0),
+            run_time_ticks: Some(600_000_000),
             media_streams: vec![
                 MediaStream {
                     index: 0,

@@ -458,12 +458,10 @@ impl UserService {
         authenticated_user: &user::Model,
     ) -> Result<user::Model, UserError> {
         let now = Utc::now();
-        let mut policy: UserPolicy =
-            serde_json::from_value(authenticated_user.policy.clone())
-                .map_err(UserError::PolicySerialization)?;
+        let mut policy: UserPolicy = serde_json::from_value(authenticated_user.policy.clone())
+            .map_err(UserError::PolicySerialization)?;
         policy.invalid_login_attempt_count = 0;
-        let policy =
-            serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+        let policy = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
         let result = user::Entity::update_many()
             .col_expr(
                 user::Column::PasswordHash,
@@ -491,18 +489,15 @@ impl UserService {
     ///
     /// Returns [`UserError::NotFound`] when the user disappeared, or a
     /// serialization or database error when the update fails.
-    pub async fn record_failed_authentication(
-        &self,
-        id: Uuid,
-    ) -> Result<user::Model, UserError> {
+    pub async fn record_failed_authentication(&self, id: Uuid) -> Result<user::Model, UserError> {
         let transaction = self.database.begin().await?;
         let target = user::Entity::find_by_id(id)
             .lock_exclusive()
             .one(&transaction)
             .await?
             .ok_or(UserError::NotFound)?;
-        let mut policy: UserPolicy =
-            serde_json::from_value(target.policy.clone()).map_err(UserError::PolicySerialization)?;
+        let mut policy: UserPolicy = serde_json::from_value(target.policy.clone())
+            .map_err(UserError::PolicySerialization)?;
         let attempts = policy.invalid_login_attempt_count.saturating_add(1);
         policy.invalid_login_attempt_count = attempts;
         let lockout = policy.login_attempts_before_lockout > 0

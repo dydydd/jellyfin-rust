@@ -46,22 +46,13 @@ pub struct BrandingOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
+#[derive(Default)]
 pub(crate) struct BrandingOptionsDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) login_disclaimer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) custom_css: Option<String>,
     pub(crate) splashscreen_enabled: bool,
-}
-
-impl Default for BrandingOptionsDto {
-    fn default() -> Self {
-        Self {
-            login_disclaimer: None,
-            custom_css: None,
-            splashscreen_enabled: false,
-        }
-    }
 }
 
 impl From<&BrandingOptions> for BrandingOptionsDto {

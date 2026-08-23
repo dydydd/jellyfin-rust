@@ -288,7 +288,7 @@ async fn broadcast_scan_summary(
             )
         },
     );
-    crate::websocket::broadcast_library_changed(&state, &added, &removed, &updated).await;
+    crate::websocket::broadcast_library_changed(state, &added, &removed, &updated).await;
 }
 
 fn folder_info(folder: VirtualFolder) -> VirtualFolderInfo {

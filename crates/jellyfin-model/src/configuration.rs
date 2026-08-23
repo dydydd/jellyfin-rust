@@ -120,7 +120,7 @@ pub enum TrickplayScanBehavior {
     NonBlocking,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
 pub struct MetadataOptions {
@@ -168,35 +168,12 @@ impl MetadataOptions {
     }
 }
 
-impl Default for MetadataOptions {
-    fn default() -> Self {
-        Self {
-            item_type: String::new(),
-            disabled_metadata_savers: Vec::new(),
-            local_metadata_reader_order: Vec::new(),
-            disabled_metadata_fetchers: Vec::new(),
-            metadata_fetcher_order: Vec::new(),
-            disabled_image_fetchers: Vec::new(),
-            image_fetcher_order: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PathSubstitution {
     pub from: String,
     pub to: String,
-}
-
-impl Default for PathSubstitution {
-    fn default() -> Self {
-        Self {
-            from: String::new(),
-            to: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

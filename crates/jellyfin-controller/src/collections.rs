@@ -20,7 +20,7 @@ pub enum CollectionError {
     BaseItem(#[from] BaseItemError),
 }
 
-/// Coordinates BoxSet validation with ordered linked-child persistence.
+/// Coordinates `BoxSet` validation with ordered linked-child persistence.
 #[derive(Clone)]
 pub struct CollectionService {
     items: BaseItemRepository,
@@ -38,7 +38,7 @@ impl CollectionService {
         }
     }
 
-    /// Creates a persisted BoxSet with its initial manual members atomically.
+    /// Creates a persisted `BoxSet` with its initial manual members atomically.
     ///
     /// # Errors
     ///
@@ -65,7 +65,7 @@ impl CollectionService {
         Ok(id)
     }
 
-    /// Appends manual members to an existing BoxSet.
+    /// Appends manual members to an existing `BoxSet`.
     ///
     /// # Errors
     ///
@@ -76,7 +76,7 @@ impl CollectionService {
         Ok(())
     }
 
-    /// Removes matching manual members from an existing BoxSet.
+    /// Removes matching manual members from an existing `BoxSet`.
     ///
     /// # Errors
     ///

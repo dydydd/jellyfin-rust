@@ -163,6 +163,11 @@ impl LibraryScanService {
         self.is_scanning.store(false, Ordering::Release);
     }
 
+    /// Scans every configured library collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any library scan fails.
     pub async fn scan_all(&self) -> Result<LibraryScanSummary, LibraryScanError> {
         self.try_start_scan()?;
         let result = self.scan_all_inner().await;
@@ -170,6 +175,7 @@ impl LibraryScanService {
         result
     }
 
+    #[allow(clippy::cast_precision_loss)]
     async fn scan_all_inner(&self) -> Result<LibraryScanSummary, LibraryScanError> {
         self.items.ensure_user_root().await?;
         let folders = self.folders.list().await?;
@@ -193,6 +199,11 @@ impl LibraryScanService {
         Ok(summary)
     }
 
+    /// Scans a single library collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the collection scan fails.
     pub async fn scan_collection(
         &self,
         collection_id: Uuid,
@@ -332,6 +343,7 @@ impl LibraryScanService {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn scan_music_path(
         &self,
         root: &Path,
@@ -400,7 +412,7 @@ impl LibraryScanService {
                 seen_paths.insert(path.to_owned());
             }
 
-            let resolved = if directory.is_root {
+            let resolved_item = if directory.is_root {
                 None
             } else {
                 resolver.resolve(&LibraryResolveArgs {
@@ -415,7 +427,7 @@ impl LibraryScanService {
                 })
             };
 
-            let (directory_id, child_parent_kind) = match resolved {
+            let (directory_id, child_parent_kind) = match resolved_item {
                 Some(item) => match item.kind {
                     ResolvedLibraryItemKind::MusicArtist => (
                         self.ensure_music_folder(
@@ -461,7 +473,7 @@ impl LibraryScanService {
                 .into_iter()
                 .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
                 .collect::<HashMap<_, _>>();
-            let extra_paths = self.extra_paths_for_entries(&files).await?;
+            let extra_paths = Self::extra_paths_for_entries(&files)?;
             let regular_files = files
                 .iter()
                 .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
@@ -602,7 +614,7 @@ impl LibraryScanService {
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect();
 
-        let extra_paths = self.extra_paths_for_entries(&files).await?;
+        let extra_paths = Self::extra_paths_for_entries(&files)?;
         let regular_files = files
             .iter()
             .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
@@ -616,8 +628,7 @@ impl LibraryScanService {
         Ok(())
     }
 
-    async fn extra_paths_for_entries(
-        &self,
+    fn extra_paths_for_entries(
         files: &[(PathBuf, MediaKind)],
     ) -> Result<HashSet<String>, LibraryScanError> {
         if files.is_empty() {
@@ -644,7 +655,7 @@ impl LibraryScanService {
             );
             let extras = resolver
                 .find_extras(&owner, &entries, &reader)
-                .map_err(|error| LibraryScanError::Io(error.into()))?;
+                .map_err(LibraryScanError::Io)?;
             for extra in extras {
                 extra_paths.insert(extra.path);
             }
@@ -682,7 +693,7 @@ impl LibraryScanService {
             );
             let extras = resolver
                 .find_extras(&owner, &entries, &reader)
-                .map_err(|error| LibraryScanError::Io(error.into()))?;
+                .map_err(LibraryScanError::Io)?;
             for extra in extras {
                 seen_paths.insert(extra.path.clone());
                 let owner_id = self
@@ -779,8 +790,7 @@ impl LibraryScanService {
                     };
                     let known_id = existing_by_path
                         .get(path_str)
-                        .map(|item| item.id)
-                        .unwrap_or_else(|| stable_item_id(path_str, item_type));
+                        .map_or_else(|| stable_item_id(path_str, item_type), |item| item.id);
                     summary.changed_ids.push(known_id);
                 }
             }
@@ -835,7 +845,7 @@ impl LibraryScanService {
         folder: &jellyfin_data::VirtualFolderWithPaths,
     ) -> Result<jellyfin_data::entities::base_item::Model, LibraryScanError> {
         if let Some(mut item) = self.items.get(folder.folder.id).await? {
-            item.item_type = "CollectionFolder".to_owned();
+            "CollectionFolder".clone_into(&mut item.item_type);
             item.parent_id = Some(USER_ROOT_FOLDER_ID);
             item.name = Some(folder.folder.name.clone());
             item.sort_name = Some(folder.folder.name.clone());
@@ -861,13 +871,13 @@ impl LibraryScanService {
         Ok(self.items.create(item).await?)
     }
 
-    async fn ensure_media_item<'a>(
+    async fn ensure_media_item(
         &self,
         path: &Path,
         parent_id: Uuid,
         media_kind: MediaKind,
         kind: ScanLibraryKind,
-        existing: Option<&'a base_item::Model>,
+        existing: Option<&base_item::Model>,
     ) -> Result<(bool, Uuid), LibraryScanError> {
         let Some(path_str) = path.to_str() else {
             return Ok((false, Uuid::nil()));
@@ -889,14 +899,13 @@ impl LibraryScanService {
                     existing.item_type = desired_type.to_owned();
                     changed = true;
                 }
-                if media_kind.needs_probe() {
-                    if let Some(media_info) = self
+                if media_kind.needs_probe()
+                    && let Some(media_info) = self
                         .ensure_media_streams(existing.id, path_str, media_kind)
                         .await?
-                        && apply_probed_item_metadata(&mut existing, path_str, &media_info)
-                    {
-                        changed = true;
-                    }
+                    && apply_probed_item_metadata(&mut existing, path_str, &media_info)
+                {
+                    changed = true;
                 }
                 if apply_nfo_metadata(&mut existing, path_str) {
                     changed = true;
@@ -935,14 +944,13 @@ impl LibraryScanService {
         item.presentation_unique_key = Some(path_str.to_owned());
         item.data = Some(media_item_data(path_str, None));
         let mut item = self.items.create(item).await?;
-        if media_kind.needs_probe() {
-            if let Some(media_info) = self
+        if media_kind.needs_probe()
+            && let Some(media_info) = self
                 .ensure_media_streams(item.id, path_str, media_kind)
                 .await?
-                && apply_probed_item_metadata(&mut item, path_str, &media_info)
-            {
-                item = self.items.update(item).await?;
-            }
+            && apply_probed_item_metadata(&mut item, path_str, &media_info)
+        {
+            item = self.items.update(item).await?;
         }
         if apply_nfo_metadata(&mut item, path_str) {
             item = self.items.update(item).await?;
@@ -951,6 +959,7 @@ impl LibraryScanService {
         Ok((true, item.id))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn ensure_episode_item(
         &self,
         existing: Option<base_item::Model>,
@@ -1386,9 +1395,7 @@ impl LibraryScanService {
 }
 
 fn default_fanout_concurrency() -> usize {
-    available_parallelism()
-        .map(|n| n.get().saturating_sub(3).max(1))
-        .unwrap_or(1)
+    available_parallelism().map_or(1, |n| n.get().saturating_sub(3).max(1))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1639,6 +1646,7 @@ fn apply_nfo_metadata(item: &mut jellyfin_data::entities::base_item::Model, path
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_movie_nfo_metadata(
     item: &mut jellyfin_data::entities::base_item::Model,
     media_path: &str,
@@ -1797,6 +1805,7 @@ fn apply_season_nfo_metadata(
     apply_non_movie_nfo(item, &nfo)
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_non_movie_nfo(item: &mut base_item::Model, nfo: &NfoMetadata) -> bool {
     let mut changed = false;
     if let Some(name) = nfo.name.as_deref().filter(|name| !name.is_empty())
@@ -1985,9 +1994,7 @@ fn season_directory(episode_path: &Path, season_number: Option<i32>) -> Option<P
         Some(parent.to_path_buf())
     } else {
         let series = series_directory(episode_path)?;
-        let Some(season_number) = season_number else {
-            return None;
-        };
+        let season_number = season_number?;
         let candidate = series.join(format!("Season {season_number}"));
         candidate.is_dir().then_some(candidate)
     }

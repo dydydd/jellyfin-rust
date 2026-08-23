@@ -162,7 +162,7 @@ impl PlaylistRepository {
         }))
     }
 
-    /// Replaces selected playlist metadata fields under a PostgreSQL row lock.
+    /// Replaces selected playlist metadata fields under a `PostgreSQL` row lock.
     ///
     /// # Errors
     ///

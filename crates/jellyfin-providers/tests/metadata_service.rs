@@ -1,11 +1,11 @@
 use std::cell::Cell;
 
 use jellyfin_model::ProviderIdMap;
-use jellyfin_providers::omdb::OmdbItem;
 use jellyfin_providers::manager::metadata_service::{
     MediaUrl, MetadataField, MetadataItem, MetadataResult, MetadataService,
     MetadataServiceCapability, PersonInfo, Video3dFormat,
 };
+use jellyfin_providers::omdb::OmdbItem;
 
 #[derive(Default)]
 struct FixtureCapability {
@@ -671,13 +671,7 @@ fn merge_omdb_item_passes_parsed_fields_through_official_merge_rules() {
     let mut target = MetadataResult::default();
     let capability = FixtureCapability::default();
 
-    MetadataService::merge_omdb_item(
-        &omdb,
-        &mut target,
-        &[],
-        false,
-        &capability,
-    );
+    MetadataService::merge_omdb_item(&omdb, &mut target, &[], false, &capability);
 
     assert_eq!(target.item.core.name.as_deref(), Some("The Matrix"));
     assert_eq!(

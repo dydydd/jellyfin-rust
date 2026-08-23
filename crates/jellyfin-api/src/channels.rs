@@ -98,6 +98,7 @@ pub(crate) struct LatestChannelItemsQuery {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct ChannelFeaturesDto {
     name: String,
     id: Uuid,

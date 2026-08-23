@@ -133,7 +133,7 @@ pub(crate) async fn require_route_auth(
             let connect_info = request
                 .extensions()
                 .get::<ConnectInfo<SocketAddr>>()
-                .cloned();
+                .copied();
             if state
                 .network_manager
                 .is_in_local_network(remote_ip(connect_info.as_ref()))
@@ -151,6 +151,7 @@ pub(crate) async fn require_route_auth(
     }
 }
 
+#[allow(clippy::match_same_arms)]
 fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     let segments = path
         .split('/')
@@ -165,32 +166,33 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Public;
     }
-    if segments.first().is_some_and(|segment| *segment == "api-docs")
+    if segments
+        .first()
+        .is_some_and(|segment| *segment == "api-docs")
         && segments != ["api-docs", "openapi.json"]
     {
         return RoutePolicy::Public;
     }
 
     match segments.as_slice() {
-        ["health"] | ["api-docs", "openapi.json"] | ["GetUtcTime"] => RoutePolicy::Public,
+        ["health" | "GetUtcTime"] | ["api-docs", "openapi.json"] => RoutePolicy::Public,
         ["System", "Info", "Public"] | ["System", "Ping"] => RoutePolicy::Public,
         ["Branding", "Configuration"] => RoutePolicy::Public,
-        ["Branding", "Css"] | ["Branding", "Css.css"] => RoutePolicy::Public,
+        ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
         ["Branding", "Splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Branding", "Splashscreen"] if is_write(method) => RoutePolicy::Elevated,
-        ["Users", "Public"]
-        | ["Users", "AuthenticateByName"]
-        | ["Users", "authenticatebyname"]
-        | ["Users", "AuthenticateWithQuickConnect"]
-        | ["Users", "ForgotPassword"]
+        [
+            "Users",
+            "Public"
+            | "AuthenticateByName"
+            | "authenticatebyname"
+            | "AuthenticateWithQuickConnect"
+            | "ForgotPassword",
+        ]
         | ["Users", "ForgotPassword", "Pin"] => RoutePolicy::Public,
         ["Users", _, "Authenticate"] => RoutePolicy::Public,
-        ["QuickConnect", "Enabled"]
-        | ["QuickConnect", "Initiate"]
-        | ["QuickConnect", "Connect"] => RoutePolicy::Public,
-        ["Startup", ..]
-        | ["Environment", ..]
-        | ["Localization", ..]
+        ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
+        ["Startup" | "Environment" | "Localization", ..]
         | ["Library", "VirtualFolders", ..]
         | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
         ["System", "Info"] => RoutePolicy::FirstTimeSetupOrIgnoreParentalControl,
@@ -200,12 +202,10 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["System", "Info", "Storage"]
         | ["System", "Shutdown"] => RoutePolicy::Elevated,
         ["ScheduledTasks", ..] => RoutePolicy::Elevated,
-        ["Auth", "Keys", ..] | ["Auth", "Providers"] | ["Auth", "PasswordResetProviders"] => {
+        ["Auth", "Keys", ..] | ["Auth", "Providers" | "PasswordResetProviders"] => {
             RoutePolicy::Elevated
         }
-        ["Devices", ..] | ["Packages", ..] | ["Repositories"] | ["Backup", ..] => {
-            RoutePolicy::Elevated
-        }
+        ["Devices" | "Packages" | "Backup", ..] | ["Repositories"] => RoutePolicy::Elevated,
         ["web", "ConfigurationPages"] => RoutePolicy::Elevated,
         ["web", "ConfigurationPage"] | ["web", ..] => RoutePolicy::Public,
         ["System", "Configuration", "MetadataOptions", "Default"]
@@ -220,12 +220,8 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Users", _] if method == Method::GET => RoutePolicy::IgnoreParentalControl,
         ["Users", _] => RoutePolicy::Default,
         ["LiveTv", "TunerHosts"] => RoutePolicy::Elevated,
-        ["Library", "MediaFolders"] | ["Library", "PhysicalPaths"] | ["Library", "Refresh"] => {
-            RoutePolicy::Elevated
-        }
-        ["Items", _, "Refresh"]
-        | ["Items", _, "MetadataEditor"]
-        | ["Items", _, "ExternalIdInfos"] => RoutePolicy::Elevated,
+        ["Library", "MediaFolders" | "PhysicalPaths" | "Refresh"] => RoutePolicy::Elevated,
+        ["Items", _, "Refresh" | "MetadataEditor" | "ExternalIdInfos"] => RoutePolicy::Elevated,
         ["Items", "RemoteSearch", "Person"] | ["Items", "RemoteSearch", "Apply", _] => {
             RoutePolicy::Elevated
         }
@@ -242,15 +238,12 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         }
         ["UserImage"] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Users", _, "Images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
-        ["Artists", _, "Images", ..]
-        | ["Genres", _, "Images", ..]
-        | ["Studios", _, "Images", ..]
-        | ["MusicGenres", _, "Images", ..]
-        | ["Persons", _, "Images", ..]
-            if is_get_or_head(method) =>
-        {
-            RoutePolicy::Optional
-        }
+        [
+            "Artists" | "Genres" | "Studios" | "MusicGenres" | "Persons",
+            _,
+            "Images",
+            ..,
+        ] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Plugins", _, _, "Image"] => RoutePolicy::Optional,
         _ => RoutePolicy::Default,
     }

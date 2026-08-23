@@ -362,6 +362,10 @@ impl ScheduledTaskService {
     }
 
     /// Registers a callback invoked after task state or progress changes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the listener lock is poisoned.
     pub fn add_change_listener(&self, listener: ScheduledTaskChangeListener) {
         self.change_listeners
             .write()
@@ -458,25 +462,29 @@ impl ScheduledTaskService {
 
 impl ScheduledTask {
     fn is_due(&self, now: DateTime<Utc>) -> bool {
-        self.triggers.iter().any(|trigger| match trigger.trigger_type {
-            TaskTriggerInfoType::StartupTrigger => self.last_run.is_none(),
-            TaskTriggerInfoType::IntervalTrigger => {
-                let Some(interval_ticks) = trigger.interval_ticks.filter(|ticks| *ticks > 0) else {
-                    return false;
-                };
-                let interval = Duration::milliseconds(interval_ticks / 10_000);
-                self.last_run.is_none_or(|last_run| last_run + interval <= now)
-            }
-            TaskTriggerInfoType::DailyTrigger => {
-                let Some(time_of_day_ticks) = trigger.time_of_day_ticks else {
-                    return false;
-                };
-                self.last_run.is_none_or(|last_run| {
-                    next_daily_after(last_run, time_of_day_ticks, trigger.day_of_week) <= now
-                })
-            }
-            TaskTriggerInfoType::WeeklyTrigger => false,
-        })
+        self.triggers
+            .iter()
+            .any(|trigger| match trigger.trigger_type {
+                TaskTriggerInfoType::StartupTrigger => self.last_run.is_none(),
+                TaskTriggerInfoType::IntervalTrigger => {
+                    let Some(interval_ticks) = trigger.interval_ticks.filter(|ticks| *ticks > 0)
+                    else {
+                        return false;
+                    };
+                    let interval = Duration::milliseconds(interval_ticks / 10_000);
+                    self.last_run
+                        .is_none_or(|last_run| last_run + interval <= now)
+                }
+                TaskTriggerInfoType::DailyTrigger => {
+                    let Some(time_of_day_ticks) = trigger.time_of_day_ticks else {
+                        return false;
+                    };
+                    self.last_run.is_none_or(|last_run| {
+                        next_daily_after(last_run, time_of_day_ticks, trigger.day_of_week) <= now
+                    })
+                }
+                TaskTriggerInfoType::WeeklyTrigger => false,
+            })
     }
 }
 
@@ -487,7 +495,11 @@ fn next_daily_after(
 ) -> DateTime<Utc> {
     let duration = Duration::milliseconds(time_of_day_ticks / 10_000);
     let mut candidate = DateTime::from_naive_utc_and_offset(
-        last_run.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default() + duration,
+        last_run
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            + duration,
         Utc,
     );
     if candidate <= last_run {

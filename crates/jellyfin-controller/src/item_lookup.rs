@@ -118,6 +118,7 @@ impl ItemLookupService {
     ///
     /// Returns not-found for a missing item or a provider error when TMDB
     /// cannot be reached.
+    #[allow(clippy::too_many_arguments)]
     pub async fn remote_images(
         &self,
         item_id: Uuid,
@@ -243,13 +244,13 @@ impl ItemLookupService {
             item.overview = Some(overview.to_owned());
         }
         if !matches!(item.data, Some(Value::Object(_))) {
-            item.data = Some(Value::Object(Default::default()));
+            item.data = Some(Value::Object(serde_json::Map::default()));
         }
         if let Some(Value::Object(metadata)) = item.data.as_mut() {
             metadata.insert(
                 "ProviderIds".to_owned(),
                 serde_json::to_value(result.provider_ids)
-                    .unwrap_or_else(|_| Value::Object(Default::default())),
+                    .unwrap_or_else(|_| Value::Object(serde_json::Map::default())),
             );
             metadata.remove("provider_ids");
         }
@@ -314,10 +315,7 @@ mod tests {
 
     #[test]
     fn identified_item_type_only_upgrades_video_items_to_movie_or_series() {
-        assert_eq!(
-            identified_item_type("Video", Some("Movie")),
-            Some("Movie")
-        );
+        assert_eq!(identified_item_type("Video", Some("Movie")), Some("Movie"));
         assert_eq!(
             identified_item_type("Video", Some("Series")),
             Some("Series")

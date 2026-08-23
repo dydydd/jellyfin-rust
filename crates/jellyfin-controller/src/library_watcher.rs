@@ -33,14 +33,18 @@ impl LibraryWatcher {
     /// Starts watching library directories. Runs the watcher in a
     /// background thread; file changes trigger a scan of only the
     /// affected virtual folder after a 5-second debounce window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the filesystem watcher cannot be created.
     pub fn start(self) -> Result<(), LibraryWatcherError> {
         if self.paths.is_empty() {
             return Ok(());
         }
 
         let (tx, rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
-        let mut watcher = RecommendedWatcher::new(tx, Config::default())
-            .map_err(LibraryWatcherError::Notify)?;
+        let mut watcher =
+            RecommendedWatcher::new(tx, Config::default()).map_err(LibraryWatcherError::Notify)?;
 
         for path in &self.paths {
             watcher
@@ -90,33 +94,30 @@ impl LibraryWatcher {
                         );
                         runtime.block_on(async {
                             // Find which virtual folders contain the changed paths
-                            let all_virtual =
-                                match folders.list().await {
-                                    Ok(v) => v,
-                                    Err(error) => {
-                                        tracing::error!(%error,
+                            let all_virtual = match folders.list().await {
+                                Ok(v) => v,
+                                Err(error) => {
+                                    tracing::error!(%error,
                                             "cannot list virtual folders for incremental scan");
-                                        return;
-                                    }
-                                };
+                                    return;
+                                }
+                            };
 
                             for path in &dirs {
-                                let canonical = match tokio::fs::canonicalize(path).await {
-                                    Ok(p) => p,
-                                    Err(_) => continue,
+                                let Ok(canonical) = tokio::fs::canonicalize(path).await else {
+                                    continue;
                                 };
                                 let canonical_str = canonical.to_string_lossy();
 
                                 for vf in &all_virtual {
                                     // Check if the changed path is under this virtual
                                     // folder's configured media paths
-                                    let matches = vf.locations.iter().any(|loc| {
-                                        canonical_str.starts_with(loc)
-                                    });
+                                    let matches = vf
+                                        .locations
+                                        .iter()
+                                        .any(|loc| canonical_str.starts_with(loc));
                                     if matches {
-                                        if let Err(error) =
-                                            scan.scan_collection(vf.id).await
-                                        {
+                                        if let Err(error) = scan.scan_collection(vf.id).await {
                                             tracing::error!(
                                                 %error, folder = %vf.name,
                                                 "incremental scan failed",
@@ -171,22 +172,53 @@ fn is_library_media_path(path: &Path) -> bool {
     };
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "mkv" | "mp4" | "avi" | "mov" | "m4v" | "wmv" | "flv" | "webm"
-            | "mp3" | "flac" | "aac" | "ogg" | "wav" | "m4a" | "opus" | "wma" | "dsf" | "aiff"
-            | "srt" | "ass" | "ssa" | "sub"
-            | "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "tif"
-            | "pdf" | "epub" | "mobi" | "cbr" | "cbz" | "djvu"
+        "mkv"
+            | "mp4"
+            | "avi"
+            | "mov"
+            | "m4v"
+            | "wmv"
+            | "flv"
+            | "webm"
+            | "mp3"
+            | "flac"
+            | "aac"
+            | "ogg"
+            | "wav"
+            | "m4a"
+            | "opus"
+            | "wma"
+            | "dsf"
+            | "aiff"
+            | "srt"
+            | "ass"
+            | "ssa"
+            | "sub"
+            | "jpg"
+            | "jpeg"
+            | "png"
+            | "gif"
+            | "bmp"
+            | "webp"
+            | "tiff"
+            | "tif"
+            | "pdf"
+            | "epub"
+            | "mobi"
+            | "cbr"
+            | "cbz"
+            | "djvu"
     )
 }
 
 fn deduplicate_parents(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut result: Vec<PathBuf> = Vec::new();
     for path in paths {
-        if let Some(parent) = path.parent() {
-            if !result.iter().any(|p| path.starts_with(p)) {
-                result.retain(|p| !p.starts_with(parent));
-                result.push(parent.to_path_buf());
-            }
+        if let Some(parent) = path.parent()
+            && !result.iter().any(|p| path.starts_with(p))
+        {
+            result.retain(|p| !p.starts_with(parent));
+            result.push(parent.to_path_buf());
         }
     }
     result

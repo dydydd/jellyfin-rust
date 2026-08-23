@@ -54,6 +54,10 @@ impl AlbumParser {
     }
 }
 
+static CLEAN_EXPRESSION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[-.()\s]+").expect("album multipart clean expression must be valid")
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,7 +71,3 @@ mod tests {
         assert!(!is_audio_file("/media/NoExtension", &options));
     }
 }
-
-static CLEAN_EXPRESSION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[-.()\s]+").expect("album multipart clean expression must be valid")
-});

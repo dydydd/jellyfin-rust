@@ -101,6 +101,7 @@ impl BaseItemDtoFields {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
+#[derive(Default)]
 pub struct BaseItemDto {
     pub name: Option<String>,
     pub server_id: String,
@@ -238,79 +239,6 @@ pub struct BaseItemPerson {
     pub role: String,
     #[serde(rename = "Type")]
     pub person_type: String,
-}
-
-impl Default for BaseItemDto {
-    fn default() -> Self {
-        Self {
-            name: None,
-            server_id: String::new(),
-            id: String::new(),
-            playlist_item_id: None,
-            item_type: String::new(),
-            etag: String::new(),
-            date_created: None,
-            sort_name: None,
-            path: None,
-            overview: None,
-            media_type: None,
-            collection_type: None,
-            is_folder: false,
-            is_virtual_item: false,
-            parent_id: None,
-            index_number: None,
-            parent_index_number: None,
-            production_year: None,
-            premiere_date: None,
-            run_time_ticks: None,
-            presentation_unique_key: None,
-            series_id: None,
-            season_id: None,
-            extra_type: None,
-            has_lyrics: None,
-            provider_ids: None,
-            user_data: None,
-            genres: Vec::new(),
-            people: Vec::new(),
-            tags: Vec::new(),
-            studios: Vec::new(),
-            community_rating: None,
-            critic_rating: None,
-            official_rating: None,
-            original_title: None,
-            tagline: None,
-            status: None,
-            custom_rating: None,
-            collection_name: None,
-            aspect_ratio: None,
-            preferred_metadata_language: None,
-            preferred_metadata_country_code: None,
-            production_locations: Vec::new(),
-            remote_trailers: Vec::new(),
-            air_days: Vec::new(),
-            end_date: None,
-            width: None,
-            height: None,
-            has_subtitles: None,
-            video_3d_format: None,
-            is_locked: None,
-            index_number_end: None,
-            airs_after_season_number: None,
-            airs_before_season_number: None,
-            airs_before_episode_number: None,
-            image_tags: HashMap::new(),
-            backdrop_image_tags: Vec::new(),
-            parent_primary_image_item_id: None,
-            parent_primary_image_tag: None,
-            primary_image_aspect_ratio: None,
-            series_primary_image_tag: None,
-            parent_backdrop_image_item_id: None,
-            parent_backdrop_image_tags: Vec::new(),
-            media_sources: None,
-            media_streams: None,
-            trickplay: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -590,8 +518,7 @@ pub(crate) async fn upload_lyrics(
         return Err(ApiError::InvalidRequest);
     }
     let content = String::from_utf8_lossy(&body);
-    let lyrics =
-        LyricManager::parse_lyrics(format, &content).ok_or(ApiError::InvalidRequest)?;
+    let lyrics = LyricManager::parse_lyrics(format, &content).ok_or(ApiError::InvalidRequest)?;
     let lyrics = state
         .user_library
         .save_lyrics(&authenticated.user, authenticated.user.id, item_id, lyrics)
@@ -645,7 +572,7 @@ pub(crate) async fn get_remote_lyrics(
     if !authenticated.can_manage_lyrics() {
         return Err(ApiError::Forbidden);
     }
-    let lyrics = state.user_library.get_remote_lyrics(&lyric_id).await?;
+    let lyrics = state.user_library.get_remote_lyrics(&lyric_id)?;
     Ok(Json(lyrics))
 }
 
@@ -654,7 +581,6 @@ fn lyric_format(file_name: &str) -> Option<&str> {
     (!extension.is_empty() && !extension.contains('/') && !extension.contains('\\'))
         .then_some(extension)
 }
-
 
 async fn get_root_for(
     state: Arc<AppState>,
@@ -782,6 +708,7 @@ async fn get_lyrics_for(
     Ok(Json(lyrics))
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
     let item_type = item.item_type.clone();
     let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"]);
@@ -829,7 +756,10 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         people: Vec::new(),
         tags: metadata_strings(item.data.as_ref(), &["Tags", "tags"]),
         studios: metadata_strings(item.data.as_ref(), &["Studios", "studios"]),
-        community_rating: metadata_f64(item.data.as_ref(), &["CommunityRating", "community_rating"]),
+        community_rating: metadata_f64(
+            item.data.as_ref(),
+            &["CommunityRating", "community_rating"],
+        ),
         critic_rating: metadata_f64(item.data.as_ref(), &["CriticRating", "critic_rating"]),
         official_rating: item.official_rating.clone(),
         original_title: metadata_string(
@@ -850,7 +780,10 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         ),
         preferred_metadata_country_code: metadata_string(
             item.data.as_ref(),
-            &["PreferredMetadataCountryCode", "preferred_metadata_country_code"],
+            &[
+                "PreferredMetadataCountryCode",
+                "preferred_metadata_country_code",
+            ],
         ),
         production_locations: metadata_strings(
             item.data.as_ref(),
@@ -865,15 +798,9 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
         has_subtitles: metadata_bool(item.data.as_ref(), &["HasSubtitles", "has_subtitles"]),
-        video_3d_format: metadata_string(
-            item.data.as_ref(),
-            &["Video3DFormat", "video_3d_format"],
-        ),
+        video_3d_format: metadata_string(item.data.as_ref(), &["Video3DFormat", "video_3d_format"]),
         is_locked: metadata_bool(item.data.as_ref(), &["IsLocked", "is_locked"]),
-        index_number_end: metadata_i32(
-            item.data.as_ref(),
-            &["IndexNumberEnd", "index_number_end"],
-        ),
+        index_number_end: metadata_i32(item.data.as_ref(), &["IndexNumberEnd", "index_number_end"]),
         airs_after_season_number: metadata_i32(
             item.data.as_ref(),
             &["AirsAfterSeasonNumber", "airs_after_season_number"],
@@ -897,7 +824,6 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_sources: None,
         media_streams: None,
         trickplay: None,
-        ..BaseItemDto::default()
     }
 }
 
@@ -914,12 +840,7 @@ pub(crate) async fn project_item_to_dto(
     let original_language = original_language_from_item(&item);
     let mut dto = item_to_dto(item, state.server_id());
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&metadata_item)).await?;
-    attach_relation_metadata(
-        &mut dto,
-        relations
-            .remove(&item_id)
-            .unwrap_or_default(),
-    );
+    attach_relation_metadata(&mut dto, relations.remove(&item_id).unwrap_or_default());
     attach_user_data(state, &mut dto, &metadata_item, target_user_id).await?;
     if let Some(projection) = state
         .dto_images
@@ -1024,13 +945,13 @@ pub(crate) async fn load_relation_metadata(
     for item in items {
         let mut metadata = ItemRelationMetadata::default();
         if let Some(values) = genres.get(&item.id) {
-            metadata.genres = values.clone();
+            metadata.genres.clone_from(values);
         }
         if let Some(values) = tags.get(&item.id) {
-            metadata.tags = values.clone();
+            metadata.tags.clone_from(values);
         }
         if let Some(values) = studios.get(&item.id) {
-            metadata.studios = values.clone();
+            metadata.studios.clone_from(values);
         }
         if let Some(credits) = people.get(&item.id) {
             metadata.people = credits
@@ -1099,7 +1020,7 @@ pub(crate) async fn trickplay_manifests_for_items(
     fields: BaseItemDtoFields,
 ) -> Result<jellyfin_controller::TrickplayManifests, ApiError> {
     if !fields.wants_trickplay() {
-        return Ok(Default::default());
+        return Ok(HashMap::default());
     }
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
     Ok(state.trickplay.manifests_for_items(&item_ids).await?)
@@ -1680,7 +1601,8 @@ fn metadata_f64(data: Option<&Value>, keys: &[&str]) -> Option<f64> {
 }
 
 fn metadata_i32(data: Option<&Value>, keys: &[&str]) -> Option<i32> {
-    metadata_value(data, keys).and_then(|value| value.as_i64().and_then(|value| i32::try_from(value).ok()))
+    metadata_value(data, keys)
+        .and_then(|value| value.as_i64().and_then(|value| i32::try_from(value).ok()))
 }
 
 fn metadata_bool(data: Option<&Value>, keys: &[&str]) -> Option<bool> {

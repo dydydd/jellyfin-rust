@@ -1,8 +1,4 @@
-use std::{
-    path::PathBuf,
-    process::Command,
-    time::Duration,
-};
+use std::{path::PathBuf, process::Command, time::Duration};
 
 use anyhow::Context;
 use jellyfin_api::AppState;
@@ -61,35 +57,33 @@ async fn main() -> anyhow::Result<()> {
         persisted_configuration.server_name,
         format!("http://{bind_address}"),
     )
-        .with_server_id(server_id)
-        .with_tmdb_api_key(tmdb_api_key)
-        .with_omdb_api_key(omdb_api_key)
-        .with_quick_connect_available(persisted_configuration.quick_connect_available)
-        .with_startup_user(initial_user.id)
-        .with_ffmpeg_path(
-            std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()),
-        )
-        .with_system_commands(|command| {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(100));
-                if let jellyfin_api::SystemCommand::Restart = command {
-                    if let Ok(executable) = std::env::current_exe() {
-                        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-                        let _ = Command::new(executable).args(arguments).spawn();
-                    }
-                }
-                std::process::exit(0);
-            });
-        })
-        .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
-        .with_persistent_startup(startup_repository)
-        .with_storage_paths(
-            PathBuf::from("programdata"),
-            PathBuf::from(&web_dir),
-            PathBuf::from("cache").join("images"),
-            PathBuf::from("cache"),
-            PathBuf::from("metadata"),
-        );
+    .with_server_id(server_id)
+    .with_tmdb_api_key(tmdb_api_key)
+    .with_omdb_api_key(omdb_api_key)
+    .with_quick_connect_available(persisted_configuration.quick_connect_available)
+    .with_startup_user(initial_user.id)
+    .with_ffmpeg_path(std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()))
+    .with_system_commands(|command| {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            if let jellyfin_api::SystemCommand::Restart = command
+                && let Ok(executable) = std::env::current_exe()
+            {
+                let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+                let _ = Command::new(executable).args(arguments).spawn();
+            }
+            std::process::exit(0);
+        });
+    })
+    .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
+    .with_persistent_startup(startup_repository)
+    .with_storage_paths(
+        PathBuf::from("programdata"),
+        PathBuf::from(&web_dir),
+        PathBuf::from("cache").join("images"),
+        PathBuf::from("cache"),
+        PathBuf::from("metadata"),
+    );
     let state = state.start_library_watcher().await;
     let app = jellyfin_api::router(state);
 

@@ -21,9 +21,7 @@ use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{
-    ApiError, AppState, authentication, authorization, user_to_dto_with_server_id,
-};
+use crate::{ApiError, AppState, authentication, authorization, user_to_dto_with_server_id};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]

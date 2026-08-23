@@ -7,6 +7,7 @@ use sea_orm_migration::{MigrationTrait, SchemaManager};
 use uuid::Uuid;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn postgres_schema_installs_specialized_indexes() {
     let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
         .await

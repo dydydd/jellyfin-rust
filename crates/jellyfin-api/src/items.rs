@@ -58,11 +58,7 @@ pub(crate) struct ItemsQuery {
     tags: Vec<String>,
     #[serde(default, rename = "person", alias = "Person")]
     person: Option<String>,
-    #[serde(
-        default,
-        rename = "minCommunityRating",
-        alias = "MinCommunityRating"
-    )]
+    #[serde(default, rename = "minCommunityRating", alias = "MinCommunityRating")]
     min_community_rating: Option<f64>,
     #[serde(default, rename = "isMovie", alias = "IsMovie")]
     is_movie: Option<bool>,
@@ -372,7 +368,7 @@ async fn latest_for(
     let target = state.users.get(target_user_id).await?;
     let configuration: UserConfiguration =
         serde_json::from_value(target.preferences).unwrap_or_default();
-    let is_played = query.is_played.or_else(|| {
+    let is_played = query.is_played.or({
         if configuration.hide_played_in_latest {
             Some(false)
         } else {
@@ -555,62 +551,6 @@ pub(crate) fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemO
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn filters_parse_official_names_case_insensitively() {
-        assert_eq!("IsFavorite".parse::<ItemFilter>(), Ok(ItemFilter::IsFavorite));
-        assert_eq!("IsPlayed".parse::<ItemFilter>(), Ok(ItemFilter::IsPlayed));
-        assert_eq!("isunplayed".parse::<ItemFilter>(), Ok(ItemFilter::IsUnplayed));
-        assert_eq!("likes".parse::<ItemFilter>(), Ok(ItemFilter::Likes));
-        assert!("UnknownFilter".parse::<ItemFilter>().is_err());
-    }
-
-    #[test]
-    fn item_order_maps_official_extended_sort_fields() {
-        assert_eq!(
-            item_order(&["PlayCount".to_owned()], &[]),
-            BaseItemOrder::PlayCountAscending
-        );
-        assert_eq!(
-            item_order(
-                &["PlayCount".to_owned()],
-                &["Descending".to_owned()]
-            ),
-            BaseItemOrder::PlayCountDescending
-        );
-        assert_eq!(
-            item_order(&["CommunityRating".to_owned()], &[]),
-            BaseItemOrder::CommunityRatingAscending
-        );
-        assert_eq!(
-            item_order(
-                &["CriticRating".to_owned()],
-                &["Descending".to_owned()]
-            ),
-            BaseItemOrder::CriticRatingDescending
-        );
-        assert_eq!(
-            item_order(&["Runtime".to_owned()], &[]),
-            BaseItemOrder::RuntimeTicksAscending
-        );
-        assert_eq!(
-            item_order(&["Runtime".to_owned()], &["Descending".to_owned()]),
-            BaseItemOrder::RuntimeTicksDescending
-        );
-    }
-
-    #[test]
-    fn item_order_keeps_premiere_direction() {
-        assert_eq!(
-            item_order(&["PremiereDate".to_owned()], &["Descending".to_owned()]),
-            BaseItemOrder::PremiereDateDescending
-        );
-    }
-}
-
 const fn default_latest_limit() -> u64 {
     20
 }
@@ -712,4 +652,60 @@ async fn page_to_dto(
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_parse_official_names_case_insensitively() {
+        assert_eq!(
+            "IsFavorite".parse::<ItemFilter>(),
+            Ok(ItemFilter::IsFavorite)
+        );
+        assert_eq!("IsPlayed".parse::<ItemFilter>(), Ok(ItemFilter::IsPlayed));
+        assert_eq!(
+            "isunplayed".parse::<ItemFilter>(),
+            Ok(ItemFilter::IsUnplayed)
+        );
+        assert_eq!("likes".parse::<ItemFilter>(), Ok(ItemFilter::Likes));
+        assert!("UnknownFilter".parse::<ItemFilter>().is_err());
+    }
+
+    #[test]
+    fn item_order_maps_official_extended_sort_fields() {
+        assert_eq!(
+            item_order(&["PlayCount".to_owned()], &[]),
+            BaseItemOrder::PlayCountAscending
+        );
+        assert_eq!(
+            item_order(&["PlayCount".to_owned()], &["Descending".to_owned()]),
+            BaseItemOrder::PlayCountDescending
+        );
+        assert_eq!(
+            item_order(&["CommunityRating".to_owned()], &[]),
+            BaseItemOrder::CommunityRatingAscending
+        );
+        assert_eq!(
+            item_order(&["CriticRating".to_owned()], &["Descending".to_owned()]),
+            BaseItemOrder::CriticRatingDescending
+        );
+        assert_eq!(
+            item_order(&["Runtime".to_owned()], &[]),
+            BaseItemOrder::RuntimeTicksAscending
+        );
+        assert_eq!(
+            item_order(&["Runtime".to_owned()], &["Descending".to_owned()]),
+            BaseItemOrder::RuntimeTicksDescending
+        );
+    }
+
+    #[test]
+    fn item_order_keeps_premiere_direction() {
+        assert_eq!(
+            item_order(&["PremiereDate".to_owned()], &["Descending".to_owned()]),
+            BaseItemOrder::PremiereDateDescending
+        );
+    }
 }

@@ -101,8 +101,7 @@ pub(crate) async fn recommendations(
     let baseline_item_name = items.first().and_then(|item| item.name.clone());
     let category_id = items
         .first()
-        .map(|item| item.id.clone())
-        .unwrap_or_else(|| Uuid::nil().simple().to_string());
+        .map_or_else(|| Uuid::nil().simple().to_string(), |item| item.id.clone());
     Ok(Json(vec![RecommendationDto {
         items,
         recommendation_type: RecommendationType::SimilarToRecentlyPlayed,

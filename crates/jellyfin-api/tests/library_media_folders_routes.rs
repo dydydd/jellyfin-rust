@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
@@ -10,7 +11,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Library Media Folders Tests\", DeviceId=\"library-media-folders-tests\", Device=\"Test\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_library_media_folders_routes_";
@@ -269,7 +270,7 @@ fn string_array(response: &Value) -> Vec<String> {
         .collect()
 }
 
-fn canonical_path(path: &PathBuf) -> String {
+fn canonical_path(path: &Path) -> String {
     path.canonicalize()
         .expect("canonical path")
         .to_str()

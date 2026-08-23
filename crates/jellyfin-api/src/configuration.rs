@@ -42,7 +42,9 @@ pub(crate) async fn update(
         .await?;
     *state.tmdb_api_key.write().await = api_key;
     *state.omdb_api_key.write().await = omdb_api_key;
-    state.quick_connect_capability.set_enabled(quick_connect_available);
+    state
+        .quick_connect_capability
+        .set_enabled(quick_connect_available);
     Ok(StatusCode::NO_CONTENT)
 }
 

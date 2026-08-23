@@ -122,8 +122,8 @@ impl UserViewManagerService {
             }
         }
 
-        add_grouped_view(&mut list, user_id, movies, "Movies", preset_views);
-        add_grouped_view(&mut list, user_id, tvshows, "TvShows", preset_views);
+        add_grouped_view(&mut list, user_id, &movies, "Movies", preset_views);
+        add_grouped_view(&mut list, user_id, &tvshows, "TvShows", preset_views);
 
         list.retain(|view| {
             !config.my_media_excludes.contains(&view.id)
@@ -241,12 +241,12 @@ impl UserViewManagerService {
         folders.retain(|folder| {
             policy_allows_folder(policy, folder)
                 && (include_hidden || !is_hidden(folder))
-                && !folder
+                && folder
                     .library_options
                     .as_object()
                     .and_then(|object| object.get("Enabled"))
                     .and_then(Value::as_bool)
-                    .is_some_and(|enabled| !enabled)
+                    .is_none_or(|enabled| enabled)
         });
         Ok(folders)
     }
@@ -334,7 +334,7 @@ fn grouped_user_view(user_id: Uuid, name: &str, collection_type: &str) -> UserVi
 fn add_grouped_view(
     list: &mut Vec<UserViewItem>,
     user_id: Uuid,
-    folders: Vec<VirtualFolder>,
+    folders: &[VirtualFolder],
     view_type: &str,
     preset_views: &[String],
 ) {

@@ -70,13 +70,11 @@ impl LyricManager {
     /// Parses a lyric file using Jellyfin's LRC parser with a TXT fallback.
     #[must_use]
     pub fn parse_lyrics(format: &str, content: &str) -> Option<Value> {
-        if format.eq_ignore_ascii_case("lrc") || format.eq_ignore_ascii_case("elrc") {
-            if let Some(parsed) = LrcLyricParser.parse_lyrics(&LyricFile::new(
-                format!("lyric.{format}"),
-                content,
-            )) {
-                return Some(lyric_dto_to_json(parsed));
-            }
+        if (format.eq_ignore_ascii_case("lrc") || format.eq_ignore_ascii_case("elrc"))
+            && let Some(parsed) =
+                LrcLyricParser.parse_lyrics(&LyricFile::new(format!("lyric.{format}"), content))
+        {
+            return Some(lyric_dto_to_json(&parsed));
         }
         if ["lrc", "elrc", "txt"]
             .iter()
@@ -94,7 +92,7 @@ impl LyricManager {
     }
 }
 
-fn lyric_dto_to_json(parsed: jellyfin_providers::lyrics::LyricDto) -> Value {
+fn lyric_dto_to_json(parsed: &jellyfin_providers::lyrics::LyricDto) -> Value {
     json!({
         "Metadata": {},
         "Lyrics": parsed.lyrics.iter().map(|line| json!({
@@ -116,8 +114,7 @@ mod tests {
 
     #[test]
     fn parses_lrc_into_official_lyric_dto_shape() {
-        let parsed =
-            LyricManager::parse_lyrics("lrc", "[00:01.00]Hello\n[00:02.50]World").unwrap();
+        let parsed = LyricManager::parse_lyrics("lrc", "[00:01.00]Hello\n[00:02.50]World").unwrap();
         assert_eq!(parsed["Lyrics"][0]["Text"], "Hello");
         assert_eq!(parsed["Lyrics"][0]["Start"], 10_000_000);
         assert_eq!(parsed["Lyrics"][1]["Text"], "World");

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use std::{fs::File, io::Write, path::Path};
 
 use axum::{

@@ -6,20 +6,11 @@ use axum::{
     extract::{OriginalUri, Path, State},
     http::{HeaderMap, StatusCode},
 };
-use axum_extra::extract::Query;
 use jellyfin_controller::RemoteSearchRequest;
 use jellyfin_model::{ExternalIdInfo, RemoteSearchResult};
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, authorization};
-
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct ApplySearchCriteriaQuery {
-    #[serde(default = "default_replace_all_images")]
-    #[serde(rename = "replaceAllImages", alias = "ReplaceAllImages")]
-    replace_all_images: bool,
-}
 
 pub(crate) async fn external_id_infos(
     State(state): State<Arc<AppState>>,
@@ -72,10 +63,7 @@ pub(crate) async fn remote_search_elevated(
 }
 
 fn remote_search_kind(uri: &axum::http::Uri) -> &str {
-    uri.path()
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
+    uri.path().rsplit('/').next().unwrap_or_default()
 }
 
 pub(crate) async fn apply_remote_search(
@@ -83,21 +71,15 @@ pub(crate) async fn apply_remote_search(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<ApplySearchCriteriaQuery>,
     request: Result<Json<RemoteSearchResult>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     authorization::require_default(&state, &headers, &uri)
         .await?
         .require_administrator()?;
-    let _replace_all_images = query.replace_all_images;
     let Json(result) = request.map_err(|_| ApiError::InvalidRequest)?;
     state
         .item_lookup
         .apply_remote_search(item_id, result)
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-const fn default_replace_all_images() -> bool {
-    true
 }

@@ -51,7 +51,10 @@ impl SubtitleManager {
     #[must_use]
     pub fn search(&self, request: &SubtitleSearchRequest) -> Vec<RemoteSubtitleInfo> {
         for provider in self.providers.iter() {
-            if !provider.supported_media_types().contains(&request.media_type.as_str()) {
+            if !provider
+                .supported_media_types()
+                .contains(&request.media_type.as_str())
+            {
                 continue;
             }
             let results = provider.search(request);
@@ -81,7 +84,7 @@ mod tests {
     struct MovieProvider;
 
     impl SubtitleProvider for MovieProvider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "MovieSubtitles"
         }
 

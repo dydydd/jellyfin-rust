@@ -17,8 +17,8 @@ pub mod library_watcher;
 mod localization;
 mod lyrics;
 mod media_attachments;
-mod media_segments;
 pub mod media_encoding;
+mod media_segments;
 pub mod transcode;
 
 pub use transcode::{

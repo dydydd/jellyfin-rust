@@ -176,7 +176,7 @@ impl LibraryControllerService {
     /// Creates a random audio mix from the seed item's normalized genres.
     ///
     /// Audio seeds remain first, while all other candidates are selected by
-    /// PostgreSQL from shared genre mappings up to Jellyfin's 200-item cap.
+    /// `PostgreSQL` from shared genre mappings up to Jellyfin's 200-item cap.
     ///
     /// # Errors
     ///

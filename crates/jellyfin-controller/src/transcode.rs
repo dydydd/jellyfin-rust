@@ -9,9 +9,7 @@ use std::{
     time::Duration,
 };
 
-use jellyfin_media_encoding_hls::{
-    HlsPlaylistError, compute_equal_length_segment_ticks,
-};
+use jellyfin_media_encoding_hls::{HlsPlaylistError, compute_equal_length_segment_ticks};
 use tokio::{fs, process::Command};
 use uuid::Uuid;
 
@@ -68,6 +66,7 @@ pub struct FfmpegCommand {
 
 /// Builds the HLS command used to produce transcode segments.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn hls_command(
     ffmpeg_path: &Path,
     input_path: &Path,
@@ -88,9 +87,7 @@ pub fn hls_command(
     arguments.push("-i".to_owned());
     arguments.push(input_path.to_string_lossy().into_owned());
 
-    if !target.is_video {
-        arguments.push("-vn".to_owned());
-    } else {
+    if target.is_video {
         match target.video_codec.as_deref() {
             Some(codec) if !codec.eq_ignore_ascii_case("copy") => {
                 arguments.push("-map".to_owned());
@@ -106,6 +103,8 @@ pub fn hls_command(
             }
             None => {}
         }
+    } else {
+        arguments.push("-vn".to_owned());
     }
 
     if let Some(bitrate) = target.video_bitrate {
@@ -119,10 +118,11 @@ pub fn hls_command(
 
     if let Some(audio_codec) = target.audio_codec.as_deref() {
         arguments.push("-map".to_owned());
-        arguments.push(target.audio_stream_index.map_or_else(
-            || "0:a:0".to_owned(),
-            |index| format!("0:a:{index}"),
-        ));
+        arguments.push(
+            target
+                .audio_stream_index
+                .map_or_else(|| "0:a:0".to_owned(), |index| format!("0:a:{index}")),
+        );
         arguments.push("-c:a".to_owned());
         arguments.push(audio_codec.to_owned());
     } else {
@@ -188,6 +188,7 @@ pub fn hls_command(
 
 /// Builds the progressive audio command used by Universal Audio requests.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn audio_command(
     ffmpeg_path: &Path,
     input_path: &Path,
@@ -274,10 +275,7 @@ impl TranscodeJobHandle {
 /// # Errors
 ///
 /// Returns a process-spawn error when `FFmpeg` cannot be started.
-pub async fn run_ffmpeg(
-    command: &FfmpegCommand,
-    job: &TranscodeJobHandle,
-) -> Result<(), String> {
+pub async fn run_ffmpeg(command: &FfmpegCommand, job: &TranscodeJobHandle) -> Result<(), String> {
     let mut child = Command::new(&command.program)
         .args(&command.arguments)
         .kill_on_drop(true)
@@ -297,7 +295,10 @@ pub async fn run_ffmpeg(
     if status.success() || job.cancel.load(Ordering::Acquire) {
         Ok(())
     } else {
-        Err(format!("{} exited with {status}", command.program.display()))
+        Err(format!(
+            "{} exited with {status}",
+            command.program.display()
+        ))
     }
 }
 
@@ -378,11 +379,7 @@ impl TranscodeJobRegistry {
     }
 
     /// Cancels all jobs belonging to a playback session and returns their ids.
-    pub async fn stop_for_session(
-        &self,
-        device_id: &str,
-        play_session_id: &str,
-    ) -> Vec<String> {
+    pub async fn stop_for_session(&self, device_id: &str, play_session_id: &str) -> Vec<String> {
         let key = session_key(device_id, play_session_id);
         let job_ids = self
             .sessions
@@ -447,6 +444,7 @@ pub fn hls_job_id(
 /// # Errors
 ///
 /// Returns an [`HlsPlaylistError`] when the segment inputs cannot be formatted.
+#[allow(clippy::cast_precision_loss)]
 pub fn build_main_playlist(
     item_id: Uuid,
     job_id: &str,
@@ -489,9 +487,7 @@ pub fn build_main_playlist(
 /// Creates a single-variant master playlist.
 #[must_use]
 pub fn build_master_playlist(main_url: &str) -> String {
-    format!(
-        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080\n{main_url}\n"
-    )
+    format!("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080\n{main_url}\n")
 }
 
 /// Duration `FFmpeg` should wait for a job's first playlist or segment.
@@ -517,9 +513,7 @@ pub async fn wait_for_segment(
         let mut found = false;
         while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with(job_id)
-                && name.ends_with(&format!(".{extension}"))
-            {
+            if name.starts_with(job_id) && name.ends_with(&format!(".{extension}")) {
                 found = true;
                 break;
             }
@@ -643,7 +637,13 @@ mod tests {
         );
         assert_ne!(
             first,
-            hls_job_id(Uuid::from_u128(2), Some("source"), Some(100), &target, &settings)
+            hls_job_id(
+                Uuid::from_u128(2),
+                Some("source"),
+                Some(100),
+                &target,
+                &settings
+            )
         );
     }
 
@@ -659,7 +659,7 @@ mod tests {
         let playlist = build_main_playlist(
             Uuid::from_u128(1),
             "job1",
-            Some(60_000_000_0),
+            Some(600_000_000),
             &HlsSegmentSettings {
                 container: "ts".to_owned(),
                 segment_length_ms: 6_000,

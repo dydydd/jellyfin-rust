@@ -10,8 +10,8 @@ use axum::{
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::Response,
 };
-use jellyfin_data::{BaseItemCounts, BaseItemPage};
 use jellyfin_controller::RelatedItemKind;
+use jellyfin_data::{BaseItemCounts, BaseItemPage};
 use jellyfin_model::{
     CollectionType, ImageOption, ImageType, ItemCounts, LibraryOptionsResultDto,
     LibraryTypeOptionsDto,
@@ -21,9 +21,7 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use crate::{
-    ApiError, AppState, authentication, authorization, user_library,
-};
+use crate::{ApiError, AppState, authentication, authorization, user_library};
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct LibraryQuery {
@@ -158,9 +156,14 @@ pub(crate) async fn theme_media(
     Path(item_id): Path<Uuid>,
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<AllThemeMediaResult>, ApiError> {
-    let theme_songs =
-        theme_result(state.clone(), headers.clone(), item_id, query.clone(), RelatedItemKind::ThemeSong)
-            .await?;
+    let theme_songs = theme_result(
+        state.clone(),
+        headers.clone(),
+        item_id,
+        query.clone(),
+        RelatedItemKind::ThemeSong,
+    )
+    .await?;
     let theme_videos =
         theme_result(state, headers, item_id, query, RelatedItemKind::ThemeVideo).await?;
     Ok(Json(AllThemeMediaResult {

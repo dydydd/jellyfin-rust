@@ -47,6 +47,11 @@ pub enum LibraryParentKind {
 
 /// Provides file-system children for nested resolver checks.
 pub trait DirectoryReader: Send + Sync {
+    /// Lists the direct children of `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory cannot be read.
     fn get_entries(&self, path: &str) -> io::Result<Vec<ResolutionFileSystemEntry>>;
 }
 

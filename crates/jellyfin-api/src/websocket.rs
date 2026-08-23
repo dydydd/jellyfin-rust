@@ -87,11 +87,7 @@ impl WebSocketHub {
         sender.send(message).is_ok()
     }
 
-    pub(crate) async fn send_all<T: serde::Serialize>(
-        &self,
-        message_type: &str,
-        data: &T,
-    ) {
+    pub(crate) async fn send_all<T: serde::Serialize>(&self, message_type: &str, data: &T) {
         let Ok(data) = serde_json::to_value(data) else {
             return;
         };
@@ -165,7 +161,7 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
                 }
             }
             message = socket.recv() => { match message {
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(Message::Close(_)) | Err(_)) | None => break,
                 Some(Ok(Message::Ping(payload))) => {
                     last_keep_alive = Instant::now();
                     forced = false;
@@ -200,7 +196,7 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break,
             } }
         }
@@ -231,7 +227,7 @@ async fn drain_session_commands(
 }
 
 async fn disconnect(state: &AppState, session_id: &str) {
-    state.web_sockets.unsubscribe(&session_id).await;
+    state.web_sockets.unsubscribe(session_id).await;
     let Some(departure) = state
         .sync_play
         .websocket_disconnected_with_departure(session_id)
@@ -321,10 +317,7 @@ pub(crate) async fn broadcast_user_data_changed(
 }
 
 pub(crate) async fn broadcast_user_updated(state: &AppState, user: &serde_json::Value) {
-    state
-        .web_sockets
-        .send_all("UserUpdated", user)
-        .await;
+    state.web_sockets.send_all("UserUpdated", user).await;
 }
 
 pub(crate) async fn broadcast_user_deleted(state: &AppState, user_id: Uuid) {
@@ -383,11 +376,7 @@ fn should_deliver_message(message: &str, subscriptions: &HashSet<String>) -> boo
             .any(|subscribed| message_type.eq_ignore_ascii_case(subscribed))
 }
 
-async fn handle_inbound(
-    payload: &[u8],
-    subscriptions: &mut HashSet<String>,
-    state: &AppState,
-) {
+async fn handle_inbound(payload: &[u8], subscriptions: &mut HashSet<String>, state: &AppState) {
     let Ok(parsed) = deserialize_websocket_message([payload]) else {
         return;
     };

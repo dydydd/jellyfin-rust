@@ -192,6 +192,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_lines)]
     pub fn new(database: DatabaseConnection, server_name: String, local_address: String) -> Self {
         let library_scan = LibraryScanService::new(database.clone());
         let scheduled_tasks = ScheduledTaskService::with_default_executors(library_scan.clone());
@@ -341,7 +342,7 @@ impl AppState {
         self
     }
 
-    /// Replaces the OMDb API key used by metadata providers.
+    /// Replaces the `OMDb` API key used by metadata providers.
     #[must_use]
     pub fn with_omdb_api_key(mut self, api_key: impl Into<String>) -> Self {
         self.omdb_api_key = Arc::new(tokio::sync::RwLock::new(api_key.into()));
@@ -357,10 +358,7 @@ impl AppState {
 
     /// Replaces the remote subtitle providers exposed by the subtitle API.
     #[must_use]
-    pub fn with_subtitle_providers(
-        mut self,
-        providers: Vec<Arc<dyn SubtitleProvider>>,
-    ) -> Self {
+    pub fn with_subtitle_providers(mut self, providers: Vec<Arc<dyn SubtitleProvider>>) -> Self {
         self.subtitles = SubtitleManager::new(providers);
         self
     }
@@ -507,8 +505,7 @@ impl AppState {
     #[must_use]
     pub fn with_ffmpeg_path(mut self, ffmpeg_path: impl Into<std::path::PathBuf>) -> Self {
         self.ffmpeg_path = ffmpeg_path.into();
-        self.library_scan
-            .set_ffmpeg_path(self.ffmpeg_path.clone());
+        self.library_scan.set_ffmpeg_path(self.ffmpeg_path.clone());
         self
     }
 
@@ -544,6 +541,8 @@ impl AppState {
     }
 }
 
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::needless_pass_by_value)]
 pub fn router(state: AppState) -> Router {
     let web_dir = state.web_directory.clone();
     let index_path = web_dir.join("index.html");
@@ -2040,8 +2039,8 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
         | LibraryScanError::VirtualFolder(
             jellyfin_data::VirtualFolderError::NotFound
             | jellyfin_data::VirtualFolderError::PathNotFound,
-        ) => (StatusCode::NOT_FOUND, "Library scan target not found"),
-        LibraryScanError::MediaStream(jellyfin_data::MediaStreamStoreError::BaseItemNotFound {
+        )
+        | LibraryScanError::MediaStream(jellyfin_data::MediaStreamStoreError::BaseItemNotFound {
             ..
         })
         | LibraryScanError::MediaAttachment(

@@ -197,7 +197,7 @@ pub struct LiveStreamResponse {
 }
 
 /// Extended media source metadata produced by media probing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct MediaInfo {
     #[serde(flatten)]
@@ -233,31 +233,6 @@ pub struct MediaInfo {
     pub official_rating_description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
-}
-
-impl Default for MediaInfo {
-    fn default() -> Self {
-        Self {
-            media_source: MediaSourceInfo::default(),
-            chapters: Vec::new(),
-            album: None,
-            artists: Vec::new(),
-            album_artists: Vec::new(),
-            studios: Vec::new(),
-            genres: Vec::new(),
-            show_name: None,
-            forced_sort_name: None,
-            index_number: None,
-            parent_index_number: None,
-            production_year: None,
-            premiere_date: None,
-            people: Vec::new(),
-            provider_ids: HashMap::new(),
-            official_rating: None,
-            official_rating_description: None,
-            overview: None,
-        }
-    }
 }
 
 /// Response returned by the playback-info endpoint.

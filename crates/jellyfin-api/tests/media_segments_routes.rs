@@ -6,7 +6,8 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, MediaSegmentRepository, NewBaseItem, NewDevice,
-    NewMediaSegment, entities::{base_item, user},
+    NewMediaSegment,
+    entities::{base_item, user},
 };
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::Value;
@@ -64,7 +65,10 @@ async fn media_segments_route_matches_official_contract_and_returns_persisted_se
     let intro_only = body_json(
         fixture
             .get(
-                &format!("/MediaSegments/{}?includeSegmentTypes=Intro", fixture.item_id),
+                &format!(
+                    "/MediaSegments/{}?includeSegmentTypes=Intro",
+                    fixture.item_id
+                ),
                 &fixture.user_token,
             )
             .await,
@@ -76,7 +80,10 @@ async fn media_segments_route_matches_official_contract_and_returns_persisted_se
     let unknown_only = body_json(
         fixture
             .get(
-                &format!("/MediaSegments/{}?includeSegmentTypes=Unknown", fixture.item_id),
+                &format!(
+                    "/MediaSegments/{}?includeSegmentTypes=Unknown",
+                    fixture.item_id
+                ),
                 &fixture.user_token,
             )
             .await,

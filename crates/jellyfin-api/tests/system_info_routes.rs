@@ -138,12 +138,11 @@ fn assert_system_info(info: &Value, startup_completed: bool) {
     assert_eq!(info["CachePath"], "cache");
     assert_eq!(info["LogPath"], "logs");
     assert_eq!(info["InternalMetadataPath"], "metadata");
-    assert_eq!(
+    assert!(
         info["TranscodingTempPath"]
             .as_str()
             .expect("transcoding temp path")
-            .ends_with("jellyfin-rust/transcodes"),
-        true
+            .ends_with("jellyfin-rust/transcodes")
     );
     assert_eq!(info["CastReceiverApplications"], Value::Array(Vec::new()));
     assert_eq!(info["HasUpdateAvailable"], false);

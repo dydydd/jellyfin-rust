@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::{UserError, UserService};
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum YearItem {
     Persisted(base_item::Model),
     Virtual(Year),
@@ -59,7 +60,7 @@ impl YearService {
 
     /// Resolves a Jellyfin year item for a positive production year.
     ///
-    /// Persisted `Year` items win. If none exists but PostgreSQL finds at
+    /// Persisted `Year` items win. If none exists but `PostgreSQL` finds at
     /// least one item tagged with the requested production year, the service
     /// returns the virtual item-by-name shape used by Jellyfin.
     ///

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use std::{
     fs,
     io::{Read, Write},
@@ -1495,6 +1496,7 @@ impl Fixture {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn image(
     image_type: BaseItemImageType,
     image_index: u32,

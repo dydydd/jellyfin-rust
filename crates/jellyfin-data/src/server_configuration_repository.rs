@@ -283,6 +283,11 @@ impl ServerConfigurationRepository {
         Ok(id)
     }
 
+    /// Updates whether remote access is enabled and returns the updated row.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the update fails.
     pub async fn update_remote_access(
         &self,
         enable_remote_access: bool,

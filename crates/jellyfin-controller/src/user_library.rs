@@ -131,11 +131,10 @@ impl UserLibraryService {
         };
         self.apply_user_policy(&mut query, target_user_id).await?;
         let page = self.hydrate_page(self.items.query(&query).await?);
-        Ok(page
-            .items
+        page.items
             .into_iter()
             .next()
-            .ok_or(UserLibraryError::ItemNotFound)?)
+            .ok_or(UserLibraryError::ItemNotFound)
     }
 
     /// Queries a target user's persisted library with PostgreSQL-side filters,
@@ -222,6 +221,7 @@ impl UserLibraryService {
     /// # Errors
     ///
     /// Returns not-found, forbidden, or persistence errors.
+    #[allow(clippy::too_many_arguments)]
     pub async fn next_up(
         &self,
         authenticated_user: &user::Model,
@@ -406,7 +406,7 @@ impl UserLibraryService {
             return Err(UserLibraryError::LyricsNotFound);
         };
         if !matches!(item.data, Some(Value::Object(_))) {
-            item.data = Some(Value::Object(Default::default()));
+            item.data = Some(Value::Object(serde_json::Map::default()));
         }
         if let Some(Value::Object(object)) = item.data.as_mut() {
             object.insert("Lyrics".to_owned(), lyrics.clone());
@@ -422,7 +422,7 @@ impl UserLibraryService {
     ///
     /// Returns [`UserLibraryError::LyricsNotFound`] when no provider can
     /// resolve `lyric_id` or the payload cannot be parsed.
-    pub async fn get_remote_lyrics(&self, lyric_id: &str) -> Result<Value, UserLibraryError> {
+    pub fn get_remote_lyrics(&self, lyric_id: &str) -> Result<Value, UserLibraryError> {
         let Some(lyric_file) = self.lyrics.get_lyrics(lyric_id) else {
             return Err(UserLibraryError::LyricsNotFound);
         };
@@ -456,7 +456,7 @@ impl UserLibraryService {
             return Err(UserLibraryError::ItemNotFound);
         }
         if !matches!(item.data, Some(Value::Object(_))) {
-            item.data = Some(Value::Object(Default::default()));
+            item.data = Some(Value::Object(serde_json::Map::default()));
         }
         if let Some(Value::Object(object)) = item.data.as_mut() {
             object.insert("Lyrics".to_owned(), lyrics.clone());
@@ -514,8 +514,8 @@ impl UserLibraryService {
         target_user_id: Uuid,
     ) -> Result<(), UserLibraryError> {
         let user = self.users.get(target_user_id).await?;
-        let policy: UserPolicy = serde_json::from_value(user.policy.clone())
-            .map_err(UserLibraryError::InvalidPolicy)?;
+        let policy: UserPolicy =
+            serde_json::from_value(user.policy.clone()).map_err(UserLibraryError::InvalidPolicy)?;
         query.blocked_tags = policy.blocked_tags;
         query.allowed_tags = policy.allowed_tags;
         query.enabled_folders = policy.enabled_folders;

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
@@ -124,7 +125,11 @@ async fn exercise_password_reset_routes(database_name: &str) {
             .unwrap()
             .starts_with("passwordreset")
     );
-    assert!(started["PinFile"].as_str().unwrap().ends_with(".json"));
+    assert!(
+        std::path::Path::new(started["PinFile"].as_str().unwrap())
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    );
     assert!(
         started["PinExpirationDate"]
             .as_str()

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},

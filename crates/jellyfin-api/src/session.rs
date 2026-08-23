@@ -128,9 +128,7 @@ pub(crate) async fn list(
     Ok(Json(sessions))
 }
 
-pub(crate) async fn all_session_infos(
-    state: &AppState,
-) -> Result<Vec<SessionInfoDto>, ApiError> {
+pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInfoDto>, ApiError> {
     let page = state
         .devices
         .query(&DeviceQuery {

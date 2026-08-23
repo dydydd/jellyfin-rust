@@ -2,8 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
-    ItemUpdateStoreError,
-    entities::base_item,
+    ItemUpdateStoreError, entities::base_item,
 };
 use jellyfin_model::MetadataProvider;
 use serde::Deserialize;
@@ -65,10 +64,10 @@ impl AudioDbClient {
             .send()
             .await?
             .error_for_status()?;
-        Ok(response
+        response
             .json()
             .await
-            .map_err(|_| AudioDbMetadataProviderError::Json)?)
+            .map_err(|_| AudioDbMetadataProviderError::Json)
     }
 }
 
@@ -86,7 +85,7 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
     .and_then(|value| reqwest::Proxy::all(value.trim()).ok())
 }
 
-/// Fetches TheAudioDB artist and album metadata for music library items.
+/// Fetches `TheAudioDB` artist and album metadata for music library items.
 pub struct AudioDbMetadataProvider {
     client: AudioDbClient,
     items: BaseItemRepository,
@@ -159,9 +158,10 @@ impl AudioDbMetadataProvider {
         &self,
         item: &base_item::Model,
     ) -> Result<Option<Album>, AudioDbMetadataProviderError> {
-        let Some(release_group_id) =
-            provider_id(item.data.as_ref(), MetadataProvider::MusicBrainzReleaseGroup)
-        else {
+        let Some(release_group_id) = provider_id(
+            item.data.as_ref(),
+            MetadataProvider::MusicBrainzReleaseGroup,
+        ) else {
             return Ok(None);
         };
         Ok(self
@@ -180,8 +180,15 @@ impl AudioDbMetadataProvider {
         artist: &Artist,
     ) -> Result<(), AudioDbMetadataProviderError> {
         let mut provider_ids = BTreeMap::new();
-        if let Some(id) = artist.id_artist.as_deref().filter(|value| !value.is_empty()) {
-            provider_ids.insert(MetadataProvider::AudioDbArtist.as_str().to_owned(), id.to_owned());
+        if let Some(id) = artist
+            .id_artist
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            provider_ids.insert(
+                MetadataProvider::AudioDbArtist.as_str().to_owned(),
+                id.to_owned(),
+            );
         }
         if let Some(id) = artist
             .str_music_brainz_id
@@ -241,7 +248,10 @@ impl AudioDbMetadataProvider {
     ) -> Result<(), AudioDbMetadataProviderError> {
         let mut provider_ids = BTreeMap::new();
         if let Some(id) = album.id_album.as_deref().filter(|value| !value.is_empty()) {
-            provider_ids.insert(MetadataProvider::AudioDbAlbum.as_str().to_owned(), id.to_owned());
+            provider_ids.insert(
+                MetadataProvider::AudioDbAlbum.as_str().to_owned(),
+                id.to_owned(),
+            );
         }
         if let Some(id) = album.id_artist.as_deref().filter(|value| !value.is_empty()) {
             provider_ids.insert(
@@ -255,7 +265,9 @@ impl AudioDbMetadataProvider {
             .filter(|value| !value.is_empty())
         {
             provider_ids.insert(
-                MetadataProvider::MusicBrainzReleaseGroup.as_str().to_owned(),
+                MetadataProvider::MusicBrainzReleaseGroup
+                    .as_str()
+                    .to_owned(),
                 id.to_owned(),
             );
         }
@@ -344,7 +356,8 @@ fn metadata_object(existing: Option<&Value>) -> serde_json::Map<String, Value> {
 }
 
 fn provider_id(data: Option<&Value>, provider: MetadataProvider) -> Option<String> {
-    data?.get("ProviderIds")?
+    data?
+        .get("ProviderIds")?
         .get(provider.as_str())?
         .as_str()
         .map(str::to_owned)
@@ -357,6 +370,7 @@ struct ArtistRoot {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_field_names)]
 struct Artist {
     id_artist: Option<String>,
     str_genre: Option<String>,
@@ -377,8 +391,8 @@ struct Artist {
 
 impl Artist {
     fn preferred_overview(&self) -> Option<&str> {
-        let language = std::env::var("JELLYFIN_METADATA_LANGUAGE")
-            .unwrap_or_else(|_| "en".to_owned());
+        let language =
+            std::env::var("JELLYFIN_METADATA_LANGUAGE").unwrap_or_else(|_| "en".to_owned());
         let localized = match language.as_str() {
             "de" => self.str_biography_de.as_deref(),
             "fr" => self.str_biography_fr.as_deref(),
@@ -416,6 +430,7 @@ struct AlbumRoot {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_field_names)]
 struct Album {
     id_album: Option<String>,
     id_artist: Option<String>,
@@ -436,8 +451,8 @@ struct Album {
 
 impl Album {
     fn preferred_overview(&self) -> Option<&str> {
-        let language = std::env::var("JELLYFIN_METADATA_LANGUAGE")
-            .unwrap_or_else(|_| "en".to_owned());
+        let language =
+            std::env::var("JELLYFIN_METADATA_LANGUAGE").unwrap_or_else(|_| "en".to_owned());
         let localized = match language.as_str() {
             "de" => self.str_description_de.as_deref(),
             "fr" => self.str_description_fr.as_deref(),

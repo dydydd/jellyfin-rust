@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_truncation)]
+
 use std::{
     collections::{BTreeMap, HashMap},
     time::Duration,
@@ -395,6 +397,11 @@ impl TmdbMetadataProvider {
         }
     }
 
+    /// Refreshes metadata for one persisted item.
+    ///
+    /// # Errors
+    ///
+    /// Returns a provider error when TMDB cannot resolve or persist metadata.
     pub async fn refresh_item(&self, item_id: Uuid) -> Result<bool, MetadataProviderError> {
         let Some(item) = self.items.get(item_id).await? else {
             return Ok(false);
@@ -618,12 +625,12 @@ impl TmdbMetadataProvider {
         item.official_rating = us_rating(&details.release_dates);
         item.runtime_ticks = details
             .runtime
-            .map(|minutes| minutes as i64 * 60 * 10_000_000);
+            .map(|minutes| i64::from(minutes) * 60 * 10_000_000);
         if let Some(premiere_date) = parse_tmdb_date(details.release_date.as_deref()) {
             item.premiere_date = Some(premiere_date);
             item.production_year = Some(premiere_date.year());
         }
-        item.data = Some(movie_extra_data(&item.data, details));
+        item.data = Some(movie_extra_data(item.data.as_ref(), details));
         self.items.update(item).await?;
 
         self.replace_people(item_id, &details.credits.cast, &details.credits.crew)
@@ -681,7 +688,7 @@ impl TmdbMetadataProvider {
             item.premiere_date = Some(premiere_date);
             item.production_year = Some(premiere_date.year());
         }
-        item.data = Some(tv_extra_data(&item.data, details, &studios));
+        item.data = Some(tv_extra_data(item.data.as_ref(), details, &studios));
         self.items.update(item).await?;
 
         self.replace_people(item_id, &details.credits.cast, &details.credits.crew)
@@ -854,6 +861,7 @@ impl TmdbMetadataProvider {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn apply_episode_metadata(
         &self,
         item_id: Uuid,
@@ -912,7 +920,7 @@ impl TmdbMetadataProvider {
             item.series_presentation_unique_key = Some(series_presentation_unique_key.to_owned());
         }
 
-        let mut data = metadata_object(&item.data);
+        let mut data = metadata_object(item.data.as_ref());
         upsert_i32(&mut data, "IndexNumberEnd", episode.index_number_end);
         upsert_i32(
             &mut data,
@@ -983,6 +991,7 @@ impl TmdbMetadataProvider {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn apply_season_metadata(
         &self,
         series_id: Uuid,
@@ -997,20 +1006,20 @@ impl TmdbMetadataProvider {
             .filter(|item| item.item_type == "Season" && item.index_number == Some(season_number))
             .collect::<Vec<_>>();
         for season_item in season_items {
-            if let Some(name) = season.name.as_deref().filter(|name| !name.is_empty()) {
-                if season_item.name.as_deref() != Some(name) {
-                    let mut updated = season_item.clone();
-                    updated.name = Some(name.to_owned());
-                    updated.sort_name = Some(name.to_owned());
-                    self.items.update(updated).await?;
-                }
+            if let Some(name) = season.name.as_deref().filter(|name| !name.is_empty())
+                && season_item.name.as_deref() != Some(name)
+            {
+                let mut updated = season_item.clone();
+                updated.name = Some(name.to_owned());
+                updated.sort_name = Some(name.to_owned());
+                self.items.update(updated).await?;
             }
-            if let Some(overview) = season.overview.as_deref().filter(|value| !value.is_empty()) {
-                if season_item.overview.as_deref() != Some(overview) {
-                    let mut updated = season_item.clone();
-                    updated.overview = Some(overview.to_owned());
-                    self.items.update(updated).await?;
-                }
+            if let Some(overview) = season.overview.as_deref().filter(|value| !value.is_empty())
+                && season_item.overview.as_deref() != Some(overview)
+            {
+                let mut updated = season_item.clone();
+                updated.overview = Some(overview.to_owned());
+                self.items.update(updated).await?;
             }
             if let Some(premiere_date) = parse_tmdb_date(season.air_date.as_deref())
                 && season_item.premiere_date != Some(premiere_date)
@@ -1027,7 +1036,7 @@ impl TmdbMetadataProvider {
                 .filter(|value| !value.is_empty())
             {
                 let mut updated = season_item.clone();
-                let mut data = metadata_object(&updated.data);
+                let mut data = metadata_object(updated.data.as_ref());
                 let mut provider_ids = provider_ids_from_data(updated.data.as_ref());
                 provider_ids.insert("Tvdb".to_owned(), tvdb_id.to_owned());
                 data.insert(
@@ -1037,23 +1046,22 @@ impl TmdbMetadataProvider {
                 updated.data = Some(Value::Object(data));
                 self.items.update(updated).await?;
             }
-            if let Some(images) = &self.images {
-                if let Some(url) =
+            if let Some(images) = &self.images
+                && let Some(url) =
                     TmdbUtils::image_url(Some("original"), season.poster_path.as_deref())
+            {
+                let existing = images.list(&season_item).await.ok();
+                let has_primary = existing.as_ref().is_some_and(|images| {
+                    images
+                        .iter()
+                        .any(|image| image.image_type == ImageType::Primary)
+                });
+                if !has_primary
+                    && let Err(error) = images
+                        .download_remote_image(season_item.id, ImageType::Primary, &url)
+                        .await
                 {
-                    let existing = images.list(&season_item).await.ok();
-                    let has_primary = existing.as_ref().is_some_and(|images| {
-                        images
-                            .iter()
-                            .any(|image| image.image_type == ImageType::Primary)
-                    });
-                    if !has_primary
-                        && let Err(error) = images
-                            .download_remote_image(season_item.id, ImageType::Primary, &url)
-                            .await
-                    {
-                        tracing::warn!(%error, "TMDB season primary image download failed");
-                    }
+                    tracing::warn!(%error, "TMDB season primary image download failed");
                 }
             }
             let episodes = self.items.children(season_item.id).await?;
@@ -1085,23 +1093,22 @@ impl TmdbMetadataProvider {
                     remote.vote_average,
                     remote.vote_count,
                 ));
-                if let Some(images) = &self.images {
-                    if let Some(url) =
+                if let Some(images) = &self.images
+                    && let Some(url) =
                         TmdbUtils::image_url(Some("original"), remote.still_path.as_deref())
+                {
+                    let existing = images.list(&episode).await.ok();
+                    let has_primary = existing.as_ref().is_some_and(|images| {
+                        images
+                            .iter()
+                            .any(|image| image.image_type == ImageType::Primary)
+                    });
+                    if !has_primary
+                        && let Err(error) = images
+                            .download_remote_image(episode.id, ImageType::Primary, &url)
+                            .await
                     {
-                        let existing = images.list(&episode).await.ok();
-                        let has_primary = existing.as_ref().is_some_and(|images| {
-                            images
-                                .iter()
-                                .any(|image| image.image_type == ImageType::Primary)
-                        });
-                        if !has_primary
-                            && let Err(error) = images
-                                .download_remote_image(episode.id, ImageType::Primary, &url)
-                                .await
-                        {
-                            tracing::warn!(%error, "TMDB episode primary image download failed");
-                        }
+                        tracing::warn!(%error, "TMDB episode primary image download failed");
                     }
                 }
                 self.items.update(episode).await?;
@@ -1223,21 +1230,21 @@ impl TmdbMetadataProvider {
                 .iter()
                 .any(|image| image.image_type == ImageType::Backdrop)
         });
-        if !has_primary && let Some(url) = TmdbUtils::image_url(Some("original"), poster_path) {
-            if let Err(error) = images
+        if !has_primary
+            && let Some(url) = TmdbUtils::image_url(Some("original"), poster_path)
+            && let Err(error) = images
                 .download_remote_image(item_id, ImageType::Primary, &url)
                 .await
-            {
-                tracing::warn!(%error, "TMDB primary image download failed");
-            }
+        {
+            tracing::warn!(%error, "TMDB primary image download failed");
         }
-        if !has_backdrop && let Some(url) = TmdbUtils::image_url(Some("original"), backdrop_path) {
-            if let Err(error) = images
+        if !has_backdrop
+            && let Some(url) = TmdbUtils::image_url(Some("original"), backdrop_path)
+            && let Err(error) = images
                 .download_remote_image(item_id, ImageType::Backdrop, &url)
                 .await
-            {
-                tracing::warn!(%error, "TMDB backdrop download failed");
-            }
+        {
+            tracing::warn!(%error, "TMDB backdrop download failed");
         }
     }
 }
@@ -1306,6 +1313,7 @@ async fn fetch_episode_details(
     ))
 }
 
+#[allow(clippy::format_push_string)]
 fn combine_episode_details(target: &mut TmdbEpisodeDetails, next: &TmdbEpisodeDetails) {
     if let Some(name) = next.name.as_deref().filter(|value| !value.is_empty()) {
         target
@@ -1322,7 +1330,7 @@ fn combine_episode_details(target: &mut TmdbEpisodeDetails, next: &TmdbEpisodeDe
 }
 
 fn episode_metadata_from_item(item: &base_item::Model) -> EpisodeMetadata {
-    let data = metadata_object(&item.data);
+    let data = metadata_object(item.data.as_ref());
     EpisodeMetadata {
         name: item.name.clone(),
         overview: item.overview.clone(),
@@ -1404,7 +1412,7 @@ fn season_context_from_item(item: &base_item::Model) -> SeasonContext {
 }
 
 fn series_context_from_item(item: &base_item::Model, seasons: Vec<SeasonContext>) -> SeriesContext {
-    let data = metadata_object(&item.data);
+    let data = metadata_object(item.data.as_ref());
     SeriesContext {
         id: item.id.simple().to_string(),
         name: item.name.clone().unwrap_or_default(),
@@ -1438,7 +1446,7 @@ fn provider_ids_from_data(data: Option<&Value>) -> ProviderIdMap {
 
 fn person_extra_data(existing: Option<&Value>, details: &TmdbPersonDetails) -> Value {
     let existing = existing.cloned();
-    let mut object = metadata_object(&existing);
+    let mut object = metadata_object(existing.as_ref());
     set_string(&mut object, "HomePageUrl", details.homepage.as_deref());
     set_string(&mut object, "EndDate", details.deathday.as_deref());
     if let Some(place) = details
@@ -1465,7 +1473,7 @@ fn person_extra_data(existing: Option<&Value>, details: &TmdbPersonDetails) -> V
 fn data_i32(data: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
     data.get(key)
         .and_then(Value::as_i64)
-        .map(|value| value as i32)
+        .and_then(|value| i32::try_from(value).ok())
 }
 
 fn data_string(data: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
@@ -1497,7 +1505,8 @@ fn datetime_to_ticks(date: DateTime<Utc>) -> i64 {
 
 fn ticks_to_datetime(ticks: i64) -> Option<DateTime<Utc>> {
     let seconds = ticks.div_euclid(10_000_000);
-    let subsec_nanos = (ticks.rem_euclid(10_000_000) as u32) * 100;
+    let subsec_nanos =
+        u32::try_from(ticks.rem_euclid(10_000_000)).expect("remainder always fits in u32") * 100;
     DateTime::<Utc>::from_timestamp(seconds, subsec_nanos)
 }
 
@@ -1582,7 +1591,7 @@ fn tv_provider_ids(details: &TmdbTvDetails) -> std::collections::BTreeMap<String
     ids
 }
 
-fn movie_extra_data(data: &Option<Value>, details: &TmdbMovieDetails) -> Value {
+fn movie_extra_data(data: Option<&Value>, details: &TmdbMovieDetails) -> Value {
     let mut object = metadata_object(data);
     set_string(
         &mut object,
@@ -1638,7 +1647,7 @@ fn episode_data_with_rating(
     Value::Object(object)
 }
 
-fn tv_extra_data(data: &Option<Value>, details: &TmdbTvDetails, studios: &[String]) -> Value {
+fn tv_extra_data(data: Option<&Value>, details: &TmdbTvDetails, studios: &[String]) -> Value {
     let mut object = metadata_object(data);
     set_string(
         &mut object,
@@ -1677,11 +1686,8 @@ fn tv_extra_data(data: &Option<Value>, details: &TmdbTvDetails, studios: &[Strin
     Value::Object(object)
 }
 
-fn metadata_object(data: &Option<Value>) -> serde_json::Map<String, Value> {
-    data.as_ref()
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default()
+fn metadata_object(data: Option<&Value>) -> serde_json::Map<String, Value> {
+    data.and_then(Value::as_object).cloned().unwrap_or_default()
 }
 
 fn set_string(object: &mut serde_json::Map<String, Value>, key: &str, value: Option<&str>) {
@@ -2083,6 +2089,7 @@ struct TmdbContentRating {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+#[allow(clippy::struct_field_names)]
 struct TmdbExternalIds {
     imdb_id: Option<String>,
     tvdb_id: Option<String>,

@@ -5,10 +5,10 @@ fn writes_float_with_invariant_decimal_separator() {
     let mut writer = FormattingStreamWriter::new(Vec::new());
 
     writer
-        .write_format(format_args!("{}", 3.14159))
+        .write_format(format_args!("{}", std::f64::consts::PI))
         .expect("write must succeed");
 
-    assert_eq!(writer.into_inner(), b"3.14159");
+    assert_eq!(writer.into_inner(), b"3.141592653589793");
 }
 
 #[test]

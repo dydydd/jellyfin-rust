@@ -297,7 +297,7 @@ impl ItemValueRepository {
 
     /// Selects random audio items sharing at least one normalized genre.
     ///
-    /// PostgreSQL performs the set intersection, deduplication, randomization,
+    /// `PostgreSQL` performs the set intersection, deduplication, randomization,
     /// and limit in one query so the candidate library is never loaded into
     /// application memory.
     ///
@@ -434,9 +434,10 @@ impl ItemValueRepository {
             })
             .collect::<Result<Vec<_>, DbErr>>()?;
         Ok(ItemValuePage {
-            total_record_count: count
-                .map(|count| u64::try_from(count).unwrap_or_default())
-                .unwrap_or_else(|| u64::try_from(values.len()).unwrap_or(u64::MAX)),
+            total_record_count: count.map_or_else(
+                || u64::try_from(values.len()).unwrap_or(u64::MAX),
+                |count| u64::try_from(count).unwrap_or_default(),
+            ),
             values,
             start_index: query.start_index,
         })

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
@@ -125,7 +126,7 @@ async fn exercise_user_list_filter_routes(database_name: &str) {
         StatusCode::BAD_REQUEST
     );
 
-    let all = user_names(get_json(&app, "/Users", &admin_token).await);
+    let all = user_names(&get_json(&app, "/Users", &admin_token).await);
     assert_eq!(
         all,
         vec![
@@ -138,7 +139,7 @@ async fn exercise_user_list_filter_routes(database_name: &str) {
     );
 
     assert_eq!(
-        user_names(get_json(&app, "/Users?isHidden=false", &admin_token).await),
+        user_names(&get_json(&app, "/Users?isHidden=false", &admin_token).await),
         vec![
             format!("user-list-admin-{suffix}"),
             format!("user-list-visible-disabled-{suffix}"),
@@ -146,14 +147,14 @@ async fn exercise_user_list_filter_routes(database_name: &str) {
         ]
     );
     assert_eq!(
-        user_names(get_json(&app, "/Users?IsHidden=true", &admin_token).await),
+        user_names(&get_json(&app, "/Users?IsHidden=true", &admin_token).await),
         vec![
             format!("user-list-hidden-disabled-{suffix}"),
             format!("user-list-hidden-enabled-{suffix}"),
         ]
     );
     assert_eq!(
-        user_names(get_json(&app, "/Users?isDisabled=false", &admin_token).await),
+        user_names(&get_json(&app, "/Users?isDisabled=false", &admin_token).await),
         vec![
             format!("user-list-admin-{suffix}"),
             format!("user-list-hidden-enabled-{suffix}"),
@@ -161,7 +162,7 @@ async fn exercise_user_list_filter_routes(database_name: &str) {
         ]
     );
     assert_eq!(
-        user_names(get_json(&app, "/Users?isHidden=false&isDisabled=true", &admin_token,).await),
+        user_names(&get_json(&app, "/Users?isHidden=false&isDisabled=true", &admin_token,).await,),
         vec![format!("user-list-visible-disabled-{suffix}")]
     );
     assert_eq!(
@@ -210,7 +211,7 @@ async fn get_json(app: &axum::Router, uri: &str, token: &str) -> Value {
     .expect("JSON response")
 }
 
-fn user_names(response: Value) -> Vec<String> {
+fn user_names(response: &Value) -> Vec<String> {
     response
         .as_array()
         .expect("user array")

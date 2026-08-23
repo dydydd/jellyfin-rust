@@ -81,24 +81,20 @@ async fn authenticate_username_password(
 ) -> Result<Json<AuthenticationResult>, ApiError> {
     let client = ClientMetadata::from_headers(headers)?;
 
-    let mut user = state
-        .users
-        .get_by_name(&username)
-        .await?
-        .ok_or_else(|| {
-            log_activity(
-                state,
-                NewActivityLog {
-                    log_severity: LogSeverity::Error,
-                    ..NewActivityLog::new(
-                        format!("Failed login attempt for {username}"),
-                        "AuthenticationFailed",
-                        Uuid::nil(),
-                    )
-                },
-            );
-            ApiError::Unauthorized
-        })?;
+    let mut user = state.users.get_by_name(&username).await?.ok_or_else(|| {
+        log_activity(
+            state,
+            NewActivityLog {
+                log_severity: LogSeverity::Error,
+                ..NewActivityLog::new(
+                    format!("Failed login attempt for {username}"),
+                    "AuthenticationFailed",
+                    Uuid::nil(),
+                )
+            },
+        );
+        ApiError::Unauthorized
+    })?;
     if user.is_disabled {
         return Err(ApiError::Forbidden);
     }

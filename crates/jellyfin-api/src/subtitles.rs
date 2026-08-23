@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -14,8 +15,8 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
-use jellyfin_data::{BaseItemError, BaseItemRepository, NamedConfigurationStoreError};
 use jellyfin_controller::SubtitleSearchRequest;
+use jellyfin_data::{BaseItemError, BaseItemRepository, NamedConfigurationStoreError};
 use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -143,7 +144,7 @@ pub(crate) async fn get_subtitle_playlist(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    AxumPath((item_id, media_source_id, index)): AxumPath<(Uuid, String, i32)>,
+    AxumPath((item_id, _media_source_id, index)): AxumPath<(Uuid, String, i32)>,
     Query(query): Query<SubtitlePlaylistQuery>,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
@@ -179,7 +180,6 @@ pub(crate) async fn get_subtitle_playlist(
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
-    let _media_source_id = media_source_id;
     Ok(response)
 }
 
@@ -457,8 +457,7 @@ fn is_supported_font_path(path: &Path) -> bool {
 }
 
 fn metadata_time(time: Option<SystemTime>) -> DateTime<Utc> {
-    time.map(DateTime::<Utc>::from)
-        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+    time.map_or(DateTime::<Utc>::UNIX_EPOCH, DateTime::<Utc>::from)
 }
 
 async fn ensure_video_item(
@@ -516,9 +515,6 @@ async fn subtitle_response(
             .unwrap_or(&route_format),
     )
     .ok_or(ApiError::InvalidRequest)?;
-    let _end_position_ticks = query.end_position_ticks;
-    let _copy_timestamps = query.copy_timestamps;
-
     ensure_video_item_by_id(state, item_id).await?;
     let stream = state
         .media_streams
@@ -589,6 +585,7 @@ fn subtitle_payload(
     Err(ApiError::InvalidRequest)
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn subtitle_playlist(
     runtime_ticks: i64,
     segment_length_seconds: i64,
@@ -610,9 +607,10 @@ fn subtitle_playlist(
         playlist.push_str(",\n");
         let end_position_ticks =
             runtime_ticks.min(position_ticks.saturating_add(segment_length_ticks));
-        playlist.push_str(&format!(
-            "stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks={position_ticks}&EndPositionTicks={end_position_ticks}&ApiKey={access_token}\n"
-        ));
+        let _ = writeln!(
+            playlist,
+            "stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks={position_ticks}&EndPositionTicks={end_position_ticks}&ApiKey={access_token}"
+        );
         position_ticks = position_ticks.saturating_add(segment_length_ticks);
     }
     playlist.push_str("#EXT-X-ENDLIST\n");

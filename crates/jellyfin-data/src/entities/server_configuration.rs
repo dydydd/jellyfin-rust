@@ -4,6 +4,7 @@ use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "server_configuration", schema_name = "jellyfin")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: i16,

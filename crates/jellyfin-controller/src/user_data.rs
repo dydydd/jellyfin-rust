@@ -406,7 +406,7 @@ fn default_user_data(item_id: Uuid, user_id: Uuid, key: &str) -> user_data::Mode
 
 fn default_user_data_dto(item: &base_item::Model, user_id: Uuid) -> UserItemDataDto {
     let keys = current_user_data_keys(item);
-    let data = default_user_data(item.id, user_id, keys.first().map(String::as_str).unwrap_or(""));
+    let data = default_user_data(item.id, user_id, keys.first().map_or("", String::as_str));
     user_data_to_dto(data, item.runtime_ticks)
 }
 

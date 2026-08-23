@@ -66,6 +66,7 @@ pub(crate) struct SearchHintsQuery {
     include_artists: Option<bool>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn hints(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -303,9 +304,9 @@ fn source_page_bounds(query: &SearchHintsQuery) -> (u64, Option<u64>) {
 
 fn paginate_search_hints(result: &mut SearchHintResult, start_index: u64, limit: Option<u64>) {
     let start = usize::try_from(start_index).unwrap_or(usize::MAX);
-    let limit = limit
-        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
-        .unwrap_or(usize::MAX);
+    let limit = limit.map_or(usize::MAX, |limit| {
+        usize::try_from(limit).unwrap_or(usize::MAX)
+    });
 
     result.search_hints = result
         .search_hints

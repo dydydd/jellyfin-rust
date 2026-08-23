@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
@@ -140,7 +141,10 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
         .expect("access token")
         .to_owned();
     assert!(!access_token.is_empty());
-    let succeeded = users.get(user.id).await.expect("successful login user reload");
+    let succeeded = users
+        .get(user.id)
+        .await
+        .expect("successful login user reload");
     assert_eq!(succeeded.policy["InvalidLoginAttemptCount"], 0);
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -148,18 +152,21 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
         .query(&ActivityLogQuery::default())
         .await
         .expect("activity log query");
-    assert!(logs
-        .items
-        .iter()
-        .any(|entry| entry.activity_type == "AuthenticationFailed"));
-    assert!(logs
-        .items
-        .iter()
-        .any(|entry| entry.activity_type == "AuthenticationSucceeded"));
-    assert!(logs
-        .items
-        .iter()
-        .any(|entry| entry.activity_type == "SessionStarted"));
+    assert!(
+        logs.items
+            .iter()
+            .any(|entry| entry.activity_type == "AuthenticationFailed")
+    );
+    assert!(
+        logs.items
+            .iter()
+            .any(|entry| entry.activity_type == "AuthenticationSucceeded")
+    );
+    assert!(
+        logs.items
+            .iter()
+            .any(|entry| entry.activity_type == "SessionStarted")
+    );
 
     assert_eq!(
         devices

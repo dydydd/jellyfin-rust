@@ -9,16 +9,16 @@ pub struct EpisodeParseResult {
 }
 
 pub fn parse_episode(path: &Path) -> EpisodeParseResult {
-    let filename = path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
-    let parent = path.parent()
+    let parent = path
+        .parent()
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    let grandparent = path.parent()
+    let grandparent = path
+        .parent()
         .and_then(|p| p.parent())
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str());
@@ -53,26 +53,28 @@ pub fn parse_episode(path: &Path) -> EpisodeParseResult {
     }
 
     // Parse series name from grandparent directory
-    if result.series_name.is_none() && result.season_number.is_some() {
-        if let Some(gp) = grandparent {
-            if !is_season_directory(gp) {
-                result.series_name = Some(clean_series_name(gp));
-            }
-        }
+    if result.series_name.is_none()
+        && result.season_number.is_some()
+        && let Some(gp) = grandparent
+        && !is_season_directory(gp)
+    {
+        result.series_name = Some(clean_series_name(gp));
     }
 
     // Fallback: parse series name from parent if parent is not a season dir
-    if result.series_name.is_none() && result.season_number.is_some() {
-        if !is_season_directory(parent) {
-            result.series_name = Some(clean_series_name(parent));
-        }
+    if result.series_name.is_none()
+        && result.season_number.is_some()
+        && !is_season_directory(parent)
+    {
+        result.series_name = Some(clean_series_name(parent));
     }
 
     // Try to extract series name from filename (patterns like "Series Name - 101.mkv")
-    if result.series_name.is_none() && result.episode_number.is_some() {
-        if let Some(name) = extract_series_name_from_filename(filename) {
-            result.series_name = Some(name);
-        }
+    if result.series_name.is_none()
+        && result.episode_number.is_some()
+        && let Some(name) = extract_series_name_from_filename(filename)
+    {
+        result.series_name = Some(name);
     }
 
     result
@@ -83,16 +85,27 @@ pub fn parse_season_directory(path: &str) -> Option<i32> {
     let lower = path.to_lowercase();
 
     // "Season N" / "Sæson N" / "Staffel N" etc.
-    for prefix in &["season ", "sæson ", "staffel ", "saison ", "stagione ", "säsong ",
-                    "seizoen ", "temporada ", "sezon ", "сезон ", "シーズン ", "serie ",
-                    "série ", "series "]
-    {
-        if let Some(rest) = lower.strip_prefix(prefix) {
-            if let Ok(n) = rest.trim().parse::<i32>() {
-                if (1..=250).contains(&n) {
-                    return Some(n);
-                }
-            }
+    for prefix in &[
+        "season ",
+        "sæson ",
+        "staffel ",
+        "saison ",
+        "stagione ",
+        "säsong ",
+        "seizoen ",
+        "temporada ",
+        "sezon ",
+        "сезон ",
+        "シーズン ",
+        "serie ",
+        "série ",
+        "series ",
+    ] {
+        if let Some(rest) = lower.strip_prefix(prefix)
+            && let Ok(n) = rest.trim().parse::<i32>()
+            && (1..=250).contains(&n)
+        {
+            return Some(n);
         }
     }
 
@@ -101,27 +114,26 @@ pub fn parse_season_directory(path: &str) -> Option<i32> {
         let rest = &lower[1..];
         if let Some(idx) = rest.find(|c: char| !c.is_ascii_digit()) {
             let digits = &rest[..idx];
-            if !rest[idx..].starts_with('e') && !digits.is_empty() {
-                if let Ok(n) = digits.parse::<i32>() {
-                    if (1..=250).contains(&n) {
-                        return Some(n);
-                    }
-                }
+            if !rest[idx..].starts_with('e')
+                && !digits.is_empty()
+                && let Ok(n) = digits.parse::<i32>()
+                && (1..=250).contains(&n)
+            {
+                return Some(n);
             }
-        } else if !rest.is_empty() {
-            if let Ok(n) = rest.parse::<i32>() {
-                if (1..=250).contains(&n) {
-                    return Some(n);
-                }
-            }
+        } else if !rest.is_empty()
+            && let Ok(n) = rest.parse::<i32>()
+            && (1..=250).contains(&n)
+        {
+            return Some(n);
         }
     }
 
     // Bare number directory
-    if let Ok(n) = lower.trim().parse::<i32>() {
-        if (1..=250).contains(&n) {
-            return Some(n);
-        }
+    if let Ok(n) = lower.trim().parse::<i32>()
+        && (1..=250).contains(&n)
+    {
+        return Some(n);
     }
 
     // "Specials" directory
@@ -154,7 +166,11 @@ fn extract_sxee(filename: &str) -> Option<(i32, i32, Option<i32>)> {
     if season_end == season_start {
         return None;
     }
-    let season: i32 = chars[season_start..season_end].iter().collect::<String>().parse().ok()?;
+    let season: i32 = chars[season_start..season_end]
+        .iter()
+        .collect::<String>()
+        .parse()
+        .ok()?;
     if season > 250 {
         return None;
     }
@@ -173,7 +189,11 @@ fn extract_sxee(filename: &str) -> Option<(i32, i32, Option<i32>)> {
     if ep_end == ep_start {
         return None;
     }
-    let episode: i32 = chars[ep_start..ep_end].iter().collect::<String>().parse().ok()?;
+    let episode: i32 = chars[ep_start..ep_end]
+        .iter()
+        .collect::<String>()
+        .parse()
+        .ok()?;
 
     // Check for ending episode (E02 or -E02)
     let mut ending = None;
@@ -183,21 +203,22 @@ fn extract_sxee(filename: &str) -> Option<(i32, i32, Option<i32>)> {
     // Look for "-E02" or "E02" pattern
     if let Some(e_pos) = rem_str.find('e') {
         let after_e = &rem_str[e_pos + 1..];
-        let digits: String = after_e.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() {
-            if let Ok(n) = digits.parse::<i32>() {
-                ending = Some(n);
-            }
+        let digits: String = after_e.chars().take_while(char::is_ascii_digit).collect();
+        if !digits.is_empty()
+            && let Ok(n) = digits.parse::<i32>()
+        {
+            ending = Some(n);
         }
     } else if let Some(hyphen) = rem_str.find('-') {
         let after = &rem_str[hyphen + 1..];
         // Check for pattern like -02
-        if after.len() <= 3 && !after.is_empty() {
-            if let Ok(n) = after.parse::<i32>() {
-                if n > episode && n < 1000 {
-                    ending = Some(n);
-                }
-            }
+        if after.len() <= 3
+            && !after.is_empty()
+            && let Ok(n) = after.parse::<i32>()
+            && n > episode
+            && n < 1000
+        {
+            ending = Some(n);
         }
     }
 
@@ -213,14 +234,17 @@ fn extract_xsep(filename: &str) -> Option<(i32, i32, Option<i32>)> {
         return None;
     }
 
-    let before_x: String = lower[..x_pos].chars().take_while(|c| c.is_ascii_digit()).collect();
+    let before_x: String = lower[..x_pos]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     let season: i32 = before_x.parse().ok()?;
     if season > 250 || season == 0 {
         return None;
     }
 
     let after_x = &lower[x_pos + 1..];
-    let ep_digits: String = after_x.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let ep_digits: String = after_x.chars().take_while(char::is_ascii_digit).collect();
     let episode: i32 = ep_digits.parse().ok()?;
     if episode > 500 {
         return None;
@@ -229,15 +253,14 @@ fn extract_xsep(filename: &str) -> Option<(i32, i32, Option<i32>)> {
     // Check for ending episode
     let remaining = &after_x[ep_digits.len()..];
     let mut ending = None;
-    if remaining.starts_with('-') {
-        let after = &remaining[1..];
-        let end_digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !end_digits.is_empty() {
-            if let Ok(n) = end_digits.parse::<i32>() {
-                if n > episode && n < 1000 {
-                    ending = Some(n);
-                }
-            }
+    if let Some(after) = remaining.strip_prefix('-') {
+        let end_digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+        if !end_digits.is_empty()
+            && let Ok(n) = end_digits.parse::<i32>()
+            && n > episode
+            && n < 1000
+        {
+            ending = Some(n);
         }
     }
 
@@ -251,27 +274,32 @@ fn extract_standalone_episode(filename: &str) -> Option<i32> {
     // "Episode 1", "ep 1"
     for prefix in &["episode ", "ep "] {
         if let Some(rest) = lower.strip_prefix(prefix) {
-            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if !digits.is_empty() {
-                if let Ok(n) = digits.parse::<i32>() {
-                    if (1..=500).contains(&n) {
-                        return Some(n);
-                    }
-                }
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if !digits.is_empty()
+                && let Ok(n) = digits.parse::<i32>()
+                && (1..=500).contains(&n)
+            {
+                return Some(n);
             }
         }
     }
 
     // Bare number (e.g., "01.mkv") - only for files in a season directory
-    if !lower.contains(|c: char| c.is_alphabetic()) || lower.split('.').next().unwrap_or("").chars().all(|c| c.is_ascii_digit()) {
+    if !lower.contains(|c: char| c.is_alphabetic())
+        || lower
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .chars()
+            .all(|c| c.is_ascii_digit())
+    {
         let stem = filename;
-        let digits: String = stem.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() {
-            if let Ok(n) = digits.parse::<i32>() {
-                if (1..=500).contains(&n) {
-                    return Some(n);
-                }
-            }
+        let digits: String = stem.chars().take_while(char::is_ascii_digit).collect();
+        if !digits.is_empty()
+            && let Ok(n) = digits.parse::<i32>()
+            && (1..=500).contains(&n)
+        {
+            return Some(n);
         }
     }
 
@@ -301,10 +329,7 @@ fn extract_series_name_from_filename(filename: &str) -> Option<String> {
 
 /// Clean series name: replace dots and underscores with spaces
 fn clean_series_name(name: &str) -> String {
-    let cleaned = name
-        .replace('.', " ")
-        .replace('_', " ")
-        .replace('-', " ");
+    let cleaned = name.replace(['.', '_', '-'], " ");
     // Collapse multiple spaces
     let mut result = String::with_capacity(cleaned.len());
     let mut prev_space = false;

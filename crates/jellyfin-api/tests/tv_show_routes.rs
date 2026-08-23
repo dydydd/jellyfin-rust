@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use axum::{
     body::{Body, Bytes},
     http::{Request, StatusCode, header},
@@ -817,6 +818,7 @@ async fn create_episode(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_episode_with_premiere_date(
     repository: &BaseItemRepository,
     name: &str,

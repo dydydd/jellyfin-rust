@@ -98,16 +98,11 @@ pub(crate) async fn universal(
         return serve_path(&headers, path, request).await;
     }
 
-    let codec = query
-        .audio_codec
-        .as_deref()
-        .unwrap_or("aac")
-        .to_owned();
-    let container = query
-        .transcoding_container
-        .as_deref()
-        .map(|container| container.trim_start_matches('.').to_owned())
-        .unwrap_or_else(|| audio_container(&codec).to_owned());
+    let codec = query.audio_codec.as_deref().unwrap_or("aac").to_owned();
+    let container = query.transcoding_container.as_deref().map_or_else(
+        || audio_container(&codec).to_owned(),
+        |container| container.trim_start_matches('.').to_owned(),
+    );
     let output = state
         .transcode_directory
         .join(format!("{item_id}-{codec}.{container}"));

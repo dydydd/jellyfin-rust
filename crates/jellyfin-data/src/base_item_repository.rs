@@ -649,7 +649,7 @@ impl BaseItemRepository {
 
     /// Returns true when at least one persisted item advertises the production year.
     ///
-    /// This intentionally uses a selective `LIMIT 1` lookup so PostgreSQL can
+    /// This intentionally uses a selective `LIMIT 1` lookup so `PostgreSQL` can
     /// satisfy year endpoints from the partial production-year index.
     ///
     /// # Errors
@@ -668,7 +668,7 @@ impl BaseItemRepository {
             .is_some())
     }
 
-    /// Queries distinct positive production years through PostgreSQL.
+    /// Queries distinct positive production years through `PostgreSQL`.
     ///
     /// # Errors
     ///
@@ -735,7 +735,7 @@ impl BaseItemRepository {
         })
     }
 
-    /// Queries distinct non-empty official ratings through PostgreSQL.
+    /// Queries distinct non-empty official ratings through `PostgreSQL`.
     ///
     /// The `base_items_official_rating_idx` partial index keeps the legacy
     /// filter endpoint selective even on large libraries where most rows do
@@ -768,6 +768,7 @@ impl BaseItemRepository {
     /// # Errors
     ///
     /// Returns a database error when hierarchy or item queries fail.
+    #[allow(clippy::too_many_lines)]
     pub async fn query(&self, query: &BaseItemQuery) -> Result<BaseItemPage, BaseItemError> {
         if let Some(is_resumable) = query.is_resumable {
             let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
@@ -949,9 +950,14 @@ impl BaseItemRepository {
             ));
         }
         if !query.years.is_empty() {
-            select = select.filter(base_item::Column::ProductionYear.is_in(query.years.iter().copied()));
+            select =
+                select.filter(base_item::Column::ProductionYear.is_in(query.years.iter().copied()));
         }
-        if let Some(person) = query.person.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(person) = query
+            .person
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             select = select.filter(person_exists_expression(person));
         }
         if let Some(min_community_rating) = query.min_community_rating {
@@ -969,7 +975,6 @@ impl BaseItemRepository {
             None
         };
         let mut select = match query.order {
-            BaseItemOrder::SortName => select.order_by_asc(base_item::Column::SortName),
             BaseItemOrder::SortNameDescending => select.order_by_desc(base_item::Column::SortName),
             BaseItemOrder::DateCreatedAscending => {
                 select.order_by_asc(base_item::Column::DateCreated)
@@ -1131,9 +1136,10 @@ impl BaseItemRepository {
         .await?;
         transaction.commit().await?;
         Ok(BaseItemPage {
-            total_record_count: count
-                .map(|count| u64::try_from(count).unwrap_or_default())
-                .unwrap_or_else(|| u64::try_from(items.len()).unwrap_or(u64::MAX)),
+            total_record_count: count.map_or_else(
+                || u64::try_from(items.len()).unwrap_or(u64::MAX),
+                |count| u64::try_from(count).unwrap_or_default(),
+            ),
             items,
             start_index: query.start_index,
         })
@@ -1191,10 +1197,7 @@ impl BaseItemRepository {
             BaseItemOrder::DateCreatedAscending => "date_created ASC, id",
             BaseItemOrder::DateCreatedDescending => "date_created DESC, id",
             BaseItemOrder::PremiereDateAscending => "premiere_date ASC NULLS LAST, sort_name, id",
-            BaseItemOrder::PremiereDateDescending => {
-                "premiere_date DESC NULLS LAST, sort_name, id"
-            }
-            BaseItemOrder::SortName => "sort_name, id",
+            BaseItemOrder::PremiereDateDescending => "premiere_date DESC NULLS LAST, sort_name, id",
             BaseItemOrder::SortNameDescending => "sort_name DESC, id",
             BaseItemOrder::Random => "random(), id",
             _ => "sort_name, id",
@@ -1218,9 +1221,7 @@ impl BaseItemRepository {
                 "community_rating DESC NULLS LAST, sort_name, id"
             }
             BaseItemOrder::CriticRatingAscending => "critic_rating ASC NULLS LAST, sort_name, id",
-            BaseItemOrder::CriticRatingDescending => {
-                "critic_rating DESC NULLS LAST, sort_name, id"
-            }
+            BaseItemOrder::CriticRatingDescending => "critic_rating DESC NULLS LAST, sort_name, id",
             BaseItemOrder::RuntimeTicksAscending => "runtime_ticks ASC NULLS LAST, sort_name, id",
             BaseItemOrder::RuntimeTicksDescending => "runtime_ticks DESC NULLS LAST, sort_name, id",
             _ => unreachable!("extended-sort query only handles extended orders"),
@@ -1270,10 +1271,14 @@ impl BaseItemRepository {
         );
         if let Some(parent_id) = query.parent_id {
             values.push(parent_id.into());
-            let _ = write!(sql, " AND episode.id IN (\
+            let _ = write!(
+                sql,
+                " AND episode.id IN (\
                 SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
                 WHERE closure.parent_item_id = ${}\
-            )", values.len());
+            )",
+                values.len()
+            );
         }
         if let Some(condition) = policy_filter_sql("episode", query) {
             sql.push_str(" AND (");
@@ -1437,9 +1442,10 @@ impl BaseItemRepository {
         .await?;
         transaction.commit().await?;
         Ok(BaseItemPage {
-            total_record_count: count
-                .map(|count| u64::try_from(count).unwrap_or_default())
-                .unwrap_or_else(|| u64::try_from(items.len()).unwrap_or(u64::MAX)),
+            total_record_count: count.map_or_else(
+                || u64::try_from(items.len()).unwrap_or(u64::MAX),
+                |count| u64::try_from(count).unwrap_or_default(),
+            ),
             items,
             start_index: query.start_index,
         })
@@ -1577,10 +1583,9 @@ impl BaseItemRepository {
             if let Ok(updated) = base_item::Entity::find_by_id(item.id)
                 .one(&transaction)
                 .await
+                && let Some(updated) = updated
             {
-                if let Some(updated) = updated {
-                    result.push(updated);
-                }
+                result.push(updated);
             }
         }
         transaction.commit().await?;
@@ -1781,7 +1786,10 @@ impl BaseItemRepository {
             .transpose()?
             .unwrap_or(0);
 
-        let mut values = vec![item_id.into(), (start_index as i64).into()];
+        let mut values = vec![
+            item_id.into(),
+            i64::try_from(start_index).unwrap_or(i64::MAX).into(),
+        ];
         let mut sql = format!(
             r"
             SELECT {BASE_ITEM_COLUMNS}
@@ -1801,7 +1809,7 @@ impl BaseItemRepository {
             "
         );
         if let Some(limit) = limit {
-            values.push((limit as i64).into());
+            values.push(i64::try_from(limit).unwrap_or(i64::MAX).into());
             sql.push_str(" LIMIT $3");
         }
 
@@ -1863,14 +1871,14 @@ impl BaseItemRepository {
         let limit = query.limit.unwrap_or(100);
         let (cte, mut page_values) =
             scored_search_cte(query, &clean_search_term, &clean_prefix, &like_original);
-        page_values.push((query.start_index as i64).into());
+        page_values.push(i64::try_from(query.start_index).unwrap_or(i64::MAX).into());
         let mut page_sql = format!(
             "{cte} SELECT {BASE_ITEM_COLUMNS} FROM filtered \
              ORDER BY search_score DESC, id ASC OFFSET ${}",
             page_values.len()
         );
-        page_values.push((limit as i64).into());
-        let _ = page_sql.push_str(&format!(" LIMIT ${}", page_values.len()));
+        page_values.push(i64::try_from(limit).unwrap_or(i64::MAX).into());
+        write!(page_sql, " LIMIT ${}", page_values.len()).expect("writing to a String cannot fail");
 
         let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -2139,21 +2147,20 @@ fn append_raw_item_filters(
             push_bind(sql, values, parent_id, " AND item.parent_id = ");
         }
     }
-    if include_search_term {
-        if let Some(search_term) = query
+    if include_search_term
+        && let Some(search_term) = query
             .search_term
             .as_deref()
             .map(str::trim)
             .filter(|term| !term.is_empty())
-        {
-            let clean_search_term = search_term.clean_value();
-            push_bind(
-                sql,
-                values,
-                postgres_contains_pattern(&clean_search_term),
-                " AND item.clean_name ILIKE ",
-            );
-        }
+    {
+        let clean_search_term = search_term.clean_value();
+        push_bind(
+            sql,
+            values,
+            postgres_contains_pattern(&clean_search_term),
+            " AND item.clean_name ILIKE ",
+        );
     }
     append_string_list_filter(
         sql,
@@ -2304,7 +2311,11 @@ fn append_raw_item_filters(
     if !query.years.is_empty() {
         append_i32_list_filter(sql, values, "item.production_year", &query.years);
     }
-    if let Some(person) = query.person.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(person) = query
+        .person
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         push_bind(
             sql,
             values,

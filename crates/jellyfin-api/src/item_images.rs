@@ -107,6 +107,7 @@ pub(crate) async fn get_by_index(
     get_internal(state, uri, headers, item_id, image_type, image_index, query).await
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) async fn get_legacy_path(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,

@@ -3,8 +3,7 @@ use std::{collections::BTreeMap, time::Duration};
 use chrono::{DateTime, NaiveDate, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
-    ItemUpdateStoreError, ItemValueError, ItemValueRepository,
-    entities::item_value::ItemValueType,
+    ItemUpdateStoreError, ItemValueError, ItemValueRepository, entities::item_value::ItemValueType,
 };
 use jellyfin_providers::{
     manager::metadata_service::{
@@ -38,7 +37,7 @@ pub enum OmdbMetadataProviderError {
     ItemValue(#[from] ItemValueError),
 }
 
-/// OMDb v3 client used by the built-in movie and series metadata provider.
+/// `OMDb` v3 client used by the built-in movie and series metadata provider.
 #[derive(Clone)]
 struct OmdbClient {
     http: reqwest::Client,
@@ -132,7 +131,7 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
     .and_then(|value| reqwest::Proxy::all(value.trim()).ok())
 }
 
-/// Fetches OMDb metadata and merges it into movie and series items.
+/// Fetches `OMDb` metadata and merges it into movie and series items.
 pub struct OmdbMetadataProvider {
     client: OmdbClient,
     items: BaseItemRepository,
@@ -156,7 +155,7 @@ impl OmdbMetadataProvider {
         }
     }
 
-    /// Refreshes one movie or series item from OMDb when an IMDb id exists.
+    /// Refreshes one movie or series item from `OMDb` when an `IMDb` id exists.
     ///
     /// # Errors
     ///
@@ -176,11 +175,7 @@ impl OmdbMetadataProvider {
         Ok(true)
     }
 
-    async fn apply(
-        &self,
-        item_id: Uuid,
-        omdb: &OmdbItem,
-    ) -> Result<(), OmdbMetadataProviderError> {
+    async fn apply(&self, item_id: Uuid, omdb: &OmdbItem) -> Result<(), OmdbMetadataProviderError> {
         let mut result = MetadataResult::default();
         MetadataService::merge_omdb_item(
             omdb,
@@ -220,7 +215,13 @@ impl OmdbMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(name) = result.item.core.name.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(name) = result
+            .item
+            .core
+            .name
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
             item.name = Some(name.to_owned());
             item.sort_name = Some(name.to_owned());
         }
@@ -233,10 +234,10 @@ impl OmdbMetadataProvider {
             .map(str::to_owned);
         item.official_rating = result.item.official_rating.clone();
         item.production_year = result.item.production_year;
-        if let Some(date) = omdb.release_date() {
-            if let Some(premiere_date) = omdb_date_to_utc(date) {
-                item.premiere_date = Some(premiere_date);
-            }
+        if let Some(date) = omdb.release_date()
+            && let Some(premiere_date) = omdb_date_to_utc(date)
+        {
+            item.premiere_date = Some(premiere_date);
         }
         item.data = Some(omdb_extra_data(item.data.as_ref(), omdb, &result));
         self.items.update(item).await?;
@@ -244,16 +245,18 @@ impl OmdbMetadataProvider {
     }
 }
 
-fn omdb_extra_data(
-    existing: Option<&Value>,
-    omdb: &OmdbItem,
-    result: &MetadataResult,
-) -> Value {
+fn omdb_extra_data(existing: Option<&Value>, omdb: &OmdbItem, result: &MetadataResult) -> Value {
     let mut object = existing
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if let Some(original_title) = result.item.core.name.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(original_title) = result
+        .item
+        .core
+        .name
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         object.insert("OriginalTitle".to_owned(), json!(original_title));
     }
     if let Some(language) = omdb
@@ -280,5 +283,9 @@ fn omdb_date_to_utc(date: jellyfin_providers::omdb::OmdbDate) -> Option<DateTime
 }
 
 fn provider_id(data: Option<&Value>, key: &str) -> Option<String> {
-    data?.get("ProviderIds")?.get(key)?.as_str().map(str::to_owned)
+    data?
+        .get("ProviderIds")?
+        .get(key)?
+        .as_str()
+        .map(str::to_owned)
 }

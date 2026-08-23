@@ -128,12 +128,11 @@ impl MediaSegmentRepository {
         item_id: Uuid,
         include_types: Option<&[i32]>,
     ) -> Result<Vec<MediaSegmentRecord>, MediaSegmentStoreError> {
-        let mut query = media_segment::Entity::find()
-            .filter(media_segment::Column::ItemId.eq(item_id));
+        let mut query =
+            media_segment::Entity::find().filter(media_segment::Column::ItemId.eq(item_id));
         if let Some(include_types) = include_types.filter(|types| !types.is_empty()) {
-            query = query.filter(
-                media_segment::Column::SegmentType.is_in(include_types.iter().copied()),
-            );
+            query = query
+                .filter(media_segment::Column::SegmentType.is_in(include_types.iter().copied()));
         }
         Ok(query
             .order_by_asc(media_segment::Column::StartTicks)

@@ -172,13 +172,13 @@ pub(crate) async fn restore(
 }
 
 async fn load_manifest(path: PathBuf) -> Result<Option<BackupManifestDto>, ApiError> {
-    tokio::task::spawn_blocking(move || load_manifest_blocking(path))
+    tokio::task::spawn_blocking(move || load_manifest_blocking(&path))
         .await
         .map_err(|_| ApiError::Internal)
 }
 
-fn load_manifest_blocking(path: PathBuf) -> Option<BackupManifestDto> {
-    let file = File::open(&path).ok()?;
+fn load_manifest_blocking(path: &Path) -> Option<BackupManifestDto> {
+    let file = File::open(path).ok()?;
     let mut archive = ZipArchive::new(file).ok()?;
     let mut manifest_entry = archive.by_name(MANIFEST_ENTRY_NAME).ok()?;
     let mut manifest_json = String::new();

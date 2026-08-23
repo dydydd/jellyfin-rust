@@ -186,9 +186,7 @@ impl SyncPlayManager {
             is_buffering: false,
             ignore_wait: false,
         };
-        let Some(group) = state.groups.get_mut(&group_id) else {
-            return None;
-        };
+        let group = state.groups.get_mut(&group_id)?;
         participant.is_buffering = group.state == GroupStateType::Waiting;
         group
             .participants
@@ -271,9 +269,7 @@ impl SyncPlayManager {
         session_id: &str,
     ) -> Option<SyncPlayDeparture> {
         let mut state = self.state.write().await;
-        let Some(connections) = state.websocket_connections.get_mut(session_id) else {
-            return None;
-        };
+        let connections = state.websocket_connections.get_mut(session_id)?;
         *connections -= 1;
         if *connections != 0 {
             return None;

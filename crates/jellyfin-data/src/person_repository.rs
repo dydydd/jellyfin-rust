@@ -310,13 +310,16 @@ impl PersonRepository {
             let Some(person) = by_id.get(&mapping.person_id).cloned() else {
                 continue;
             };
-            result.entry(mapping.item_id).or_default().push(PersonCredit {
-                person,
-                person_type: mapping.person_type,
-                role: mapping.role,
-                sort_order: mapping.sort_order,
-                list_order: mapping.list_order,
-            });
+            result
+                .entry(mapping.item_id)
+                .or_default()
+                .push(PersonCredit {
+                    person,
+                    person_type: mapping.person_type,
+                    role: mapping.role,
+                    sort_order: mapping.sort_order,
+                    list_order: mapping.list_order,
+                });
         }
         Ok(result)
     }
