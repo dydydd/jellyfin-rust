@@ -213,7 +213,7 @@ impl VideoResolver {
         let mut name = name.filter(|name| !name.is_empty())?.to_owned();
         let mut cleaned_any = false;
         for (index, regex) in options.clean_string_regexes.iter().enumerate() {
-            let Some(captures) = regex.captures(&name) else {
+            let Some(captures) = regex.captures(&name).ok().flatten() else {
                 continue;
             };
             let Some(cleaned) = captures.name("cleaned") else {
@@ -233,15 +233,12 @@ impl VideoResolver {
     pub fn clean_date_time(name: &str, options: &NamingOptions) -> CleanDateTimeResult {
         if !name.is_empty() {
             for regex in &options.clean_date_time_regexes {
-                let Some(captures) = regex.captures(name) else {
+                let Some(captures) = regex.captures(name).ok().flatten() else {
                     continue;
                 };
                 let (Some(cleaned), Some(year)) = (captures.get(1), captures.get(2)) else {
                     continue;
                 };
-                if invalid_year_suffix(&name.as_bytes()[year.end()..]) {
-                    continue;
-                }
                 let Ok(year) = year.as_str().parse() else {
                     continue;
                 };
@@ -371,17 +368,6 @@ impl VideoResolver {
                 .any(|candidate| candidate.eq_ignore_ascii_case(extension))
         })
     }
-}
-
-fn invalid_year_suffix(suffix: &[u8]) -> bool {
-    if suffix.first().is_some_and(u8::is_ascii_digit) {
-        return true;
-    }
-    suffix.len() >= 6
-        && !suffix[0].is_ascii_alphanumeric()
-        && suffix[1..3].iter().all(u8::is_ascii_digit)
-        && !suffix[3].is_ascii_alphanumeric()
-        && suffix[4..6].iter().all(u8::is_ascii_digit)
 }
 
 fn is_extension_only(value: &str) -> bool {

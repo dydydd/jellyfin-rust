@@ -1,4 +1,4 @@
-use regex::{Regex, RegexBuilder};
+use fancy_regex::RegexBuilder;
 
 use crate::{
     stack::FileStackRule,
@@ -13,8 +13,8 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct NamingOptions {
     pub audio_file_extensions: Vec<String>,
-    pub audio_book_parts_regexes: Vec<Regex>,
-    pub audio_book_name_regexes: Vec<Regex>,
+    pub audio_book_parts_regexes: Vec<fancy_regex::Regex>,
+    pub audio_book_name_regexes: Vec<fancy_regex::Regex>,
     pub album_stacking_prefixes: Vec<String>,
     pub subtitle_file_extensions: Vec<String>,
     pub lyric_file_extensions: Vec<String>,
@@ -26,8 +26,8 @@ pub struct NamingOptions {
     pub video_flag_delimiters: Vec<char>,
     pub stub_file_extensions: Vec<String>,
     pub stub_types: Vec<StubTypeRule>,
-    pub clean_date_time_regexes: Vec<Regex>,
-    pub clean_string_regexes: Vec<Regex>,
+    pub clean_date_time_regexes: Vec<fancy_regex::Regex>,
+    pub clean_string_regexes: Vec<fancy_regex::Regex>,
     pub format_3d_rules: Vec<Format3dRule>,
     pub episode_expressions: Vec<EpisodeExpression>,
     pub multiple_episode_expressions: Vec<EpisodeExpression>,
@@ -102,14 +102,14 @@ impl Default for NamingOptions {
                 StubTypeRule::new("DSR", "tv"),
             ],
             clean_date_time_regexes: regexes(&[
-                r"(.+[^_\,.\(\)\[\]\-])[_\.\(\)\[\]\-](19[0-9]{2}|20[0-9]{2})",
-                r"(.+[^_\,.\(\)\[\]\-])[ _\.\(\)\[\]\-]+(19[0-9]{2}|20[0-9]{2})",
+                r"(.+[^_\,\.\(\)\[\]\-])[_\.\(\)\[\]\-](19[0-9]{2}|20[0-9]{2})(?![0-9]+|\W[0-9]{2}\W[0-9]{2})([ _\,\.\(\)\[\]\-][^0-9]|).*(19[0-9]{2}|20[0-9]{2})*",
+                r"(.+[^_\,\.\(\)\[\]\-])[ _\.\(\)\[\]\-]+(19[0-9]{2}|20[0-9]{2})(?![0-9]+|\W[0-9]{2}\W[0-9]{2})([ _\,\.\(\)\[\]\-][^0-9]|).*(19[0-9]{2}|20[0-9]{2})*",
             ]),
             clean_string_regexes: regexes(&[
                 r"^\s*(?P<cleaned>.+?)[ _,.()\[\]\-](?:3d|sbs|tab|hsbs|htab|mvc|HDR|HDC|UHD|UltraHD|4k|ac3|dts|custom|dc|divx|divx5|dsr|dsrip|dutch|dvd|dvdrip|dvdscr|dvdscreener|screener|dvdivx|cam|fragment|fs|hdtv|hdrip|hdtvrip|internal|limited|multi|subs|ntsc|ogg|ogm|pal|pdtv|proper|repack|rerip|retail|cd[1-9]|r5|bd5|bd|se|svcd|swedish|german|read\.nfo|nfofix|unrated|ws|telesync|ts|telecine|tc|brrip|bdrip|480p|480i|576p|576i|720p|720i|1080p|1080i|2160p|hrhd|hrhdtv|hddvd|bluray|blu-ray|x264|x265|h264|h265|xvid|xvidvd|xxx|www\.www|AAC|DTS)(?:[ _,.()\[\]\-]|$)",
                 r"^\s*(?P<cleaned>.+?)((\s*\[[^\]]+\]\s*)+)(\.[^\s]+)?$",
                 r"^\s*(?P<cleaned>.+?)\WE[0-9]+(?:-|~)E?[0-9]+(?:\W|$)",
-                r"^\s*\[[^\]]+\]\s*(?P<cleaned>.+)",
+                r"^\s*\[[^\]]+\](?!\.\w+$)\s*(?P<cleaned>.+)",
                 r"^\s*(?P<cleaned>.+?)\s+-\s+[0-9]+\s*$",
                 r"^\s*(?P<cleaned>.+?)(?:(?:[-._ ](?:trailer|sample))|-(?:scene|clip|behindthescenes|deleted|deletedscene|featurette|short|interview|other|extra))$",
             ]),
@@ -217,7 +217,7 @@ fn default_video_extra_rules() -> Vec<ExtraRule> {
         .collect()
 }
 
-fn regexes(values: &[&str]) -> Vec<Regex> {
+fn regexes(values: &[&str]) -> Vec<fancy_regex::Regex> {
     values
         .iter()
         .map(|expression| {

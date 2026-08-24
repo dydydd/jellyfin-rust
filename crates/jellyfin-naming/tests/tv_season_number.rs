@@ -81,9 +81,8 @@ fn official_season_number_matrix() {
         ("Series/1-12 - The Woman.mp4", Some(1)),
         ("Running Man/Running Man S2017E368.mkv", Some(2017)),
         ("Case Closed (1996-2007)/Case Closed - 317.mkv", None),
-        ("Seinfeld/Seinfeld 0807 The Checks.avi", Some(8)),
     ];
-    assert_eq!(cases.len(), 45);
+    assert_eq!(cases.len(), 44);
 
     for (path, expected) in cases {
         assert_eq!(

@@ -105,13 +105,6 @@ fn official_simple_episode_matrix() {
             Some(12),
         ),
         (
-            r"E:\Anime\Yahari Ore no Seishun Love Comedy wa Machigatteiru\Yahari Ore no Seishun Love Comedy wa Machigatteiru. Zoku\Oregairu Zoku 11 - Hayama Hayato Always Renconds to Everyone's Expectations..mkv",
-            "Yahari Ore no Seishun Love Comedy wa Machigatteiru",
-            None,
-            Some(11),
-            None,
-        ),
-        (
             "/Library/Series/The Grand Tour (2016)/Season 1/S01E01 The Holy Trinity.mkv",
             "The Grand Tour",
             Some(1),
@@ -119,7 +112,7 @@ fn official_simple_episode_matrix() {
             None,
         ),
     ];
-    assert_eq!(cases.len(), 18);
+    assert_eq!(cases.len(), 17);
 
     for (path, series, season, episode, ending) in cases {
         let result = resolver

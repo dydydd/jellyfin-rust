@@ -241,7 +241,7 @@ impl SeriesPathParser {
             if !expression.is_named {
                 continue;
             }
-            let Some(captures) = expression.regex().captures(path) else {
+            let Some(captures) = expression.regex().captures(path).ok().flatten() else {
                 continue;
             };
             let Some(series) = captures.name("seriesname") else {

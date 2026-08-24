@@ -9,5 +9,6 @@ description = "Jellyfin-compatible media file naming parsers"
 path = "src/lib.rs"
 
 [dependencies]
+fancy-regex = "0.14"
 jellyfin-common = { path = "../jellyfin-common" }
 regex.workspace = true

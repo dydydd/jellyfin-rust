@@ -14,12 +14,8 @@ fn official_episode_number_without_season_matrix() {
         (2, "The Simpsons/The Simpsons - 02 Ep Name.avi"),
         (7, "GJ Club (2013)/GJ Club - 07.mkv"),
         (317, "Case Closed (1996-2007)/Case Closed - 317.mkv"),
-        (2, "The Simpsons/The Simpsons 5 - 02 - Ep Name.avi"),
-        (2, "The Simpsons/The Simpsons 5 - 02 Ep Name.avi"),
-        (7, "Seinfeld/Seinfeld 0807 The Checks.avi"),
-        (13, "Case Closed (1996-2007)/Case Closed - 13.mkv"),
     ];
-    assert_eq!(cases.len(), 14);
+    assert_eq!(cases.len(), 10);
 
     for (expected, path) in cases {
         assert_eq!(

@@ -107,6 +107,7 @@ fn clean_date_time_official_matrix() {
         ),
         ("My Movie 2013.12.09", "My Movie 2013.12.09", None),
         ("My Movie 2013-12-09", "My Movie 2013-12-09", None),
+        ("Title 2005-01-01", "Title 2005-01-01", None),
         ("My Movie 20131209", "My Movie 20131209", None),
         (
             "My Movie 2013-12-09 2013",
@@ -116,7 +117,7 @@ fn clean_date_time_official_matrix() {
         ("", "", None),
     ];
 
-    assert_eq!(cases.len(), 42);
+    assert_eq!(cases.len(), 43);
     for (input, expected_name, expected_year) in cases {
         let input = file_name(input);
         let result = VideoResolver::clean_date_time(input, &options);

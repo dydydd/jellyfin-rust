@@ -1,15 +1,9 @@
-use regex::{Regex, RegexBuilder};
+use fancy_regex::{Regex, RegexBuilder};
 
 use crate::{
     NamingOptions, ProviderIdMap, provider_ids,
     video::{Format3dParser, StubResolver},
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DateOrder {
-    YearMonthDay,
-    DayMonthYear,
-}
 
 #[derive(Clone, Debug)]
 pub struct EpisodeExpression {
@@ -19,8 +13,6 @@ pub struct EpisodeExpression {
     pub is_optimistic: bool,
     pub is_named: bool,
     pub supports_absolute_episode_numbers: bool,
-    reject_hyphen_tail: bool,
-    pub date_order: Option<DateOrder>,
 }
 
 impl EpisodeExpression {
@@ -35,7 +27,10 @@ impl EpisodeExpression {
     }
 
     /// Creates a configurable episode expression and compiles its regex.
-    pub fn try_new(expression: impl Into<String>, by_date: bool) -> Result<Self, regex::Error> {
+    pub fn try_new(
+        expression: impl Into<String>,
+        by_date: bool,
+    ) -> Result<Self, fancy_regex::Error> {
         let expression = expression.into();
         let regex = compile_expression(&expression)?;
         Ok(Self {
@@ -45,8 +40,6 @@ impl EpisodeExpression {
             is_optimistic: false,
             is_named: false,
             supports_absolute_episode_numbers: true,
-            reject_hyphen_tail: false,
-            date_order: None,
         })
     }
 
@@ -64,7 +57,10 @@ impl EpisodeExpression {
     ///
     /// If compilation fails, both the expression and compiled regex remain
     /// unchanged.
-    pub fn set_expression(&mut self, expression: impl Into<String>) -> Result<(), regex::Error> {
+    pub fn set_expression(
+        &mut self,
+        expression: impl Into<String>,
+    ) -> Result<(), fancy_regex::Error> {
         let expression = expression.into();
         let regex = compile_expression(&expression)?;
         self.expression = expression;
@@ -76,10 +72,9 @@ impl EpisodeExpression {
         Self::try_new(expression, by_date).expect("built-in episode expression must be valid")
     }
 
-    fn by_date(expression: &str, order: DateOrder) -> Self {
+    fn by_date(expression: &str) -> Self {
         let mut value = Self::built_in(expression, true);
         value.is_named = true;
-        value.date_order = Some(order);
         value
     }
 
@@ -93,54 +88,33 @@ impl EpisodeExpression {
         self
     }
 
-    fn without_hyphen_tail(mut self) -> Self {
-        self.reject_hyphen_tail = true;
-        self
-    }
 }
 
-fn compile_expression(expression: &str) -> Result<Regex, regex::Error> {
+fn compile_expression(expression: &str) -> Result<Regex, fancy_regex::Error> {
     RegexBuilder::new(expression).case_insensitive(true).build()
 }
 
 pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
     vec![
         EpisodeExpression::named(
-            r"(?:^|[/\\])[s]eason\s*(?P<seasonnumber>[0-9]{1,2})[/\\](?P<epnumber>[0-9]{1,2})(?:x[0-9]+){2,}",
-        ),
-        EpisodeExpression::named(
-            r".*(\\|/)(?P<seriesname>[^\\/]*?)[Ss](?P<seasonnumber>[0-9]+)[\[\] ._-]*[Ee](?P<epnumber>[0-9]+)([^\\/]*)$",
+            r".*(\\|/)(?P<seriesname>((?![Ss]([0-9]+)[\[\] ._-]*[Ee]([0-9]+))[^\\/])*)?[Ss](?P<seasonnumber>[0-9]+)[\[\] ._-]*[Ee](?P<epnumber>[0-9]+)([^\\/]*)$",
         ),
         EpisodeExpression::positional(r".*?[\._ -]()[Ee][Pp]_?([0-9]+)([^\\/]*)$"),
         EpisodeExpression::positional(r"[^\\/]*?()\.?[Ee]([0-9]+)\.([^\\/]*)$"),
         EpisodeExpression::by_date(
             r"(?P<year>[0-9]{4})[._ -](?P<month>[0-9]{2})[._ -](?P<day>[0-9]{2})",
-            DateOrder::YearMonthDay,
         ),
         EpisodeExpression::by_date(
             r"(?P<day>[0-9]{2})[._ -](?P<month>[0-9]{2})[._ -](?P<year>[0-9]{4})",
-            DateOrder::DayMonthYear,
         ),
         EpisodeExpression::named(
             r".*[\\/]((?P<seriesname>[^\\/]+?)\s)?[Ss](?:eason)?\s*(?P<seasonnumber>[0-9]+)\s+[Ee](?:pisode)?\s*(?P<epnumber>[0-9]+).*$",
         ),
         EpisodeExpression::named(
-            r".*[\\/](?P<seriesname>[^\\/]+?)\s(?P<seasonnumber>0[0-9])(?P<epnumber>[0-9]{2})(?:[ ._-]|$)[^\\/]*$",
+            r".*[\\/](?![Ee]pisode)(?![^\\/]*[Ss][0-9]+[\[\] ._-]*[Ee][0-9]+)(?P<seriesname>[\w\s]+?)\s(?P<epnumber>[0-9]{1,4})(-(?P<endingepnumber>[0-9]{2,4}))*[^\\/x]*$",
         ),
-        EpisodeExpression::named(
-            r".*[\\/](?P<epnumber>[0-9]{1,4})\s+[0-9]+\s+[^\\/]*$",
-        )
-        .optimistic(),
-        EpisodeExpression::named(
-            r".*[\\/](?P<epnumber>[0-9]{1,2})x[0-9]{2}x[0-9]{2,4}[^\\/]*$",
-        )
-        .optimistic(),
-        EpisodeExpression::named(
-            r".*[\\/](?P<seriesname>(?:[^\dEe\\/]|[Ee][^pP\d])[\w\s]*?)\s(?P<epnumber>[0-9]{1,4})(-(?P<endingepnumber>[0-9]{2,4}))*[^\\/]*$",
-        )
-        .without_hyphen_tail(),
         EpisodeExpression::positional(
-            r".*?[\\/\._ \[\(-]([0-9]+)x([0-9]+(?:(?:[a-i]|\.[1-9]))?)([^\\/]*)$",
+            r"[\\/\._ \[\(-]([0-9]+)x([0-9]+(?:(?:[a-i]|\.[1-9])(?![0-9]))?)([^\\/]*)$",
         ),
         EpisodeExpression::named(
             r".*[\\/]?.*?(\[.*?\])+.*?(?P<seriesname>[-\w\s]+?)[\s_]*-[\s_]*(?P<epnumber>[0-9]+).*$",
@@ -149,7 +123,7 @@ pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
             r".*[\\/](?P<seriesname>[^\\/]+?)[\s_]+-[\s_]+(?P<epnumber>[0-9]+)[\s_]*(?:\[.*?\]|\(.*?\))*[\s_]*(?:\.\w+)?$",
         ),
         EpisodeExpression::named(
-            r".*?[\\/._ -](?P<seriesname>[^0-9\\/_][^\\/_]*)[\\/._ -](?P<seasonnumber>[0-9]+)(?P<epnumber>[0-9][0-9](?:(?:[a-i]|\.[1-9]))?)([._ -][^\\/]*)$",
+            r"[\\/._ -](?P<seriesname>(?![0-9]{3})([^\\/_])*)[\\/._ -](?P<seasonnumber>[0-9]+)(?P<epnumber>[0-9][0-9](?:(?:[a-i]|\.[1-9])(?![0-9]))?)([._ -][^\\/]*)$",
         )
         .optimistic()
         .without_absolute_numbers(),
@@ -158,17 +132,13 @@ pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
             r"[Ee]pisode (?P<epnumber>[0-9]+)(-(?P<endingepnumber>[0-9]+))?[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r".*[\\/](?:[^\dEe\\/][^\\/]*|[Ee][^pP\d][^\\/]*)[ _-]+[0-9]+[ _-]+-?[ _-]+(?P<epnumber>[0-9]{1,3})(?:[ _-]+-?[ _-]+|$|[ .])[^\\/]*$",
-        )
-        .optimistic(),
-        EpisodeExpression::named(
             r".*(\\|/)[sS]?(?P<seasonnumber>[0-9]+)[xX](?P<epnumber>[0-9]+)[^\\/]*$",
         ),
         EpisodeExpression::named(
             r".*(\\|/)[sS](?P<seasonnumber>[0-9]+)[x,X]?[eE](?P<epnumber>[0-9]+)[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]+))[^\\/]*$",
+            r".*(\\|/)(?P<seriesname>((?![sS]?[0-9]{1,4}[xX][0-9]{1,3})[^\\/])*)?([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]+))[^\\/]*$",
         ),
         EpisodeExpression::named(
             r".*(\\|/)(?P<seriesname>[^\\/]*)[sS](?P<seasonnumber>[0-9]{1,4})[xX\.]?[eE](?P<epnumber>[0-9]+)[^\\/]*$",
@@ -201,7 +171,7 @@ pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
             r"(.*(\\|/))*(?P<seriesname>.+)[\. _\-]+[sS](eason)?[\. _\-]*(?P<seasonnumber>[0-9]+)",
         ),
         EpisodeExpression::named(
-            r"(?:\[[^\]]+\]\s*)?(?P<seriesname>\[[^\]]+\]|[^\[\]/\\]+?)\s*\[(?P<epnumber>[0-9]+)\]",
+            r"(?:\[(?:[^\]]+)\]\s*)?(?P<seriesname>\[[^\]]+\]|[^\[\]]+)\s*\[(?P<epnumber>[0-9]+)\]",
         ),
     ]
 }
@@ -350,13 +320,15 @@ impl EpisodePathParser {
 
 fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<EpisodePathParserResult> {
     let normalized_path = expression.is_by_date.then(|| path.replace('_', "-"));
-    let (matched_path, captures) = if let Some(captures) = expression.regex().captures(path) {
+    let (matched_path, captures) = if let Some(captures) =
+        expression.regex().captures(path).ok().flatten()
+    {
         (path, captures)
     } else {
         let normalized_path = normalized_path.as_deref()?;
         (
             normalized_path,
-            expression.regex().captures(normalized_path)?,
+            expression.regex().captures(normalized_path).ok().flatten()?,
         )
     };
     let mut result = EpisodePathParserResult {
@@ -375,7 +347,12 @@ fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<Episod
         result.year = capture_number(&captures, "year").or_else(|| capture_at(&captures, 2));
         result.month = capture_number(&captures, "month").or_else(|| capture_at(&captures, 3));
         result.day = capture_number(&captures, "day").or_else(|| capture_at(&captures, 4));
-        result.success = valid_date(result.year, result.month, result.day);
+        result.success = true;
+        if !valid_date(result.year, result.month, result.day) {
+            result.year = None;
+            result.month = None;
+            result.day = None;
+        }
         return Some(result);
     }
 
@@ -403,32 +380,14 @@ fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<Episod
         return Some(result);
     }
     result.success = result.episode_number.is_some();
-    if expression.reject_hyphen_tail && result.success {
-        let end = captures.name("epnumber").map_or(0, |value| value.end());
-        if let Some(tail) = matched_path.get(end..) {
-            let trimmed_tail = tail.trim_start_matches(' ');
-            if trimmed_tail.starts_with(['x', 'X']) {
-                result.success = false;
-            }
-            let after_hyphen = trimmed_tail
-                .trim_start_matches(' ')
-                .strip_prefix('-')
-                .map(str::trim_start);
-            if after_hyphen
-                .is_some_and(|value| value.as_bytes().first().is_some_and(u8::is_ascii_digit))
-            {
-                result.success = false;
-            }
-        }
-    }
     Some(result)
 }
 
-fn capture_number(captures: &regex::Captures<'_>, name: &str) -> Option<i32> {
+fn capture_number(captures: &fancy_regex::Captures<'_>, name: &str) -> Option<i32> {
     captures.name(name)?.as_str().parse().ok()
 }
 
-fn capture_at(captures: &regex::Captures<'_>, index: usize) -> Option<i32> {
+fn capture_at(captures: &fancy_regex::Captures<'_>, index: usize) -> Option<i32> {
     captures.get(index)?.as_str().parse().ok()
 }
 
@@ -497,13 +456,13 @@ fn daily_series_name_from_path(path: &str) -> Option<String> {
         r"^(?P<name>.*?)[._ \-]*(?:\(|\[)?(?P<year>[0-9]{4})[._\-](?P<month>[0-9]{2})[._\-](?P<day>[0-9]{2})",
         r"^(?P<name>.*?)[._ \-]*(?:\(|\[)?(?P<day>[0-9]{2})[._\-](?P<month>[0-9]{2})[._\-](?P<year>[0-9]{4})",
     ] {
-        let Some(name) = RegexBuilder::new(expression)
-            .case_insensitive(true)
-            .build()
-            .ok()?
-            .captures(stem)
-            .and_then(|captures| captures.name("name"))
-        else {
+        let Ok(regex) = RegexBuilder::new(expression).case_insensitive(true).build() else {
+            continue;
+        };
+        let Some(captures) = regex.captures(stem).ok().flatten() else {
+            continue;
+        };
+        let Some(name) = captures.name("name") else {
             continue;
         };
         let name = name

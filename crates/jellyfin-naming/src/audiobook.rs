@@ -82,7 +82,7 @@ impl AudioBookFilePathParser {
         let stem = file_stem(file_name(path));
         let mut result = AudioBookFilePathParserResult::default();
         for expression in &self.options.audio_book_parts_regexes {
-            let Some(captures) = expression.captures(stem) else {
+            let Some(captures) = expression.captures(stem).ok().flatten() else {
                 continue;
             };
             if result.chapter_number.is_none() {
@@ -91,13 +91,14 @@ impl AudioBookFilePathParser {
                     .and_then(|value| value.as_str().parse().ok());
             }
             if result.part_number.is_none() {
-                let part = captures.name("part");
-                let is_chapter_suffix = part.is_some_and(|value| {
-                    let prefix = stem[..value.start()].to_ascii_lowercase();
-                    prefix.ends_with("chapter ") || prefix.ends_with("ch ")
-                });
-                if !is_chapter_suffix {
-                    result.part_number = part.and_then(|value| value.as_str().parse().ok());
+                if let Some(part) = captures.name("part") {
+                    // C# excludes a trailing number preceded by "chapter " or
+                    // "ch " with `(?<!ch(?:apter) )`; fancy-regex's lookbehind
+                    // is unreliable here, so keep the equivalent fixed-width check.
+                    let prefix = stem[..part.start()].to_ascii_lowercase();
+                    if !(prefix.ends_with("chapter ") || prefix.ends_with("ch ")) {
+                        result.part_number = part.as_str().parse().ok();
+                    }
                 }
             }
         }
@@ -165,7 +166,7 @@ impl AudioBookNameParser {
         let mut result = AudioBookNameParserResult::default();
         let mut found_name = false;
         for expression in &self.options.audio_book_name_regexes {
-            let Some(captures) = expression.captures(value) else {
+            let Some(captures) = expression.captures(value).ok().flatten() else {
                 continue;
             };
             if !found_name && let Some(name) = captures.name("name") {

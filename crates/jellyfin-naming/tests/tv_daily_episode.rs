@@ -1,4 +1,4 @@
-use jellyfin_naming::{EpisodeResolver, NamingOptions};
+use jellyfin_naming::{EpisodePathParser, EpisodeResolver, NamingOptions};
 
 #[test]
 fn official_daily_episode_matrix() {
@@ -65,4 +65,16 @@ fn official_daily_episode_matrix() {
             result.series_name
         );
     }
+}
+
+#[test]
+fn invalid_daily_date_keeps_by_date_success_without_parts() {
+    let parser = EpisodePathParser::new(NamingOptions::default());
+    let result = parser.parse("/server/anything_2013-99-99.mp4", false);
+    assert!(result.success);
+    assert!(result.is_by_date);
+    assert_eq!(result.year, None);
+    assert_eq!(result.month, None);
+    assert_eq!(result.day, None);
+    assert_eq!(result.episode_number, None);
 }

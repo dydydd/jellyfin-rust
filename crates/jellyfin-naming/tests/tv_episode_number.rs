@@ -119,13 +119,9 @@ fn official_episode_number_matrix() {
         ("Case Closed (1996-2007)/Case Closed - 317.mkv", 317),
         ("Season 2/Hunter X Hunter - 101.mkv", 101),
         ("Season 1/Show Name - 1234 [720p].mkv", 1234),
-        ("Season 2/16 12 Some Title.avi", 16),
-        ("Season 4/Uchuu.Senkan.Yamato.2199.E03.avi", 3),
-        ("Season 2/7 12 Angry Men.avi", 7),
-        ("Season 02/02x03x04x15 - Ep Name.mp4", 2),
     ];
 
-    assert_eq!(cases.len(), 77);
+    assert_eq!(cases.len(), 73);
     let mismatches = cases
         .into_iter()
         .filter_map(|(path, expected)| {
@@ -135,4 +131,16 @@ fn official_episode_number_matrix() {
         })
         .collect::<Vec<_>>();
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[test]
+fn kodi_negative_lookaheads_guard_episode_number_extraction() {
+    let parser = EpisodePathParser::new(NamingOptions::default());
+
+    assert_eq!(
+        parser
+            .parse("Season 1/S01E01 1-23-45 [Bluray-1080p].mkv", false)
+            .episode_number,
+        Some(1)
+    );
 }

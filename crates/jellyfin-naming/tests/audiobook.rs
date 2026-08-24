@@ -198,6 +198,8 @@ fn file_path_parser_supports_default_numbering_matrix() {
     let cases = [
         ("01 Introduction.mp3", Some(1), None),
         ("Chapter 12.mp3", Some(12), None),
+        ("ch 05.mp3", Some(5), None),
+        ("chapter 05.mp3", Some(5), None),
         ("Part 4.mp3", None, Some(4)),
         ("0001_005.mp3", Some(1), Some(5)),
         ("Disc 3.mp3", Some(3), Some(3)),

@@ -28,8 +28,8 @@ pub use extra::{ExtraResolver, ExtraResult, ExtraRuleResolver};
 pub use provider_ids::ProviderIdMap;
 pub use stack::{FileStack, FileStackRule, FileStackRuleResult, StackFileInfo, StackResolver};
 pub use tv::{
-    DateOrder, EpisodeExpression, EpisodeInfo, EpisodePathParser, EpisodePathParserResult,
-    EpisodeResolver, SeriesStatus, TvParserHelpers,
+    EpisodeExpression, EpisodeInfo, EpisodePathParser, EpisodePathParserResult, EpisodeResolver,
+    SeriesStatus, TvParserHelpers,
 };
 pub use tv_paths::{
     SeasonPathParser, SeasonPathParserResult, SeriesInfo, SeriesPathParser, SeriesPathParserResult,

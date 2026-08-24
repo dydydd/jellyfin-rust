@@ -17,13 +17,13 @@ fn naming_options_episode_expressions() {
     assert!(expression.is_optimistic);
 
     assert_eq!(expression.expression(), "");
-    assert!(expression.regex().is_match("anything"));
+    assert!(expression.regex().is_match("anything").unwrap());
     expression
         .set_expression("test")
         .expect("replacement regex is valid");
     assert_eq!(expression.expression(), "test");
-    assert!(expression.regex().is_match("TEST"));
-    assert!(!expression.regex().is_match("anything"));
+    assert!(expression.regex().is_match("TEST").unwrap());
+    assert!(!expression.regex().is_match("anything").unwrap());
 }
 
 #[test]
@@ -33,5 +33,5 @@ fn invalid_user_expression_preserves_compiled_state() {
     assert!(EpisodeExpression::try_new("(", false).is_err());
     assert!(expression.set_expression("(").is_err());
     assert_eq!(expression.expression(), "test");
-    assert!(expression.regex().is_match("TEST"));
+    assert!(expression.regex().is_match("TEST").unwrap());
 }
