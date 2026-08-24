@@ -14,7 +14,7 @@ use jellyfin_data::{
     ApiKeyRepository, DeviceRepository, NewDevice,
     entities::{api_key, user},
 };
-use jellyfin_model::{PluginInfo, PluginStatus};
+use jellyfin_model::{PluginInfo, PluginStatus, UserPolicy};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter,
     Set,
@@ -88,8 +88,13 @@ async fn authenticated_users_receive_complete_name_ordered_plugin_metadata() {
 #[tokio::test]
 async fn plugin_lifecycle_endpoints_enable_disable_configure_and_uninstall() {
     let plugin_id = Uuid::from_u128(0x2d35_0a13_0bf7_4b61_859c_d5e6_01b5_facf);
-    let fixture = Fixture::new(vec![plugin("Lifecycle", plugin_id, None, PluginStatus::Active)])
-        .await;
+    let fixture = Fixture::new(vec![plugin(
+        "Lifecycle",
+        plugin_id,
+        None,
+        PluginStatus::Active,
+    )])
+    .await;
 
     assert_eq!(
         request_with_token(
@@ -138,7 +143,10 @@ async fn plugin_lifecycle_endpoints_enable_disable_configure_and_uninstall() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_json(response).await["Id"], plugin_id.simple().to_string());
+    assert_eq!(
+        body_json(response).await["Id"],
+        plugin_id.simple().to_string()
+    );
 
     assert_eq!(
         request_with_token(
@@ -338,7 +346,7 @@ async fn unknown_revoked_empty_and_lower_priority_keys_are_rejected() {
 }
 
 #[tokio::test]
-async fn active_device_wins_over_same_token_api_key_before_admin_policy() {
+async fn device_token_stays_authoritative_over_same_token_api_key() {
     let fixture = Fixture::new(Vec::new()).await;
     let api_keys = ApiKeyRepository::new(fixture.database.clone());
     let mut key = api_keys
@@ -377,7 +385,28 @@ async fn active_device_wins_over_same_token_api_key_before_admin_policy() {
             )
             .await
             .status(),
-        StatusCode::OK
+        StatusCode::FORBIDDEN
+    );
+
+    let policy = UserPolicy {
+        is_disabled: true,
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("disabled user policy");
+    assert_eq!(
+        fixture
+            .request(
+                "/System/ActivityLog/Entries",
+                &[("x-emby-token", fixture.user_token.as_str())],
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
     );
 
     fixture.cleanup().await;

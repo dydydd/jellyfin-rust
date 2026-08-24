@@ -256,7 +256,12 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Items", _, "ContentType"] | ["Items", _, "RemoteImages", "Download"] => {
             RoutePolicy::Elevated
         }
-        ["Videos", _, "Subtitles", _] if method == Method::DELETE => RoutePolicy::Elevated,
+        ["Videos", _, _, "Subtitles", _, ..]
+            if is_get_or_head(method) && subtitle_stream_segment(&segments) =>
+        {
+            RoutePolicy::Public
+        }
+        ["Videos", _, "Subtitles", _] if method == Method::DELETE => RoutePolicy::Default,
         ["Audio", _, "hls", ..] => RoutePolicy::Public,
         ["Videos", _, "hls", ..] if hls_path_is_playlist(&segments) => RoutePolicy::Default,
         ["Videos", _, "hls", ..] => RoutePolicy::Public,
@@ -351,6 +356,15 @@ fn is_get_or_head(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD)
 }
 
+fn subtitle_stream_segment(segments: &[&str]) -> bool {
+    segments
+        .get(5)
+        .is_some_and(|segment| segment.starts_with("Stream."))
+        || segments
+            .get(6)
+            .is_some_and(|segment| segment.starts_with("Stream."))
+}
+
 fn is_write(method: &Method) -> bool {
     matches!(
         *method,
@@ -424,6 +438,27 @@ mod tests {
         );
         assert_eq!(
             route_policy(&Method::GET, "/Videos/{item_id}/hls/playlist/stream.m3u8"),
+            RoutePolicy::Default
+        );
+        assert_eq!(
+            route_policy(
+                &Method::GET,
+                "/Videos/{item_id}/{media_source_id}/Subtitles/0/Stream.srt"
+            ),
+            RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(
+                &Method::GET,
+                "/Videos/{item_id}/{media_source_id}/Subtitles/0/10000000/Stream.vtt"
+            ),
+            RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(
+                &Method::GET,
+                "/Videos/{item_id}/{media_source_id}/Subtitles/0/subtitles.m3u8"
+            ),
             RoutePolicy::Default
         );
         assert_eq!(

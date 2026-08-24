@@ -21,7 +21,7 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Subtitle Tests\", Device=\"Te
 const DATABASE_PREFIX: &str = "jellyfin_subtitle_routes_";
 
 #[tokio::test]
-async fn delete_subtitle_route_requires_elevation_and_deletes_only_target_subtitle_stream() {
+async fn delete_subtitle_route_uses_subtitle_management_and_deletes_only_target_stream() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -79,7 +79,7 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
     );
     assert_eq!(
         fixture
-            .send(Method::DELETE, &route, Some(&fixture.admin_token))
+            .send(Method::DELETE, &route, Some(&fixture.manager_token))
             .await
             .status(),
         StatusCode::NO_CONTENT
@@ -87,6 +87,13 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
     assert_eq!(
         fixture
             .send(Method::DELETE, &route, Some(&fixture.admin_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        fixture
+            .send(Method::DELETE, &route, Some(&fixture.manager_token))
             .await
             .status(),
         StatusCode::NO_CONTENT

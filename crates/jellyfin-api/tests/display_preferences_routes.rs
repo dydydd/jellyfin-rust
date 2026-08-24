@@ -64,6 +64,7 @@ async fn exercise_display_preferences_routes(database_name: &str) {
     assert_auth_query_and_target_rules(&fixture).await;
     assert_default_preferences(&fixture).await;
     assert_self_update_round_trips(&fixture).await;
+    assert_item_id_query_round_trips(&fixture).await;
     assert_admin_can_update_another_user_with_aliases(&fixture).await;
     database.close().await.expect("database pool cleanup");
 }
@@ -281,6 +282,28 @@ async fn assert_self_update_round_trips(fixture: &Fixture) {
     assert_eq!(preferences["CustomPrefs"]["my-custom"], "kept");
     assert!(preferences["CustomPrefs"]["nullable"].is_null());
     assert_eq!(preferences["CustomPrefs"]["skipBackLength"], "15000");
+}
+
+async fn assert_item_id_query_round_trips(fixture: &Fixture) {
+    let item_id = Uuid::new_v4();
+    let route = format!("/DisplayPreferences/usersettings?itemId={item_id}&client=web");
+
+    assert_eq!(
+        request(
+            &fixture.app,
+            "POST",
+            &route,
+            Some(&fixture.user_token),
+            json!({}),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let preferences = get_json(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(preferences["Id"], item_id.to_string());
+    assert_eq!(preferences["Client"], "web");
 }
 
 async fn assert_admin_can_update_another_user_with_aliases(fixture: &Fixture) {

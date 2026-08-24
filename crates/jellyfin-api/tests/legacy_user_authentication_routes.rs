@@ -10,7 +10,7 @@ use jellyfin_data::{
 };
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use sea_orm::ConnectionTrait;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -91,18 +91,23 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        post(
+        post_json(
             &app,
-            &format!("/Users/{}/Authenticate?pw=correct-password", Uuid::new_v4())
+            &format!("/Users/{}/Authenticate", Uuid::new_v4()),
+            &json!({ "Pw": "correct-password" }),
         )
         .await
         .status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(
-        post(&app, &format!("/Users/{}/Authenticate?pw=wrong", user.id))
-            .await
-            .status(),
+        post_json(
+            &app,
+            &format!("/Users/{}/Authenticate", user.id),
+            &json!({ "Pw": "wrong" }),
+        )
+        .await
+        .status(),
         StatusCode::UNAUTHORIZED
     );
     let failed = users.get(user.id).await.expect("failed login user reload");
@@ -119,9 +124,10 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
         0
     );
 
-    let response = post(
+    let response = post_json(
         &app,
-        &format!("/Users/{}/Authenticate?pw=correct-password", user.id),
+        &format!("/Users/{}/Authenticate?pw=wrong-password", user.id),
+        &json!({ "Pw": "correct-password" }),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -195,6 +201,19 @@ async fn post(app: &axum::Router, uri: &str) -> axum::response::Response {
             Request::post(uri)
                 .header(header::AUTHORIZATION, AUTHORIZATION)
                 .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("route response")
+}
+
+async fn post_json(app: &axum::Router, uri: &str, body: &Value) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::post(uri)
+                .header(header::AUTHORIZATION, AUTHORIZATION)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
                 .expect("request"),
         )
         .await

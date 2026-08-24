@@ -81,13 +81,13 @@ pub(crate) struct SubtitlePlaylistQuery {
 
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     AxumPath((item_id, index)): AxumPath<(Uuid, i32)>,
 ) -> Result<StatusCode, ApiError> {
-    authorization::require_default(&state, &headers, &uri)
-        .await?
-        .require_administrator()?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
     state
         .media_streams
         .delete_media_stream(item_id, index, MediaStreamType::Subtitle)

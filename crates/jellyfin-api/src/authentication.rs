@@ -67,8 +67,10 @@ pub(crate) async fn authenticate(
     headers: HeaderMap,
     Path(user_id): Path<Uuid>,
     Query(query): Query<AuthenticateUserQuery>,
+    request: Result<Json<AuthenticateUserByName>, JsonRejection>,
 ) -> Result<Json<AuthenticationResult>, ApiError> {
-    let password = query.pw.ok_or(ApiError::InvalidRequest)?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let password = request.pw.or(query.pw).ok_or(ApiError::InvalidRequest)?;
     let user = state.users.get(user_id).await?;
     authenticate_username_password(&state, &headers, user.username, password).await
 }
@@ -94,7 +96,9 @@ async fn authenticate_username_password(
         .await
         .map_err(session_error_to_api)?;
     Ok(Json(authentication_result_from_device(
-        state, &session.user, session.device,
+        state,
+        &session.user,
+        session.device,
     )))
 }
 
@@ -362,12 +366,7 @@ pub(crate) async fn authenticated_identity(
     let access_token =
         access_token(headers, uri.and_then(Uri::query)).ok_or(ApiError::Unauthorized)?;
 
-    if let Some(session) = state
-        .devices
-        .find_by_token(&access_token)
-        .await?
-        .filter(|session| session.is_active)
-    {
+    if let Some(session) = state.devices.find_by_token(&access_token).await? {
         let user = state.users.get(session.user_id).await?;
         if user.is_disabled {
             return Err(ApiError::Forbidden);
