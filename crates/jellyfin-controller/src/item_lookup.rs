@@ -11,6 +11,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::google_books::GoogleBooksClient;
 use crate::tmdb::{MetadataProviderError, TmdbClient, images_to_remote_images, provider_id};
 
 const TMDB_PROVIDER_NAME: &str = "TheMovieDb";
@@ -23,6 +24,8 @@ pub enum ItemLookupError {
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     Metadata(#[from] MetadataProviderError),
+    #[error(transparent)]
+    GoogleBooks(#[from] crate::google_books::GoogleBooksProviderError),
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -91,10 +94,6 @@ impl ItemLookupService {
         request: RemoteSearchRequest,
         api_key: &str,
     ) -> Result<Vec<RemoteSearchResult>, ItemLookupError> {
-        if api_key.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let client = TmdbClient::new(api_key.to_owned());
         let name = request.search_info.name.as_deref().unwrap_or_default();
         if name.trim().is_empty() {
             return Ok(Vec::new());
@@ -104,10 +103,44 @@ impl ItemLookupService {
             .year
             .or(request.search_info.production_year);
         match kind.to_ascii_lowercase().as_str() {
-            "movie" | "trailer" | "musicvideo" => Ok(client.search_movie(name, year).await?),
-            "series" => Ok(client.search_tv(name, year).await?),
-            "person" => Ok(client.search_person(name).await?),
-            "boxset" => Ok(client.search_collection(name).await?),
+            "movie" | "trailer" | "musicvideo" => {
+                if api_key.trim().is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(TmdbClient::new(api_key.to_owned())
+                    .search_movie(name, year)
+                    .await?)
+            }
+            "series" => {
+                if api_key.trim().is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(TmdbClient::new(api_key.to_owned())
+                    .search_tv(name, year)
+                    .await?)
+            }
+            "person" => {
+                if api_key.trim().is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(TmdbClient::new(api_key.to_owned())
+                    .search_person(name)
+                    .await?)
+            }
+            "boxset" => {
+                if api_key.trim().is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(TmdbClient::new(api_key.to_owned())
+                    .search_collection(name)
+                    .await?)
+            }
+            "book" => {
+                if api_key.trim().is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(GoogleBooksClient::new().search(name, year).await?)
+            }
             _ => Ok(Vec::new()),
         }
     }

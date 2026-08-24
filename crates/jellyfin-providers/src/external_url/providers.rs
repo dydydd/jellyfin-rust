@@ -9,6 +9,10 @@ const GOOGLE_BOOKS_URL: &str = "https://books.google.com/books?id=";
 const IMDB_BASE_URL: &str = "https://www.imdb.com/";
 const MUSIC_BRAINZ_DEFAULT_SERVER: &str = "https://musicbrainz.org";
 const TMDB_BASE_URL: &str = "https://www.themoviedb.org/";
+const TVDB_BASE_URL: &str = "https://www.thetvdb.com/?tab=series&id=";
+const TV_MAZE_BASE_URL: &str = "https://www.tvmaze.com/shows/";
+const TV_COM_BASE_URL: &str = "https://www.tv.com/shows/";
+const TV_RAGE_BASE_URL: &str = "https://www.tvrage.com/shows/id-";
 const WORLDCAT_ISBN_URL: &str = "https://search.worldcat.org/search?q=bn:";
 const ZAP2IT_URL: &str = "http://tvlistings.zap2it.com/overview.html?programSeriesId=";
 
@@ -232,7 +236,17 @@ impl ExternalUrlProvider for TmdbExternalUrlProvider {
             ExternalUrlItemKind::Series => tmdb_item_url(item, "tv"),
             ExternalUrlItemKind::Movie => tmdb_item_url(item, "movie"),
             ExternalUrlItemKind::Person => tmdb_item_url(item, "person"),
-            ExternalUrlItemKind::BoxSet => tmdb_item_url(item, "collection"),
+            ExternalUrlItemKind::BoxSet => one(provider_id(
+                &item.provider_ids,
+                MetadataProvider::Tmdb.as_str(),
+            )
+            .or_else(|| {
+                provider_id(
+                    &item.provider_ids,
+                    MetadataProvider::TmdbCollection.as_str(),
+                )
+            })
+            .map(|id| format!("{TMDB_BASE_URL}collection/{}", encode_component(id)))),
             ExternalUrlItemKind::Season => tmdb_season_url(item),
             ExternalUrlItemKind::Episode => tmdb_episode_url(item),
             _ => Vec::new(),
@@ -252,6 +266,87 @@ impl ExternalUrlProvider for Zap2ItExternalUrlProvider {
         one(
             provider_id(&item.provider_ids, MetadataProvider::Zap2It.as_str())
                 .map(|id| format!("{ZAP2IT_URL}{}", encode_component(id))),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TheTvdbExternalUrlProvider;
+
+impl ExternalUrlProvider for TheTvdbExternalUrlProvider {
+    fn name(&self) -> &'static str {
+        "TheTVDB"
+    }
+
+    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
+        match item.kind {
+            ExternalUrlItemKind::Series => supported_url(
+                item,
+                &[ExternalUrlItemKind::Series],
+                MetadataProvider::Tvdb.as_str(),
+                TVDB_BASE_URL,
+            ),
+            ExternalUrlItemKind::Season | ExternalUrlItemKind::Episode => one(provider_id(
+                &item.series_provider_ids,
+                MetadataProvider::Tvdb.as_str(),
+            )
+            .map(|id| format!("{TVDB_BASE_URL}{}", encode_component(id)))),
+            _ => Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TvMazeExternalUrlProvider;
+
+impl ExternalUrlProvider for TvMazeExternalUrlProvider {
+    fn name(&self) -> &'static str {
+        "TVmaze"
+    }
+
+    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
+        supported_url(
+            item,
+            &[ExternalUrlItemKind::Series],
+            MetadataProvider::TvMaze.as_str(),
+            TV_MAZE_BASE_URL,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TvcomExternalUrlProvider;
+
+impl ExternalUrlProvider for TvcomExternalUrlProvider {
+    fn name(&self) -> &'static str {
+        "TV.com"
+    }
+
+    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
+        if item.kind != ExternalUrlItemKind::Series {
+            return Vec::new();
+        }
+        one(
+            provider_id(&item.provider_ids, MetadataProvider::Tvcom.as_str())
+                .map(|id| format!("{TV_COM_BASE_URL}{}/", encode_relative_path(id))),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TvRageExternalUrlProvider;
+
+impl ExternalUrlProvider for TvRageExternalUrlProvider {
+    fn name(&self) -> &'static str {
+        "TVRage"
+    }
+
+    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
+        supported_url(
+            item,
+            &[ExternalUrlItemKind::Series],
+            MetadataProvider::TvRage.as_str(),
+            TV_RAGE_BASE_URL,
         )
     }
 }

@@ -601,10 +601,12 @@ impl TmdbMetadataProvider {
         &self,
         item: &base_item::Model,
     ) -> Result<Option<i64>, MetadataProviderError> {
-        if let Some(id) =
-            provider_id(item.data.as_ref(), "Tmdb").and_then(|id| id.parse::<i64>().ok())
-        {
-            return Ok(Some(id));
+        for key in ["TmdbCollection", "Tmdb"] {
+            if let Some(id) =
+                provider_id(item.data.as_ref(), key).and_then(|id| id.parse::<i64>().ok())
+            {
+                return Ok(Some(id));
+            }
         }
         let results = self
             .client
@@ -758,10 +760,10 @@ impl TmdbMetadataProvider {
                 ItemMetadataPatch {
                     tags: None,
                     genres: None,
-                    provider_ids: Some(BTreeMap::from([(
-                        "Tmdb".to_owned(),
-                        details.id.to_string(),
-                    )])),
+                    provider_ids: Some(BTreeMap::from([
+                        ("Tmdb".to_owned(), details.id.to_string()),
+                        ("TmdbCollection".to_owned(), details.id.to_string()),
+                    ])),
                 },
             )
             .await?;
@@ -1644,6 +1646,22 @@ fn tv_provider_ids(details: &TmdbTvDetails) -> std::collections::BTreeMap<String
     {
         ids.insert("Imdb".to_owned(), imdb_id.to_owned());
     }
+    if let Some(tvdb_id) = details
+        .external_ids
+        .tvdb_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        ids.insert("Tvdb".to_owned(), tvdb_id.to_owned());
+    }
+    if let Some(tvrage_id) = details
+        .external_ids
+        .tvrage_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        ids.insert("TvRage".to_owned(), tvrage_id.to_owned());
+    }
     ids
 }
 
@@ -2364,5 +2382,24 @@ mod tests {
         assert_eq!(data["ProviderIds"]["Tmdb"], json!(7));
         assert_eq!(data["ProviderIds"]["Imdb"], json!("nm123"));
         assert_eq!(data["ProductionLocations"], json!(["Paris"]));
+    }
+
+    #[test]
+    fn tv_provider_ids_include_tmdb_external_ids() {
+        let details = TmdbTvDetails {
+            id: 1399,
+            external_ids: TmdbExternalIds {
+                imdb_id: Some("tt0944947".to_owned()),
+                tvdb_id: Some("121361".to_owned()),
+                tvrage_id: Some("24493".to_owned()),
+            },
+            ..TmdbTvDetails::default()
+        };
+
+        let ids = tv_provider_ids(&details);
+        assert_eq!(ids["Tmdb"], "1399");
+        assert_eq!(ids["Imdb"], "tt0944947");
+        assert_eq!(ids["Tvdb"], "121361");
+        assert_eq!(ids["TvRage"], "24493");
     }
 }

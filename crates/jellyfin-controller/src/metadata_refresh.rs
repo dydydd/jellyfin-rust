@@ -23,9 +23,10 @@ use crate::{
     ItemImageService, VirtualFolderService, VirtualFolderServiceError,
     item_update::ItemUpdateService,
     metadata_providers::{
-        AudioDbMetadataProvider, AudioDbMetadataProviderError, MetadataProviderError,
-        MusicBrainzMetadataProvider, MusicBrainzProviderError, OmdbMetadataProvider,
-        OmdbMetadataProviderError, TmdbMetadataProvider,
+        AudioDbMetadataProvider, AudioDbMetadataProviderError, GoogleBooksMetadataProvider,
+        GoogleBooksProviderError, MetadataProviderError, MusicBrainzMetadataProvider,
+        MusicBrainzProviderError, OmdbMetadataProvider, OmdbMetadataProviderError,
+        TmdbMetadataProvider, TvMazeMetadataProvider, TvMazeProviderError,
     },
 };
 
@@ -41,6 +42,10 @@ pub enum MetadataRefreshError {
     AudioDb(#[from] AudioDbMetadataProviderError),
     #[error(transparent)]
     MusicBrainz(#[from] MusicBrainzProviderError),
+    #[error(transparent)]
+    GoogleBooks(#[from] GoogleBooksProviderError),
+    #[error(transparent)]
+    TvMaze(#[from] TvMazeProviderError),
     #[error(transparent)]
     VirtualFolder(#[from] VirtualFolderServiceError),
     #[error(transparent)]
@@ -171,12 +176,29 @@ impl MetadataRefreshService {
             MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
         ) {
             match service.name.as_str() {
-                "MovieMetadataService" | "SeriesMetadataService" => {
+                "MovieMetadataService" => {
                     if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
                         refreshed |= self
                             .tmdb_provider(tmdb_api_key)
                             .refresh_item(item_id)
                             .await?;
+                    }
+                    if provider_enabled("OMDb") && !omdb_api_key.trim().is_empty() {
+                        refreshed |= self
+                            .omdb_provider(omdb_api_key)
+                            .refresh_item(item_id)
+                            .await?;
+                    }
+                }
+                "SeriesMetadataService" => {
+                    if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
+                        refreshed |= self
+                            .tmdb_provider(tmdb_api_key)
+                            .refresh_item(item_id)
+                            .await?;
+                    }
+                    if !refreshed && provider_enabled("TVMaze") {
+                        refreshed |= self.tv_maze_provider().refresh_item(item_id).await?;
                     }
                     if provider_enabled("OMDb") && !omdb_api_key.trim().is_empty() {
                         refreshed |= self
@@ -203,6 +225,14 @@ impl MetadataRefreshService {
                     if provider_enabled("MusicBrainz") {
                         refreshed |= self.music_brainz_provider().refresh_item(item_id).await?;
                     }
+                }
+                "BookMetadataService" => {
+                    if provider_enabled("GoogleBooks") {
+                        refreshed |= self.google_books_provider().refresh_item(item_id).await?;
+                    }
+                }
+                "AudioMetadataService" if provider_enabled("MusicBrainz") => {
+                    refreshed |= self.music_brainz_provider().refresh_item(item_id).await?;
                 }
                 _ => {}
             }
@@ -297,6 +327,18 @@ impl MetadataRefreshService {
 
     fn music_brainz_provider(&self) -> MusicBrainzMetadataProvider {
         MusicBrainzMetadataProvider::new(self.items.clone(), self.updates.clone())
+    }
+
+    fn google_books_provider(&self) -> GoogleBooksMetadataProvider {
+        GoogleBooksMetadataProvider::new(self.items.clone(), self.updates.clone())
+    }
+
+    fn tv_maze_provider(&self) -> TvMazeMetadataProvider {
+        TvMazeMetadataProvider::new(
+            self.items.clone(),
+            self.values.clone(),
+            self.updates.clone(),
+        )
     }
 
     async fn save_local_metadata_enabled(
@@ -519,6 +561,28 @@ fn metadata_services_for(item_type: &str) -> Vec<ManagedMetadataService> {
                 true,
             )]
         }
+        "Book" | "AudioBook" => vec![ManagedMetadataService::new(
+            "BookMetadataService",
+            true,
+            true,
+        )],
+        "Channel" | "ChannelFolderItem" | "LiveTvChannel" => {
+            vec![ManagedMetadataService::new(
+                "ChannelMetadataService",
+                true,
+                true,
+            )]
+        }
+        "Playlist" => vec![ManagedMetadataService::new(
+            "PlaylistMetadataService",
+            true,
+            true,
+        )],
+        "Audio" => vec![ManagedMetadataService::new(
+            "AudioMetadataService",
+            true,
+            true,
+        )],
         _ => Vec::new(),
     }
 }
@@ -529,6 +593,8 @@ fn provider_registry() -> Vec<ManagedMetadataProvider> {
         ManagedMetadataProvider::new("OMDb", MetadataProviderKind::Remote),
         ManagedMetadataProvider::new("TheAudioDB", MetadataProviderKind::Remote),
         ManagedMetadataProvider::new("MusicBrainz", MetadataProviderKind::Remote),
+        ManagedMetadataProvider::new("GoogleBooks", MetadataProviderKind::Remote),
+        ManagedMetadataProvider::new("TVMaze", MetadataProviderKind::Remote),
     ]
 }
 
@@ -732,6 +798,13 @@ mod tests {
             "Year",
             "MusicArtist",
             "MusicAlbum",
+            "Book",
+            "AudioBook",
+            "Channel",
+            "ChannelFolderItem",
+            "LiveTvChannel",
+            "Playlist",
+            "Audio",
         ] {
             assert!(
                 !metadata_services_for(item_type).is_empty(),

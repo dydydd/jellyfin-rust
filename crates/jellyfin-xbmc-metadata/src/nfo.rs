@@ -290,16 +290,76 @@ fn parse_node(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetad
             }
         }
         "fileinfo" => parse_file_info(node, metadata),
-        "id" => parse_id(node, kind, metadata),
+        "id" => parse_id(node, metadata),
         "uniqueid" => parse_unique_id(node, metadata),
         "imdbid" | "imdb_id" => set_provider(metadata, MetadataProvider::Imdb.as_str(), text(node)),
         "tmdbid" => set_provider(metadata, MetadataProvider::Tmdb.as_str(), text(node)),
         "tvdbid" => set_provider(metadata, MetadataProvider::Tvdb.as_str(), text(node)),
+        "tmdbcolid" | "collectionnumber" => {
+            set_provider(
+                metadata,
+                MetadataProvider::TmdbCollection.as_str(),
+                text(node),
+            );
+        }
+        "musicbrainzalbumid" => {
+            set_provider(
+                metadata,
+                MetadataProvider::MusicBrainzAlbum.as_str(),
+                text(node),
+            );
+        }
+        "musicbrainzalbumartistid" => {
+            set_provider(
+                metadata,
+                MetadataProvider::MusicBrainzAlbumArtist.as_str(),
+                text(node),
+            );
+        }
         "musicbrainzartistid" => set_provider(
             metadata,
             MetadataProvider::MusicBrainzArtist.as_str(),
             text(node),
         ),
+        "musicbrainzreleasegroupid" => {
+            set_provider(
+                metadata,
+                MetadataProvider::MusicBrainzReleaseGroup.as_str(),
+                text(node),
+            );
+        }
+        "musicbrainztrackid" => {
+            set_provider(
+                metadata,
+                MetadataProvider::MusicBrainzTrack.as_str(),
+                text(node),
+            );
+        }
+        "musicbrainzrecordingid" => {
+            set_provider(
+                metadata,
+                MetadataProvider::MusicBrainzRecording.as_str(),
+                text(node),
+            );
+        }
+        "audiodbalbumid" => {
+            set_provider(
+                metadata,
+                MetadataProvider::AudioDbAlbum.as_str(),
+                text(node),
+            );
+        }
+        "audiodbartistid" => {
+            set_provider(
+                metadata,
+                MetadataProvider::AudioDbArtist.as_str(),
+                text(node),
+            );
+        }
+        "zap2itid" => set_provider(metadata, MetadataProvider::Zap2It.as_str(), text(node)),
+        "tvmazeid" => set_provider(metadata, MetadataProvider::TvMaze.as_str(), text(node)),
+        "tvrageid" => set_provider(metadata, MetadataProvider::TvRage.as_str(), text(node)),
+        "tvcomid" => set_provider(metadata, MetadataProvider::Tvcom.as_str(), text(node)),
         "airs_time" => metadata.air_time = text(node),
         "airs_dayofweek" => parse_air_days(node, metadata),
         "status" => metadata.status = text(node).map(|value| parse_status(&value)),
@@ -405,7 +465,7 @@ fn parse_file_info(node: Node<'_, '_>, metadata: &mut NfoMetadata) {
     }
 }
 
-fn parse_id(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetadata) {
+fn parse_id(node: Node<'_, '_>, metadata: &mut NfoMetadata) {
     for (attribute, provider) in [
         ("IMDB", MetadataProvider::Imdb.as_str()),
         ("TMDB", MetadataProvider::Tmdb.as_str()),
@@ -417,14 +477,13 @@ fn parse_id(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetadat
             attribute_value(node, attribute).map(str::to_owned),
         );
     }
-    if kind == NfoDocumentKind::Series {
-        set_provider(metadata, MetadataProvider::Tvdb.as_str(), text(node));
-    } else if kind == NfoDocumentKind::Episode
-        && !metadata
-            .provider_ids
-            .contains_key(MetadataProvider::Tmdb.as_str())
+    let content = text(node).filter(|id| id.starts_with("tt"));
+    if !metadata
+        .provider_ids
+        .contains_key(MetadataProvider::Imdb.as_str())
+        && let Some(id) = content
     {
-        set_provider(metadata, MetadataProvider::Tmdb.as_str(), text(node));
+        set_provider(metadata, MetadataProvider::Imdb.as_str(), Some(id));
     }
 }
 
@@ -436,7 +495,25 @@ fn parse_unique_id(node: Node<'_, '_>, metadata: &mut NfoMetadata) {
         "imdb" | "imdb_id" => MetadataProvider::Imdb.as_str(),
         "tmdb" => MetadataProvider::Tmdb.as_str(),
         "tvdb" => MetadataProvider::Tvdb.as_str(),
+        "tmdbcol" | "tmdbcolid" | "collectionnumber" => MetadataProvider::TmdbCollection.as_str(),
+        "musicbrainzalbum" | "musicbrainzalbumid" => MetadataProvider::MusicBrainzAlbum.as_str(),
+        "musicbrainzalbumartist" | "musicbrainzalbumartistid" => {
+            MetadataProvider::MusicBrainzAlbumArtist.as_str()
+        }
         "musicbrainzartist" | "musicbrainzartistid" => MetadataProvider::MusicBrainzArtist.as_str(),
+        "musicbrainzreleasegroup" | "musicbrainzreleasegroupid" => {
+            MetadataProvider::MusicBrainzReleaseGroup.as_str()
+        }
+        "musicbrainztrack" | "musicbrainztrackid" => MetadataProvider::MusicBrainzTrack.as_str(),
+        "musicbrainzrecording" | "musicbrainzrecordingid" => {
+            MetadataProvider::MusicBrainzRecording.as_str()
+        }
+        "audiodbalbum" | "audiodbalbumid" => MetadataProvider::AudioDbAlbum.as_str(),
+        "audiodbartist" | "audiodbartistid" => MetadataProvider::AudioDbArtist.as_str(),
+        "zap2it" | "zap2itid" => MetadataProvider::Zap2It.as_str(),
+        "tvmaze" | "tvmazeid" => MetadataProvider::TvMaze.as_str(),
+        "tvrage" | "tvrageid" => MetadataProvider::TvRage.as_str(),
+        "tvcom" | "tvcomid" => MetadataProvider::Tvcom.as_str(),
         _ => provider,
     };
     set_provider(metadata, normalized, text(node));

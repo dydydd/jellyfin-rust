@@ -6,6 +6,7 @@ mod dashboard;
 mod environment;
 mod episode_parser;
 mod genres;
+mod google_books;
 mod item_images;
 mod item_lookup;
 mod item_types;
@@ -47,6 +48,7 @@ mod system_logs;
 mod system_storage;
 mod tmdb;
 mod trickplay;
+mod tv_maze;
 mod user_data;
 mod user_library;
 mod user_views;
@@ -60,6 +62,7 @@ pub use collections::{CollectionError, CollectionService};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
 pub use genres::{Genre, GenreError, GenreKind, GenrePage, GenreService};
+pub use google_books::{GoogleBooksMetadataProvider, GoogleBooksProviderError};
 pub use item_images::{ItemImageError, ItemImageResource, ItemImageService};
 pub use item_lookup::{ItemLookupError, ItemLookupService, RemoteSearchInfo, RemoteSearchRequest};
 pub use item_types::{
@@ -104,6 +107,7 @@ pub use subtitles::{SubtitleManager, SubtitleProvider, SubtitleResponse, Subtitl
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
 pub use system_storage::SystemStorageService;
 pub use trickplay::{TrickplayError, TrickplayManifest, TrickplayManifests, TrickplayService};
+pub use tv_maze::{TvMazeMetadataProvider, TvMazeProviderError};
 pub use user_data::{UserDataService, UserDataServiceError, UserDataUpdate};
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use user_views::{

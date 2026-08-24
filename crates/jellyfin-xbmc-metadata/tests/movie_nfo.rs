@@ -304,3 +304,14 @@ fn malformed_xml_and_wrong_root_report_typed_errors() {
         Err(NfoParseError::UnexpectedRoot(root)) if root == "tvshow"
     ));
 }
+
+#[test]
+fn parses_lock_state_and_locked_fields() {
+    let movie = parse_movie_nfo(
+        "<movie><lockdata>true</lockdata><lockedfields>Cast|Genres|runtime</lockedfields></movie>",
+    )
+    .unwrap();
+
+    assert!(movie.is_locked);
+    assert_eq!(movie.locked_fields, ["Cast", "Genres", "Runtime"]);
+}

@@ -2121,6 +2121,8 @@ fn apply_movie_nfo_metadata(
     changed |= upsert_f32(&mut data, "CommunityRating", nfo.community_rating);
     changed |= upsert_f32(&mut data, "CriticRating", nfo.critic_rating);
     changed |= upsert_string(&mut data, "CustomRating", nfo.custom_rating.as_deref());
+    changed |= upsert_bool(&mut data, "IsLocked", nfo.is_locked);
+    changed |= upsert_strings(&mut data, "LockedFields", &nfo.locked_fields);
     changed |= upsert_string(
         &mut data,
         "PreferredMetadataLanguage",

@@ -229,6 +229,16 @@ pub fn movie_nfo_xml(movie: &MovieNfo) -> String {
     }
     push_text(&mut xml, "mpaa", movie.official_rating.as_deref());
     push_text(&mut xml, "customrating", movie.custom_rating.as_deref());
+    if movie.is_locked {
+        push_text(&mut xml, "lockdata", Some("true"));
+    }
+    if !movie.locked_fields.is_empty() {
+        push_text(
+            &mut xml,
+            "lockedfields",
+            Some(&movie.locked_fields.join("|")),
+        );
+    }
     for genre in &movie.genres {
         push_text(&mut xml, "genre", Some(genre));
     }
@@ -239,15 +249,7 @@ pub fn movie_nfo_xml(movie: &MovieNfo) -> String {
         push_text(&mut xml, "country", Some(location));
     }
     for (provider, id) in &movie.provider_ids {
-        push_text(&mut xml, "uniqueid", Some(id));
-        if let Some(position) = xml.rfind("<uniqueid") {
-            let tag = format!(
-                "<uniqueid type=\"{}\">{}</uniqueid>",
-                escape(provider),
-                escape(id)
-            );
-            xml.replace_range(position..position + 10, &tag);
-        }
+        push_unique_id(&mut xml, provider, id);
     }
     for person in &movie.people {
         push_person(&mut xml, person);
@@ -384,6 +386,23 @@ mod tests {
         assert!(xml.contains("<uniqueid type=\"Imdb\">tt123</uniqueid>"));
         assert!(xml.contains("<name>Keanu Reeves</name>"));
         assert!(xml.contains("<thumb>poster.jpg</thumb>"));
+        assert_eq!(xml.matches("</uniqueid>").count(), 1);
+        assert!(roxmltree::Document::parse(&xml).is_ok());
+    }
+
+    #[test]
+    fn movie_nfo_xml_writes_lock_state() {
+        let movie = MovieNfo {
+            is_locked: true,
+            locked_fields: vec!["Name".to_owned(), "Cast".to_owned()],
+            ..MovieNfo::default()
+        };
+
+        let xml = movie_nfo_xml(&movie);
+
+        assert!(xml.contains("<lockdata>true</lockdata>"));
+        assert!(xml.contains("<lockedfields>Name|Cast</lockedfields>"));
+        assert!(roxmltree::Document::parse(&xml).is_ok());
     }
 
     #[test]

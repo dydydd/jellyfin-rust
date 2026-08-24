@@ -9,5 +9,6 @@ pub use providers::{
     ImdbExternalUrlProvider, IsbnExternalUrlProvider, MusicBrainzAlbumArtistExternalUrlProvider,
     MusicBrainzAlbumExternalUrlProvider, MusicBrainzArtistExternalUrlProvider,
     MusicBrainzReleaseGroupExternalUrlProvider, MusicBrainzTrackExternalUrlProvider,
-    TmdbExternalUrlProvider, Zap2ItExternalUrlProvider,
+    TmdbExternalUrlProvider, TheTvdbExternalUrlProvider, TvMazeExternalUrlProvider,
+    TvRageExternalUrlProvider, TvcomExternalUrlProvider, Zap2ItExternalUrlProvider,
 };

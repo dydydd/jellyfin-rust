@@ -5,7 +5,9 @@ use jellyfin_providers::external_url::{
     GoogleBooksExternalUrlProvider, ImdbExternalUrlProvider, IsbnExternalUrlProvider,
     MusicBrainzAlbumArtistExternalUrlProvider, MusicBrainzAlbumExternalUrlProvider,
     MusicBrainzArtistExternalUrlProvider, MusicBrainzReleaseGroupExternalUrlProvider,
-    MusicBrainzTrackExternalUrlProvider, TmdbExternalUrlProvider, Zap2ItExternalUrlProvider,
+    MusicBrainzTrackExternalUrlProvider, TheTvdbExternalUrlProvider, TmdbExternalUrlProvider,
+    TvMazeExternalUrlProvider, TvRageExternalUrlProvider, TvcomExternalUrlProvider,
+    Zap2ItExternalUrlProvider,
 };
 
 const MBID: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
@@ -360,6 +362,15 @@ fn tmdb_official_matrix() {
                 .is_empty()
         );
     }
+    assert_only(
+        &provider,
+        &with_id(
+            ExternalUrlItemKind::BoxSet,
+            MetadataProvider::TmdbCollection.as_str(),
+            "10",
+        ),
+        "https://www.themoviedb.org/collection/10",
+    );
 
     let season = ExternalUrlItem::new(ExternalUrlItemKind::Season)
         .with_index_number(3)
@@ -402,6 +413,64 @@ fn tmdb_official_matrix() {
                     .with_season_index_number(1)
             )
             .is_empty()
+    );
+}
+
+#[test]
+fn tv_provider_external_url_matrix() {
+    let tvdb = TheTvdbExternalUrlProvider;
+    assert_only(
+        &tvdb,
+        &with_id(
+            ExternalUrlItemKind::Series,
+            MetadataProvider::Tvdb.as_str(),
+            "121361",
+        ),
+        "https://www.thetvdb.com/?tab=series&id=121361",
+    );
+    let season = ExternalUrlItem::new(ExternalUrlItemKind::Season)
+        .with_series_provider_id(MetadataProvider::Tvdb.as_str(), "121361");
+    assert_only(
+        &tvdb,
+        &season,
+        "https://www.thetvdb.com/?tab=series&id=121361",
+    );
+    assert!(
+        tvdb.get_external_urls(&ExternalUrlItem::new(ExternalUrlItemKind::Movie))
+            .is_empty()
+    );
+
+    let tv_maze = TvMazeExternalUrlProvider;
+    assert_only(
+        &tv_maze,
+        &with_id(
+            ExternalUrlItemKind::Series,
+            MetadataProvider::TvMaze.as_str(),
+            "82",
+        ),
+        "https://www.tvmaze.com/shows/82",
+    );
+
+    let tvcom = TvcomExternalUrlProvider;
+    assert_only(
+        &tvcom,
+        &with_id(
+            ExternalUrlItemKind::Series,
+            MetadataProvider::Tvcom.as_str(),
+            "the-good-place",
+        ),
+        "https://www.tv.com/shows/the-good-place/",
+    );
+
+    let tvrage = TvRageExternalUrlProvider;
+    assert_only(
+        &tvrage,
+        &with_id(
+            ExternalUrlItemKind::Series,
+            MetadataProvider::TvRage.as_str(),
+            "24493",
+        ),
+        "https://www.tvrage.com/shows/id-24493",
     );
 }
 

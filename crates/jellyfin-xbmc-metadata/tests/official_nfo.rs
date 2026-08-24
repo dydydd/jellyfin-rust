@@ -402,6 +402,54 @@ fn series_parse_url_file_success() {
 }
 
 #[test]
+fn id_content_is_only_used_for_imdb_shaped_values() {
+    let series = jellyfin_xbmc_metadata::parse_nfo(
+        r#"<tvshow><id TMDB="123" TVDB="456">789</id></tvshow>"#,
+        NfoDocumentKind::Series,
+    )
+    .unwrap();
+    assert_eq!(
+        series.provider_ids.get("Tmdb").map(String::as_str),
+        Some("123")
+    );
+    assert_eq!(
+        series.provider_ids.get("Tvdb").map(String::as_str),
+        Some("456")
+    );
+    assert!(!series.provider_ids.contains_key("Imdb"));
+
+    let episode = jellyfin_xbmc_metadata::parse_nfo(
+        "<episodedetails><id>789</id></episodedetails>",
+        NfoDocumentKind::Episode,
+    )
+    .unwrap();
+    assert!(episode.provider_ids.is_empty());
+
+    let imdb = jellyfin_xbmc_metadata::parse_nfo(
+        "<episodedetails><id>tt1234567</id></episodedetails>",
+        NfoDocumentKind::Episode,
+    )
+    .unwrap();
+    assert_eq!(
+        imdb.provider_ids.get("Imdb").map(String::as_str),
+        Some("tt1234567")
+    );
+
+    let collection = jellyfin_xbmc_metadata::parse_nfo(
+        r#"<tvshow><uniqueid type="tmdbcol">97020</uniqueid></tvshow>"#,
+        NfoDocumentKind::Series,
+    )
+    .unwrap();
+    assert_eq!(
+        collection
+            .provider_ids
+            .get("TmdbCollection")
+            .map(String::as_str),
+        Some("97020")
+    );
+}
+
+#[test]
 fn series_fetch_with_missing_target_returns_typed_error() {
     let error = fetch_nfo_file(NfoDocumentKind::Series, None, fixture("American Gods.nfo"))
         .expect_err("missing target should fail");

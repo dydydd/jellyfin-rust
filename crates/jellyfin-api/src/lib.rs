@@ -2329,6 +2329,10 @@ fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static 
             StatusCode::INTERNAL_SERVER_ERROR,
             "TMDB metadata provider failed",
         ),
+        ItemLookupError::GoogleBooks(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Google Books metadata provider failed",
+        ),
     }
 }
 

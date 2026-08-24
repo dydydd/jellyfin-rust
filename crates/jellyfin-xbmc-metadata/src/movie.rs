@@ -95,6 +95,8 @@ pub struct MovieNfo {
     pub critic_rating: Option<f32>,
     pub custom_rating: Option<String>,
     pub official_rating: Option<String>,
+    pub is_locked: bool,
+    pub locked_fields: Vec<String>,
     pub preferred_metadata_language: Option<String>,
     pub preferred_metadata_country_code: Option<String>,
     pub collection_name: Option<String>,
@@ -277,6 +279,11 @@ fn parse_basic_movie_node(tag: &str, node: Node<'_, '_>, movie: &mut MovieNfo) -
         "countrycode" => movie.preferred_metadata_country_code = normalized_text(node),
         "customrating" => movie.custom_rating = normalized_text(node),
         "mpaa" => movie.official_rating = normalized_text(node),
+        "lockdata" => {
+            movie.is_locked =
+                normalized_text(node).is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        }
+        "lockedfields" => parse_locked_fields(node, movie),
         "criticrating" => {
             if let Some(rating) = parse_f32(node) {
                 movie.critic_rating = Some(rating);
@@ -401,6 +408,33 @@ fn parse_ratings(node: Node<'_, '_>, movie: &mut MovieNfo) {
         } else {
             movie.community_rating = Some(value);
         }
+    }
+}
+
+fn parse_locked_fields(node: Node<'_, '_>, movie: &mut MovieNfo) {
+    let Some(value) = normalized_text(node) else {
+        return;
+    };
+    movie.locked_fields = value
+        .split('|')
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(normalize_locked_field)
+        .collect();
+}
+
+fn normalize_locked_field(value: &str) -> String {
+    match value.to_ascii_lowercase().as_str() {
+        "cast" => "Cast".to_owned(),
+        "genres" => "Genres".to_owned(),
+        "productionlocations" => "ProductionLocations".to_owned(),
+        "studios" => "Studios".to_owned(),
+        "tags" => "Tags".to_owned(),
+        "name" => "Name".to_owned(),
+        "overview" => "Overview".to_owned(),
+        "runtime" => "Runtime".to_owned(),
+        "officialrating" => "OfficialRating".to_owned(),
+        _ => value.to_owned(),
     }
 }
 

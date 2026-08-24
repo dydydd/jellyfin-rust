@@ -100,6 +100,12 @@ const DESCRIPTORS: &[ExternalIdDescriptor] = &[
     ),
     descriptor(
         "TheMovieDb",
+        "TmdbCollection",
+        Some(ExternalIdMediaType::BoxSet),
+        &["BoxSet"],
+    ),
+    descriptor(
+        "TheMovieDb",
         "Tmdb",
         Some(ExternalIdMediaType::Episode),
         &["Episode"],
@@ -125,6 +131,42 @@ const DESCRIPTORS: &[ExternalIdDescriptor] = &[
     descriptor(
         "TheMovieDb",
         "Tmdb",
+        Some(ExternalIdMediaType::Series),
+        &["Series"],
+    ),
+    descriptor(
+        "TheTVDB",
+        "Tvdb",
+        Some(ExternalIdMediaType::Series),
+        &["Series"],
+    ),
+    descriptor(
+        "TheTVDB",
+        "Tvdb",
+        Some(ExternalIdMediaType::Season),
+        &["Season"],
+    ),
+    descriptor(
+        "TheTVDB",
+        "Tvdb",
+        Some(ExternalIdMediaType::Episode),
+        &["Episode"],
+    ),
+    descriptor(
+        "TVmaze",
+        "TvMaze",
+        Some(ExternalIdMediaType::Series),
+        &["Series"],
+    ),
+    descriptor(
+        "TV.com",
+        "Tvcom",
+        Some(ExternalIdMediaType::Series),
+        &["Series"],
+    ),
+    descriptor(
+        "TVRage",
+        "TvRage",
         Some(ExternalIdMediaType::Series),
         &["Series"],
     ),
@@ -193,5 +235,36 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn book_box_set_and_series_registries_cover_supported_providers() {
+        let book_keys = external_id_infos("Book")
+            .into_iter()
+            .map(|info| info.key)
+            .collect::<Vec<_>>();
+        assert_eq!(book_keys, ["ComicVine", "GoogleBooks", "ISBN"]);
+
+        let box_set = external_id_infos("BoxSet");
+        assert_eq!(
+            box_set,
+            vec![ExternalIdInfo {
+                name: "TheMovieDb".to_owned(),
+                key: "TmdbCollection".to_owned(),
+                media_type: Some(ExternalIdMediaType::BoxSet),
+            }]
+        );
+
+        let series_keys = external_id_infos("Series")
+            .into_iter()
+            .map(|info| info.key)
+            .collect::<Vec<_>>();
+        assert!(series_keys.contains(&"Imdb".to_owned()));
+        assert!(series_keys.contains(&"Tmdb".to_owned()));
+        assert!(series_keys.contains(&"Tvdb".to_owned()));
+        assert!(series_keys.contains(&"TvMaze".to_owned()));
+        assert!(series_keys.contains(&"Tvcom".to_owned()));
+        assert!(series_keys.contains(&"TvRage".to_owned()));
+        assert!(series_keys.contains(&"Zap2It".to_owned()));
     }
 }

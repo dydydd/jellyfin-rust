@@ -186,6 +186,25 @@ pub(crate) fn movie_nfo_from_item(item: &base_item::Model, mut existing: MovieNf
     {
         existing.official_rating = Some(official_rating.to_owned());
     }
+    if let Some(is_locked) = data
+        .and_then(|data| data.get("IsLocked"))
+        .and_then(Value::as_bool)
+    {
+        existing.is_locked = is_locked;
+    }
+    if let Some(locked_fields) = data
+        .and_then(|data| data.get("LockedFields"))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+    {
+        existing.locked_fields = locked_fields;
+    }
     if let Some(genres) = data
         .and_then(|data| data.get("Genres"))
         .and_then(Value::as_array)
@@ -369,6 +388,8 @@ mod tests {
             original_title: Some("Old Original".to_owned()),
             tagline: Some("Keep this tagline".to_owned()),
             custom_rating: Some("Custom".to_owned()),
+            is_locked: true,
+            locked_fields: vec!["Cast".to_owned()],
             ..MovieNfo::default()
         };
         let item = base_item::Model {
@@ -377,7 +398,9 @@ mod tests {
             data: Some(serde_json::json!({
                 "OriginalTitle": "New Original",
                 "Genres": ["Action"],
-                "ProviderIds": { "Imdb": "tt1234567" }
+                "ProviderIds": { "Imdb": "tt1234567" },
+                "IsLocked": false,
+                "LockedFields": ["Name"]
             })),
             path: Some("/media/movie.mkv".to_owned()),
             parent_id: None,
@@ -413,5 +436,7 @@ mod tests {
         assert_eq!(merged.custom_rating.as_deref(), Some("Custom"));
         assert_eq!(merged.genres, ["Action"]);
         assert_eq!(merged.provider_ids["Imdb"], "tt1234567");
+        assert!(!merged.is_locked);
+        assert_eq!(merged.locked_fields, ["Name"]);
     }
 }

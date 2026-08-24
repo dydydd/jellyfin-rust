@@ -151,6 +151,21 @@ impl MusicBrainzMetadataProvider {
                 self.apply_album(item.id, &album).await?;
                 Ok(true)
             }
+            "Audio" => {
+                let Some(id) =
+                    provider_id(item.data.as_ref(), MetadataProvider::MusicBrainzRecording)
+                else {
+                    return Ok(false);
+                };
+                let recording = self
+                    .client
+                    .get_json::<RecordingResponse>(&format!(
+                        "/recording/{id}?inc=artists+releases+tags+annotation&fmt=json"
+                    ))
+                    .await?;
+                self.apply_recording(item.id, &recording).await?;
+                Ok(true)
+            }
             _ => Ok(false),
         }
     }
@@ -231,6 +246,117 @@ impl MusicBrainzMetadataProvider {
         self.items.update(item).await?;
         Ok(())
     }
+
+    async fn apply_recording(
+        &self,
+        item_id: Uuid,
+        recording: &RecordingResponse,
+    ) -> Result<(), MusicBrainzProviderError> {
+        let genres = recording
+            .tags
+            .iter()
+            .map(|tag| tag.name.clone())
+            .collect::<Vec<_>>();
+        let provider_ids = recording_provider_ids(recording);
+        self.updates
+            .update(
+                item_id,
+                ItemMetadataPatch {
+                    tags: Some(genres.clone()),
+                    genres: Some(genres),
+                    provider_ids: Some(provider_ids),
+                },
+            )
+            .await?;
+
+        let mut item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
+        if let Some(title) = recording.title.as_deref().filter(|value| !value.is_empty()) {
+            item.name = Some(title.to_owned());
+            item.sort_name = Some(title.to_owned());
+        }
+        if let Some(overview) = annotation_text(recording.annotation.as_ref())
+            .filter(|overview| !overview.trim().is_empty())
+        {
+            item.overview = Some(overview);
+        }
+        item.production_year = recording
+            .releases
+            .first()
+            .and_then(|release| release.date.as_deref())
+            .and_then(|date| date.get(..4))
+            .and_then(|year| year.parse::<i32>().ok());
+        item.data = Some(recording_data(item.data.as_ref(), recording));
+        self.items.update(item).await?;
+        Ok(())
+    }
+}
+
+fn recording_provider_ids(recording: &RecordingResponse) -> BTreeMap<String, String> {
+    let mut provider_ids = BTreeMap::from([(
+        MetadataProvider::MusicBrainzRecording.as_str().to_owned(),
+        recording.id.clone(),
+    )]);
+    if let Some(release) = recording.releases.first() {
+        provider_ids.insert(
+            MetadataProvider::MusicBrainzAlbum.as_str().to_owned(),
+            release.id.clone(),
+        );
+        if let Some(release_group) = release
+            .release_group
+            .as_ref()
+            .map(|group| group.id.as_str())
+        {
+            provider_ids.insert(
+                MetadataProvider::MusicBrainzReleaseGroup
+                    .as_str()
+                    .to_owned(),
+                release_group.to_owned(),
+            );
+        }
+    }
+    if let Some(artist) = recording
+        .artist_credit
+        .first()
+        .and_then(|credit| credit.artist.as_ref())
+    {
+        provider_ids.insert(
+            MetadataProvider::MusicBrainzArtist.as_str().to_owned(),
+            artist.id.clone(),
+        );
+    }
+    provider_ids
+}
+
+fn recording_data(existing: Option<&Value>, recording: &RecordingResponse) -> Value {
+    let mut object = existing
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(title) = recording.title.as_deref().filter(|value| !value.is_empty()) {
+        object.insert("OriginalTitle".to_owned(), json!(title));
+    }
+    let artists = recording
+        .artist_credit
+        .iter()
+        .filter_map(|credit| credit.name.clone())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if !artists.is_empty() {
+        object.insert("Artists".to_owned(), json!(artists));
+    }
+    if let Some(album) = recording
+        .releases
+        .first()
+        .and_then(|release| release.title.as_deref())
+        .filter(|value| !value.is_empty())
+    {
+        object.insert("Album".to_owned(), json!(album));
+    }
+    Value::Object(object)
 }
 
 fn artist_data(existing: Option<&Value>, artist: &ArtistResponse) -> Value {
@@ -286,6 +412,43 @@ struct ReleaseGroupResponse {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", default)]
+struct RecordingResponse {
+    id: String,
+    title: Option<String>,
+    annotation: Option<Value>,
+    tags: Vec<Tag>,
+    artist_credit: Vec<ArtistCredit>,
+    releases: Vec<RecordingRelease>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ArtistCredit {
+    name: Option<String>,
+    artist: Option<ArtistRef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ArtistRef {
+    id: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", default)]
+struct RecordingRelease {
+    id: String,
+    title: Option<String>,
+    date: Option<String>,
+    release_group: Option<ReleaseGroupRef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ReleaseGroupRef {
+    id: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct Tag {
     name: String,
 }
@@ -323,5 +486,32 @@ mod tests {
             provider_id(Some(&data), MetadataProvider::MusicBrainzReleaseGroup).as_deref(),
             Some("release-id")
         );
+    }
+
+    #[test]
+    fn recording_provider_ids_map_related_musicbrainz_entities() {
+        let recording = RecordingResponse {
+            id: "recording-id".to_owned(),
+            artist_credit: vec![ArtistCredit {
+                name: Some("Artist".to_owned()),
+                artist: Some(ArtistRef {
+                    id: "artist-id".to_owned(),
+                }),
+            }],
+            releases: vec![RecordingRelease {
+                id: "release-id".to_owned(),
+                release_group: Some(ReleaseGroupRef {
+                    id: "release-group-id".to_owned(),
+                }),
+                ..RecordingRelease::default()
+            }],
+            ..RecordingResponse::default()
+        };
+
+        let ids = recording_provider_ids(&recording);
+        assert_eq!(ids["MusicBrainzRecording"], "recording-id");
+        assert_eq!(ids["MusicBrainzArtist"], "artist-id");
+        assert_eq!(ids["MusicBrainzAlbum"], "release-id");
+        assert_eq!(ids["MusicBrainzReleaseGroup"], "release-group-id");
     }
 }
