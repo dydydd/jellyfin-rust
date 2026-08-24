@@ -13,6 +13,7 @@ chardetng = "1.0.0"
 chrono.workspace = true
 encoding_rs = "0.8"
 serde_json.workspace = true
+thiserror.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

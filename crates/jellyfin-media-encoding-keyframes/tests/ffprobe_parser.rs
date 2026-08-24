@@ -64,14 +64,14 @@ fn malformed_and_non_keyframe_records_are_ignored() {
 }
 
 #[test]
-fn tick_conversion_uses_dotnet_ties_to_even_rounding() {
+fn tick_conversion_truncates_toward_zero() {
     let output = concat!(
         "packet,0.00000005,K_\n",
         "packet,0.00000015,K_\n",
         "format,0.00000025\n",
     );
     let result = parse_ffprobe_output(Cursor::new(output)).unwrap();
-    assert_eq!(result.keyframe_ticks, [0, 2]);
+    assert_eq!(result.keyframe_ticks, [0, 1]);
     assert_eq!(result.total_duration, 2);
 }
 

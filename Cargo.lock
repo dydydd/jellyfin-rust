@@ -1587,6 +1587,7 @@ dependencies = [
  "jellyfin-drawing",
  "jellyfin-extensions",
  "jellyfin-live-tv",
+ "jellyfin-media-encoding",
  "jellyfin-model",
  "jellyfin-networking",
  "jellyfin-server-implementations",
@@ -1715,6 +1716,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -1788,6 +1790,7 @@ dependencies = [
  "jellyfin-controller",
  "jellyfin-data",
  "jellyfin-live-tv",
+ "jellyfin-media-encoding",
  "jellyfin-networking",
  "sea-orm",
  "tokio",

@@ -28,7 +28,7 @@ fn ffmpeg_version_matrix_matches_official_cases() {
         ("FFmpegGitUnknownOutput2", Some(FfmpegVersion::new(4, 4))),
         (
             "FFmpegGitWithoutLibpostprocOutput",
-            Some(FfmpegVersion::new(4, 4)),
+            None,
         ),
         ("FFmpegGitUnknownOutput", None),
     ];
@@ -47,7 +47,7 @@ fn supported_version_matrix_matches_official_cases() {
         ("FFmpegV44Output", true),
         ("FFmpegV432Output", false),
         ("FFmpegGitUnknownOutput2", true),
-        ("FFmpegGitWithoutLibpostprocOutput", true),
+        ("FFmpegGitWithoutLibpostprocOutput", false),
         ("FFmpegGitUnknownOutput", false),
     ];
     for (name, expected) in cases {
@@ -72,7 +72,7 @@ fn malformed_release_and_libav_outputs_are_rejected() {
 fn git_fallback_requires_every_core_library() {
     let missing_library = official_output("FFmpegGitWithoutLibpostprocOutput")
         .lines()
-        .filter(|line| !line.starts_with("libavfilter"))
+        .filter(|line| !line.starts_with("libpostproc"))
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(ffmpeg_version(&missing_library), None);

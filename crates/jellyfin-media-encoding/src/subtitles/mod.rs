@@ -48,6 +48,8 @@ pub enum SubtitleFormat {
     Srt,
     Ssa,
     Ass,
+    Vtt,
+    MicroDvd,
 }
 
 impl SubtitleFormat {
@@ -61,6 +63,8 @@ impl SubtitleFormat {
             "srt" | "subrip" => Some(Self::Srt),
             "ssa" => Some(Self::Ssa),
             "ass" => Some(Self::Ass),
+            "vtt" | "webvtt" => Some(Self::Vtt),
+            "sub" | "microdvd" => Some(Self::MicroDvd),
             _ => None,
         }
     }
@@ -144,6 +148,8 @@ pub fn parse_subtitle_str(
         SubtitleFormat::Srt => SrtParser::parse(input),
         SubtitleFormat::Ssa => SsaParser::parse(input),
         SubtitleFormat::Ass => AssParser::parse(input),
+        SubtitleFormat::Vtt => VttParser::parse(input),
+        SubtitleFormat::MicroDvd => MicroDvdParser::parse(input),
     };
     if track.events.is_empty() {
         Err(SubtitleParseError::NoEvents(format))
@@ -183,6 +189,104 @@ impl SrtParser {
 
         SubtitleTrack { events }
     }
+}
+
+/// `WebVTT` subtitle parser.
+pub struct VttParser;
+
+impl VttParser {
+    #[must_use]
+    pub fn parse(input: &str) -> SubtitleTrack {
+        let lines = normalized_lines(input);
+        let mut events = Vec::new();
+        let mut cursor = 0;
+        while cursor < lines.len() {
+            if lines[cursor].trim().is_empty() {
+                cursor += 1;
+                continue;
+            }
+            let Some(timeline_index) = (cursor..lines.len())
+                .find(|index| lines[*index].contains("-->"))
+            else {
+                break;
+            };
+            let Some((start, end)) = parse_vtt_timeline(lines[timeline_index]) else {
+                cursor = timeline_index + 1;
+                continue;
+            };
+            let id = if timeline_index > cursor && !lines[timeline_index - 1].trim().is_empty() {
+                lines[timeline_index - 1].trim().to_owned()
+            } else {
+                (events.len() + 1).to_string()
+            };
+            let text_start = timeline_index + 1;
+            let mut text_end = text_start;
+            while text_end < lines.len() && !lines[text_end].is_empty() {
+                text_end += 1;
+            }
+            events.push(SubtitleEvent {
+                id,
+                text: lines[text_start..text_end].join("\n"),
+                start_position_ticks: start,
+                end_position_ticks: end,
+            });
+            cursor = text_end;
+        }
+        SubtitleTrack { events }
+    }
+}
+
+/// `MicroDVD` subtitle parser.
+pub struct MicroDvdParser;
+
+impl MicroDvdParser {
+    #[must_use]
+    pub fn parse(input: &str) -> SubtitleTrack {
+        let mut events = Vec::new();
+        let mut frame_rate = 25.0_f64;
+        for raw_line in normalized_lines(input) {
+            let line = raw_line.trim();
+            let Some(rest) = line.strip_prefix('{') else {
+                continue;
+            };
+            let Some((start, rest)) = rest.split_once('}') else {
+                continue;
+            };
+            let Some(rest) = rest.strip_prefix('{') else {
+                continue;
+            };
+            let Some((end, text)) = rest.split_once('}') else {
+                continue;
+            };
+            let Ok(start) = start.parse::<f64>() else {
+                continue;
+            };
+            let Ok(end) = end.parse::<f64>() else {
+                continue;
+            };
+            let text = text.trim();
+            if start == 1.0 && end == 1.0 {
+                if let Some(rate) = text.parse::<f64>().ok().filter(|rate| *rate > 0.0) {
+                    frame_rate = rate;
+                }
+                continue;
+            }
+            if text.is_empty() {
+                continue;
+            }
+            events.push(SubtitleEvent {
+                id: (events.len() + 1).to_string(),
+                text: text.to_owned(),
+                start_position_ticks: frames_to_ticks(start, frame_rate),
+                end_position_ticks: frames_to_ticks(end, frame_rate),
+            });
+        }
+        SubtitleTrack { events }
+    }
+}
+
+fn frames_to_ticks(frames: f64, frame_rate: f64) -> i64 {
+    (frames * (TICKS_PER_SECOND as f64) / frame_rate) as i64
 }
 
 /// `SubStation Alpha` subtitle parser.
@@ -252,6 +356,28 @@ fn parse_srt_time(value: &str) -> Option<i64> {
         return None;
     }
     time_parts_to_ticks(hours, minutes, seconds, milliseconds)
+}
+
+fn parse_vtt_timeline(line: &str) -> Option<(i64, i64)> {
+    let (start, end) = line.split_once("-->")?;
+    let end = end.split_ascii_whitespace().next()?;
+    Some((parse_vtt_time(start.trim())?, parse_vtt_time(end.trim())?))
+}
+
+fn parse_vtt_time(value: &str) -> Option<i64> {
+    let (time, fraction) = match value.rsplit_once('.') {
+        Some((time, fraction)) => (time, fraction),
+        None => (value, ""),
+    };
+    if fraction.len() != 3 {
+        return None;
+    }
+    let parts = time.split(':').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [hours, minutes, seconds] => time_parts_to_ticks(hours, minutes, seconds, fraction),
+        [minutes, seconds] => time_parts_to_ticks("0", minutes, seconds, fraction),
+        _ => None,
+    }
 }
 
 fn parse_substation_alpha(input: &str) -> SubtitleTrack {

@@ -605,16 +605,21 @@ fn format_ssa_time(ticks: i64) -> String {
 }
 
 fn normalized_input_format(stream: &SubtitleMediaStream) -> String {
+    let codec = stream.codec.to_ascii_lowercase();
+    if is_vob_sub_format(&codec) || is_pgs_format(&codec) {
+        return codec;
+    }
     let raw = stream
         .path
         .extension()
         .and_then(|extension| extension.to_str())
         .filter(|extension| !extension.is_empty())
-        .unwrap_or(&stream.codec)
+        .unwrap_or(&codec)
         .to_ascii_lowercase();
     match raw.as_str() {
         "subrip" => "srt".to_owned(),
         "webvtt" => "vtt".to_owned(),
+        "sub" => "microdvd".to_owned(),
         _ => raw,
     }
 }
@@ -675,12 +680,15 @@ fn extractable_extension(codec: &str) -> &str {
 fn is_copyable_codec(codec: &str) -> bool {
     matches!(
         codec.to_ascii_lowercase().as_str(),
-        "ass" | "ssa" | "srt" | "subrip" | "pgssub"
+        "ass" | "ssa" | "srt" | "subrip" | "vtt" | "webvtt" | "microdvd" | "pgssub"
     ) || is_vob_sub_format(codec)
 }
 
 fn is_parser_format(format: &str) -> bool {
-    matches!(format, "srt" | "ssa" | "ass")
+    matches!(
+        format.to_ascii_lowercase().as_str(),
+        "srt" | "subrip" | "ssa" | "ass" | "vtt" | "webvtt" | "sub" | "microdvd"
+    )
 }
 
 fn is_text_format(format: &str) -> bool {

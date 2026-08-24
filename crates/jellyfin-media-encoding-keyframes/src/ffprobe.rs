@@ -23,12 +23,7 @@ impl Decimal {
     fn to_ticks(self) -> Option<i64> {
         let scaled = self.numerator.checked_mul(TICKS_PER_SECOND)?;
         let quotient = scaled / self.scale;
-        let remainder = scaled % self.scale;
-        let twice_remainder = remainder.checked_mul(2)?;
-        let round_up =
-            twice_remainder > self.scale || (twice_remainder == self.scale && quotient % 2 == 1);
-        let rounded = quotient.checked_add(u128::from(round_up))?;
-        i64::try_from(rounded).ok()
+        i64::try_from(quotient).ok()
     }
 }
 

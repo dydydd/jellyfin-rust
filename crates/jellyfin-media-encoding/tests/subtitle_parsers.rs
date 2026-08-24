@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
 use jellyfin_media_encoding::subtitles::{
-    AssParser, SrtParser, SsaParser, SubtitleEvent, SubtitleFormat, SubtitleParseError,
-    parse_subtitle, parse_subtitle_str,
+    AssParser, MicroDvdParser, SrtParser, SsaParser, SubtitleEvent, SubtitleFormat,
+    SubtitleParseError, VttParser, parse_subtitle, parse_subtitle_str,
 };
 
 const EXAMPLE_SRT: &str = include_str!("fixtures/example.srt");
@@ -112,6 +112,42 @@ fn srt_accepts_bom_crlf_dot_milliseconds_and_timing_settings() {
 }
 
 #[test]
+fn parses_webvtt_cues_with_identifiers_and_settings() {
+    let input = concat!(
+        "WEBVTT\n\n",
+        "intro\n",
+        "00:00:01.000 --> 00:00:02.500 position:50%\n",
+        "Hello from VTT\n\n",
+        "00:02.000 --> 00:03.000\n",
+        "Short form\n",
+    );
+    let parsed = VttParser::parse(input);
+    assert_eq!(parsed.events.len(), 2);
+    assert_eq!(parsed.events[0].id, "intro");
+    assert_eq!(parsed.events[0].text, "Hello from VTT");
+    assert_eq!(parsed.events[0].start_position_ticks, 10_000_000);
+    assert_eq!(parsed.events[0].end_position_ticks, 25_000_000);
+    assert_eq!(parsed.events[1].id, "2");
+    assert_eq!(parsed.events[1].start_position_ticks, 20_000_000);
+    assert_eq!(parsed.events[1].end_position_ticks, 30_000_000);
+}
+
+#[test]
+fn parses_microdvd_subtitle_with_custom_frame_rate() {
+    let input = concat!(
+        "{1}{1}23.976\n",
+        "{24}{48}Hello, MicroDVD\n",
+        "{72}{96}Second cue\n",
+    );
+    let parsed = MicroDvdParser::parse(input);
+    assert_eq!(parsed.events.len(), 2);
+    assert_eq!(parsed.events[0].text, "Hello, MicroDVD");
+    assert_eq!(parsed.events[0].start_position_ticks, 10_010_010);
+    assert_eq!(parsed.events[0].end_position_ticks, 20_020_020);
+    assert_eq!(parsed.events[1].start_position_ticks, 30_030_030);
+}
+
+#[test]
 fn format_detection_and_empty_input_errors_are_explicit() {
     assert_eq!(
         SubtitleFormat::from_extension(".SRT"),
@@ -125,9 +161,17 @@ fn format_detection_and_empty_input_errors_are_explicit() {
         SubtitleFormat::from_extension("ASS"),
         Some(SubtitleFormat::Ass)
     );
+    assert_eq!(
+        SubtitleFormat::from_extension("vtt"),
+        Some(SubtitleFormat::Vtt)
+    );
+    assert_eq!(
+        SubtitleFormat::from_extension("sub"),
+        Some(SubtitleFormat::MicroDvd)
+    );
     assert!(matches!(
         parse_subtitle_str("", "vtt"),
-        Err(SubtitleParseError::UnsupportedFormat(_))
+        Err(SubtitleParseError::NoEvents(SubtitleFormat::Vtt))
     ));
     assert!(matches!(
         parse_subtitle_str("not subtitles", "srt"),

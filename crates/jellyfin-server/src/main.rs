@@ -1,4 +1,9 @@
-use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::Context;
 use jellyfin_api::AppState;
@@ -8,6 +13,7 @@ use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_live_tv::listings::{
     GuideRefreshService, JsonListingsConfigurationStore, SchedulesDirectClient,
 };
+use jellyfin_media_encoding::encoder::MediaEncoder;
 use sea_orm::ConnectionTrait;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -55,6 +61,12 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {bind_address}"))?;
     let web_dir =
         std::env::var("JELLYFIN_WEB_DIR").unwrap_or_else(|_| "jellyfin-web/dist".to_owned());
+    let ffmpeg_path =
+        PathBuf::from(std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()));
+    let ffprobe_path = ffprobe_path_for(&ffmpeg_path);
+    let encoder_capabilities = MediaEncoder::new(ffmpeg_path.clone(), ffprobe_path)
+        .validate()
+        .unwrap_or_default();
     let state = AppState::new(
         database,
         persisted_configuration.server_name,
@@ -65,7 +77,8 @@ async fn main() -> anyhow::Result<()> {
     .with_omdb_api_key(omdb_api_key)
     .with_quick_connect_available(persisted_configuration.quick_connect_available)
     .with_startup_user(initial_user.id)
-    .with_ffmpeg_path(std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()))
+    .with_ffmpeg_path(ffmpeg_path)
+    .with_encoder_capabilities(encoder_capabilities)
     .with_system_commands(|command| {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
@@ -141,6 +154,14 @@ async fn ensure_initial_user(
     let user = users.create_initial_administrator(&name).await?;
     info!(username = %name, "created initial user");
     Ok(user)
+}
+
+fn ffprobe_path_for(ffmpeg_path: &Path) -> PathBuf {
+    let file_name = ffmpeg_path
+        .file_name()
+        .map(|name| name.to_string_lossy().replace("ffmpeg", "ffprobe"))
+        .unwrap_or_else(|| "ffprobe".to_owned());
+    ffmpeg_path.with_file_name(file_name)
 }
 
 async fn shutdown_signal() {

@@ -12,6 +12,7 @@ jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-live-tv = { path = "../jellyfin-live-tv" }
+jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-networking = { path = "../jellyfin-networking" }
 sea-orm.workspace = true
 tokio.workspace = true

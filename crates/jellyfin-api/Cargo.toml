@@ -18,6 +18,7 @@ jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-drawing = { path = "../jellyfin-drawing" }
 jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-live-tv = { path = "../jellyfin-live-tv" }
+jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-model = { path = "../jellyfin-model", features = ["openapi"] }
 jellyfin-networking = { path = "../jellyfin-networking" }
 jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }

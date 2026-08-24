@@ -38,6 +38,7 @@ use jellyfin_live_tv::{
     listings::{GuideRefreshError, GuideRefreshService},
     tuner_hosts::{TunerHostError, TunerHostManager},
 };
+use jellyfin_media_encoding::encoder::EncoderCapabilities;
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
@@ -184,6 +185,7 @@ pub struct AppState {
     pub(crate) network_manager: Arc<NetworkManager>,
     pub(crate) transcode_directory: PathBuf,
     pub(crate) ffmpeg_path: PathBuf,
+    pub(crate) encoder_capabilities: EncoderCapabilities,
     pub(crate) transcode_jobs: TranscodeJobRegistry,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) session_manager: SessionManager<PostgresSessionStore>,
@@ -292,6 +294,7 @@ impl AppState {
                 .join("jellyfin-rust")
                 .join("transcodes"),
             ffmpeg_path: PathBuf::from("ffmpeg"),
+            encoder_capabilities: EncoderCapabilities::default(),
             transcode_jobs: TranscodeJobRegistry::new(),
             authentication: DefaultAuthenticationProvider::new(),
             session_manager: SessionManager::new(session_store),
@@ -527,6 +530,13 @@ impl AppState {
     pub fn with_ffmpeg_path(mut self, ffmpeg_path: impl Into<std::path::PathBuf>) -> Self {
         self.ffmpeg_path = ffmpeg_path.into();
         self.library_scan.set_ffmpeg_path(self.ffmpeg_path.clone());
+        self
+    }
+
+    /// Replaces the probed encoder capabilities used by transcode decisions.
+    #[must_use]
+    pub fn with_encoder_capabilities(mut self, capabilities: EncoderCapabilities) -> Self {
+        self.encoder_capabilities = capabilities;
         self
     }
 
