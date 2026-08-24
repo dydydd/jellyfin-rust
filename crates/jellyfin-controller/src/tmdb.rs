@@ -415,6 +415,57 @@ impl TmdbMetadataProvider {
         }
     }
 
+    /// Refreshes only remote poster/backdrop images for an item.
+    ///
+    /// # Errors
+    ///
+    /// Returns a provider error when TMDB cannot resolve or fetch image data.
+    pub async fn refresh_images(
+        &self,
+        item_id: Uuid,
+        replace_all: bool,
+    ) -> Result<bool, MetadataProviderError> {
+        let Some(item) = self.items.get(item_id).await? else {
+            return Ok(false);
+        };
+        let (poster, backdrop) = match item.item_type.as_str() {
+            "Movie" => {
+                let Some(id) = self.resolve_movie_id(&item).await? else {
+                    return Ok(false);
+                };
+                let details = self.client.movie_details(id).await?;
+                (
+                    details.poster_path.as_deref().map(str::to_owned),
+                    details.backdrop_path.as_deref().map(str::to_owned),
+                )
+            }
+            "Series" => {
+                let Some(id) = self.resolve_series_id(&item).await? else {
+                    return Ok(false);
+                };
+                let details = self.client.tv_details(id).await?;
+                (
+                    details.poster_path.as_deref().map(str::to_owned),
+                    details.backdrop_path.as_deref().map(str::to_owned),
+                )
+            }
+            "BoxSet" => {
+                let Some(id) = self.resolve_box_set_id(&item).await? else {
+                    return Ok(false);
+                };
+                let details = self.client.collection_details(id).await?;
+                (
+                    details.poster_path.as_deref().map(str::to_owned),
+                    details.backdrop_path.as_deref().map(str::to_owned),
+                )
+            }
+            _ => return Ok(false),
+        };
+        self.save_remote_images(item.id, poster.as_deref(), backdrop.as_deref(), replace_all)
+            .await;
+        Ok(true)
+    }
+
     async fn refresh_movie(&self, item: &base_item::Model) -> Result<bool, MetadataProviderError> {
         let Some(tmdb_id) = self.resolve_movie_id(item).await? else {
             return Ok(false);
@@ -425,6 +476,7 @@ impl TmdbMetadataProvider {
             item.id,
             details.poster_path.as_deref(),
             details.backdrop_path.as_deref(),
+            false,
         )
         .await;
         Ok(true)
@@ -441,6 +493,7 @@ impl TmdbMetadataProvider {
             item.id,
             details.poster_path.as_deref(),
             details.backdrop_path.as_deref(),
+            false,
         )
         .await;
         Ok(true)
@@ -481,6 +534,7 @@ impl TmdbMetadataProvider {
             item.id,
             details.poster_path.as_deref(),
             details.backdrop_path.as_deref(),
+            false,
         )
         .await;
         Ok(true)
@@ -1209,6 +1263,7 @@ impl TmdbMetadataProvider {
         item_id: Uuid,
         poster_path: Option<&str>,
         backdrop_path: Option<&str>,
+        replace_all: bool,
     ) {
         let Some(images) = &self.images else {
             return;
@@ -1216,6 +1271,10 @@ impl TmdbMetadataProvider {
         let Some(item) = self.items.get(item_id).await.ok().flatten() else {
             return;
         };
+        if replace_all {
+            let _ = images.delete(item_id, ImageType::Primary, 0).await;
+            let _ = images.delete(item_id, ImageType::Backdrop, 0).await;
+        }
         let existing = images.list(&item).await.ok();
         let has_primary = existing.as_ref().is_some_and(|images| {
             images

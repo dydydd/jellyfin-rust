@@ -1,7 +1,10 @@
 use std::{fs, time::SystemTime};
 
 use image::{DynamicImage, ImageFormat as DecoderFormat, Rgba, RgbaImage};
-use jellyfin_drawing::{ImageProcessingError, ImageProcessingRequest, ImageProcessor, ImageSource};
+use jellyfin_drawing::{
+    ImageCollageOptions, ImageProcessingError, ImageProcessingRequest, ImageProcessor, ImageSource,
+    create_collage,
+};
 use jellyfin_model::ImageFormat;
 use tempfile::TempDir;
 
@@ -298,4 +301,69 @@ async fn chooses_first_supported_format_and_does_not_return_unaccepted_source() 
     assert_ne!(result.path, source.path);
     assert_eq!(result.mime_type, "image/bmp");
     assert_eq!(result.path.extension().unwrap(), "bmp");
+}
+
+#[tokio::test]
+async fn creates_grid_collage_with_requested_dimensions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut inputs = Vec::new();
+    for index in 0..4 {
+        let path = directory.path().join(format!("input-{index}.png"));
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            40,
+            30,
+            Rgba([u8::from(index > 1) * 255, 80, 120, 255]),
+        ))
+        .save(&path)
+        .expect("write collage input");
+        inputs.push(path);
+    }
+    let output = directory.path().join("collage.jpg");
+    let result = create_collage(ImageCollageOptions {
+        input_paths: inputs,
+        output_path: output.clone(),
+        width: 120,
+        height: 90,
+        thumb_layout: false,
+    })
+    .await
+    .expect("create grid collage");
+
+    assert_eq!(result, output);
+    assert_eq!(image::image_dimensions(output).unwrap(), (120, 90));
+}
+
+#[tokio::test]
+async fn creates_thumb_collage_and_rejects_invalid_options() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let first = directory.path().join("first.png");
+    let second = directory.path().join("second.png");
+    DynamicImage::ImageRgba8(RgbaImage::from_pixel(80, 40, Rgba([255, 0, 0, 255])))
+        .save(&first)
+        .expect("first input");
+    DynamicImage::ImageRgba8(RgbaImage::from_pixel(80, 40, Rgba([0, 0, 255, 255])))
+        .save(&second)
+        .expect("second input");
+    let output = directory.path().join("thumb.jpg");
+    create_collage(ImageCollageOptions {
+        input_paths: vec![first, second],
+        output_path: output.clone(),
+        width: 120,
+        height: 60,
+        thumb_layout: true,
+    })
+    .await
+    .expect("create thumb collage");
+    assert_eq!(image::image_dimensions(output).unwrap(), (120, 60));
+
+    let error = create_collage(ImageCollageOptions {
+        input_paths: Vec::new(),
+        output_path: directory.path().join("empty.jpg"),
+        width: 120,
+        height: 60,
+        thumb_layout: false,
+    })
+    .await
+    .expect_err("empty collage must fail");
+    assert!(matches!(error, ImageProcessingError::InvalidCollageOptions));
 }

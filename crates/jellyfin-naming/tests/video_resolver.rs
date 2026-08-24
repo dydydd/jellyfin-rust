@@ -203,6 +203,22 @@ fn video_file_info_filename_and_display_contracts() {
     assert_eq!(directory.file_name_without_extension(), "Collection.name");
 }
 
+#[test]
+fn library_root_is_forwarded_to_extra_resolution() {
+    let options = NamingOptions::default();
+    let path = "/media/trailers/Movie.mkv";
+    let without_root = VideoResolver::resolve_file(Some(path), &options).unwrap();
+    let with_root = VideoResolver::resolve_file_with_library_root(
+        Some(path),
+        &options,
+        Some("/media/trailers"),
+    )
+    .unwrap();
+
+    assert_eq!(without_root.extra_type, Some(ExtraType::Trailer));
+    assert_eq!(with_root.extra_type, None);
+}
+
 fn assert_video(actual: &VideoFileInfo, expected: VideoCase) {
     assert_eq!(actual.path, expected.path, "path: {}", expected.path);
     assert_eq!(

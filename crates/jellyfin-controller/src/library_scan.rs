@@ -27,7 +27,7 @@ use jellyfin_media_encoding_keyframes::{KeyframeData, extract_keyframes};
 use jellyfin_model::{
     CollectionType, MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream,
 };
-use jellyfin_naming::{ExtraResolver, NamingOptions};
+use jellyfin_naming::{ExtraResolver, NamingOptions, VideoListResolver, VideoResolver};
 use jellyfin_providers::media_info::{
     MediaFileSystemEntry, SubtitleResolveRequest, SubtitleResolver,
 };
@@ -260,11 +260,129 @@ impl LibraryScanService {
                 readable_roots.push(root.to_path_buf());
             }
         }
+        if kind.is_tv() {
+            self.reconcile_series_hierarchy(collection.id).await?;
+        }
         let removed = self
             .remove_stale_media(collection.id, &seen_paths, &readable_roots)
             .await?;
         summary.items_removed += removed.len();
         summary.removed_ids.extend(removed);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn reconcile_series_hierarchy(
+        &self,
+        collection_id: Uuid,
+    ) -> Result<(), LibraryScanError> {
+        let descendants = self.items.descendants(collection_id).await?;
+        let series = descendants
+            .iter()
+            .filter(|entry| entry.item.item_type == "Series")
+            .map(|entry| entry.item.clone())
+            .collect::<Vec<_>>();
+        for series_item in series {
+            let series_id = series_item.id;
+            let mut seasons = descendants
+                .iter()
+                .filter(|entry| {
+                    entry.item.item_type == "Season" && entry.item.series_id == Some(series_id)
+                })
+                .map(|entry| entry.item.clone())
+                .collect::<Vec<_>>();
+            let episodes = descendants
+                .iter()
+                .filter(|entry| {
+                    entry.item.item_type == "Episode" && entry.item.series_id == Some(series_id)
+                })
+                .map(|entry| entry.item.clone())
+                .collect::<Vec<_>>();
+            let mut episode_season_ids = episodes
+                .iter()
+                .filter_map(|episode| episode.season_id)
+                .collect::<HashSet<_>>();
+
+            for mut episode in episodes.clone() {
+                if episode.season_id.is_some() {
+                    continue;
+                }
+                let season_number = episode
+                    .parent_index_number
+                    .or_else(|| episode.index_number.map(|_| 1));
+                let Some(season_number) = season_number else {
+                    continue;
+                };
+                let season_key = format!("{}_{}", series_id.simple(), season_number);
+                let season_id = stable_item_id(&season_key, "Season");
+                let mut season = if let Some(season) = seasons
+                    .iter()
+                    .find(|season| season.index_number == Some(season_number))
+                {
+                    season.clone()
+                } else if let Some(season) = self.items.get(season_id).await? {
+                    season
+                } else {
+                    let created = NewBaseItem {
+                        id: season_id,
+                        item_type: "Season".to_owned(),
+                        data: Some(json!({ "CollectionType": "tvshows" })),
+                        path: None,
+                        parent_id: Some(series_id),
+                        name: Some(format!("Season {season_number}")),
+                        sort_name: Some(format!("Season {season_number}")),
+                        media_type: None,
+                        overview: None,
+                        official_rating: None,
+                        index_number: Some(season_number),
+                        parent_index_number: None,
+                        production_year: None,
+                        premiere_date: None,
+                        runtime_ticks: None,
+                        is_folder: true,
+                        is_virtual_item: false,
+                        presentation_unique_key: Some(season_key),
+                        primary_version_id: None,
+                        series_id: Some(series_id),
+                        season_id: None,
+                        series_presentation_unique_key: Some(series_id.simple().to_string()),
+                    };
+                    let created = self.items.create(created).await?;
+                    seasons.push(created.clone());
+                    created
+                };
+                if season.parent_id != Some(series_id) {
+                    season.parent_id = Some(series_id);
+                }
+                if season.series_id != Some(series_id) {
+                    season.series_id = Some(series_id);
+                }
+                if season.series_presentation_unique_key.as_deref()
+                    != Some(series_id.simple().to_string().as_str())
+                {
+                    season.series_presentation_unique_key = Some(series_id.simple().to_string());
+                }
+                if season.path.is_none() && episode.season_id != Some(season.id) {
+                    self.items.update(season.clone()).await?;
+                }
+                if episode.season_id != Some(season.id) {
+                    episode.season_id = Some(season.id);
+                    episode.series_presentation_unique_key = Some(series_id.simple().to_string());
+                    self.items.update(episode).await?;
+                    episode_season_ids.insert(season.id);
+                }
+            }
+
+            for season in seasons {
+                if season.path.is_none()
+                    && !episode_season_ids.contains(&season.id)
+                    && let Some(existing) = self.items.get(season.id).await?
+                    && existing.path.is_none()
+                {
+                    self.items.delete(existing.id).await?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -322,6 +440,7 @@ impl LibraryScanService {
             kind,
             summary,
             seen_paths,
+            root,
         )
         .await?;
         while let Some(directory) = pending.pop() {
@@ -337,6 +456,7 @@ impl LibraryScanService {
                 kind,
                 summary,
                 seen_paths,
+                root,
             )
             .await?;
         }
@@ -473,7 +593,7 @@ impl LibraryScanService {
                 .into_iter()
                 .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
                 .collect::<HashMap<_, _>>();
-            let extra_paths = Self::extra_paths_for_entries(&files)?;
+            let extra_paths = Self::extra_paths_for_entries(&files, root)?;
             let regular_files = files
                 .iter()
                 .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
@@ -488,7 +608,7 @@ impl LibraryScanService {
                     summary,
                 )
                 .await?;
-            self.ensure_extras(&files, kind, summary, seen_paths)
+            self.ensure_extras(&files, kind, summary, seen_paths, root)
                 .await?;
         }
         Ok(())
@@ -558,6 +678,7 @@ impl LibraryScanService {
         Ok(item_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn scan_entries(
         &self,
         entries: &mut tokio::fs::ReadDir,
@@ -566,6 +687,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
+        library_root: &Path,
     ) -> Result<(), LibraryScanError> {
         let mut files = Vec::new();
         let ignore_rule = CoreResolutionIgnoreRule::new(NamingOptions::default(), "");
@@ -614,7 +736,7 @@ impl LibraryScanService {
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect();
 
-        let extra_paths = Self::extra_paths_for_entries(&files)?;
+        let extra_paths = Self::extra_paths_for_entries(&files, library_root)?;
         let regular_files = files
             .iter()
             .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
@@ -623,19 +745,121 @@ impl LibraryScanService {
         summary.items_added += self
             .process_files(&regular_files, parent_id, kind, &existing_by_path, summary)
             .await?;
-        self.ensure_extras(&files, kind, summary, seen_paths)
+        self.group_scanned_video_entries(&regular_files, kind, library_root)
             .await?;
+        self.ensure_extras(&files, kind, summary, seen_paths, library_root)
+            .await?;
+        Ok(())
+    }
+
+    async fn group_scanned_video_entries(
+        &self,
+        files: &[(PathBuf, MediaKind)],
+        kind: ScanLibraryKind,
+        library_root: &Path,
+    ) -> Result<(), LibraryScanError> {
+        let paths = files
+            .iter()
+            .filter(|(_, media_kind)| *media_kind == MediaKind::Video)
+            .filter_map(|(path, _)| path.to_str().map(String::from))
+            .collect::<Vec<_>>();
+        if paths.len() < 2 {
+            return Ok(());
+        }
+        let items = self.items.by_paths(&paths).await?;
+        if items.len() < 2 {
+            return Ok(());
+        }
+        let by_path = items
+            .into_iter()
+            .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+            .collect::<HashMap<_, _>>();
+        let options = NamingOptions::default();
+        let videos = paths
+            .iter()
+            .filter_map(|path| {
+                VideoResolver::resolve_file_with_library_root(
+                    Some(path),
+                    &options,
+                    library_root.to_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let collection_type = if kind.is_tv() {
+            Some(jellyfin_naming::video_list::CollectionType::TvShows)
+        } else {
+            Some(jellyfin_naming::video_list::CollectionType::Movies)
+        };
+        let groups =
+            VideoListResolver::new(options).resolve_with_options(&videos, true, collection_type);
+        for group in groups {
+            let Some(primary_path) = group.files.first().map(|file| file.path.as_str()) else {
+                continue;
+            };
+            let Some(primary) = by_path.get(primary_path).cloned() else {
+                continue;
+            };
+            let primary_id = primary.id;
+            let mut updated_primary = primary.clone();
+            updated_primary.primary_version_id = None;
+            let mut primary_changed =
+                updated_primary.primary_version_id != primary.primary_version_id;
+            if group.files.len() > 1 {
+                let parts = group
+                    .files
+                    .iter()
+                    .skip(1)
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>();
+                primary_changed |= set_additional_parts(&mut updated_primary, &parts);
+            }
+            if !group.name.is_empty()
+                && (updated_primary.name.as_deref() != Some(group.name.as_str())
+                    || updated_primary.sort_name.as_deref() != Some(group.name.as_str()))
+            {
+                updated_primary.name = Some(group.name.clone());
+                updated_primary.sort_name = Some(group.name.clone());
+                primary_changed = true;
+            }
+            if primary_changed {
+                self.items.update(updated_primary).await?;
+            }
+
+            let mut version_paths = group
+                .files
+                .iter()
+                .skip(1)
+                .map(|file| file.path.clone())
+                .collect::<Vec<_>>();
+            for alternate in &group.alternate_versions {
+                version_paths.extend(alternate.files.iter().map(|file| file.path.clone()));
+            }
+            for path in version_paths {
+                let Some(mut item) = by_path.get(&path).cloned() else {
+                    continue;
+                };
+                if item.primary_version_id == Some(primary_id) {
+                    continue;
+                }
+                item.primary_version_id = Some(primary_id);
+                self.items.update(item).await?;
+            }
+        }
         Ok(())
     }
 
     fn extra_paths_for_entries(
         files: &[(PathBuf, MediaKind)],
+        library_root: &Path,
     ) -> Result<HashSet<String>, LibraryScanError> {
         if files.is_empty() {
             return Ok(HashSet::new());
         }
         let options = NamingOptions::default();
-        let resolver = LibraryExtrasResolver::new(options.clone());
+        let resolver = LibraryExtrasResolver::with_library_root(
+            options.clone(),
+            library_root.to_string_lossy(),
+        );
         let entries = files
             .iter()
             .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
@@ -669,12 +893,16 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
+        library_root: &Path,
     ) -> Result<(), LibraryScanError> {
         if kind.is_tv() {
             return Ok(());
         }
         let options = NamingOptions::default();
-        let resolver = LibraryExtrasResolver::new(options.clone());
+        let resolver = LibraryExtrasResolver::with_library_root(
+            options.clone(),
+            library_root.to_string_lossy(),
+        );
         let entries = files
             .iter()
             .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
@@ -2350,6 +2578,33 @@ fn display_name(path: &str) -> String {
         .to_owned()
 }
 
+fn set_additional_parts(item: &mut base_item::Model, parts: &[String]) -> bool {
+    let mut data = item.data.clone().unwrap_or_else(|| json!({}));
+    let object = data
+        .as_object_mut()
+        .expect("base item metadata must be a JSON object");
+    let previous = object
+        .get("AdditionalParts")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if previous == parts {
+        return false;
+    }
+    object.insert(
+        "AdditionalParts".to_owned(),
+        Value::Array(parts.iter().cloned().map(Value::String).collect()),
+    );
+    item.data = Some(data);
+    true
+}
+
 fn stable_item_id(path: &str, item_type: &str) -> Uuid {
     let digest = Md5::digest(format!("{item_type}{path}"));
     let mut bytes = [0; 16];
@@ -2394,7 +2649,7 @@ mod tests {
         attachment_image_type, attachments_from_media_info, codec_from_extension, default_stream,
         display_name, extra_type_name, is_extras_directory, local_image_type, media_item_data,
         media_kind, next_stream_index, resolve_external_subtitle_streams_from_entries,
-        stable_item_id, streams_from_media_info,
+        set_additional_parts, stable_item_id, streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
@@ -2404,6 +2659,38 @@ mod tests {
     use jellyfin_xbmc_metadata::NfoMetadata;
     use serde_json::json;
     use std::path::Path;
+
+    fn base_item_default() -> base_item::Model {
+        base_item::Model {
+            id: uuid::Uuid::nil(),
+            item_type: "Movie".to_owned(),
+            data: None,
+            path: None,
+            parent_id: None,
+            top_parent_id: None,
+            name: None,
+            clean_name: None,
+            sort_name: None,
+            media_type: None,
+            overview: None,
+            official_rating: None,
+            index_number: None,
+            parent_index_number: None,
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: false,
+            is_virtual_item: false,
+            presentation_unique_key: None,
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: Utc::now(),
+            date_modified: Utc::now(),
+            row_version: 1,
+        }
+    }
 
     #[test]
     fn media_kind_accepts_common_direct_play_extensions() {
@@ -2834,6 +3121,27 @@ mod tests {
             media_item_data("/media/Movie.mp4", None),
             json!({ "Container": "mp4" })
         );
+    }
+
+    #[test]
+    fn additional_parts_metadata_is_idempotent() {
+        let mut item = base_item::Model {
+            id: uuid::Uuid::new_v4(),
+            item_type: "Movie".to_owned(),
+            data: Some(json!({ "Name": "Movie" })),
+            ..base_item_default()
+        };
+        let parts = vec!["/media/part2.mkv".to_owned(), "/media/part3.mkv".to_owned()];
+        assert!(set_additional_parts(&mut item, &parts));
+        assert_eq!(
+            item.data
+                .as_ref()
+                .and_then(|data| data.get("AdditionalParts"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(!set_additional_parts(&mut item, &parts));
     }
 
     #[test]

@@ -4,35 +4,22 @@ use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_controller::MetadataRefreshService;
+use jellyfin_controller::{MetadataRefreshMode, MetadataRefreshOptions, MetadataRefreshService};
 use jellyfin_data::{BaseItemError, BaseItemRepository};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authorization};
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "PascalCase")]
-enum MetadataRefreshMode {
-    #[default]
-    None,
-    ValidationOnly,
-    Default,
-    FullRefresh,
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct RefreshItemQuery {
     #[serde(rename = "metadataRefreshMode", alias = "MetadataRefreshMode")]
     metadata_refresh_mode: MetadataRefreshMode,
-    /// Deprecated by Jellyfin clients; accepted for wire compatibility and ignored.
     #[serde(rename = "imageRefreshMode", alias = "ImageRefreshMode")]
     image_refresh_mode: MetadataRefreshMode,
-    /// Accepted for wire compatibility and ignored by this refresh pipeline.
     #[serde(rename = "replaceAllMetadata", alias = "ReplaceAllMetadata")]
     replace_all_metadata: bool,
-    /// Accepted for wire compatibility and ignored by this refresh pipeline.
     #[serde(rename = "replaceAllImages", alias = "ReplaceAllImages")]
     replace_all_images: bool,
     #[serde(rename = "regenerateTrickplay", alias = "RegenerateTrickplay")]
@@ -86,16 +73,28 @@ pub(crate) async fn refresh(
         crate::websocket::broadcast_refresh_progress(&state, item_id, 80.0).await;
     }
 
-    if matches!(
-        query.metadata_refresh_mode,
-        MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
-    ) {
+    if query.metadata_refresh_mode != MetadataRefreshMode::None
+        || query.image_refresh_mode != MetadataRefreshMode::None
+    {
         crate::websocket::broadcast_refresh_progress(&state, item_id, 40.0).await;
         let service =
             MetadataRefreshService::new(state.database.clone(), Some(state.item_images.clone()));
         let tmdb_api_key = state.tmdb_api_key.read().await.clone();
         let omdb_api_key = state.omdb_api_key.read().await.clone();
-        if let Err(error) = service.refresh(item_id, &tmdb_api_key, &omdb_api_key).await {
+        if let Err(error) = service
+            .refresh(
+                item_id,
+                &tmdb_api_key,
+                &omdb_api_key,
+                MetadataRefreshOptions {
+                    metadata_refresh_mode: query.metadata_refresh_mode,
+                    image_refresh_mode: query.image_refresh_mode,
+                    replace_all_metadata: query.replace_all_metadata,
+                    replace_all_images: query.replace_all_images,
+                },
+            )
+            .await
+        {
             tracing::error!(%error, "metadata refresh failed");
         }
         crate::websocket::broadcast_refresh_progress(&state, item_id, 90.0).await;

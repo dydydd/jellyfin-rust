@@ -19,6 +19,7 @@ pub struct EpisodeExpression {
     pub is_optimistic: bool,
     pub is_named: bool,
     pub supports_absolute_episode_numbers: bool,
+    reject_hyphen_tail: bool,
     pub date_order: Option<DateOrder>,
 }
 
@@ -44,6 +45,7 @@ impl EpisodeExpression {
             is_optimistic: false,
             is_named: false,
             supports_absolute_episode_numbers: true,
+            reject_hyphen_tail: false,
             date_order: None,
         })
     }
@@ -90,6 +92,11 @@ impl EpisodeExpression {
         self.supports_absolute_episode_numbers = false;
         self
     }
+
+    fn without_hyphen_tail(mut self) -> Self {
+        self.reject_hyphen_tail = true;
+        self
+    }
 }
 
 fn compile_expression(expression: &str) -> Result<Regex, regex::Error> {
@@ -102,81 +109,134 @@ pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
             r"(?:^|[/\\])[s]eason\s*(?P<seasonnumber>[0-9]{1,2})[/\\](?P<epnumber>[0-9]{1,2})(?:x[0-9]+){2,}",
         ),
         EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[s](?P<seasonnumber>[0-9]+)[x\[\] ._-]*[e](?P<epnumber>[0-9]+)",
+            r".*(\\|/)(?P<seriesname>[^\\/]*?)[Ss](?P<seasonnumber>[0-9]+)[\[\] ._-]*[Ee](?P<epnumber>[0-9]+)([^\\/]*)$",
         ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[s](?:eason)?\s*(?P<seasonnumber>[0-9]+)\s+[e](?:pisode)?\s*(?P<epnumber>[0-9]+)",
-        ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[s]?(?P<seasonnumber>[0-9]{1,4})x(?P<epnumber>[0-9]+)",
-        ),
+        EpisodeExpression::positional(r".*?[\._ -]()[Ee][Pp]_?([0-9]+)([^\\/]*)$"),
+        EpisodeExpression::positional(r"[^\\/]*?()\.?[Ee]([0-9]+)\.([^\\/]*)$"),
         EpisodeExpression::by_date(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[._ \-(]+(?P<year>[0-9]{4})[._ -](?P<month>[0-9]{2})[._ -](?P<day>[0-9]{2})",
+            r"(?P<year>[0-9]{4})[._ -](?P<month>[0-9]{2})[._ -](?P<day>[0-9]{2})",
             DateOrder::YearMonthDay,
         ),
         EpisodeExpression::by_date(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[._ \-(]+(?P<day>[0-9]{2})[._ -](?P<month>[0-9]{2})[._ -](?P<year>[0-9]{4})",
+            r"(?P<day>[0-9]{2})[._ -](?P<month>[0-9]{2})[._ -](?P<year>[0-9]{4})",
             DateOrder::DayMonthYear,
         ),
         EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[._ -][e][p]_?(?P<epnumber>[0-9]+)",
+            r".*[\\/]((?P<seriesname>[^\\/]+?)\s)?[Ss](?:eason)?\s*(?P<seasonnumber>[0-9]+)\s+[Ee](?:pisode)?\s*(?P<epnumber>[0-9]+).*$",
         ),
         EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[._ -][e](?P<epnumber>[0-9]+)(?:[._ -]|$)",
+            r".*[\\/](?P<seriesname>[^\\/]+?)\s(?P<seasonnumber>0[0-9])(?P<epnumber>[0-9]{2})(?:[ ._-]|$)[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r"[e]pisode\s*-?\s*(?P<epnumber>[0-9]+)(?:-(?P<endingepnumber>[0-9]+))?",
-        ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]+?)\s+(?P<epnumber>[0-9]{1,4})\s+-\s+[^0-9/\\][^/\\]*$",
-        ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?:\[[^\]]+\]\s*)?(?P<seriesname>[^0-9/\\][^/\\]*?)\s+-\s+(?P<epnumber>[0-9]+)(?:\s|\.|$)[^/\\]*$",
-        ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]*?)[._ -](?P<seasonnumber>[0-9]{1,2})(?P<epnumber>[0-9]{2})\s+[^/\\]+$",
-        ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]+?)[._ -](?P<seasonnumber>[0-9]+)(?P<epnumber>[0-9]{2})(?:[._ -][^/\\]*)?\.[A-Za-z0-9]+$",
-        )
-        .optimistic()
-        .without_absolute_numbers(),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seasonnumber>[0-9]+)-(?P<epnumber>[0-9]+)(?P<endingepnumber_suffix>)(?:\s+-|\.|$)",
-        ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<epnumber>[0-9]{1,4})(?:-(?P<endingepnumber>[0-9]{1,4}))?(?:\s*-\s*|[. ]|$)[^/\\]*$",
+            r".*[\\/](?P<epnumber>[0-9]{1,4})\s+[0-9]+\s+[^\\/]*$",
         )
         .optimistic(),
         EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[\p{L}\p{N}_ .'-]+?)\s+(?P<epnumber>[0-9]{1,4})(?:-(?P<endingepnumber>[0-9]{2,4}))?(?:\.[A-Za-z0-9]+)?$",
+            r".*[\\/](?P<epnumber>[0-9]{1,2})x[0-9]{2}x[0-9]{2,4}[^\\/]*$",
+        )
+        .optimistic(),
+        EpisodeExpression::named(
+            r".*[\\/](?P<seriesname>(?:[^\dEe\\/]|[Ee][^pP\d])[\w\s]*?)\s(?P<epnumber>[0-9]{1,4})(-(?P<endingepnumber>[0-9]{2,4}))*[^\\/]*$",
+        )
+        .without_hyphen_tail(),
+        EpisodeExpression::positional(
+            r".*?[\\/\._ \[\(-]([0-9]+)x([0-9]+(?:(?:[a-i]|\.[1-9]))?)([^\\/]*)$",
+        ),
+        EpisodeExpression::named(
+            r".*[\\/]?.*?(\[.*?\])+.*?(?P<seriesname>[-\w\s]+?)[\s_]*-[\s_]*(?P<epnumber>[0-9]+).*$",
+        ),
+        EpisodeExpression::named(
+            r".*[\\/](?P<seriesname>[^\\/]+?)[\s_]+-[\s_]+(?P<epnumber>[0-9]+)[\s_]*(?:\[.*?\]|\(.*?\))*[\s_]*(?:\.\w+)?$",
+        ),
+        EpisodeExpression::named(
+            r".*?[\\/._ -](?P<seriesname>[^0-9\\/_][^\\/_]*)[\\/._ -](?P<seasonnumber>[0-9]+)(?P<epnumber>[0-9][0-9](?:(?:[a-i]|\.[1-9]))?)([._ -][^\\/]*)$",
+        )
+        .optimistic()
+        .without_absolute_numbers(),
+        EpisodeExpression::positional(r".*?[\/._ -]p(?:ar)?t[_. -]()([ivx]+|[0-9]+)([._ -][^\/]*)$"),
+        EpisodeExpression::named(
+            r"[Ee]pisode (?P<epnumber>[0-9]+)(-(?P<endingepnumber>[0-9]+))?[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*[\\/](?:[^\dEe\\/][^\\/]*|[Ee][^pP\d][^\\/]*)[ _-]+[0-9]+[ _-]+-?[ _-]+(?P<epnumber>[0-9]{1,3})(?:[ _-]+-?[ _-]+|$|[ .])[^\\/]*$",
+        )
+        .optimistic(),
+        EpisodeExpression::named(
+            r".*(\\|/)[sS]?(?P<seasonnumber>[0-9]+)[xX](?P<epnumber>[0-9]+)[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)[sS](?P<seasonnumber>[0-9]+)[x,X]?[eE](?P<epnumber>[0-9]+)[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]+))[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*)[sS](?P<seasonnumber>[0-9]{1,4})[xX\.]?[eE](?P<epnumber>[0-9]+)[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*[\\/](?P<epnumber>[0-9]+)(-(?P<endingepnumber>[0-9]+))*\.\w+$",
+        )
+        .optimistic(),
+        EpisodeExpression::positional(r"([0-9]+)-([0-9]+)"),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<epnumber>[0-9]{1,3})(-(?P<endingepnumber>[0-9]{2,3}))*\s?-\s?[^\\/]*$",
+        )
+        .optimistic(),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<epnumber>[0-9]{1,3})(-(?P<endingepnumber>[0-9]{2,3}))*\.[^\\/]+$",
+        )
+        .optimistic(),
+        EpisodeExpression::named(
+            r".*[\\/][^\\/]* - (?P<epnumber>[0-9]{1,3})(-(?P<endingepnumber>[0-9]{2,3}))*[^\\/]*$",
+        )
+        .optimistic(),
+        EpisodeExpression::named(
+            r"[Ss]eason[\._ ](?P<seasonnumber>[0-9]+)[\\/](?P<epnumber>[0-9]{1,3})([^\\/]*)$",
+        )
+        .optimistic(),
+        EpisodeExpression::named(
+            r"(.*(\\|/))*(?P<seriesname>.+)\/[Ss](eason)?[\. _\-]*(?P<seasonnumber>[0-9]+)",
+        ),
+        EpisodeExpression::named(
+            r"(.*(\\|/))*(?P<seriesname>.+)[\. _\-]+[sS](eason)?[\. _\-]*(?P<seasonnumber>[0-9]+)",
         ),
         EpisodeExpression::named(
             r"(?:\[[^\]]+\]\s*)?(?P<seriesname>\[[^\]]+\]|[^\[\]/\\]+?)\s*\[(?P<epnumber>[0-9]+)\]",
         ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]+)[/\\][s](?:eason)?[. _-]*(?P<seasonnumber>[0-9]+)(?:[^0-9]|$)",
-        ),
-        EpisodeExpression::named(
-            r"(?:^|[/\\])(?P<seriesname>[^/\\]+?)[. _-]+[s](?:eason)?[. _-]*(?P<seasonnumber>[0-9]+)(?:[^0-9]|$)",
-        ),
-        EpisodeExpression::positional(r"(?:^|[/\\])([0-9]+)-([0-9]+)"),
     ]
 }
 
 pub(crate) fn default_multiple_episode_expressions() -> Vec<EpisodeExpression> {
     vec![
         EpisodeExpression::named(
-            r"(?:^|[/\\])[^/\\]*?[s]?(?P<seasonnumber>[0-9]{1,4})x(?P<epnumber>[0-9]{1,3})(?:(?:\s*-\s*)(?:[0-9]{1,4})?[xe](?P<endingepnumber>[0-9]{1,3}))+[^/\\]*$",
+            r".*(\\|/)[sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3})((-| - )[0-9]{1,4}[eExX](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r"(?:^|[/\\])[^/\\]*?[s]?(?P<seasonnumber>[0-9]{1,4})x(?P<epnumber>[0-9]{1,3})(?:[xe](?P<endingepnumber>[0-9]{1,3}))+[^/\\]*$",
+            r".*(\\|/)[sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3})((-| - )[0-9]{1,4}[xX][eE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r"(?:^|[/\\])[^/\\]*?[s]?(?P<seasonnumber>[0-9]{1,4})x(?P<epnumber>[0-9]{1,3})(?:-(?:[xe])?(?P<endingepnumber>[0-9]{1,3}))+[^/\\]*$",
+            r".*(\\|/)[sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3})((-| - )?[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r"(?:^|[/\\])[^/\\]*?[s](?P<seasonnumber>[0-9]{1,4})[x.]?[e](?P<epnumber>[0-9]{1,3})(?:-(?:[xe])?(?P<endingepnumber>[0-9]{1,3}))+[^/\\]*$",
+            r".*(\\|/)[sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3})(-[xE]?[eE]?(?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )[0-9]{1,4}[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )[0-9]{1,4}[xX][eE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )?[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))(-[xX]?[eE]?(?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*)[sS](?P<seasonnumber>[0-9]{1,4})[xX\.]?[eE](?P<epnumber>[0-9]{1,3})((-| - )?[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+        ),
+        EpisodeExpression::named(
+            r".*(\\|/)(?P<seriesname>[^\\/]*)[sS](?P<seasonnumber>[0-9]{1,4})[xX\.]?[eE](?P<epnumber>[0-9]{1,3})(-[xX]?[eE]?(?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
     ]
 }
@@ -343,6 +403,24 @@ fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<Episod
         return Some(result);
     }
     result.success = result.episode_number.is_some();
+    if expression.reject_hyphen_tail && result.success {
+        let end = captures.name("epnumber").map_or(0, |value| value.end());
+        if let Some(tail) = matched_path.get(end..) {
+            let trimmed_tail = tail.trim_start_matches(' ');
+            if trimmed_tail.starts_with(['x', 'X']) {
+                result.success = false;
+            }
+            let after_hyphen = trimmed_tail
+                .trim_start_matches(' ')
+                .strip_prefix('-')
+                .map(str::trim_start);
+            if after_hyphen
+                .is_some_and(|value| value.as_bytes().first().is_some_and(u8::is_ascii_digit))
+            {
+                result.success = false;
+            }
+        }
+    }
     Some(result)
 }
 
@@ -378,6 +456,11 @@ fn clean_series_name(name: &str) -> String {
 }
 
 fn fill_series_from_path(path: &str, result: &mut EpisodePathParserResult) {
+    if result.is_by_date
+        && let Some(name) = daily_series_name_from_path(path)
+    {
+        result.series_name = Some(name);
+    }
     if let Some(name) = result.series_name.as_mut()
         && name.ends_with("_KTLADT")
     {
@@ -406,6 +489,41 @@ fn fill_series_from_path(path: &str, result: &mut EpisodePathParserResult) {
             result.series_name = Some(grandparent.to_owned());
         }
     }
+}
+
+fn daily_series_name_from_path(path: &str) -> Option<String> {
+    let stem = file_stem(path);
+    for expression in [
+        r"^(?P<name>.*?)[._ \-]*(?:\(|\[)?(?P<year>[0-9]{4})[._\-](?P<month>[0-9]{2})[._\-](?P<day>[0-9]{2})",
+        r"^(?P<name>.*?)[._ \-]*(?:\(|\[)?(?P<day>[0-9]{2})[._\-](?P<month>[0-9]{2})[._\-](?P<year>[0-9]{4})",
+    ] {
+        let Some(name) = RegexBuilder::new(expression)
+            .case_insensitive(true)
+            .build()
+            .ok()?
+            .captures(stem)
+            .and_then(|captures| captures.name("name"))
+        else {
+            continue;
+        };
+        let name = name
+            .as_str()
+            .trim()
+            .trim_matches(['_', '.', '-', ' ', '(', '['])
+            .trim();
+        let name = if name
+            .get(name.len().saturating_sub("_KTLADT".len())..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case("_KTLADT"))
+        {
+            &name[..name.len() - "_KTLADT".len()]
+        } else {
+            name
+        };
+        if !name.is_empty() {
+            return Some(name.to_owned());
+        }
+    }
+    None
 }
 
 fn is_season_folder(value: &str) -> bool {
@@ -517,7 +635,7 @@ impl EpisodeResolver {
         Some(EpisodeInfo {
             path: path.to_owned(),
             container,
-            series_name: parsed.series_name,
+            series_name: parsed.series_name.or_else(|| Some(String::new())),
             format_3d: format.format_3d,
             is_3d: format.is_3d,
             is_stub,

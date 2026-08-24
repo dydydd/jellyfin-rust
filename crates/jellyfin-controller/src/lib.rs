@@ -30,6 +30,7 @@ mod media_streams;
 mod metadata_editor;
 pub mod metadata_providers;
 mod metadata_refresh;
+mod music_brainz;
 mod music_genre;
 mod omdb;
 mod packages;
@@ -78,7 +79,10 @@ pub use media_streams::{
     MediaStreamService, MediaStreamServiceError,
 };
 pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
-pub use metadata_refresh::{MetadataRefreshError, MetadataRefreshService};
+pub use metadata_refresh::{
+    MetadataRefreshError, MetadataRefreshMode, MetadataRefreshOptions, MetadataRefreshService,
+};
+pub use music_brainz::{MusicBrainzMetadataProvider, MusicBrainzProviderError};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};
 pub use packages::{PackageError, PackageService};
 pub use persons::{Person, PersonError, PersonPage, PersonService};

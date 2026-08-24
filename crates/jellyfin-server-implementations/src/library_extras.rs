@@ -124,12 +124,27 @@ pub struct ResolvedLibraryExtra {
 #[derive(Debug, Clone)]
 pub struct LibraryExtrasResolver {
     naming_options: NamingOptions,
+    library_root: Option<String>,
 }
 
 impl LibraryExtrasResolver {
     #[must_use]
     pub fn new(naming_options: NamingOptions) -> Self {
-        Self { naming_options }
+        Self {
+            naming_options,
+            library_root: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_library_root(
+        naming_options: NamingOptions,
+        library_root: impl Into<String>,
+    ) -> Self {
+        Self {
+            naming_options,
+            library_root: Some(library_root.into()),
+        }
     }
 
     /// Finds extras among the owner's known children and recognized extras folders.
@@ -144,9 +159,12 @@ impl LibraryExtrasResolver {
         directory_reader: &R,
     ) -> io::Result<Vec<ResolvedLibraryExtra>> {
         let owner_is_directory = owner.is_folder || owner.is_disc;
-        let Some(owner_video_info) =
-            VideoResolver::resolve(Some(&owner.path), owner_is_directory, &self.naming_options)
-        else {
+        let Some(owner_video_info) = VideoResolver::resolve_with_library_root(
+            Some(&owner.path),
+            owner_is_directory,
+            &self.naming_options,
+            self.library_root.as_deref(),
+        ) else {
             return Ok(Vec::new());
         };
         let owner_stack_parts = self.owner_stack_parts(owner, file_system_children);
@@ -193,8 +211,11 @@ impl LibraryExtrasResolver {
                 (name, parsed.year, ExtraMediaKind::Audio)
             }
             MediaType::Video => {
-                let video =
-                    VideoResolver::resolve_file(Some(&file.full_name), &self.naming_options)?;
+                let video = VideoResolver::resolve_file_with_library_root(
+                    Some(&file.full_name),
+                    &self.naming_options,
+                    self.library_root.as_deref(),
+                )?;
                 let kind = if extra_type == ExtraType::Trailer {
                     ExtraMediaKind::Trailer
                 } else {
@@ -219,7 +240,11 @@ impl LibraryExtrasResolver {
         path: &str,
         owner: &VideoFileInfo,
     ) -> Option<(ExtraType, ExtraRule)> {
-        let extra = ExtraResolver::resolve(path, &self.naming_options);
+        let extra = ExtraResolver::resolve_with_library_root(
+            path,
+            &self.naming_options,
+            self.library_root.as_deref(),
+        );
         let (extra_type, rule) = (extra.extra_type?, extra.rule?);
         let parsed =
             VideoResolver::clean_date_time(file_stem(file_name(path)), &self.naming_options);

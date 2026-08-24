@@ -14,6 +14,7 @@ use jellyfin_xbmc_metadata::{
     save_nfo,
 };
 use sea_orm::DatabaseConnection;
+use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -23,7 +24,8 @@ use crate::{
     item_update::ItemUpdateService,
     metadata_providers::{
         AudioDbMetadataProvider, AudioDbMetadataProviderError, MetadataProviderError,
-        OmdbMetadataProvider, OmdbMetadataProviderError, TmdbMetadataProvider,
+        MusicBrainzMetadataProvider, MusicBrainzProviderError, OmdbMetadataProvider,
+        OmdbMetadataProviderError, TmdbMetadataProvider,
     },
 };
 
@@ -38,11 +40,33 @@ pub enum MetadataRefreshError {
     #[error(transparent)]
     AudioDb(#[from] AudioDbMetadataProviderError),
     #[error(transparent)]
+    MusicBrainz(#[from] MusicBrainzProviderError),
+    #[error(transparent)]
     VirtualFolder(#[from] VirtualFolderServiceError),
     #[error(transparent)]
     Person(#[from] PersonError),
     #[error("NFO write failed: {0}")]
     Nfo(#[source] std::io::Error),
+}
+
+/// Official item-refresh modes propagated into the provider pipeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum MetadataRefreshMode {
+    #[default]
+    None,
+    ValidationOnly,
+    Default,
+    FullRefresh,
+}
+
+/// Refresh controls accepted by the item refresh endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MetadataRefreshOptions {
+    pub metadata_refresh_mode: MetadataRefreshMode,
+    pub image_refresh_mode: MetadataRefreshMode,
+    pub replace_all_metadata: bool,
+    pub replace_all_images: bool,
 }
 
 /// Real metadata-refresh pipeline backed by `ProviderManager` ordering and the
@@ -75,36 +99,65 @@ impl MetadataRefreshService {
     /// # Errors
     ///
     /// Returns provider, persistence, or NFO write errors.
+    #[allow(clippy::too_many_lines)]
     pub async fn refresh(
         &self,
         item_id: Uuid,
         tmdb_api_key: &str,
         omdb_api_key: &str,
+        options: MetadataRefreshOptions,
     ) -> Result<bool, MetadataRefreshError> {
         let item = self
             .items
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
+        let library_options = self.library_options_for_item(&item).await?;
+        let full_metadata_refresh =
+            options.metadata_refresh_mode == MetadataRefreshMode::FullRefresh;
+        let mut provider_order = if full_metadata_refresh {
+            ProviderOrderOptions::default()
+        } else {
+            provider_order_options(&library_options, &item.item_type)
+        };
+        if full_metadata_refresh {
+            provider_order.metadata_fetchers = None;
+        }
         let provider_item = ProviderItem {
             type_name: item.item_type.clone(),
             is_locked: is_locked(&item),
             supports_local_metadata: true,
             is_owned: false,
         };
-        let mut manager = ProviderManager::new(
-            ProviderOrderOptions::default(),
-            ProviderOrderOptions::default(),
-        );
+        let mut manager = ProviderManager::new(provider_order, ProviderOrderOptions::default());
         let services = metadata_services_for(&item.item_type);
         if services.is_empty() {
+            if options.image_refresh_mode != MetadataRefreshMode::None {
+                return self
+                    .refresh_images(
+                        item_id,
+                        tmdb_api_key,
+                        options.image_refresh_mode == MetadataRefreshMode::FullRefresh,
+                    )
+                    .await;
+            }
             return Ok(false);
         }
-        manager.add_parts(Vec::new(), services, provider_registry());
+        let mut providers = provider_registry();
+        if full_metadata_refresh {
+            for provider in &mut providers {
+                provider.forced = true;
+            }
+        }
+        manager.add_parts(Vec::new(), services, providers);
         let Some(service) = manager.select_metadata_service(&provider_item) else {
             return Ok(false);
         };
-        let mut filter = ProviderFilter;
+        let mut filter = ProviderFilter {
+            metadata_fetchers: string_array(library_options.as_object(), "MetadataFetchers"),
+            image_fetchers: string_array(library_options.as_object(), "ImageFetchers"),
+            full_refresh: full_metadata_refresh,
+        };
         let enabled_providers = manager.get_metadata_providers(&provider_item, &mut filter);
         let provider_enabled = |name: &str| {
             enabled_providers
@@ -113,46 +166,109 @@ impl MetadataRefreshService {
         };
 
         let mut refreshed = false;
-        match service.name.as_str() {
-            "MovieMetadataService" | "SeriesMetadataService" => {
-                if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
-                    refreshed |= self
-                        .tmdb_provider(tmdb_api_key)
-                        .refresh_item(item_id)
-                        .await?;
+        if matches!(
+            options.metadata_refresh_mode,
+            MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
+        ) {
+            match service.name.as_str() {
+                "MovieMetadataService" | "SeriesMetadataService" => {
+                    if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
+                        refreshed |= self
+                            .tmdb_provider(tmdb_api_key)
+                            .refresh_item(item_id)
+                            .await?;
+                    }
+                    if provider_enabled("OMDb") && !omdb_api_key.trim().is_empty() {
+                        refreshed |= self
+                            .omdb_provider(omdb_api_key)
+                            .refresh_item(item_id)
+                            .await?;
+                    }
                 }
-                if provider_enabled("OMDb") && !omdb_api_key.trim().is_empty() {
-                    refreshed |= self
-                        .omdb_provider(omdb_api_key)
-                        .refresh_item(item_id)
-                        .await?;
+                "SeasonMetadataService"
+                | "EpisodeMetadataService"
+                | "BoxSetMetadataService"
+                | "PersonMetadataService" => {
+                    if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
+                        refreshed |= self
+                            .tmdb_provider(tmdb_api_key)
+                            .refresh_item(item_id)
+                            .await?;
+                    }
                 }
-            }
-            "SeasonMetadataService"
-            | "EpisodeMetadataService"
-            | "BoxSetMetadataService"
-            | "PersonMetadataService" => {
-                if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
-                    refreshed |= self
-                        .tmdb_provider(tmdb_api_key)
-                        .refresh_item(item_id)
-                        .await?;
+                "MusicArtistMetadataService" | "MusicAlbumMetadataService" => {
+                    if provider_enabled("TheAudioDB") {
+                        refreshed |= self.audio_db_provider().refresh_item(item_id).await?;
+                    }
+                    if provider_enabled("MusicBrainz") {
+                        refreshed |= self.music_brainz_provider().refresh_item(item_id).await?;
+                    }
                 }
+                _ => {}
             }
-            "MusicArtistMetadataService" | "MusicAlbumMetadataService"
-                if provider_enabled("TheAudioDB") =>
-            {
-                refreshed |= self.audio_db_provider().refresh_item(item_id).await?;
-            }
-            _ => {}
         }
 
-        if let Some(updated) = self.items.get(item_id).await?
+        if options.image_refresh_mode != MetadataRefreshMode::None {
+            let full_image_refresh = options.image_refresh_mode == MetadataRefreshMode::FullRefresh;
+            if image_fetcher_enabled(&library_options, &item.item_type, full_image_refresh) {
+                refreshed |= self
+                    .refresh_images(item_id, tmdb_api_key, full_image_refresh)
+                    .await?;
+            }
+        }
+
+        if options.metadata_refresh_mode != MetadataRefreshMode::None
+            && let Some(updated) = self.items.get(item_id).await?
             && self.save_local_metadata_enabled(&updated).await?
         {
             self.save_nfo(&updated).await?;
         }
         Ok(refreshed)
+    }
+
+    async fn refresh_images(
+        &self,
+        item_id: Uuid,
+        tmdb_api_key: &str,
+        replace_all: bool,
+    ) -> Result<bool, MetadataRefreshError> {
+        if tmdb_api_key.trim().is_empty() {
+            return Ok(false);
+        }
+        let item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
+        if !matches!(
+            item.item_type.as_str(),
+            "Movie" | "Video" | "Series" | "BoxSet" | "Person"
+        ) {
+            return Ok(false);
+        }
+        Ok(self
+            .tmdb_provider(tmdb_api_key)
+            .refresh_images(item_id, replace_all)
+            .await?)
+    }
+
+    async fn library_options_for_item(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<Value, MetadataRefreshError> {
+        let Some(item_path) = item.path.as_deref() else {
+            return Ok(Value::Object(serde_json::Map::new()));
+        };
+        for folder in self.virtual_folders.list().await? {
+            if folder
+                .locations
+                .iter()
+                .any(|path| Path::new(item_path).starts_with(Path::new(path)))
+            {
+                return Ok(folder.library_options);
+            }
+        }
+        Ok(Value::Object(serde_json::Map::new()))
     }
 
     fn tmdb_provider(&self, api_key: &str) -> TmdbMetadataProvider {
@@ -177,6 +293,10 @@ impl MetadataRefreshService {
 
     fn audio_db_provider(&self) -> AudioDbMetadataProvider {
         AudioDbMetadataProvider::new(self.items.clone(), self.updates.clone())
+    }
+
+    fn music_brainz_provider(&self) -> MusicBrainzMetadataProvider {
+        MusicBrainzMetadataProvider::new(self.items.clone(), self.updates.clone())
     }
 
     async fn save_local_metadata_enabled(
@@ -388,13 +508,105 @@ fn provider_registry() -> Vec<ManagedMetadataProvider> {
         ManagedMetadataProvider::new("TheMovieDb", MetadataProviderKind::Remote),
         ManagedMetadataProvider::new("OMDb", MetadataProviderKind::Remote),
         ManagedMetadataProvider::new("TheAudioDB", MetadataProviderKind::Remote),
+        ManagedMetadataProvider::new("MusicBrainz", MetadataProviderKind::Remote),
     ]
 }
 
-struct ProviderFilter;
+struct ProviderFilter {
+    metadata_fetchers: Vec<String>,
+    image_fetchers: Vec<String>,
+    full_refresh: bool,
+}
 
 impl ProviderManagerCapability for ProviderFilter {
     type Error = String;
+
+    fn image_fetcher_enabled(&mut self, _item: &ProviderItem, provider_name: &str) -> bool {
+        self.full_refresh
+            || self.image_fetchers.is_empty()
+            || self
+                .image_fetchers
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(provider_name))
+    }
+
+    fn metadata_fetcher_enabled(&mut self, _item: &ProviderItem, provider_name: &str) -> bool {
+        self.full_refresh
+            || self.metadata_fetchers.is_empty()
+            || self
+                .metadata_fetchers
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(provider_name))
+    }
+}
+
+fn provider_order_options(options: &Value, item_type: &str) -> ProviderOrderOptions {
+    let type_options = options
+        .get("TypeOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option
+                    .get("Type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(item_type))
+            })
+        });
+    let metadata_fetchers = type_options
+        .and_then(|option| option.get("MetadataFetchers"))
+        .or_else(|| options.get("MetadataFetchers"))
+        .and_then(Value::as_array)
+        .map(|values| string_value_array(values))
+        .filter(|values| !values.is_empty());
+    ProviderOrderOptions {
+        metadata_fetcher_order: type_options
+            .and_then(|option| option.get("MetadataFetcherOrder"))
+            .or_else(|| options.get("MetadataFetcherOrder"))
+            .and_then(Value::as_array)
+            .map(|values| string_value_array(values)),
+        image_fetcher_order: type_options
+            .and_then(|option| option.get("ImageFetcherOrder"))
+            .or_else(|| options.get("ImageFetcherOrder"))
+            .and_then(Value::as_array)
+            .map(|values| string_value_array(values)),
+        metadata_fetchers,
+        ..ProviderOrderOptions::default()
+    }
+}
+
+fn image_fetcher_enabled(options: &Value, item_type: &str, full_refresh: bool) -> bool {
+    if full_refresh {
+        return true;
+    }
+    let type_options = options
+        .get("TypeOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option
+                    .get("Type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(item_type))
+            })
+        });
+    let fetchers = type_options
+        .and_then(|option| option.get("ImageFetchers"))
+        .or_else(|| options.get("ImageFetchers"))
+        .and_then(Value::as_array)
+        .map(|values| string_value_array(values))
+        .unwrap_or_default();
+    fetchers.is_empty()
+        || fetchers
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("TheMovieDb"))
+}
+
+fn string_value_array(values: &[Value]) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn is_locked(item: &base_item::Model) -> bool {
@@ -526,6 +738,39 @@ mod tests {
         assert_eq!(weekday_from_name("saturday"), Some(Weekday::Sat));
         assert_eq!(weekday_from_name("monday"), Some(Weekday::Mon));
         assert_eq!(weekday_from_name("Funday"), None);
+    }
+
+    #[test]
+    fn provider_order_options_reads_type_specific_fetchers() {
+        let options = json!({
+            "TypeOptions": [{
+                "Type": "Movie",
+                "MetadataFetchers": ["TheMovieDb"],
+                "MetadataFetcherOrder": ["OMDb", "TheMovieDb"],
+                "ImageFetcherOrder": ["TheMovieDb"]
+            }]
+        });
+        let parsed = provider_order_options(&options, "Movie");
+        assert_eq!(
+            parsed.metadata_fetchers,
+            Some(vec!["TheMovieDb".to_owned()])
+        );
+        assert_eq!(
+            parsed.metadata_fetcher_order,
+            Some(vec!["OMDb".to_owned(), "TheMovieDb".to_owned()])
+        );
+        assert!(image_fetcher_enabled(&options, "Movie", false));
+        assert!(!image_fetcher_enabled(
+            &json!({
+                "TypeOptions": [{
+                    "Type": "Movie",
+                    "ImageFetchers": ["TheAudioDB"]
+                }]
+            }),
+            "Movie",
+            false
+        ));
+        assert!(image_fetcher_enabled(&json!({}), "Movie", true));
     }
 
     fn test_item() -> base_item::Model {

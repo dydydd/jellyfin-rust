@@ -108,6 +108,8 @@ pub struct ProcessedImage {
 pub enum ImageProcessingError {
     #[error("image encoding concurrency limit must be at least one")]
     InvalidConcurrencyLimit,
+    #[error("collage requires at least one input and positive dimensions")]
+    InvalidCollageOptions,
     #[error("image processor concurrency limiter was closed")]
     SemaphoreClosed,
     #[error("image quality must be between 1 and 100, got {0}")]
@@ -295,6 +297,16 @@ pub struct ImageProcessor {
     encoding_limit: Arc<Semaphore>,
 }
 
+/// Inputs and layout for Jellyfin-style dynamic image collages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageCollageOptions {
+    pub input_paths: Vec<PathBuf>,
+    pub output_path: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub thumb_layout: bool,
+}
+
 impl ImageProcessor {
     /// Creates an image processor with a compile-time positive concurrency limit.
     #[must_use]
@@ -405,6 +417,124 @@ impl ImageProcessor {
                 ),
             })
     }
+}
+
+/// Creates a grid or thumb collage from the supplied raster images.
+///
+/// The output is always JPEG, matching Jellyfin's generated collection images.
+///
+/// # Errors
+///
+/// Returns a typed [`ImageProcessingError`] when an input cannot be decoded or
+/// the output cannot be written.
+pub async fn create_collage(options: ImageCollageOptions) -> Result<PathBuf, ImageProcessingError> {
+    if options.input_paths.is_empty() || options.width == 0 || options.height == 0 {
+        return Err(ImageProcessingError::InvalidCollageOptions);
+    }
+    tokio::task::spawn_blocking(move || {
+        let canvas = build_collage(&options)?;
+        canvas
+            .save_with_format(&options.output_path, image::ImageFormat::Jpeg)
+            .map_err(|source| ImageProcessingError::Encode {
+                path: options.output_path.clone(),
+                source,
+            })?;
+        Ok(options.output_path)
+    })
+    .await?
+}
+
+fn build_collage(options: &ImageCollageOptions) -> Result<DynamicImage, ImageProcessingError> {
+    let inputs = options
+        .input_paths
+        .iter()
+        .map(|path| {
+            ImageReader::open(path)
+                .map_err(|source| ImageProcessingError::FileAccess {
+                    path: path.clone(),
+                    source,
+                })?
+                .with_guessed_format()
+                .map_err(|source| ImageProcessingError::FileAccess {
+                    path: path.clone(),
+                    source,
+                })?
+                .decode()
+                .map_err(|source| ImageProcessingError::Decode {
+                    path: path.clone(),
+                    source,
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut canvas = RgbaImage::from_pixel(
+        options.width.max(1),
+        options.height.max(1),
+        Rgba([12, 12, 14, 255]),
+    );
+    if options.thumb_layout && inputs.len() > 1 {
+        draw_thumb_collage(&mut canvas, &inputs);
+    } else {
+        draw_grid_collage(&mut canvas, &inputs);
+    }
+    Ok(DynamicImage::ImageRgba8(canvas))
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn draw_grid_collage(canvas: &mut RgbaImage, inputs: &[DynamicImage]) {
+    let columns = (inputs.len() as f64).sqrt().ceil() as u32;
+    let rows = u32::try_from(inputs.len().div_ceil(usize::try_from(columns).unwrap_or(1)))
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let cell_width = canvas.width() / columns.max(1);
+    let cell_height = canvas.height() / rows.max(1);
+    if cell_width == 0 || cell_height == 0 {
+        return;
+    }
+    for (index, input) in inputs.iter().enumerate() {
+        let row = u32::try_from(index / usize::try_from(columns).unwrap_or(1)).unwrap_or(0);
+        let column = u32::try_from(index % usize::try_from(columns).unwrap_or(1)).unwrap_or(0);
+        let x = column * cell_width;
+        let y = row * cell_height;
+        let scaled = fill_crop(input, cell_width, cell_height);
+        image::imageops::overlay(canvas, &scaled, i64::from(x), i64::from(y));
+    }
+}
+
+fn draw_thumb_collage(canvas: &mut RgbaImage, inputs: &[DynamicImage]) {
+    let first_width = canvas.width() * 2 / 3;
+    let remaining_width = canvas.width() - first_width;
+    let first = fill_crop(&inputs[0], first_width, canvas.height());
+    image::imageops::overlay(canvas, &first, 0, 0);
+    let rest = &inputs[1..];
+    let cell_height = canvas.height() / u32::try_from(rest.len()).unwrap_or(1).max(1);
+    for (index, input) in rest.iter().enumerate() {
+        let cell = fill_crop(input, remaining_width, cell_height);
+        image::imageops::overlay(
+            canvas,
+            &cell,
+            i64::from(first_width),
+            i64::from(u32::try_from(index).unwrap_or(u32::MAX) * cell_height),
+        );
+    }
+}
+
+fn fill_crop(input: &DynamicImage, width: u32, height: u32) -> DynamicImage {
+    if width == 0 || height == 0 {
+        return DynamicImage::ImageRgba8(RgbaImage::new(1, 1));
+    }
+    let (source_width, source_height) = input.dimensions();
+    let scale = Ratio::new(width, source_width).max(Ratio::new(height, source_height));
+    let scaled_width = scale.scale_ceil(source_width);
+    let scaled_height = scale.scale_ceil(source_height);
+    let resized = input.resize_exact(scaled_width, scaled_height, FilterType::Lanczos3);
+    let x = (scaled_width - width) / 2;
+    let y = (scaled_height - height) / 2;
+    resized.crop_imm(x, y, width, height)
 }
 
 #[derive(Clone, Debug)]

@@ -259,12 +259,30 @@ impl VideoResolver {
 
     #[must_use]
     pub fn resolve_file(path: Option<&str>, options: &NamingOptions) -> Option<VideoFileInfo> {
-        Self::resolve(path, false, options)
+        Self::resolve_with_library_root(path, false, options, None)
+    }
+
+    #[must_use]
+    pub fn resolve_file_with_library_root(
+        path: Option<&str>,
+        options: &NamingOptions,
+        library_root: Option<&str>,
+    ) -> Option<VideoFileInfo> {
+        Self::resolve_with_library_root(path, false, options, library_root)
     }
 
     #[must_use]
     pub fn resolve_directory(path: Option<&str>, options: &NamingOptions) -> Option<VideoFileInfo> {
-        Self::resolve(path, true, options)
+        Self::resolve_with_library_root(path, true, options, None)
+    }
+
+    #[must_use]
+    pub fn resolve_directory_with_library_root(
+        path: Option<&str>,
+        options: &NamingOptions,
+        library_root: Option<&str>,
+    ) -> Option<VideoFileInfo> {
+        Self::resolve_with_library_root(path, true, options, library_root)
     }
 
     #[must_use]
@@ -272,6 +290,16 @@ impl VideoResolver {
         path: Option<&str>,
         is_directory: bool,
         options: &NamingOptions,
+    ) -> Option<VideoFileInfo> {
+        Self::resolve_with_library_root(path, is_directory, options, None)
+    }
+
+    #[must_use]
+    pub fn resolve_with_library_root(
+        path: Option<&str>,
+        is_directory: bool,
+        options: &NamingOptions,
+        library_root: Option<&str>,
     ) -> Option<VideoFileInfo> {
         let path = path.filter(|path| !path.is_empty())?;
         let (container, is_stub, stub_type) = if is_directory {
@@ -306,7 +334,7 @@ impl VideoResolver {
         );
         let date = Self::clean_date_time(raw_name, options);
         let name = Self::try_clean_string(Some(&date.name), options).unwrap_or(date.name);
-        let extra = ExtraResolver::resolve(path, options);
+        let extra = ExtraResolver::resolve_with_library_root(path, options, library_root);
 
         Some(VideoFileInfo {
             name,
