@@ -6,7 +6,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use jellyfin_media_encoding_hls::{HlsPlaylistError, compute_equal_length_segment_ticks};
@@ -366,10 +366,45 @@ pub async fn run_ffmpeg(command: &FfmpegCommand, job: &TranscodeJobHandle) -> Re
     }
 }
 
-/// A registry of active HLS transcode jobs keyed by job and playback session.
+/// Runtime metadata for one active transcode job.
+#[derive(Clone, Debug)]
+pub struct TranscodingJobInfo {
+    pub id: String,
+    pub device_id: Option<String>,
+    pub play_session_id: Option<String>,
+    pub path: Option<String>,
+    pub is_hls: bool,
+    pub started_at: Instant,
+    pub last_ping: Instant,
+    pub is_user_paused: bool,
+}
+
+impl TranscodingJobInfo {
+    fn new(id: String) -> Self {
+        let now = Instant::now();
+        Self {
+            id,
+            device_id: None,
+            play_session_id: None,
+            path: None,
+            is_hls: false,
+            started_at: now,
+            last_ping: now,
+            is_user_paused: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TranscodeJobEntry {
+    handle: TranscodeJobHandle,
+    info: TranscodingJobInfo,
+}
+
+/// A registry of active transcode jobs keyed by job and playback session.
 #[derive(Debug, Clone, Default)]
 pub struct TranscodeJobRegistry {
-    jobs: Arc<Mutex<HashMap<String, TranscodeJobHandle>>>,
+    jobs: Arc<Mutex<HashMap<String, TranscodeJobEntry>>>,
     sessions: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 }
 
@@ -389,7 +424,13 @@ impl TranscodeJobRegistry {
         self.jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(job_id, handle.clone());
+            .insert(
+                job_id.clone(),
+                TranscodeJobEntry {
+                    handle: handle.clone(),
+                    info: TranscodingJobInfo::new(job_id),
+                },
+            );
         handle
     }
 
@@ -406,11 +447,48 @@ impl TranscodeJobRegistry {
         handle
     }
 
+    /// Registers an HLS job with playback-session and path metadata.
+    pub fn register_for_session_with_path(
+        &self,
+        job_id: impl Into<String>,
+        device_id: &str,
+        play_session_id: &str,
+        path: &str,
+    ) -> TranscodeJobHandle {
+        let job_id = job_id.into();
+        let handle = self.register(job_id.clone());
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&job_id)
+            .map(|entry| {
+                entry.info.device_id = non_empty(device_id);
+                entry.info.play_session_id = non_empty(play_session_id);
+                entry.info.path = non_empty(path);
+                entry.info.is_hls = true;
+            });
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session_key(device_id, play_session_id))
+            .or_default()
+            .insert(job_id);
+        handle
+    }
+
     /// Associates an already running job with a playback session.
     pub fn associate(&self, job_id: &str, device_id: &str, play_session_id: &str) {
         if device_id.trim().is_empty() || play_session_id.trim().is_empty() {
             return;
         }
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(job_id)
+            .map(|entry| {
+                entry.info.device_id = Some(device_id.to_owned());
+                entry.info.play_session_id = Some(play_session_id.to_owned());
+            });
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -425,7 +503,76 @@ impl TranscodeJobRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(job_id)
-            .is_some_and(TranscodeJobHandle::running)
+            .is_some_and(|entry| entry.handle.running())
+    }
+
+    /// Updates the last-ping timestamp for every job in a playback session.
+    pub fn ping(&self, play_session_id: &str, is_user_paused: Option<bool>) {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values_mut()
+            .filter(|entry| {
+                entry
+                    .info
+                    .play_session_id
+                    .as_deref()
+                    .is_some_and(|session| session.eq_ignore_ascii_case(play_session_id))
+            })
+            .for_each(|entry| {
+                entry.info.last_ping = Instant::now();
+                if let Some(paused) = is_user_paused {
+                    entry.info.is_user_paused = paused;
+                }
+            });
+    }
+
+    /// Returns metadata for the active job in a playback session.
+    #[must_use]
+    pub fn get(&self, play_session_id: &str) -> Option<TranscodingJobInfo> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .find(|entry| {
+                entry
+                    .info
+                    .play_session_id
+                    .as_deref()
+                    .is_some_and(|session| session.eq_ignore_ascii_case(play_session_id))
+            })
+            .map(|entry| entry.info.clone())
+    }
+
+    /// Returns a snapshot of every active transcode job.
+    #[must_use]
+    pub fn list(&self) -> Vec<TranscodingJobInfo> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .map(|entry| entry.info.clone())
+            .collect()
+    }
+
+    /// Cancels every running job whose last ping is older than `timeout`.
+    pub async fn stop_stale_jobs(&self, timeout: Duration) -> Vec<String> {
+        let now = Instant::now();
+        let stale = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|entry| {
+                entry.handle.running()
+                    && now.duration_since(entry.info.last_ping) > timeout
+            })
+            .map(|entry| entry.info.id.clone())
+            .collect::<Vec<_>>();
+        for job_id in &stale {
+            self.stop(job_id).await;
+        }
+        stale
     }
 
     /// Cancels and removes a single transcode job.
@@ -435,7 +582,7 @@ impl TranscodeJobRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(job_id)
-            .cloned();
+            .map(|entry| entry.handle.clone());
         if let Some(handle) = handle {
             handle.cancel_and_wait().await;
         }
@@ -465,6 +612,10 @@ impl TranscodeJobRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(job_id);
     }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_owned())
 }
 
 fn session_key(device_id: &str, play_session_id: &str) -> String {
@@ -804,6 +955,28 @@ mod tests {
         assert!(playlist.contains("#EXTM3U"));
         assert!(playlist.contains("/Videos/00000000-0000-0000-0000-000000000001/hls1/job1/0.ts?"));
         assert!(playlist.contains("runtimeTicks=0&actualSegmentLengthTicks=60000000"));
+    }
+
+    #[test]
+    fn registry_tracks_session_metadata_and_pings() {
+        let registry = TranscodeJobRegistry::new();
+        registry.register_for_session_with_path(
+            "job-1",
+            "device-1",
+            "play-session-1",
+            "/media/video.mkv",
+        );
+
+        let info = registry.get("play-session-1").expect("job metadata");
+        assert_eq!(info.id, "job-1");
+        assert_eq!(info.device_id.as_deref(), Some("device-1"));
+        assert_eq!(info.path.as_deref(), Some("/media/video.mkv"));
+        assert!(info.is_hls);
+
+        registry.ping("play-session-1", Some(true));
+        let paused = registry.get("play-session-1").expect("job metadata");
+        assert!(paused.is_user_paused);
+        assert_eq!(registry.list().len(), 1);
     }
 
     #[tokio::test]

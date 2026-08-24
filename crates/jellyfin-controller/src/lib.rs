@@ -23,8 +23,8 @@ pub mod transcode;
 
 pub use transcode::{
     FfmpegCommand, HlsSegmentSettings, HlsVariant, TranscodeJobRegistry, TranscodeTarget,
-    audio_command, build_main_playlist, build_master_playlist, build_variant_master_playlist,
-    hls_command, hls_job_id, run_ffmpeg, wait_for_segment,
+    TranscodingJobInfo, audio_command, build_main_playlist, build_master_playlist,
+    build_variant_master_playlist, hls_command, hls_job_id, run_ffmpeg, wait_for_segment,
 };
 mod media_streams;
 mod metadata_editor;

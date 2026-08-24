@@ -255,6 +255,9 @@ pub(crate) async fn ping_playback_session(
         return Err(ApiError::InvalidRequest);
     }
     authorization::require_default(&state, &headers, &uri).await?;
+    if let Some(play_session_id) = query.play_session_id.as_deref() {
+        state.transcode_jobs.ping(play_session_id, None);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -466,6 +469,12 @@ async fn record_device_playback_stop(
     info: PlaybackStopInfo,
 ) -> Result<(), ApiError> {
     let item_id = info.item_id;
+    if let Some(play_session_id) = info.play_session_id.as_deref() {
+        state
+            .transcode_jobs
+            .stop_for_session(&session.device.device_id, play_session_id)
+            .await;
+    }
     let update = PlaybackStopUpdate::from(info);
     state
         .playstate

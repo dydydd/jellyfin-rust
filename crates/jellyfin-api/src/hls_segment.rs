@@ -408,7 +408,7 @@ async fn start_hls_job(
         (Some(device_id), Some(play_session_id)) => {
             state
                 .transcode_jobs
-                .register_for_session(job_id, device_id, play_session_id)
+                .register_for_session_with_path(job_id, device_id, play_session_id, &input)
         }
         _ => state.transcode_jobs.register(job_id),
     };
