@@ -1,5 +1,6 @@
 use std::{fmt::Write as _, num::ParseIntError, path::Path, str::FromStr};
 
+use jellyfin_media_encoding::encoder::EncoderCapabilities;
 use jellyfin_model::{MediaSourceInfo, MediaStream, SubtitleDeliveryMethod};
 use thiserror::Error;
 
@@ -80,6 +81,7 @@ pub struct EncodingJobInfo {
     pub subtitle_stream: Option<MediaStream>,
     pub subtitle_delivery_method: SubtitleDeliveryMethod,
     pub start_time_ticks: Option<i64>,
+    pub run_time_ticks: Option<i64>,
 }
 
 impl EncodingJobInfo {
@@ -92,15 +94,52 @@ impl EncodingJobInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodingHelper {
     encoder_version: FfmpegVersion,
+    capabilities: EncoderCapabilities,
 }
 
 impl EncodingHelper {
     #[must_use]
     pub const fn new(encoder_version: FfmpegVersion) -> Self {
-        Self { encoder_version }
+        Self {
+            encoder_version,
+            capabilities: EncoderCapabilities {
+                version: None,
+                supported: true,
+                encoders: Vec::new(),
+                decoders: Vec::new(),
+                hwaccels: Vec::new(),
+                filters: Vec::new(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: EncoderCapabilities) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    #[must_use]
+    pub fn supports_encoder(&self, name: &str) -> bool {
+        self.capabilities.has_encoder(name)
+    }
+
+    #[must_use]
+    pub fn supports_decoder(&self, name: &str) -> bool {
+        self.capabilities.has_decoder(name)
+    }
+
+    #[must_use]
+    pub fn supports_filter(&self, name: &str) -> bool {
+        self.capabilities.has_filter(name)
+    }
+
+    #[must_use]
+    pub fn supports_hwaccel(&self, name: &str) -> bool {
+        self.capabilities.has_hwaccel(name)
     }
 
     /// Builds copied-audio trimming and ADTS-to-ASC bitstream filters.
@@ -282,6 +321,115 @@ impl EncodingHelper {
         arguments.join(" ")
     }
 
+    /// Infers the output audio codec from a container name.
+    #[must_use]
+    pub fn infer_audio_codec(&self, container: &str) -> String {
+        match container.trim().to_ascii_lowercase().as_str() {
+            "" => "aac".to_owned(),
+            "ogg" | "oga" | "ogv" | "webm" | "webma" => "opus".to_owned(),
+            "m4a" | "m4b" | "mp4" | "mov" | "mkv" | "mka" => "aac".to_owned(),
+            "ts" | "avi" | "flv" | "f4v" | "swf" => "mp3".to_owned(),
+            value => value.to_owned(),
+        }
+    }
+
+    /// Infers the output video codec from a URL or path extension.
+    #[must_use]
+    pub fn infer_video_codec(&self, url: &str) -> String {
+        let extension = Path::new(url)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match extension.as_str() {
+            "asf" => "wmv".to_owned(),
+            "webm" => "vp8".to_owned(),
+            "ogg" | "ogv" => "theora".to_owned(),
+            "m3u8" | "ts" => "h264".to_owned(),
+            _ => "copy".to_owned(),
+        }
+    }
+
+    /// Builds the HDR input color-property filter used before tonemapping.
+    #[must_use]
+    pub fn get_input_hdr_param(&self, color_transfer: Option<&str>) -> String {
+        if color_transfer.is_some_and(|value| value.eq_ignore_ascii_case("arib-std-b67")) {
+            "setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc".to_owned()
+        } else {
+            "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc".to_owned()
+        }
+    }
+
+    /// Builds the SDR output color-property filter.
+    #[must_use]
+    pub fn get_output_sdr_param(&self, tonemapping_range: Option<&str>) -> String {
+        let range = tonemapping_range.map_or("", |value| {
+            if value.eq_ignore_ascii_case("tv") {
+                ":range=tv"
+            } else if value.eq_ignore_ascii_case("pc") {
+                ":range=pc"
+            } else {
+                ""
+            }
+        });
+        format!("setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709{range}")
+    }
+
+    /// Returns the video stream bit depth with Jellyfin's pixel-format fallback.
+    #[must_use]
+    pub fn get_video_color_bit_depth(&self, state: &EncodingJobInfo) -> i32 {
+        let Some(stream) = state.video_stream.as_ref() else {
+            return 8;
+        };
+        stream.bit_depth.unwrap_or_else(|| {
+            let pixel_format = stream.pixel_format.as_deref().unwrap_or_default();
+            if pixel_format.contains("12") {
+                12
+            } else if pixel_format.contains("10") || pixel_format.contains("p010") {
+                10
+            } else {
+                8
+            }
+        })
+    }
+
+    /// Builds copied-video bitstream filters for H.264, HEVC, and AV1 streams.
+    #[must_use]
+    pub fn get_video_bit_stream_arguments(&self, state: &EncodingJobInfo) -> Option<String> {
+        let stream = state.video_stream.as_ref()?;
+        let codec = stream.codec.as_deref()?;
+        if codec.eq_ignore_ascii_case("h264") {
+            Some("-bsf:v h264_mp4toannexb".to_owned())
+        } else if codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265") {
+            Some("-bsf:v hevc_mp4toannexb".to_owned())
+        } else if codec.eq_ignore_ascii_case("av1") {
+            None
+        } else {
+            None
+        }
+    }
+
+    /// Builds the fast-seek parameter with the HLS remux keyframe offset.
+    #[must_use]
+    pub fn get_fast_seek_command_line_parameter(
+        &self,
+        state: &EncodingJobInfo,
+        is_hls_remuxing: bool,
+    ) -> String {
+        let Some(time) = state.start_time_ticks.filter(|time| *time > 0) else {
+            return String::new();
+        };
+        let seek_ticks = if is_hls_remuxing {
+            time.saturating_add(5_000_000)
+        } else {
+            time
+        };
+        let seek_ticks = state.run_time_ticks.map_or(seek_ticks, |runtime| {
+            seek_ticks.clamp(0, runtime.saturating_sub(50_000_000).max(0))
+        });
+        format!("-ss {}", format_ticks_as_seconds(seek_ticks))
+    }
+
     fn copied_audio_trim_filter(&self, state: &EncodingJobInfo) -> Option<String> {
         if state.transcoding_type != TranscodingJobType::Hls
             || !state.is_video_request
@@ -408,12 +556,59 @@ fn format_ticks_as_seconds(ticks: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_ticks_as_seconds;
+    use jellyfin_model::MediaStream;
+
+    use super::{
+        EncodingHelper, EncodingJobInfo, FfmpegVersion, TranscodingJobType, format_ticks_as_seconds,
+    };
 
     #[test]
     fn tick_formatting_matches_three_decimal_ties_to_even() {
         assert_eq!(format_ticks_as_seconds(630_630_000), "63.063");
         assert_eq!(format_ticks_as_seconds(10_005_000), "1.000");
         assert_eq!(format_ticks_as_seconds(10_015_000), "1.002");
+    }
+
+    #[test]
+    fn codec_and_color_parameter_helpers_match_official_shapes() {
+        let helper = EncodingHelper::new(FfmpegVersion::new(7, 0));
+        assert_eq!(helper.infer_audio_codec("webm"), "opus");
+        assert_eq!(helper.infer_audio_codec("mkv"), "aac");
+        assert_eq!(helper.infer_video_codec("video.webm"), "vp8");
+        assert_eq!(helper.infer_video_codec("video.m3u8"), "h264");
+        assert_eq!(
+            helper.get_input_hdr_param(Some("smpte2084")),
+            "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"
+        );
+        assert_eq!(
+            helper.get_output_sdr_param(Some("tv")),
+            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+        );
+    }
+
+    #[test]
+    fn video_bitstream_and_fast_seek_follow_copy_stream_rules() {
+        let helper = EncodingHelper::new(FfmpegVersion::new(7, 0));
+        let state = EncodingJobInfo {
+            transcoding_type: TranscodingJobType::Hls,
+            video_stream: Some(MediaStream {
+                codec: Some("hevc".to_owned()),
+                bit_depth: Some(10),
+                ..MediaStream::default()
+            }),
+            start_time_ticks: Some(10_000_000),
+            run_time_ticks: Some(120_000_000),
+            ..EncodingJobInfo::default()
+        };
+
+        assert_eq!(
+            helper.get_video_bit_stream_arguments(&state).as_deref(),
+            Some("-bsf:v hevc_mp4toannexb")
+        );
+        assert_eq!(
+            helper.get_fast_seek_command_line_parameter(&state, true),
+            "-ss 1.500"
+        );
+        assert_eq!(helper.get_video_color_bit_depth(&state), 10);
     }
 }
