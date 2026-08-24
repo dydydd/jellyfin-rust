@@ -2136,6 +2136,9 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
         | LibraryScanError::Chapter(_)
         | LibraryScanError::Keyframe(_)
         | LibraryScanError::ItemImage(_)
+        | LibraryScanError::ItemValue(_)
+        | LibraryScanError::ItemUpdate(_)
+        | LibraryScanError::Person(_)
         | LibraryScanError::MediaStream(jellyfin_data::MediaStreamStoreError::Database(_))
         | LibraryScanError::MediaAttachment(jellyfin_data::MediaAttachmentStoreError::Database(
             _,

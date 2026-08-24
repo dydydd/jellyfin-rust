@@ -11,12 +11,15 @@ use std::{
 
 use jellyfin_data::{
     BaseItemError, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
-    BaseItemRepository, ChapterRepository, ChapterStoreError, ItemValueRepository,
-    KeyframeDataRepository, KeyframeDataStoreError, MediaAttachmentRepository,
-    MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError,
-    NewBaseItem, NewBaseItemImage, NewChapter, NewKeyframeData, PersistedMediaAttachment,
-    PersistedMediaStream, PersistedMediaStreamType, USER_ROOT_FOLDER_ID, VirtualFolderError,
-    VirtualFolderRepository, VirtualFolderWithPaths, entities::base_item,
+    BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
+    ItemUpdateRepository, ItemUpdateStoreError, ItemValueError, ItemValueRepository,
+    KeyframeDataRepository,
+    KeyframeDataStoreError, MediaAttachmentRepository, MediaAttachmentStoreError,
+    MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError, NewBaseItem,
+    NewBaseItemImage, NewChapter, NewKeyframeData, NewPerson, PersistedMediaAttachment,
+    PersistedMediaStream, PersistedMediaStreamType, PersonError as PersonStoreError,
+    PersonRepository, USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository,
+    VirtualFolderWithPaths, entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
@@ -38,8 +41,8 @@ use jellyfin_server_implementations::{
     ResolutionParentContext, ResolutionParentKind, ResolvedLibraryExtra, ResolvedLibraryItemKind,
 };
 use jellyfin_xbmc_metadata::{
-    MovieNfoLocation, MovieVideoType, NfoDocumentKind, NfoMetadata, movie_nfo_save_paths,
-    parse_movie_nfo_file,
+    MovieNfo, MovieNfoLocation, MovieVideoType, NfoDocumentKind, NfoMetadata, NfoPerson,
+    PersonKind as NfoPersonKind, movie_nfo_save_paths, parse_movie_nfo_file, parse_nfo,
 };
 use md5::{Digest, Md5};
 use sea_orm::DatabaseConnection;
@@ -76,6 +79,12 @@ pub enum LibraryScanError {
     #[error(transparent)]
     ItemImage(#[from] BaseItemImageStoreError),
     #[error(transparent)]
+    ItemValue(#[from] ItemValueError),
+    #[error(transparent)]
+    ItemUpdate(#[from] ItemUpdateStoreError),
+    #[error(transparent)]
+    Person(#[from] PersonStoreError),
+    #[error(transparent)]
     VirtualFolder(#[from] VirtualFolderError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -90,6 +99,8 @@ pub struct LibraryScanService {
     streams: MediaStreamRepository,
     attachments: MediaAttachmentRepository,
     images: BaseItemImageRepository,
+    people: PersonRepository,
+    updates: ItemUpdateRepository,
     chapters: ChapterRepository,
     keyframes: KeyframeDataRepository,
     values: ItemValueRepository,
@@ -118,6 +129,8 @@ impl LibraryScanService {
             streams: MediaStreamRepository::new(database.clone()),
             attachments: MediaAttachmentRepository::new(database.clone()),
             images: BaseItemImageRepository::new(database.clone()),
+            people: PersonRepository::new(database.clone()),
+            updates: ItemUpdateRepository::new(database.clone()),
             chapters: ChapterRepository::new(database.clone()),
             keyframes: KeyframeDataRepository::new(database.clone()),
             values: ItemValueRepository::new(database),
@@ -1138,6 +1151,8 @@ impl LibraryScanService {
                 if apply_nfo_metadata(&mut existing, path_str) {
                     changed = true;
                 }
+                self.persist_scan_relations(existing.id, path_str, &existing.item_type, None)
+                    .await?;
                 self.discover_local_images(existing.id, path_str).await?;
                 if changed {
                     self.items.update(existing).await?;
@@ -1183,6 +1198,8 @@ impl LibraryScanService {
         if apply_nfo_metadata(&mut item, path_str) {
             item = self.items.update(item).await?;
         }
+        self.persist_scan_relations(item.id, path_str, &item.item_type, None)
+            .await?;
         self.discover_local_images(item.id, path_str).await?;
         Ok((true, item.id))
     }
@@ -1222,6 +1239,8 @@ impl LibraryScanService {
             {
                 self.items.update(series).await?;
             }
+            self.persist_scan_relations(series_item_id, path_str, "Series", None)
+                .await?;
             series_id = Some(series_item_id);
             series_puk = Some(series_item_id.simple().to_string());
 
@@ -1245,6 +1264,8 @@ impl LibraryScanService {
                 {
                     self.items.update(season).await?;
                 }
+                self.persist_scan_relations(season_item_id, path_str, "Season", Some(sn))
+                    .await?;
                 season_id = Some(season_item_id);
             }
         }
@@ -1265,6 +1286,8 @@ impl LibraryScanService {
             }
             existing.series_presentation_unique_key = series_puk.clone();
             let nfo_changed = apply_episode_nfo_metadata(&mut existing, path);
+            self.persist_scan_relations(existing.id, path_str, &existing.item_type, season_number)
+                .await?;
             if let Some(media_info) = self
                 .ensure_media_streams(existing.id, path_str, media_kind)
                 .await?
@@ -1296,6 +1319,8 @@ impl LibraryScanService {
         if apply_episode_nfo_metadata(&mut item, path) {
             item = self.items.update(item).await?;
         }
+        self.persist_scan_relations(item.id, path_str, &item.item_type, season_number)
+            .await?;
         if let Some(media_info) = self
             .ensure_media_streams(item.id, path_str, media_kind)
             .await?
@@ -1307,6 +1332,60 @@ impl LibraryScanService {
         }
         let item_id = item.id;
         Ok((true, item_id))
+    }
+
+    async fn persist_scan_relations(
+        &self,
+        item_id: Uuid,
+        path: &str,
+        item_type: &str,
+        season_number: Option<i32>,
+    ) -> Result<(), LibraryScanError> {
+        let Some(relations) = scan_nfo_relations(path, item_type, season_number) else {
+            return Ok(());
+        };
+        if !relations.genres.is_empty() {
+            self.updates
+                .update(
+                    item_id,
+                    ItemMetadataPatch {
+                        genres: Some(relations.genres),
+                        ..ItemMetadataPatch::default()
+                    },
+                )
+                .await?;
+        }
+        if !relations.tags.is_empty() {
+            self.updates
+                .update(
+                    item_id,
+                    ItemMetadataPatch {
+                        tags: Some(relations.tags),
+                        ..ItemMetadataPatch::default()
+                    },
+                )
+                .await?;
+        }
+        for studio in relations.studios {
+            self.values
+                .link(item_id, ItemValueType::Studios, &studio)
+                .await?;
+        }
+        let mut list_order = 0;
+        for person in relations.people {
+            self.people
+                .link(
+                    item_id,
+                    NewPerson::new(person.name),
+                    &person.person_type,
+                    Some(&person.role),
+                    person.sort_order,
+                    list_order,
+                )
+                .await?;
+            list_order += 1;
+        }
+        Ok(())
     }
 
     async fn ensure_media_streams(
@@ -1871,6 +1950,103 @@ fn apply_nfo_metadata(item: &mut jellyfin_data::entities::base_item::Model, path
     match item.item_type.as_str() {
         "Movie" | "Video" | "Trailer" | "MusicVideo" => apply_movie_nfo_metadata(item, path),
         _ => false,
+    }
+}
+
+struct ScanNfoRelations {
+    genres: Vec<String>,
+    tags: Vec<String>,
+    studios: Vec<String>,
+    people: Vec<ScanNfoPerson>,
+}
+
+struct ScanNfoPerson {
+    name: String,
+    person_type: String,
+    role: String,
+    sort_order: Option<i32>,
+}
+
+fn scan_nfo_relations(
+    path: &str,
+    item_type: &str,
+    season_number: Option<i32>,
+) -> Option<ScanNfoRelations> {
+    match item_type {
+        "Movie" | "Video" | "Trailer" | "MusicVideo" => {
+            read_movie_nfo(path).map(|nfo| relations_from_movie_nfo(&nfo))
+        }
+        "Episode" => read_episode_nfo(path).map(|nfo| relations_from_nfo_metadata(&nfo)),
+        "Series" => read_series_nfo(path).map(|nfo| relations_from_nfo_metadata(&nfo)),
+        "Season" => read_season_nfo(path, season_number)
+            .map(|nfo| relations_from_nfo_metadata(&nfo)),
+        _ => None,
+    }
+}
+
+fn read_movie_nfo(path: &str) -> Option<MovieNfo> {
+    let nfo_path = movie_nfo_save_paths(&MovieNfoLocation {
+        path: PathBuf::from(path),
+        is_in_mixed_folder: false,
+        video_type: MovieVideoType::File,
+    })
+    .into_iter()
+    .find(|path| path.is_file())?;
+    parse_movie_nfo_file(nfo_path).ok()
+}
+
+fn read_episode_nfo(path: &str) -> Option<NfoMetadata> {
+    let nfo_path = Path::new(path).with_extension("nfo");
+    let input = std::fs::read_to_string(nfo_path).ok()?;
+    parse_nfo(&input, NfoDocumentKind::Episode).ok()
+}
+
+fn read_series_nfo(episode_path: &str) -> Option<NfoMetadata> {
+    let directory = series_directory(Path::new(episode_path))?;
+    let input = std::fs::read_to_string(directory.join("tvshow.nfo")).ok()?;
+    parse_nfo(&input, NfoDocumentKind::Series).ok()
+}
+
+fn read_season_nfo(episode_path: &str, season_number: Option<i32>) -> Option<NfoMetadata> {
+    let directory = season_directory(Path::new(episode_path), season_number)?;
+    let candidate = season_nfo_path(&directory, season_number);
+    let input = std::fs::read_to_string(candidate).ok()?;
+    parse_nfo(&input, NfoDocumentKind::Season).ok()
+}
+
+fn relations_from_movie_nfo(movie: &MovieNfo) -> ScanNfoRelations {
+    ScanNfoRelations {
+        genres: movie.genres.clone(),
+        tags: Vec::new(),
+        studios: movie.studios.clone(),
+        people: movie.people.iter().map(scan_nfo_person).collect(),
+    }
+}
+
+fn relations_from_nfo_metadata(metadata: &NfoMetadata) -> ScanNfoRelations {
+    ScanNfoRelations {
+        genres: metadata.genres.clone(),
+        tags: metadata.tags.clone(),
+        studios: metadata.studios.clone(),
+        people: metadata.people.iter().map(scan_nfo_person).collect(),
+    }
+}
+
+fn scan_nfo_person(person: &NfoPerson) -> ScanNfoPerson {
+    let person_type = match &person.kind {
+        NfoPersonKind::Actor => "Actor",
+        NfoPersonKind::Director => "Director",
+        NfoPersonKind::Writer => "Writer",
+        NfoPersonKind::Lyricist => "Lyricist",
+        NfoPersonKind::Other(kind) if !kind.trim().is_empty() => kind,
+        NfoPersonKind::Other(_) => "Actor",
+    }
+    .to_owned();
+    ScanNfoPerson {
+        name: person.name.clone(),
+        person_type,
+        role: person.role.clone(),
+        sort_order: person.sort_order,
     }
 }
 
@@ -2650,15 +2826,16 @@ mod tests {
         MediaKind, ScanLibraryKind, apply_non_movie_nfo, apply_probed_item_metadata,
         attachment_image_type, attachments_from_media_info, codec_from_extension, default_stream,
         display_name, extra_type_name, is_extras_directory, local_image_type, media_item_data,
-        media_kind, next_stream_index, resolve_external_subtitle_streams_from_entries,
-        set_additional_parts, stable_item_id, streams_from_media_info,
+        media_kind, next_stream_index, relations_from_movie_nfo, relations_from_nfo_metadata,
+        resolve_external_subtitle_streams_from_entries, scan_nfo_person, set_additional_parts,
+        stable_item_id, streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
     use jellyfin_naming::ExtraType;
     use jellyfin_providers::media_info::MediaFileSystemEntry;
-    use jellyfin_xbmc_metadata::NfoMetadata;
+    use jellyfin_xbmc_metadata::{MovieNfo, NfoMetadata, NfoPerson, PersonKind};
     use serde_json::json;
     use std::path::Path;
 
@@ -3219,5 +3396,76 @@ mod tests {
                 "OriginalLanguage": "eng"
             }))
         );
+    }
+
+    #[test]
+    fn movie_nfo_relations_include_genres_studios_and_people() {
+        let movie = MovieNfo {
+            genres: vec!["Drama".to_owned(), "Crime".to_owned()],
+            studios: vec!["Example Studio".to_owned()],
+            people: vec![
+                NfoPerson {
+                    name: "Jane Actor".to_owned(),
+                    role: "Lead".to_owned(),
+                    kind: PersonKind::Actor,
+                    sort_order: Some(0),
+                    image_url: None,
+                },
+                NfoPerson {
+                    name: "John Director".to_owned(),
+                    role: "Director".to_owned(),
+                    kind: PersonKind::Director,
+                    sort_order: Some(1),
+                    image_url: None,
+                },
+            ],
+            ..MovieNfo::default()
+        };
+
+        let relations = relations_from_movie_nfo(&movie);
+        assert_eq!(relations.genres, ["Drama", "Crime"]);
+        assert!(relations.tags.is_empty());
+        assert_eq!(relations.studios, ["Example Studio"]);
+        assert_eq!(relations.people.len(), 2);
+        assert_eq!(relations.people[0].name, "Jane Actor");
+        assert_eq!(relations.people[0].person_type, "Actor");
+        assert_eq!(relations.people[0].role, "Lead");
+        assert_eq!(relations.people[1].person_type, "Director");
+    }
+
+    #[test]
+    fn generic_nfo_relations_include_tags_and_normalized_person_types() {
+        let metadata = NfoMetadata {
+            genres: vec!["Sci-Fi".to_owned()],
+            tags: vec!["anthology".to_owned()],
+            studios: vec!["Network".to_owned()],
+            people: vec![NfoPerson {
+                name: "Jane Writer".to_owned(),
+                role: "Writer".to_owned(),
+                kind: PersonKind::Writer,
+                sort_order: Some(2),
+                image_url: None,
+            }],
+            ..NfoMetadata::default()
+        };
+
+        let relations = relations_from_nfo_metadata(&metadata);
+        assert_eq!(relations.genres, ["Sci-Fi"]);
+        assert_eq!(relations.tags, ["anthology"]);
+        assert_eq!(relations.studios, ["Network"]);
+        assert_eq!(relations.people[0].person_type, "Writer");
+        assert_eq!(relations.people[0].sort_order, Some(2));
+    }
+
+    #[test]
+    fn unknown_nfo_person_kinds_fall_back_to_actor() {
+        let person = scan_nfo_person(&NfoPerson {
+            name: "Uncredited".to_owned(),
+            role: String::new(),
+            kind: PersonKind::Other(String::new()),
+            sort_order: None,
+            image_url: None,
+        });
+        assert_eq!(person.person_type, "Actor");
     }
 }

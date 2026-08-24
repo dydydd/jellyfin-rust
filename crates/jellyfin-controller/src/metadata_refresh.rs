@@ -485,6 +485,26 @@ fn metadata_services_for(item_type: &str) -> Vec<ManagedMetadataService> {
             true,
             true,
         )],
+        "Genre" => vec![ManagedMetadataService::new(
+            "GenreMetadataService",
+            true,
+            true,
+        )],
+        "Studio" => vec![ManagedMetadataService::new(
+            "StudioMetadataService",
+            true,
+            true,
+        )],
+        "MusicGenre" => vec![ManagedMetadataService::new(
+            "MusicGenreMetadataService",
+            true,
+            true,
+        )],
+        "Year" => vec![ManagedMetadataService::new(
+            "YearMetadataService",
+            true,
+            true,
+        )],
         "MusicArtist" => {
             vec![ManagedMetadataService::new(
                 "MusicArtistMetadataService",
@@ -706,6 +726,10 @@ mod tests {
             "Episode",
             "BoxSet",
             "Person",
+            "Genre",
+            "Studio",
+            "MusicGenre",
+            "Year",
             "MusicArtist",
             "MusicAlbum",
         ] {
