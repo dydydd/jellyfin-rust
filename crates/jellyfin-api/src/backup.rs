@@ -119,14 +119,16 @@ pub(crate) async fn create(
         path: archive_path.to_string_lossy().into_owned(),
         options,
     };
-    let manifest_for_archive = manifest.clone();
-    tokio::task::spawn_blocking(move || {
-        create_backup_archive_blocking(&archive_path, &manifest_for_archive)
-    })
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<BackupManifestDto, Box<dyn std::error::Error + Send + Sync>> {
+            create_backup_archive_blocking(&archive_path, &manifest)?;
+            Ok(manifest)
+        },
+    )
     .await
     .map_err(|_| ApiError::Internal)?
     .map_err(|_| ApiError::Internal)?;
-    Ok(Json(manifest))
+    Ok(Json(result))
 }
 
 pub(crate) async fn manifest(

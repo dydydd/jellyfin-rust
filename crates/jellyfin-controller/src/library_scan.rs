@@ -13,13 +13,13 @@ use jellyfin_data::{
     BaseItemError, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
     BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
     ItemUpdateRepository, ItemUpdateStoreError, ItemValueError, ItemValueRepository,
-    KeyframeDataRepository,
-    KeyframeDataStoreError, MediaAttachmentRepository, MediaAttachmentStoreError,
-    MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError, NewBaseItem,
-    NewBaseItemImage, NewChapter, NewKeyframeData, NewPerson, PersistedMediaAttachment,
-    PersistedMediaStream, PersistedMediaStreamType, PersonError as PersonStoreError,
-    PersonRepository, USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository,
-    VirtualFolderWithPaths, entities::{base_item, item_value::ItemValueType},
+    KeyframeDataRepository, KeyframeDataStoreError, MediaAttachmentRepository,
+    MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError,
+    NewBaseItem, NewBaseItemImage, NewChapter, NewKeyframeData, NewPerson,
+    PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
+    PersonError as PersonStoreError, PersonRepository, USER_ROOT_FOLDER_ID, VirtualFolderError,
+    VirtualFolderRepository, VirtualFolderWithPaths,
+    entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
@@ -289,34 +289,35 @@ impl LibraryScanService {
         &self,
         collection_id: Uuid,
     ) -> Result<(), LibraryScanError> {
-        let descendants = self.items.descendants(collection_id).await?;
-        let series = descendants
-            .iter()
-            .filter(|entry| entry.item.item_type == "Series")
-            .map(|entry| entry.item.clone())
-            .collect::<Vec<_>>();
-        for series_item in series {
-            let series_id = series_item.id;
-            let mut seasons = descendants
-                .iter()
-                .filter(|entry| {
-                    entry.item.item_type == "Season" && entry.item.series_id == Some(series_id)
-                })
-                .map(|entry| entry.item.clone())
-                .collect::<Vec<_>>();
-            let episodes = descendants
-                .iter()
-                .filter(|entry| {
-                    entry.item.item_type == "Episode" && entry.item.series_id == Some(series_id)
-                })
-                .map(|entry| entry.item.clone())
-                .collect::<Vec<_>>();
+        let mut items_by_series = HashMap::<Uuid, Vec<base_item::Model>>::new();
+        let mut series_order = Vec::new();
+        for entry in self.items.descendants(collection_id).await? {
+            let item = entry.item;
+            if item.item_type == "Series" {
+                series_order.push(item.id);
+                items_by_series.entry(item.id).or_default().push(item);
+            } else if let Some(series_id) = item.series_id {
+                items_by_series.entry(series_id).or_default().push(item);
+            }
+        }
+        for series_id in series_order {
+            let mut seasons = Vec::new();
+            let mut episodes = Vec::new();
+            if let Some(items) = items_by_series.remove(&series_id) {
+                for item in items {
+                    match item.item_type.as_str() {
+                        "Season" => seasons.push(item),
+                        "Episode" => episodes.push(item),
+                        _ => {}
+                    }
+                }
+            }
             let mut episode_season_ids = episodes
                 .iter()
                 .filter_map(|episode| episode.season_id)
                 .collect::<HashSet<_>>();
 
-            for mut episode in episodes.clone() {
+            for mut episode in episodes {
                 if episode.season_id.is_some() {
                     continue;
                 }
@@ -375,14 +376,15 @@ impl LibraryScanService {
                 {
                     season.series_presentation_unique_key = Some(series_id.simple().to_string());
                 }
-                if season.path.is_none() && episode.season_id != Some(season.id) {
-                    self.items.update(season.clone()).await?;
+                let season_id = season.id;
+                if season.path.is_none() && episode.season_id != Some(season_id) {
+                    self.items.update(season).await?;
                 }
-                if episode.season_id != Some(season.id) {
-                    episode.season_id = Some(season.id);
+                if episode.season_id != Some(season_id) {
+                    episode.season_id = Some(season_id);
                     episode.series_presentation_unique_key = Some(series_id.simple().to_string());
                     self.items.update(episode).await?;
-                    episode_season_ids.insert(season.id);
+                    episode_season_ids.insert(season_id);
                 }
             }
 
@@ -602,10 +604,12 @@ impl LibraryScanService {
                 .filter_map(|(path, _)| path.to_str().map(String::from))
                 .collect::<Vec<_>>();
             let existing = self.items.by_paths(&paths).await?;
-            let existing_by_path = existing
-                .into_iter()
-                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
-                .collect::<HashMap<_, _>>();
+            let existing_by_path = Arc::new(
+                existing
+                    .into_iter()
+                    .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+                    .collect::<HashMap<_, _>>(),
+            );
             let extra_paths = Self::extra_paths_for_entries(&files, root)?;
             let regular_files = files
                 .iter()
@@ -617,7 +621,7 @@ impl LibraryScanService {
                     &regular_files,
                     directory_id,
                     kind,
-                    &existing_by_path,
+                    existing_by_path,
                     summary,
                 )
                 .await?;
@@ -650,12 +654,11 @@ impl LibraryScanService {
                 existing.parent_id = Some(parent_id);
                 changed = true;
             }
-            if existing.name.as_deref() != Some(name.as_str()) {
+            if existing.name.as_deref() != Some(name.as_str())
+                || existing.sort_name.as_deref() != Some(name.as_str())
+            {
                 existing.name = Some(name.clone());
-                changed = true;
-            }
-            if existing.sort_name.as_deref() != Some(name.as_str()) {
-                existing.sort_name = Some(name.clone());
+                existing.sort_name = Some(name);
                 changed = true;
             }
             if !existing.is_folder {
@@ -744,10 +747,12 @@ impl LibraryScanService {
             .filter_map(|(p, _)| p.to_str().map(String::from))
             .collect();
         let existing = self.items.by_paths(&paths).await?;
-        let existing_by_path: HashMap<String, base_item::Model> = existing
-            .into_iter()
-            .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
-            .collect();
+        let existing_by_path = Arc::new(
+            existing
+                .into_iter()
+                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+                .collect::<HashMap<_, _>>(),
+        );
 
         let extra_paths = Self::extra_paths_for_entries(&files, library_root)?;
         let regular_files = files
@@ -756,7 +761,7 @@ impl LibraryScanService {
             .cloned()
             .collect::<Vec<_>>();
         summary.items_added += self
-            .process_files(&regular_files, parent_id, kind, &existing_by_path, summary)
+            .process_files(&regular_files, parent_id, kind, existing_by_path, summary)
             .await?;
         self.group_scanned_video_entries(&regular_files, kind, library_root)
             .await?;
@@ -813,16 +818,17 @@ impl LibraryScanService {
                 continue;
             };
             let primary_id = primary.id;
-            let mut updated_primary = primary.clone();
+            let original_primary_version_id = primary.primary_version_id;
+            let mut updated_primary = primary;
             updated_primary.primary_version_id = None;
             let mut primary_changed =
-                updated_primary.primary_version_id != primary.primary_version_id;
+                updated_primary.primary_version_id != original_primary_version_id;
             if group.files.len() > 1 {
                 let parts = group
                     .files
                     .iter()
                     .skip(1)
-                    .map(|file| file.path.clone())
+                    .map(|file| file.path.as_str())
                     .collect::<Vec<_>>();
                 primary_changed |= set_additional_parts(&mut updated_primary, &parts);
             }
@@ -842,13 +848,13 @@ impl LibraryScanService {
                 .files
                 .iter()
                 .skip(1)
-                .map(|file| file.path.clone())
+                .map(|file| file.path.as_str())
                 .collect::<Vec<_>>();
             for alternate in &group.alternate_versions {
-                version_paths.extend(alternate.files.iter().map(|file| file.path.clone()));
+                version_paths.extend(alternate.files.iter().map(|file| file.path.as_str()));
             }
             for path in version_paths {
-                let Some(mut item) = by_path.get(&path).cloned() else {
+                let Some(mut item) = by_path.get(path).cloned() else {
                     continue;
                 };
                 if item.primary_version_id == Some(primary_id) {
@@ -869,24 +875,26 @@ impl LibraryScanService {
             return Ok(HashSet::new());
         }
         let options = NamingOptions::default();
-        let resolver = LibraryExtrasResolver::with_library_root(
-            options.clone(),
-            library_root.to_string_lossy(),
-        );
         let entries = files
             .iter()
             .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
             .map(|(path, _)| ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false))
             .collect::<Vec<_>>();
+        let eligible_entries = entries
+            .iter()
+            .filter(|entry| {
+                ExtraResolver::resolve(&entry.full_name, &options)
+                    .extra_type
+                    .is_none()
+            })
+            .collect::<Vec<_>>();
+        let resolver =
+            LibraryExtrasResolver::with_library_root(options, library_root.to_string_lossy());
         let reader = TokioExtraDirectoryReader;
         let mut extra_paths = HashSet::new();
-        for entry in entries.iter().filter(|entry| {
-            ExtraResolver::resolve(&entry.full_name, &options)
-                .extra_type
-                .is_none()
-        }) {
+        for entry in eligible_entries {
             let owner = ExtraOwner::new(
-                entry.full_name.clone(),
+                entry.full_name.as_str(),
                 display_name(&entry.full_name),
                 ExtraOwnerKind::Movie,
             );
@@ -912,23 +920,25 @@ impl LibraryScanService {
             return Ok(());
         }
         let options = NamingOptions::default();
-        let resolver = LibraryExtrasResolver::with_library_root(
-            options.clone(),
-            library_root.to_string_lossy(),
-        );
         let entries = files
             .iter()
             .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
             .map(|(path, _)| ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false))
             .collect::<Vec<_>>();
+        let eligible_entries = entries
+            .iter()
+            .filter(|entry| {
+                ExtraResolver::resolve(&entry.full_name, &options)
+                    .extra_type
+                    .is_none()
+            })
+            .collect::<Vec<_>>();
+        let resolver =
+            LibraryExtrasResolver::with_library_root(options, library_root.to_string_lossy());
         let reader = TokioExtraDirectoryReader;
-        for entry in entries.iter().filter(|entry| {
-            ExtraResolver::resolve(&entry.full_name, &options)
-                .extra_type
-                .is_none()
-        }) {
+        for entry in eligible_entries {
             let owner = ExtraOwner::new(
-                entry.full_name.clone(),
+                entry.full_name.as_str(),
                 display_name(&entry.full_name),
                 ExtraOwnerKind::Movie,
             );
@@ -945,7 +955,7 @@ impl LibraryScanService {
                     .next()
                     .map(|item| item.id);
                 if let Some(owner_id) = owner_id {
-                    self.ensure_extra_item(&extra, owner_id, summary).await?;
+                    self.ensure_extra_item(extra, owner_id, summary).await?;
                 }
             }
         }
@@ -954,7 +964,7 @@ impl LibraryScanService {
 
     async fn ensure_extra_item(
         &self,
-        extra: &ResolvedLibraryExtra,
+        extra: ResolvedLibraryExtra,
         owner_id: Uuid,
         summary: &mut LibraryScanSummary,
     ) -> Result<(), LibraryScanError> {
@@ -970,7 +980,7 @@ impl LibraryScanService {
         );
         let stable_id = stable_item_id(&extra.path, item_type);
         if let Some(existing) = self.items.get(stable_id).await? {
-            let mut updated = existing.clone();
+            let mut updated = existing;
             updated.item_type = item_type.to_owned();
             updated.parent_id = Some(owner_id);
             updated.data = Some(serde_json::Value::Object(data));
@@ -978,10 +988,11 @@ impl LibraryScanService {
             return Ok(());
         }
         let mut item = NewBaseItem::new(stable_id, item_type);
-        item.path = Some(extra.path.clone());
+        let path = extra.path;
+        item.path = Some(path.clone());
         item.parent_id = Some(owner_id);
         item.name = Some(extra.name.clone());
-        item.sort_name = Some(extra.name.clone());
+        item.sort_name = Some(extra.name);
         item.media_type = Some(
             match extra.media_kind {
                 ExtraMediaKind::Audio => "Audio",
@@ -991,7 +1002,7 @@ impl LibraryScanService {
         );
         item.is_folder = false;
         item.is_virtual_item = false;
-        item.presentation_unique_key = Some(extra.path.clone());
+        item.presentation_unique_key = Some(path);
         item.data = Some(serde_json::Value::Object(data));
         self.items.create(item).await?;
         summary.items_added += 1;
@@ -1003,7 +1014,7 @@ impl LibraryScanService {
         files: &[(PathBuf, MediaKind)],
         parent_id: Uuid,
         kind: ScanLibraryKind,
-        existing_by_path: &HashMap<String, base_item::Model>,
+        existing_by_path: Arc<HashMap<String, base_item::Model>>,
         summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
@@ -1037,12 +1048,6 @@ impl LibraryScanService {
             }
             return Ok(added);
         }
-        let existing_by_path = Arc::new(
-            existing_by_path
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<HashMap<_, _>>(),
-        );
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let mut handles = Vec::with_capacity(files.len());
         for file in files {
@@ -1403,7 +1408,7 @@ impl LibraryScanService {
             })
             .await?;
         let default_stream = default_stream(path, media_kind);
-        if !existing.is_empty() && existing != [default_stream.clone()] {
+        if !existing.is_empty() && (existing.len() != 1 || existing[0] != default_stream) {
             return Ok(None);
         }
         let media_info = self.probe_media_info(path, media_kind).await;
@@ -1974,12 +1979,11 @@ fn scan_nfo_relations(
 ) -> Option<ScanNfoRelations> {
     match item_type {
         "Movie" | "Video" | "Trailer" | "MusicVideo" => {
-            read_movie_nfo(path).map(|nfo| relations_from_movie_nfo(&nfo))
+            read_movie_nfo(path).map(relations_from_movie_nfo)
         }
-        "Episode" => read_episode_nfo(path).map(|nfo| relations_from_nfo_metadata(&nfo)),
-        "Series" => read_series_nfo(path).map(|nfo| relations_from_nfo_metadata(&nfo)),
-        "Season" => read_season_nfo(path, season_number)
-            .map(|nfo| relations_from_nfo_metadata(&nfo)),
+        "Episode" => read_episode_nfo(path).map(relations_from_nfo_metadata),
+        "Series" => read_series_nfo(path).map(relations_from_nfo_metadata),
+        "Season" => read_season_nfo(path, season_number).map(relations_from_nfo_metadata),
         _ => None,
     }
 }
@@ -2014,25 +2018,30 @@ fn read_season_nfo(episode_path: &str, season_number: Option<i32>) -> Option<Nfo
     parse_nfo(&input, NfoDocumentKind::Season).ok()
 }
 
-fn relations_from_movie_nfo(movie: &MovieNfo) -> ScanNfoRelations {
+fn relations_from_movie_nfo(movie: MovieNfo) -> ScanNfoRelations {
+    let genres = movie.genres;
+    let studios = movie.studios;
     ScanNfoRelations {
-        genres: movie.genres.clone(),
+        genres,
         tags: Vec::new(),
-        studios: movie.studios.clone(),
-        people: movie.people.iter().map(scan_nfo_person).collect(),
+        studios,
+        people: movie.people.into_iter().map(scan_nfo_person).collect(),
     }
 }
 
-fn relations_from_nfo_metadata(metadata: &NfoMetadata) -> ScanNfoRelations {
+fn relations_from_nfo_metadata(metadata: NfoMetadata) -> ScanNfoRelations {
+    let genres = metadata.genres;
+    let tags = metadata.tags;
+    let studios = metadata.studios;
     ScanNfoRelations {
-        genres: metadata.genres.clone(),
-        tags: metadata.tags.clone(),
-        studios: metadata.studios.clone(),
-        people: metadata.people.iter().map(scan_nfo_person).collect(),
+        genres,
+        tags,
+        studios,
+        people: metadata.people.into_iter().map(scan_nfo_person).collect(),
     }
 }
 
-fn scan_nfo_person(person: &NfoPerson) -> ScanNfoPerson {
+fn scan_nfo_person(person: NfoPerson) -> ScanNfoPerson {
     let person_type = match &person.kind {
         NfoPersonKind::Actor => "Actor",
         NfoPersonKind::Director => "Director",
@@ -2043,9 +2052,9 @@ fn scan_nfo_person(person: &NfoPerson) -> ScanNfoPerson {
     }
     .to_owned();
     ScanNfoPerson {
-        name: person.name.clone(),
+        name: person.name,
         person_type,
-        role: person.role.clone(),
+        role: person.role,
         sort_order: person.sort_order,
     }
 }
@@ -2758,8 +2767,11 @@ fn display_name(path: &str) -> String {
         .to_owned()
 }
 
-fn set_additional_parts(item: &mut base_item::Model, parts: &[String]) -> bool {
-    let mut data = item.data.clone().unwrap_or_else(|| json!({}));
+fn set_additional_parts<I>(item: &mut base_item::Model, parts: &[I]) -> bool
+where
+    I: AsRef<str>,
+{
+    let mut data = item.data.take().unwrap_or_else(|| json!({}));
     let object = data
         .as_object_mut()
         .expect("base item metadata must be a JSON object");
@@ -2774,12 +2786,22 @@ fn set_additional_parts(item: &mut base_item::Model, parts: &[String]) -> bool {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if previous == parts {
+    if previous
+        .iter()
+        .map(String::as_str)
+        .eq(parts.iter().map(AsRef::as_ref))
+    {
+        item.data = Some(data);
         return false;
     }
     object.insert(
         "AdditionalParts".to_owned(),
-        Value::Array(parts.iter().cloned().map(Value::String).collect()),
+        Value::Array(
+            parts
+                .iter()
+                .map(|part| Value::String(part.as_ref().to_owned()))
+                .collect(),
+        ),
     );
     item.data = Some(data);
     true
@@ -3424,7 +3446,7 @@ mod tests {
             ..MovieNfo::default()
         };
 
-        let relations = relations_from_movie_nfo(&movie);
+        let relations = relations_from_movie_nfo(movie);
         assert_eq!(relations.genres, ["Drama", "Crime"]);
         assert!(relations.tags.is_empty());
         assert_eq!(relations.studios, ["Example Studio"]);
@@ -3451,7 +3473,7 @@ mod tests {
             ..NfoMetadata::default()
         };
 
-        let relations = relations_from_nfo_metadata(&metadata);
+        let relations = relations_from_nfo_metadata(metadata);
         assert_eq!(relations.genres, ["Sci-Fi"]);
         assert_eq!(relations.tags, ["anthology"]);
         assert_eq!(relations.studios, ["Network"]);
@@ -3461,7 +3483,7 @@ mod tests {
 
     #[test]
     fn unknown_nfo_person_kinds_fall_back_to_actor() {
-        let person = scan_nfo_person(&NfoPerson {
+        let person = scan_nfo_person(NfoPerson {
             name: "Uncredited".to_owned(),
             role: String::new(),
             kind: PersonKind::Other(String::new()),

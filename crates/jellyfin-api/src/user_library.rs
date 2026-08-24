@@ -650,10 +650,11 @@ async fn get_related_query_for(
     item_id: Uuid,
     kind: RelatedItemKind,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    let items = related_items(state.clone(), headers, requested_user_id, item_id, kind).await?;
+    let server_id = state.server_id().to_owned();
+    let items = related_items(state, headers, requested_user_id, item_id, kind).await?;
     let items = items
         .into_iter()
-        .map(|item| item_to_dto(item, state.server_id()))
+        .map(|item| item_to_dto(item, &server_id))
         .collect::<Vec<_>>();
     Ok(Json(BaseItemQueryResult {
         total_record_count: items.len(),
@@ -669,11 +670,12 @@ async fn get_related_for(
     item_id: Uuid,
     kind: RelatedItemKind,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    let items = related_items(state.clone(), headers, requested_user_id, item_id, kind).await?;
+    let server_id = state.server_id().to_owned();
+    let items = related_items(state, headers, requested_user_id, item_id, kind).await?;
     Ok(Json(
         items
             .into_iter()
-            .map(|item| item_to_dto(item, state.server_id()))
+            .map(|item| item_to_dto(item, &server_id))
             .collect(),
     ))
 }
@@ -836,12 +838,12 @@ pub(crate) async fn project_item_to_dto(
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
-    let metadata_item = item.clone();
     let original_language = original_language_from_item(&item);
+    let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
+    let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let mut dto = item_to_dto(item, state.server_id());
-    let mut relations = load_relation_metadata(state, std::slice::from_ref(&metadata_item)).await?;
     attach_relation_metadata(&mut dto, relations.remove(&item_id).unwrap_or_default());
-    attach_user_data(state, &mut dto, &metadata_item, target_user_id).await?;
+    attach_user_data_dto(&mut dto, user_data);
     if let Some(projection) = state
         .dto_images
         .project(item_id, DtoImageOptions::default())
@@ -986,12 +988,11 @@ pub(crate) fn attach_user_data_dto(dto: &mut BaseItemDto, user_data: UserItemDat
     dto.user_data = Some(user_data);
 }
 
-async fn attach_user_data(
+async fn user_data_for_item(
     state: &AppState,
-    dto: &mut BaseItemDto,
     item: &base_item::Model,
     target_user_id: Uuid,
-) -> Result<(), ApiError> {
+) -> Result<UserItemDataDto, ApiError> {
     let user_data = state
         .user_data
         .preferred_dto_map(target_user_id, std::slice::from_ref(item))
@@ -1010,8 +1011,7 @@ async fn attach_user_data(
             key: item.id.simple().to_string(),
             item_id: item.id.simple().to_string(),
         });
-    dto.user_data = Some(user_data);
-    Ok(())
+    Ok(user_data)
 }
 
 pub(crate) async fn trickplay_manifests_for_items(

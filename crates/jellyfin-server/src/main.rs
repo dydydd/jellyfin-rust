@@ -9,11 +9,11 @@ use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{BaseItemRepository, DatabaseConfig, ServerConfigurationRepository};
-use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_live_tv::listings::{
     GuideRefreshService, JsonListingsConfigurationStore, SchedulesDirectClient,
 };
 use jellyfin_media_encoding::encoder::MediaEncoder;
+use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use sea_orm::ConnectionTrait;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -61,10 +61,11 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {bind_address}"))?;
     let web_dir =
         std::env::var("JELLYFIN_WEB_DIR").unwrap_or_else(|_| "jellyfin-web/dist".to_owned());
-    let ffmpeg_path =
-        PathBuf::from(std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()));
+    let ffmpeg_path = PathBuf::from(
+        std::env::var("JELLYFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned()),
+    );
     let ffprobe_path = ffprobe_path_for(&ffmpeg_path);
-    let encoder_capabilities = MediaEncoder::new(ffmpeg_path.clone(), ffprobe_path)
+    let encoder_capabilities = MediaEncoder::new(ffmpeg_path.as_path(), ffprobe_path)
         .validate()
         .unwrap_or_default();
     let state = AppState::new(

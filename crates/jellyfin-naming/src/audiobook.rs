@@ -221,7 +221,7 @@ impl AudioBookListResolver {
             .iter()
             .filter_map(|file| resolver.resolve(&file.path))
             .collect::<Vec<_>>();
-        StackResolver::resolve_audio_books(&resolved)
+        StackResolver::resolve_audio_books(resolved)
             .into_iter()
             .map(|stack| {
                 let mut stack_files = stack

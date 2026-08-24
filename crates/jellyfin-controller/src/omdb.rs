@@ -184,15 +184,11 @@ impl OmdbMetadataProvider {
             &DefaultMetadataServiceCapability,
         );
 
-        let provider_ids = result
-            .item
-            .core
-            .provider_ids
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
+        let provider_ids = std::mem::take(&mut result.item.core.provider_ids)
+            .into_iter()
             .collect::<BTreeMap<_, _>>();
-        let genres = result.item.genres.clone();
-        let studios = result.item.studios.clone();
+        let genres = std::mem::take(&mut result.item.genres);
+        let studios = std::mem::take(&mut result.item.studios);
         self.updates
             .update(
                 item_id,
@@ -224,14 +220,9 @@ impl OmdbMetadataProvider {
             item.name = Some(name.to_owned());
             item.sort_name = Some(name.to_owned());
         }
-        item.overview = result
-            .item
-            .core
-            .overview
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned);
-        item.official_rating = result.item.official_rating.clone();
+        item.overview =
+            std::mem::take(&mut result.item.core.overview).filter(|value| !value.trim().is_empty());
+        item.official_rating = std::mem::take(&mut result.item.official_rating);
         item.production_year = result.item.production_year;
         if let Some(date) = omdb.release_date()
             && let Some(premiere_date) = omdb_date_to_utc(date)

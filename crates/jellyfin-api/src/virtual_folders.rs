@@ -278,16 +278,14 @@ async fn broadcast_scan_summary(
     state: &AppState,
     summary: Option<&jellyfin_controller::LibraryScanSummary>,
 ) {
-    let (added, removed, updated) = summary.map_or_else(
-        || (Vec::new(), Vec::new(), Vec::new()),
-        |summary| {
-            (
-                summary.added_ids.clone(),
-                summary.removed_ids.clone(),
-                summary.changed_ids.clone(),
-            )
-        },
-    );
+    let (added, removed, updated): (&[Uuid], &[Uuid], &[Uuid]) = match summary {
+        Some(summary) => (
+            summary.added_ids.as_slice(),
+            summary.removed_ids.as_slice(),
+            summary.changed_ids.as_slice(),
+        ),
+        None => (&[], &[], &[]),
+    };
     crate::websocket::broadcast_library_changed(state, &added, &removed, &updated).await;
 }
 

@@ -97,7 +97,7 @@ async fn authenticate_username_password(
         .map_err(session_error_to_api)?;
     Ok(Json(authentication_result_from_device(
         state,
-        &session.user,
+        session.user,
         session.device,
     )))
 }
@@ -159,29 +159,31 @@ pub(crate) async fn authenticate_with_quick_connect(
         ),
     );
     Ok(Json(authentication_result_from_device(
-        &state, &user, session,
+        &state, user, session,
     )))
 }
 
 fn authentication_result_from_device(
     state: &AppState,
-    user: &user::Model,
+    user: user::Model,
     session: device::Model,
 ) -> AuthenticationResult {
-    let mut user_dto = user_to_dto(user.clone());
+    let user_id = user.id;
+    let session_info = json!({
+        "Id": session.id.to_string(),
+        "UserId": user_id.simple().to_string(),
+        "UserName": &user.username,
+        "Client": &session.app_name,
+        "ApplicationVersion": &session.app_version,
+        "DeviceName": &session.device_name,
+        "DeviceId": &session.device_id,
+        "IsActive": session.is_active,
+    });
+    let mut user_dto = user_to_dto(user);
     user_dto.server_id = Some(state.server_id().to_owned());
     AuthenticationResult {
         user: user_dto,
-        session_info: json!({
-            "Id": session.id.to_string(),
-            "UserId": user.id.simple().to_string(),
-            "UserName": user.username,
-            "Client": session.app_name,
-            "ApplicationVersion": session.app_version,
-            "DeviceName": session.device_name,
-            "DeviceId": session.device_id,
-            "IsActive": session.is_active,
-        }),
+        session_info,
         access_token: session.access_token,
         server_id: state.server_id().to_owned(),
     }
@@ -367,7 +369,8 @@ pub(crate) async fn authenticated_identity(
         access_token(headers, uri.and_then(Uri::query)).ok_or(ApiError::Unauthorized)?;
 
     if let Some(session) = state.devices.find_by_token(&access_token).await? {
-        let user = state.users.get(session.user_id).await?;
+        let user_id = session.user_id;
+        let user = state.users.get(user_id).await?;
         if user.is_disabled {
             return Err(ApiError::Forbidden);
         }
@@ -375,7 +378,7 @@ pub(crate) async fn authenticated_identity(
         return Ok(AuthenticatedIdentity::Device(Box::new(
             AuthenticatedSession {
                 user,
-                device: session.clone(),
+                device: session,
                 access_token,
                 policy,
             },

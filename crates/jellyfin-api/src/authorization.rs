@@ -112,45 +112,41 @@ pub(crate) async fn require_route_auth(
     match route_policy(request.method(), request.uri().path()) {
         RoutePolicy::Public => Ok(next.run(request).await),
         RoutePolicy::Optional => {
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            authentication::optional_authenticated_identity(&state, &headers, &uri).await?;
+            authentication::optional_authenticated_identity(
+                &state,
+                request.headers(),
+                request.uri(),
+            )
+            .await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::Default => {
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            require_default(&state, &headers, &uri).await?;
+            require_default(&state, request.headers(), request.uri()).await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::IgnoreParentalControl => {
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            require_ignore_parental_control(&state, &headers, &uri).await?;
+            require_ignore_parental_control(&state, request.headers(), request.uri()).await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::FirstTimeSetupOrIgnoreParentalControl => {
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            require_first_time_setup_or_ignore_parental_control(&state, &headers, &uri).await?;
+            require_first_time_setup_or_ignore_parental_control(
+                &state,
+                request.headers(),
+                request.uri(),
+            )
+            .await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::FirstTimeSetupOrDefault => {
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            require_first_time_setup_or_default(&state, &headers, &uri).await?;
+            require_first_time_setup_or_default(&state, request.headers(), request.uri()).await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::FirstTimeSetupOrElevated => {
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+            require_first_time_setup_or_elevated(&state, request.headers(), request.uri()).await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::Elevated => {
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            authentication::authenticated_identity(&state, &headers, Some(&uri))
+            authentication::authenticated_identity(&state, request.headers(), Some(request.uri()))
                 .await?
                 .require_administrator()?;
             Ok(next.run(request).await)
@@ -167,9 +163,7 @@ pub(crate) async fn require_route_auth(
                 return Ok(next.run(request).await);
             }
 
-            let headers = request.headers().clone();
-            let uri = request.uri().clone();
-            authentication::authenticated_identity(&state, &headers, Some(&uri))
+            authentication::authenticated_identity(&state, request.headers(), Some(request.uri()))
                 .await?
                 .require_administrator()?;
             Ok(next.run(request).await)

@@ -92,33 +92,25 @@ impl UserViewManagerService {
         let mut list = Vec::new();
 
         for folder in folders {
-            let collection_type = folder.collection_type.clone();
-            if is_user_specific(collection_type.as_deref()) {
-                list.push(named_user_view(
-                    user_id,
-                    &folder,
-                    collection_type,
-                    &folder.name,
-                ));
+            if is_user_specific(folder.collection_type.as_deref()) {
+                list.push(named_user_view(user_id, folder));
                 continue;
             }
-            if is_eligible_for_grouping(collection_type.as_deref())
+            let collection_type = folder.collection_type.as_deref();
+            if is_eligible_for_grouping(collection_type)
                 && config.grouped_folders.contains(&folder.id)
             {
-                if collection_type
-                    .as_deref()
-                    .is_some_and(|kind| kind.eq_ignore_ascii_case("tvshows"))
-                {
+                if collection_type.is_some_and(|kind| kind.eq_ignore_ascii_case("tvshows")) {
                     tvshows.push(folder);
                 } else {
                     movies.push(folder);
                 }
                 continue;
             }
-            if preset_matches(collection_type.as_deref(), preset_views) {
-                list.push(shadow_user_view(&folder, collection_type));
+            if preset_matches(collection_type, preset_views) {
+                list.push(shadow_user_view(folder));
             } else {
-                list.push(collection_folder_view(&folder));
+                list.push(collection_folder_view_owned(folder));
             }
         }
 
@@ -273,31 +265,44 @@ fn collection_folder_view(folder: &VirtualFolder) -> UserViewItem {
     }
 }
 
-fn shadow_user_view(folder: &VirtualFolder, collection_type: Option<String>) -> UserViewItem {
+fn collection_folder_view_owned(folder: VirtualFolder) -> UserViewItem {
+    let name = folder.name;
+    UserViewItem {
+        id: folder.id,
+        name: name.clone(),
+        collection_type: folder.collection_type,
+        display_parent_id: None,
+        parent_id: Some(USER_ROOT_FOLDER_ID),
+        item_type: "CollectionFolder".to_owned(),
+        is_virtual_item: false,
+        sort_name: name,
+    }
+}
+
+fn shadow_user_view(folder: VirtualFolder) -> UserViewItem {
+    let collection_type = folder.collection_type;
+    let name = folder.name;
     let id = user_view_id(&format!(
         "38_namedview_{}{}{}",
-        folder.name,
+        name,
         folder.id,
         collection_type.as_deref().unwrap_or_default()
     ));
     UserViewItem {
         id,
-        name: folder.name.clone(),
+        name: name.clone(),
         collection_type,
         display_parent_id: Some(folder.id),
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
-        sort_name: folder.name.clone(),
+        sort_name: name,
     }
 }
 
-fn named_user_view(
-    user_id: Uuid,
-    folder: &VirtualFolder,
-    collection_type: Option<String>,
-    name: &str,
-) -> UserViewItem {
+fn named_user_view(user_id: Uuid, folder: VirtualFolder) -> UserViewItem {
+    let collection_type = folder.collection_type;
+    let name = folder.name;
     let id = user_view_id(&format!(
         "38_namedview_{}{}{}{}",
         name,
@@ -307,13 +312,13 @@ fn named_user_view(
     ));
     UserViewItem {
         id,
-        name: name.to_owned(),
+        name: name.clone(),
         collection_type,
         display_parent_id: Some(folder.id),
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
-        sort_name: name.to_owned(),
+        sort_name: name,
     }
 }
 

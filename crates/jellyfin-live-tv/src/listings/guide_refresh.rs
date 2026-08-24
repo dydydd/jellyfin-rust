@@ -43,10 +43,7 @@ pub struct GuideRefreshService {
 
 impl GuideRefreshService {
     #[must_use]
-    pub fn new(
-        store: Arc<dyn ListingsConfigurationStore>,
-        client: SchedulesDirectClient,
-    ) -> Self {
+    pub fn new(store: Arc<dyn ListingsConfigurationStore>, client: SchedulesDirectClient) -> Self {
         Self { store, client }
     }
 
@@ -105,17 +102,18 @@ impl GuideRefreshService {
             .collect::<Vec<_>>();
         let station_ids = lineup
             .channel_map
-            .iter()
-            .filter_map(|channel| channel.station_id.clone())
+            .into_iter()
+            .filter_map(|channel| channel.station_id)
             .collect::<HashSet<_>>();
+        let channel_count = station_ids.len();
         let schedules = self
             .client
             .schedules(
                 &token,
                 &station_ids
-                    .iter()
+                    .into_iter()
                     .map(|station_id| ScheduleRequest {
-                        station_id: Some(station_id.clone()),
+                        station_id: Some(station_id),
                         date: dates.clone(),
                     })
                     .collect::<Vec<_>>(),
@@ -140,7 +138,7 @@ impl GuideRefreshService {
         Ok(GuideRefreshSummary {
             provider_id: provider.id.clone(),
             lineup_id: lineup_id.to_owned(),
-            channels: station_ids.len(),
+            channels: channel_count,
             programs: program_count,
             refreshed_at: Utc::now(),
         })

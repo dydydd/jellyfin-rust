@@ -117,18 +117,18 @@ pub(crate) async fn update_configuration(
         preferred_metadata_language: Some(request.preferred_metadata_language.unwrap_or_default()),
     };
     if let Some(repository) = &state.startup_repository {
+        let StartupConfiguration {
+            server_name,
+            ui_culture,
+            metadata_country_code,
+            preferred_metadata_language,
+        } = configuration;
         repository
             .update_startup_configuration(StartupConfigurationUpdate {
-                server_name: configuration.server_name.clone().unwrap_or_default(),
-                ui_culture: configuration.ui_culture.clone().unwrap_or_default(),
-                metadata_country_code: configuration
-                    .metadata_country_code
-                    .clone()
-                    .unwrap_or_default(),
-                preferred_metadata_language: configuration
-                    .preferred_metadata_language
-                    .clone()
-                    .unwrap_or_default(),
+                server_name: server_name.unwrap_or_default(),
+                ui_culture: ui_culture.unwrap_or_default(),
+                metadata_country_code: metadata_country_code.unwrap_or_default(),
+                preferred_metadata_language: preferred_metadata_language.unwrap_or_default(),
             })
             .await?;
     } else {

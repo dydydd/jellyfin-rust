@@ -55,7 +55,7 @@ impl VideoListResolver {
             .filter(|video| video.extra_type.is_none())
             .map(|video| StackFileInfo::new(&video.path, video.is_directory))
             .collect::<Vec<_>>();
-        let stacks = StackResolver::resolve(&stack_files, &self.options);
+        let stacks = StackResolver::resolve_owned(stack_files, &self.options);
         let mut consumed = Vec::new();
         let mut media = Vec::new();
         for stack in stacks {

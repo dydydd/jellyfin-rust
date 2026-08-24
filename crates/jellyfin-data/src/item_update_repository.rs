@@ -67,7 +67,8 @@ impl ItemUpdateRepository {
             .one(&transaction)
             .await?
             .ok_or(ItemUpdateStoreError::NotFound)?;
-        let data = patch_data(item.data.clone(), &patch)?;
+        let mut item = item;
+        let data = patch_data(std::mem::take(&mut item.data), &patch)?;
 
         if let Some(tags) = patch.tags.as_deref() {
             replace_values(&transaction, item_id, item_value::ItemValueType::Tags, tags).await?;
