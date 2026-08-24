@@ -16,7 +16,7 @@ jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-xbmc-metadata = { path = "../jellyfin-xbmc-metadata" }
 md-5 = "0.10"
 flate2 = "1.0"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 roxmltree = "0.21"
 sea-orm.workspace = true
 serde.workspace = true

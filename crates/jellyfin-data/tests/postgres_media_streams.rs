@@ -501,12 +501,13 @@ async fn assert_postgres_catalog(database: &DatabaseConnection) {
         ))
         .await
         .expect("media-stream column catalog");
-    assert_eq!(columns.len(), 47);
+    assert_eq!(columns.len(), 48);
     let names = columns
         .iter()
         .map(|row| String::try_get(row, "", "column_name").unwrap())
         .collect::<Vec<_>>();
     assert!(!names.iter().any(|name| name == "key_frames"));
+    assert!(names.iter().any(|name| name == "color_range"));
     assert_eq!(names[0], "item_id");
     assert_eq!(names[1], "stream_index");
     assert_eq!(names[2], "stream_type");
@@ -645,6 +646,7 @@ fn minimal_stream(
         title: None,
         time_base: None,
         codec_time_base: None,
+        color_range: None,
         color_primaries: None,
         color_space: None,
         color_transfer: None,
@@ -696,6 +698,7 @@ fn full_video_stream(stream_index: i32) -> PersistedMediaStream {
         title: Some("Main video".to_owned()),
         time_base: Some("1/90000".to_owned()),
         codec_time_base: Some("1/48".to_owned()),
+        color_range: Some("pc".to_owned()),
         color_primaries: Some("bt2020".to_owned()),
         color_space: Some("bt2020nc".to_owned()),
         color_transfer: Some("smpte2084".to_owned()),

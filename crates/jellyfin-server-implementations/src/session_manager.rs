@@ -13,6 +13,8 @@ pub struct AuthenticationRequest {
     pub device_id: Option<String>,
     pub device_name: Option<String>,
     pub app_version: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
 }
 
 impl AuthenticationRequest {
@@ -29,6 +31,28 @@ impl AuthenticationRequest {
             device_id: Some(device_id.into()),
             device_name: Some(device_name.into()),
             app_version: Some(app_version.into()),
+            username: None,
+            password: None,
+        }
+    }
+
+    /// Creates a request with all client metadata and local credentials.
+    #[must_use]
+    pub fn with_credentials(
+        app: impl Into<String>,
+        device_id: impl Into<String>,
+        device_name: impl Into<String>,
+        app_version: impl Into<String>,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
+        Self {
+            app: Some(app.into()),
+            device_id: Some(device_id.into()),
+            device_name: Some(device_name.into()),
+            app_version: Some(app_version.into()),
+            username: Some(username.into()),
+            password: Some(password.into()),
         }
     }
 }
@@ -40,6 +64,8 @@ pub struct ValidatedAuthenticationRequest {
     device_id: String,
     device_name: String,
     app_version: String,
+    username: Option<String>,
+    password: Option<String>,
 }
 
 impl ValidatedAuthenticationRequest {
@@ -61,6 +87,16 @@ impl ValidatedAuthenticationRequest {
     #[must_use]
     pub fn app_version(&self) -> &str {
         &self.app_version
+    }
+
+    #[must_use]
+    pub fn username(&self) -> Option<&str> {
+        self.username.as_deref()
+    }
+
+    #[must_use]
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref()
     }
 }
 
@@ -214,6 +250,8 @@ fn validate_authentication_request(
             request.app_version.as_ref(),
             AuthenticationField::AppVersion,
         )?,
+        username: request.username.clone(),
+        password: request.password.clone(),
     })
 }
 

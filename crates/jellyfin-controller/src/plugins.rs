@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use jellyfin_model::{MimeTypes, PluginInfo};
@@ -63,7 +63,7 @@ pub struct PluginImage {
 /// In-memory metadata for plugins discovered by the server runtime.
 #[derive(Clone, Default)]
 pub struct PluginRegistry {
-    plugins: Arc<[InstalledPlugin]>,
+    plugins: Arc<Mutex<Vec<InstalledPlugin>>>,
 }
 
 impl PluginRegistry {
@@ -81,15 +81,22 @@ impl PluginRegistry {
     #[must_use]
     pub fn from_installed(plugins: Vec<InstalledPlugin>) -> Self {
         Self {
-            plugins: plugins.into(),
+            plugins: Arc::new(Mutex::new(plugins)),
         }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, Vec<InstalledPlugin>>, PluginRegistryError> {
+        self.plugins
+            .lock()
+            .map_err(|_| PluginRegistryError::LockPoisoned)
     }
 
     /// Returns an owned, name-ordered snapshot of installed plugins.
     #[must_use]
     pub fn plugins(&self) -> Vec<PluginInfo> {
         let mut plugins = self
-            .plugins
+            .lock()
+            .expect("plugin registry lock is not poisoned")
             .iter()
             .map(|plugin| plugin.info.clone())
             .collect::<Vec<_>>();
@@ -105,11 +112,84 @@ impl PluginRegistry {
     /// Reads the image belonging to the exact plugin id and version.
     #[must_use]
     pub fn image(&self, plugin_id: Uuid, version: &str) -> Option<PluginImage> {
-        self.plugins
+        self.lock()
+            .ok()?
             .iter()
             .find(|plugin| plugin.info.id == plugin_id && plugin.info.version == version)
             .and_then(InstalledPlugin::image)
     }
+
+    /// Enables an exact plugin version.
+    pub fn enable(&self, plugin_id: Uuid, version: &str) -> Result<bool, PluginRegistryError> {
+        let mut plugins = self.lock()?;
+        let Some(plugin) = plugins
+            .iter_mut()
+            .find(|plugin| plugin.info.id == plugin_id && plugin.info.version == version)
+        else {
+            return Ok(false);
+        };
+        plugin.info.status = jellyfin_model::PluginStatus::Active;
+        Ok(true)
+    }
+
+    /// Disables an exact plugin version.
+    pub fn disable(&self, plugin_id: Uuid, version: &str) -> Result<bool, PluginRegistryError> {
+        let mut plugins = self.lock()?;
+        let Some(plugin) = plugins
+            .iter_mut()
+            .find(|plugin| plugin.info.id == plugin_id && plugin.info.version == version)
+        else {
+            return Ok(false);
+        };
+        plugin.info.status = jellyfin_model::PluginStatus::Disabled;
+        Ok(true)
+    }
+
+    /// Uninstalls one plugin version, or every version when omitted.
+    pub fn uninstall(
+        &self,
+        plugin_id: Uuid,
+        version: Option<&str>,
+    ) -> Result<bool, PluginRegistryError> {
+        let mut plugins = self.lock()?;
+        let original_len = plugins.len();
+        plugins.retain(|plugin| {
+            plugin.info.id != plugin_id
+                || version.is_some_and(|version| !version.eq_ignore_ascii_case(&plugin.info.version))
+        });
+        Ok(plugins.len() != original_len)
+    }
+
+    /// Returns the plugin configuration object (currently the empty defaults).
+    pub fn configuration(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<Option<serde_json::Value>, PluginRegistryError> {
+        let plugins = self.lock()?;
+        Ok(plugins
+            .iter()
+            .find(|plugin| plugin.info.id == plugin_id)
+            .map(|_| serde_json::json!({})))
+    }
+
+    /// Returns the serialized plugin manifest for one plugin id.
+    pub fn manifest(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<Option<jellyfin_model::PluginInfo>, PluginRegistryError> {
+        let plugins = self.lock()?;
+        Ok(plugins
+            .iter()
+            .find(|plugin| plugin.info.id == plugin_id)
+            .map(|plugin| plugin.info.clone()))
+    }
+}
+
+/// Registry mutation failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PluginRegistryError {
+    #[error("plugin registry lock is poisoned")]
+    LockPoisoned,
 }
 
 fn read_plugin_image(installation_directory: &Path, image_path: &str) -> Option<PluginImage> {
@@ -166,6 +246,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use jellyfin_model::PluginStatus;
+    use serde_json::json;
 
     use super::*;
 
@@ -324,6 +405,41 @@ mod tests {
         }
 
         fs::remove_dir_all(outside_directory).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_mutations_update_plugin_status_and_registry() {
+        let plugin_id = Uuid::from_u128(1);
+        let registry = PluginRegistry::new(vec![plugin("Test", 1)]);
+
+        assert!(registry.disable(plugin_id, "1.0.0.0").unwrap());
+        assert_eq!(
+            registry.plugins()[0].status,
+            PluginStatus::Disabled
+        );
+        assert!(registry.enable(plugin_id, "1.0.0.0").unwrap());
+        assert_eq!(
+            registry.plugins()[0].status,
+            PluginStatus::Active
+        );
+        assert!(!registry.enable(Uuid::from_u128(2), "1.0.0.0").unwrap());
+        assert!(registry.uninstall(plugin_id, None).unwrap());
+        assert!(registry.plugins().is_empty());
+        assert!(!registry.uninstall(plugin_id, None).unwrap());
+    }
+
+    #[test]
+    fn configuration_and_manifest_are_available_for_known_plugins() {
+        let plugin_id = Uuid::from_u128(1);
+        let registry = PluginRegistry::new(vec![plugin("Test", 1)]);
+
+        assert_eq!(registry.configuration(plugin_id).unwrap(), Some(json!({})));
+        assert_eq!(
+            registry.manifest(plugin_id).unwrap().unwrap().id,
+            plugin_id
+        );
+        assert!(registry.configuration(Uuid::from_u128(2)).unwrap().is_none());
+        assert!(registry.manifest(Uuid::from_u128(2)).unwrap().is_none());
     }
 
     struct TempDirectory(PathBuf);

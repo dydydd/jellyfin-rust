@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use jellyfin_controller::{
     ArtistError, ArtistService, CollectionError, CollectionService, DashboardError, DashboardPage,
@@ -20,10 +20,10 @@ use jellyfin_controller::{
     PlaylistService, PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError,
     ScheduledTaskService, StudioError, StudioService, SubtitleManager, SubtitleProvider,
     SystemLogError, SystemLogService, SystemStorageService, TranscodeJobRegistry, TrickplayError,
-    TrickplayService, UserDataService, UserDataServiceError, UserError, UserLibraryError,
-    UserLibraryService, UserService, UserViewManagerError, UserViewManagerService, VideoError,
-    VideoService, VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
-    client_event::ClientEventLogger,
+    TrickplayService, PostgresSessionStore, UserDataService, UserDataServiceError, UserError,
+    UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
+    UserViewManagerService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -34,12 +34,16 @@ use jellyfin_data::{
     SessionCommandRepository, SessionCommandStoreError, entities::user,
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
-use jellyfin_live_tv::tuner_hosts::{TunerHostError, TunerHostManager};
+use jellyfin_live_tv::{
+    listings::{GuideRefreshError, GuideRefreshService},
+    tuner_hosts::{TunerHostError, TunerHostManager},
+};
 use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, PersistedDtoImageProjectionService,
-    QuickConnectError, QuickConnectManager, SyncPlayManager, SystemQuickConnectCapability,
+    QuickConnectError, QuickConnectManager, SessionManager, SyncPlayManager,
+    SystemQuickConnectCapability,
 };
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
@@ -158,6 +162,7 @@ pub struct AppState {
     pub(crate) videos: VideoService,
     pub(crate) years: YearService,
     pub(crate) tuner_hosts: TunerHostManager,
+    pub(crate) live_tv_guide: Option<GuideRefreshService>,
     pub(crate) virtual_folders: VirtualFolderService,
     pub(crate) user_views: UserViewManagerService,
     pub(crate) dashboard: DashboardService,
@@ -181,6 +186,7 @@ pub struct AppState {
     pub(crate) ffmpeg_path: PathBuf,
     pub(crate) transcode_jobs: TranscodeJobRegistry,
     pub(crate) authentication: DefaultAuthenticationProvider,
+    pub(crate) session_manager: SessionManager<PostgresSessionStore>,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
     pub(crate) startup: Arc<Mutex<startup::StartupState>>,
@@ -199,6 +205,12 @@ impl AppState {
         let item_images = ItemImageService::new(database.clone());
         let web_sockets = Arc::new(websocket::WebSocketHub::new());
         let quick_connect_capability = SystemQuickConnectCapability::new(true);
+        let session_store = PostgresSessionStore::new(
+            UserService::new(database.clone()),
+            DeviceRepository::new(database.clone()),
+            ActivityLogRepository::new(database.clone()),
+            DefaultAuthenticationProvider::new(),
+        );
         let state = Self {
             users: UserService::new(database.clone()),
             activity_logs: ActivityLogRepository::new(database.clone()),
@@ -246,6 +258,7 @@ impl AppState {
             videos: VideoService::new(database.clone()),
             years: YearService::new(database.clone()),
             tuner_hosts: TunerHostManager::new(database.clone()),
+            live_tv_guide: None,
             virtual_folders: VirtualFolderService::new(database.clone()),
             user_views: UserViewManagerService::new(database.clone()),
             dashboard: DashboardService::default(),
@@ -281,6 +294,7 @@ impl AppState {
             ffmpeg_path: PathBuf::from("ffmpeg"),
             transcode_jobs: TranscodeJobRegistry::new(),
             authentication: DefaultAuthenticationProvider::new(),
+            session_manager: SessionManager::new(session_store),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
                 local_address: Some(local_address),
@@ -489,6 +503,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the Schedules Direct guide refresh service used by Live TV.
+    #[must_use]
+    pub fn with_guide_refresh_service(mut self, service: GuideRefreshService) -> Self {
+        self.live_tv_guide = Some(service);
+        self
+    }
+
     /// Replaces the directory containing active transcoding output.
     #[must_use]
     pub fn with_transcode_directory(
@@ -544,9 +565,19 @@ impl AppState {
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::needless_pass_by_value)]
 pub fn router(state: AppState) -> Router {
+    let state = Arc::new(state);
+    let base = base_router(state.clone());
+
+    Router::new()
+        .nest("/api", base.clone())
+        .nest("/emby", base.clone())
+        .merge(base)
+        .with_state(state)
+}
+
+fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let web_dir = state.web_directory.clone();
     let index_path = web_dir.join("index.html");
-    let state = Arc::new(state);
 
     let router = openapi::documented_routes()
         .merge(system_routes())
@@ -710,6 +741,24 @@ pub fn router(state: AppState) -> Router {
             get(videos::stream_with_container).head(videos::stream_with_container),
         )
         .route("/Plugins", get(plugins::list))
+        .route(
+            "/Plugins/{plugin_id}/{version}/Enable",
+            post(plugins::enable),
+        )
+        .route(
+            "/Plugins/{plugin_id}/{version}/Disable",
+            post(plugins::disable),
+        )
+        .route(
+            "/Plugins/{plugin_id}/{version}",
+            delete(plugins::uninstall_version),
+        )
+        .route("/Plugins/{plugin_id}", delete(plugins::uninstall))
+        .route(
+            "/Plugins/{plugin_id}/Configuration",
+            get(plugins::get_configuration).post(plugins::update_configuration),
+        )
+        .route("/Plugins/{plugin_id}/Manifest", post(plugins::manifest))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .merge(package_routes())
         .merge(environment_routes())
@@ -1428,10 +1477,20 @@ fn video_routes() -> Router<Arc<AppState>> {
 }
 
 fn live_tv_routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/LiveTv/TunerHosts",
-        post(live_tv::save_tuner_host).delete(live_tv::delete_tuner_host),
-    )
+    Router::new()
+        .route(
+            "/LiveTv/TunerHosts",
+            post(live_tv::save_tuner_host).delete(live_tv::delete_tuner_host),
+        )
+        .route(
+            "/LiveTv/ListingProviders/SchedulesDirect/Refresh",
+            post(live_tv::refresh_guide),
+        )
+        .route(
+            "/LiveTv/ListingProviders/Lineups",
+            get(live_tv::listing_provider_lineups),
+        )
+        .route("/LiveTv/GuideInfo", get(live_tv::guide_info))
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
@@ -1508,6 +1567,7 @@ pub(crate) enum ApiError {
     UserViewManager(UserViewManagerError),
     Dashboard(DashboardError),
     TunerHost(TunerHostError),
+    GuideRefresh(GuideRefreshError),
     ItemLookup(ItemLookupError),
     ItemUpdate(ItemUpdateError),
     ItemImage(ItemImageError),
@@ -1663,6 +1723,12 @@ impl From<DashboardError> for ApiError {
 impl From<TunerHostError> for ApiError {
     fn from(error: TunerHostError) -> Self {
         Self::TunerHost(error)
+    }
+}
+
+impl From<GuideRefreshError> for ApiError {
+    fn from(error: GuideRefreshError) -> Self {
+        Self::GuideRefresh(error)
     }
 }
 
@@ -1954,6 +2020,7 @@ impl IntoResponse for ApiError {
             ),
             Self::Dashboard(error) => dashboard_error_response(&error),
             Self::TunerHost(error) => tuner_host_error_response(&error),
+            Self::GuideRefresh(error) => guide_refresh_error_response(&error),
             Self::ItemLookup(error) => item_lookup_error_response(&error),
             Self::ItemUpdate(error) => item_update_error_response(&error),
             Self::ItemImage(ItemImageError::NotFound) => {
@@ -2379,6 +2446,22 @@ fn tuner_host_error_response(error: &TunerHostError) -> (StatusCode, &'static st
         TunerHostError::Store(jellyfin_data::TunerHostStoreError::Database(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Tuner host persistence failed",
+        ),
+    }
+}
+
+fn guide_refresh_error_response(error: &GuideRefreshError) -> (StatusCode, &'static str) {
+    match error {
+        GuideRefreshError::NoProvider
+        | GuideRefreshError::InvalidProviderConfiguration
+        | GuideRefreshError::MissingToken => (StatusCode::NOT_FOUND, "Live TV guide refresh failed"),
+        GuideRefreshError::Configuration(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Live TV guide configuration failed",
+        ),
+        GuideRefreshError::Client(_) => (
+            StatusCode::BAD_GATEWAY,
+            "Schedules Direct guide refresh failed",
         ),
     }
 }

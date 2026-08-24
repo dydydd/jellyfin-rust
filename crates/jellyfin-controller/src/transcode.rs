@@ -17,6 +17,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscodeTarget {
     pub is_video: bool,
+    pub hwaccel: Option<String>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
     pub video_bitrate: Option<i64>,
@@ -24,6 +25,10 @@ pub struct TranscodeTarget {
     pub audio_channels: Option<i32>,
     pub audio_sample_rate: Option<i32>,
     pub audio_stream_index: Option<i32>,
+    pub subtitle_index: Option<i32>,
+    pub burn_subtitles: bool,
+    pub audio_normalize: bool,
+    pub tonemap_hdr: bool,
     pub max_width: Option<i32>,
     pub max_height: Option<i32>,
     pub max_framerate: Option<f32>,
@@ -34,6 +39,7 @@ impl Default for TranscodeTarget {
     fn default() -> Self {
         Self {
             is_video: true,
+            hwaccel: None,
             video_codec: Some("h264".to_owned()),
             audio_codec: Some("aac".to_owned()),
             video_bitrate: None,
@@ -41,6 +47,10 @@ impl Default for TranscodeTarget {
             audio_channels: None,
             audio_sample_rate: None,
             audio_stream_index: None,
+            subtitle_index: None,
+            burn_subtitles: false,
+            audio_normalize: false,
+            tonemap_hdr: false,
             max_width: None,
             max_height: None,
             max_framerate: None,
@@ -64,6 +74,37 @@ pub struct FfmpegCommand {
     pub arguments: Vec<String>,
 }
 
+/// One rendition advertised by an HLS master playlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HlsVariant {
+    pub bandwidth: u64,
+    pub resolution: String,
+    pub codecs: Option<String>,
+    pub url: String,
+}
+
+impl HlsVariant {
+    #[must_use]
+    pub fn new(
+        bandwidth: u64,
+        resolution: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Self {
+        Self {
+            bandwidth,
+            resolution: resolution.into(),
+            codecs: None,
+            url: url.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_codecs(mut self, codecs: impl Into<String>) -> Self {
+        self.codecs = Some(codecs.into());
+        self
+    }
+}
+
 /// Builds the HLS command used to produce transcode segments.
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -80,6 +121,10 @@ pub fn hls_command(
         "error".to_owned(),
         "-y".to_owned(),
     ];
+    if let Some(hwaccel) = target.hwaccel.as_deref().filter(|value| !value.is_empty()) {
+        arguments.push("-hwaccel".to_owned());
+        arguments.push(hwaccel.to_owned());
+    }
     if let Some(start_time_ticks) = target.start_time_ticks.filter(|ticks| *ticks > 0) {
         arguments.push("-ss".to_owned());
         arguments.push(format_ticks_as_seconds(start_time_ticks));
@@ -141,6 +186,10 @@ pub fn hls_command(
         arguments.push("-ar".to_owned());
         arguments.push(sample_rate.to_string());
     }
+    if target.audio_normalize {
+        arguments.push("-af".to_owned());
+        arguments.push("loudnorm=I=-16:TP=-1.5:LRA=11".to_owned());
+    }
 
     let mut filters = Vec::new();
     if let Some(width) = target.max_width {
@@ -150,6 +199,21 @@ pub fn hls_command(
     }
     if let Some(framerate) = target.max_framerate {
         filters.push(format!("fps={framerate}"));
+    }
+    if target.tonemap_hdr {
+        filters.push(
+            "zscale=transfer=linear:npl=100,tonemap=tonemap=hable:desat=0,zscale=transfer=bt709:primaries=bt709:matrix=bt709"
+                .to_owned(),
+        );
+    }
+    if target.burn_subtitles
+        && let Some(subtitle_index) = target.subtitle_index
+    {
+        let escaped = input_path
+            .to_string_lossy()
+            .replace('\'', "\\'")
+            .replace(':', "\\:");
+        filters.push(format!("subtitles='{escaped}':si={subtitle_index}"));
     }
     if !filters.is_empty() {
         arguments.push("-vf".to_owned());
@@ -427,6 +491,9 @@ pub fn hls_job_id(
     digest.update(target.audio_bitrate.unwrap_or_default().to_le_bytes());
     digest.update(target.max_width.unwrap_or_default().to_le_bytes());
     digest.update(target.max_height.unwrap_or_default().to_le_bytes());
+    digest.update(target.hwaccel.as_deref().unwrap_or_default().as_bytes());
+    digest.update(target.subtitle_index.unwrap_or_default().to_le_bytes());
+    digest.update([target.burn_subtitles as u8, target.audio_normalize as u8, target.tonemap_hdr as u8]);
     digest.update(settings.segment_length_ms.to_le_bytes());
     digest.update(settings.container.as_bytes());
     let bytes = digest.finalize();
@@ -484,10 +551,32 @@ pub fn build_main_playlist(
     Ok(playlist)
 }
 
-/// Creates a single-variant master playlist.
+/// Creates a single-variant master playlist for compatibility callers.
 #[must_use]
 pub fn build_master_playlist(main_url: &str) -> String {
-    format!("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080\n{main_url}\n")
+    build_variant_master_playlist(&[HlsVariant::new(
+        8_000_000,
+        "1920x1080",
+        main_url,
+    )])
+}
+
+/// Creates an HLS master playlist advertising one or more renditions.
+#[must_use]
+pub fn build_variant_master_playlist(variants: &[HlsVariant]) -> String {
+    let mut playlist = "#EXTM3U\n".to_owned();
+    for variant in variants {
+        let codecs = variant
+            .codecs
+            .as_deref()
+            .map_or_else(String::new, |codecs| format!(",CODECS=\"{codecs}\""));
+        let _ = write!(
+            playlist,
+            "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}{codecs}\n{}\n",
+            variant.bandwidth, variant.resolution, variant.url
+        );
+    }
+    playlist
 }
 
 /// Duration `FFmpeg` should wait for a job's first playlist or segment.
@@ -652,6 +741,50 @@ mod tests {
         let master = build_master_playlist("main.m3u8?jobId=abc");
         assert!(master.contains("#EXT-X-STREAM-INF"));
         assert!(master.contains("main.m3u8?jobId=abc"));
+    }
+
+    #[test]
+    fn variant_master_playlist_advertises_multiple_renditions() {
+        let master = build_variant_master_playlist(&[
+            HlsVariant::new(2_000_000, "640x360", "low.m3u8"),
+            HlsVariant::new(5_000_000, "1280x720", "mid.m3u8").with_codecs("avc1.640028"),
+            HlsVariant::new(8_000_000, "1920x1080", "high.m3u8"),
+        ]);
+        assert_eq!(
+            master,
+            "#EXTM3U\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=640x360\nlow.m3u8\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1280x720,CODECS=\"avc1.640028\"\nmid.m3u8\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080\nhigh.m3u8\n"
+        );
+    }
+
+    #[test]
+    fn hls_command_supports_hwaccel_subtitle_burn_audio_normalization_and_hdr() {
+        let command = hls_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/job1"),
+            &TranscodeTarget {
+                hwaccel: Some("vaapi".to_owned()),
+                subtitle_index: Some(3),
+                burn_subtitles: true,
+                audio_normalize: true,
+                tonemap_hdr: true,
+                ..TranscodeTarget::default()
+            },
+            &HlsSegmentSettings {
+                container: "ts".to_owned(),
+                segment_length_ms: 6_000,
+                min_segments: 2,
+            },
+        );
+
+        let joined = command.arguments.join(" ");
+        assert!(joined.contains("-hwaccel vaapi"));
+        assert!(joined.contains("-af loudnorm=I=-16:TP=-1.5:LRA=11"));
+        assert!(joined.contains("tonemap=tonemap=hable:desat=0"));
+        assert!(joined.contains("subtitles='/media/movie.mkv':si=3"));
     }
 
     #[test]

@@ -40,6 +40,7 @@ pub struct Model {
     pub title: Option<String>,
     pub time_base: Option<String>,
     pub codec_time_base: Option<String>,
+    pub color_range: Option<String>,
     pub color_primaries: Option<String>,
     pub color_space: Option<String>,
     pub color_transfer: Option<String>,

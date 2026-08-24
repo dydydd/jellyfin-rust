@@ -95,6 +95,10 @@ pub struct MediaStream {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub aspect_ratio: Option<String>,
+    pub color_range: Option<String>,
+    pub color_space: Option<String>,
+    pub color_transfer: Option<String>,
+    pub color_primaries: Option<String>,
     pub average_frame_rate: Option<f32>,
     pub real_frame_rate: Option<f32>,
     pub bit_depth: Option<i32>,
@@ -118,6 +122,7 @@ pub struct MediaStream {
     pub el_present_flag: Option<i32>,
     pub bl_present_flag: Option<i32>,
     pub dv_bl_signal_compatibility_id: Option<i32>,
+    pub hdr10_plus_present_flag: Option<bool>,
     pub rotation: Option<i32>,
 }
 
@@ -290,6 +295,7 @@ fn normalize_root(root: &Map<String, Value>, context: ProbeContext<'_>) -> Media
         .filter_map(Value::as_object)
         .filter_map(normalize_attachment)
         .collect();
+    apply_hdr10_plus_flags(&mut streams, root.get("frames"));
     let bitrate = format.and_then(|value| int64(value, "bit_rate"));
     if !context.is_audio {
         estimate_missing_bitrates(&mut streams, bitrate);
@@ -369,6 +375,10 @@ fn normalize_stream(
         aspect_ratio: (stream_type == MediaStreamType::Video)
             .then(|| aspect_ratio(display_aspect.as_deref(), width, height))
             .flatten(),
+        color_range: string(stream, "color_range"),
+        color_space: string(stream, "color_space"),
+        color_transfer: string(stream, "color_transfer"),
+        color_primaries: string(stream, "color_primaries"),
         average_frame_rate: string(stream, "avg_frame_rate")
             .as_deref()
             .and_then(frame_rate),
@@ -396,6 +406,7 @@ fn normalize_stream(
         el_present_flag: None,
         bl_present_flag: None,
         dv_bl_signal_compatibility_id: None,
+        hdr10_plus_present_flag: None,
         rotation: None,
     };
     apply_side_data(&mut result, stream.get("side_data_list"));
@@ -526,6 +537,33 @@ fn apply_side_data(stream: &mut MediaStream, side_data: Option<&Value>) {
                 stream.flags.set(MediaStreamFlags::ANAMORPHIC, false);
             }
             _ => {}
+        }
+    }
+}
+
+fn apply_hdr10_plus_flags(streams: &mut [MediaStream], frames: Option<&Value>) {
+    let Some(frames) = frames.and_then(Value::as_array) else {
+        return;
+    };
+    for stream in streams
+        .iter_mut()
+        .filter(|stream| stream.stream_type == MediaStreamType::Video)
+    {
+        let frame = frames.iter().filter_map(Value::as_object).find(|frame| {
+            int32(frame, "stream_index") == Some(stream.index)
+        });
+        let has_hdr10_plus = frame
+            .and_then(|frame| frame.get("side_data_list"))
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                entries.iter().filter_map(Value::as_object).any(|entry| {
+                    string(entry, "side_data_type").is_some_and(|value| {
+                        value.eq_ignore_ascii_case("HDR Dynamic Metadata SMPTE2094-40 (HDR10+)")
+                    })
+                })
+            });
+        if has_hdr10_plus {
+            stream.hdr10_plus_present_flag = Some(true);
         }
     }
 }

@@ -1,10 +1,13 @@
-use std::{path::PathBuf, process::Command, time::Duration};
+use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{BaseItemRepository, DatabaseConfig, ServerConfigurationRepository};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
+use jellyfin_live_tv::listings::{
+    GuideRefreshService, JsonListingsConfigurationStore, SchedulesDirectClient,
+};
 use sea_orm::ConnectionTrait;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -77,6 +80,12 @@ async fn main() -> anyhow::Result<()> {
     })
     .with_network_manager(NetworkManager::new(network_configuration, Vec::new()))
     .with_persistent_startup(startup_repository)
+    .with_guide_refresh_service(GuideRefreshService::new(
+        Arc::new(JsonListingsConfigurationStore::new(
+            PathBuf::from("programdata").join("livetv.json"),
+        )),
+        SchedulesDirectClient::new(),
+    ))
     .with_storage_paths(
         PathBuf::from("programdata"),
         PathBuf::from(&web_dir),

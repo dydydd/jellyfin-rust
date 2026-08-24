@@ -21,6 +21,7 @@ enum RoutePolicy {
     Optional,
     Default,
     IgnoreParentalControl,
+    FirstTimeSetupOrDefault,
     FirstTimeSetupOrIgnoreParentalControl,
     FirstTimeSetupOrElevated,
     Elevated,
@@ -61,6 +62,25 @@ pub(crate) async fn require_first_time_setup_or_elevated(
     authentication::authenticated_identity(state, headers, Some(uri))
         .await?
         .require_administrator()
+}
+
+/// Applies Jellyfin's startup-wizard-or-any-authenticated-user policy.
+///
+/// Official controllers such as `LocalizationController` use
+/// `FirstTimeSetupOrDefault`, which allows every authenticated user once the
+/// startup wizard has completed instead of requiring administrator rights.
+pub(crate) async fn require_first_time_setup_or_default(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Result<(), ApiError> {
+    let startup_completed = crate::startup::is_completed(state).await?;
+    if !startup_completed {
+        return Ok(());
+    }
+
+    require_default(state, headers, uri).await?;
+    Ok(())
 }
 
 /// Applies Jellyfin's first-time-setup-or-ignore-parental-control policy.
@@ -115,6 +135,12 @@ pub(crate) async fn require_route_auth(
             require_first_time_setup_or_ignore_parental_control(&state, &headers, &uri).await?;
             Ok(next.run(request).await)
         }
+        RoutePolicy::FirstTimeSetupOrDefault => {
+            let headers = request.headers().clone();
+            let uri = request.uri().clone();
+            require_first_time_setup_or_default(&state, &headers, &uri).await?;
+            Ok(next.run(request).await)
+        }
         RoutePolicy::FirstTimeSetupOrElevated => {
             let headers = request.headers().clone();
             let uri = request.uri().clone();
@@ -158,7 +184,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
     if !is_known_api_path(&segments) {
-        return RoutePolicy::Public;
+        return RoutePolicy::Default;
     }
     if segments
         .first()
@@ -192,9 +218,10 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["Users", "ForgotPassword", "Pin"] => RoutePolicy::Public,
         ["Users", _, "Authenticate"] => RoutePolicy::Public,
         ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
-        ["Startup" | "Environment" | "Localization", ..]
+        ["Startup" | "Environment", ..]
         | ["Library", "VirtualFolders", ..]
         | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
+        ["Localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
         ["System", "Info"] => RoutePolicy::FirstTimeSetupOrIgnoreParentalControl,
         ["System", "Restart"] => RoutePolicy::LocalOrElevated,
         ["System", "ActivityLog", "Entries"]
@@ -220,6 +247,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Users", _] if method == Method::GET => RoutePolicy::IgnoreParentalControl,
         ["Users", _] => RoutePolicy::Default,
         ["LiveTv", "TunerHosts"] => RoutePolicy::Elevated,
+        ["LiveTv", "ListingProviders", ..] => RoutePolicy::Elevated,
         ["Library", "MediaFolders" | "PhysicalPaths" | "Refresh"] => RoutePolicy::Elevated,
         ["Items", _, "Refresh" | "MetadataEditor" | "ExternalIdInfos"] => RoutePolicy::Elevated,
         ["Items", "RemoteSearch", "Person"] | ["Items", "RemoteSearch", "Apply", _] => {
@@ -245,6 +273,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             ..,
         ] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Plugins", _, _, "Image"] => RoutePolicy::Optional,
+        ["Plugins", ..] => RoutePolicy::Elevated,
         _ => RoutePolicy::Default,
     }
 }
@@ -382,6 +411,14 @@ mod tests {
             RoutePolicy::Optional
         );
         assert_eq!(
+            route_policy(&Method::GET, "/Localization/Options"),
+            RoutePolicy::FirstTimeSetupOrDefault
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/Localization/Cultures"),
+            RoutePolicy::FirstTimeSetupOrDefault
+        );
+        assert_eq!(
             route_policy(&Method::GET, "/Videos/{item_id}/hls/playlist/seg1.ts"),
             RoutePolicy::Public
         );
@@ -391,7 +428,7 @@ mod tests {
         );
         assert_eq!(
             route_policy(&Method::GET, "/not-a-route"),
-            RoutePolicy::Public
+            RoutePolicy::Default
         );
     }
 }

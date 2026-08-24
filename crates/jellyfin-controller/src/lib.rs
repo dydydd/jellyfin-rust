@@ -22,9 +22,9 @@ mod media_segments;
 pub mod transcode;
 
 pub use transcode::{
-    FfmpegCommand, HlsSegmentSettings, TranscodeJobRegistry, TranscodeTarget, audio_command,
-    build_main_playlist, build_master_playlist, hls_command, hls_job_id, run_ffmpeg,
-    wait_for_segment,
+    FfmpegCommand, HlsSegmentSettings, HlsVariant, TranscodeJobRegistry, TranscodeTarget,
+    audio_command, build_main_playlist, build_master_playlist, build_variant_master_playlist,
+    hls_command, hls_job_id, run_ffmpeg, wait_for_segment,
 };
 mod media_streams;
 mod metadata_editor;
@@ -40,6 +40,7 @@ mod playstate;
 mod plugins;
 pub mod providers;
 mod scheduled_tasks;
+mod sessions;
 mod studios;
 mod subtitles;
 mod system_logs;
@@ -91,8 +92,13 @@ pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,
     PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
 };
-pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry};
+pub use plugins::{
+    InstalledPlugin, PluginImage, PluginRegistry, PluginRegistryError,
+};
 pub use scheduled_tasks::{ScheduledTaskError, ScheduledTaskPaths, ScheduledTaskService};
+pub use sessions::{
+    PostgresAuthenticationResult, PostgresSessionStore, PostgresSessionStoreError,
+};
 pub use studios::{Studio, StudioError, StudioPage, StudioService};
 pub use subtitles::{SubtitleManager, SubtitleProvider, SubtitleResponse, SubtitleSearchRequest};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};

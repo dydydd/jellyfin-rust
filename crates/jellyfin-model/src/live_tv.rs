@@ -23,6 +23,14 @@ pub enum ProgramAudio {
     Atmos,
 }
 
+/// Guide availability reported by the Live TV API.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct GuideInfo {
+    pub start_date: DateTime<Utc>,
+    pub end_date: DateTime<Utc>,
+}
+
 /// Internal timer data shared by Live TV recording services.
 ///
 /// This is the subset of Jellyfin's controller `TimerInfo` contract used to

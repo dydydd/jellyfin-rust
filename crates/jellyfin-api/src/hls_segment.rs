@@ -8,8 +8,8 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{
-    HlsSegmentSettings, TranscodeTarget, build_main_playlist, build_master_playlist, hls_command,
-    hls_job_id, run_ffmpeg, wait_for_segment,
+    HlsSegmentSettings, HlsVariant, TranscodeTarget, build_main_playlist,
+    build_variant_master_playlist, hls_command, hls_job_id, run_ffmpeg, wait_for_segment,
 };
 use jellyfin_extensions::PathHelper;
 use jellyfin_model::MimeTypes;
@@ -42,6 +42,16 @@ pub(crate) struct TranscodeQuery {
     audio_bitrate: Option<i64>,
     #[serde(rename = "audioStreamIndex", alias = "AudioStreamIndex")]
     audio_stream_index: Option<i32>,
+    #[serde(rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
+    subtitle_stream_index: Option<i32>,
+    #[serde(rename = "burnSubtitles", alias = "BurnSubtitles")]
+    burn_subtitles: Option<bool>,
+    #[serde(rename = "audioNormalize", alias = "AudioNormalize")]
+    audio_normalize: Option<bool>,
+    #[serde(rename = "enableHDRToneMapping", alias = "EnableHDRToneMapping")]
+    enable_hdr_tone_mapping: Option<bool>,
+    #[serde(rename = "hwaccel", alias = "Hwaccel")]
+    hwaccel: Option<String>,
     #[serde(rename = "audioSampleRate", alias = "AudioSampleRate")]
     audio_sample_rate: Option<i32>,
     #[serde(rename = "maxWidth", alias = "MaxWidth")]
@@ -72,6 +82,11 @@ impl TranscodeQuery {
             || self.video_bitrate.is_some()
             || self.audio_bitrate.is_some()
             || self.audio_sample_rate.is_some()
+            || self.subtitle_stream_index.is_some()
+            || self.burn_subtitles == Some(true)
+            || self.audio_normalize == Some(true)
+            || self.enable_hdr_tone_mapping == Some(true)
+            || self.hwaccel.is_some()
             || self.max_width.is_some()
             || self.max_height.is_some()
             || self.max_framerate.is_some()
@@ -258,11 +273,34 @@ async fn ensure_master_playlist(
     start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
     let path =
         resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.master.m3u8"))?;
-    let content = build_master_playlist(&main_url);
+    let content = build_variant_master_playlist(&master_variants(query, &main_url));
     tokio::fs::write(&path, content)
         .await
         .map_err(|_| ApiError::Internal)?;
     serve_file(path, headers).await
+}
+
+fn master_variants(query: &TranscodeQuery, main_url: &str) -> Vec<HlsVariant> {
+    let (width, height) = match (query.max_width, query.max_height) {
+        (Some(width), Some(height)) => (width, height),
+        (Some(width), None) => (width, 1_080),
+        (None, Some(height)) => (1_920, height),
+        (None, None) => {
+            return vec![
+                HlsVariant::new(2_000_000, "640x360", main_url),
+                HlsVariant::new(5_000_000, "1280x720", main_url),
+                HlsVariant::new(8_000_000, "1920x1080", main_url),
+            ];
+        }
+    };
+    let bandwidth = query
+        .video_bitrate
+        .map_or(8_000_000, |bitrate| bitrate.max(1)) as u64;
+    vec![HlsVariant::new(
+        bandwidth,
+        format!("{width}x{height}"),
+        main_url,
+    )]
 }
 
 async fn ensure_main_playlist(
@@ -314,6 +352,7 @@ async fn start_hls_job(
     };
     let target = TranscodeTarget {
         is_video: media_type == "Videos",
+        hwaccel: query.hwaccel.clone(),
         video_codec: query
             .video_codec
             .clone()
@@ -324,6 +363,10 @@ async fn start_hls_job(
         audio_channels: query.max_audio_channels,
         audio_sample_rate: query.audio_sample_rate,
         audio_stream_index: query.audio_stream_index,
+        subtitle_index: query.subtitle_stream_index,
+        burn_subtitles: query.burn_subtitles.unwrap_or(false),
+        audio_normalize: query.audio_normalize.unwrap_or(false),
+        tonemap_hdr: query.enable_hdr_tone_mapping.unwrap_or(false),
         max_width: query.max_width,
         max_height: query.max_height,
         max_framerate: query.max_framerate,
@@ -442,6 +485,7 @@ fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
 fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, media_type: &str) -> String {
     let target = TranscodeTarget {
         is_video: media_type == "Videos",
+        hwaccel: query.hwaccel.clone(),
         video_codec: query.video_codec.clone(),
         audio_codec: query.audio_codec.clone(),
         video_bitrate: query.video_bitrate,
@@ -449,6 +493,10 @@ fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, media_type: &str) -> St
         audio_channels: query.max_audio_channels,
         audio_sample_rate: None,
         audio_stream_index: query.audio_stream_index,
+        subtitle_index: query.subtitle_stream_index,
+        burn_subtitles: query.burn_subtitles.unwrap_or(false),
+        audio_normalize: query.audio_normalize.unwrap_or(false),
+        tonemap_hdr: query.enable_hdr_tone_mapping.unwrap_or(false),
         max_width: query.max_width,
         max_height: query.max_height,
         max_framerate: query.max_framerate,

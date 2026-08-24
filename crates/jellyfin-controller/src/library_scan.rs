@@ -2335,6 +2335,7 @@ fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
         color_primaries: None,
         color_space: None,
         color_transfer: None,
+        color_range: None,
         dv_version_major: None,
         dv_version_minor: None,
         dv_profile: None,
@@ -2485,9 +2486,10 @@ fn stream_from_probe(stream: &ProbedMediaStream) -> PersistedMediaStream {
         title: stream.title.clone(),
         time_base: stream.time_base.clone(),
         codec_time_base: stream.codec_time_base.clone(),
-        color_primaries: None,
-        color_space: None,
-        color_transfer: None,
+        color_range: stream.color_range.clone(),
+        color_primaries: stream.color_primaries.clone(),
+        color_space: stream.color_space.clone(),
+        color_transfer: stream.color_transfer.clone(),
         dv_version_major: stream.dv_version_major,
         dv_version_minor: stream.dv_version_minor,
         dv_profile: stream.dv_profile,
@@ -2498,7 +2500,7 @@ fn stream_from_probe(stream: &ProbedMediaStream) -> PersistedMediaStream {
         dv_bl_signal_compatibility_id: stream.dv_bl_signal_compatibility_id,
         is_hearing_impaired: Some(stream.is_hearing_impaired()),
         rotation: stream.rotation,
-        hdr10_plus_present_flag: None,
+        hdr10_plus_present_flag: stream.hdr10_plus_present_flag,
     }
 }
 

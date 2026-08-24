@@ -1,7 +1,9 @@
 mod manager;
 mod program;
 mod program_etag;
+mod guide_refresh;
 mod schedules_direct;
+mod schedules_direct_client;
 mod xmltv;
 mod xmltv_provider;
 
@@ -10,6 +12,7 @@ pub use manager::{
     ListingsConfigurationError, ListingsConfigurationStore, ListingsManager, LiveTvConfiguration,
     MemoryListingsConfigurationStore,
 };
+pub use guide_refresh::{GuideRefreshError, GuideRefreshService, GuideRefreshSummary};
 pub use program::{ProgramAudio, ProgramFlag, ProgramFlags, ProgramInfo};
 pub use program_etag::{
     ProgramEtagError, XMLTV_ETAG_PREFIX, create_xmltv_program_etag, is_xmltv_etag,
@@ -21,6 +24,9 @@ pub use schedules_direct::{
     ProgramDetails, ProgramEventDetails, ProgramMetadata, ProgramTitle, ScheduleDay,
     ScheduleRequest, ScheduledProgram, SchedulesDirectErrorCode, ShowImagesResponse, Station,
     StationLogo, TokenResponse,
+};
+pub use schedules_direct_client::{
+    SchedulesDirectClient, SchedulesDirectClientError,
 };
 pub use xmltv::{
     XmlTvChannel, XmlTvOptions, XmlTvParseError, parse_xmltv_channels, parse_xmltv_programs,

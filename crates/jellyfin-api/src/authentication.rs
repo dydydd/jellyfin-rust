@@ -5,10 +5,10 @@ use axum::{
     extract::{Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, Uri, header},
 };
-use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc, Weekday};
 use jellyfin_data::{
-    NewActivityLog, NewDevice,
-    entities::{activity_log::LogSeverity, api_key, device, user},
+    NewActivityLog,
+    entities::{api_key, device, user},
 };
 use jellyfin_model::{DynamicDayOfWeek, SyncPlayUserAccessType, UserPolicy};
 use percent_encoding::percent_decode_str;
@@ -80,93 +80,45 @@ async fn authenticate_username_password(
     password: String,
 ) -> Result<Json<AuthenticationResult>, ApiError> {
     let client = ClientMetadata::from_headers(headers)?;
-
-    let mut user = state.users.get_by_name(&username).await?.ok_or_else(|| {
-        log_activity(
-            state,
-            NewActivityLog {
-                log_severity: LogSeverity::Error,
-                ..NewActivityLog::new(
-                    format!("Failed login attempt for {username}"),
-                    "AuthenticationFailed",
-                    Uuid::nil(),
-                )
-            },
-        );
-        ApiError::Unauthorized
-    })?;
-    if user.is_disabled {
-        return Err(ApiError::Forbidden);
-    }
-    if !user
-        .authentication_provider_id
-        .eq_ignore_ascii_case(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID)
-    {
-        return Err(ApiError::Unauthorized);
-    }
-    let authentication = state.authentication;
-    let username_for_authentication = username.clone();
-    let user_id = user.id;
-    let authenticated = tokio::task::spawn_blocking(move || {
-        authentication.authenticate(&username_for_authentication, &password, Some(&mut user))?;
-        Ok::<_, jellyfin_server_implementations::AuthenticationError>(user)
-    })
-    .await
-    .map_err(|_| ApiError::Internal)?;
-    let user = match authenticated {
-        Ok(user) => user,
-        Err(jellyfin_server_implementations::AuthenticationError::InvalidCredentials) => {
-            let _ = state.users.record_failed_authentication(user_id).await;
-            log_activity(
-                state,
-                NewActivityLog {
-                    log_severity: LogSeverity::Error,
-                    ..NewActivityLog::new(
-                        format!("Failed login attempt for {username}"),
-                        "AuthenticationFailed",
-                        user_id,
-                    )
-                },
-            );
-            return Err(ApiError::Unauthorized);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let policy = stored_user_policy(&user)?;
-    if !is_parental_schedule_allowed(&policy, Local::now().fixed_offset()) {
-        return Err(ApiError::Forbidden);
-    }
-    let user = state.users.record_successful_authentication(&user).await?;
+    let request = jellyfin_server_implementations::AuthenticationRequest::with_credentials(
+        client.client,
+        client.device_id,
+        client.device,
+        client.version,
+        username,
+        password,
+    );
     let session = state
-        .devices
-        .create_session(NewDevice::new(
-            user.id,
-            &client.client,
-            &client.version,
-            &client.device,
-            &client.device_id,
-        ))
-        .await?;
-    log_activity(
-        state,
-        NewActivityLog::new(
-            format!("Authentication succeeded for {username}"),
-            "AuthenticationSucceeded",
-            user.id,
-        ),
-    );
-    log_activity(
-        state,
-        NewActivityLog::new(
-            format!("{username} is online from {}", client.device),
-            "SessionStarted",
-            user.id,
-        ),
-    );
-
+        .session_manager
+        .authenticate_new_session_internal(&request, true)
+        .await
+        .map_err(session_error_to_api)?;
     Ok(Json(authentication_result_from_device(
-        state, &user, session,
+        state, &session.user, session.device,
     )))
+}
+
+fn session_error_to_api(
+    error: jellyfin_server_implementations::SessionManagerError<
+        jellyfin_controller::PostgresSessionStoreError,
+    >,
+) -> ApiError {
+    use jellyfin_controller::PostgresSessionStoreError;
+
+    match error {
+        jellyfin_server_implementations::SessionManagerError::Validation(_) => {
+            ApiError::InvalidRequest
+        }
+        jellyfin_server_implementations::SessionManagerError::Store(
+            PostgresSessionStoreError::MissingCredentials
+            | PostgresSessionStoreError::InvalidCredentials
+            | PostgresSessionStoreError::UnsupportedAuthenticationProvider,
+        ) => ApiError::Unauthorized,
+        jellyfin_server_implementations::SessionManagerError::Store(
+            PostgresSessionStoreError::Disabled | PostgresSessionStoreError::ParentalSchedule,
+        ) => ApiError::Forbidden,
+        jellyfin_server_implementations::SessionManagerError::Store(_) => ApiError::Internal,
+    }
 }
 
 pub(crate) fn log_activity(state: &AppState, entry: NewActivityLog) {

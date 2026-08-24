@@ -93,6 +93,10 @@ fn mp4_metadata_success() {
     assert!(video.is_avc());
     assert_eq!(video.real_frame_rate, Some(120.0));
     assert_eq!(video.time_base.as_deref(), Some("1/90000"));
+    assert_eq!(video.color_range.as_deref(), Some("tv"));
+    assert_eq!(video.color_space.as_deref(), Some("smpte170m"));
+    assert_eq!(video.color_transfer.as_deref(), Some("bt709"));
+    assert_eq!(video.color_primaries.as_deref(), Some("smpte170m"));
     assert_eq!(video.bit_rate, Some(1_147_365));
     assert_eq!(video.bit_depth, Some(8));
     assert!(video.is_default());
@@ -261,6 +265,49 @@ fn assert_video(result: &MediaInfo, expected: ExpectedVideo<'_>) {
     assert_eq!(video.bit_rate, Some(expected.bit_rate));
     assert_eq!(video.bit_depth, Some(8));
     assert!(video.is_default());
+}
+
+#[test]
+fn hdr10_plus_flag_is_read_from_the_first_video_frame() {
+    let probe = r#"
+    {
+      "streams": [
+        {
+          "index": 0,
+          "codec_type": "video",
+          "codec_name": "hevc",
+          "color_range": "pc",
+          "color_space": "bt2020nc",
+          "color_transfer": "smpte2084",
+          "color_primaries": "bt2020"
+        }
+      ],
+      "frames": [
+        {
+          "stream_index": 0,
+          "side_data_list": [
+            {
+              "side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"
+            }
+          ]
+        }
+      ]
+    }
+    "#;
+    let result = normalize_probe_json(
+        probe,
+        ProbeContext {
+            path: "hdr10plus.mkv",
+            is_audio: false,
+        },
+    )
+    .expect("HDR10+ probe should normalize");
+    let video = result.video_stream().expect("video stream");
+    assert_eq!(video.color_range.as_deref(), Some("pc"));
+    assert_eq!(video.color_space.as_deref(), Some("bt2020nc"));
+    assert_eq!(video.color_transfer.as_deref(), Some("smpte2084"));
+    assert_eq!(video.color_primaries.as_deref(), Some("bt2020"));
+    assert_eq!(video.hdr10_plus_present_flag, Some(true));
 }
 
 #[test]

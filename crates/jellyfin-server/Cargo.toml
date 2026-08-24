@@ -11,6 +11,7 @@ axum.workspace = true
 jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
+jellyfin-live-tv = { path = "../jellyfin-live-tv" }
 jellyfin-networking = { path = "../jellyfin-networking" }
 sea-orm.workspace = true
 tokio.workspace = true

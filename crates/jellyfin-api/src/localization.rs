@@ -14,7 +14,7 @@ pub(crate) async fn cultures(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<CultureDto>>, ApiError> {
-    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    authorization::require_first_time_setup_or_default(&state, &headers, &uri).await?;
     Ok(Json(state.localization.distinct_sorted_cultures()))
 }
 
@@ -23,7 +23,7 @@ pub(crate) async fn countries(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<CountryInfo>>, ApiError> {
-    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    authorization::require_first_time_setup_or_default(&state, &headers, &uri).await?;
     Ok(Json(state.localization.countries()))
 }
 
@@ -32,7 +32,7 @@ pub(crate) async fn parental_ratings(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ParentalRating>>, ApiError> {
-    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    authorization::require_first_time_setup_or_default(&state, &headers, &uri).await?;
     let configuration = state.server_configuration.load().await?;
     Ok(Json(
         state
@@ -46,6 +46,6 @@ pub(crate) async fn options(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<LocalizationOption>>, ApiError> {
-    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    authorization::require_first_time_setup_or_default(&state, &headers, &uri).await?;
     Ok(Json(state.localization.localization_options()))
 }

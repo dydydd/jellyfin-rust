@@ -44,6 +44,7 @@ impl MigrationTrait for Migration {
                     title text,
                     time_base text,
                     codec_time_base text,
+                    color_range text,
                     color_primaries text,
                     color_space text,
                     color_transfer text,

@@ -183,7 +183,7 @@ async fn assert_completed_authorization(
         );
         assert_eq!(
             get(app, route, Some(user_token)).await.status(),
-            StatusCode::FORBIDDEN
+            StatusCode::OK
         );
         assert_eq!(
             get(app, route, Some(administrator_token)).await.status(),

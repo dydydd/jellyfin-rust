@@ -5,7 +5,7 @@ use std::{
 
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
@@ -32,7 +32,7 @@ async fn official_plugins_contract_requires_authentication_and_defaults_to_empty
 
     assert_eq!(fixture.get(None).await.status(), StatusCode::UNAUTHORIZED);
 
-    let response = fixture.get(Some(&fixture.user_token)).await;
+    let response = fixture.get(Some(&fixture.admin_token)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers()[header::CONTENT_TYPE],
@@ -52,7 +52,7 @@ async fn authenticated_users_receive_complete_name_ordered_plugin_metadata() {
     ])
     .await;
 
-    let response = fixture.get(Some(&fixture.user_token)).await;
+    let response = fixture.get(Some(&fixture.admin_token)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers()[header::CONTENT_TYPE],
@@ -82,6 +82,81 @@ async fn authenticated_users_receive_complete_name_ordered_plugin_metadata() {
             }
         ])
     );
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn plugin_lifecycle_endpoints_enable_disable_configure_and_uninstall() {
+    let plugin_id = Uuid::from_u128(0x2d35_0a13_0bf7_4b61_859c_d5e6_01b5_facf);
+    let fixture = Fixture::new(vec![plugin("Lifecycle", plugin_id, None, PluginStatus::Active)])
+        .await;
+
+    assert_eq!(
+        request_with_token(
+            &fixture.app,
+            Method::POST,
+            &format!("/Plugins/{plugin_id}/1.2.3.4/Disable"),
+            Some(&fixture.user_token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request_with_token(
+            &fixture.app,
+            Method::POST,
+            &format!("/Plugins/{plugin_id}/1.2.3.4/Disable"),
+            Some(&fixture.admin_token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let listed = body_json(fixture.get(Some(&fixture.admin_token)).await).await;
+    assert_eq!(listed[0]["Status"], "Disabled");
+
+    let response = request_with_token(
+        &fixture.app,
+        Method::GET,
+        &format!("/Plugins/{plugin_id}/Configuration"),
+        Some(&fixture.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await, json!({}));
+
+    let response = request_with_token(
+        &fixture.app,
+        Method::POST,
+        &format!("/Plugins/{plugin_id}/Manifest"),
+        Some(&fixture.api_key_token),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["Id"], plugin_id.simple().to_string());
+
+    assert_eq!(
+        request_with_token(
+            &fixture.app,
+            Method::DELETE,
+            &format!("/Plugins/{plugin_id}/1.2.3.4"),
+            Some(&fixture.admin_token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        body_json(fixture.get(Some(&fixture.admin_token)).await).await,
+        json!([])
+    );
+
     fixture.cleanup().await;
 }
 
@@ -148,7 +223,7 @@ async fn anonymous_plugin_images_match_official_file_and_path_security_contract(
         );
     }
 
-    let listed_plugins = body_json(fixture.get(Some(&fixture.user_token)).await).await;
+    let listed_plugins = body_json(fixture.get(Some(&fixture.admin_token)).await).await;
     let listed_json = serde_json::to_string(&listed_plugins).unwrap();
     assert!(listed_json.contains(&valid_id.simple().to_string()));
     assert!(!listed_json.contains(plugin_root.to_string_lossy().as_ref()));
@@ -470,6 +545,7 @@ struct Fixture {
     app: axum::Router,
     user_id: Uuid,
     user_token: String,
+    admin_token: String,
     api_key_token: String,
     api_key_last_activity: chrono::DateTime<Utc>,
     api_key_id: i64,
@@ -496,7 +572,13 @@ impl Fixture {
             .create(&format!("plugin-user-{suffix}"))
             .await
             .expect("user creation");
-        let user_token = session(&DeviceRepository::new(database.clone()), user.id, &suffix).await;
+        let devices = DeviceRepository::new(database.clone());
+        let user_token = session(&devices, user.id, &suffix).await;
+        let administrator = UserService::new(database.clone())
+            .create_initial_administrator(&format!("plugin-admin-{suffix}"))
+            .await
+            .expect("administrator creation");
+        let admin_token = session(&devices, administrator.id, &format!("admin-{suffix}")).await;
         let api_keys = ApiKeyRepository::new(database.clone());
         let api_key = api_keys
             .create(&format!("plugin-key-{suffix}"))
@@ -517,6 +599,7 @@ impl Fixture {
             app: jellyfin_api::router(state),
             user_id: user.id,
             user_token,
+            admin_token,
             api_key_token: api_key.access_token,
             api_key_last_activity,
             api_key_id: api_key.id,
@@ -575,6 +658,30 @@ async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> Str
         .await
         .expect("session creation")
         .access_token
+}
+
+async fn request_with_token(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Body>,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(token) = token {
+        request = request.header(
+            header::AUTHORIZATION,
+            format!("{AUTHORIZATION}, Token=\"{token}\""),
+        );
+    }
+    app.clone()
+        .oneshot(
+            request
+                .body(body.unwrap_or_else(Body::empty))
+                .expect("plugin lifecycle request"),
+        )
+        .await
+        .expect("plugin lifecycle response")
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

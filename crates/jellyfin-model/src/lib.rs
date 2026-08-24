@@ -73,7 +73,7 @@ pub use extensions::first_to_upper;
 pub use globalization::LocalizationOption;
 pub use io::{FileSystemEntryInfo, FileSystemEntryType};
 pub use library_options::{LibraryOptionInfoDto, LibraryOptionsResultDto, LibraryTypeOptionsDto};
-pub use live_tv::{ChannelType, ProgramAudio, TimerInfo, TunerHostInfo};
+pub use live_tv::{ChannelType, GuideInfo, ProgramAudio, TimerInfo, TunerHostInfo};
 pub use media_info::{
     AudioCodec, AudioIndexSource, BlurayDiscInfo, BlurayExaminer, LiveStreamRequest,
     LiveStreamResponse, MediaInfo, PlaybackInfoResponse, SubtitleFormat, SubtitleTrackEvent,

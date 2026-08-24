@@ -49,6 +49,7 @@ mod m20260804_000046_add_tmdb_api_key_configuration;
 mod m20260822_000047_create_chapters;
 mod m20260822_000048_add_provider_configuration;
 mod m20260822_000049_create_media_segments;
+mod m20260824_000050_add_media_stream_color_range;
 
 #[doc(hidden)]
 pub use m20260722_000001_create_users::Migration as CreateUsersMigration;
@@ -144,6 +145,7 @@ pub use m20260804_000046_add_tmdb_api_key_configuration::Migration as AddTmdbApi
 pub use m20260822_000047_create_chapters::Migration as CreateChaptersMigration;
 pub use m20260822_000048_add_provider_configuration::Migration as AddProviderConfigurationMigration;
 pub use m20260822_000049_create_media_segments::Migration as CreateMediaSegmentsMigration;
+pub use m20260824_000050_add_media_stream_color_range::Migration as AddMediaStreamColorRangeMigration;
 
 pub struct Migrator;
 
@@ -200,6 +202,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260822_000047_create_chapters::Migration),
             Box::new(m20260822_000048_add_provider_configuration::Migration),
             Box::new(m20260822_000049_create_media_segments::Migration),
+            Box::new(m20260824_000050_add_media_stream_color_range::Migration),
         ]
     }
 }

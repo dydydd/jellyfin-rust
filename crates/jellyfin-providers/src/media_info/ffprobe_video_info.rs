@@ -443,7 +443,11 @@ pub fn merge_bluray_info(
     fill_zero(&mut bluray.bit_rate, ffprobe.bit_rate);
     fill_zero(&mut bluray.width, ffprobe.width);
     fill_zero(&mut bluray.height, ffprobe.height);
+    bluray.color_range = ffprobe.color_range;
+    bluray.color_space = ffprobe.color_space;
     bluray.color_transfer = ffprobe.color_transfer;
+    bluray.color_primaries = ffprobe.color_primaries;
+    bluray.hdr10_plus_present_flag = ffprobe.hdr10_plus_present_flag;
     bluray.bit_depth = ffprobe.bit_depth;
 }
 

@@ -3,10 +3,12 @@ use std::sync::Arc;
 use axum::{
     Json,
     body::Body,
-    extract::{OriginalUri, Path, State},
+    extract::{OriginalUri, Path, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use jellyfin_model::PluginInfo;
+use serde_json::Value;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
@@ -56,4 +58,139 @@ pub(crate) async fn image(
         );
     }
     Ok(response)
+}
+
+pub(crate) async fn enable(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((plugin_id, version)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    if state
+        .plugins
+        .enable(plugin_id, &version)
+        .map_err(|_| ApiError::Internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+pub(crate) async fn disable(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((plugin_id, version)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    if state
+        .plugins
+        .disable(plugin_id, &version)
+        .map_err(|_| ApiError::Internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+pub(crate) async fn uninstall_version(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((plugin_id, version)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    if state
+        .plugins
+        .uninstall(plugin_id, Some(&version))
+        .map_err(|_| ApiError::Internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+pub(crate) async fn uninstall(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(plugin_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    if state
+        .plugins
+        .uninstall(plugin_id, None)
+        .map_err(|_| ApiError::Internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+pub(crate) async fn get_configuration(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(plugin_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    Ok(Json(
+        state
+            .plugins
+            .configuration(plugin_id)
+            .map_err(|_| ApiError::Internal)?
+            .ok_or(ApiError::NotFound)?,
+    ))
+}
+
+pub(crate) async fn update_configuration(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(plugin_id): Path<Uuid>,
+    request: Result<Json<Value>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    let Json(_configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
+    if state
+        .plugins
+        .configuration(plugin_id)
+        .map_err(|_| ApiError::Internal)?
+        .is_some()
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+pub(crate) async fn manifest(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(plugin_id): Path<Uuid>,
+) -> Result<Json<PluginInfo>, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    Ok(Json(
+        state
+            .plugins
+            .manifest(plugin_id)
+            .map_err(|_| ApiError::Internal)?
+            .ok_or(ApiError::NotFound)?,
+    ))
+}
+
+async fn require_elevated(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Result<(), ApiError> {
+    authentication::authenticated_identity(state, headers, Some(uri))
+        .await?
+        .require_administrator()
 }
