@@ -83,7 +83,9 @@ impl UserDataService {
             .get(item_id)
             .await?
             .ok_or(UserDataServiceError::ItemNotFound)?;
-        if !self.is_visible(&item, &user.policy).await? {
+        let policy: UserPolicy = serde_json::from_value(user.policy)
+            .map_err(UserDataServiceError::InvalidPolicy)?;
+        if !self.is_visible_with_policy(&item, &policy).await? {
             return Err(UserDataServiceError::ItemNotFound);
         }
         Ok(item)
@@ -285,8 +287,8 @@ impl UserDataService {
             Err(UserError::NotFound) => return Err(UserDataServiceError::UserNotFound),
             Err(error) => return Err(error.into()),
         };
-        let policy: UserPolicy = serde_json::from_value(user.policy.clone())
-            .map_err(UserDataServiceError::InvalidPolicy)?;
+        let policy: UserPolicy =
+            serde_json::from_value(user.policy).map_err(UserDataServiceError::InvalidPolicy)?;
         if !bypass_preference_gate && !policy.enable_user_preference_access {
             return Err(UserDataServiceError::Forbidden);
         }
@@ -322,23 +324,12 @@ impl UserDataService {
                 .await?
                 .ok_or(UserDataServiceError::ItemNotFound)?
         };
-        if !self.is_visible(&item, &user.policy).await? {
+        let policy: UserPolicy =
+            serde_json::from_value(user.policy).map_err(UserDataServiceError::InvalidPolicy)?;
+        if !self.is_visible_with_policy(&item, &policy).await? {
             return Err(UserDataServiceError::ItemNotFound);
         }
         Ok(item)
-    }
-
-    async fn is_visible(
-        &self,
-        item: &base_item::Model,
-        stored_policy: &serde_json::Value,
-    ) -> Result<bool, UserDataServiceError> {
-        if item.item_type == "UserRootFolder" {
-            return Ok(true);
-        }
-        let policy: UserPolicy = serde_json::from_value(stored_policy.clone())
-            .map_err(UserDataServiceError::InvalidPolicy)?;
-        self.is_visible_with_policy(item, &policy).await
     }
 
     async fn is_visible_with_policy(

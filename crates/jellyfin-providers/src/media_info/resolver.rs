@@ -1,5 +1,8 @@
 use jellyfin_model::{MediaProtocol, MediaStream, MediaStreamType, MimeTypes};
-use jellyfin_naming::{DlnaProfileType, ExternalPathParser, LocalizationManager, NamingOptions};
+use jellyfin_naming::{
+    DlnaProfileType, ExternalPathParser, ExternalPathParserResult, LocalizationManager,
+    NamingOptions,
+};
 
 /// A directory-service entry considered while resolving external media.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,21 +139,29 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
                 continue;
             };
 
+            let ExternalPathParserResult {
+                path,
+                language,
+                title,
+                is_default,
+                is_forced,
+                is_hearing_impaired,
+            } = path_info;
+            let mime_type = MimeTypes::get_mime_type(&path)
+                .unwrap_or_else(|_| "application/octet-stream".to_owned());
             let index_offset = i32::try_from(streams.len()).unwrap_or(i32::MAX);
             let stream = MediaStream {
                 index: request.start_index.saturating_add(index_offset),
                 stream_type: self.stream_type,
-                is_default: path_info.is_default,
-                is_forced: path_info.is_forced,
-                is_hearing_impaired: path_info.is_hearing_impaired,
+                is_default,
+                is_forced,
+                is_hearing_impaired,
                 is_external: true,
-                path: Some(path_info.path.clone()),
-                language: path_info.language,
-                title: path_info.title,
+                path: Some(path),
+                language,
+                title,
                 ..MediaStream::default()
             };
-            let mime_type = MimeTypes::get_mime_type(&path_info.path)
-                .unwrap_or_else(|_| "application/octet-stream".to_owned());
             streams.push(ResolvedExternalStream { stream, mime_type });
         }
 

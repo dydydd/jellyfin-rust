@@ -17,10 +17,10 @@ use jellyfin_controller::{
     MediaAttachmentServiceError, MediaSegmentError, MediaSegmentManagerService, MediaStreamService,
     MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
     MusicGenreService, PackageError, PackageService, PersonError, PersonService, PlaylistError,
-    PlaylistService, PlaystateError, PlaystateService, PluginRegistry, ScheduledTaskError,
-    ScheduledTaskService, StudioError, StudioService, SubtitleManager, SubtitleProvider,
-    SystemLogError, SystemLogService, SystemStorageService, TranscodeJobRegistry, TrickplayError,
-    TrickplayService, PostgresSessionStore, UserDataService, UserDataServiceError, UserError,
+    PlaylistService, PlaystateError, PlaystateService, PluginRegistry, PostgresSessionStore,
+    ScheduledTaskError, ScheduledTaskService, StudioError, StudioService, SubtitleManager,
+    SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService, TranscodeJobRegistry,
+    TrickplayError, TrickplayService, UserDataService, UserDataServiceError, UserError,
     UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
     UserViewManagerService, VideoError, VideoService, VirtualFolderService,
     VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
@@ -454,10 +454,10 @@ impl AppState {
     #[must_use]
     pub fn with_log_directory(mut self, log_directory: impl Into<std::path::PathBuf>) -> Self {
         let log_directory = log_directory.into();
-        self.system_logs = SystemLogService::new(log_directory.clone());
+        self.system_logs = SystemLogService::new(log_directory.as_path());
         self.client_event_logger = ClientEventLogger::new(log_directory);
         self.scheduled_tasks
-            .set_log_directory(self.system_logs.directory().to_path_buf());
+            .set_log_directory(self.system_logs.directory());
         self
     }
 
@@ -476,11 +476,11 @@ impl AppState {
         self.image_cache_directory = image_cache_directory.into();
         self.internal_metadata_directory = internal_metadata_directory.into();
         self.library_scan
-            .set_image_cache_directory(self.image_cache_directory.clone());
+            .set_image_cache_directory(self.image_cache_directory.as_path());
         self.item_images = ItemImageService::with_storage_directories(
             self.database.clone(),
-            self.image_cache_directory.clone(),
-            self.internal_metadata_directory.clone(),
+            self.image_cache_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
         );
         self.dto_images = PersistedDtoImageProjectionService::new(
             BaseItemRepository::new(self.database.clone()),
@@ -488,14 +488,14 @@ impl AppState {
             self.item_images.clone(),
         );
         self.image_processor =
-            ImageProcessor::with_concurrency::<4>(self.image_cache_directory.clone());
+            ImageProcessor::with_concurrency::<4>(self.image_cache_directory.as_path());
         self.trickplay = TrickplayService::new(
             self.database.clone(),
             self.program_data_directory.join("trickplay"),
         );
         self.cache_directory = cache_directory.into();
         self.scheduled_tasks
-            .set_cache_directory(self.cache_directory.clone());
+            .set_cache_directory(self.cache_directory.as_path());
         self
     }
 
@@ -521,7 +521,7 @@ impl AppState {
     ) -> Self {
         self.transcode_directory = transcode_directory.into();
         self.scheduled_tasks
-            .set_transcode_directory(self.transcode_directory.clone());
+            .set_transcode_directory(self.transcode_directory.as_path());
         self
     }
 
@@ -529,7 +529,8 @@ impl AppState {
     #[must_use]
     pub fn with_ffmpeg_path(mut self, ffmpeg_path: impl Into<std::path::PathBuf>) -> Self {
         self.ffmpeg_path = ffmpeg_path.into();
-        self.library_scan.set_ffmpeg_path(self.ffmpeg_path.clone());
+        self.library_scan
+            .set_ffmpeg_path(self.ffmpeg_path.as_path());
         self
     }
 
@@ -586,8 +587,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    let web_dir = state.web_directory.clone();
-    let index_path = web_dir.join("index.html");
+    let index_path = state.web_directory.join("index.html");
 
     let router = openapi::documented_routes()
         .merge(system_routes())
@@ -886,7 +886,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .nest_service(
             "/web",
-            ServeDir::new(&web_dir).fallback(ServeFile::new(&index_path)),
+            ServeDir::new(&state.web_directory).fallback(ServeFile::new(&index_path)),
         )
         .fallback(robots::redirect_or_not_found)
         .with_state(state.clone());
@@ -2471,7 +2471,9 @@ fn guide_refresh_error_response(error: &GuideRefreshError) -> (StatusCode, &'sta
     match error {
         GuideRefreshError::NoProvider
         | GuideRefreshError::InvalidProviderConfiguration
-        | GuideRefreshError::MissingToken => (StatusCode::NOT_FOUND, "Live TV guide refresh failed"),
+        | GuideRefreshError::MissingToken => {
+            (StatusCode::NOT_FOUND, "Live TV guide refresh failed")
+        }
         GuideRefreshError::Configuration(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Live TV guide configuration failed",

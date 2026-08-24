@@ -137,10 +137,6 @@ impl AudioResolver {
         let resolved =
             AudioBookListResolver::new(self.naming_options.clone()).resolve(&naming_files);
         let is_in_mixed_folder = resolved.len() > 1 || parent.is_top_parent();
-        let items = resolved
-            .iter()
-            .filter_map(|book| displayable_item(book, parse_name, is_in_mixed_folder))
-            .collect();
 
         let mut extra_files = directories;
         extra_files.extend(
@@ -148,13 +144,17 @@ impl AudioResolver {
                 .into_iter()
                 .filter(|entry| !contains_file(&resolved, &entry.full_name)),
         );
+        let items = resolved
+            .into_iter()
+            .filter_map(|book| displayable_item(book, parse_name, is_in_mixed_folder))
+            .collect();
 
         Some(MultipleAudioResolverResult { items, extra_files })
     }
 }
 
 fn displayable_item(
-    book: &AudioBookInfo,
+    book: AudioBookInfo,
     parse_name: bool,
     is_in_mixed_folder: bool,
 ) -> Option<ResolvedAudioBook> {
@@ -162,14 +162,16 @@ fn displayable_item(
         return None;
     }
 
-    let media = &book.files[0];
+    let media = book.files.into_iter().next()?;
+    let path = media.path;
+    let name = if parse_name {
+        book.name
+    } else {
+        file_stem(file_name(&path)).to_owned()
+    };
     Some(ResolvedAudioBook {
-        path: media.path.clone(),
-        name: if parse_name {
-            book.name.clone()
-        } else {
-            file_stem(file_name(&media.path)).to_owned()
-        },
+        path,
+        name,
         production_year: book.year,
         is_in_mixed_folder,
     })

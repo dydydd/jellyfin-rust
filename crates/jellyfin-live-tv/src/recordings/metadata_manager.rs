@@ -271,7 +271,7 @@ impl RecordingsMetadataManager {
         let nfo_path = self.resolve_existing_file(&nfo_path)?;
         let input = fs::read_to_string(&nfo_path).map_err(|source| RecordingMetadataError::Io {
             operation: "read recording NFO",
-            path: nfo_path.clone(),
+            path: nfo_path,
             source,
         })?;
         let document = Document::parse(&input)
@@ -305,11 +305,16 @@ impl RecordingsMetadataManager {
 
     fn resolve_recording_file(&self, path: &Path) -> Result<PathBuf, RecordingMetadataError> {
         let resolved = self.resolve_existing_path(path)?;
-        let metadata = fs::metadata(&resolved).map_err(|source| RecordingMetadataError::Io {
-            operation: "inspect recording",
-            path: resolved.clone(),
-            source,
-        })?;
+        let metadata = match fs::metadata(&resolved) {
+            Ok(metadata) => metadata,
+            Err(source) => {
+                return Err(RecordingMetadataError::Io {
+                    operation: "inspect recording",
+                    path: resolved,
+                    source,
+                });
+            }
+        };
         if !metadata.is_file() {
             return Err(RecordingMetadataError::NotAFile(resolved));
         }
@@ -318,11 +323,16 @@ impl RecordingsMetadataManager {
 
     fn resolve_series_directory(&self, path: &Path) -> Result<PathBuf, RecordingMetadataError> {
         let resolved = self.resolve_existing_path(path)?;
-        let metadata = fs::metadata(&resolved).map_err(|source| RecordingMetadataError::Io {
-            operation: "inspect series directory",
-            path: resolved.clone(),
-            source,
-        })?;
+        let metadata = match fs::metadata(&resolved) {
+            Ok(metadata) => metadata,
+            Err(source) => {
+                return Err(RecordingMetadataError::Io {
+                    operation: "inspect series directory",
+                    path: resolved,
+                    source,
+                });
+            }
+        };
         if !metadata.is_dir() {
             return Err(RecordingMetadataError::NotADirectory(resolved));
         }
@@ -364,22 +374,29 @@ impl RecordingsMetadataManager {
         } else {
             self.recording_root.join(path)
         };
-        let relative = candidate.strip_prefix(&self.recording_root).map_err(|_| {
-            RecordingMetadataError::OutsideRecordingRoot {
-                root: self.recording_root.clone(),
-                path: candidate.clone(),
+        let relative = match candidate.strip_prefix(&self.recording_root) {
+            Ok(relative) => relative,
+            Err(_) => {
+                return Err(RecordingMetadataError::OutsideRecordingRoot {
+                    root: self.recording_root.clone(),
+                    path: candidate,
+                });
             }
-        })?;
+        };
 
         let mut current = self.recording_root.clone();
         for component in relative.components() {
             current.push(component);
-            let metadata =
-                fs::symlink_metadata(&current).map_err(|source| RecordingMetadataError::Io {
-                    operation: "inspect path component",
-                    path: current.clone(),
-                    source,
-                })?;
+            let metadata = match fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                Err(source) => {
+                    return Err(RecordingMetadataError::Io {
+                        operation: "inspect path component",
+                        path: current,
+                        source,
+                    });
+                }
+            };
             if metadata.file_type().is_symlink() {
                 return Err(RecordingMetadataError::SymbolicLink(current));
             }

@@ -120,22 +120,16 @@ pub(crate) async fn create(
     if owner_user_id.is_nil() {
         return Err(ApiError::InvalidRequest);
     }
-    let name = query
-        .name
-        .or_else(|| body.as_ref()?.name.clone())
-        .ok_or(ApiError::InvalidRequest)?;
+    let body = body.unwrap_or_default();
+    let name = query.name.or(body.name).ok_or(ApiError::InvalidRequest)?;
     let ids = if query.ids.is_empty() {
-        body.as_ref().map_or_else(Vec::new, |body| body.ids.clone())
+        body.ids
     } else {
         query.ids
     };
-    let media_type = query
-        .media_type
-        .or_else(|| body.as_ref()?.media_type.clone());
-    let shares = body.as_ref().map_or(&[][..], |body| body.users.as_slice());
-    let is_public = body
-        .as_ref()
-        .is_some_and(|body| body.is_public.unwrap_or(true));
+    let media_type = query.media_type.or(body.media_type);
+    let shares = body.users.as_slice();
+    let is_public = body.is_public.unwrap_or(true);
     let id = state
         .playlists
         .create(name, owner_user_id, is_public, media_type, shares, &ids)

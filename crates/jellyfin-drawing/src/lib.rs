@@ -433,13 +433,14 @@ pub async fn create_collage(options: ImageCollageOptions) -> Result<PathBuf, Ima
     }
     tokio::task::spawn_blocking(move || {
         let canvas = build_collage(&options)?;
-        canvas
-            .save_with_format(&options.output_path, image::ImageFormat::Jpeg)
-            .map_err(|source| ImageProcessingError::Encode {
-                path: options.output_path.clone(),
+        let output_path = options.output_path;
+        if let Err(source) = canvas.save_with_format(&output_path, image::ImageFormat::Jpeg) {
+            return Err(ImageProcessingError::Encode {
+                path: output_path,
                 source,
-            })?;
-        Ok(options.output_path)
+            });
+        }
+        Ok(output_path)
     })
     .await?
 }
@@ -448,22 +449,23 @@ fn build_collage(options: &ImageCollageOptions) -> Result<DynamicImage, ImagePro
     let inputs = options
         .input_paths
         .iter()
+        .cloned()
         .map(|path| {
-            ImageReader::open(path)
-                .map_err(|source| ImageProcessingError::FileAccess {
-                    path: path.clone(),
-                    source,
-                })?
-                .with_guessed_format()
-                .map_err(|source| ImageProcessingError::FileAccess {
-                    path: path.clone(),
-                    source,
-                })?
+            let reader = match ImageReader::open(&path) {
+                Ok(reader) => reader,
+                Err(source) => {
+                    return Err(ImageProcessingError::FileAccess { path, source });
+                }
+            };
+            let reader = match reader.with_guessed_format() {
+                Ok(reader) => reader,
+                Err(source) => {
+                    return Err(ImageProcessingError::FileAccess { path, source });
+                }
+            };
+            reader
                 .decode()
-                .map_err(|source| ImageProcessingError::Decode {
-                    path: path.clone(),
-                    source,
-                })
+                .map_err(|source| ImageProcessingError::Decode { path, source })
         })
         .collect::<Result<Vec<_>, _>>()?;
 

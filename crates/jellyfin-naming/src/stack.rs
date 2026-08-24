@@ -106,30 +106,26 @@ pub struct StackResolver;
 
 impl StackResolver {
     #[must_use]
-    pub fn resolve_audio_books(files: &[AudioBookFileInfo]) -> Vec<FileStack> {
+    pub fn resolve_audio_books(files: Vec<AudioBookFileInfo>) -> Vec<FileStack> {
         let mut stacks: Vec<(String, FileStack)> = Vec::new();
         for file in files {
             let directory = parent_path(&file.path);
             if directory.is_empty() {
-                stacks.push((
-                    file.path.clone(),
-                    FileStack::new(
-                        file_stem(file_name(&file.path)),
-                        false,
-                        vec![file.path.clone()],
-                    ),
-                ));
+                let path = file.path;
+                let name = file_stem(file_name(&path)).to_owned();
+                stacks.push((path.clone(), FileStack::new(name, false, vec![path])));
                 continue;
             }
             if let Some((_, stack)) = stacks
                 .iter_mut()
                 .find(|(candidate, _)| candidate == directory)
             {
-                stack.files.push(file.path.clone());
+                stack.files.push(file.path);
             } else {
+                let name = file_name(directory).to_owned();
                 stacks.push((
                     directory.to_owned(),
-                    FileStack::new(file_name(directory), false, vec![file.path.clone()]),
+                    FileStack::new(name, false, vec![file.path]),
                 ));
             }
         }
@@ -142,7 +138,7 @@ impl StackResolver {
             .iter()
             .map(|path| StackFileInfo::new(path.as_ref(), false))
             .collect::<Vec<_>>();
-        Self::resolve(&entries, options)
+        Self::resolve_owned(entries, options)
     }
 
     #[must_use]
@@ -154,13 +150,27 @@ impl StackResolver {
             .iter()
             .map(|path| StackFileInfo::new(path.as_ref(), true))
             .collect::<Vec<_>>();
-        Self::resolve(&entries, options)
+        Self::resolve_owned(entries, options)
     }
 
     #[must_use]
     pub fn resolve(files: &[StackFileInfo], options: &NamingOptions) -> Vec<FileStack> {
-        let mut files = files
+        let files = files
             .iter()
+            .filter(|file| {
+                file.is_directory
+                    || VideoResolver::is_video_file(&file.path, options)
+                    || VideoResolver::is_stub_file(&file.path, options)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        Self::resolve_owned(files, options)
+    }
+
+    #[must_use]
+    pub fn resolve_owned(files: Vec<StackFileInfo>, options: &NamingOptions) -> Vec<FileStack> {
+        let mut files = files
+            .into_iter()
             .filter(|file| {
                 file.is_directory
                     || VideoResolver::is_video_file(&file.path, options)
@@ -195,9 +205,7 @@ impl StackResolver {
                     if candidate.is_numerical != rule.is_numerical {
                         break;
                     }
-                    candidate
-                        .parts
-                        .push((parsed.part_number, file.path.clone()));
+                    candidate.parts.push((parsed.part_number, file.path));
                 } else {
                     candidates.push(StackCandidate {
                         name: parsed.stack_name,
@@ -205,7 +213,7 @@ impl StackResolver {
                         part_type: parsed.part_type,
                         is_numerical: rule.is_numerical,
                         is_directory: file.is_directory,
-                        parts: vec![(parsed.part_number, file.path.clone())],
+                        parts: vec![(parsed.part_number, file.path)],
                     });
                 }
                 break;

@@ -176,11 +176,11 @@ impl ScheduledTaskService {
     /// # Panics
     ///
     /// Panics if the internal path lock is poisoned.
-    pub fn set_log_directory(&self, path: PathBuf) {
+    pub fn set_log_directory(&self, path: impl Into<PathBuf>) {
         self.paths
             .write()
             .expect("scheduled task paths lock poisoned")
-            .log_directory = path;
+            .log_directory = path.into();
     }
 
     /// Updates the cache directory used by maintenance tasks.
@@ -188,11 +188,11 @@ impl ScheduledTaskService {
     /// # Panics
     ///
     /// Panics if the internal path lock is poisoned.
-    pub fn set_cache_directory(&self, path: PathBuf) {
+    pub fn set_cache_directory(&self, path: impl Into<PathBuf>) {
         self.paths
             .write()
             .expect("scheduled task paths lock poisoned")
-            .cache_directory = path;
+            .cache_directory = path.into();
     }
 
     /// Updates the transcode directory used by maintenance tasks.
@@ -200,11 +200,11 @@ impl ScheduledTaskService {
     /// # Panics
     ///
     /// Panics if the internal path lock is poisoned.
-    pub fn set_transcode_directory(&self, path: PathBuf) {
+    pub fn set_transcode_directory(&self, path: impl Into<PathBuf>) {
         self.paths
             .write()
             .expect("scheduled task paths lock poisoned")
-            .transcode_directory = path;
+            .transcode_directory = path.into();
     }
 
     /// Updates the log-file retention window used by maintenance tasks.
@@ -542,7 +542,7 @@ fn clean_log_files_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTas
         Box::pin(async move {
             let paths = context.paths();
             let log_directory = paths.log_directory.clone();
-            let logs = SystemLogService::new(log_directory.clone());
+            let logs = SystemLogService::new(log_directory.as_path());
             let cutoff = Utc::now() - Duration::days(paths.log_file_retention_days.max(0).into());
             let candidates = logs
                 .list()
@@ -798,7 +798,7 @@ mod tests {
         set_modified(&old, UNIX_EPOCH);
 
         let service = ScheduledTaskService::new(vec![test_task("CleanLogFiles")]);
-        service.set_log_directory(root.clone());
+        service.set_log_directory(root.as_path());
         service.register_executor("CleanLogFiles", clean_log_files_handler());
 
         service.start("CleanLogFiles").await.unwrap();
@@ -824,8 +824,8 @@ mod tests {
         set_modified(&old_transcode, UNIX_EPOCH);
 
         let service = ScheduledTaskService::new(vec![test_task("DeleteCacheFiles")]);
-        service.set_cache_directory(cache.clone());
-        service.set_transcode_directory(transcode.clone());
+        service.set_cache_directory(cache.as_path());
+        service.set_transcode_directory(transcode.as_path());
         service.register_executor("DeleteCacheFiles", delete_cache_files_handler());
 
         service.start("DeleteCacheFiles").await.unwrap();

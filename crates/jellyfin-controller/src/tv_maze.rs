@@ -66,7 +66,7 @@ impl TvMazeClient {
             .await?;
         Ok(response
             .into_iter()
-            .map(|result| show_to_remote_result(&result.show))
+            .map(|result| show_to_remote_result(result.show))
             .collect())
     }
 
@@ -253,20 +253,19 @@ impl TvMazeMetadataProvider {
     }
 }
 
-fn show_to_remote_result(show: &TvMazeShow) -> RemoteSearchResult {
+fn show_to_remote_result(show: TvMazeShow) -> RemoteSearchResult {
+    let provider_ids = show_provider_ids(&show).into_iter().collect();
+    let image_url = show.image.and_then(|image| image.original.or(image.medium));
+    let overview = show.summary.as_deref().map(strip_html);
     RemoteSearchResult {
-        name: show.name.clone(),
+        name: show.name,
         r#type: Some("Series".to_owned()),
-        provider_ids: show_provider_ids(show).into_iter().collect(),
+        provider_ids,
         production_year: parse_year(show.premiered.as_deref()),
         premiere_date: parse_date(show.premiered.as_deref()),
-        image_url: show
-            .image
-            .as_ref()
-            .and_then(|image| image.original.as_deref().or(image.medium.as_deref()))
-            .map(str::to_owned),
+        image_url,
         search_provider_name: Some(TV_MAZE_PROVIDER_NAME.to_owned()),
-        overview: show.summary.as_deref().map(strip_html),
+        overview,
         ..RemoteSearchResult::default()
     }
 }
@@ -459,7 +458,7 @@ mod tests {
             ..TvMazeShow::default()
         };
 
-        let result = show_to_remote_result(&show);
+        let result = show_to_remote_result(show);
         assert_eq!(result.name.as_deref(), Some("Game of Thrones"));
         assert_eq!(result.provider_ids["TvMaze"], "82");
         assert_eq!(result.provider_ids["Tvdb"], "121361");

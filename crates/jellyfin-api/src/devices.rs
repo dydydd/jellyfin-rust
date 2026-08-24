@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -52,7 +52,11 @@ pub(crate) async fn list(
             serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
         devices.retain(|device| can_access_device(&policy, device));
     }
-    devices.sort_by_key(|device| (Reverse(device.date_last_activity), device.device_id.clone()));
+    devices.sort_by(|a, b| {
+        b.date_last_activity
+            .cmp(&a.date_last_activity)
+            .then_with(|| a.device_id.cmp(&b.device_id))
+    });
     let options = device_options_by_id(&state, &devices).await?;
 
     let mut items = Vec::with_capacity(devices.len());

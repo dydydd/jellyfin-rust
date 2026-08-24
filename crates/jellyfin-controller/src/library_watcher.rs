@@ -46,10 +46,10 @@ impl LibraryWatcher {
         let mut watcher =
             RecommendedWatcher::new(tx, Config::default()).map_err(LibraryWatcherError::Notify)?;
 
-        for path in &self.paths {
-            watcher
-                .watch(path, RecursiveMode::Recursive)
-                .map_err(|e| LibraryWatcherError::Watch(path.clone(), e))?;
+        for path in self.paths {
+            if let Err(error) = watcher.watch(&path, RecursiveMode::Recursive) {
+                return Err(LibraryWatcherError::Watch(path, error));
+            }
             tracing::info!(path = %path.display(), "watching library directory");
         }
 

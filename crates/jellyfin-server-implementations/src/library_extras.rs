@@ -301,7 +301,7 @@ impl LibraryExtrasResolver {
                 .filter(|entry| !entry.is_directory)
                 .map(|entry| StackFileInfo::new(&entry.full_name, false)),
         );
-        StackResolver::resolve(&files, &self.naming_options)
+        StackResolver::resolve_owned(files, &self.naming_options)
             .into_iter()
             .find(|stack| stack.contains_file(&owner.path, false))
             .map_or_else(|| vec![owner.path.clone()], |stack| stack.files)

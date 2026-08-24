@@ -238,12 +238,12 @@ impl EpisodeMetadataService {
 
         if let Some(provider_result) = provider_result.filter(|result| result.has_metadata) {
             let mut target = EpisodeMetadataResult {
-                item: episode.clone(),
+                item: std::mem::take(episode),
                 has_metadata: false,
             };
             Self::merge_data(&provider_result, &mut target, options.replace_data, true);
             let existing = EpisodeMetadataResult {
-                item: episode.clone(),
+                item: original.clone(),
                 has_metadata: true,
             };
             Self::merge_data(&existing, &mut target, false, false);
