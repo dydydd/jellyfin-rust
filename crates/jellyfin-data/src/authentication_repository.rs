@@ -324,6 +324,30 @@ impl DeviceRepository {
             .rows_affected)
     }
 
+    /// Deletes every authentication record for a user on an exact device.
+    ///
+    /// The device identifier is compared case-insensitively, matching the
+    /// device lookup used by the rest of this repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when deletion fails.
+    pub async fn delete_by_user_and_device(
+        &self,
+        user_id: Uuid,
+        device_id: &str,
+    ) -> Result<u64, AuthenticationStoreError> {
+        Ok(device::Entity::delete_many()
+            .filter(device::Column::UserId.eq(user_id))
+            .filter(Expr::cust_with_values(
+                "lower(device_id) = lower($1::text)",
+                [device_id.to_owned()],
+            ))
+            .exec(&self.database)
+            .await?
+            .rows_affected)
+    }
+
     /// Returns devices matching the supplied exact filters.
     ///
     /// A limit of zero matches upstream behavior and means no limit.

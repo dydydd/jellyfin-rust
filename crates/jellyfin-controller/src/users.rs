@@ -500,8 +500,9 @@ impl UserService {
             serde_json::from_value(target.policy).map_err(UserError::PolicySerialization)?;
         let attempts = policy.invalid_login_attempt_count.saturating_add(1);
         policy.invalid_login_attempt_count = attempts;
-        let lockout = policy.login_attempts_before_lockout > 0
-            && attempts >= policy.login_attempts_before_lockout;
+        policy.login_attempts_before_lockout =
+            normalized_login_attempts(policy.login_attempts_before_lockout);
+        let lockout = should_lockout(policy.login_attempts_before_lockout, attempts);
         let is_disabled = if lockout && !target.is_administrator {
             policy.is_disabled = true;
             true
@@ -629,11 +630,14 @@ impl UserService {
         id: Uuid,
         policy: &UserPolicy,
     ) -> Result<(user::Model, bool), UserError> {
+        let mut policy = policy.clone();
+        policy.login_attempts_before_lockout =
+            normalized_login_attempts(policy.login_attempts_before_lockout);
         let authentication_provider_id =
             validate_policy_provider_id(policy.authentication_provider_id.as_deref())?;
         let password_reset_provider_id =
             validate_policy_provider_id(policy.password_reset_provider_id.as_deref())?;
-        let serialized = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+        let serialized = serde_json::to_value(&policy).map_err(UserError::PolicySerialization)?;
 
         let transaction = self.database.begin().await?;
         transaction
@@ -840,6 +844,18 @@ where
             .await?;
     }
     Ok(())
+}
+
+const fn normalized_login_attempts(value: i32) -> i32 {
+    match value {
+        -1 => -1,
+        0 => 3,
+        value => value,
+    }
+}
+
+const fn should_lockout(max_attempts: i32, attempts: i32) -> bool {
+    max_attempts != -1 && attempts >= max_attempts
 }
 
 fn normalize_username(name: &str) -> String {

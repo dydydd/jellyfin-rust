@@ -7,7 +7,7 @@ use uuid::Uuid;
 pub type SessionStoreFuture<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;
 
 /// Client metadata supplied when authenticating a new session.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticationRequest {
     pub app: Option<String>,
     pub device_id: Option<String>,
@@ -15,6 +15,7 @@ pub struct AuthenticationRequest {
     pub app_version: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
+    pub is_local_network: bool,
 }
 
 impl AuthenticationRequest {
@@ -33,6 +34,7 @@ impl AuthenticationRequest {
             app_version: Some(app_version.into()),
             username: None,
             password: None,
+            is_local_network: true,
         }
     }
 
@@ -53,6 +55,21 @@ impl AuthenticationRequest {
             app_version: Some(app_version.into()),
             username: Some(username.into()),
             password: Some(password.into()),
+            is_local_network: true,
+        }
+    }
+}
+
+impl Default for AuthenticationRequest {
+    fn default() -> Self {
+        Self {
+            app: None,
+            device_id: None,
+            device_name: None,
+            app_version: None,
+            username: None,
+            password: None,
+            is_local_network: true,
         }
     }
 }
@@ -66,6 +83,7 @@ pub struct ValidatedAuthenticationRequest {
     app_version: String,
     username: Option<String>,
     password: Option<String>,
+    is_local_network: bool,
 }
 
 impl ValidatedAuthenticationRequest {
@@ -97,6 +115,11 @@ impl ValidatedAuthenticationRequest {
     #[must_use]
     pub fn password(&self) -> Option<&str> {
         self.password.as_deref()
+    }
+
+    #[must_use]
+    pub const fn is_local_network(&self) -> bool {
+        self.is_local_network
     }
 }
 
@@ -252,6 +275,7 @@ fn validate_authentication_request(
         )?,
         username: request.username.clone(),
         password: request.password.clone(),
+        is_local_network: request.is_local_network,
     })
 }
 

@@ -1,9 +1,10 @@
 use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike, Weekday};
 use jellyfin_data::{
-    ActivityLogRepository, AuthenticationStoreError, DeviceRepository, NewActivityLog, NewDevice,
+    ActivityLogRepository, AuthenticationStoreError, DeviceQuery, DeviceRepository, NewActivityLog,
+    NewDevice,
     entities::{activity_log::LogSeverity, device, user},
 };
-use jellyfin_model::{DynamicDayOfWeek, UserPolicy};
+use jellyfin_model::{ClientCapabilitiesDto, DynamicDayOfWeek, UserPolicy};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, SessionStore, SessionStoreFuture,
     ValidatedAuthenticationRequest,
@@ -32,6 +33,12 @@ pub enum PostgresSessionStoreError {
     UnsupportedAuthenticationProvider,
     #[error("the user is currently blocked by parental control")]
     ParentalSchedule,
+    #[error("the user is not allowed remote access")]
+    RemoteAccess,
+    #[error("the user is not allowed access from this device")]
+    DeviceAccessDenied,
+    #[error("the user is at their maximum number of sessions")]
+    MaxActiveSessions,
     #[error(transparent)]
     User(#[from] UserError),
     #[error(transparent)]
@@ -86,8 +93,12 @@ impl SessionStore for PostgresSessionStore {
         _enforce_password: bool,
     ) -> SessionStoreFuture<'_, Self::AuthenticationResult, Self::Error> {
         Box::pin(async move {
-            let username = request.username().ok_or(PostgresSessionStoreError::MissingCredentials)?;
-            let password = request.password().ok_or(PostgresSessionStoreError::MissingCredentials)?;
+            let username = request
+                .username()
+                .ok_or(PostgresSessionStoreError::MissingCredentials)?;
+            let password = request
+                .password()
+                .ok_or(PostgresSessionStoreError::MissingCredentials)?;
             let mut user = self
                 .users
                 .get_by_name(username)
@@ -119,27 +130,51 @@ impl SessionStore for PostgresSessionStore {
                 Ok(user) => user,
                 Err(AuthenticationError::InvalidCredentials) => {
                     let _ = self.users.record_failed_authentication(user_id).await;
-                    self.log_activity(
-                        NewActivityLog {
-                            log_severity: LogSeverity::Error,
-                            ..NewActivityLog::new(
-                                format!("Failed login attempt for {logged_username}"),
-                                "AuthenticationFailed",
-                                user_id,
-                            )
-                        },
-                    );
+                    self.log_activity(NewActivityLog {
+                        log_severity: LogSeverity::Error,
+                        ..NewActivityLog::new(
+                            format!("Failed login attempt for {logged_username}"),
+                            "AuthenticationFailed",
+                            user_id,
+                        )
+                    });
                     return Err(PostgresSessionStoreError::InvalidCredentials);
                 }
                 Err(error) => return Err(error.into()),
             };
 
             let policy: UserPolicy = serde_json::from_value(user.policy.clone())?;
+            if !policy.enable_remote_access && !request.is_local_network() {
+                return Err(PostgresSessionStoreError::RemoteAccess);
+            }
             if !is_parental_schedule_allowed(&policy, Local::now().fixed_offset()) {
                 return Err(PostgresSessionStoreError::ParentalSchedule);
             }
 
             let user = self.users.record_successful_authentication(&user).await?;
+            if !self
+                .can_access_device(&policy, user.is_administrator, request.device_id())
+                .await?
+            {
+                return Err(PostgresSessionStoreError::DeviceAccessDenied);
+            }
+            let active_sessions = self
+                .devices
+                .query(&DeviceQuery {
+                    user_id: Some(user.id),
+                    is_active: Some(true),
+                    ..DeviceQuery::default()
+                })
+                .await?
+                .total_record_count;
+            let at_max = u32::try_from(policy.max_active_sessions)
+                .is_ok_and(|max| max > 0 && active_sessions >= u64::from(max));
+            if at_max {
+                return Err(PostgresSessionStoreError::MaxActiveSessions);
+            }
+            self.devices
+                .delete_by_user_and_device(user.id, request.device_id())
+                .await?;
             let device = self
                 .devices
                 .create_session(NewDevice::new(
@@ -171,6 +206,9 @@ impl SessionStore for PostgresSessionStore {
         request: jellyfin_server_implementations::AuthorizationTokenRequest,
     ) -> SessionStoreFuture<'_, String, Self::Error> {
         Box::pin(async move {
+            self.devices
+                .delete_by_user_and_device(request.user_id, &request.device_id)
+                .await?;
             let device = self
                 .devices
                 .create_session(NewDevice::new(
@@ -187,6 +225,35 @@ impl SessionStore for PostgresSessionStore {
 }
 
 impl PostgresSessionStore {
+    async fn can_access_device(
+        &self,
+        policy: &UserPolicy,
+        is_administrator: bool,
+        device_id: &str,
+    ) -> Result<bool, AuthenticationStoreError> {
+        if policy.enable_all_devices || is_administrator {
+            return Ok(true);
+        }
+        if policy
+            .enabled_devices
+            .iter()
+            .any(|enabled| enabled.eq_ignore_ascii_case(device_id))
+        {
+            return Ok(true);
+        }
+
+        let supports_persistent_identifier = self
+            .devices
+            .latest_by_device_id(device_id)
+            .await?
+            .is_none_or(|existing| {
+                serde_json::from_value::<ClientCapabilitiesDto>(existing.capabilities)
+                    .unwrap_or_default()
+                    .supports_persistent_identifier
+            });
+        Ok(!supports_persistent_identifier)
+    }
+
     fn log_activity(&self, entry: NewActivityLog) {
         let repository = self.activity_logs.clone();
         tokio::spawn(async move {

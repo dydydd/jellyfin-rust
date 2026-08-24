@@ -34,7 +34,17 @@ pub(crate) async fn require_default(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<AuthenticatedIdentity, ApiError> {
+    require_default_with_remote(state, headers, uri, IpAddr::V4(Ipv4Addr::LOCALHOST)).await
+}
+
+pub(crate) async fn require_default_with_remote(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    remote_ip: IpAddr,
+) -> Result<AuthenticatedIdentity, ApiError> {
     let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
+    identity.require_remote_access(state, remote_ip)?;
     identity.require_parental_schedule(Local::now().fixed_offset())?;
     Ok(identity)
 }
@@ -45,7 +55,24 @@ pub(crate) async fn require_ignore_parental_control(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<AuthenticatedIdentity, ApiError> {
-    authentication::authenticated_identity(state, headers, Some(uri)).await
+    require_ignore_parental_control_with_remote(
+        state,
+        headers,
+        uri,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+    )
+    .await
+}
+
+pub(crate) async fn require_ignore_parental_control_with_remote(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    remote_ip: IpAddr,
+) -> Result<AuthenticatedIdentity, ApiError> {
+    let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
+    identity.require_remote_access(state, remote_ip)?;
+    Ok(identity)
 }
 
 /// Applies Jellyfin's startup-wizard-or-elevated authorization policy.
@@ -74,12 +101,27 @@ pub(crate) async fn require_first_time_setup_or_default(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<(), ApiError> {
+    require_first_time_setup_or_default_with_remote(
+        state,
+        headers,
+        uri,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+    )
+    .await
+}
+
+pub(crate) async fn require_first_time_setup_or_default_with_remote(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    remote_ip: IpAddr,
+) -> Result<(), ApiError> {
     let startup_completed = crate::startup::is_completed(state).await?;
     if !startup_completed {
         return Ok(());
     }
 
-    require_default(state, headers, uri).await?;
+    require_default_with_remote(state, headers, uri, remote_ip).await?;
     Ok(())
 }
 
@@ -109,6 +151,7 @@ pub(crate) async fn require_route_auth(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
+    let remote_ip = remote_ip(request.extensions().get::<ConnectInfo<SocketAddr>>());
     match route_policy(request.method(), request.uri().path()) {
         RoutePolicy::Public => Ok(next.run(request).await),
         RoutePolicy::Optional => {
@@ -121,11 +164,18 @@ pub(crate) async fn require_route_auth(
             Ok(next.run(request).await)
         }
         RoutePolicy::Default => {
-            require_default(&state, request.headers(), request.uri()).await?;
+            require_default_with_remote(&state, request.headers(), request.uri(), remote_ip)
+                .await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::IgnoreParentalControl => {
-            require_ignore_parental_control(&state, request.headers(), request.uri()).await?;
+            require_ignore_parental_control_with_remote(
+                &state,
+                request.headers(),
+                request.uri(),
+                remote_ip,
+            )
+            .await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::FirstTimeSetupOrIgnoreParentalControl => {
@@ -138,37 +188,66 @@ pub(crate) async fn require_route_auth(
             Ok(next.run(request).await)
         }
         RoutePolicy::FirstTimeSetupOrDefault => {
-            require_first_time_setup_or_default(&state, request.headers(), request.uri()).await?;
+            require_first_time_setup_or_default_with_remote(
+                &state,
+                request.headers(),
+                request.uri(),
+                remote_ip,
+            )
+            .await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::FirstTimeSetupOrElevated => {
-            require_first_time_setup_or_elevated(&state, request.headers(), request.uri()).await?;
+            require_first_time_setup_or_elevated_with_remote(
+                &state,
+                request.headers(),
+                request.uri(),
+                remote_ip,
+            )
+            .await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::Elevated => {
-            authentication::authenticated_identity(&state, request.headers(), Some(request.uri()))
-                .await?
-                .require_administrator()?;
+            require_elevated_with_remote(&state, request.headers(), request.uri(), remote_ip)
+                .await?;
             Ok(next.run(request).await)
         }
         RoutePolicy::LocalOrElevated => {
-            let connect_info = request
-                .extensions()
-                .get::<ConnectInfo<SocketAddr>>()
-                .copied();
-            if state
-                .network_manager
-                .is_in_local_network(remote_ip(connect_info.as_ref()))
-            {
+            if state.network_manager.is_in_local_network(remote_ip) {
                 return Ok(next.run(request).await);
             }
 
-            authentication::authenticated_identity(&state, request.headers(), Some(request.uri()))
-                .await?
-                .require_administrator()?;
+            require_elevated_with_remote(&state, request.headers(), request.uri(), remote_ip)
+                .await?;
             Ok(next.run(request).await)
         }
     }
+}
+
+async fn require_first_time_setup_or_elevated_with_remote(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    remote_ip: IpAddr,
+) -> Result<(), ApiError> {
+    let startup_completed = crate::startup::is_completed(state).await?;
+    if !startup_completed {
+        return Ok(());
+    }
+
+    require_elevated_with_remote(state, headers, uri, remote_ip).await
+}
+
+async fn require_elevated_with_remote(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    remote_ip: IpAddr,
+) -> Result<(), ApiError> {
+    let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
+    identity.require_remote_access(state, remote_ip)?;
+    identity.require_administrator()?;
+    Ok(())
 }
 
 #[allow(clippy::match_same_arms)]

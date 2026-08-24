@@ -1,8 +1,14 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
+use axum::http::request::Parts;
 use axum::{
     Json,
-    extract::{Path, Query, State, rejection::JsonRejection},
+    extract::{ConnectInfo, FromRequestParts, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, Uri, header},
 };
 use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc, Weekday};
@@ -47,15 +53,37 @@ pub struct AuthenticationResult {
     server_id: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RemoteIp(IpAddr);
+
+impl<S: Sync> FromRequestParts<S> for RemoteIp {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let ip = parts.extensions.get::<ConnectInfo<SocketAddr>>().map_or(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            |info| match info.0.ip() {
+                IpAddr::V6(address) => address
+                    .to_ipv4_mapped()
+                    .map_or(IpAddr::V6(address), IpAddr::V4),
+                address @ IpAddr::V4(_) => address,
+            },
+        );
+        Ok(Self(ip))
+    }
+}
+
 pub(crate) async fn authenticate_by_name(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    remote_ip: RemoteIp,
     request: Result<Json<AuthenticateUserByName>, JsonRejection>,
 ) -> Result<Json<AuthenticationResult>, ApiError> {
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     authenticate_username_password(
         &state,
         &headers,
+        remote_ip.0,
         request.username.unwrap_or_default(),
         request.pw.unwrap_or_default(),
     )
@@ -65,6 +93,7 @@ pub(crate) async fn authenticate_by_name(
 pub(crate) async fn authenticate(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    remote_ip: RemoteIp,
     Path(user_id): Path<Uuid>,
     Query(query): Query<AuthenticateUserQuery>,
     request: Result<Json<AuthenticateUserByName>, JsonRejection>,
@@ -72,17 +101,18 @@ pub(crate) async fn authenticate(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let password = request.pw.or(query.pw).ok_or(ApiError::InvalidRequest)?;
     let user = state.users.get(user_id).await?;
-    authenticate_username_password(&state, &headers, user.username, password).await
+    authenticate_username_password(&state, &headers, remote_ip.0, user.username, password).await
 }
 
 async fn authenticate_username_password(
     state: &AppState,
     headers: &HeaderMap,
+    remote_ip: IpAddr,
     username: String,
     password: String,
 ) -> Result<Json<AuthenticationResult>, ApiError> {
     let client = ClientMetadata::from_headers(headers)?;
-    let request = jellyfin_server_implementations::AuthenticationRequest::with_credentials(
+    let mut request = jellyfin_server_implementations::AuthenticationRequest::with_credentials(
         client.client,
         client.device_id,
         client.device,
@@ -90,11 +120,12 @@ async fn authenticate_username_password(
         username,
         password,
     );
+    request.is_local_network = state.network_manager.is_in_local_network(remote_ip);
     let session = state
         .session_manager
         .authenticate_new_session_internal(&request, true)
         .await
-        .map_err(session_error_to_api)?;
+        .map_err(|error| session_error_to_api(&error))?;
     Ok(Json(authentication_result_from_device(
         state,
         session.user,
@@ -103,7 +134,7 @@ async fn authenticate_username_password(
 }
 
 fn session_error_to_api(
-    error: jellyfin_server_implementations::SessionManagerError<
+    error: &jellyfin_server_implementations::SessionManagerError<
         jellyfin_controller::PostgresSessionStoreError,
     >,
 ) -> ApiError {
@@ -119,7 +150,11 @@ fn session_error_to_api(
             | PostgresSessionStoreError::UnsupportedAuthenticationProvider,
         ) => ApiError::Unauthorized,
         jellyfin_server_implementations::SessionManagerError::Store(
-            PostgresSessionStoreError::Disabled | PostgresSessionStoreError::ParentalSchedule,
+            PostgresSessionStoreError::Disabled
+            | PostgresSessionStoreError::ParentalSchedule
+            | PostgresSessionStoreError::RemoteAccess
+            | PostgresSessionStoreError::DeviceAccessDenied
+            | PostgresSessionStoreError::MaxActiveSessions,
         ) => ApiError::Forbidden,
         jellyfin_server_implementations::SessionManagerError::Store(_) => ApiError::Internal,
     }
@@ -269,6 +304,22 @@ impl AuthenticatedIdentity {
             Self::Device(session)
                 if !session.user.is_administrator
                     && !is_parental_schedule_allowed(&session.policy, local_now) =>
+            {
+                Err(ApiError::Forbidden)
+            }
+            Self::Device(_) | Self::ApiKey(_) => Ok(()),
+        }
+    }
+
+    pub(crate) fn require_remote_access(
+        &self,
+        state: &AppState,
+        remote_ip: IpAddr,
+    ) -> Result<(), ApiError> {
+        match self {
+            Self::Device(session)
+                if !session.policy.enable_remote_access
+                    && !state.network_manager.is_in_local_network(remote_ip) =>
             {
                 Err(ApiError::Forbidden)
             }
