@@ -98,6 +98,16 @@ impl ItemImageService {
         }
     }
 
+    /// Replaces the storage directories used by image read/write operations.
+    pub fn set_storage_directories(
+        &mut self,
+        cache_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        self.cache_directory = cache_directory.into();
+        self.internal_metadata_directory = internal_metadata_directory.into();
+    }
+
     /// Lists one item's images in Jellyfin's single-image-then-multiple order.
     ///
     /// Local file metadata is best-effort, matching the official endpoint: a

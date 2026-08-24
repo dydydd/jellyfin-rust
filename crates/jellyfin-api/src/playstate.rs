@@ -8,7 +8,7 @@ use axum::{
 use jellyfin_controller::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, parse_date_played,
 };
-use jellyfin_data::{BaseItemRepository, NewActivityLog};
+use jellyfin_data::NewActivityLog;
 use jellyfin_model::{PlayMethod, PlaybackOrder, PlayerStateInfo, RepeatMode, UserItemDataDto};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -494,10 +494,7 @@ async fn log_playback_activity(
     item_id: Uuid,
     action: &str,
 ) {
-    let Ok(Some(item)) = BaseItemRepository::new(state.database.clone())
-        .get(item_id)
-        .await
-    else {
+    let Ok(Some(item)) = state.base_items.get(item_id).await else {
         return;
     };
     let activity_type = match action {
@@ -590,10 +587,7 @@ async fn session_now_playing_item(
     if item_id.is_nil() {
         return Ok(None);
     }
-    let Some(item) = BaseItemRepository::new(state.database.clone())
-        .get(item_id)
-        .await?
-    else {
+    let Some(item) = state.base_items.get(item_id).await? else {
         return Ok(None);
     };
     let item = user_library::item_to_dto(item, state.server_id());

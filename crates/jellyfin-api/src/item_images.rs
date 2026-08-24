@@ -10,7 +10,7 @@ use axum::{
 use axum_extra::extract::Query;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
-use jellyfin_data::{BaseItemError, BaseItemRepository};
+use jellyfin_data::BaseItemError;
 use jellyfin_drawing::{ImageProcessingRequest, ImageSource};
 use jellyfin_model::{ImageFormat, ImageInfo, ImageType, MimeTypes};
 use serde::Deserialize;
@@ -226,7 +226,8 @@ async fn upload_internal(
         .await?
         .require_administrator()?;
     let image_type = parse_image_type(&image_type)?;
-    BaseItemRepository::new(state.database.clone())
+    state
+        .base_items
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;
@@ -280,7 +281,8 @@ async fn delete_internal(
             .delete(item_id, image_type, image_index)
             .await?;
     } else {
-        BaseItemRepository::new(state.database.clone())
+        state
+            .base_items
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
@@ -427,7 +429,8 @@ async fn ensure_visible_item(
     {
         state.user_data.visible_item(user_id, item_id).await?;
     } else {
-        BaseItemRepository::new(state.database.clone())
+        state
+            .base_items
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;

@@ -15,13 +15,13 @@ use jellyfin_controller::{
     ItemUpdateError, ItemUpdateService, LibraryControllerError, LibraryControllerService,
     LibraryScanError, LibraryScanService, LocalizationService, MediaAttachmentService,
     MediaAttachmentServiceError, MediaSegmentError, MediaSegmentManagerService, MediaStreamService,
-    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MusicGenreError,
-    MusicGenreService, PackageError, PackageService, PersonError, PersonService, PlaylistError,
-    PlaylistService, PlaystateError, PlaystateService, PluginRegistry, PostgresSessionStore,
-    ScheduledTaskError, ScheduledTaskService, StudioError, StudioService, SubtitleManager,
-    SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService, TranscodeJobRegistry,
-    TrickplayError, TrickplayService, UserDataService, UserDataServiceError, UserError,
-    UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
+    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MetadataRefreshService,
+    MusicGenreError, MusicGenreService, PackageError, PackageService, PersonError, PersonService,
+    PlaylistError, PlaylistService, PlaystateError, PlaystateService, PluginRegistry,
+    PostgresSessionStore, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
+    SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
+    TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
     UserViewManagerService, VideoError, VideoService, VirtualFolderService,
     VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
@@ -29,9 +29,10 @@ use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, BaseItemImageRepository, BaseItemRepository, DeviceOptionsRepository,
     DeviceRepository, DisplayPreferenceRepository, DisplayPreferenceStoreError,
-    ItemUpdateStoreError, NamedConfigurationRepository, NamedConfigurationStoreError,
-    QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
-    SessionCommandRepository, SessionCommandStoreError, entities::user,
+    ItemUpdateStoreError, ItemValueRepository, NamedConfigurationRepository,
+    NamedConfigurationStoreError, PersonRepository, QuickConnectRepository,
+    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
+    SessionCommandStoreError, entities::user,
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
 use jellyfin_live_tv::{
@@ -147,6 +148,11 @@ pub struct AppState {
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_images: ItemImageService,
+    pub(crate) metadata_refresh: MetadataRefreshService,
+    pub(crate) base_items: BaseItemRepository,
+    pub(crate) item_values: ItemValueRepository,
+    pub(crate) people: PersonRepository,
+    pub(crate) base_item_images: BaseItemImageRepository,
     pub(crate) dto_images: PersistedDtoImageProjectionService<ItemImageService>,
     pub(crate) image_processor: ImageProcessor,
     pub(crate) item_lookup: ItemLookupService,
@@ -205,6 +211,12 @@ impl AppState {
         let library_scan = LibraryScanService::new(database.clone());
         let scheduled_tasks = ScheduledTaskService::with_default_executors(library_scan.clone());
         let item_images = ItemImageService::new(database.clone());
+        let metadata_refresh =
+            MetadataRefreshService::new(database.clone(), Some(item_images.clone()));
+        let base_items = BaseItemRepository::new(database.clone());
+        let item_values = ItemValueRepository::new(database.clone());
+        let people = PersonRepository::new(database.clone());
+        let base_item_images = BaseItemImageRepository::new(database.clone());
         let web_sockets = Arc::new(websocket::WebSocketHub::new());
         let quick_connect_capability = SystemQuickConnectCapability::new(true);
         let session_store = PostgresSessionStore::new(
@@ -238,11 +250,16 @@ impl AppState {
             music_genres: MusicGenreService::new(database.clone()),
             persons: PersonService::new(database.clone()),
             dto_images: PersistedDtoImageProjectionService::new(
-                BaseItemRepository::new(database.clone()),
-                BaseItemImageRepository::new(database.clone()),
+                base_items.clone(),
+                base_item_images.clone(),
                 item_images.clone(),
             ),
             item_images,
+            metadata_refresh,
+            base_items,
+            item_values,
+            people,
+            base_item_images,
             image_processor: ImageProcessor::with_concurrency::<4>(
                 PathBuf::from("cache").join("images"),
             ),
@@ -477,22 +494,21 @@ impl AppState {
         self.internal_metadata_directory = internal_metadata_directory.into();
         self.library_scan
             .set_image_cache_directory(self.image_cache_directory.as_path());
-        self.item_images = ItemImageService::with_storage_directories(
-            self.database.clone(),
+        self.item_images.set_storage_directories(
             self.image_cache_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
+        self.metadata_refresh
+            .set_images(Some(self.item_images.clone()));
         self.dto_images = PersistedDtoImageProjectionService::new(
-            BaseItemRepository::new(self.database.clone()),
-            BaseItemImageRepository::new(self.database.clone()),
+            self.base_items.clone(),
+            self.base_item_images.clone(),
             self.item_images.clone(),
         );
         self.image_processor =
             ImageProcessor::with_concurrency::<4>(self.image_cache_directory.as_path());
-        self.trickplay = TrickplayService::new(
-            self.database.clone(),
-            self.program_data_directory.join("trickplay"),
-        );
+        self.trickplay
+            .set_storage_directory(self.program_data_directory.join("trickplay"));
         self.cache_directory = cache_directory.into();
         self.scheduled_tasks
             .set_cache_directory(self.cache_directory.as_path());

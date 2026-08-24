@@ -4,8 +4,8 @@ use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_controller::{MetadataRefreshMode, MetadataRefreshOptions, MetadataRefreshService};
-use jellyfin_data::{BaseItemError, BaseItemRepository};
+use jellyfin_controller::{MetadataRefreshMode, MetadataRefreshOptions};
+use jellyfin_data::BaseItemError;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -38,7 +38,8 @@ pub(crate) async fn refresh(
         .require_administrator()?;
 
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let item = BaseItemRepository::new(state.database.clone())
+    let item = state
+        .base_items
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;
@@ -77,11 +78,10 @@ pub(crate) async fn refresh(
         || query.image_refresh_mode != MetadataRefreshMode::None
     {
         crate::websocket::broadcast_refresh_progress(&state, item_id, 40.0).await;
-        let service =
-            MetadataRefreshService::new(state.database.clone(), Some(state.item_images.clone()));
         let tmdb_api_key = state.tmdb_api_key.read().await.clone();
         let omdb_api_key = state.omdb_api_key.read().await.clone();
-        if let Err(error) = service
+        if let Err(error) = state
+            .metadata_refresh
             .refresh(
                 item_id,
                 &tmdb_api_key,

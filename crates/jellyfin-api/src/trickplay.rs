@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
-use jellyfin_data::{BaseItemError, BaseItemRepository};
+use jellyfin_data::BaseItemError;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -63,7 +63,8 @@ pub(crate) async fn tile(
                 .await?;
         }
         AuthenticatedIdentity::ApiKey(_) => {
-            BaseItemRepository::new(state.database.clone())
+            state
+                .base_items
                 .get(item_id)
                 .await?
                 .ok_or(BaseItemError::NotFound)?;

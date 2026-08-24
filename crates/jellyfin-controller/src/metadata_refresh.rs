@@ -99,6 +99,11 @@ impl MetadataRefreshService {
         }
     }
 
+    /// Replaces the image service used by image refreshes.
+    pub fn set_images(&mut self, images: Option<ItemImageService>) {
+        self.images = images;
+    }
+
     /// Refreshes metadata for one item through the registered metadata service.
     ///
     /// # Errors

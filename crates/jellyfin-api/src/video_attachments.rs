@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_controller::MediaAttachmentFilter;
-use jellyfin_data::{BaseItemError, BaseItemRepository};
+use jellyfin_data::BaseItemError;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState};
@@ -16,7 +16,8 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     Path((item_id, _media_source_id, index)): Path<(Uuid, String, i32)>,
 ) -> Result<Response, ApiError> {
-    BaseItemRepository::new(state.database.clone())
+    state
+        .base_items
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;

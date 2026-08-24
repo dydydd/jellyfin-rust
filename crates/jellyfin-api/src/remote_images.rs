@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::Query;
-use jellyfin_data::{BaseItemError, BaseItemRepository};
+use jellyfin_data::BaseItemError;
 use jellyfin_model::{ImageProviderInfo, ImageType, RemoteImageResult};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -108,7 +108,8 @@ pub(crate) async fn download(
 }
 
 async fn ensure_item_exists(state: &AppState, item_id: Uuid) -> Result<(), ApiError> {
-    BaseItemRepository::new(state.database.clone())
+    state
+        .base_items
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;

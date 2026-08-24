@@ -11,10 +11,7 @@ use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, LyricManager, MusicGenre, Person,
     RelatedItemKind, Studio, TrickplayManifest, Year, library::get_media_source_name,
 };
-use jellyfin_data::{
-    ItemValueRepository, PersonRepository,
-    entities::{base_item, item_value, user_data},
-};
+use jellyfin_data::entities::{base_item, item_value, user_data};
 use jellyfin_model::{
     MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
     SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
@@ -925,20 +922,23 @@ pub(crate) async fn load_relation_metadata(
     items: &[base_item::Model],
 ) -> Result<HashMap<Uuid, ItemRelationMetadata>, ApiError> {
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let values = ItemValueRepository::new(state.database.clone());
-    let genres = values
+    let genres = state
+        .item_values
         .values_for_items(&item_ids, item_value::ItemValueType::Genre)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let tags = values
+    let tags = state
+        .item_values
         .values_for_items(&item_ids, item_value::ItemValueType::Tags)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let studios = values
+    let studios = state
+        .item_values
         .values_for_items(&item_ids, item_value::ItemValueType::Studios)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let people = PersonRepository::new(state.database.clone())
+    let people = state
+        .people
         .people_for_items(&item_ids)
         .await
         .map_err(|_| ApiError::Internal)?;

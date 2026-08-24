@@ -36,6 +36,11 @@ impl TrickplayService {
         }
     }
 
+    /// Replaces the directory used by trickplay read/write operations.
+    pub fn set_storage_directory(&mut self, storage_directory: impl Into<PathBuf>) {
+        self.storage_directory = storage_directory.into();
+    }
+
     /// Builds the official image-only HLS playlist for one resolution.
     ///
     /// # Errors

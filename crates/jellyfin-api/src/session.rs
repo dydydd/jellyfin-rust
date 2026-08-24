@@ -9,9 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use chrono::{Duration, Utc};
-use jellyfin_data::{
-    BaseItemRepository, DeviceQuery, NewActivityLog, NewSessionCommand, entities::device,
-};
+use jellyfin_data::{DeviceQuery, NewActivityLog, NewSessionCommand, entities::device};
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     NameIdPair, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
@@ -224,7 +222,8 @@ pub(crate) async fn report_viewing(
     };
     let item_id = required_query_value(query.item_id)?;
     let item_id = Uuid::parse_str(&item_id).map_err(|_| ApiError::InvalidRequest)?;
-    let item = BaseItemRepository::new(state.database.clone())
+    let item = state
+        .base_items
         .get(item_id)
         .await?
         .ok_or(jellyfin_data::BaseItemError::NotFound)?;

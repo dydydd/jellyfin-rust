@@ -5,10 +5,7 @@ use axum::{
     extract::{Query, State},
     http::HeaderMap,
 };
-use jellyfin_data::{
-    BaseItemQuery, BaseItemRepository, ItemValueQuery, ItemValueRepository, ProductionYearOrder,
-    entities::item_value,
-};
+use jellyfin_data::{BaseItemQuery, ItemValueQuery, ProductionYearOrder, entities::item_value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -151,14 +148,14 @@ pub(crate) async fn filters_legacy(
         ..ItemValueQuery::default()
     };
 
-    let items = BaseItemRepository::new(state.database.clone());
-    let values = ItemValueRepository::new(state.database.clone());
-    let years = items
+    let years = state
+        .base_items
         .production_years(&item_query, ProductionYearOrder::Ascending)
         .await?
         .years;
-    let official_ratings = items.official_ratings(&item_query).await?;
-    let tags = values
+    let official_ratings = state.base_items.official_ratings(&item_query).await?;
+    let tags = state
+        .item_values
         .query_values(item_value::ItemValueType::Tags, &value_query)
         .await
         .map_err(|_| ApiError::Internal)?
@@ -166,7 +163,8 @@ pub(crate) async fn filters_legacy(
         .into_iter()
         .map(|value| value.value)
         .collect();
-    let genres = values
+    let genres = state
+        .item_values
         .query_values(item_value::ItemValueType::Genre, &value_query)
         .await
         .map_err(|_| ApiError::Internal)?
@@ -207,7 +205,7 @@ async fn legacy_parent_id(
         return Ok(None);
     }
 
-    let items = BaseItemRepository::new(state.database.clone());
+    let items = &state.base_items;
     let parent = if let Some(parent_id) = query.parent_id {
         items.get(parent_id).await?
     } else {

@@ -159,7 +159,8 @@ pub(crate) async fn all_features(
     headers: HeaderMap,
 ) -> Result<Json<Vec<ChannelFeaturesDto>>, ApiError> {
     authentication::authenticated_session(&state, &headers).await?;
-    let page = BaseItemRepository::new(state.database.clone())
+    let page = state
+        .base_items
         .query(&BaseItemQuery {
             include_item_types: vec!["Channel".to_owned()],
             order: BaseItemOrder::SortName,
@@ -178,7 +179,8 @@ pub(crate) async fn features(
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<ChannelFeaturesDto>, ApiError> {
     authentication::authenticated_session(&state, &headers).await?;
-    let channel = BaseItemRepository::new(state.database.clone())
+    let channel = state
+        .base_items
         .get(channel_id)
         .await?
         .filter(|item| item.item_type == "Channel")
@@ -194,7 +196,7 @@ pub(crate) async fn channel_items(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    let repository = BaseItemRepository::new(state.database.clone());
+    let repository = &state.base_items;
     repository
         .get(channel_id)
         .await?
@@ -247,7 +249,7 @@ pub(crate) async fn latest_channel_items(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    let repository = BaseItemRepository::new(state.database.clone());
+    let repository = &state.base_items;
     let item_ids = channel_descendant_item_ids(&repository, &query.channel_ids).await?;
     let ids = if item_ids.is_empty() {
         vec![Uuid::nil()]

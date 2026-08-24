@@ -16,7 +16,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
 use jellyfin_controller::SubtitleSearchRequest;
-use jellyfin_data::{BaseItemError, BaseItemRepository, NamedConfigurationStoreError};
+use jellyfin_data::{BaseItemError, NamedConfigurationStoreError};
 use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -480,7 +480,8 @@ async fn ensure_video_item_by_id(
     state: &AppState,
     item_id: Uuid,
 ) -> Result<jellyfin_data::entities::base_item::Model, ApiError> {
-    let item = BaseItemRepository::new(state.database.clone())
+    let item = state
+        .base_items
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;
