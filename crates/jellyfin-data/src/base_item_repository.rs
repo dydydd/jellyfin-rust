@@ -11,7 +11,7 @@ use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr,
     DeleteResult, EntityTrait, FromQueryResult, IsolationLevel, PaginatorTrait, QueryFilter,
     QueryOrder, QuerySelect, SqlErr, Statement, TransactionTrait, Value as SeaValue,
-    sea_query::{Alias, Expr, Order, Query, extension::postgres::PgExpr},
+    sea_query::{Alias, Expr, Order, Query},
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -803,6 +803,10 @@ impl BaseItemRepository {
         }
         let mut select =
             base_item::Entity::find().filter(base_item::Column::ItemType.ne("PLACEHOLDER"));
+        select = select.filter(base_item::Column::PrimaryVersionId.is_null());
+        select = select.filter(Expr::cust(
+            "(data ->> 'OwnerId') IS NULL OR (data ->> 'ExtraType') IS NOT NULL",
+        ));
         if !query.ids.is_empty() {
             select = select.filter(base_item::Column::Id.is_in(query.ids.iter().copied()));
         }
@@ -828,11 +832,12 @@ impl BaseItemRepository {
             .map(str::trim)
             .filter(|term| !term.is_empty())
         {
-            let clean_search_term = search_term.clean_value();
-            select = select.filter(
-                Expr::col(base_item::Column::CleanName)
-                    .ilike(postgres_contains_pattern(&clean_search_term)),
-            );
+            let (clean_pattern, original_pattern) = search_term_patterns(search_term);
+            select = select.filter(Expr::cust_with_values(
+                "clean_name LIKE $1 OR ((data ->> 'OriginalTitle') IS NOT NULL \
+                 AND (data ->> 'OriginalTitle') ILIKE $2)",
+                [clean_pattern, original_pattern],
+            ));
         }
         if !query.include_item_types.is_empty() {
             select = select.filter(
@@ -872,17 +877,16 @@ impl BaseItemRepository {
         }
         if let Some(is_played) = query.is_played {
             let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
-            let played_items = Query::select()
-                .column(user_data::Column::ItemId)
-                .from((Alias::new("jellyfin"), user_data::Entity))
-                .and_where(user_data::Column::UserId.eq(user_id))
-                .and_where(user_data::Column::Played.eq(true))
-                .to_owned();
-            select = if is_played {
-                select.filter(base_item::Column::Id.in_subquery(played_items))
-            } else {
-                select.filter(base_item::Column::Id.not_in_subquery(played_items))
-            };
+            let mut values = Vec::new();
+            let mut condition = String::new();
+            append_is_played_filter(
+                &mut condition,
+                &mut values,
+                user_id,
+                "\"base_items\"",
+                is_played,
+            );
+            select = select.filter(Expr::cust_with_values(condition, values));
         }
         if let Some(is_favorite) = query.is_favorite {
             let user_id = query.user_id.ok_or(BaseItemError::UserRequired)?;
@@ -1936,6 +1940,8 @@ fn scored_search_cte(
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.id <> '00000000-0000-0000-0000-000000000001'::uuid \
                AND item.is_virtual_item = false \
+               AND item.primary_version_id IS NULL \
+               AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL) \
                AND (item.clean_name ILIKE $4 OR item.data ->> 'OriginalTitle' ILIKE $5)",
     );
     append_raw_item_filters(&mut sql, &mut values, query, false);
@@ -1990,17 +1996,41 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
              GROUP BY item_id\
-         ), resume_versions AS (\
-             SELECT DISTINCT ON (COALESCE(item.primary_version_id, item.id)) \
-                    item.*, progress.resume_last_played_date \
-             FROM progress_by_item AS progress \
-             JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
-             WHERE item.item_type <> 'PLACEHOLDER' \
-             ORDER BY COALESCE(item.primary_version_id, item.id), \
-                      progress.resume_last_played_date DESC NULLS LAST, item.id\
          ), filtered AS (\
-             SELECT item.* FROM resume_versions AS item \
-             WHERE item.item_type <> 'PLACEHOLDER'",
+             SELECT item.*, progress.resume_last_played_date \
+             FROM jellyfin.base_items AS item \
+             LEFT JOIN progress_by_item AS progress ON progress.item_id = item.id \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND (item.is_folder = false AND EXISTS (\
+                   SELECT 1 FROM progress_by_item AS progress \
+                   WHERE progress.item_id = item.id\
+               ) OR ",
+    );
+    append_folder_is_resumable_condition(&mut sql, &mut values, user_id, "item");
+    sql.push_str(
+        ") AND (item.is_folder = true OR \
+            (item.primary_version_id IS NULL AND NOT EXISTS (\
+                SELECT 1 FROM jellyfin.base_items AS sibling \
+                WHERE sibling.primary_version_id = item.id\
+            )) OR NOT EXISTS (\
+                SELECT 1 \
+                FROM jellyfin.base_items AS sibling \
+                JOIN progress_by_item AS sibling_progress \
+                  ON sibling_progress.item_id = sibling.id \
+                WHERE sibling.id <> item.id \
+                  AND COALESCE(sibling.primary_version_id, sibling.id) \
+                      = COALESCE(item.primary_version_id, item.id) \
+                  AND (sibling_progress.resume_last_played_date > (\
+                      SELECT progress.resume_last_played_date \
+                      FROM progress_by_item AS progress \
+                      WHERE progress.item_id = item.id\
+                  ) OR (sibling_progress.resume_last_played_date = (\
+                      SELECT progress.resume_last_played_date \
+                      FROM progress_by_item AS progress \
+                      WHERE progress.item_id = item.id\
+                  ) AND sibling.id < item.id))\
+            )\
+        )",
     );
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
@@ -2010,19 +2040,28 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
 fn not_resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = vec![user_id.into()];
     let mut sql = String::from(
-        "WITH resumable_groups AS (\
+        "WITH progress_by_item AS (\
+             SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
+             FROM jellyfin.user_data \
+             WHERE user_id = $1 AND playback_position_ticks > 0 \
+             GROUP BY item_id\
+         ), resumable_groups AS (\
              SELECT DISTINCT COALESCE(item.primary_version_id, item.id) AS primary_id \
-             FROM jellyfin.user_data AS progress \
+             FROM progress_by_item AS progress \
              JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
-             WHERE progress.user_id = $1 AND progress.playback_position_ticks > 0\
          ), filtered AS (\
              SELECT item.* FROM jellyfin.base_items AS item \
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.primary_version_id IS NULL \
-               AND NOT EXISTS (\
+               AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL) \
+               AND ((item.is_folder = true AND NOT (",
+    );
+    append_folder_is_resumable_condition(&mut sql, &mut values, user_id, "item");
+    sql.push_str(
+        ")) OR (item.is_folder = false AND NOT EXISTS (\
                    SELECT 1 FROM resumable_groups \
                    WHERE resumable_groups.primary_id = item.id\
-               )",
+               )))",
     );
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
@@ -2044,6 +2083,7 @@ fn date_played_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Ve
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.primary_version_id IS NULL",
     );
+    append_default_owned_filter(&mut sql);
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push_str(
         "), dated AS (\
@@ -2078,6 +2118,7 @@ fn extended_sort_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
          FROM jellyfin.base_items AS item \
          WHERE item.item_type <> 'PLACEHOLDER'",
     );
+    append_default_owned_filter(&mut sql);
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
     (sql, values)
@@ -2092,6 +2133,7 @@ fn production_years_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
              WHERE item.item_type <> 'PLACEHOLDER' \
                AND item.production_year > 0",
     );
+    append_default_owned_filter(&mut sql);
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push_str(
         "), years AS (\
@@ -2111,6 +2153,7 @@ fn official_ratings_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
                AND item.official_rating IS NOT NULL \
                AND item.official_rating <> ''",
     );
+    append_default_owned_filter(&mut sql);
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push_str(
         "), ratings AS (\
@@ -2118,6 +2161,218 @@ fn official_ratings_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
          )",
     );
     (sql, values)
+}
+
+#[derive(Clone, Copy)]
+enum LeafUserDataCondition {
+    Played,
+    Unplayed,
+    InProgress,
+}
+
+/// Mirrors the `TranslateQuery` default exclusion: alternate versions and
+/// owned non-extra items are hidden, while extras keep their owner context.
+fn append_default_owned_filter(sql: &mut String) {
+    sql.push_str(
+        " AND item.primary_version_id IS NULL \
+           AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL)",
+    );
+}
+
+fn search_term_patterns(search_term: &str) -> (String, String) {
+    let clean_search_term = search_term.clean_value();
+    let has_wildcard = clean_search_term
+        .chars()
+        .any(|character| matches!(character, '%' | '_' | '[' | ']' | '^'));
+    if has_wildcard {
+        (
+            format!("%{}%", clean_search_term.trim_matches('%')),
+            format!("%{}%", search_term.trim_matches('%')),
+        )
+    } else {
+        (format!("%{clean_search_term}%"), format!("%{search_term}%"))
+    }
+}
+
+/// Builds the folder-side user-data predicate used by `IsPlayed`,
+/// `IsResumable`, and their inverses.
+fn append_leaf_user_data_condition(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    user_id: Uuid,
+    alias: &str,
+    condition: LeafUserDataCondition,
+) {
+    match condition {
+        LeafUserDataCondition::Played => {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                &format!(
+                    " EXISTS (SELECT 1 FROM jellyfin.user_data AS leaf_data \
+                     WHERE leaf_data.item_id = {alias}.id AND leaf_data.user_id = "
+                ),
+            );
+            sql.push_str(" AND leaf_data.played = true)");
+        }
+        LeafUserDataCondition::Unplayed => {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                &format!(
+                    " NOT EXISTS (SELECT 1 FROM jellyfin.user_data AS leaf_data \
+                     WHERE leaf_data.item_id = {alias}.id AND leaf_data.user_id = "
+                ),
+            );
+            sql.push_str(" AND leaf_data.played = true)");
+        }
+        LeafUserDataCondition::InProgress => {
+            push_bind(
+                sql,
+                values,
+                user_id,
+                &format!(
+                    " EXISTS (SELECT 1 FROM jellyfin.user_data AS leaf_data \
+                     WHERE leaf_data.item_id = {alias}.id AND leaf_data.user_id = "
+                ),
+            );
+            sql.push_str(" AND leaf_data.playback_position_ticks > 0)");
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn append_has_descendant_leaf_condition(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    user_id: Uuid,
+    table: &str,
+    include_owned: bool,
+    condition: LeafUserDataCondition,
+) {
+    let hierarchy_owned_filter = if include_owned {
+        String::new()
+    } else {
+        " AND leaf.primary_version_id IS NULL \
+           AND (leaf.data ->> 'OwnerId' IS NULL OR leaf.data ->> 'ExtraType' IS NOT NULL)"
+            .to_owned()
+    };
+    let linked_owned_filter = if include_owned {
+        String::new()
+    } else {
+        " AND linked.primary_version_id IS NULL \
+           AND (linked.data ->> 'OwnerId' IS NULL OR linked.data ->> 'ExtraType' IS NOT NULL)"
+            .to_owned()
+    };
+
+    let _ = write!(
+        sql,
+        "EXISTS (SELECT 1 FROM jellyfin.ancestor_ids AS closure \
+         JOIN jellyfin.base_items AS leaf ON leaf.id = closure.item_id \
+         WHERE closure.parent_item_id = {table}.id \
+           AND leaf.is_folder = false AND leaf.is_virtual_item = false{hierarchy_owned_filter} AND "
+    );
+    append_leaf_user_data_condition(sql, values, user_id, "leaf", condition);
+    sql.push(')');
+    let _ = write!(
+        sql,
+        " OR EXISTS (SELECT 1 FROM jellyfin.linked_children AS link \
+         JOIN jellyfin.base_items AS linked ON linked.id = link.child_id \
+         WHERE link.parent_id = {table}.id AND ( \
+             (linked.is_folder = false AND linked.is_virtual_item = false{linked_owned_filter} AND "
+    );
+    append_leaf_user_data_condition(sql, values, user_id, "linked", condition);
+    sql.push(')');
+    let _ = write!(
+        sql,
+        " OR EXISTS (SELECT 1 FROM jellyfin.ancestor_ids AS closure \
+         JOIN jellyfin.base_items AS leaf ON leaf.id = closure.item_id \
+         WHERE closure.parent_item_id = linked.id \
+           AND leaf.is_folder = false AND leaf.is_virtual_item = false{hierarchy_owned_filter} AND "
+    );
+    append_leaf_user_data_condition(sql, values, user_id, "leaf", condition);
+    sql.push_str(")))");
+}
+
+fn append_is_played_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    user_id: Uuid,
+    table: &str,
+    is_played: bool,
+) {
+    sql.push_str(" (");
+    let _ = write!(sql, "{table}.is_folder = false AND ");
+    append_leaf_user_data_condition(
+        sql,
+        values,
+        user_id,
+        table,
+        if is_played {
+            LeafUserDataCondition::Played
+        } else {
+            LeafUserDataCondition::Unplayed
+        },
+    );
+    let _ = write!(sql, " OR {table}.is_folder = true AND (");
+    if is_played {
+        sql.push_str("NOT (");
+    }
+    append_has_descendant_leaf_condition(
+        sql,
+        values,
+        user_id,
+        table,
+        false,
+        LeafUserDataCondition::Unplayed,
+    );
+    if is_played {
+        sql.push(')');
+    }
+    sql.push(')');
+    sql.push(')');
+}
+
+#[allow(clippy::too_many_lines)]
+fn append_folder_is_resumable_condition(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    user_id: Uuid,
+    table: &str,
+) {
+    let _ = write!(
+        sql,
+        "{table}.is_folder = true AND {table}.item_type IN ('Series', 'Season') AND ("
+    );
+    append_has_descendant_leaf_condition(
+        sql,
+        values,
+        user_id,
+        table,
+        true,
+        LeafUserDataCondition::InProgress,
+    );
+    sql.push_str(" OR (");
+    append_has_descendant_leaf_condition(
+        sql,
+        values,
+        user_id,
+        table,
+        false,
+        LeafUserDataCondition::Played,
+    );
+    sql.push_str(" AND ");
+    append_has_descendant_leaf_condition(
+        sql,
+        values,
+        user_id,
+        table,
+        false,
+        LeafUserDataCondition::Unplayed,
+    );
+    sql.push_str("))");
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2154,13 +2409,14 @@ fn append_raw_item_filters(
             .map(str::trim)
             .filter(|term| !term.is_empty())
     {
-        let clean_search_term = search_term.clean_value();
-        push_bind(
-            sql,
-            values,
-            postgres_contains_pattern(&clean_search_term),
-            " AND item.clean_name ILIKE ",
+        let (clean_pattern, original_pattern) = search_term_patterns(search_term);
+        push_bind(sql, values, clean_pattern, " AND (item.clean_name LIKE ");
+        sql.push_str(
+            " OR (item.data ->> 'OriginalTitle') IS NOT NULL \
+               AND (item.data ->> 'OriginalTitle') ILIKE ",
         );
+        push_bind(sql, values, original_pattern, "");
+        sql.push(')');
     }
     append_string_list_filter(
         sql,
@@ -2189,26 +2445,8 @@ fn append_raw_item_filters(
         let Some(user_id) = query.user_id else {
             return;
         };
-        if is_played {
-            push_bind(
-                sql,
-                values,
-                user_id,
-                " AND item.id IN (
-                    SELECT data.item_id FROM jellyfin.user_data AS data
-                    WHERE data.played = true AND data.user_id = ",
-            );
-        } else {
-            push_bind(
-                sql,
-                values,
-                user_id,
-                " AND item.id NOT IN (
-                    SELECT data.item_id FROM jellyfin.user_data AS data
-                    WHERE data.played = true AND data.user_id = ",
-            );
-        }
-        sql.push(')');
+        sql.push_str(" AND");
+        append_is_played_filter(sql, values, user_id, "item", is_played);
     }
     if let Some(is_favorite) = query.is_favorite {
         let Some(user_id) = query.user_id else {

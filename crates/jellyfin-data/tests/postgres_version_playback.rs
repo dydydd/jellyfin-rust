@@ -210,10 +210,9 @@ async fn date_played_rolls_version_dates_up_to_primary_and_preserves_default_que
             ..Default::default()
         })
         .await
-        .expect("default query remains ungrouped");
-    assert_eq!(default_query.total_record_count, 2);
-    assert_eq!(default_query.items[0].id, alternate.id);
-    assert_eq!(default_query.items[1].id, primary.id);
+        .expect("default query excludes alternate versions");
+    assert_eq!(default_query.total_record_count, 1);
+    assert_eq!(default_query.items[0].id, primary.id);
 
     let missing_user = items
         .query(&BaseItemQuery {

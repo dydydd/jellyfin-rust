@@ -43,7 +43,8 @@ async fn version_group_returns_primary_version() {
         })
         .await
         .expect("ungrouped query must succeed");
-    assert_eq!(ungrouped.total_record_count, 2);
+    assert_eq!(ungrouped.total_record_count, 1);
+    assert_eq!(ungrouped.items[0].id, primary.id);
 
     cleanup(&repository, &[primary.id, alternate.id]).await;
 }
