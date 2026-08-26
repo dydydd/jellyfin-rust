@@ -191,16 +191,16 @@ pub(crate) fn default_multiple_episode_expressions() -> Vec<EpisodeExpression> {
             r".*(\\|/)[sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3})(-[xE]?[eE]?(?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )[0-9]{1,4}[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+            r".*(\\|/)(?P<seriesname>((?![sS]?[0-9]{1,4}[xX][0-9]{1,3})[^\\/])*)?([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )[0-9]{1,4}[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )[0-9]{1,4}[xX][eE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+            r".*(\\|/)(?P<seriesname>((?![sS]?[0-9]{1,4}[xX][0-9]{1,3})[^\\/])*)?([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )[0-9]{1,4}[xX][eE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )?[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+            r".*(\\|/)(?P<seriesname>((?![sS]?[0-9]{1,4}[xX][0-9]{1,3})[^\\/])*)?([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))((-| - )?[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
-            r".*(\\|/)(?P<seriesname>[^\\/]*?)([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))(-[xX]?[eE]?(?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
+            r".*(\\|/)(?P<seriesname>((?![sS]?[0-9]{1,4}[xX][0-9]{1,3})[^\\/])*)?([sS]?(?P<seasonnumber>[0-9]{1,4})[xX](?P<epnumber>[0-9]{1,3}))(-[xX]?[eE]?(?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",
         ),
         EpisodeExpression::named(
             r".*(\\|/)(?P<seriesname>[^\\/]*)[sS](?P<seasonnumber>[0-9]{1,4})[xX\.]?[eE](?P<epnumber>[0-9]{1,3})((-| - )?[xXeE](?P<endingepnumber>[0-9]{1,3}))+[^\\/]*$",

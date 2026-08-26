@@ -70,6 +70,7 @@ fn official_season_path_matrix() {
         ),
         ("/Drive/Season (8)", "/Drive", None, false),
         ("/Drive/3.Staffel", "/Drive", Some(3), true),
+        ("/Drive/1. season", "/Drive", Some(1), true),
         ("/Drive/s06e05", "/Drive", None, false),
         (
             "/Drive/The.Legend.of.Condor.Heroes.2017.V2.web-dl.1080p.h264.aac-hdctv",
@@ -127,7 +128,7 @@ fn official_season_path_matrix() {
             true,
         ),
     ];
-    assert_eq!(cases.len(), 68);
+    assert_eq!(cases.len(), 69);
 
     let mismatches = cases
         .into_iter()

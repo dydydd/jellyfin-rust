@@ -294,13 +294,9 @@ fn rule_parser_returns_structured_result() {
 }
 
 #[test]
-fn stacks_are_isolated_by_parent_directory() {
+fn stacks_merge_by_stack_name_across_directories() {
     let result = StackResolver::resolve_files(
-        &[
-            "/movies/a/Movie part1.mkv",
-            "/movies/b/Movie part2.mkv",
-            "/movies/a/Movie part2.mkv",
-        ],
+        &["/movies/a/Movie part1.mkv", "/movies/b/Movie part2.mkv"],
         &NamingOptions::default(),
     );
     assert_eq!(result.len(), 1);
@@ -309,12 +305,18 @@ fn stacks_are_isolated_by_parent_directory() {
         result[0]
             .files
             .iter()
-            .all(|path| path.starts_with("/movies/a/"))
+            .any(|path| path.starts_with("/movies/a/"))
+    );
+    assert!(
+        result[0]
+            .files
+            .iter()
+            .any(|path| path.starts_with("/movies/b/"))
     );
 }
 
 #[test]
-fn stacks_are_isolated_by_file_system_type() {
+fn later_file_system_types_do_not_create_a_second_stack() {
     let files = [
         StackFileInfo::new("Movie part1.mkv", false),
         StackFileInfo::new("Movie part2.mkv", false),
@@ -322,9 +324,9 @@ fn stacks_are_isolated_by_file_system_type() {
         StackFileInfo::new("Movie part2", true),
     ];
     let result = StackResolver::resolve(&files, &NamingOptions::default());
-    assert_eq!(result.len(), 2);
-    assert!(result.iter().any(|stack| stack.is_directory_stack));
-    assert!(result.iter().any(|stack| !stack.is_directory_stack));
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_directory_stack);
+    assert_eq!(result[0].files.len(), 2);
 }
 
 #[test]

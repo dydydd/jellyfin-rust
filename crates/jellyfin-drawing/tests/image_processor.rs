@@ -62,7 +62,7 @@ async fn max_width_resizes_without_changing_aspect_ratio() {
 }
 
 #[tokio::test]
-async fn fill_resizes_and_center_crops() {
+async fn fill_preserves_aspect_ratio_without_cropping() {
     let (directory, source) = fixture(80, 40);
     let request = ImageProcessingRequest {
         fill_width: Some(20),
@@ -73,6 +73,25 @@ async fn fill_resizes_and_center_crops() {
         .process(&source, &request)
         .await
         .expect("fill image");
+    let image = image::open(result.path).expect("decode result").to_rgba8();
+
+    assert_eq!(image.dimensions(), (40, 20));
+    assert_eq!(image.get_pixel(0, 10), &Rgba([255, 0, 0, 255]));
+    assert_eq!(image.get_pixel(39, 10), &Rgba([0, 0, 255, 255]));
+}
+
+#[tokio::test]
+async fn width_and_height_stretch_to_requested_dimensions() {
+    let (directory, source) = fixture(80, 40);
+    let request = ImageProcessingRequest {
+        width: Some(20),
+        height: Some(20),
+        ..ImageProcessingRequest::default()
+    };
+    let result = processor(&directory)
+        .process(&source, &request)
+        .await
+        .expect("stretch image");
     let image = image::open(result.path).expect("decode result").to_rgba8();
 
     assert_eq!(image.dimensions(), (20, 20));
@@ -264,7 +283,7 @@ async fn supports_all_required_encoded_formats() {
 }
 
 #[tokio::test]
-async fn animated_gif_is_returned_unchanged_even_with_transform_options() {
+async fn gif_is_flattened_to_a_static_frame_when_transformed() {
     let (directory, source) = fixture(8, 4);
     let gif_path = directory.path().join("animated.gif");
     image::open(&source.path)
@@ -279,6 +298,25 @@ async fn animated_gif_is_returned_unchanged_even_with_transform_options() {
     };
     let result = processor(&directory)
         .process(&gif, &request)
+        .await
+        .expect("flatten gif");
+
+    assert_ne!(result.path, gif_path);
+    assert_eq!(result.mime_type, "image/jpeg");
+    assert_eq!(image::image_dimensions(result.path).unwrap(), (4, 2));
+}
+
+#[tokio::test]
+async fn gif_without_transform_returns_original() {
+    let (directory, source) = fixture(8, 4);
+    let gif_path = directory.path().join("animated.gif");
+    image::open(&source.path)
+        .unwrap()
+        .save_with_format(&gif_path, DecoderFormat::Gif)
+        .expect("write gif fixture");
+    let gif = ImageSource::new(gif_path.clone(), SystemTime::now()).with_dimensions(8, 4);
+    let result = processor(&directory)
+        .process(&gif, &ImageProcessingRequest::default())
         .await
         .expect("serve gif unchanged");
 

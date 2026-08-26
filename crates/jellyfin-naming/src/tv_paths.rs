@@ -145,22 +145,28 @@ fn parse_number_before_keyword(value: &str) -> Option<i32> {
     if digit_end == 0 {
         return None;
     }
-    let suffix = &value[digit_end..];
-    let direct_match = SEASON_KEYWORDS
-        .iter()
-        .any(|keyword| suffix.starts_with(keyword));
-    let ordinal_match = ["st", "nd", "rd", "th"].iter().any(|ordinal| {
-        suffix.strip_prefix(ordinal).is_some_and(|rest| {
-            SEASON_KEYWORDS
-                .iter()
-                .any(|keyword| rest.starts_with(keyword))
-        })
-    });
-    if direct_match || ordinal_match {
-        value[..digit_end].parse().ok()
-    } else {
-        None
+    let mut suffix = &value[digit_end..];
+    loop {
+        if SEASON_KEYWORDS
+            .iter()
+            .any(|keyword| suffix.starts_with(keyword))
+        {
+            return value[..digit_end].parse().ok();
+        }
+        if let Some(rest) = ["st", "nd", "rd", "th"]
+            .iter()
+            .find_map(|ordinal| suffix.strip_prefix(ordinal))
+        {
+            suffix = rest;
+            continue;
+        }
+        if let Some(rest) = suffix.strip_prefix('.') {
+            suffix = rest;
+            continue;
+        }
+        break;
     }
+    None
 }
 
 fn parse_number_after_keyword(value: &str) -> Option<i32> {

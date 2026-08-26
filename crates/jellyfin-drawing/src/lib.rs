@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 
-const CACHE_VERSION: u8 = 1;
+const CACHE_VERSION: u8 = 2;
 const DEFAULT_QUALITY: u8 = 100;
 
 /// A source image and the metadata needed to safely key processed-image caches.
@@ -362,14 +362,6 @@ impl ImageProcessor {
         let source_format = format_from_path(&source.path);
 
         ensure_source_exists(&source.path).await?;
-        // Jellyfin serves GIFs untouched so animated sources are never flattened to one frame.
-        if source_format == Some(ImageFormat::Gif) {
-            return Ok(ProcessedImage {
-                path: source.path.clone(),
-                mime_type: ImageFormat::Gif.mime_type(),
-                date_modified: source.date_modified,
-            });
-        }
         if normalized.can_return_original(source, source_format)
             && let Some(format) = source_format
         {
@@ -623,8 +615,6 @@ impl NormalizedRequest {
             || self.foreground_opacity.is_some()
             || self.percent_played.is_some()
             || self.unplayed_count.is_some()
-            || self.fill_width.is_some()
-            || self.fill_height.is_some()
         {
             return false;
         }
@@ -635,6 +625,10 @@ impl NormalizedRequest {
                 && self.height.is_none_or(|requested| requested == height)
                 && self.max_width.is_none_or(|maximum| width <= maximum)
                 && self.max_height.is_none_or(|maximum| height <= maximum)
+                && self.fill_width.is_none_or(|fill_width| width <= fill_width)
+                && self
+                    .fill_height
+                    .is_none_or(|fill_height| height <= fill_height)
         }) || (dimensions.is_none()
             && self.width.is_none()
             && self.height.is_none()
@@ -864,36 +858,31 @@ fn blur_sigma(sigma: u32) -> f32 {
 
 fn resize_image(mut image: DynamicImage, request: &NormalizedRequest) -> DynamicImage {
     let (width, height) = image.dimensions();
-    let (target_width, target_height) = contained_size(
-        width,
-        height,
+    let (target_width, target_height) = new_image_size(width, height, request);
+    if (target_width, target_height) != (width, height) {
+        image = image.resize_exact(target_width, target_height, FilterType::Lanczos3);
+    }
+    image
+}
+
+fn new_image_size(
+    source_width: u32,
+    source_height: u32,
+    request: &NormalizedRequest,
+) -> (u32, u32) {
+    let (width, height) = drawing_utils_resize(
+        source_width,
+        source_height,
         request.width,
         request.height,
         request.max_width,
         request.max_height,
     );
-    if (target_width, target_height) != (width, height) {
-        image = image.resize_exact(target_width, target_height, FilterType::Lanczos3);
-    }
-
-    match (request.fill_width, request.fill_height) {
-        (Some(fill_width), Some(fill_height)) => {
-            let (width, height) = image.dimensions();
-            let scale = Ratio::new(fill_width, width).max(Ratio::new(fill_height, height));
-            let scaled_width = scale.scale_ceil(width);
-            let scaled_height = scale.scale_ceil(height);
-            let resized = image.resize_exact(scaled_width, scaled_height, FilterType::Lanczos3);
-            let x = (scaled_width - fill_width) / 2;
-            let y = (scaled_height - fill_height) / 2;
-            resized.crop_imm(x, y, fill_width, fill_height)
-        }
-        (Some(fill_width), None) => image.resize(fill_width, u32::MAX, FilterType::Lanczos3),
-        (None, Some(fill_height)) => image.resize(u32::MAX, fill_height, FilterType::Lanczos3),
-        (None, None) => image,
-    }
+    let (width, height) = resize_fill(width, height, request.fill_width, request.fill_height);
+    scale_down_to_fit(width, height, source_width, source_height)
 }
 
-fn contained_size(
+fn drawing_utils_resize(
     width: u32,
     height: u32,
     requested_width: Option<u32>,
@@ -901,18 +890,95 @@ fn contained_size(
     max_width: Option<u32>,
     max_height: Option<u32>,
 ) -> (u32, u32) {
-    let requested_scale = match (requested_width, requested_height) {
-        (Some(requested_width), Some(requested_height)) => {
-            Ratio::new(requested_width, width).min(Ratio::new(requested_height, height))
-        }
-        (Some(requested_width), None) => Ratio::new(requested_width, width),
-        (None, Some(requested_height)) => Ratio::new(requested_height, height),
-        (None, None) => Ratio::ONE,
-    };
-    let max_width_scale = max_width.map_or(Ratio::MAX, |maximum| Ratio::new(maximum, width));
-    let max_height_scale = max_height.map_or(Ratio::MAX, |maximum| Ratio::new(maximum, height));
-    let scale = requested_scale.min(max_width_scale).min(max_height_scale);
-    (scale.scale_round(width), scale.scale_round(height))
+    let mut new_width = width;
+    let mut new_height = height;
+    if let (Some(requested_width), Some(requested_height)) = (requested_width, requested_height) {
+        new_width = requested_width;
+        new_height = requested_height;
+    } else if let Some(requested_height) = requested_height {
+        new_width = rounded_int(f64::from(requested_height) / f64::from(height) * f64::from(width));
+        new_height = requested_height;
+    } else if let Some(requested_width) = requested_width {
+        new_height = rounded_int(f64::from(requested_width) / f64::from(width) * f64::from(height));
+        new_width = requested_width;
+    }
+
+    if let Some(maximum_height) = max_height.filter(|maximum| *maximum < new_height) {
+        let current_height = new_height;
+        let current_width = new_width;
+        new_width = rounded_int(
+            f64::from(maximum_height) / f64::from(current_height) * f64::from(current_width),
+        );
+        new_height = maximum_height;
+    }
+    if let Some(maximum_width) = max_width.filter(|maximum| *maximum < new_width) {
+        let current_height = new_height;
+        let current_width = new_width;
+        new_height = rounded_int(
+            f64::from(maximum_width) / f64::from(current_width) * f64::from(current_height),
+        );
+        new_width = maximum_width;
+    }
+    (new_width, new_height)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn resize_fill(
+    width: u32,
+    height: u32,
+    fill_width: Option<u32>,
+    fill_height: Option<u32>,
+) -> (u32, u32) {
+    if fill_width.is_none() && fill_height.is_none() {
+        return (width, height);
+    }
+
+    let fill_width = fill_width.unwrap_or(1);
+    let fill_height = fill_height.unwrap_or(1);
+    let width_ratio = f64::from(width) / f64::from(fill_width);
+    let height_ratio = f64::from(height) / f64::from(fill_height);
+    let scale_ratio = width_ratio.min(height_ratio);
+    if scale_ratio < 1.0 {
+        return (width, height);
+    }
+
+    (
+        (f64::from(width) / scale_ratio).ceil().max(1.0) as u32,
+        (f64::from(height) / scale_ratio).ceil().max(1.0) as u32,
+    )
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn scale_down_to_fit(
+    width: u32,
+    height: u32,
+    bounding_width: u32,
+    bounding_height: u32,
+) -> (u32, u32) {
+    if width == 0 || height == 0 || bounding_width == 0 || bounding_height == 0 {
+        return (width, height);
+    }
+
+    let width_ratio = f64::from(width) / f64::from(bounding_width);
+    let height_ratio = f64::from(height) / f64::from(bounding_height);
+    let scale_ratio = width_ratio.max(height_ratio);
+    if scale_ratio <= 1.0 {
+        return (width, height);
+    }
+
+    (
+        (f64::from(width) / scale_ratio)
+            .round_ties_even()
+            .clamp(1.0, f64::from(bounding_width)) as u32,
+        (f64::from(height) / scale_ratio)
+            .round_ties_even()
+            .clamp(1.0, f64::from(bounding_height)) as u32,
+    )
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn rounded_int(value: f64) -> u32 {
+    value.round_ties_even().clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
 #[derive(Clone, Copy)]
@@ -922,29 +988,10 @@ struct Ratio {
 }
 
 impl Ratio {
-    const MAX: Self = Self {
-        numerator: u32::MAX,
-        denominator: 1,
-    };
-    const ONE: Self = Self {
-        numerator: 1,
-        denominator: 1,
-    };
-
     const fn new(numerator: u32, denominator: u32) -> Self {
         Self {
             numerator,
             denominator,
-        }
-    }
-
-    fn min(self, other: Self) -> Self {
-        if u128::from(self.numerator) * u128::from(other.denominator)
-            <= u128::from(other.numerator) * u128::from(self.denominator)
-        {
-            self
-        } else {
-            other
         }
     }
 
@@ -956,12 +1003,6 @@ impl Ratio {
         } else {
             other
         }
-    }
-
-    fn scale_round(self, dimension: u32) -> u32 {
-        let numerator = u64::from(dimension) * u64::from(self.numerator);
-        let rounded = (numerator + u64::from(self.denominator) / 2) / u64::from(self.denominator);
-        u32::try_from(rounded).unwrap_or(u32::MAX).max(1)
     }
 
     fn scale_ceil(self, dimension: u32) -> u32 {
@@ -1244,13 +1285,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn contained_size_preserves_aspect_ratio_and_never_upscales_for_maximums() {
+    fn drawing_utils_maximums_scale_down_and_never_upscale() {
         assert_eq!(
-            contained_size(1920, 1080, None, None, Some(1280), Some(800)),
+            drawing_utils_resize(1920, 1080, None, None, Some(1280), Some(800)),
             (1280, 720)
         );
         assert_eq!(
-            contained_size(320, 180, None, None, Some(1280), Some(800)),
+            drawing_utils_resize(320, 180, None, None, Some(1280), Some(800)),
             (320, 180)
         );
     }

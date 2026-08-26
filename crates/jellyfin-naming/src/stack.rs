@@ -189,15 +189,13 @@ impl StackResolver {
                 let Some(parsed) = rule.parse(name) else {
                     continue;
                 };
-                let directory = parent_path(&file.path);
-                let existing = candidates.iter().position(|candidate| {
-                    candidate.name == parsed.stack_name
-                        && candidate.directory == directory
-                        && candidate.is_directory == file.is_directory
-                });
+                let existing = candidates
+                    .iter()
+                    .position(|candidate| candidate.name == parsed.stack_name);
                 if let Some(index) = existing {
                     let candidate = &mut candidates[index];
-                    if !candidate.part_type.eq_ignore_ascii_case(&parsed.part_type)
+                    if candidate.is_directory != file.is_directory
+                        || !candidate.part_type.eq_ignore_ascii_case(&parsed.part_type)
                         || candidate.contains_part(&parsed.part_number)
                     {
                         continue;
@@ -209,7 +207,6 @@ impl StackResolver {
                 } else {
                     candidates.push(StackCandidate {
                         name: parsed.stack_name,
-                        directory: directory.to_owned(),
                         part_type: parsed.part_type,
                         is_numerical: rule.is_numerical,
                         is_directory: file.is_directory,
@@ -234,7 +231,6 @@ impl StackResolver {
 
 struct StackCandidate {
     name: String,
-    directory: String,
     part_type: String,
     is_numerical: bool,
     is_directory: bool,

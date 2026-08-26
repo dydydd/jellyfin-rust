@@ -46,6 +46,10 @@ fn needs_cleaning_official_matrix() {
             "Crouching.Tiger.Hidden.Dragon",
         ),
         (
+            "Last.Call.for.Nowhere.WEB-DL.1080p",
+            "Last.Call.for.Nowhere",
+        ),
+        (
             "[HorribleSubs] Made in Abyss - 13 [720p].mkv",
             "Made in Abyss",
         ),
@@ -69,7 +73,7 @@ fn needs_cleaning_official_matrix() {
         ),
     ];
 
-    assert_eq!(cases.len(), 21);
+    assert_eq!(cases.len(), 22);
     for (input, expected) in cases {
         assert_eq!(
             VideoResolver::try_clean_string(Some(input), &options).as_deref(),

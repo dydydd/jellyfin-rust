@@ -105,3 +105,32 @@ fn official_multiple_episode_matrix() {
         );
     }
 }
+
+#[test]
+fn multiple_episode_series_names_stop_before_episode_markers() {
+    let parser = EpisodePathParser::new(NamingOptions::default());
+    for path in [
+        "/Season 2/Elementary - 02x03 - 02x04 - 02x15 - Ep Name.mp4",
+        "/Season 2/Elementary - 02x03-04-15 - Ep Name.mp4",
+        "/Season 02/Elementary - 02x03-E15 - Ep Name.mp4",
+        "/Season 02/Elementary - 02x03 - x04 - x15 - Ep Name.mp4",
+        "/Season 02/Elementary - 02x03x04x15 - Ep Name.mp4",
+    ] {
+        let result = parser.parse(path, false);
+        assert_eq!(result.series_name.as_deref(), Some("Elementary"), "{path}");
+    }
+
+    for path in [
+        "/Season 2/02x03 - 02x04 - 02x15 - Ep Name.mp4",
+        "/Season 2/02x03-04-15 - Ep Name.mp4",
+        "/Season 02/02x03-E15 - Ep Name.mp4",
+        "/Season 02/02x03 - x04 - x15 - Ep Name.mp4",
+        "/Season 02/02x03x04x15 - Ep Name.mp4",
+    ] {
+        let result = parser.parse(path, false);
+        assert!(
+            result.series_name.as_deref().is_none_or(str::is_empty),
+            "{path}"
+        );
+    }
+}
