@@ -387,13 +387,220 @@ async fn sync_play_manager_tracks_buffering_and_ping_per_session() {
         manager.get_group(group.group_id).await.unwrap().state,
         GroupStateType::Waiting
     );
-    assert_eq!(
+    assert!(
         manager
             .queue_state_for_session("1")
             .await
             .unwrap()
-            .position_ticks,
-        80
+            .position_ticks
+            >= 10
+    );
+}
+
+#[tokio::test]
+async fn sync_play_manager_ready_emits_unpause_when_group_starts_playing() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Ready Commands".to_owned(),
+        )
+        .await;
+    assert!(
+        manager
+            .join_group(session(2, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 42).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+
+    let first = manager
+        .ready_with_events(
+            "1",
+            ReadyRequestDto {
+                when: Utc::now(),
+                position_ticks: 42,
+                is_playing: false,
+                playlist_item_id,
+            },
+            1_000,
+        )
+        .await;
+    assert_command(&first, &["1"], SendCommandType::Pause);
+    assert!(first.state_update.is_none());
+
+    let second = manager
+        .ready_with_events(
+            "2",
+            ReadyRequestDto {
+                when: Utc::now(),
+                position_ticks: 42,
+                is_playing: false,
+                playlist_item_id,
+            },
+            1_000,
+        )
+        .await;
+    assert_command(&second, &["1", "2"], SendCommandType::Unpause);
+    assert_state_update(second.state_update.as_ref().unwrap(), "Playing", "Ready");
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Playing
+    );
+}
+
+#[tokio::test]
+async fn sync_play_manager_buffering_emits_pause_and_recomputes_position() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Buffering Commands".to_owned(),
+        )
+        .await;
+    assert!(
+        manager
+            .join_group(session(2, Uuid::new_v4(), "bob"), group.group_id)
+            .await
+    );
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 10).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+    let ready = ReadyRequestDto {
+        when: Utc::now(),
+        position_ticks: 10,
+        is_playing: false,
+        playlist_item_id,
+    };
+    assert!(manager.ready("1", ready, 1_000).await);
+    assert!(manager.ready("2", ready, 1_000).await);
+    let before = manager
+        .queue_state_for_session("1")
+        .await
+        .unwrap()
+        .position_ticks;
+
+    let events = manager
+        .buffering_with_events(
+            "1",
+            BufferRequestDto {
+                when: Utc::now(),
+                position_ticks: 999,
+                is_playing: true,
+                playlist_item_id,
+            },
+            1_000,
+        )
+        .await;
+    assert_command(&events, &["2"], SendCommandType::Pause);
+    assert_state_update(events.state_update.as_ref().unwrap(), "Waiting", "Buffer");
+    let position = manager
+        .queue_state_for_session("1")
+        .await
+        .unwrap()
+        .position_ticks;
+    assert!(position >= before);
+    assert_ne!(position, 999);
+}
+
+#[tokio::test]
+async fn sync_play_manager_ready_corrects_mispositioned_client_with_seek() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Seek Correction".to_owned(),
+        )
+        .await;
+    assert!(
+        manager
+            .set_new_queue("1", &[Uuid::new_v4()], 0, 10_000_000)
+            .await
+    );
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+
+    let events = manager
+        .ready_with_events(
+            "1",
+            ReadyRequestDto {
+                when: Utc::now(),
+                position_ticks: 0,
+                is_playing: false,
+                playlist_item_id,
+            },
+            10_000_000,
+        )
+        .await;
+    assert_command(&events, &["1"], SendCommandType::Seek);
+    assert_state_update(events.state_update.as_ref().unwrap(), "Waiting", "Ready");
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Waiting
+    );
+}
+
+#[tokio::test]
+async fn sync_play_manager_ready_and_buffering_correct_wrong_playlist_item() {
+    let manager = SyncPlayManager::new();
+    let group = manager
+        .create_group(
+            session(1, Uuid::new_v4(), "alice"),
+            "Queue Correction".to_owned(),
+        )
+        .await;
+    assert!(manager.set_new_queue("1", &[Uuid::new_v4()], 0, 10).await);
+    let playlist_item_id =
+        manager.queue_state_for_session("1").await.unwrap().items[0].playlist_item_id;
+
+    let ready = manager
+        .ready_with_events(
+            "1",
+            ReadyRequestDto {
+                when: Utc::now(),
+                position_ticks: 10,
+                is_playing: false,
+                playlist_item_id: Uuid::new_v4(),
+            },
+            1_000,
+        )
+        .await;
+    assert!(ready.playback_command.is_none());
+    assert!(ready.state_update.is_none());
+    assert_eq!(ready.queue_update.as_ref().unwrap().session_ids, ["1"]);
+    assert_eq!(
+        ready.queue_update.as_ref().unwrap().payload["Data"]["Reason"],
+        "SetCurrentItem"
+    );
+
+    assert!(
+        manager
+            .ready("1", ready_request(playlist_item_id, 10), 1_000)
+            .await
+    );
+    assert_eq!(
+        manager.get_group(group.group_id).await.unwrap().state,
+        GroupStateType::Playing
+    );
+    let buffering = manager
+        .buffering_with_events(
+            "1",
+            BufferRequestDto {
+                when: Utc::now(),
+                position_ticks: 10,
+                is_playing: true,
+                playlist_item_id: Uuid::new_v4(),
+            },
+            1_000,
+        )
+        .await;
+    assert!(buffering.playback_command.is_none());
+    assert!(buffering.state_update.is_none());
+    assert_eq!(buffering.queue_update.as_ref().unwrap().session_ids, ["1"]);
+    assert_eq!(
+        buffering.queue_update.as_ref().unwrap().payload["Data"]["Reason"],
+        "SetCurrentItem"
     );
 }
 
@@ -782,4 +989,13 @@ fn assert_state_update(update: &SyncPlayGroupUpdate, state: &str, reason: &str) 
     assert_eq!(update.payload["Type"], "StateUpdate");
     assert_eq!(update.payload["Data"]["State"], state);
     assert_eq!(update.payload["Data"]["Reason"], reason);
+}
+
+fn ready_request(playlist_item_id: Uuid, position_ticks: i64) -> ReadyRequestDto {
+    ReadyRequestDto {
+        when: Utc::now(),
+        position_ticks,
+        is_playing: false,
+        playlist_item_id,
+    }
 }

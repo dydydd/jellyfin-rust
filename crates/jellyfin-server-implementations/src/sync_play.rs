@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use jellyfin_model::{
     BufferRequestDto, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
     GroupStateType, GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, PlayQueueUpdateDto,
@@ -12,6 +12,11 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+const DEFAULT_PING_MILLIS: i64 = 500;
+const MAX_PLAYBACK_OFFSET_TICKS: i64 = 5_000_000;
+const TIME_SYNC_OFFSET_MILLIS: i64 = 2_000;
+const TICKS_PER_MILLISECOND: i64 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPlaySession {
@@ -69,6 +74,8 @@ struct ManagedSyncPlayGroup {
     participants: HashMap<String, SyncPlayParticipant>,
     play_queue: PlayQueue,
     position_ticks: i64,
+    last_activity: DateTime<Utc>,
+    initial_state: GroupStateType,
     resume_playing: bool,
 }
 
@@ -130,6 +137,7 @@ impl SyncPlayManager {
             is_buffering: false,
             ignore_wait: false,
         };
+        let now = Utc::now();
         let group = ManagedSyncPlayGroup {
             id,
             name: group_name,
@@ -137,6 +145,8 @@ impl SyncPlayManager {
             participants: HashMap::from([(session.session_id.clone(), participant)]),
             play_queue: PlayQueue::new(),
             position_ticks: 0,
+            last_activity: now,
+            initial_state: GroupStateType::Idle,
             resume_playing: false,
         };
         let info = group.info();
@@ -435,6 +445,7 @@ impl SyncPlayManager {
             .play_queue
             .set_playing_item_by_index(playing_item_position);
         group.position_ticks = start_position_ticks;
+        group.last_activity = Utc::now();
         begin_wait(group, true);
         true
     }
@@ -451,6 +462,7 @@ impl SyncPlayManager {
             return false;
         }
         group.position_ticks = 0;
+        group.last_activity = Utc::now();
         begin_wait(group, true);
         true
     }
@@ -474,6 +486,7 @@ impl SyncPlayManager {
         };
         if playing_item_removed {
             group.position_ticks = 0;
+            group.last_activity = Utc::now();
             if !group.play_queue.is_item_playing() {
                 group.state = GroupStateType::Idle;
             }
@@ -542,6 +555,7 @@ impl SyncPlayManager {
         match group.state {
             GroupStateType::Idle => {
                 group.position_ticks = 0;
+                group.last_activity = Utc::now();
                 begin_wait(group, true);
                 events.queue_update = Some(queue_group_update(
                     group,
@@ -552,24 +566,17 @@ impl SyncPlayManager {
                 group.resume_playing = true;
                 events.state_update = Some(state_group_update(group, PlaybackRequestType::Unpause));
             }
-            GroupStateType::Waiting | GroupStateType::Paused | GroupStateType::Playing => {
-                let previous_state = group.state;
-                group.state = GroupStateType::Playing;
-                group.resume_playing = true;
-                set_all_buffering(group, false);
-                events.playback_command = Some(if previous_state == GroupStateType::Playing {
-                    playback_command_for_sessions(
-                        group,
-                        vec![session_id.to_owned()],
-                        SendCommandType::Unpause,
-                    )
-                } else {
-                    playback_command(group, SendCommandType::Unpause)
-                });
-                if previous_state != GroupStateType::Playing {
-                    events.state_update =
-                        Some(state_group_update(group, PlaybackRequestType::Unpause));
-                }
+            GroupStateType::Waiting | GroupStateType::Paused => {
+                start_playing(group);
+                events.playback_command = Some(playback_command(group, SendCommandType::Unpause));
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Unpause));
+            }
+            GroupStateType::Playing => {
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Unpause,
+                ));
             }
         }
         events
@@ -604,6 +611,7 @@ impl SyncPlayManager {
                 ));
             }
             GroupStateType::Playing => {
+                advance_elapsed_position(group);
                 group.state = GroupStateType::Paused;
                 events.playback_command = Some(playback_command(group, SendCommandType::Pause));
                 events.state_update = Some(state_group_update(group, PlaybackRequestType::Pause));
@@ -635,6 +643,7 @@ impl SyncPlayManager {
         let previous_state = group.state;
         group.state = GroupStateType::Idle;
         group.position_ticks = 0;
+        group.last_activity = Utc::now();
         group.resume_playing = false;
         set_all_buffering(group, false);
         let sessions = if previous_state == GroupStateType::Idle {
@@ -701,6 +710,7 @@ impl SyncPlayManager {
             GroupStateType::Idle => return SyncPlayPlaybackEvents::rejected(),
         };
         group.position_ticks = position_ticks.clamp(0, runtime_ticks.max(0));
+        group.last_activity = Utc::now();
         begin_wait(group, resume_playing);
         SyncPlayPlaybackEvents {
             applied: true,
@@ -753,31 +763,94 @@ impl SyncPlayManager {
         request: BufferRequestDto,
         runtime_ticks: i64,
     ) -> (bool, Option<SyncPlayGroupUpdate>) {
+        let events = self
+            .buffering_with_events(session_id, request, runtime_ticks)
+            .await;
+        (events.applied, events.state_update)
+    }
+
+    pub async fn buffering_with_events(
+        &self,
+        session_id: &str,
+        request: BufferRequestDto,
+        _runtime_ticks: i64,
+    ) -> SyncPlayPlaybackEvents {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return (false, None);
+            return SyncPlayPlaybackEvents::rejected();
         };
-        let resume_playing = match group.state {
-            GroupStateType::Playing => true,
-            GroupStateType::Paused => false,
-            GroupStateType::Waiting => group.resume_playing,
-            GroupStateType::Idle => return (true, None),
+        let mut events = SyncPlayPlaybackEvents {
+            applied: true,
+            queue_update: None,
+            playback_command: None,
+            state_update: None,
         };
-        group.state = GroupStateType::Waiting;
-        group.resume_playing = resume_playing;
         let current_item = group.play_queue.playing_item_playlist_id();
-        let Some(participant) = group.participants.get_mut(session_id) else {
-            return (false, None);
-        };
-        participant.is_buffering = true;
-        if request.playlist_item_id == current_item {
-            group.position_ticks = request.position_ticks.clamp(0, runtime_ticks.max(0));
-            return (
-                true,
-                Some(state_group_update(group, PlaybackRequestType::Buffer)),
-            );
+        if group.state != GroupStateType::Idle && request.playlist_item_id != current_item {
+            if let Some(participant) = group.participants.get_mut(session_id) {
+                participant.is_buffering = true;
+            }
+            events.queue_update = Some(queue_group_update_for_sessions(
+                group,
+                vec![session_id.to_owned()],
+                PlayQueueUpdateReason::SetCurrentItem,
+            ));
+            return events;
         }
-        (true, None)
+
+        let Some(participant) = group.participants.get_mut(session_id) else {
+            return SyncPlayPlaybackEvents::rejected();
+        };
+        match group.state {
+            GroupStateType::Idle => {
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Stop,
+                ));
+            }
+            GroupStateType::Playing => {
+                group.resume_playing = true;
+                participant.is_buffering = true;
+                advance_elapsed_position(group);
+                group.state = GroupStateType::Waiting;
+                let ready_sessions = group
+                    .participants
+                    .iter()
+                    .filter(|(_, participant)| !participant.is_buffering)
+                    .map(|(session_id, _)| session_id.clone())
+                    .collect::<Vec<_>>();
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    ready_sessions,
+                    SendCommandType::Pause,
+                ));
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Buffer));
+            }
+            GroupStateType::Paused => {
+                group.resume_playing = false;
+                participant.is_buffering = true;
+                group.state = GroupStateType::Waiting;
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Pause,
+                ));
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Buffer));
+            }
+            GroupStateType::Waiting => {
+                participant.is_buffering = true;
+                if !group.resume_playing {
+                    events.playback_command = Some(playback_command_for_sessions(
+                        group,
+                        vec![session_id.to_owned()],
+                        SendCommandType::Pause,
+                    ));
+                }
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Buffer));
+            }
+        }
+        events
     }
 
     pub async fn ready(
@@ -797,35 +870,163 @@ impl SyncPlayManager {
         request: ReadyRequestDto,
         runtime_ticks: i64,
     ) -> (bool, Option<SyncPlayGroupUpdate>) {
-        const MAX_PLAYBACK_OFFSET_TICKS: i64 = 5_000_000;
+        let events = self
+            .ready_with_events(session_id, request, runtime_ticks)
+            .await;
+        (events.applied, events.state_update)
+    }
 
+    pub async fn ready_with_events(
+        &self,
+        session_id: &str,
+        request: ReadyRequestDto,
+        runtime_ticks: i64,
+    ) -> SyncPlayPlaybackEvents {
         let mut state = self.state.write().await;
         let Some(group) = group_for_session_mut(&mut state, session_id) else {
-            return (false, None);
+            return SyncPlayPlaybackEvents::rejected();
         };
-        let was_waiting = group.state == GroupStateType::Waiting;
+        let mut events = SyncPlayPlaybackEvents {
+            applied: true,
+            queue_update: None,
+            playback_command: None,
+            state_update: None,
+        };
         let current_item = group.play_queue.playing_item_playlist_id();
+        if group.state == GroupStateType::Waiting && request.playlist_item_id != current_item {
+            if let Some(participant) = group.participants.get_mut(session_id) {
+                participant.is_buffering = true;
+            }
+            events.queue_update = Some(queue_group_update_for_sessions(
+                group,
+                vec![session_id.to_owned()],
+                PlayQueueUpdateReason::SetCurrentItem,
+            ));
+            return events;
+        }
+
+        match group.state {
+            GroupStateType::Playing => {
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Unpause,
+                ));
+                return events;
+            }
+            GroupStateType::Paused => {
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Pause,
+                ));
+                return events;
+            }
+            GroupStateType::Idle => {
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Stop,
+                ));
+                return events;
+            }
+            GroupStateType::Waiting => {}
+        }
+
+        let now = Utc::now();
+        let mut elapsed = now.signed_duration_since(request.when);
+        if elapsed.abs() > Duration::milliseconds(TIME_SYNC_OFFSET_MILLIS) {
+            elapsed = Duration::zero();
+        }
+        if !request.is_playing {
+            elapsed = Duration::zero();
+        }
+        let elapsed_ticks = duration_ticks(elapsed);
         let request_ticks = request.position_ticks.clamp(0, runtime_ticks.max(0));
-        let correct_position = request.is_playing
-            || group.position_ticks.abs_diff(request_ticks) <= MAX_PLAYBACK_OFFSET_TICKS as u64;
-        let correct_position = if group.resume_playing {
-            correct_position
-        } else {
-            group.position_ticks.abs_diff(request_ticks) <= MAX_PLAYBACK_OFFSET_TICKS as u64
-        };
+        let client_position_ticks = request_ticks.saturating_add(elapsed_ticks);
+        let delay_ticks = group.position_ticks.saturating_sub(client_position_ticks);
+
         let Some(participant) = group.participants.get_mut(session_id) else {
-            return (false, None);
+            return SyncPlayPlaybackEvents::rejected();
         };
-        participant.is_buffering = request.playlist_item_id != current_item || !correct_position;
-        let invalid_report = participant.is_buffering;
-        finish_wait_if_ready(group);
-        let send_update = was_waiting
-            && request.playlist_item_id == current_item
-            && (invalid_report || group.state != GroupStateType::Waiting);
-        (
-            true,
-            send_update.then(|| state_group_update(group, PlaybackRequestType::Ready)),
-        )
+        if group.resume_playing {
+            if !request.is_playing && delay_ticks.unsigned_abs() > MAX_PLAYBACK_OFFSET_TICKS as u64
+            {
+                participant.is_buffering = true;
+                events.playback_command = Some(playback_command_for_sessions(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Seek,
+                ));
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Ready));
+                return events;
+            }
+
+            participant.is_buffering = false;
+            if any_buffering(group) {
+                let when = now + Duration::microseconds(delay_ticks.div_euclid(10));
+                events.playback_command = Some(playback_command_for_sessions_at(
+                    group,
+                    vec![session_id.to_owned()],
+                    SendCommandType::Pause,
+                    when,
+                ));
+                return events;
+            }
+
+            let highest_ping = highest_ping(group);
+            let sessions = if delay_ticks
+                > highest_ping
+                    .saturating_mul(2)
+                    .saturating_mul(TICKS_PER_MILLISECOND)
+            {
+                group.last_activity = now + Duration::microseconds(delay_ticks.div_euclid(10));
+                if request.is_playing {
+                    sorted_sessions_except(group, session_id)
+                } else {
+                    sorted_sessions(group)
+                }
+            } else {
+                let delay = highest_ping.saturating_mul(2).max(DEFAULT_PING_MILLIS);
+                group.last_activity = now + Duration::milliseconds(delay);
+                sorted_sessions(group)
+            };
+
+            group.state = GroupStateType::Playing;
+            group.resume_playing = true;
+            set_all_buffering(group, false);
+            events.playback_command = Some(playback_command_for_sessions_at(
+                group,
+                sessions,
+                SendCommandType::Unpause,
+                group.last_activity,
+            ));
+            events.state_update = Some(state_group_update(group, PlaybackRequestType::Ready));
+        } else if group.position_ticks.abs_diff(request_ticks) > MAX_PLAYBACK_OFFSET_TICKS as u64 {
+            participant.is_buffering = true;
+            events.playback_command = Some(playback_command_for_sessions(
+                group,
+                vec![session_id.to_owned()],
+                SendCommandType::Seek,
+            ));
+            events.state_update = Some(state_group_update(group, PlaybackRequestType::Ready));
+        } else {
+            participant.is_buffering = false;
+            if any_buffering(group) {
+                return events;
+            }
+
+            group.state = GroupStateType::Paused;
+            if group.initial_state == GroupStateType::Playing {
+                advance_elapsed_position(group);
+                events.playback_command = Some(playback_command(group, SendCommandType::Pause));
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Pause));
+            } else {
+                events.playback_command = Some(playback_command(group, SendCommandType::Pause));
+                events.state_update = Some(state_group_update(group, PlaybackRequestType::Ready));
+            }
+        }
+        events
     }
 
     pub async fn set_ignore_wait(&self, session_id: &str, ignore_wait: bool) -> bool {
@@ -901,15 +1102,40 @@ async fn navigate_queue(
     };
     if changed {
         group.position_ticks = 0;
+        group.last_activity = Utc::now();
         begin_wait(group, true);
     }
     changed
 }
 
 fn begin_wait(group: &mut ManagedSyncPlayGroup, resume_playing: bool) {
+    if group.state != GroupStateType::Waiting {
+        group.initial_state = group.state;
+    }
     group.state = GroupStateType::Waiting;
     group.resume_playing = resume_playing;
     set_all_buffering(group, true);
+}
+
+fn advance_elapsed_position(group: &mut ManagedSyncPlayGroup) {
+    let now = Utc::now();
+    let elapsed_ticks = duration_ticks(now.signed_duration_since(group.last_activity)).max(0);
+    group.position_ticks = group.position_ticks.saturating_add(elapsed_ticks);
+    group.last_activity = now;
+}
+
+fn start_playing(group: &mut ManagedSyncPlayGroup) {
+    group.state = GroupStateType::Playing;
+    group.resume_playing = true;
+    set_all_buffering(group, false);
+    set_unpause_delay(group);
+}
+
+fn set_unpause_delay(group: &mut ManagedSyncPlayGroup) {
+    let delay_millis = highest_ping(group)
+        .saturating_mul(2)
+        .max(DEFAULT_PING_MILLIS);
+    group.last_activity = Utc::now() + Duration::milliseconds(delay_millis);
 }
 
 fn set_all_buffering(group: &mut ManagedSyncPlayGroup, is_buffering: bool) {
@@ -918,18 +1144,32 @@ fn set_all_buffering(group: &mut ManagedSyncPlayGroup, is_buffering: bool) {
     }
 }
 
+fn any_buffering(group: &ManagedSyncPlayGroup) -> bool {
+    group
+        .participants
+        .values()
+        .any(|participant| participant.is_buffering && !participant.ignore_wait)
+}
+
+fn highest_ping(group: &ManagedSyncPlayGroup) -> i64 {
+    group
+        .participants
+        .values()
+        .map(|participant| participant.ping)
+        .max()
+        .unwrap_or(DEFAULT_PING_MILLIS)
+}
+
 fn finish_wait_if_ready(group: &mut ManagedSyncPlayGroup) {
-    if group.state == GroupStateType::Waiting
-        && !group
-            .participants
-            .values()
-            .any(|participant| participant.is_buffering && !participant.ignore_wait)
-    {
+    if group.state == GroupStateType::Waiting && !any_buffering(group) {
         group.state = if group.resume_playing {
             GroupStateType::Playing
         } else {
             GroupStateType::Paused
         };
+        if group.state == GroupStateType::Playing {
+            set_unpause_delay(group);
+        }
     }
 }
 
@@ -1020,19 +1260,13 @@ fn departure_state_events(
         return (None, None);
     };
     participant.is_buffering = false;
-    if group
-        .participants
-        .values()
-        .any(|participant| participant.is_buffering && !participant.ignore_wait)
-    {
+    if any_buffering(group) {
         return (None, None);
     }
-    if !group.resume_playing {
-        group.state = GroupStateType::Paused;
+    finish_wait_if_ready(group);
+    if group.state != GroupStateType::Playing {
         return (None, None);
     }
-
-    group.state = GroupStateType::Playing;
     (
         Some(playback_command(group, SendCommandType::Unpause)),
         Some(state_group_update(group, PlaybackRequestType::Unpause)),
@@ -1051,13 +1285,22 @@ fn playback_command_for_sessions(
     sessions: Vec<String>,
     command: SendCommandType,
 ) -> (Vec<String>, SendCommandDto) {
+    playback_command_for_sessions_at(group, sessions, command, group.last_activity)
+}
+
+fn playback_command_for_sessions_at(
+    group: &ManagedSyncPlayGroup,
+    sessions: Vec<String>,
+    command: SendCommandType,
+    when: DateTime<Utc>,
+) -> (Vec<String>, SendCommandDto) {
     let emitted_at = Utc::now();
     (
         sessions,
         SendCommandDto {
             group_id: group.id,
             playlist_item_id: group.play_queue.playing_item_playlist_id(),
-            when: emitted_at,
+            when,
             position_ticks: Some(group.position_ticks),
             command,
             emitted_at,
@@ -1067,6 +1310,17 @@ fn playback_command_for_sessions(
 
 fn sorted_sessions(group: &ManagedSyncPlayGroup) -> Vec<String> {
     let mut sessions = group.participants.keys().cloned().collect::<Vec<_>>();
+    sessions.sort_unstable();
+    sessions
+}
+
+fn sorted_sessions_except(group: &ManagedSyncPlayGroup, session_id: &str) -> Vec<String> {
+    let mut sessions = group
+        .participants
+        .keys()
+        .filter(|id| *id != session_id)
+        .cloned()
+        .collect::<Vec<_>>();
     sessions.sort_unstable();
     sessions
 }
@@ -1084,12 +1338,19 @@ fn queue_update_dto(
             playlist_item_id: item.playlist_item_id,
         })
         .collect();
+    let start_position_ticks = if group.state == GroupStateType::Playing {
+        let elapsed_ticks =
+            duration_ticks(Utc::now().signed_duration_since(group.last_activity)).max(0);
+        group.position_ticks.saturating_add(elapsed_ticks)
+    } else {
+        group.position_ticks
+    };
     PlayQueueUpdateDto {
         reason,
         last_update: Utc::now(),
         playlist,
         playing_item_index: group.play_queue.playing_item_index(),
-        start_position_ticks: group.position_ticks,
+        start_position_ticks,
         is_playing: group.state == GroupStateType::Playing,
         shuffle_mode: group.play_queue.shuffle_mode(),
         repeat_mode: group.play_queue.repeat_mode(),
@@ -1100,12 +1361,24 @@ fn queue_group_update(
     group: &ManagedSyncPlayGroup,
     reason: PlayQueueUpdateReason,
 ) -> SyncPlayGroupUpdate {
+    queue_group_update_for_sessions(group, sorted_sessions(group), reason)
+}
+
+fn queue_group_update_for_sessions(
+    group: &ManagedSyncPlayGroup,
+    session_ids: Vec<String>,
+    reason: PlayQueueUpdateReason,
+) -> SyncPlayGroupUpdate {
     group_update(
-        sorted_sessions(group),
+        session_ids,
         group.id,
         queue_update_dto(group, reason),
         GroupUpdateType::PlayQueue,
     )
+}
+
+fn duration_ticks(duration: Duration) -> i64 {
+    duration.num_microseconds().unwrap_or(0).saturating_mul(10)
 }
 
 fn group_update<T: Serialize>(

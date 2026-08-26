@@ -383,11 +383,11 @@ pub(crate) async fn buffering(
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let runtime_ticks = current_item_runtime(&state, &session).await?;
-    let (_, update) = state
+    let events = state
         .sync_play
-        .buffering_with_update(&session.session_id, request, runtime_ticks)
+        .buffering_with_events(&session.session_id, request, runtime_ticks)
         .await;
-    broadcast_optional_group_update(&state, update).await;
+    broadcast_playback_events(&state, events).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -399,11 +399,11 @@ pub(crate) async fn ready(
     let session = require_active_user(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let runtime_ticks = current_item_runtime(&state, &session).await?;
-    let (_, update) = state
+    let events = state
         .sync_play
-        .ready_with_update(&session.session_id, request, runtime_ticks)
+        .ready_with_events(&session.session_id, request, runtime_ticks)
         .await;
-    broadcast_optional_group_update(&state, update).await;
+    broadcast_playback_events(&state, events).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

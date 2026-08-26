@@ -683,6 +683,9 @@ async fn exercise_websocket_commands_and_disconnect(
         .await,
     )
     .await;
+    let pause_when_ready = websocket_json(&mut creator_socket).await;
+    assert_eq!(pause_when_ready["MessageType"], "SyncPlayCommand");
+    assert_eq!(pause_when_ready["Data"]["Command"], "Pause");
 
     joiner_socket.close(None).await.unwrap();
     let resumed = websocket_json(&mut creator_socket).await;
