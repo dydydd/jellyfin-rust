@@ -101,3 +101,20 @@ pub enum UnratedItem {
     ChannelContent,
     Other,
 }
+
+impl UnratedItem {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Movie => "Movie",
+            Self::Trailer => "Trailer",
+            Self::Series => "Series",
+            Self::Music => "Music",
+            Self::Book => "Book",
+            Self::LiveTvChannel => "LiveTvChannel",
+            Self::LiveTvProgram => "LiveTvProgram",
+            Self::ChannelContent => "ChannelContent",
+            Self::Other => "Other",
+        }
+    }
+}

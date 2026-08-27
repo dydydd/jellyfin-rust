@@ -41,6 +41,7 @@ mod playstate;
 mod plugins;
 pub mod providers;
 mod scheduled_tasks;
+mod search;
 mod sessions;
 mod studios;
 mod subtitles;
@@ -95,13 +96,12 @@ pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,
     PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
 };
-pub use plugins::{
-    InstalledPlugin, PluginImage, PluginRegistry, PluginRegistryError,
-};
+pub use plugins::{InstalledPlugin, PluginImage, PluginRegistry, PluginRegistryError};
 pub use scheduled_tasks::{ScheduledTaskError, ScheduledTaskPaths, ScheduledTaskService};
-pub use sessions::{
-    PostgresAuthenticationResult, PostgresSessionStore, PostgresSessionStoreError,
+pub use search::{
+    DatabaseSearchProvider, SearchManager, SearchProvider, SearchProviderQuery, SearchResult,
 };
+pub use sessions::{PostgresAuthenticationResult, PostgresSessionStore, PostgresSessionStoreError};
 pub use studios::{Studio, StudioError, StudioPage, StudioService};
 pub use subtitles::{SubtitleManager, SubtitleProvider, SubtitleResponse, SubtitleSearchRequest};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};

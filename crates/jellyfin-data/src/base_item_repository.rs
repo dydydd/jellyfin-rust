@@ -113,6 +113,9 @@ pub struct BaseItemQuery {
     pub ids: Vec<Uuid>,
     pub exclude_ids: Vec<Uuid>,
     pub genres: Vec<String>,
+    pub studios: Vec<String>,
+    pub artists: Vec<String>,
+    pub albums: Vec<String>,
     pub years: Vec<i32>,
     pub tags: Vec<String>,
     pub person: Option<String>,
@@ -127,6 +130,7 @@ pub struct BaseItemQuery {
     pub include_item_types: Vec<String>,
     pub exclude_item_types: Vec<String>,
     pub media_types: Vec<String>,
+    pub image_types: Vec<i16>,
     pub is_movie: Option<bool>,
     pub is_series: Option<bool>,
     pub is_news: Option<bool>,
@@ -138,7 +142,58 @@ pub struct BaseItemQuery {
     pub is_resumable: Option<bool>,
     pub is_played: Option<bool>,
     pub min_premiere_date: Option<DateTime<Utc>>,
+    pub max_premiere_date: Option<DateTime<Utc>>,
+    pub min_date_last_saved: Option<DateTime<Utc>>,
+    pub min_date_last_saved_for_user: Option<DateTime<Utc>>,
+    pub min_critic_rating: Option<f64>,
+    pub has_overview: Option<bool>,
+    pub has_official_rating: Option<bool>,
+    pub has_parental_rating: Option<bool>,
+    pub has_imdb_id: Option<bool>,
+    pub has_tmdb_id: Option<bool>,
+    pub has_tvdb_id: Option<bool>,
+    pub has_subtitles: Option<bool>,
+    pub has_theme_song: Option<bool>,
+    pub has_theme_video: Option<bool>,
+    pub has_special_feature: Option<bool>,
+    pub has_trailer: Option<bool>,
+    pub is_hd: Option<bool>,
+    pub is_4k: Option<bool>,
+    pub min_width: Option<i32>,
+    pub max_width: Option<i32>,
+    pub min_height: Option<i32>,
+    pub max_height: Option<i32>,
+    pub is_3d: Option<bool>,
+    pub is_locked: Option<bool>,
+    pub is_placeholder: Option<bool>,
+    pub is_missing: Option<bool>,
+    pub is_unaired: Option<bool>,
+    pub index_number: Option<i32>,
+    pub parent_index_number: Option<i32>,
+    pub adjacent_to: Option<Uuid>,
+    pub location_types: Vec<String>,
+    pub exclude_location_types: Vec<String>,
+    pub video_types: Vec<String>,
+    pub series_statuses: Vec<String>,
+    pub official_ratings: Vec<String>,
+    pub audio_languages: Vec<String>,
+    pub subtitle_languages: Vec<String>,
+    pub person_ids: Vec<Uuid>,
+    pub person_types: Vec<String>,
+    pub studio_ids: Vec<Uuid>,
+    pub genre_ids: Vec<Uuid>,
+    pub artist_ids: Vec<Uuid>,
+    pub exclude_artist_ids: Vec<Uuid>,
+    pub album_artist_ids: Vec<Uuid>,
+    pub contributing_artist_ids: Vec<Uuid>,
+    pub album_ids: Vec<Uuid>,
+    pub name_starts_with_or_greater: Option<String>,
+    pub name_starts_with: Option<String>,
+    pub name_less_than: Option<String>,
+    pub collapse_box_set_items: bool,
     pub allowed_official_ratings: Vec<String>,
+    pub allowed_parental_ratings: Vec<String>,
+    pub block_unrated_items: Vec<String>,
     pub blocked_tags: Vec<String>,
     pub allowed_tags: Vec<String>,
     pub enabled_folders: Vec<Uuid>,
@@ -801,6 +856,9 @@ impl BaseItemRepository {
         if query.group_versions_by_presentation_key {
             return self.query_grouped_versions(query).await;
         }
+        if query_uses_advanced_filters(query) {
+            return self.query_by_filtered_cte(query).await;
+        }
         let mut select =
             base_item::Entity::find().filter(base_item::Column::ItemType.ne("PLACEHOLDER"));
         select = select.filter(base_item::Column::PrimaryVersionId.is_null());
@@ -1231,6 +1289,24 @@ impl BaseItemRepository {
             _ => unreachable!("extended-sort query only handles extended orders"),
         };
         self.query_raw_page(cte, values, "filtered", order, "ExtendedSort", query)
+            .await
+    }
+
+    async fn query_by_filtered_cte(
+        &self,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let (cte, values) = filtered_query_cte(query);
+        let order = match query.order {
+            BaseItemOrder::SortNameDescending => "sort_name DESC, id",
+            BaseItemOrder::DateCreatedAscending => "date_created ASC, id",
+            BaseItemOrder::DateCreatedDescending => "date_created DESC, id",
+            BaseItemOrder::PremiereDateAscending => "premiere_date ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::PremiereDateDescending => "premiere_date DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::Random => "random(), id",
+            _ => "sort_name, id",
+        };
+        self.query_raw_page(cte, values, "filtered", order, "FilteredItems", query)
             .await
     }
 
@@ -1988,6 +2064,76 @@ fn grouped_versions_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     (sql, values)
 }
 
+fn filtered_query_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
+    let mut values = Vec::new();
+    let mut sql = String::from(
+        "WITH filtered AS (\
+             SELECT item.* FROM jellyfin.base_items AS item \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND item.primary_version_id IS NULL \
+               AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL)",
+    );
+    append_raw_item_filters(&mut sql, &mut values, query, true);
+    sql.push(')');
+    (sql, values)
+}
+
+fn query_uses_advanced_filters(query: &BaseItemQuery) -> bool {
+    query.max_premiere_date.is_some()
+        || query.min_date_last_saved.is_some()
+        || query.min_date_last_saved_for_user.is_some()
+        || query.min_critic_rating.is_some()
+        || query.has_overview.is_some()
+        || query.has_official_rating.is_some()
+        || query.has_parental_rating.is_some()
+        || query.has_imdb_id.is_some()
+        || query.has_tmdb_id.is_some()
+        || query.has_tvdb_id.is_some()
+        || query.has_subtitles.is_some()
+        || query.has_theme_song.is_some()
+        || query.has_theme_video.is_some()
+        || query.has_special_feature.is_some()
+        || query.has_trailer.is_some()
+        || query.is_hd.is_some()
+        || query.is_4k.is_some()
+        || query.min_width.is_some()
+        || query.max_width.is_some()
+        || query.min_height.is_some()
+        || query.max_height.is_some()
+        || query.is_3d.is_some()
+        || query.is_locked.is_some()
+        || query.is_placeholder.is_some()
+        || query.is_missing.is_some()
+        || query.is_unaired.is_some()
+        || query.index_number.is_some()
+        || query.parent_index_number.is_some()
+        || query.adjacent_to.is_some()
+        || !query.location_types.is_empty()
+        || !query.exclude_location_types.is_empty()
+        || !query.video_types.is_empty()
+        || !query.image_types.is_empty()
+        || !query.series_statuses.is_empty()
+        || !query.official_ratings.is_empty()
+        || !query.audio_languages.is_empty()
+        || !query.subtitle_languages.is_empty()
+        || !query.person_ids.is_empty()
+        || !query.person_types.is_empty()
+        || !query.studio_ids.is_empty()
+        || !query.genre_ids.is_empty()
+        || !query.artist_ids.is_empty()
+        || !query.exclude_artist_ids.is_empty()
+        || !query.album_artist_ids.is_empty()
+        || !query.contributing_artist_ids.is_empty()
+        || !query.album_ids.is_empty()
+        || query.name_starts_with_or_greater.is_some()
+        || query.name_starts_with.is_some()
+        || query.name_less_than.is_some()
+        || query.collapse_box_set_items
+        || !query.studios.is_empty()
+        || !query.artists.is_empty()
+        || !query.albums.is_empty()
+}
+
 fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = vec![user_id.into()];
     let mut sql = String::from(
@@ -2563,7 +2709,358 @@ fn append_raw_item_filters(
                 JOIN jellyfin.people AS person ON person.id = person_map.person_id
                 WHERE person_map.item_id = item.id AND person.name = ",
         );
+        if !query.person_types.is_empty() {
+            sql.push_str(" AND person_map.person_type IN (");
+            append_bind_list(sql, values, query.person_types.iter().cloned());
+            sql.push(')');
+        }
         sql.push(')');
+    }
+    if !query.person_ids.is_empty() {
+        sql.push_str(
+            " AND EXISTS (
+            SELECT 1 FROM jellyfin.people_base_item_map AS person_map
+            WHERE person_map.item_id = item.id
+              AND person_map.person_id IN (",
+        );
+        append_bind_list(sql, values, query.person_ids.iter().copied());
+        sql.push(')');
+        if !query.person_types.is_empty() {
+            sql.push_str(" AND person_map.person_type IN (");
+            append_bind_list(sql, values, query.person_types.iter().cloned());
+            sql.push(')');
+        }
+        sql.push(')');
+    }
+    if !query.studio_ids.is_empty() {
+        append_item_value_id_filter(
+            sql,
+            values,
+            &[item_value::ItemValueType::Studios],
+            &query.studio_ids,
+            false,
+        );
+    }
+    if !query.genre_ids.is_empty() {
+        append_item_value_id_filter(
+            sql,
+            values,
+            &[item_value::ItemValueType::Genre],
+            &query.genre_ids,
+            false,
+        );
+    }
+    if !query.artist_ids.is_empty() {
+        append_item_value_id_filter(
+            sql,
+            values,
+            &[
+                item_value::ItemValueType::Artist,
+                item_value::ItemValueType::AlbumArtist,
+            ],
+            &query.artist_ids,
+            false,
+        );
+    }
+    if !query.exclude_artist_ids.is_empty() {
+        append_item_value_id_filter(
+            sql,
+            values,
+            &[
+                item_value::ItemValueType::Artist,
+                item_value::ItemValueType::AlbumArtist,
+            ],
+            &query.exclude_artist_ids,
+            true,
+        );
+    }
+    if !query.album_artist_ids.is_empty() {
+        append_item_value_id_filter(
+            sql,
+            values,
+            &[item_value::ItemValueType::AlbumArtist],
+            &query.album_artist_ids,
+            false,
+        );
+    }
+    if !query.contributing_artist_ids.is_empty() {
+        append_item_value_id_filter(
+            sql,
+            values,
+            &[item_value::ItemValueType::Artist],
+            &query.contributing_artist_ids,
+            false,
+        );
+        append_item_value_id_filter(
+            sql,
+            values,
+            &[item_value::ItemValueType::AlbumArtist],
+            &query.contributing_artist_ids,
+            true,
+        );
+    }
+    if !query.album_ids.is_empty() {
+        append_uuid_list_filter(sql, values, "item.parent_id", &query.album_ids);
+    }
+    if !query.studios.is_empty() {
+        sql.push_str(" AND EXISTS (");
+        sql.push_str(&item_value_exists_sql(
+            item_value::ItemValueType::Studios,
+            &query.studios,
+            values,
+        ));
+        sql.push(')');
+    }
+    if !query.artists.is_empty() {
+        sql.push_str(" AND (EXISTS (");
+        sql.push_str(&item_value_exists_sql(
+            item_value::ItemValueType::Artist,
+            &query.artists,
+            values,
+        ));
+        sql.push_str(") OR EXISTS (");
+        sql.push_str(&item_value_exists_sql(
+            item_value::ItemValueType::AlbumArtist,
+            &query.artists,
+            values,
+        ));
+        sql.push_str("))");
+    }
+    if !query.albums.is_empty() {
+        sql.push_str(
+            " AND item.parent_id IN (
+            SELECT album.id
+            FROM jellyfin.base_items AS album
+            WHERE album.item_type = 'MusicAlbum'
+              AND COALESCE(album.clean_name, album.name) IN (",
+        );
+        append_bind_list(sql, values, query.albums.iter().cloned());
+        sql.push_str("))");
+    }
+    if let Some(index_number) = query.index_number {
+        push_bind(sql, values, index_number, " AND item.index_number = ");
+    }
+    if let Some(parent_index_number) = query.parent_index_number {
+        push_bind(
+            sql,
+            values,
+            parent_index_number,
+            " AND item.parent_index_number = ",
+        );
+    }
+    if let Some(is_missing) = query.is_missing {
+        push_bind(sql, values, is_missing, " AND item.is_virtual_item = ");
+    }
+    if let Some(is_unaired) = query.is_unaired {
+        if is_unaired {
+            sql.push_str(" AND item.premiere_date >= CURRENT_TIMESTAMP");
+        } else {
+            sql.push_str(" AND item.premiere_date < CURRENT_TIMESTAMP");
+        }
+    }
+    if let Some(max_premiere_date) = query.max_premiere_date {
+        push_bind(
+            sql,
+            values,
+            max_premiere_date,
+            " AND item.premiere_date <= ",
+        );
+    }
+    if let Some(min_date_last_saved) = query.min_date_last_saved {
+        push_bind(
+            sql,
+            values,
+            min_date_last_saved,
+            " AND item.date_modified >= ",
+        );
+    }
+    if let Some(min_date_last_saved_for_user) = query.min_date_last_saved_for_user {
+        push_bind(
+            sql,
+            values,
+            min_date_last_saved_for_user,
+            " AND item.date_modified >= ",
+        );
+    }
+    if let Some(has_overview) = query.has_overview {
+        if has_overview {
+            sql.push_str(" AND item.overview IS NOT NULL AND btrim(item.overview) <> ''");
+        } else {
+            sql.push_str(" AND (item.overview IS NULL OR btrim(item.overview) = '')");
+        }
+    }
+    if let Some(has_official_rating) = query.has_official_rating {
+        if has_official_rating {
+            sql.push_str(
+                " AND item.official_rating IS NOT NULL AND btrim(item.official_rating) <> ''",
+            );
+        } else {
+            sql.push_str(" AND (item.official_rating IS NULL OR btrim(item.official_rating) = '')");
+        }
+    }
+    if let Some(has_parental_rating) = query.has_parental_rating {
+        if has_parental_rating {
+            sql.push_str(" AND item.official_rating IS NOT NULL");
+        } else {
+            sql.push_str(" AND item.official_rating IS NULL");
+        }
+    }
+    if let Some(min_critic_rating) = query.min_critic_rating {
+        push_bind(
+            sql,
+            values,
+            min_critic_rating,
+            " AND COALESCE((item.data ->> 'CriticRating')::double precision, 0.0) >= ",
+        );
+    }
+    if !query.official_ratings.is_empty() {
+        append_string_list_filter(
+            sql,
+            values,
+            "item.official_rating",
+            &query.official_ratings,
+            false,
+        );
+    }
+    if let Some(is_locked) = query.is_locked {
+        push_bind(
+            sql,
+            values,
+            is_locked,
+            " AND COALESCE((item.data ->> 'IsLocked')::boolean, false) = ",
+        );
+    }
+    if let Some(is_placeholder) = query.is_placeholder {
+        push_bind(
+            sql,
+            values,
+            is_placeholder,
+            " AND COALESCE((item.data ->> 'IsPlaceHolder')::boolean, false) = ",
+        );
+    }
+    if let Some(is_3d) = query.is_3d {
+        if is_3d {
+            sql.push_str(" AND item.data ? 'Video3DFormat'");
+        } else {
+            sql.push_str(" AND NOT (item.data ? 'Video3DFormat')");
+        }
+    }
+    if !query.series_statuses.is_empty() {
+        append_string_list_filter(
+            sql,
+            values,
+            "item.data ->> 'Status'",
+            &query.series_statuses,
+            false,
+        );
+    }
+    if !query.video_types.is_empty() {
+        sql.push_str(" AND (item.data ->> 'VideoType' IN (");
+        append_bind_list(sql, values, query.video_types.iter().cloned());
+        sql.push_str(") OR item.data ->> 'IsoType' IN (");
+        append_bind_list(sql, values, query.video_types.iter().cloned());
+        sql.push_str("))");
+    }
+    if !query.image_types.is_empty() {
+        sql.push_str(
+            " AND EXISTS (
+            SELECT 1 FROM jellyfin.base_item_images AS image
+            WHERE image.item_id = item.id AND image.image_type IN (",
+        );
+        for (index, image_type) in query.image_types.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push((*image_type).into());
+            let _ = write!(sql, "${}", values.len());
+        }
+        sql.push_str("))");
+    }
+    for (provider, has_provider) in [
+        ("Imdb", query.has_imdb_id),
+        ("Tmdb", query.has_tmdb_id),
+        ("Tvdb", query.has_tvdb_id),
+    ] {
+        let Some(has_provider) = has_provider else {
+            continue;
+        };
+        if has_provider {
+            sql.push_str(" AND EXISTS (");
+        } else {
+            sql.push_str(" AND NOT EXISTS (");
+        }
+        sql.push_str(
+            "SELECT 1 FROM jsonb_each_text(COALESCE(item.data -> 'ProviderIds', '{}'::jsonb)) \
+             AS provider(provider_id, provider_value) WHERE lower(provider_id) = ",
+        );
+        let _ = write!(sql, "'{}'", provider.to_lowercase());
+        sql.push(')');
+    }
+    if let Some(adjacent_to) = query.adjacent_to {
+        push_bind(
+            sql,
+            values,
+            adjacent_to,
+            " AND item.parent_id = (SELECT parent_id FROM jellyfin.base_items WHERE id = ",
+        );
+        sql.push(')');
+        push_bind(sql, values, adjacent_to, " AND item.id <> ");
+    }
+    if let Some(name) = query
+        .name_starts_with_or_greater
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        push_bind(
+            sql,
+            values,
+            name,
+            " AND COALESCE(item.sort_name, item.clean_name, item.name) >= ",
+        );
+    }
+    if let Some(name) = query
+        .name_starts_with
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        push_bind(
+            sql,
+            values,
+            format!("{name}%"),
+            " AND COALESCE(item.sort_name, item.clean_name, item.name) LIKE ",
+        );
+    }
+    if let Some(name) = query
+        .name_less_than
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        push_bind(
+            sql,
+            values,
+            name,
+            " AND COALESCE(item.sort_name, item.clean_name, item.name) < ",
+        );
+    }
+    if !query.location_types.is_empty() || !query.exclude_location_types.is_empty() {
+        let virtual_expected = query
+            .location_types
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case("Virtual"));
+        if !query.location_types.is_empty() {
+            push_bind(
+                sql,
+                values,
+                virtual_expected,
+                " AND item.is_virtual_item = ",
+            );
+        } else if query
+            .exclude_location_types
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case("Virtual"))
+        {
+            push_bind(sql, values, false, " AND item.is_virtual_item = ");
+        }
     }
     if let Some(min_community_rating) = query.min_community_rating {
         push_bind(
@@ -2581,11 +3078,233 @@ fn append_raw_item_filters(
             " AND item.premiere_date >= ",
         );
     }
+    if let Some(has_subtitles) = query.has_subtitles {
+        append_leaf_or_descendant_match(
+            sql,
+            &stream_match_condition("{alias}", 2, None),
+            has_subtitles,
+        );
+    }
+    if !query.audio_languages.is_empty() {
+        append_leaf_or_descendant_match(
+            sql,
+            &stream_match_condition("{alias}", 0, Some(&query.audio_languages)),
+            true,
+        );
+    }
+    if !query.subtitle_languages.is_empty() {
+        append_leaf_or_descendant_match(
+            sql,
+            &stream_match_condition("{alias}", 2, Some(&query.subtitle_languages)),
+            true,
+        );
+    }
+    if query.is_hd.is_some() || query.is_4k.is_some() {
+        let mut buckets = Vec::new();
+        if query.is_hd == Some(false) {
+            buckets.push(dimension_stream_condition(
+                "{alias}",
+                "stream.width > 0 AND stream.width < 1200",
+            ));
+        }
+        if query.is_hd == Some(true) {
+            buckets.push(dimension_stream_condition(
+                "{alias}",
+                "stream.width >= 1200 AND (stream.width < 3800 OR stream.height IS NULL OR stream.height < 2100)",
+            ));
+        }
+        if query.is_4k == Some(true) {
+            buckets.push(dimension_stream_condition(
+                "{alias}",
+                "stream.width >= 3800 OR stream.height >= 2100",
+            ));
+        }
+        if buckets.is_empty() {
+            sql.push_str(" AND 1 = 0");
+        } else {
+            append_leaf_or_descendant_match(sql, &buckets.join(" OR "), true);
+        }
+    }
+    if let Some(min_width) = query.min_width {
+        let value_index = values.len() + 1;
+        values.push(min_width.into());
+        append_leaf_or_descendant_match(
+            sql,
+            &dimension_stream_condition("{alias}", &format!("stream.width >= ${value_index}")),
+            true,
+        );
+    }
+    if let Some(max_width) = query.max_width {
+        let value_index = values.len() + 1;
+        values.push(max_width.into());
+        append_leaf_or_descendant_match(
+            sql,
+            &format!(
+                "NOT {} AND {}",
+                dimension_stream_condition("{alias}", &format!("stream.width > ${value_index}")),
+                dimension_stream_condition("{alias}", "stream.width IS NOT NULL")
+            ),
+            true,
+        );
+    }
+    if let Some(min_height) = query.min_height {
+        let value_index = values.len() + 1;
+        values.push(min_height.into());
+        append_leaf_or_descendant_match(
+            sql,
+            &dimension_stream_condition("{alias}", &format!("stream.height >= ${value_index}")),
+            true,
+        );
+    }
+    if let Some(max_height) = query.max_height {
+        let value_index = values.len() + 1;
+        values.push(max_height.into());
+        append_leaf_or_descendant_match(
+            sql,
+            &format!(
+                "NOT {} AND {}",
+                dimension_stream_condition("{alias}", &format!("stream.height > ${value_index}")),
+                dimension_stream_condition("{alias}", "stream.height IS NOT NULL")
+            ),
+            true,
+        );
+    }
+    if let Some(has_theme_song) = query.has_theme_song {
+        append_leaf_or_descendant_match(
+            sql,
+            &extra_type_condition("{alias}", "ThemeSong"),
+            has_theme_song,
+        );
+    }
+    if let Some(has_theme_video) = query.has_theme_video {
+        append_leaf_or_descendant_match(
+            sql,
+            &extra_type_condition("{alias}", "ThemeVideo"),
+            has_theme_video,
+        );
+    }
+    if let Some(has_trailer) = query.has_trailer {
+        append_leaf_or_descendant_match(
+            sql,
+            &extra_type_condition("{alias}", "Trailer"),
+            has_trailer,
+        );
+    }
+    if let Some(has_special_feature) = query.has_special_feature {
+        append_leaf_or_descendant_match(
+            sql,
+            "EXISTS (\
+                SELECT 1 FROM jellyfin.base_items AS extra \
+                WHERE extra.data ->> 'OwnerId' = {alias}.id::text \
+                  AND extra.data ->> 'ExtraType' IS NOT NULL \
+                  AND extra.data ->> 'ExtraType' NOT IN ('Trailer', 'ThemeSong', 'ThemeVideo', 'Unknown')\
+            )",
+            has_special_feature,
+        );
+    }
     if let Some(condition) = policy_filter_sql("item", query) {
         sql.push_str(" AND (");
         sql.push_str(&condition);
         sql.push(')');
     }
+}
+
+fn append_leaf_or_descendant_match(sql: &mut String, condition_template: &str, expected: bool) {
+    let leaf = condition_template.replace("{alias}", "item");
+    let descendant = condition_template.replace("{alias}", "descendant");
+    sql.push_str(" AND ");
+    if !expected {
+        sql.push_str("NOT ");
+    }
+    sql.push_str("((item.is_folder = false AND (");
+    sql.push_str(&leaf);
+    sql.push_str(
+        ")) OR (item.is_folder = true AND EXISTS (\
+            SELECT 1 FROM jellyfin.ancestor_ids AS closure \
+            JOIN jellyfin.base_items AS descendant ON descendant.id = closure.item_id \
+            WHERE closure.parent_item_id = item.id AND (",
+    );
+    sql.push_str(&descendant);
+    sql.push_str("))))");
+}
+
+fn stream_match_condition(alias: &str, stream_type: i16, languages: Option<&[String]>) -> String {
+    let mut condition = format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.media_streams AS stream \
+            JOIN jellyfin.base_items AS version ON version.id = stream.item_id \
+            WHERE COALESCE(version.primary_version_id, version.id) = {alias}.id \
+              AND stream.stream_type = {stream_type}"
+    );
+    if let Some(languages) = languages.filter(|languages| !languages.is_empty()) {
+        let values = quoted_string_list(languages);
+        let has_und = languages
+            .iter()
+            .any(|language| language.eq_ignore_ascii_case("und"));
+        if has_und {
+            condition.push_str(&format!(
+                " AND (stream.language IN ({values}) OR stream.language IS NULL)"
+            ));
+        } else {
+            condition.push_str(&format!(" AND stream.language IN ({values})"));
+        }
+    }
+    condition.push(')');
+    condition
+}
+
+fn dimension_stream_condition(alias: &str, predicate: &str) -> String {
+    format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.media_streams AS stream \
+            JOIN jellyfin.base_items AS version ON version.id = stream.item_id \
+            WHERE COALESCE(version.primary_version_id, version.id) = {alias}.id \
+              AND stream.stream_type = 1 AND ({predicate})\
+        )"
+    )
+}
+
+fn extra_type_condition(alias: &str, extra_type: &str) -> String {
+    format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.base_items AS extra \
+            WHERE extra.data ->> 'OwnerId' = {alias}.id::text \
+              AND extra.data ->> 'ExtraType' = '{extra_type}'\
+        )"
+    )
+}
+
+fn append_item_value_id_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    value_types: &[item_value::ItemValueType],
+    ids: &[Uuid],
+    negated: bool,
+) {
+    if ids.is_empty() {
+        return;
+    }
+    sql.push_str(" AND ");
+    if negated {
+        sql.push_str("NOT ");
+    }
+    sql.push_str(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.item_value_map AS value_map \
+            JOIN jellyfin.item_values AS item_value \
+              ON item_value.item_value_id = value_map.item_value_id \
+            WHERE value_map.item_id = item.id \
+              AND item_value.type IN (",
+    );
+    for (index, value_type) in value_types.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        let _ = write!(sql, "{}", item_value_type_code(*value_type));
+    }
+    sql.push_str(") AND item_value.item_value_id IN (");
+    append_bind_list(sql, values, ids.iter().copied());
+    sql.push_str("))");
 }
 
 fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<String> {
@@ -2596,32 +3315,30 @@ fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<String> {
             quoted_string_list(&query.allowed_official_ratings)
         ));
     }
+    if !query.allowed_parental_ratings.is_empty() {
+        parts.push(format!(
+            "({} OR NOT {})",
+            effective_rating_matches(table, &query.allowed_parental_ratings),
+            effective_rating_recognized(table)
+        ));
+    }
+    if !query.block_unrated_items.is_empty() {
+        parts.push(format!(
+            "NOT ({} AND NOT {})",
+            unrated_type_matches(table, &query.block_unrated_items),
+            effective_rating_recognized(table)
+        ));
+    }
     if !query.blocked_tags.is_empty() {
         parts.push(format!(
-            "NOT EXISTS (\
-                SELECT 1 FROM jellyfin.item_value_map AS blocked_map \
-                JOIN jellyfin.item_values AS blocked_value \
-                  ON blocked_value.item_value_id = blocked_map.item_value_id \
-                WHERE blocked_map.item_id = {table}.id \
-                  AND blocked_value.type = {} \
-                  AND blocked_value.value IN ({})\
-            )",
-            item_value_type_code(item_value::ItemValueType::Tags),
-            quoted_string_list(&query.blocked_tags)
+            "NOT {}",
+            inherited_tag_matches(table, &query.blocked_tags)
         ));
     }
     if !query.allowed_tags.is_empty() {
         parts.push(format!(
-            "EXISTS (\
-                SELECT 1 FROM jellyfin.item_value_map AS allowed_map \
-                JOIN jellyfin.item_values AS allowed_value \
-                  ON allowed_value.item_value_id = allowed_map.item_value_id \
-                WHERE allowed_map.item_id = {table}.id \
-                  AND allowed_value.type = {} \
-                  AND allowed_value.value IN ({})\
-            )",
-            item_value_type_code(item_value::ItemValueType::Tags),
-            quoted_string_list(&query.allowed_tags)
+            "({} OR {table}.item_type = 'Person')",
+            inherited_tag_matches(table, &query.allowed_tags)
         ));
     }
     if let Some(blocked) = query
@@ -2686,6 +3403,131 @@ fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<String> {
         }
     }
     (!parts.is_empty()).then(|| parts.join(" AND "))
+}
+
+fn effective_rating_matches(table: &str, values: &[String]) -> String {
+    let quoted = quoted_string_list(values);
+    format!(
+        "EXISTS (\
+            SELECT 1 FROM ({}) AS effective_rating \
+            WHERE effective_rating.rating IS NOT NULL \
+              AND (lower(btrim(effective_rating.rating)) IN ({quoted}) \
+                   OR EXISTS (\
+                       SELECT 1 FROM unnest(string_to_array(effective_rating.rating, '/')) AS part \
+                       WHERE lower(btrim(part)) IN ({quoted})\
+                   ) \
+                   OR EXISTS (\
+                       SELECT 1 FROM unnest(string_to_array(effective_rating.rating, ':')) AS part \
+                       WHERE lower(btrim(part)) IN ({quoted})\
+                   ) \
+                   OR EXISTS (\
+                       SELECT 1 FROM unnest(string_to_array(effective_rating.rating, ' ')) AS part \
+                       WHERE lower(btrim(part)) IN ({quoted})\
+                   ))\
+        )",
+        effective_rating_values(table)
+    )
+}
+
+fn effective_rating_recognized(table: &str) -> String {
+    format!(
+        "EXISTS (\
+            SELECT 1 FROM ({}) AS effective_rating \
+            WHERE effective_rating.rating IS NOT NULL \
+              AND btrim(effective_rating.rating) <> '' \
+              AND lower(btrim(effective_rating.rating)) NOT IN ('n/a', 'unrated', 'not rated', 'nr')\
+        )",
+        effective_rating_values(table)
+    )
+}
+
+fn effective_rating_values(table: &str) -> String {
+    format!(
+        "SELECT COALESCE(\
+            (SELECT custom_ratings.rating FROM (\
+                SELECT 0 AS priority, \
+                       NULLIF(btrim({table}.data ->> 'CustomRating'), '') AS rating \
+                UNION ALL \
+                SELECT 1, NULLIF(btrim(series.data ->> 'CustomRating'), '') \
+                  FROM jellyfin.base_items AS series WHERE series.id = {table}.series_id \
+                UNION ALL \
+                SELECT 2 + closure.depth, \
+                       NULLIF(btrim(ancestor.data ->> 'CustomRating'), '') \
+                  FROM jellyfin.ancestor_ids AS closure \
+                  JOIN jellyfin.base_items AS ancestor \
+                    ON ancestor.id = closure.parent_item_id \
+                  WHERE closure.item_id = {table}.id \
+                UNION ALL \
+                SELECT 100, NULLIF(btrim(top_parent.data ->> 'CustomRating'), '') \
+                  FROM jellyfin.base_items AS top_parent \
+                  WHERE top_parent.id = {table}.top_parent_id\
+            ) AS custom_ratings \
+            WHERE custom_ratings.rating IS NOT NULL \
+            ORDER BY custom_ratings.priority, custom_ratings.rating \
+            LIMIT 1), \
+            (SELECT official_ratings.rating FROM (\
+                SELECT 0 AS priority, \
+                       NULLIF(btrim({table}.official_rating), '') AS rating \
+                UNION ALL \
+                SELECT 1, NULLIF(btrim(series.official_rating), '') \
+                  FROM jellyfin.base_items AS series WHERE series.id = {table}.series_id \
+                UNION ALL \
+                SELECT 2 + closure.depth, \
+                       NULLIF(btrim(ancestor.official_rating), '') \
+                  FROM jellyfin.ancestor_ids AS closure \
+                  JOIN jellyfin.base_items AS ancestor \
+                    ON ancestor.id = closure.parent_item_id \
+                  WHERE closure.item_id = {table}.id \
+                UNION ALL \
+                SELECT 100, NULLIF(btrim(top_parent.official_rating), '') \
+                  FROM jellyfin.base_items AS top_parent \
+                  WHERE top_parent.id = {table}.top_parent_id\
+            ) AS official_ratings \
+            WHERE official_ratings.rating IS NOT NULL \
+            ORDER BY official_ratings.priority, official_ratings.rating \
+            LIMIT 1)\
+        ) AS rating"
+    )
+}
+
+fn unrated_type_matches(table: &str, block_unrated_items: &[String]) -> String {
+    let values = quoted_string_list(block_unrated_items);
+    format!(
+        "(\
+            ({table}.item_type IN ('Movie') AND 'Movie' IN ({values})) \
+            OR ({table}.item_type IN ('Trailer') AND 'Trailer' IN ({values})) \
+            OR ({table}.item_type IN ('Series', 'Season', 'Episode') AND 'Series' IN ({values})) \
+            OR ({table}.item_type IN ('MusicAlbum', 'MusicArtist', 'Audio', 'MusicVideo') AND 'Music' IN ({values})) \
+            OR ({table}.item_type IN ('Book', 'AudioBook') AND 'Book' IN ({values})) \
+            OR ({table}.item_type IN ('LiveTvChannel') AND 'LiveTvChannel' IN ({values})) \
+            OR ({table}.item_type IN ('LiveTvProgram', 'Program') AND 'LiveTvProgram' IN ({values})) \
+            OR ({table}.data ->> 'ChannelId' IS NOT NULL \
+                AND {table}.item_type NOT IN ('LiveTvChannel', 'LiveTvProgram', 'Program') \
+                AND 'ChannelContent' IN ({values}))\
+        )"
+    )
+}
+
+fn inherited_tag_matches(table: &str, values: &[String]) -> String {
+    format!(
+        "EXISTS (\
+            SELECT 1 FROM jellyfin.item_value_map AS inherited_map \
+            JOIN jellyfin.item_values AS inherited_value \
+              ON inherited_value.item_value_id = inherited_map.item_value_id \
+            WHERE inherited_value.type = {} \
+              AND inherited_value.clean_value IN ({}) \
+              AND (inherited_map.item_id = {table}.id \
+                   OR ({table}.series_id IS NOT NULL AND inherited_map.item_id = {table}.series_id) \
+                   OR EXISTS (\
+                       SELECT 1 FROM jellyfin.ancestor_ids AS inherited_closure \
+                       WHERE inherited_closure.item_id = {table}.id \
+                         AND inherited_closure.parent_item_id = inherited_map.item_id\
+                   ) \
+                   OR ({table}.top_parent_id IS NOT NULL AND inherited_map.item_id = {table}.top_parent_id))\
+        )",
+        item_value_type_code(item_value::ItemValueType::Tags),
+        quoted_string_list(values)
+    )
 }
 
 fn quoted_string_list(values: &[String]) -> String {

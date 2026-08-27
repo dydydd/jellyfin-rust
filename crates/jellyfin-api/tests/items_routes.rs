@@ -9,7 +9,8 @@ use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewTrickplayInfo, NewUserData,
-    TrickplayInfoRepository, UserDataRepository, entities::user,
+    TrickplayInfoRepository, UserDataRepository,
+    entities::{base_item, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -314,8 +315,8 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
     .await;
     assert_eq!(without_total["Items"].as_array().unwrap().len(), 1);
     assert_eq!(
-        without_total["TotalRecordCount"], 1,
-        "official QueryResult uses the returned item count when total counts are disabled"
+        without_total["TotalRecordCount"], 3,
+        "search-provider results keep the full candidate count even when total counts are disabled"
     );
 
     let descending_route = format!(
@@ -337,10 +338,10 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
     assert_eq!(
         names,
         vec![
-            format!("D {}", fixture.suffix),
-            format!("C {}", fixture.suffix),
+            format!("A {}", fixture.suffix),
             format!("B {}", fixture.suffix),
-            format!("A {}", fixture.suffix)
+            format!("C {}", fixture.suffix),
+            format!("D {}", fixture.suffix)
         ]
     );
     fixture.cleanup().await;
@@ -379,13 +380,27 @@ async fn delimited_and_repeated_item_filters_reach_postgres_queries() {
     .await;
     assert_eq!(excluded["TotalRecordCount"], 2);
 
-    let selected = body_json(
+    let selected_with_search = body_json(
         fixture
             .request(
                 &format!(
                     "/Items?recursive=true&searchTerm={}&ids={},not-a-uuid,,{}",
                     fixture.suffix, fixture.item_ids[0], fixture.item_ids[2]
                 ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        selected_with_search["TotalRecordCount"], 4,
+        "official search combines explicit ids with every provider candidate"
+    );
+
+    let selected = body_json(
+        fixture
+            .request(
+                &format!("/Items?ids={},{}", fixture.item_ids[0], fixture.item_ids[2]),
                 Some(&fixture.user_token),
             )
             .await,
@@ -463,6 +478,202 @@ async fn resume_is_deduplicated_recent_first_paginated_and_user_scoped() {
 }
 
 #[tokio::test]
+async fn collection_folder_with_include_item_types_defaults_to_recursive() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let collection = create_item(
+        &items,
+        "CollectionFolder",
+        &format!("Collection {}", fixture.suffix),
+        root.id,
+    )
+    .await;
+    let nested = create_item(
+        &items,
+        "Folder",
+        &format!("Nested {}", fixture.suffix),
+        collection.id,
+    )
+    .await;
+    let movie = create_item(
+        &items,
+        "Movie",
+        &format!("Deep Movie {}", fixture.suffix),
+        nested.id,
+    )
+    .await;
+
+    let route = format!("/Items?parentId={}&includeItemTypes=Movie", collection.id);
+    let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+    assert_eq!(body["TotalRecordCount"], 1);
+    assert_eq!(body["Items"][0]["Id"], movie.id.simple().to_string());
+
+    items
+        .delete(collection.id)
+        .await
+        .expect("collection cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn advanced_items_filters_are_applied_to_the_public_query() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let sd = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("SD {}", fixture.suffix),
+        root.id,
+        serde_json::json!({ "IsLocked": true }),
+    )
+    .await;
+    let hd = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("HD {}", fixture.suffix),
+        root.id,
+        serde_json::json!({ "ProviderIds": { "Imdb": "tt1234567" } }),
+    )
+    .await;
+    let four_k = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("4K {}", fixture.suffix),
+        root.id,
+        serde_json::Value::Null,
+    )
+    .await;
+    let audio = create_item_with_data(
+        &items,
+        "Audio",
+        &format!("Audio {}", fixture.suffix),
+        root.id,
+        serde_json::Value::Null,
+    )
+    .await;
+    let streams = MediaStreamService::new(fixture.database.clone());
+    streams
+        .save_media_streams(
+            sd.id,
+            &[MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                width: Some(640),
+                height: Some(360),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("sd stream");
+    streams
+        .save_media_streams(
+            hd.id,
+            &[MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                width: Some(1920),
+                height: Some(1080),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("hd stream");
+    streams
+        .save_media_streams(
+            four_k.id,
+            &[MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                width: Some(3840),
+                height: Some(2160),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("4k stream");
+    streams
+        .save_media_streams(
+            audio.id,
+            &[MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Audio,
+                language: Some("eng".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("audio stream");
+
+    let ids = format!("{},{},{},{}", sd.id, hd.id, four_k.id, audio.id);
+    let hd_route = format!("/Items?ids={ids}&isHd=true");
+    let hd_body = body_json(fixture.request(&hd_route, Some(&fixture.user_token)).await).await;
+    assert_eq!(hd_body["TotalRecordCount"], 1);
+    assert_eq!(hd_body["Items"][0]["Id"], hd.id.simple().to_string());
+
+    let four_k_route = format!("/Items?ids={ids}&is4K=true");
+    let four_k_body = body_json(
+        fixture
+            .request(&four_k_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(four_k_body["TotalRecordCount"], 1);
+    assert_eq!(
+        four_k_body["Items"][0]["Id"],
+        four_k.id.simple().to_string()
+    );
+
+    let language_route = format!("/Items?ids={ids}&audioLanguages=eng");
+    let language_body = body_json(
+        fixture
+            .request(&language_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(language_body["TotalRecordCount"], 1);
+    assert_eq!(
+        language_body["Items"][0]["Id"],
+        audio.id.simple().to_string()
+    );
+
+    let provider_route = format!("/Items?ids={ids}&hasImdbId=true");
+    let provider_body = body_json(
+        fixture
+            .request(&provider_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(provider_body["TotalRecordCount"], 1);
+    assert_eq!(provider_body["Items"][0]["Id"], hd.id.simple().to_string());
+
+    let exclude_route = format!("/Items?ids={ids}&excludeItemIds={}", hd.id);
+    let exclude_body = body_json(
+        fixture
+            .request(&exclude_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(exclude_body["TotalRecordCount"], 3);
+    assert!(
+        exclude_body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Id"] != hd.id.simple().to_string())
+    );
+
+    for item_id in [sd.id, hd.id, four_k.id, audio.id] {
+        items.delete(item_id).await.expect("item cleanup");
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn item_query_authentication_and_target_permissions_are_enforced() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
@@ -516,6 +727,21 @@ impl Fixture {
                 .exec(&database)
                 .await
                 .expect("stale items test users must be removed");
+        }
+        for pattern in [
+            "SD %",
+            "HD %",
+            "4K %",
+            "Audio %",
+            "Collection %",
+            "Nested %",
+            "Deep Movie %",
+        ] {
+            base_item::Entity::delete_many()
+                .filter(base_item::Column::Name.like(pattern))
+                .exec(&database)
+                .await
+                .expect("stale items test rows must be removed");
         }
         let suffix = Uuid::new_v4().simple().to_string();
         let users = UserService::new(database.clone());
@@ -618,6 +844,22 @@ async fn create_item(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     item.parent_id = Some(parent_id);
+    item.is_folder = item_type == "Folder" || item_type == "CollectionFolder";
+    repository.create(item).await.expect("item creation")
+}
+
+async fn create_item_with_data(
+    repository: &BaseItemRepository,
+    item_type: &str,
+    name: &str,
+    parent_id: Uuid,
+    data: serde_json::Value,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.parent_id = Some(parent_id);
+    item.data = (!data.is_null()).then_some(data);
     repository.create(item).await.expect("item creation")
 }
 
