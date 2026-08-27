@@ -52,6 +52,21 @@ fn expanded_format_3d_official_matrix() {
     }
 }
 
+#[test]
+fn preceding_token_rule_latches_after_non_adjacent_tokens() {
+    let options = NamingOptions::default();
+    for (input, format) in [
+        ("Super movie 3d 1080p hsbs.mp4", Some("hsbs")),
+        ("Super movie 3d whatever sbs.mp4", Some("sbs")),
+        ("Super movie 3d htab.mp4", Some("htab")),
+        ("Super movie 3d tab.mp4", Some("tab")),
+    ] {
+        let result = Format3dParser::parse(input, &options);
+        assert!(result.is_3d, "input={input:?}");
+        assert_eq!(result.format_3d.as_deref(), format, "input={input:?}");
+    }
+}
+
 fn assert_format(input: &str, is_3d: bool, format: Option<&str>, options: &NamingOptions) {
     let result = Format3dParser::parse(input, options);
     assert_eq!(result.is_3d, is_3d, "input={input:?}");

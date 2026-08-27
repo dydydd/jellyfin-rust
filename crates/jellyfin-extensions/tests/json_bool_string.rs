@@ -25,6 +25,18 @@ fn deserialize_false_string() {
 }
 
 #[test]
+fn deserialize_numeric_strings_used_by_ffprobe() {
+    assert_eq!(
+        serde_json::from_str::<Body>(r#"{ "Value": "1" }"#).unwrap(),
+        Body { value: true }
+    );
+    assert_eq!(
+        serde_json::from_str::<Body>(r#"{ "Value": "0" }"#).unwrap(),
+        Body { value: false }
+    );
+}
+
+#[test]
 fn serialize_true_as_boolean() {
     assert_eq!(
         serde_json::to_string(&Body { value: true }).unwrap(),

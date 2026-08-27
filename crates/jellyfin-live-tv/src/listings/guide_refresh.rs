@@ -92,7 +92,7 @@ impl GuideRefreshService {
             .ok_or(GuideRefreshError::MissingToken)?;
         let lineup = self.client.channel_lineup(&token, lineup_id).await?;
 
-        let guide_days = configuration.guide_days.unwrap_or(3).clamp(1, 14);
+        let guide_days = configuration.guide_days.unwrap_or(7).clamp(1, 14);
         let dates = (0..guide_days)
             .map(|day| {
                 (Utc::now().date_naive() + Duration::days(i64::from(day)))

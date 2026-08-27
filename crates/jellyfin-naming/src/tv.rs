@@ -87,7 +87,6 @@ impl EpisodeExpression {
         self.supports_absolute_episode_numbers = false;
         self
     }
-
 }
 
 fn compile_expression(expression: &str) -> Result<Regex, fancy_regex::Error> {
@@ -100,7 +99,7 @@ pub(crate) fn default_episode_expressions() -> Vec<EpisodeExpression> {
             r".*(\\|/)(?P<seriesname>((?![Ss]([0-9]+)[\[\] ._-]*[Ee]([0-9]+))[^\\/])*)?[Ss](?P<seasonnumber>[0-9]+)[\[\] ._-]*[Ee](?P<epnumber>[0-9]+)([^\\/]*)$",
         ),
         EpisodeExpression::positional(r".*?[\._ -]()[Ee][Pp]_?([0-9]+)([^\\/]*)$"),
-        EpisodeExpression::positional(r"[^\\/]*?()\.?[Ee]([0-9]+)\.([^\\/]*)$"),
+        EpisodeExpression::positional(r"(?:^|[\\/._ -])()\.?[Ee]([0-9]+)\.([^\\/]*)$"),
         EpisodeExpression::by_date(
             r"(?P<year>[0-9]{4})[._ -](?P<month>[0-9]{2})[._ -](?P<day>[0-9]{2})",
         ),
@@ -320,17 +319,20 @@ impl EpisodePathParser {
 
 fn parse_expression(path: &str, expression: &EpisodeExpression) -> Option<EpisodePathParserResult> {
     let normalized_path = expression.is_by_date.then(|| path.replace('_', "-"));
-    let (matched_path, captures) = if let Some(captures) =
-        expression.regex().captures(path).ok().flatten()
-    {
-        (path, captures)
-    } else {
-        let normalized_path = normalized_path.as_deref()?;
-        (
-            normalized_path,
-            expression.regex().captures(normalized_path).ok().flatten()?,
-        )
-    };
+    let (matched_path, captures) =
+        if let Some(captures) = expression.regex().captures(path).ok().flatten() {
+            (path, captures)
+        } else {
+            let normalized_path = normalized_path.as_deref()?;
+            (
+                normalized_path,
+                expression
+                    .regex()
+                    .captures(normalized_path)
+                    .ok()
+                    .flatten()?,
+            )
+        };
     let mut result = EpisodePathParserResult {
         season_number: capture_number(&captures, "seasonnumber"),
         episode_number: capture_number(&captures, "epnumber"),
@@ -395,6 +397,9 @@ fn valid_date(year: Option<i32>, month: Option<i32>, day: Option<i32>) -> bool {
     let (Some(year), Some(month), Some(day)) = (year, month, day) else {
         return false;
     };
+    if year <= 1 {
+        return false;
+    }
     let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
     let max_day = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,

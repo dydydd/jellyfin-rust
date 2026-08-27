@@ -707,6 +707,24 @@ fn utc_time_response_matches_syncplay_wire_contract() {
 }
 
 #[test]
+fn nonzero_datetime_fraction_keeps_official_seven_digits() {
+    let user = UserDto {
+        last_login_date: Some(
+            Utc.with_ymd_and_hms(2026, 7, 22, 8, 30, 0)
+                .unwrap()
+                .with_nanosecond(120_000_000)
+                .unwrap(),
+        ),
+        ..UserDto::default()
+    };
+
+    assert_eq!(
+        serde_json::to_value(user).unwrap()["LastLoginDate"],
+        "2026-07-22T08:30:00.1200000Z"
+    );
+}
+
+#[test]
 fn sync_play_group_info_matches_official_wire_contract() {
     let group = GroupInfoDto::new(
         Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap(),

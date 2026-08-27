@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::movie::{MovieNfo, NfoImage, NfoLocalImage, NfoPerson, PersonKind};
+use super::movie::{MovieNfo, NfoPerson, PersonKind};
 use crate::nfo::NfoMetadata;
 
 /// NFO document families with a writer in this crate.
@@ -72,6 +72,18 @@ pub fn nfo_xml(kind: NfoSaveKind, metadata: &NfoMetadata) -> String {
         push_text(&mut xml, "runtime", Some(&minutes.to_string()));
     }
     push_text(&mut xml, "mpaa", metadata.official_rating.as_deref());
+    push_text(
+        &mut xml,
+        "lockdata",
+        Some(if metadata.is_locked { "true" } else { "false" }),
+    );
+    if let Some(date_created) = metadata.date_created {
+        push_text(
+            &mut xml,
+            "dateadded",
+            Some(&date_created.format("%Y-%m-%d %H:%M:%S").to_string()),
+        );
+    }
     for genre in &metadata.genres {
         push_text(&mut xml, "genre", Some(genre));
     }
@@ -81,8 +93,11 @@ pub fn nfo_xml(kind: NfoSaveKind, metadata: &NfoMetadata) -> String {
     for tag in &metadata.tags {
         push_text(&mut xml, "tag", Some(tag));
     }
-    for (provider, id) in &metadata.provider_ids {
-        push_unique_id(&mut xml, provider, id);
+    match kind {
+        NfoSaveKind::Series => push_series_provider_ids(&mut xml, metadata),
+        NfoSaveKind::Episode | NfoSaveKind::Season => {
+            push_named_provider_ids(&mut xml, metadata.provider_ids.iter());
+        }
     }
     for person in &metadata.people {
         push_person(&mut xml, person);
@@ -90,6 +105,13 @@ pub fn nfo_xml(kind: NfoSaveKind, metadata: &NfoMetadata) -> String {
     for trailer in &metadata.remote_trailers {
         push_text(&mut xml, "trailer", Some(trailer));
     }
+    push_art(
+        &mut xml,
+        metadata
+            .remote_images
+            .iter()
+            .map(|image| (image.url.as_str(), image.image_type)),
+    );
     match kind {
         NfoSaveKind::Episode => push_episode_elements(&mut xml, metadata),
         NfoSaveKind::Season => push_season_elements(&mut xml, metadata),
@@ -141,9 +163,6 @@ fn push_season_elements(xml: &mut String, metadata: &NfoMetadata) {
 }
 
 fn push_series_elements(xml: &mut String, metadata: &NfoMetadata) {
-    if let Some(tvdb_id) = provider_id(metadata, "Tvdb") {
-        push_text(xml, "id", Some(tvdb_id));
-    }
     push_text(xml, "season", Some("-1"));
     push_text(xml, "episode", Some("-1"));
     if let Some(status) = metadata.status.as_ref() {
@@ -160,12 +179,38 @@ fn push_series_elements(xml: &mut String, metadata: &NfoMetadata) {
     }
 }
 
-fn push_unique_id(xml: &mut String, provider: &str, id: &str) {
-    xml.push_str(&format!(
-        "  <uniqueid type=\"{}\">{}</uniqueid>\n",
-        escape(provider),
-        escape(id)
-    ));
+fn push_named_provider_ids<'a>(
+    xml: &mut String,
+    providers: impl Iterator<Item = (&'a String, &'a String)>,
+) {
+    for (provider, id) in providers {
+        let tag = provider_tag(provider, false);
+        xml.push_str(&format!("  <{tag}>{}</{tag}>\n", escape(id)));
+    }
+}
+
+fn push_series_provider_ids(xml: &mut String, metadata: &NfoMetadata) {
+    if let Some(tvdb_id) = provider_id(metadata, "Tvdb") {
+        push_text(xml, "id", Some(tvdb_id));
+    }
+    for (provider, id) in &metadata.provider_ids {
+        let tag = provider_tag(provider, true);
+        if provider.eq_ignore_ascii_case("Tvdb") {
+            push_text(xml, "tvdbid", Some(id));
+            continue;
+        }
+        xml.push_str(&format!("  <{tag}>{}</{tag}>\n", escape(id)));
+    }
+}
+
+fn provider_tag(provider: &str, is_series: bool) -> String {
+    if is_series && provider.eq_ignore_ascii_case("Imdb") {
+        return "imdb_id".to_owned();
+    }
+    if provider.eq_ignore_ascii_case("TmdbCollection") {
+        return "collectionnumber".to_owned();
+    }
+    format!("{}id", provider.to_ascii_lowercase())
 }
 
 fn push_optional_number(xml: &mut String, tag: &str, value: Option<i32>) {
@@ -177,6 +222,16 @@ fn push_optional_number(xml: &mut String, tag: &str, value: Option<i32>) {
 fn provider_id<'a>(metadata: &'a NfoMetadata, key: &str) -> Option<&'a str> {
     metadata
         .provider_ids
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+        .map(|(_, value)| value.as_str())
+}
+
+fn provider_id_from_map<'a>(
+    provider_ids: &'a std::collections::HashMap<String, String>,
+    key: &str,
+) -> Option<&'a str> {
+    provider_ids
         .iter()
         .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
         .map(|(_, value)| value.as_str())
@@ -229,8 +284,17 @@ pub fn movie_nfo_xml(movie: &MovieNfo) -> String {
     }
     push_text(&mut xml, "mpaa", movie.official_rating.as_deref());
     push_text(&mut xml, "customrating", movie.custom_rating.as_deref());
-    if movie.is_locked {
-        push_text(&mut xml, "lockdata", Some("true"));
+    push_text(
+        &mut xml,
+        "lockdata",
+        Some(if movie.is_locked { "true" } else { "false" }),
+    );
+    if let Some(date_created) = movie.date_created {
+        push_text(
+            &mut xml,
+            "dateadded",
+            Some(&date_created.format("%Y-%m-%d %H:%M:%S").to_string()),
+        );
     }
     if !movie.locked_fields.is_empty() {
         push_text(
@@ -248,21 +312,14 @@ pub fn movie_nfo_xml(movie: &MovieNfo) -> String {
     for location in &movie.production_locations {
         push_text(&mut xml, "country", Some(location));
     }
-    for (provider, id) in &movie.provider_ids {
-        push_unique_id(&mut xml, provider, id);
-    }
+    push_movie_provider_ids(&mut xml, movie);
     for person in &movie.people {
         push_person(&mut xml, person);
     }
     for trailer in &movie.remote_trailers {
         push_text(&mut xml, "trailer", Some(trailer));
     }
-    for image in &movie.remote_images {
-        push_image(&mut xml, image);
-    }
-    for image in &movie.local_images {
-        push_local_image(&mut xml, image);
-    }
+    push_movie_art(&mut xml, movie);
     xml.push_str("</movie>\n");
     xml
 }
@@ -302,25 +359,60 @@ fn push_person(xml: &mut String, person: &NfoPerson) {
     }
 }
 
-fn push_image(xml: &mut String, image: &NfoImage) {
-    let aspect = image_type_aspect(image.image_type);
-    xml.push_str(&format!(
-        "  <thumb aspect=\"{}\">{}</thumb>\n",
-        escape(aspect),
-        escape(&image.url)
-    ));
+fn push_movie_provider_ids(xml: &mut String, movie: &MovieNfo) {
+    if let Some(imdb_id) = provider_id_from_map(&movie.provider_ids, "Imdb") {
+        push_text(xml, "id", Some(imdb_id));
+    }
+    push_named_provider_ids(xml, movie.provider_ids.iter());
 }
 
-fn push_local_image(xml: &mut String, image: &NfoLocalImage) {
-    let aspect = image_type_aspect(image.image_type);
-    xml.push_str(&format!(
-        "  <thumb aspect=\"{}\">{}</thumb>\n",
-        escape(aspect),
-        escape(&image.path)
-    ));
+fn push_art<'a>(
+    xml: &mut String,
+    images: impl Iterator<Item = (&'a str, super::movie::ImageType)>,
+) {
+    let mut images = images.peekable();
+    if images.peek().is_none() {
+        return;
+    }
+    xml.push_str("  <art>\n");
+    for (url, image_type) in images {
+        push_indented_text(xml, art_tag(image_type), url);
+    }
+    xml.push_str("  </art>\n");
 }
 
-const fn image_type_aspect(image_type: super::movie::ImageType) -> &'static str {
+fn push_movie_art(xml: &mut String, movie: &MovieNfo) {
+    let mut has_images = false;
+    for image in &movie.remote_images {
+        if !movie
+            .local_images
+            .iter()
+            .any(|local| local.image_type == image.image_type)
+        {
+            has_images = true;
+        }
+    }
+    has_images |= !movie.local_images.is_empty();
+    if !has_images {
+        return;
+    }
+    xml.push_str("  <art>\n");
+    for image in &movie.local_images {
+        push_indented_text(xml, art_tag(image.image_type), &image.path);
+    }
+    for image in &movie.remote_images {
+        if !movie
+            .local_images
+            .iter()
+            .any(|local| local.image_type == image.image_type)
+        {
+            push_indented_text(xml, art_tag(image.image_type), &image.url);
+        }
+    }
+    xml.push_str("  </art>\n");
+}
+
+const fn art_tag(image_type: super::movie::ImageType) -> &'static str {
     match image_type {
         super::movie::ImageType::Primary => "poster",
         super::movie::ImageType::Logo => "clearlogo",
@@ -383,10 +475,11 @@ mod tests {
         let xml = movie_nfo_xml(&movie);
 
         assert!(xml.contains("<title>A &lt;B&gt; &amp; C</title>"));
-        assert!(xml.contains("<uniqueid type=\"Imdb\">tt123</uniqueid>"));
+        assert!(xml.contains("<id>tt123</id>"));
+        assert!(xml.contains("<imdbid>tt123</imdbid>"));
         assert!(xml.contains("<name>Keanu Reeves</name>"));
         assert!(xml.contains("<thumb>poster.jpg</thumb>"));
-        assert_eq!(xml.matches("</uniqueid>").count(), 1);
+        assert_eq!(xml.matches("<id>").count(), 1);
         assert!(roxmltree::Document::parse(&xml).is_ok());
     }
 
@@ -403,6 +496,37 @@ mod tests {
         assert!(xml.contains("<lockdata>true</lockdata>"));
         assert!(xml.contains("<lockedfields>Name|Cast</lockedfields>"));
         assert!(roxmltree::Document::parse(&xml).is_ok());
+    }
+
+    #[test]
+    fn movie_nfo_writer_uses_named_provider_tags_and_art() {
+        let movie = MovieNfo {
+            name: Some("Movie".to_owned()),
+            provider_ids: HashMap::from([
+                ("Imdb".to_owned(), "tt123".to_owned()),
+                ("Tmdb".to_owned(), "456".to_owned()),
+            ]),
+            remote_images: vec![
+                crate::movie::NfoImage {
+                    url: "https://example.com/poster.jpg".to_owned(),
+                    image_type: crate::movie::ImageType::Primary,
+                },
+                crate::movie::NfoImage {
+                    url: "https://example.com/backdrop.jpg".to_owned(),
+                    image_type: crate::movie::ImageType::Backdrop,
+                },
+            ],
+            ..MovieNfo::default()
+        };
+
+        let xml = movie_nfo_xml(&movie);
+        assert!(xml.contains("<id>tt123</id>"));
+        assert!(xml.contains("<imdbid>tt123</imdbid>"));
+        assert!(xml.contains("<tmdbid>456</tmdbid>"));
+        assert!(!xml.contains("<uniqueid"));
+        assert!(xml.contains("<art>"));
+        assert!(xml.contains("<poster>https://example.com/poster.jpg</poster>"));
+        assert!(xml.contains("<fanart>https://example.com/backdrop.jpg</fanart>"));
     }
 
     #[test]
@@ -426,7 +550,8 @@ mod tests {
         assert!(episode.contains("<episode>3</episode>"));
         assert!(episode.contains("<episodenumberend>4</episodenumberend>"));
         assert!(episode.contains("<season>2</season>"));
-        assert!(episode.contains("<uniqueid type=\"Tmdb\">123</uniqueid>"));
+        assert!(episode.contains("<tmdbid>123</tmdbid>"));
+        assert!(!episode.contains("<uniqueid"));
         assert!(episode.ends_with("</episodedetails>\n"));
 
         let season = nfo_xml(NfoSaveKind::Season, &metadata);

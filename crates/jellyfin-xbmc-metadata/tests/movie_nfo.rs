@@ -256,6 +256,22 @@ fn provider_only_url_fixtures_are_supported() {
 }
 
 #[test]
+fn provider_urls_after_closing_xml_tag_are_still_parsed() {
+    let movie = parse_movie_nfo(
+        "<movie><title>Movie</title></movie>\nhttps://www.themoviedb.org/movie/603-the-conjuring\nhttps://www.imdb.com/title/tt1457767/\n",
+    )
+    .unwrap();
+    assert_eq!(
+        movie.provider_ids.get("Tmdb").map(String::as_str),
+        Some("603")
+    );
+    assert_eq!(
+        movie.provider_ids.get("Imdb").map(String::as_str),
+        Some("tt1457767")
+    );
+}
+
+#[test]
 fn escaped_xml_and_tmdb_collection_id_are_normalized() {
     let movie = parse_movie_nfo(LILO_AND_STITCH).unwrap();
     assert_eq!(movie.name.as_deref(), Some("Lilo & Stitch"));

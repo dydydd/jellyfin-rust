@@ -531,6 +531,12 @@ fn series_xml(timer: &TimerInfo) -> Result<Vec<u8>, RecordingMetadataError> {
     )?;
     write_known_provider(
         &mut writer,
+        "tvdbid",
+        &timer.series_provider_ids,
+        MetadataProvider::Tvdb,
+    )?;
+    write_known_provider(
+        &mut writer,
         "imdb_id",
         &timer.series_provider_ids,
         MetadataProvider::Imdb,

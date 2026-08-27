@@ -166,8 +166,19 @@ pub fn parse_nfo(input: &str, kind: NfoDocumentKind) -> Result<NfoMetadata, Meta
         return parse_multi_episode(input);
     }
 
-    let document = Document::parse(input)?;
-    parse_root(document.root_element(), kind)
+    let xml = if kind == NfoDocumentKind::Series {
+        xml_document_prefix(input)
+    } else {
+        input
+    };
+    let document = Document::parse(xml)?;
+    let mut metadata = parse_root(document.root_element(), kind)?;
+    if kind == NfoDocumentKind::Series
+        && let Some(suffix) = xml_document_suffix(input)
+    {
+        parse_provider_links(suffix, kind, &mut metadata.provider_ids);
+    }
+    Ok(metadata)
 }
 
 /// Loads an NFO into an existing metadata target.
@@ -208,11 +219,11 @@ fn parse_multi_episode(input: &str) -> Result<NfoMetadata, MetadataNfoError> {
     combined.overview = joined(&episodes_with_first(&combined, &episodes, |item| {
         item.overview.as_deref()
     }));
-    combined.index_number_end = episodes
-        .last()
-        .and_then(|episode| episode.index_number)
-        .or(combined.index_number_end)
-        .or(combined.index_number);
+    let last_index = std::iter::once(&combined)
+        .chain(&episodes)
+        .filter_map(|episode| episode.index_number_end.or(episode.index_number))
+        .max();
+    combined.index_number_end = last_index.or(combined.index_number_end);
     Ok(combined)
 }
 
@@ -238,9 +249,6 @@ fn parse_root(root: Node<'_, '_>, kind: NfoDocumentKind) -> Result<NfoMetadata, 
     let mut metadata = NfoMetadata::default();
     for node in root.children().filter(Node::is_element) {
         parse_node(node, kind, &mut metadata);
-    }
-    if kind == NfoDocumentKind::Episode {
-        metadata.index_number_end = metadata.index_number_end.or(metadata.index_number);
     }
     Ok(metadata)
 }
@@ -287,6 +295,11 @@ fn parse_node(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetad
         "fanart" => {
             for thumb in node.children().filter(|child| child.has_tag_name("thumb")) {
                 parse_image(thumb, Some("fanart"), metadata);
+            }
+        }
+        "art" => {
+            for child in node.children().filter(Node::is_element) {
+                parse_image(child, Some(child.tag_name().name()), metadata);
             }
         }
         "fileinfo" => parse_file_info(node, metadata),
@@ -539,6 +552,19 @@ fn parse_provider_links(input: &str, kind: NfoDocumentKind, ids: &mut ProviderId
             }
         }
     }
+}
+
+fn xml_document_prefix(input: &str) -> &str {
+    let lowercase = input.to_ascii_lowercase();
+    lowercase
+        .find("</tvshow>")
+        .map_or(input, |index| &input[..index + "</tvshow>".len()])
+}
+
+fn xml_document_suffix(input: &str) -> Option<&str> {
+    let lowercase = input.to_ascii_lowercase();
+    let index = lowercase.find("</tvshow>")? + "</tvshow>".len();
+    (!input[index..].trim().is_empty()).then_some(&input[index..])
 }
 
 fn parse_air_days(node: Node<'_, '_>, metadata: &mut NfoMetadata) {

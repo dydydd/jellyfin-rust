@@ -31,10 +31,75 @@ const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 async fn official_tuner_host_contract_and_postgres_lifecycle() {
     let fixture = Fixture::new().await;
     assert_post_rejections(&fixture).await;
+    assert_live_tv_route_surface(&fixture).await;
     let created_id = assert_local_create_update_and_persistence(&fixture).await;
     let api_key_id = assert_http_api_key_create(&fixture).await;
     assert_delete_contract(&fixture, &created_id).await;
     fixture.cleanup(&[&api_key_id]).await;
+}
+
+async fn assert_live_tv_route_surface(fixture: &Fixture) {
+    for route in [
+        "/LiveTv/Info",
+        "/LiveTv/Channels",
+        "/LiveTv/Recordings",
+        "/LiveTv/Recordings/Series",
+        "/LiveTv/Recordings/Groups",
+        "/LiveTv/Recordings/Folders",
+        "/LiveTv/Timers",
+        "/LiveTv/Timers/Defaults",
+        "/LiveTv/Programs",
+        "/LiveTv/Programs/Recommended",
+        "/LiveTv/SeriesTimers",
+        "/LiveTv/ListingProviders/Default",
+        "/LiveTv/TunerHosts/Types",
+        "/LiveTv/ChannelMappingOptions",
+        "/LiveTv/Tuners/Discover",
+        "/LiveTv/ListingProviders/SchedulesDirect/Countries",
+    ] {
+        assert_eq!(
+            fixture
+                .get(route, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::OK,
+            "{route}"
+        );
+    }
+    for route in [
+        "/LiveTv/Channels/00000000-0000-0000-0000-000000000000",
+        "/LiveTv/Recordings/00000000-0000-0000-0000-000000000000",
+        "/LiveTv/Timers/not-found",
+        "/LiveTv/Programs/not-found",
+        "/LiveTv/SeriesTimers/not-found",
+    ] {
+        assert_eq!(
+            fixture
+                .get(route, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{route}"
+        );
+    }
+    assert_eq!(
+        fixture
+            .post_uri(
+                "/LiveTv/ChannelMappings",
+                Some(&fixture.admin_token),
+                json!({}),
+            )
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        fixture
+            .post_uri("/LiveTv/Timers", Some(&fixture.admin_token), json!({}))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
 }
 
 async fn assert_post_rejections(fixture: &Fixture) {
@@ -262,9 +327,18 @@ impl Fixture {
     }
 
     async fn post(&self, token: Option<&str>, body: Value) -> axum::response::Response {
+        self.post_uri("/LiveTv/TunerHosts", token, body).await
+    }
+
+    async fn post_uri(
+        &self,
+        uri: &str,
+        token: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
         let mut request = Request::builder()
             .method(Method::POST)
-            .uri("/LiveTv/TunerHosts")
+            .uri(uri)
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(token) = token {
             request = request.header("x-emby-token", token);
@@ -272,6 +346,18 @@ impl Fixture {
         self.app
             .clone()
             .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn get(&self, uri: &str, token: Option<&str>) -> axum::response::Response {
+        let mut request = Request::builder().method(Method::GET).uri(uri);
+        if let Some(token) = token {
+            request = request.header("x-emby-token", token);
+        }
+        self.app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
     }

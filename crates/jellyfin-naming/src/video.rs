@@ -118,9 +118,14 @@ impl Format3dParser {
 
         for rule in &options.format_3d_rules {
             let matches = if let Some(preceding) = rule.preceding_token.as_deref() {
-                tokens.windows(2).any(|pair| {
-                    pair[0].eq_ignore_ascii_case(preceding)
-                        && pair[1].eq_ignore_ascii_case(&rule.token)
+                let mut found_prefix = false;
+                tokens.iter().any(|token| {
+                    if !found_prefix {
+                        found_prefix = token.eq_ignore_ascii_case(preceding);
+                        false
+                    } else {
+                        token.eq_ignore_ascii_case(&rule.token)
+                    }
                 })
             } else {
                 tokens

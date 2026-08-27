@@ -186,6 +186,29 @@ fn episode_fetch_valid_multi_episode_with_missing_tags_success() {
 }
 
 #[test]
+fn single_episode_without_end_tag_keeps_index_number_end_unset() {
+    let episode = jellyfin_xbmc_metadata::parse_nfo(
+        "<episodedetails><title>Only</title><episode>3</episode></episodedetails>",
+        NfoDocumentKind::Episode,
+    )
+    .unwrap();
+    assert_eq!(episode.index_number, Some(3));
+    assert_eq!(episode.index_number_end, None);
+}
+
+#[test]
+fn multi_episode_uses_maximum_episode_number_when_last_block_is_missing_one() {
+    let episode = jellyfin_xbmc_metadata::parse_nfo(
+        "<episodedetails><title>One</title><episode>1</episode></episodedetails>\
+         <episodedetails><title>Two</title><episode>2</episode></episodedetails>\
+         <episodedetails><title>Three</title></episodedetails>",
+        NfoDocumentKind::Episode,
+    )
+    .unwrap();
+    assert_eq!(episode.index_number_end, Some(2));
+}
+
+#[test]
 fn episode_thumb_without_aspect_is_primary() {
     let item = parse_fixture("Sonarr-Thumb.nfo", NfoDocumentKind::Episode);
     let primary: Vec<_> = item

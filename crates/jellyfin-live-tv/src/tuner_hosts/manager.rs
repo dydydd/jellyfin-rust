@@ -5,6 +5,8 @@ use jellyfin_model::TunerHostInfo;
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::hdhomerun::HdHomerunHost;
+
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
@@ -44,11 +46,28 @@ impl TunerHostManager {
     ///
     /// Returns not-found-style validation errors for unsupported providers or
     /// inaccessible sources, and a store error when persistence fails.
-    pub async fn save(&self, host: TunerHostInfo) -> Result<TunerHostInfo, TunerHostError> {
-        if !host.tuner_type.eq_ignore_ascii_case("m3u") {
-            return Err(TunerHostError::UnsupportedType);
-        }
-        self.validate_m3u_source(&host).await?;
+    pub async fn save(&self, mut host: TunerHostInfo) -> Result<TunerHostInfo, TunerHostError> {
+        let host = match host.tuner_type.to_ascii_lowercase().as_str() {
+            "m3u" => {
+                self.validate_m3u_source(&host).await?;
+                host
+            }
+            "hdhomerun" => {
+                let tuner_host =
+                    HdHomerunHost::new().map_err(|_| TunerHostError::SourceUnavailable)?;
+                let model = tuner_host
+                    .get_model_info(&host, false)
+                    .await
+                    .map_err(|_| TunerHostError::SourceUnavailable)?;
+                host.device_id = model.device_id.or(host.device_id);
+                if host.friendly_name.is_none() {
+                    host.friendly_name = model.friendly_name;
+                }
+                host.tuner_count = model.tuner_count;
+                host
+            }
+            _ => return Err(TunerHostError::UnsupportedType),
+        };
         let requested_id = host.id.as_deref().and_then(parse_compact_uuid);
         let saved = self
             .repository

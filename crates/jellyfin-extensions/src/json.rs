@@ -94,7 +94,11 @@ impl Visitor<'_> for BoolStringVisitor {
     where
         E: de::Error,
     {
-        if value.eq_ignore_ascii_case("true") {
+        if value == "1" {
+            Ok(true)
+        } else if value == "0" {
+            Ok(false)
+        } else if value.eq_ignore_ascii_case("true") {
             Ok(true)
         } else if value.eq_ignore_ascii_case("false") {
             Ok(false)

@@ -78,3 +78,14 @@ fn invalid_daily_date_keeps_by_date_success_without_parts() {
     assert_eq!(result.day, None);
     assert_eq!(result.episode_number, None);
 }
+
+#[test]
+fn year_one_is_not_a_valid_daily_episode_date() {
+    let parser = EpisodePathParser::new(NamingOptions::default());
+    let result = parser.parse("/server/anything_0001.01.01.mp4", false);
+    assert!(result.success);
+    assert!(result.is_by_date);
+    assert_eq!(result.year, None);
+    assert_eq!(result.month, None);
+    assert_eq!(result.day, None);
+}

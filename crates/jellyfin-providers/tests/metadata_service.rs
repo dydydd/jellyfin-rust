@@ -95,6 +95,42 @@ fn merge_base_item_data_merge_metadata_settings_merges_when_set() {
     }
 }
 
+#[test]
+fn merge_base_item_data_runtime_respects_locked_fields() {
+    let source = MetadataResult {
+        item: MetadataItem {
+            core: jellyfin_providers::tv::EpisodeMetadata {
+                runtime_ticks: Some(2),
+                ..Default::default()
+            },
+            ..MetadataItem::default()
+        },
+        people: None,
+    };
+    let target = MetadataResult {
+        item: MetadataItem {
+            core: jellyfin_providers::tv::EpisodeMetadata {
+                runtime_ticks: Some(1),
+                ..Default::default()
+            },
+            ..MetadataItem::default()
+        },
+        people: None,
+    };
+
+    let (locked, _) = merge(
+        &source,
+        target.clone(),
+        &[MetadataField::Runtime],
+        true,
+        false,
+    );
+    assert_eq!(locked.item.core.runtime_ticks, Some(1));
+
+    let (unlocked, _) = merge(&source, target, &[], true, false);
+    assert_eq!(unlocked.item.core.runtime_ticks, Some(2));
+}
+
 #[derive(Clone, Copy)]
 enum StringProperty {
     Name,

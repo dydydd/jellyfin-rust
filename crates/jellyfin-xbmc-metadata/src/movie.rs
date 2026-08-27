@@ -198,6 +198,9 @@ pub fn parse_movie_nfo_with_file_lookup(
     for node in root.children().filter(Node::is_element) {
         parse_movie_node(node, &mut movie, &mut file_exists);
     }
+    if let Some(suffix) = xml_document_suffix(input) {
+        parse_provider_links(suffix, &mut movie.provider_ids);
+    }
     Ok(movie)
 }
 
@@ -237,6 +240,11 @@ fn parse_movie_node(
         "fanart" => {
             for thumb in node.children().filter(|child| child.has_tag_name("thumb")) {
                 parse_image(thumb, Some("fanart"), movie, file_exists);
+            }
+        }
+        "art" => {
+            for child in node.children().filter(Node::is_element) {
+                parse_image(child, Some(child.tag_name().name()), movie, file_exists);
             }
         }
         "fileinfo" => parse_file_info(node, movie),
@@ -606,6 +614,12 @@ fn xml_document_prefix(input: &str) -> &str {
     lowercase
         .find("</movie>")
         .map_or(input, |index| &input[..index + "</movie>".len()])
+}
+
+fn xml_document_suffix(input: &str) -> Option<&str> {
+    let lowercase = input.to_ascii_lowercase();
+    let index = lowercase.find("</movie>")? + "</movie>".len();
+    (!input[index..].trim().is_empty()).then_some(&input[index..])
 }
 
 fn normalized_text(node: Node<'_, '_>) -> Option<String> {

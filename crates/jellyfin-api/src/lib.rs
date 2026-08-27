@@ -1516,6 +1516,85 @@ fn video_routes() -> Router<Arc<AppState>> {
 
 fn live_tv_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/LiveTv/Info", get(live_tv::info))
+        .route("/LiveTv/Channels", get(live_tv::channels))
+        .route("/LiveTv/Channels/{channel_id}", get(live_tv::channel))
+        .route("/LiveTv/Recordings", get(live_tv::recordings))
+        .route("/LiveTv/Recordings/Series", get(live_tv::recording_series))
+        .route("/LiveTv/Recordings/Groups", get(live_tv::recording_groups))
+        .route(
+            "/LiveTv/Recordings/Folders",
+            get(live_tv::recording_folders),
+        )
+        .route(
+            "/LiveTv/Recordings/{recording_id}",
+            get(live_tv::recording).delete(live_tv::delete_recording),
+        )
+        .route(
+            "/LiveTv/Tuners/{tuner_id}/Reset",
+            post(live_tv::reset_tuner),
+        )
+        .route(
+            "/LiveTv/Timers",
+            get(live_tv::timers).post(live_tv::create_timer),
+        )
+        .route("/LiveTv/Timers/Defaults", get(live_tv::timer_defaults))
+        .route(
+            "/LiveTv/Timers/{timer_id}",
+            get(live_tv::timer)
+                .post(live_tv::update_timer)
+                .delete(live_tv::cancel_timer),
+        )
+        .route(
+            "/LiveTv/Programs",
+            get(live_tv::programs).post(live_tv::programs_post),
+        )
+        .route(
+            "/LiveTv/Programs/Recommended",
+            get(live_tv::recommended_programs),
+        )
+        .route("/LiveTv/Programs/{program_id}", get(live_tv::program))
+        .route(
+            "/LiveTv/SeriesTimers",
+            get(live_tv::series_timers).post(live_tv::create_series_timer),
+        )
+        .route(
+            "/LiveTv/SeriesTimers/{timer_id}",
+            get(live_tv::series_timer)
+                .post(live_tv::update_series_timer)
+                .delete(live_tv::cancel_series_timer),
+        )
+        .route(
+            "/LiveTv/ListingProviders/Default",
+            get(live_tv::listing_provider_default),
+        )
+        .route(
+            "/LiveTv/ListingProviders",
+            post(live_tv::listing_providers_post).delete(live_tv::delete_listing_provider),
+        )
+        .route(
+            "/LiveTv/ListingProviders/SchedulesDirect/Countries",
+            get(live_tv::schedules_direct_countries),
+        )
+        .route(
+            "/LiveTv/ChannelMappingOptions",
+            get(live_tv::channel_mapping_options),
+        )
+        .route(
+            "/LiveTv/ChannelMappings",
+            post(live_tv::set_channel_mapping),
+        )
+        .route("/LiveTv/TunerHosts/Types", get(live_tv::tuner_host_types))
+        .route("/LiveTv/Tuners/Discover", get(live_tv::discover_tuners))
+        .route("/LiveTv/Tuners/Discvover", get(live_tv::discover_tuners))
+        .route(
+            "/LiveTv/LiveRecordings/{recording_id}/stream",
+            get(live_tv::live_recording_stream),
+        )
+        .route(
+            "/LiveTv/LiveStreamFiles/{stream_id}/stream.{container}",
+            get(live_tv::live_stream_file),
+        )
         .route(
             "/LiveTv/TunerHosts",
             post(live_tv::save_tuner_host).delete(live_tv::delete_tuner_host),

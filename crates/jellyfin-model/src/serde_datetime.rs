@@ -56,15 +56,6 @@ where
     S: Serializer,
 {
     let ticks = value.nanosecond() / 100;
-    let mut output = format!("{}.{ticks:07}Z", value.format("%Y-%m-%dT%H:%M:%S"));
-
-    if value.timestamp_subsec_millis() != 0 {
-        let z = output.pop().expect("timestamp always ends in Z");
-        while output.ends_with('0') {
-            output.pop();
-        }
-        output.push(z);
-    }
-
+    let output = format!("{}.{ticks:07}Z", value.format("%Y-%m-%dT%H:%M:%S"));
     serializer.serialize_str(&output)
 }

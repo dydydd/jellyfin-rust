@@ -27,3 +27,29 @@ fn official_episode_number_without_season_matrix() {
         );
     }
 }
+
+#[test]
+fn e_number_requires_a_token_boundary_before_the_letter() {
+    let resolver = EpisodeResolver::new(NamingOptions::default());
+    assert_eq!(
+        resolver
+            .resolve(
+                "The Simpsons/The Simpsons.S25E08.Steal this episode.mp4",
+                false
+            )
+            .and_then(|value| value.episode_number),
+        Some(8)
+    );
+    assert_eq!(
+        resolver
+            .resolve("The Simpsons/E01.Pilot.mp4", false)
+            .and_then(|value| value.episode_number),
+        Some(1)
+    );
+    assert_eq!(
+        resolver
+            .resolve("The Simpsons/SimpsonE01Pilot.mp4", false)
+            .and_then(|value| value.episode_number),
+        None
+    );
+}

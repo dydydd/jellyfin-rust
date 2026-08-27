@@ -257,6 +257,13 @@ fn merge_scalar_fields(
         &mut target.production_year,
         replace_data,
     );
+    if !locked_fields.contains(&MetadataField::Runtime) {
+        merge_optional(
+            source.core.runtime_ticks.as_ref(),
+            &mut target.core.runtime_ticks,
+            replace_data,
+        );
+    }
     merge_optional(
         source.critic_rating.as_ref(),
         &mut target.critic_rating,
