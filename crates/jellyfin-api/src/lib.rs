@@ -18,12 +18,13 @@ use jellyfin_controller::{
     MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MetadataRefreshService,
     MusicGenreError, MusicGenreService, PackageError, PackageService, PersonError, PersonService,
     PlaylistError, PlaylistService, PlaystateError, PlaystateService, PluginRegistry,
-    PostgresSessionStore, ScheduledTaskError, ScheduledTaskService, StudioError, StudioService,
-    SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
-    TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
-    UserViewManagerService, VideoError, VideoService, VirtualFolderService,
-    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
+    PostgresSessionStore, ScheduledTaskError, ScheduledTaskService, SearchManager, SearchProvider,
+    StudioError, StudioService, SubtitleManager, SubtitleProvider, SystemLogError,
+    SystemLogService, SystemStorageService, TranscodeJobRegistry, TrickplayError, TrickplayService,
+    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
+    UserService, UserViewManagerError, UserViewManagerService, VideoError, VideoService,
+    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
+    client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -161,6 +162,7 @@ pub struct AppState {
     pub(crate) localization: LocalizationService,
     pub(crate) server_configuration: ServerConfigurationRepository,
     pub(crate) user_library: UserLibraryService,
+    pub(crate) search: SearchManager,
     pub(crate) library_controller: LibraryControllerService,
     pub(crate) media_attachments: MediaAttachmentService,
     pub(crate) media_segments: MediaSegmentManagerService,
@@ -219,6 +221,8 @@ impl AppState {
         let base_item_images = BaseItemImageRepository::new(database.clone());
         let web_sockets = Arc::new(websocket::WebSocketHub::new());
         let quick_connect_capability = SystemQuickConnectCapability::new(true);
+        let user_library = UserLibraryService::new(database.clone());
+        let search = SearchManager::with_default_database(user_library.clone());
         let session_store = PostgresSessionStore::new(
             UserService::new(database.clone()),
             DeviceRepository::new(database.clone()),
@@ -268,7 +272,8 @@ impl AppState {
             metadata_editor: MetadataEditorService::new(database.clone()),
             localization: LocalizationService,
             server_configuration: ServerConfigurationRepository::new(database.clone()),
-            user_library: UserLibraryService::new(database.clone()),
+            user_library,
+            search,
             library_controller: LibraryControllerService::new(database.clone()),
             media_attachments: MediaAttachmentService::new(database.clone()),
             media_segments: MediaSegmentManagerService::new(database.clone()),
@@ -404,6 +409,13 @@ impl AppState {
         providers: Vec<Arc<dyn jellyfin_controller::LyricProvider>>,
     ) -> Self {
         self.user_library = self.user_library.with_lyric_providers(providers);
+        self
+    }
+
+    /// Adds external search providers to the `/Items` search pipeline.
+    #[must_use]
+    pub fn with_search_providers(mut self, providers: Vec<Arc<dyn SearchProvider>>) -> Self {
+        self.search = self.search.with_providers(providers);
         self
     }
 

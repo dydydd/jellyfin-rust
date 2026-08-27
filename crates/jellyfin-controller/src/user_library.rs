@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ScoredBaseItem,
-    ScoredBaseItemPage,
+    ScoredBaseItemPage, ServerConfigurationRepository,
     entities::{base_item, user},
 };
+use jellyfin_extensions::StringExtensions;
 use jellyfin_model::UserPolicy;
 use sea_orm::DatabaseConnection;
 use serde_json::Value;
@@ -50,6 +51,7 @@ pub struct UserLibraryService {
     items: BaseItemRepository,
     item_types: ItemTypeRegistry,
     localization: LocalizationService,
+    server_configuration: ServerConfigurationRepository,
     lyrics: LyricManager,
 }
 
@@ -66,9 +68,10 @@ impl UserLibraryService {
     ) -> Self {
         Self {
             users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database),
+            items: BaseItemRepository::new(database.clone()),
             item_types,
             localization: LocalizationService,
+            server_configuration: ServerConfigurationRepository::new(database),
             lyrics: LyricManager::default(),
         }
     }
@@ -516,20 +519,29 @@ impl UserLibraryService {
         let user = self.users.get(target_user_id).await?;
         let policy: UserPolicy =
             serde_json::from_value(user.policy).map_err(UserLibraryError::InvalidPolicy)?;
-        query.blocked_tags = policy.blocked_tags;
-        query.allowed_tags = policy.allowed_tags;
+        query.blocked_tags = normalized_tags(&policy.blocked_tags);
+        query.allowed_tags = normalized_tags(&policy.allowed_tags);
+        query.block_unrated_items = policy
+            .block_unrated_items
+            .iter()
+            .map(|item| item.as_str().to_owned())
+            .collect();
+        if let Some(maximum) = policy.max_parental_rating {
+            let metadata_country_code = self
+                .server_configuration
+                .load()
+                .await
+                .map(|configuration| configuration.metadata_country_code)
+                .unwrap_or_default();
+            query.allowed_parental_ratings = self.localization.parental_rating_names_at_or_below(
+                maximum,
+                policy.max_parental_sub_rating,
+                &metadata_country_code,
+            );
+        }
         query.enabled_folders = policy.enabled_folders;
         query.enable_all_folders = policy.enable_all_folders;
         query.blocked_media_folders = policy.blocked_media_folders;
-        if let Some(maximum) = policy.max_parental_rating {
-            query.allowed_official_ratings = self
-                .localization
-                .parental_ratings("US")
-                .into_iter()
-                .filter(|rating| rating.value.is_none_or(|value| value <= maximum))
-                .map(|rating| rating.name)
-                .collect();
-        }
         Ok(())
     }
 
@@ -595,6 +607,16 @@ fn is_display_extra_type(value: &str) -> bool {
     ]
     .iter()
     .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
+fn normalized_tags(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.clean_value())
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 fn is_video_item_type(value: &str) -> bool {

@@ -1,6 +1,7 @@
 use jellyfin_data::{
-    BaseItemQuery, BaseItemRepository, CollectionRepository, DatabaseConfig, NewBaseItem,
-    NewUserData, UserDataRepository, entities::user,
+    BaseItemQuery, BaseItemRepository, CollectionRepository, DatabaseConfig, ItemValueRepository,
+    NewBaseItem, NewUserData, UserDataRepository,
+    entities::{item_value::ItemValueType, user},
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, Statement};
 use serde_json::{Value, json};
@@ -379,6 +380,237 @@ async fn resumable_filter_rolls_up_partially_watched_series_and_seasons() {
         .exec(&database)
         .await
         .expect("resume user cleanup");
+}
+
+#[tokio::test]
+async fn parental_control_filters_inherit_ratings_tags_and_unrated_type() {
+    let _guard = TEST_LOCK.lock().await;
+    let database = prepare_database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let repository = BaseItemRepository::new(database.clone());
+    let values = ItemValueRepository::new(database.clone());
+    let root = repository.ensure_user_root().await.expect("user root");
+    let container = create_item(
+        &repository,
+        "Folder",
+        &format!("Parental Container {suffix}"),
+        Some(root.id),
+        true,
+        None,
+        None,
+    )
+    .await;
+
+    let mut series = create_item(
+        &repository,
+        "Series",
+        &format!("Parental Series {suffix}"),
+        Some(container.id),
+        true,
+        None,
+        None,
+    )
+    .await;
+    series.official_rating = Some("PG-13".to_owned());
+    let series = repository.update(series).await.expect("series rating");
+    values
+        .link(series.id, ItemValueType::Tags, "horror")
+        .await
+        .expect("series tag");
+
+    let season = create_item(
+        &repository,
+        "Season",
+        &format!("Parental Season {suffix}"),
+        Some(series.id),
+        true,
+        None,
+        None,
+    )
+    .await;
+    let mut episode = create_item(
+        &repository,
+        "Episode",
+        &format!("Parental Episode {suffix}"),
+        Some(season.id),
+        false,
+        None,
+        None,
+    )
+    .await;
+    episode.series_id = Some(series.id);
+    episode.top_parent_id = Some(container.id);
+    let episode = repository.update(episode).await.expect("episode hierarchy");
+
+    let blocked = repository
+        .query(&BaseItemQuery {
+            ids: vec![episode.id, season.id],
+            blocked_tags: vec!["horror".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("blocked inherited tag query");
+    assert_eq!(blocked.total_record_count, 0);
+
+    let allowed = repository
+        .query(&BaseItemQuery {
+            ids: vec![episode.id, season.id],
+            allowed_tags: vec!["horror".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("allowed inherited tag query");
+    assert_eq!(allowed.total_record_count, 2);
+
+    let untagged_movie = create_item(
+        &repository,
+        "Movie",
+        &format!("Parental Untagged Movie {suffix}"),
+        Some(container.id),
+        false,
+        None,
+        None,
+    )
+    .await;
+    let allowed_movie = repository
+        .query(&BaseItemQuery {
+            ids: vec![untagged_movie.id],
+            allowed_tags: vec!["horror".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("allowed tag movie query");
+    assert_eq!(allowed_movie.total_record_count, 0);
+
+    let rating_blocked = repository
+        .query(&BaseItemQuery {
+            ids: vec![episode.id],
+            allowed_parental_ratings: vec!["10".to_owned(), "10+".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("inherited rating block query");
+    assert_eq!(rating_blocked.total_record_count, 0);
+
+    let rating_allowed = repository
+        .query(&BaseItemQuery {
+            ids: vec![episode.id],
+            allowed_parental_ratings: vec!["pg-13".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("inherited rating allow query");
+    assert_eq!(rating_allowed.total_record_count, 1);
+
+    let mut custom_rated = create_item(
+        &repository,
+        "Movie",
+        &format!("Parental Custom Rated Movie {suffix}"),
+        Some(container.id),
+        false,
+        None,
+        Some(json!({ "CustomRating": "FSK-18" })),
+    )
+    .await;
+    custom_rated.official_rating = Some("PG".to_owned());
+    let custom_rated = repository
+        .update(custom_rated)
+        .await
+        .expect("custom rated movie");
+    let custom_blocked = repository
+        .query(&BaseItemQuery {
+            ids: vec![custom_rated.id],
+            allowed_parental_ratings: vec!["pg".to_owned(), "pg-13".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("custom rating block query");
+    assert_eq!(custom_blocked.total_record_count, 0);
+
+    let custom_series = create_item(
+        &repository,
+        "Series",
+        &format!("Parental Custom Series {suffix}"),
+        Some(container.id),
+        true,
+        None,
+        Some(json!({ "CustomRating": "FSK-18" })),
+    )
+    .await;
+    let custom_series = repository
+        .update(custom_series)
+        .await
+        .expect("custom series");
+    let mut custom_series_child = create_item(
+        &repository,
+        "Episode",
+        &format!("Parental Custom Series Child {suffix}"),
+        Some(custom_series.id),
+        false,
+        None,
+        None,
+    )
+    .await;
+    custom_series_child.official_rating = Some("PG".to_owned());
+    custom_series_child.series_id = Some(custom_series.id);
+    custom_series_child.top_parent_id = Some(container.id);
+    let custom_series_child = repository
+        .update(custom_series_child)
+        .await
+        .expect("custom series child");
+    let inherited_custom_blocked = repository
+        .query(&BaseItemQuery {
+            ids: vec![custom_series_child.id],
+            allowed_parental_ratings: vec!["pg".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("inherited custom rating block query");
+    assert_eq!(inherited_custom_blocked.total_record_count, 0);
+
+    let unrated_blocked = repository
+        .query(&BaseItemQuery {
+            ids: vec![untagged_movie.id],
+            block_unrated_items: vec!["Movie".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("unrated movie block query");
+    assert_eq!(unrated_blocked.total_record_count, 0);
+
+    let mut rated_movie = create_item(
+        &repository,
+        "Movie",
+        &format!("Parental Rated Movie {suffix}"),
+        Some(container.id),
+        false,
+        None,
+        None,
+    )
+    .await;
+    rated_movie.official_rating = Some("PG-13".to_owned());
+    let rated_movie = repository.update(rated_movie).await.expect("rated movie");
+    let unrated_allowed = repository
+        .query(&BaseItemQuery {
+            ids: vec![rated_movie.id],
+            block_unrated_items: vec!["Movie".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("rated movie unrated block query");
+    assert_eq!(unrated_allowed.total_record_count, 1);
+
+    let unrated_series_child = repository
+        .query(&BaseItemQuery {
+            ids: vec![episode.id],
+            block_unrated_items: vec!["Series".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("unrated series child query");
+    assert_eq!(unrated_series_child.total_record_count, 1);
+
+    cleanup(&repository, container.id).await;
 }
 
 async fn prepare_database() -> DatabaseConnection {

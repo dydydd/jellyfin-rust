@@ -171,6 +171,22 @@ fn resolves_valid_rating_strings() {
 }
 
 #[test]
+fn parental_rating_names_at_or_below_use_all_systems_and_sub_scores() {
+    let service = LocalizationService;
+    let names = service.parental_rating_names_at_or_below(13, None, "DE");
+    assert!(names.contains(&"pg-13".to_owned()));
+    assert!(names.contains(&"rated: pg-13".to_owned()));
+    assert!(names.contains(&"fsk-12".to_owned()));
+    assert!(names.contains(&"10+".to_owned()));
+    assert!(!names.contains(&"fsk-16".to_owned()));
+
+    let without_sub_score = service.parental_rating_names_at_or_below(17, None, "US");
+    assert!(!without_sub_score.contains(&"tv-ma".to_owned()));
+    let with_sub_score = service.parental_rating_names_at_or_below(17, Some(1), "US");
+    assert!(with_sub_score.contains(&"tv-ma".to_owned()));
+}
+
+#[test]
 fn parses_numeric_rating_scores() {
     let service = LocalizationService;
     for value in [0, 1, 6, 12, 42, 9999] {

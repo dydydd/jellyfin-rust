@@ -123,6 +123,48 @@ impl LocalizationService {
         parental_ratings(country_code)
     }
 
+    /// Returns every rating spelling that resolves at or below the requested
+    /// parental limit using the server's configured metadata country.
+    ///
+    /// The list is built from every official rating system, including the
+    /// common prefixed and `Rated ...` spellings, so the database filter can
+    /// compare inherited item ratings without hard-coding one country.
+    #[must_use]
+    pub fn parental_rating_names_at_or_below(
+        &self,
+        max_score: i32,
+        max_sub_score: Option<i32>,
+        configured_country_code: &str,
+    ) -> Vec<String> {
+        let mut names = HashSet::new();
+        let mut add_if_allowed = |candidate: &str| {
+            let Some(score) = self.rating_score(candidate, configured_country_code, None) else {
+                return;
+            };
+            if score_at_or_below(score, max_score, max_sub_score) {
+                names.insert(candidate.trim().to_lowercase());
+            }
+        };
+
+        for system in rating_systems() {
+            for entry in &system.ratings {
+                for rating in &entry.rating_strings {
+                    for candidate in
+                        rating_spelling_candidates(rating, system.country_code.as_str())
+                    {
+                        add_if_allowed(&candidate);
+                    }
+                }
+            }
+        }
+        for value in 0..=max_score.max(0) {
+            add_if_allowed(&value.to_string());
+            add_if_allowed(&format!("{value}+"));
+        }
+
+        names.into_iter().collect()
+    }
+
     /// Returns every embedded server UI culture ordered by native display name.
     #[must_use]
     pub fn localization_options(&self) -> Vec<LocalizationOption> {
@@ -495,6 +537,26 @@ fn rating_in_country(country_code: &str, rating: &str) -> Option<ParentalRatingS
         .iter()
         .find(|system| system.country_code.eq_ignore_ascii_case(country_code))
         .and_then(|system| rating_in_system(system, rating))
+}
+
+fn score_at_or_below(
+    score: ParentalRatingScore,
+    max_score: i32,
+    max_sub_score: Option<i32>,
+) -> bool {
+    score.score < max_score
+        || (score.score == max_score && score.sub_score.unwrap_or(0) <= max_sub_score.unwrap_or(0))
+}
+
+fn rating_spelling_candidates(rating: &str, country_code: &str) -> Vec<String> {
+    let mut candidates = vec![rating.to_owned()];
+    for prefix in ["Rated ", "Rated: ", "Rated : "] {
+        candidates.push(format!("{prefix}{rating}"));
+    }
+    for separator in [": ", ":", "-"] {
+        candidates.push(format!("{country_code}{separator}{rating}"));
+    }
+    candidates
 }
 
 fn rating_in_system(system: &RatingSystem, rating: &str) -> Option<ParentalRatingScore> {
