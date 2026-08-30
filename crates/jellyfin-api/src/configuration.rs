@@ -119,6 +119,8 @@ fn server_configuration(
         allow_client_log_upload: model.allow_client_log_upload,
         trickplay_options: serde_json::from_value::<TrickplayOptions>(model.trickplay_options)
             .map_err(|_| ApiError::Internal)?,
+        cast_receiver_applications: serde_json::from_value(model.cast_receiver_applications)
+            .map_err(|_| ApiError::Internal)?,
         tmdb_api_key: model.tmdb_api_key,
         omdb_api_key: model.omdb_api_key,
         quick_connect_available: model.quick_connect_available,
@@ -146,6 +148,8 @@ fn server_configuration_update(
         max_audiobook_resume: configuration.max_audiobook_resume,
         allow_client_log_upload: configuration.allow_client_log_upload,
         trickplay_options: serde_json::to_value(configuration.trickplay_options)
+            .map_err(|_| ApiError::Internal)?,
+        cast_receiver_applications: serde_json::to_value(configuration.cast_receiver_applications)
             .map_err(|_| ApiError::Internal)?,
         tmdb_api_key: configuration.tmdb_api_key,
         quick_connect_available: configuration.quick_connect_available,

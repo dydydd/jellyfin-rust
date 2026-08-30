@@ -191,6 +191,24 @@ impl NetworkManager {
     }
 
     #[must_use]
+    pub fn get_loopbacks(&self) -> Vec<IpData> {
+        let mut loopbacks = Vec::new();
+        if self.config.enable_ipv4 {
+            loopbacks.push(IpData {
+                address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                subnet: network("127.0.0.0/8"),
+            });
+        }
+        if self.config.enable_ipv6 {
+            loopbacks.push(IpData {
+                address: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                subnet: network("::1/128"),
+            });
+        }
+        loopbacks
+    }
+
+    #[must_use]
     pub fn get_internal_bind_addresses(&self) -> Vec<IpData> {
         let mut interfaces = self
             .interfaces
@@ -283,9 +301,11 @@ impl NetworkManager {
 
         if available.is_empty() {
             return match source {
+                Some(IpAddr::V4(_)) if self.config.enable_ipv4 => "127.0.0.1".to_owned(),
                 Some(IpAddr::V6(_)) if self.config.enable_ipv6 => "::1".to_owned(),
                 _ if self.config.enable_ipv4 => "127.0.0.1".to_owned(),
-                _ => "::1".to_owned(),
+                _ if self.config.enable_ipv6 => "::1".to_owned(),
+                _ => "127.0.0.1".to_owned(),
             };
         }
         let Some(source) = source else {
@@ -351,6 +371,40 @@ impl NetworkManager {
             }
             self.interfaces
                 .retain(|interface| addresses.contains(&interface.address()));
+
+            if addresses.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST))
+                && !self
+                    .interfaces
+                    .iter()
+                    .any(|i| i.address() == IpAddr::V4(Ipv4Addr::LOCALHOST))
+                && self.config.enable_ipv4
+            {
+                self.interfaces.push(NetworkInterface::new(
+                    IpData {
+                        address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        subnet: network("127.0.0.0/8"),
+                    },
+                    1,
+                    "lo",
+                ));
+            }
+
+            if addresses.contains(&IpAddr::V6(Ipv6Addr::LOCALHOST))
+                && !self
+                    .interfaces
+                    .iter()
+                    .any(|i| i.address() == IpAddr::V6(Ipv6Addr::LOCALHOST))
+                && self.config.enable_ipv6
+            {
+                self.interfaces.push(NetworkInterface::new(
+                    IpData {
+                        address: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                        subnet: network("::1/128"),
+                    },
+                    2,
+                    "lo",
+                ));
+            }
         }
 
         if self.config.ignore_virtual_interfaces {
@@ -372,6 +426,29 @@ impl NetworkManager {
                 IpAddr::V4(_) => enable_ipv4,
                 IpAddr::V6(_) => enable_ipv6,
             });
+
+        if self.interfaces.is_empty() {
+            if self.config.enable_ipv4 {
+                self.interfaces.push(NetworkInterface::new(
+                    IpData {
+                        address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        subnet: network("127.0.0.0/8"),
+                    },
+                    1,
+                    "lo",
+                ));
+            }
+            if self.config.enable_ipv6 {
+                self.interfaces.push(NetworkInterface::new(
+                    IpData {
+                        address: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                        subnet: network("::1/128"),
+                    },
+                    2,
+                    "lo",
+                ));
+            }
+        }
 
         let mut addresses = HashSet::new();
         self.interfaces
@@ -478,6 +555,7 @@ impl NetworkManager {
             interfaces.sort_by_key(|interface| {
                 (
                     !subnet_contains_address(interface.subnet(), source),
+                    !same_family(interface.address(), source),
                     std::cmp::Reverse(interface.subnet().prefix_length()),
                     interface.index,
                 )
@@ -494,6 +572,7 @@ impl NetworkManager {
             interfaces.sort_by_key(|interface| {
                 (
                     !subnet_contains_address(interface.subnet(), source),
+                    !same_family(interface.address(), source),
                     std::cmp::Reverse(interface.subnet().prefix_length()),
                     interface.index,
                 )

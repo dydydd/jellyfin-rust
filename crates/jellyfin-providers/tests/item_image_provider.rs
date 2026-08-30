@@ -540,3 +540,78 @@ fn refresh_images_provider_remote_filters_by_width() {
         assert_eq!(result.image_updated, expected_update);
     }
 }
+
+#[test]
+fn refresh_images_local_provider_attaches_discovered_artwork() {
+    let mut item = ImageItem::default();
+    let mut capability = FixtureCapability {
+        local_images: vec![
+            LocalImageInfo::new("/media/movies/The Matrix/poster.jpg", ImageType::Primary),
+            LocalImageInfo::new("/media/movies/The Matrix/fanart.png", ImageType::Backdrop),
+        ],
+        ..FixtureCapability::default()
+    };
+
+    let result = ItemImageProvider.refresh_images(
+        &mut item,
+        &ImageLibraryOptions::default(),
+        &[ImageProvider::local("local")],
+        &ImageRefreshOptions::default(),
+        &mut capability,
+    );
+
+    assert!(result.image_updated);
+    assert_eq!(item.image_count(ImageType::Primary), 1);
+    assert_eq!(item.image_count(ImageType::Backdrop), 1);
+    // Local artwork keeps its own path instead of being copied into metadata.
+    let primary = item.images_of(ImageType::Primary).remove(0);
+    assert_eq!(primary.path, "/media/movies/The Matrix/poster.jpg");
+    assert!(primary.is_local_file);
+}
+
+#[test]
+fn refresh_images_local_provider_does_not_overwrite_existing_images() {
+    let mut item = item_with_images(ImageType::Primary, 1, false);
+    let existing = item.images_of(ImageType::Primary).remove(0).path.clone();
+    let mut capability = FixtureCapability {
+        local_images: vec![LocalImageInfo::new("/media/local/poster.jpg", ImageType::Primary)],
+        ..FixtureCapability::default()
+    };
+
+    let result = ItemImageProvider.refresh_images(
+        &mut item,
+        &ImageLibraryOptions::default(),
+        &[ImageProvider::local("local")],
+        &ImageRefreshOptions::default(),
+        &mut capability,
+    );
+
+    assert!(!result.image_updated);
+    assert_eq!(item.image_count(ImageType::Primary), 1);
+    assert_eq!(item.images_of(ImageType::Primary).remove(0).path, existing);
+}
+
+#[test]
+fn refresh_images_local_provider_skips_disabled_image_types() {
+    let mut item = ImageItem::default();
+    let mut capability = FixtureCapability {
+        local_images: vec![LocalImageInfo::new("/media/local/logo.png", ImageType::Logo)],
+        ..FixtureCapability::default()
+    };
+
+    let mut options = ImageTypeOptions::new(ImageType::Logo, 1);
+    options.enabled = false;
+
+    let result = ItemImageProvider.refresh_images(
+        &mut item,
+        &ImageLibraryOptions {
+            image_options: vec![options],
+        },
+        &[ImageProvider::local("local")],
+        &ImageRefreshOptions::default(),
+        &mut capability,
+    );
+
+    assert!(!result.image_updated);
+    assert_eq!(item.image_count(ImageType::Logo), 0);
+}

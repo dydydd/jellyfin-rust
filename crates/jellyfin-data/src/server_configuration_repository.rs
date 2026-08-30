@@ -31,6 +31,7 @@ pub struct ServerConfigurationUpdate {
     pub max_audiobook_resume: i32,
     pub allow_client_log_upload: bool,
     pub trickplay_options: Value,
+    pub cast_receiver_applications: Value,
     pub tmdb_api_key: String,
     pub quick_connect_available: bool,
     pub omdb_api_key: String,
@@ -93,7 +94,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             ",
@@ -130,7 +131,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             "
@@ -188,7 +189,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             ",
@@ -225,7 +226,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             ",
@@ -270,7 +271,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             ",
@@ -303,7 +304,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             ",
@@ -339,7 +340,7 @@ impl ServerConfigurationRepository {
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             ",
@@ -384,16 +385,17 @@ impl ServerConfigurationRepository {
                 max_audiobook_resume = $12,
                 allow_client_log_upload = $13,
                 trickplay_options = $14,
-                tmdb_api_key = $15,
-                quick_connect_available = $16,
-                omdb_api_key = $17
+                cast_receiver_applications = $15,
+                tmdb_api_key = $16,
+                quick_connect_available = $17,
+                omdb_api_key = $18
             WHERE id = 1
             RETURNING id, server_name, ui_culture, metadata_country_code,
                 preferred_metadata_language, is_startup_wizard_completed,
                 content_types, plugin_repositories, min_resume_pct, max_resume_pct,
                 min_resume_duration_seconds, min_audiobook_resume,
                 max_audiobook_resume, allow_client_log_upload, trickplay_options,
-                enable_remote_access, server_id, tmdb_api_key,
+                cast_receiver_applications, enable_remote_access, server_id, tmdb_api_key,
                 quick_connect_available, omdb_api_key,
                 row_version, created_at, updated_at
             ",
@@ -412,6 +414,7 @@ impl ServerConfigurationRepository {
                 update.max_audiobook_resume.into(),
                 update.allow_client_log_upload.into(),
                 update.trickplay_options.into(),
+                update.cast_receiver_applications.into(),
                 update.tmdb_api_key.into(),
                 update.quick_connect_available.into(),
                 update.omdb_api_key.into(),

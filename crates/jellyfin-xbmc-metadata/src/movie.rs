@@ -100,6 +100,10 @@ pub struct MovieNfo {
     pub preferred_metadata_language: Option<String>,
     pub preferred_metadata_country_code: Option<String>,
     pub collection_name: Option<String>,
+    pub sort_name: Option<String>,
+    pub forced_sort_name: Option<String>,
+    pub tags: Vec<String>,
+    pub display_order: Option<String>,
     pub aspect_ratio: Option<String>,
     pub width: Option<i32>,
     pub height: Option<i32>,
@@ -273,7 +277,13 @@ fn parse_movie_node(
                 normalized_text(node),
             );
         }
-        _ => {}
+        other => {
+            if let Some(key) = extract_provider_key(other)
+                && let Some(val) = normalized_text(node)
+            {
+                movie.provider_ids.insert(normalize_provider_name(key), val);
+            }
+        }
     }
 }
 
@@ -344,6 +354,10 @@ fn parse_basic_movie_node(tag: &str, node: Node<'_, '_>, movie: &mut MovieNfo) -
             }
         }
         "aspectratio" => movie.aspect_ratio = normalized_text(node),
+        "sortname" => movie.sort_name = normalized_text(node),
+        "sorttitle" => movie.forced_sort_name = normalized_text(node),
+        "displayorder" => movie.display_order = normalized_text(node),
+        "tag" | "style" => push_unique_text(node, &mut movie.tags),
         _ => return false,
     }
 
@@ -380,22 +394,67 @@ fn parse_id_node(node: Node<'_, '_>, movie: &mut MovieNfo) {
 }
 
 fn parse_unique_id(node: Node<'_, '_>, movie: &mut MovieNfo) {
-    let Some(provider) = attribute_ignore_ascii_case(node, "type") else {
-        return;
-    };
     let Some(id) = normalized_text(node) else {
         return;
     };
-    let normalized_provider = match provider.to_ascii_lowercase().as_str() {
-        "imdb" | "imdb_id" => MetadataProvider::Imdb.as_str(),
-        "tmdb" => MetadataProvider::Tmdb.as_str(),
-        "tvdb" => MetadataProvider::Tvdb.as_str(),
-        "tmdbcol" | "tmdbcolid" | "collectionnumber" => MetadataProvider::TmdbCollection.as_str(),
-        _ => provider,
-    };
-    movie
-        .provider_ids
-        .insert(normalized_provider.to_owned(), id);
+    let provider = attribute_ignore_ascii_case(node, "type")
+        .or_else(|| attribute_ignore_ascii_case(node, "name"))
+        .unwrap_or("Imdb");
+    let normalized = normalize_provider_name(provider);
+    movie.provider_ids.insert(normalized, id);
+}
+
+fn extract_provider_key(tag: &str) -> Option<&str> {
+    if tag.len() <= 2 {
+        return None;
+    }
+    let lower = tag.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "uniqueid" | "fileinfo" | "aspectratio" | "id" | "thumb" | "art" | "fanart" | "set" | "actor" | "director" | "writer" | "credits" | "genre" | "studio" | "country" | "trailer" | "ratings"
+    ) {
+        return None;
+    }
+    if tag.len() > 3 && tag[tag.len() - 3..].eq_ignore_ascii_case("_id") {
+        let prefix = &tag[..tag.len() - 3];
+        if !prefix.is_empty() {
+            return Some(prefix);
+        }
+    }
+    if tag.len() > 2 && tag[tag.len() - 2..].eq_ignore_ascii_case("id") {
+        let prefix = &tag[..tag.len() - 2];
+        if !prefix.is_empty() && !prefix.eq_ignore_ascii_case("val") {
+            return Some(prefix);
+        }
+    }
+    None
+}
+
+fn normalize_provider_name(provider: &str) -> String {
+    match provider.to_ascii_lowercase().as_str() {
+        "imdb" | "imdb_id" => MetadataProvider::Imdb.as_str().to_owned(),
+        "tmdb" => MetadataProvider::Tmdb.as_str().to_owned(),
+        "tvdb" => MetadataProvider::Tvdb.as_str().to_owned(),
+        "tmdbcol" | "tmdbcolid" | "collectionnumber" => {
+            MetadataProvider::TmdbCollection.as_str().to_owned()
+        }
+        "tvmaze" => "Tvmaze".to_owned(),
+        "tvrage" => "TvRage".to_owned(),
+        "zap2it" => "Zap2It".to_owned(),
+        "anidb" => "AniDB".to_owned(),
+        "audiodb" => "AudioDb".to_owned(),
+        "musicbrainz" => "MusicBrainz".to_owned(),
+        "musicbrainzartist" => "MusicBrainzArtist".to_owned(),
+        "musicbrainzalbum" => "MusicBrainzAlbum".to_owned(),
+        "musicbrainzreleasegroup" => "MusicBrainzReleaseGroup".to_owned(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        }
+    }
 }
 
 fn parse_ratings(node: Node<'_, '_>, movie: &mut MovieNfo) {

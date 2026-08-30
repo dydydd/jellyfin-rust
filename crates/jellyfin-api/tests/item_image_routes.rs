@@ -230,7 +230,11 @@ async fn exercise_legacy_item_image_path(database_name: &str) {
     assert_eq!(response.headers()[header::ETAG], "\"legacy-tag\"");
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let decoded = image::load_from_memory(&bytes).unwrap();
-    assert_eq!((decoded.width(), decoded.height()), (2, 1));
+    // `DrawingUtils.Resize` assigns both dimensions verbatim when width and
+    // height are both non-zero, so the requested box is used as-is rather than
+    // being fitted to the source aspect ratio. The 8x4 fixture is not scaled
+    // down because `ScaleDownToFit` only shrinks.
+    assert_eq!((decoded.width(), decoded.height()), (2, 2));
 
     let head = fixture.request(Method::HEAD, &path, &[]).await;
     assert_eq!(head.status(), StatusCode::OK);

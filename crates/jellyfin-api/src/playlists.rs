@@ -115,6 +115,13 @@ pub(crate) async fn create(
     let body = body
         .map_err(|_| ApiError::InvalidRequest)?
         .map(|Json(body)| body);
+    // Upstream only applies the `CreatePlaylistDto.IsPublic` default of `true`
+    // when a body was actually supplied. A bodyless request leaves
+    // `PlaylistCreationRequest.Public` null, which `PlaylistManager` turns into
+    // `OpenAccess = false`.
+    let is_public = body
+        .as_ref()
+        .map_or(false, |body| body.is_public.unwrap_or(true));
     let requested_user_id = query.user_id.or_else(|| body.as_ref()?.user_id);
     let owner_user_id = identity.target_user_id(requested_user_id)?;
     if owner_user_id.is_nil() {
@@ -129,7 +136,6 @@ pub(crate) async fn create(
     };
     let media_type = query.media_type.or(body.media_type);
     let shares = body.users.as_slice();
-    let is_public = body.is_public.unwrap_or(true);
     let id = state
         .playlists
         .create(name, owner_user_id, is_public, media_type, shares, &ids)

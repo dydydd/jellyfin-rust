@@ -450,7 +450,16 @@ pub(crate) async fn authenticated_identity(
 }
 
 pub(crate) fn stored_user_policy(user: &user::Model) -> Result<UserPolicy, ApiError> {
-    serde_json::from_value(user.policy.clone()).map_err(|_| ApiError::Internal)
+    let mut policy: UserPolicy =
+        serde_json::from_value(user.policy.clone()).map_err(|_| ApiError::Internal)?;
+    policy.invalid_login_attempt_count = user.invalid_login_attempt_count;
+    policy.login_attempts_before_lockout = user.login_attempts_before_lockout;
+    policy.is_administrator = user.is_administrator;
+    policy.is_hidden = user.is_hidden;
+    policy.is_disabled = user.is_disabled;
+    policy.authentication_provider_id = Some(user.authentication_provider_id.clone());
+    policy.password_reset_provider_id = Some(user.password_reset_provider_id.clone());
+    Ok(policy)
 }
 
 fn is_parental_schedule_allowed(policy: &UserPolicy, local_now: DateTime<FixedOffset>) -> bool {

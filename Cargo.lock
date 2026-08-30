@@ -1665,6 +1665,7 @@ dependencies = [
  "blurhash",
  "image",
  "jellyfin-model",
+ "miniz_oxide",
  "sha2",
  "tempfile",
  "thiserror",
@@ -1774,6 +1775,7 @@ version = "0.1.0"
 name = "jellyfin-providers"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "jellyfin-model",
  "jellyfin-naming",
  "serde_json",

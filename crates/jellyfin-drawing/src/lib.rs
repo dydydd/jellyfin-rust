@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, OpenOptions},
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, BufWriter, Cursor, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -843,8 +843,15 @@ fn process_to_cache(
         output_format.extension().trim_start_matches('.'),
         unique_suffix()
     ));
-    let result = encode_image(&image, &temporary_path, request.quality, output_format)
-        .and_then(|()| persist_cache(&temporary_path, cache_path));
+    let icc_profile = extract_icc_profile_from_file(source_path).unwrap_or(None);
+    let result = encode_image(
+        &image,
+        &temporary_path,
+        request.quality,
+        output_format,
+        icc_profile.as_deref(),
+    )
+    .and_then(|()| persist_cache(&temporary_path, cache_path));
     if result.is_err() {
         let _ = fs::remove_file(&temporary_path);
     }
@@ -1131,12 +1138,59 @@ fn draw_count_glyphs(canvas: &mut RgbaImage, center_x: u32, center_y: u32, text:
     }
 }
 
+/// Encodes `image` with the encoder settings Jellyfin uses and, for JPEG
+/// output, carries the source's embedded ICC profile over to the result.
+///
+/// Grayscale sources keep their `L8` colour type so a monochrome image is not
+/// expanded to RGB on the way out.
 fn encode_image(
     image: &DynamicImage,
     path: &Path,
     quality: u8,
     format: ImageFormat,
+    icc_profile: Option<&[u8]>,
 ) -> Result<(), ImageProcessingError> {
+    let mut encoded = Vec::new();
+    let encode_result = match format {
+        ImageFormat::Jpg => match image {
+            DynamicImage::ImageLuma8(luma) => {
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality).write_image(
+                    luma.as_raw(),
+                    luma.width(),
+                    luma.height(),
+                    image::ExtendedColorType::L8,
+                )
+            }
+            DynamicImage::ImageLumaA8(la) => {
+                let luma = DynamicImage::ImageLumaA8(la.clone()).into_luma8();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality).write_image(
+                    luma.as_raw(),
+                    luma.width(),
+                    luma.height(),
+                    image::ExtendedColorType::L8,
+                )
+            }
+            _ => {
+                let rgb = image.to_rgb8();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality).write_image(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+            }
+        },
+        format => image.write_to(&mut Cursor::new(&mut encoded), decoder_format(format)?),
+    };
+    encode_result.map_err(|source| ImageProcessingError::Encode {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    if format == ImageFormat::Jpg && let Some(profile) = icc_profile {
+        embed_icc_profile(&mut encoded, profile);
+    }
+
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1146,22 +1200,12 @@ fn encode_image(
             source,
         })?;
     let mut writer = BufWriter::new(file);
-    let encode_result = match format {
-        ImageFormat::Jpg => {
-            let rgb = image.to_rgb8();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, quality).write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                image::ExtendedColorType::Rgb8,
-            )
-        }
-        format => image.write_to(&mut writer, decoder_format(format)?),
-    };
-    encode_result.map_err(|source| ImageProcessingError::Encode {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    writer
+        .write_all(&encoded)
+        .map_err(|source| ImageProcessingError::FileAccess {
+            path: path.to_path_buf(),
+            source,
+        })?;
     writer
         .flush()
         .map_err(|source| ImageProcessingError::FileAccess {
@@ -1240,6 +1284,163 @@ fn format_from_path(path: &Path) -> Option<ImageFormat> {
         "svg" => Some(ImageFormat::Svg),
         _ => None,
     }
+}
+
+/// Extracts the raw ICC color profile bytes embedded in an image, if present.
+#[must_use]
+pub fn extract_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+    // 1. JPEG APP2 ICC_PROFILE
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        let mut offset = 2;
+        let mut chunks: std::collections::BTreeMap<u8, Vec<u8>> = std::collections::BTreeMap::new();
+        while offset + 4 <= bytes.len() {
+            if bytes[offset] != 0xFF {
+                break;
+            }
+            let marker = bytes[offset + 1];
+            if marker == 0xDA || marker == 0xD9 {
+                break;
+            }
+            let length = u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]) as usize;
+            if offset + 2 + length > bytes.len() {
+                break;
+            }
+            let segment = &bytes[offset + 4..offset + 2 + length];
+            if marker == 0xE2 && segment.len() >= 14 && segment.starts_with(b"ICC_PROFILE\0") {
+                let seq_no = segment[12];
+                let data = &segment[14..];
+                chunks.insert(seq_no, data.to_vec());
+            }
+            offset += 2 + length;
+        }
+        if !chunks.is_empty() {
+            let mut total = Vec::new();
+            for (_, chunk) in chunks {
+                total.extend_from_slice(&chunk);
+            }
+            return Some(total);
+        }
+    }
+
+    // 2. PNG iCCP chunk
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+        let mut offset = 8;
+        while offset + 8 <= bytes.len() {
+            let length = u32::from_be_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ]) as usize;
+            let chunk_type = &bytes[offset + 4..offset + 8];
+            if offset + 12 + length > bytes.len() {
+                break;
+            }
+            if chunk_type == b"iCCP" {
+                let data = &bytes[offset + 8..offset + 8 + length];
+                if let Some(null_pos) = data.iter().position(|&b| b == 0)
+                    && null_pos + 2 < data.len()
+                    && data[null_pos + 1] == 0
+                {
+                    let compressed = &data[null_pos + 2..];
+                    if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec_zlib(compressed) {
+                        return Some(decompressed);
+                    }
+                }
+            }
+            offset += 12 + length;
+        }
+    }
+
+    // 3. WebP ICCP chunk
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        let mut offset = 12;
+        while offset + 8 <= bytes.len() {
+            let fourcc = &bytes[offset..offset + 4];
+            let length = u32::from_le_bytes([
+                bytes[offset + 4],
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7],
+            ]) as usize;
+            if offset + 8 + length > bytes.len() {
+                break;
+            }
+            let payload = &bytes[offset + 8..offset + 8 + length];
+            if fourcc == b"ICCP" {
+                return Some(payload.to_vec());
+            }
+            offset += 8 + ((length + 1) & !1);
+        }
+    }
+
+    None
+}
+
+/// Re-embeds an ICC profile into an encoded JPEG as an APP2 segment.
+///
+/// The segment is inserted straight after the SOI marker. The ICC
+/// specification caps a chunk's payload at just under 64 KiB, so larger
+/// profiles are split across numbered chunks, exactly as encoders in the wild
+/// write them.
+pub fn embed_icc_profile(jpeg: &mut Vec<u8>, profile: &[u8]) {
+    const MAX_CHUNK_PAYLOAD: usize = 65_519;
+
+    if jpeg.len() < 2 || jpeg[0] != 0xFF || jpeg[1] != 0xD8 || profile.is_empty() {
+        return;
+    }
+
+    let parts = profile.chunks(MAX_CHUNK_PAYLOAD).collect::<Vec<_>>();
+    let total_chunks = u8::try_from(parts.len()).unwrap_or(u8::MAX);
+
+    let mut segments = Vec::with_capacity(parts.len());
+    for (index, chunk) in parts.iter().enumerate() {
+        let mut segment = Vec::with_capacity(chunk.len() + 14);
+        segment.extend_from_slice(b"ICC_PROFILE\0");
+        segment.push(u8::try_from(index + 1).unwrap_or(u8::MAX));
+        segment.push(total_chunks);
+        segment.extend_from_slice(chunk);
+        segments.push(segment);
+    }
+
+    let extra = segments
+        .iter()
+        .map(|segment| segment.len() + 4)
+        .sum::<usize>();
+    let mut output = Vec::with_capacity(jpeg.len() + extra);
+    output.extend_from_slice(&jpeg[..2]);
+    for segment in &segments {
+        // The length field counts its own two bytes plus the payload.
+        let length = u16::try_from(segment.len() + 2).unwrap_or(u16::MAX);
+        output.push(0xFF);
+        output.push(0xE2);
+        output.extend_from_slice(&length.to_be_bytes());
+        output.extend_from_slice(segment);
+    }
+    output.extend_from_slice(&jpeg[2..]);
+    *jpeg = output;
+}
+
+/// Extracts the raw ICC color profile bytes from a local image file.
+///
+/// # Errors
+///
+/// Returns an error when reading the file fails.
+pub fn extract_icc_profile_from_file(path: impl AsRef<Path>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    let bytes = fs::read(path)?;
+    Ok(extract_icc_profile(&bytes))
+}
+
+/// Returns whether the provided image represents a grayscale color space.
+#[must_use]
+pub const fn is_grayscale_image(image: &DynamicImage) -> bool {
+    matches!(
+        image,
+        DynamicImage::ImageLuma8(_)
+            | DynamicImage::ImageLuma16(_)
+            | DynamicImage::ImageLumaA8(_)
+            | DynamicImage::ImageLumaA16(_)
+    )
 }
 
 fn parse_color(value: &str) -> Result<Rgba<u8>, ImageProcessingError> {

@@ -248,6 +248,36 @@ fn merge_scalar_fields(
         replace_data,
     );
     merge_optional(
+        source.core.index_number_end.as_ref(),
+        &mut target.core.index_number_end,
+        replace_data,
+    );
+    merge_optional(
+        source.core.airs_before_season_number.as_ref(),
+        &mut target.core.airs_before_season_number,
+        replace_data,
+    );
+    merge_optional(
+        source.core.airs_after_season_number.as_ref(),
+        &mut target.core.airs_after_season_number,
+        replace_data,
+    );
+    merge_optional(
+        source.core.airs_before_episode_number.as_ref(),
+        &mut target.core.airs_before_episode_number,
+        replace_data,
+    );
+    merge_string(
+        source.core.series_name.as_ref(),
+        &mut target.core.series_name,
+        replace_data,
+    );
+    merge_string(
+        source.core.season_name.as_ref(),
+        &mut target.core.season_name,
+        replace_data,
+    );
+    merge_optional(
         source.premiere_date.as_ref(),
         &mut target.premiere_date,
         replace_data,

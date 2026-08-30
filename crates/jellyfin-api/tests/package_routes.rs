@@ -247,7 +247,18 @@ async fn exercise_package_routes(database_name: &str) {
     .await;
 
     let repositories = body_json(request(&app, "/Repositories", Some(&admin_token)).await).await;
-    assert_eq!(repositories, json!([]));
+    // A fresh database is seeded with the default plugin repository by the
+    // `AddDefaultPluginRepository` startup routine.
+    assert_eq!(
+        repositories,
+        json!([
+            {
+                "Name": "Jellyfin Stable",
+                "Url": "https://repo.jellyfin.org/files/plugin/manifest.json",
+                "Enabled": true
+            }
+        ])
+    );
 
     assert_eq!(
         post_repositories(&app, "/Repositories", None, repositories_fixture())

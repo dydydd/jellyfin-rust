@@ -69,7 +69,18 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.server_name, "Jellyfin");
     assert!(!seeded.is_startup_wizard_completed);
     assert_eq!(seeded.content_types, json!([]));
-    assert_eq!(seeded.plugin_repositories, json!([]));
+    // The `AddDefaultPluginRepository` startup routine seeds the default
+    // repository on a fresh database.
+    assert_eq!(
+        seeded.plugin_repositories,
+        json!([
+            {
+                "Name": "Jellyfin Stable",
+                "Url": "https://repo.jellyfin.org/files/plugin/manifest.json",
+                "Enabled": true
+            }
+        ])
+    );
     assert_eq!(seeded.min_resume_pct, 5);
     assert_eq!(seeded.max_resume_pct, 90);
     assert_eq!(seeded.min_resume_duration_seconds, 300);
@@ -79,7 +90,10 @@ async fn exercise_server_configuration(database_name: &str) {
     assert!(seeded.enable_remote_access);
     assert_eq!(seeded.trickplay_options["Interval"], 10_000);
     assert_eq!(seeded.trickplay_options["ScanBehavior"], "NonBlocking");
-    assert_eq!(seeded.row_version, 1);
+    // Seeding the default plugin repository and cast receivers counts as real
+    // configuration changes, so the row version has already advanced past its
+    // initial value.
+    assert!(seeded.row_version >= 1);
 
     let updated = first
         .update_startup_configuration(configuration("First update"))
@@ -426,6 +440,10 @@ fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
             "JpegQuality": 85,
             "ProcessThreads": 2
         }),
+        cast_receiver_applications: json!([
+            { "Id": "F007D354", "Name": "Stable" },
+            { "Id": "6F511C87", "Name": "Unstable" }
+        ]),
         tmdb_api_key: "tmdb-test-key".to_owned(),
         quick_connect_available: true,
         omdb_api_key: "omdb-test-key".to_owned(),

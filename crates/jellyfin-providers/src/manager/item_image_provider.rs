@@ -603,7 +603,16 @@ impl ItemImageProvider {
 
         for provider in providers {
             let provider_result = match provider {
-                ImageProvider::Basic { .. } | ImageProvider::Local { .. } => Ok(()),
+                ImageProvider::Basic { .. } => Ok(()),
+                ImageProvider::Local { name } => refresh_local(
+                    item,
+                    name,
+                    library_options,
+                    refresh_options,
+                    &mut downloaded_images,
+                    &mut result,
+                    capability,
+                ),
                 ImageProvider::Dynamic {
                     name,
                     supported_images,
@@ -689,6 +698,42 @@ fn update_replace_images(options: &mut ImageRefreshOptions, protected: &[ImageTy
     options
         .replace_images
         .retain(|image_type| !protected.contains(image_type));
+}
+
+/// Attaches artwork a local provider found next to the item's files.
+///
+/// Local images keep their original path instead of being copied into the
+/// internal metadata directory, and they only fill image types the item does
+/// not have yet, so a remote provider that already supplied a poster is not
+/// overwritten by a lower priority local file.
+#[allow(clippy::too_many_arguments)]
+fn refresh_local<C: ItemImageProviderCapability + ?Sized>(
+    item: &mut ImageItem,
+    provider_name: &str,
+    library_options: &ImageLibraryOptions,
+    refresh_options: &ImageRefreshOptions,
+    downloaded_images: &mut Vec<ImageType>,
+    result: &mut ImageRefreshResult,
+    capability: &mut C,
+) -> Result<(), C::Error> {
+    for local_image in capability.local_images(provider_name, item)? {
+        let image_type = local_image.image_type;
+        if !library_options.is_enabled(image_type) {
+            continue;
+        }
+
+        let replacing = refresh_options.is_replacing(image_type);
+        if item.has_image(image_type)
+            && (!replacing || downloaded_images.contains(&image_type))
+        {
+            continue;
+        }
+
+        item.set_image(ItemImage::new(local_image.path, image_type));
+        downloaded_images.push(image_type);
+        result.image_updated = true;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

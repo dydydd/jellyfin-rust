@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-naming = { path = "../jellyfin-naming" }
+chrono.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

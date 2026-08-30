@@ -1,3 +1,5 @@
 /target
 /jellyfin/
 /src/main.rs
+/jellyfin-web/
+/.workbuddy/

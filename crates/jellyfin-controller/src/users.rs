@@ -265,12 +265,15 @@ impl UserService {
             normalized_username: Set(normalized),
             password_hash: Set(None),
             must_update_password: Set(false),
+            enable_local_password: Set(false),
             is_administrator: Set(is_administrator),
             is_hidden: Set(true),
             is_disabled: Set(false),
             enable_auto_login: Set(false),
             last_login_date: Set(None),
             last_activity_date: Set(None),
+            invalid_login_attempt_count: Set(0),
+            login_attempts_before_lockout: Set(-1),
             authentication_provider_id: Set(
                 UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()
             ),
@@ -470,6 +473,7 @@ impl UserService {
             .col_expr(user::Column::LastLoginDate, Expr::value(now))
             .col_expr(user::Column::LastActivityDate, Expr::value(now))
             .col_expr(user::Column::Policy, Expr::value(policy))
+            .col_expr(user::Column::InvalidLoginAttemptCount, Expr::value(0))
             .filter(user::Column::Id.eq(authenticated_user.id))
             .exec(&self.database)
             .await?;
@@ -503,15 +507,24 @@ impl UserService {
         policy.login_attempts_before_lockout =
             normalized_login_attempts(policy.login_attempts_before_lockout);
         let lockout = should_lockout(policy.login_attempts_before_lockout, attempts);
+        let login_attempts_before_lockout = policy.login_attempts_before_lockout;
         let is_disabled = if lockout && !target.is_administrator {
             policy.is_disabled = true;
             true
         } else {
             target.is_disabled
         };
-        let policy = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+        let policy = serde_json::to_value(&policy).map_err(UserError::PolicySerialization)?;
         user::Entity::update_many()
             .col_expr(user::Column::Policy, Expr::value(policy))
+            .col_expr(
+                user::Column::InvalidLoginAttemptCount,
+                Expr::value(attempts),
+            )
+            .col_expr(
+                user::Column::LoginAttemptsBeforeLockout,
+                Expr::value(login_attempts_before_lockout),
+            )
             .col_expr(user::Column::IsDisabled, Expr::value(is_disabled))
             .filter(user::Column::Id.eq(id))
             .exec(&transaction)
@@ -689,6 +702,14 @@ impl UserService {
                 Expr::value(password_reset_provider_id),
             )
             .col_expr(
+                user::Column::InvalidLoginAttemptCount,
+                Expr::value(policy.invalid_login_attempt_count),
+            )
+            .col_expr(
+                user::Column::LoginAttemptsBeforeLockout,
+                Expr::value(policy.login_attempts_before_lockout),
+            )
+            .col_expr(
                 user::Column::IsAdministrator,
                 Expr::value(policy.is_administrator),
             )
@@ -729,6 +750,10 @@ impl UserService {
             serde_json::to_value(configuration).map_err(UserError::ConfigurationSerialization)?;
         let result = user::Entity::update_many()
             .col_expr(user::Column::Preferences, Expr::value(serialized))
+            .col_expr(
+                user::Column::EnableLocalPassword,
+                Expr::value(configuration.enable_local_password),
+            )
             .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
             .filter(user::Column::Id.eq(id))
             .exec(&self.database)

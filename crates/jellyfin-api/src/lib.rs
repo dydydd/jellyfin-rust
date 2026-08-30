@@ -1644,8 +1644,11 @@ pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
     policy.is_disabled = user.is_disabled;
     policy.authentication_provider_id = Some(user.authentication_provider_id);
     policy.password_reset_provider_id = Some(user.password_reset_provider_id);
-    let configuration: UserConfiguration =
+    policy.invalid_login_attempt_count = user.invalid_login_attempt_count;
+    policy.login_attempts_before_lockout = user.login_attempts_before_lockout;
+    let mut configuration: UserConfiguration =
         serde_json::from_value(user.preferences).unwrap_or_default();
+    configuration.enable_local_password = user.enable_local_password;
 
     UserDto {
         id: user.id,

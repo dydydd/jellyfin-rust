@@ -49,3 +49,18 @@ fn in_network_false_official_matrix() {
         assert!(!manager(network).is_in_local_network(ip(address)));
     }
 }
+
+#[test]
+fn synthesizes_loopback_when_no_interfaces_available() {
+    let mut config = NetworkConfiguration::default();
+    config.enable_ipv4 = true;
+    config.enable_ipv6 = true;
+    let manager = NetworkManager::with_resolver(config, Vec::new(), FixtureResolver::default());
+    let loopbacks = manager.get_loopbacks();
+    assert_eq!(loopbacks.len(), 2);
+    assert_eq!(loopbacks[0].address.to_string(), "127.0.0.1");
+    assert_eq!(loopbacks[1].address.to_string(), "::1");
+    assert_eq!(manager.interfaces().len(), 2);
+    assert_eq!(manager.get_bind_address_for_ip(Some(ip("192.168.1.50")), false), "127.0.0.1");
+    assert_eq!(manager.get_bind_address_for_ip(Some(ip("2001:db8::1")), false), "::1");
+}
