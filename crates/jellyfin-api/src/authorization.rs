@@ -256,6 +256,8 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
+    // Unknown paths still go through auth so the existence of a route is not
+    // leaked through the response status code.
     if !is_known_api_path(&segments) {
         return RoutePolicy::Default;
     }
@@ -335,6 +337,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             RoutePolicy::Public
         }
         ["Videos", _, "Subtitles", _] if method == Method::DELETE => RoutePolicy::Default,
+        ["Videos", _, _, "Attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
         ["Audio", _, "hls", ..] => RoutePolicy::Public,
         ["Videos", _, "hls", ..] if hls_path_is_playlist(&segments) => RoutePolicy::Default,
         ["Videos", _, "hls", ..] => RoutePolicy::Public,
@@ -386,6 +389,7 @@ fn is_known_api_path(segments: &[&str]) -> bool {
             | "displaypreferences"
             | "users"
             | "user"
+            | "userimage"
             | "userviews"
             | "startup"
             | "quickconnect"
@@ -537,6 +541,13 @@ mod tests {
         assert_eq!(
             route_policy(&Method::GET, "/not-a-route"),
             RoutePolicy::Default
+        );
+        assert_eq!(
+            route_policy(
+                &Method::GET,
+                "/Videos/{item_id}/{media_source_id}/Attachments/0"
+            ),
+            RoutePolicy::Public
         );
     }
 }

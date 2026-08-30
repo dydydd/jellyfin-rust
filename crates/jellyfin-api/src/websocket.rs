@@ -140,9 +140,17 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
     broadcast_sessions(&state).await;
     broadcast_scheduled_tasks_info(&state).await;
 
+    // Web clients treat the three `*Info` snapshots as drop-after-connection:
+    // they always expect Sessions / ScheduledTasksInfo right away, so opt the
+    // session into those subscriptions eagerly rather than waiting for a
+    // `SessionsStart` text.
+    let mut subscriptions: HashSet<String> = SUBSCRIPTION_MESSAGE_TYPES
+        .iter()
+        .map(|kind| (*kind).to_owned())
+        .collect();
+
     let mut last_keep_alive = Instant::now();
     let mut forced = false;
-    let mut subscriptions = HashSet::new();
     let mut watchdog = tokio::time::interval(WATCH_INTERVAL);
     watchdog.set_missed_tick_behavior(MissedTickBehavior::Delay);
     watchdog.tick().await;

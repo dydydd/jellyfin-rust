@@ -1637,7 +1637,9 @@ fn select_subtitle_profile(
                 || !profile.supports_language(subtitle.language.as_deref())
                 || (!subtitle.is_external
                     && method == PlayMethod::Transcode
-                    && !can_extract_subtitles)
+                    && !can_extract_subtitles
+                    && !subtitle.is_pgs_subtitle_stream()
+                    && !subtitle.is_vobsub_subtitle_stream())
             {
                 return false;
             }
