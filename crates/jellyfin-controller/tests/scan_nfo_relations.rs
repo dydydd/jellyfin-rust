@@ -50,8 +50,10 @@ async fn exercise_scan(database_name: &str) {
         .await
         .expect("PostgreSQL migrations must succeed");
 
-    let library_root =
-        std::env::temp_dir().join(format!("jellyfin-nfo-relations-{}", Uuid::new_v4().simple()));
+    let library_root = std::env::temp_dir().join(format!(
+        "jellyfin-nfo-relations-{}",
+        Uuid::new_v4().simple()
+    ));
     std::fs::create_dir_all(&library_root).expect("movie fixture directory");
     std::fs::write(library_root.join("Scan Movie.mkv"), b"not a real movie").unwrap();
     std::fs::write(
@@ -101,9 +103,7 @@ async fn exercise_scan(database_name: &str) {
         .await
         .expect("genre query");
     assert!(
-        genres
-            .iter()
-            .any(|value| value.value == "Drama"),
+        genres.iter().any(|value| value.value == "Drama"),
         "NFO genre must be linked"
     );
     let studios = values
@@ -111,9 +111,7 @@ async fn exercise_scan(database_name: &str) {
         .await
         .expect("studio query");
     assert!(
-        studios
-            .iter()
-            .any(|value| value.value == "Example Studio"),
+        studios.iter().any(|value| value.value == "Example Studio"),
         "NFO studio must be linked"
     );
 

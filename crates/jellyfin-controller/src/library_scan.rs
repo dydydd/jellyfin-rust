@@ -51,7 +51,9 @@ use thiserror::Error;
 use tokio::{fs, sync::Semaphore};
 use uuid::Uuid;
 
-use crate::{LocalizationService, media_streams::MediaStreamMapper};
+use crate::{
+    LocalizationService, episode_parser::parse_season_directory, media_streams::MediaStreamMapper,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -257,17 +259,39 @@ impl LibraryScanService {
         let kind = ScanLibraryKind::from_collection_type(folder.folder.collection_type.as_deref());
         let collection = self.ensure_collection_folder(folder).await?;
         summary.folders_seen += 1;
+        let enabled = bool_option(&folder.folder.library_options, "Enabled", true);
+        let allow_photos = collection_allows_photos(
+            folder.folder.collection_type.as_deref(),
+            &folder.folder.library_options,
+        );
         let mut seen_paths = HashSet::new();
         let mut readable_roots = Vec::new();
+        if !enabled {
+            return Ok(());
+        }
         for path in &folder.paths {
             let root = Path::new(&path.normalized_path);
             let readable = if kind.is_music() {
-                self.scan_music_path(root, collection.id, kind, summary, &mut seen_paths)
-                    .await?;
+                self.scan_music_path(
+                    root,
+                    collection.id,
+                    kind,
+                    allow_photos,
+                    summary,
+                    &mut seen_paths,
+                )
+                .await?;
                 true
             } else {
-                self.scan_path(root, collection.id, kind, summary, &mut seen_paths)
-                    .await?
+                self.scan_path(
+                    root,
+                    collection.id,
+                    kind,
+                    allow_photos,
+                    summary,
+                    &mut seen_paths,
+                )
+                .await?
             };
             if readable {
                 readable_roots.push(root.to_path_buf());
@@ -277,10 +301,13 @@ impl LibraryScanService {
             self.reconcile_series_hierarchy(collection.id).await?;
         }
         let removed = self
-            .remove_stale_media(collection.id, &seen_paths, &readable_roots)
+            .remove_stale_media(collection.id, kind, &seen_paths, &readable_roots)
             .await?;
         summary.items_removed += removed.len();
         summary.removed_ids.extend(removed);
+        if kind.is_tv() {
+            self.reconcile_series_hierarchy(collection.id).await?;
+        }
         Ok(())
     }
 
@@ -377,12 +404,22 @@ impl LibraryScanService {
                     season.series_presentation_unique_key = Some(series_id.simple().to_string());
                 }
                 let season_id = season.id;
-                if season.path.is_none() && episode.season_id != Some(season_id) {
-                    self.items.update(season).await?;
+                let mut episode_changed = false;
+                if episode.parent_id != Some(season_id) {
+                    episode.parent_id = Some(season_id);
+                    episode_changed = true;
                 }
                 if episode.season_id != Some(season_id) {
                     episode.season_id = Some(season_id);
+                    episode_changed = true;
+                }
+                if episode.series_presentation_unique_key.as_deref()
+                    != Some(series_id.simple().to_string().as_str())
+                {
                     episode.series_presentation_unique_key = Some(series_id.simple().to_string());
+                    episode_season_ids.insert(season_id);
+                }
+                if episode_changed {
                     self.items.update(episode).await?;
                     episode_season_ids.insert(season_id);
                 }
@@ -404,33 +441,78 @@ impl LibraryScanService {
     async fn remove_stale_media(
         &self,
         parent_id: Uuid,
+        kind: ScanLibraryKind,
         seen_paths: &HashSet<String>,
         readable_roots: &[PathBuf],
     ) -> Result<Vec<Uuid>, LibraryScanError> {
         if readable_roots.is_empty() {
             return Ok(Vec::new());
         }
-        let stale_ids = self
-            .items
-            .children(parent_id)
-            .await?
-            .into_iter()
-            .filter(|item| is_scanned_media_type(&item.item_type))
+        let descendants = self.items.descendants(parent_id).await?;
+        let stale_ids = descendants
+            .iter()
+            .map(|entry| &entry.item)
+            .filter(|item| match kind {
+                ScanLibraryKind::TvShows => {
+                    matches!(item.item_type.as_str(), "Episode" | "Trailer" | "Video")
+                }
+                ScanLibraryKind::Music => matches!(
+                    item.item_type.as_str(),
+                    "MusicArtist" | "MusicAlbum" | "Audio"
+                ),
+                ScanLibraryKind::Movies
+                | ScanLibraryKind::MusicVideos
+                | ScanLibraryKind::Generic => {
+                    matches!(
+                        item.item_type.as_str(),
+                        "Movie" | "MusicVideo" | "Video" | "Trailer" | "Photo" | "Book" | "Audio"
+                    )
+                }
+            })
             .filter_map(|item| {
                 let path = item.path.as_deref()?;
-                let scanned_path = item.presentation_unique_key.as_deref() == Some(path);
-                let stale = scanned_path
-                    && !seen_paths.contains(path)
+                let stale = !seen_paths.contains(path)
                     && readable_roots
                         .iter()
                         .any(|root| Path::new(path).starts_with(root));
                 stale.then_some(item.id)
             })
             .collect::<Vec<_>>();
-        if stale_ids.is_empty() {
-            return Ok(Vec::new());
+        if !stale_ids.is_empty() {
+            self.items.delete_many(&stale_ids).await?;
         }
-        self.items.delete_many(&stale_ids).await?;
+
+        if kind.is_tv() {
+            let descendants = self.items.descendants(parent_id).await?;
+            let stale_seasons = descendants
+                .iter()
+                .map(|entry| &entry.item)
+                .filter(|item| item.item_type == "Season" && item.path.is_some())
+                .filter(|season| {
+                    !descendants.iter().any(|entry| {
+                        (entry.item.item_type == "Episode"
+                            && entry.item.season_id == Some(season.id))
+                            || entry.item.parent_id == Some(season.id)
+                    })
+                })
+                .filter(|season| {
+                    season.path.as_deref().is_some_and(|path| {
+                        readable_roots
+                            .iter()
+                            .any(|root| Path::new(path).starts_with(root))
+                    })
+                })
+                .map(|season| season.id)
+                .collect::<Vec<_>>();
+            if !stale_seasons.is_empty() {
+                self.items.delete_many(&stale_seasons).await?;
+                return Ok(stale_ids
+                    .into_iter()
+                    .chain(stale_seasons)
+                    .collect::<Vec<_>>());
+            }
+        }
+
         Ok(stale_ids)
     }
 
@@ -439,6 +521,7 @@ impl LibraryScanService {
         root: &Path,
         parent_id: Uuid,
         kind: ScanLibraryKind,
+        allow_photos: bool,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
     ) -> Result<bool, LibraryScanError> {
@@ -453,6 +536,7 @@ impl LibraryScanService {
             &mut pending,
             parent_id,
             kind,
+            allow_photos,
             summary,
             seen_paths,
             root,
@@ -469,6 +553,7 @@ impl LibraryScanService {
                 &mut pending,
                 parent_id,
                 kind,
+                allow_photos,
                 summary,
                 seen_paths,
                 root,
@@ -484,6 +569,7 @@ impl LibraryScanService {
         root: &Path,
         parent_id: Uuid,
         kind: ScanLibraryKind,
+        allow_photos: bool,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
     ) -> Result<(), LibraryScanError> {
@@ -534,6 +620,9 @@ impl LibraryScanService {
                 let Some(media_kind) = media_kind(&path) else {
                     continue;
                 };
+                if media_kind == MediaKind::Photo && !allow_photos {
+                    continue;
+                }
                 summary.items_seen += 1;
                 if let Some(path) = path.to_str() {
                     seen_paths.insert(path.to_owned());
@@ -621,6 +710,7 @@ impl LibraryScanService {
                     &regular_files,
                     directory_id,
                     kind,
+                    root,
                     existing_by_path,
                     summary,
                 )
@@ -701,6 +791,7 @@ impl LibraryScanService {
         pending: &mut Vec<PathBuf>,
         parent_id: Uuid,
         kind: ScanLibraryKind,
+        allow_photos: bool,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
         library_root: &Path,
@@ -732,6 +823,9 @@ impl LibraryScanService {
             let Some(media_kind) = media_kind(&path) else {
                 continue;
             };
+            if media_kind == MediaKind::Photo && !allow_photos {
+                continue;
+            }
             summary.items_seen += 1;
             if let Some(path) = path.to_str() {
                 seen_paths.insert(path.to_owned());
@@ -761,7 +855,14 @@ impl LibraryScanService {
             .cloned()
             .collect::<Vec<_>>();
         summary.items_added += self
-            .process_files(&regular_files, parent_id, kind, existing_by_path, summary)
+            .process_files(
+                &regular_files,
+                parent_id,
+                kind,
+                library_root,
+                existing_by_path,
+                summary,
+            )
             .await?;
         self.group_scanned_video_entries(&regular_files, kind, library_root)
             .await?;
@@ -1014,6 +1115,7 @@ impl LibraryScanService {
         files: &[(PathBuf, MediaKind)],
         parent_id: Uuid,
         kind: ScanLibraryKind,
+        library_root: &Path,
         existing_by_path: Arc<HashMap<String, base_item::Model>>,
         summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
@@ -1026,7 +1128,7 @@ impl LibraryScanService {
             for (path, media_kind) in files {
                 let existing = path.to_str().and_then(|p| existing_by_path.get(p));
                 let (item_added, item_id) = self
-                    .ensure_media_item(path, parent_id, *media_kind, kind, existing)
+                    .ensure_media_item(path, parent_id, *media_kind, kind, library_root, existing)
                     .await?;
                 if item_added {
                     added += 1;
@@ -1059,10 +1161,18 @@ impl LibraryScanService {
                 .await
                 .expect("semaphore closed");
             let service = self.clone();
+            let library_root = library_root.to_path_buf();
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
                 service
-                    .ensure_media_item(&path, parent_id, media_kind, kind, existing.as_ref())
+                    .ensure_media_item(
+                        &path,
+                        parent_id,
+                        media_kind,
+                        kind,
+                        &library_root,
+                        existing.as_ref(),
+                    )
                     .await
             }));
         }
@@ -1123,6 +1233,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         media_kind: MediaKind,
         kind: ScanLibraryKind,
+        library_root: &Path,
         existing: Option<&base_item::Model>,
     ) -> Result<(bool, Uuid), LibraryScanError> {
         let Some(path_str) = path.to_str() else {
@@ -1165,13 +1276,20 @@ impl LibraryScanService {
                 return Ok((false, existing_id));
             }
             return self
-                .ensure_episode_item(Some(existing), path, parent_id, media_kind, path_str)
+                .ensure_episode_item(
+                    Some(existing),
+                    path,
+                    parent_id,
+                    library_root,
+                    media_kind,
+                    path_str,
+                )
                 .await;
         }
 
         if kind.is_tv() && media_kind == MediaKind::Video {
             return self
-                .ensure_episode_item(None, path, parent_id, media_kind, path_str)
+                .ensure_episode_item(None, path, parent_id, library_root, media_kind, path_str)
                 .await;
         }
 
@@ -1215,6 +1333,7 @@ impl LibraryScanService {
         existing: Option<base_item::Model>,
         path: &Path,
         parent_id: Uuid,
+        library_root: &Path,
         media_kind: MediaKind,
         path_str: &str,
     ) -> Result<(bool, Uuid), LibraryScanError> {
@@ -1226,24 +1345,12 @@ impl LibraryScanService {
         let mut series_id = None;
         let mut season_id = None;
         let mut series_puk = None;
-
-        if let Some(ref name) = series_name {
-            let series_item_type = "Series";
-            let series_item_id = stable_item_id(name, series_item_type);
-            if self.items.get(series_item_id).await?.is_none() {
-                let mut series = NewBaseItem::new(series_item_id, series_item_type);
-                series.name = Some(name.clone());
-                series.sort_name = Some(name.clone());
-                series.is_folder = true;
-                series.is_virtual_item = false;
-                series.data = Some(json!({ "CollectionType": "tvshows" }));
-                self.items.create(series).await?;
-            }
-            if let Some(mut series) = self.items.get(series_item_id).await?
-                && apply_series_nfo_metadata(&mut series, path)
-            {
-                self.items.update(series).await?;
-            }
+        if let Some((series_name, series_path)) =
+            episode_series_context(path, library_root, series_name)
+        {
+            let (series_item_id, _) = self
+                .ensure_series_item(&series_name, parent_id, series_path.as_deref(), path)
+                .await?;
             self.persist_scan_relations(series_item_id, path_str, "Series", None)
                 .await?;
             series_id = Some(series_item_id);
@@ -1253,7 +1360,14 @@ impl LibraryScanService {
                 let season_key = format!("{}_{}", series_item_id.simple(), sn);
                 let season_item_id = stable_item_id(&season_key, "Season");
                 if self.items.get(season_item_id).await?.is_none() {
+                    let season_path = path.parent().and_then(|folder| {
+                        let name = folder.file_name()?.to_str()?;
+                        parse_season_directory(name)
+                            .filter(|number| *number == sn)
+                            .map(|_| folder.to_path_buf())
+                    });
                     let mut season = NewBaseItem::new(season_item_id, "Season");
+                    season.path = season_path.map(|path| path.to_string_lossy().into_owned());
                     season.name = Some(format!("Season {sn}"));
                     season.sort_name = season.name.clone();
                     season.parent_id = Some(series_item_id);
@@ -1275,12 +1389,14 @@ impl LibraryScanService {
             }
         }
 
-        let item_type = media_kind.item_type();
+        let item_type = "Episode";
         let name = display_name(path_str);
         let stable_id = stable_item_id(path_str, item_type);
 
         if let Some(mut existing) = existing {
             let existing_id = existing.id;
+            existing.parent_id = season_id.or(series_id).or(Some(parent_id));
+            item_type.clone_into(&mut existing.item_type);
             existing.index_number = episode_number;
             existing.parent_index_number = season_number;
             if let Some(sid) = series_id {
@@ -1307,7 +1423,7 @@ impl LibraryScanService {
 
         let mut item = NewBaseItem::new(stable_id, item_type);
         item.path = Some(path_str.to_owned());
-        item.parent_id = Some(parent_id);
+        item.parent_id = season_id.or(series_id).or(Some(parent_id));
         item.name = Some(name.clone());
         item.sort_name = Some(name);
         item.media_type = Some(media_kind.media_type().to_owned());
@@ -1335,8 +1451,94 @@ impl LibraryScanService {
             self.items.update(item).await?;
             return Ok((true, item_id));
         }
+
         let item_id = item.id;
         Ok((true, item_id))
+    }
+
+    async fn ensure_series_item(
+        &self,
+        name: &str,
+        parent_id: Uuid,
+        series_path: Option<&Path>,
+        episode_path: &Path,
+    ) -> Result<(Uuid, bool), LibraryScanError> {
+        let path_id = series_path.map(|path| stable_item_id(&path.to_string_lossy(), "Series"));
+        let name_id = stable_item_id(name, "Series");
+
+        let mut existing = None;
+        if let Some(path_id) = path_id
+            && let Some(item) = self.items.get(path_id).await?
+        {
+            existing = Some(item);
+        } else if let Some(item) = self.items.get(name_id).await? {
+            existing = Some(item);
+        }
+
+        if let Some(mut series) = existing {
+            let mut changed = false;
+            if series.item_type != "Series" {
+                "Series".clone_into(&mut series.item_type);
+                changed = true;
+            }
+            if let Some(path) = series_path
+                && series.path.as_deref() != Some(path.to_string_lossy().as_ref())
+            {
+                series.path = Some(path.to_string_lossy().into_owned());
+                changed = true;
+            }
+            if series.parent_id != Some(parent_id) {
+                series.parent_id = Some(parent_id);
+                changed = true;
+            }
+            if series.name.is_none() || series.sort_name.is_none() {
+                series.name = Some(name.to_owned());
+                series.sort_name = Some(name.to_owned());
+                changed = true;
+            }
+            if !series.is_folder || series.is_virtual_item {
+                series.is_folder = true;
+                series.is_virtual_item = false;
+                changed = true;
+            }
+            let presentation_key = series_path.map_or_else(
+                || name.to_owned(),
+                |path| path.to_string_lossy().into_owned(),
+            );
+            if series.presentation_unique_key.as_deref() != Some(presentation_key.as_str()) {
+                series.presentation_unique_key = Some(presentation_key);
+                changed = true;
+            }
+            if apply_series_nfo_metadata(&mut series, episode_path) {
+                changed = true;
+            }
+            if changed {
+                series = self.items.update(series).await?;
+            }
+            return Ok((series.id, false));
+        }
+
+        let id = path_id.unwrap_or(name_id);
+        let mut series = NewBaseItem::new(id, "Series");
+        series.path = series_path.map(|path| path.to_string_lossy().into_owned());
+        series.parent_id = Some(parent_id);
+        series.name = Some(name.to_owned());
+        series.sort_name = Some(name.to_owned());
+        series.is_folder = true;
+        series.is_virtual_item = false;
+        series.presentation_unique_key = Some(series_path.map_or_else(
+            || name.to_owned(),
+            |path| path.to_string_lossy().into_owned(),
+        ));
+        series.data = Some(json!({ "CollectionType": "tvshows" }));
+        let mut series = self.items.create(series).await?;
+        let mut series = if apply_series_nfo_metadata(&mut series, episode_path) {
+            self.items.update(series).await?
+        } else {
+            series
+        };
+        series.is_folder = true;
+        Ok((series.id, true))
     }
 
     async fn persist_scan_relations(
@@ -1376,8 +1578,7 @@ impl LibraryScanService {
                 .link(item_id, ItemValueType::Studios, &studio)
                 .await?;
         }
-        let mut list_order = 0;
-        for person in relations.people {
+        for (list_order, person) in relations.people.into_iter().enumerate() {
             self.people
                 .link(
                     item_id,
@@ -1385,10 +1586,9 @@ impl LibraryScanService {
                     &person.person_type,
                     Some(&person.role),
                     person.sort_order,
-                    list_order,
+                    i32::try_from(list_order).unwrap_or(i32::MAX),
                 )
                 .await?;
-            list_order += 1;
         }
         Ok(())
     }
@@ -1900,11 +2100,55 @@ fn contains_any(value: &str, candidates: &[&str]) -> bool {
     candidates.iter().any(|candidate| value.contains(candidate))
 }
 
-fn is_scanned_media_type(item_type: &str) -> bool {
-    matches!(
-        item_type,
-        "Audio" | "Video" | "Movie" | "Trailer" | "Photo" | "Book" | "MusicArtist" | "MusicAlbum"
-    )
+fn episode_series_context(
+    episode_path: &Path,
+    library_root: &Path,
+    parsed_name: Option<String>,
+) -> Option<(String, Option<PathBuf>)> {
+    let folder = episode_path.parent()?;
+    if folder.starts_with(library_root)
+        && folder
+            .strip_prefix(library_root)
+            .is_ok_and(|relative| relative.components().count() == 0)
+    {
+        return parsed_name.map(|name| (name, None));
+    }
+    let folder = if folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(parse_season_directory)
+        .is_some()
+    {
+        folder.parent().unwrap_or(folder)
+    } else {
+        folder
+    };
+    let name = folder
+        .file_name()?
+        .to_str()
+        .map(str::to_owned)
+        .map(|name| clean_series_name(&name))
+        .or_else(|| parsed_name.filter(|name| !name.trim().is_empty()))?;
+    Some((name, Some(folder.to_path_buf())))
+}
+
+fn clean_series_name(name: &str) -> String {
+    name.trim().replace(['.', '_'], " ")
+}
+
+fn bool_option(options: &Value, key: &str, default: bool) -> bool {
+    options.get(key).and_then(Value::as_bool).unwrap_or(default)
+}
+
+fn collection_allows_photos(collection_type: Option<&str>, options: &Value) -> bool {
+    let parsed = collection_type
+        .and_then(|value| CollectionType::from_str(value).ok())
+        .unwrap_or(CollectionType::Unknown);
+    match parsed {
+        CollectionType::Photos => true,
+        CollectionType::HomeVideos => bool_option(options, "EnablePhotos", false),
+        _ => false,
+    }
 }
 
 fn apply_probed_item_metadata(
@@ -2043,12 +2287,11 @@ fn relations_from_nfo_metadata(metadata: NfoMetadata) -> ScanNfoRelations {
 
 fn scan_nfo_person(person: NfoPerson) -> ScanNfoPerson {
     let person_type = match &person.kind {
-        NfoPersonKind::Actor => "Actor",
         NfoPersonKind::Director => "Director",
         NfoPersonKind::Writer => "Writer",
         NfoPersonKind::Lyricist => "Lyricist",
         NfoPersonKind::Other(kind) if !kind.trim().is_empty() => kind,
-        NfoPersonKind::Other(_) => "Actor",
+        NfoPersonKind::Actor | NfoPersonKind::Other(_) => "Actor",
     }
     .to_owned();
     ScanNfoPerson {
