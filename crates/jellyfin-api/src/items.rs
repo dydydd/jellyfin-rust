@@ -961,67 +961,65 @@ pub(crate) fn item_order(sort_by: &[String], sort_order: &[String]) -> BaseItemO
         .first()
         .is_some_and(|(_, order)| *order == SortOrder::Descending);
 
-    match order_by.first().map(|(sort, _)| sort.as_str()) {
-        Some(sort) if sort.eq_ignore_ascii_case("DateCreated") => {
-            if descending {
-                BaseItemOrder::DateCreatedDescending
-            } else {
-                BaseItemOrder::DateCreatedAscending
-            }
+    let Some((sort, _)) = order_by.first() else {
+        return BaseItemOrder::default();
+    };
+    if sort.eq_ignore_ascii_case("Random") {
+        return BaseItemOrder::Random;
+    }
+    let order = if descending {
+        SortOrder::Descending
+    } else {
+        SortOrder::Ascending
+    };
+    let known_sort = match sort.as_str() {
+        sort if sort.eq_ignore_ascii_case("DateCreated") => BaseItemOrder::DateCreatedAscending,
+        sort if sort.eq_ignore_ascii_case("DatePlayed") => BaseItemOrder::DatePlayedAscending,
+        sort if sort.eq_ignore_ascii_case("PremiereDate") => BaseItemOrder::PremiereDateAscending,
+        sort if sort.eq_ignore_ascii_case("PlayCount") => BaseItemOrder::PlayCountAscending,
+        sort if sort.eq_ignore_ascii_case("CommunityRating") => {
+            BaseItemOrder::CommunityRatingAscending
         }
-        Some(sort) if sort.eq_ignore_ascii_case("DatePlayed") => {
-            if descending {
-                BaseItemOrder::DatePlayedDescending
-            } else {
-                BaseItemOrder::DatePlayedAscending
-            }
+        sort if sort.eq_ignore_ascii_case("CriticRating") => BaseItemOrder::CriticRatingAscending,
+        sort if sort.eq_ignore_ascii_case("Runtime") => BaseItemOrder::RuntimeTicksAscending,
+        sort if sort.eq_ignore_ascii_case("AiredEpisodeOrder") => {
+            BaseItemOrder::AiredEpisodeOrderAscending
         }
-        Some(sort) if sort.eq_ignore_ascii_case("Random") => BaseItemOrder::Random,
-        Some(sort) if sort.eq_ignore_ascii_case("PremiereDate") => {
-            if descending {
-                BaseItemOrder::PremiereDateDescending
-            } else {
-                BaseItemOrder::PremiereDateAscending
-            }
+        sort if sort.eq_ignore_ascii_case("Album") => BaseItemOrder::AlbumAscending,
+        sort if sort.eq_ignore_ascii_case("AlbumArtist") => BaseItemOrder::AlbumArtistAscending,
+        sort if sort.eq_ignore_ascii_case("Artist") => BaseItemOrder::ArtistAscending,
+        sort if sort.eq_ignore_ascii_case("OfficialRating") => {
+            BaseItemOrder::OfficialRatingAscending
         }
-        Some(sort) if sort.eq_ignore_ascii_case("PlayCount") => {
-            if descending {
-                BaseItemOrder::PlayCountDescending
-            } else {
-                BaseItemOrder::PlayCountAscending
-            }
+        sort if sort.eq_ignore_ascii_case("StartDate") => BaseItemOrder::StartDateAscending,
+        sort if sort.eq_ignore_ascii_case("IsFolder") => BaseItemOrder::IsFolderAscending,
+        sort if sort.eq_ignore_ascii_case("IsUnplayed") => BaseItemOrder::IsUnplayedAscending,
+        sort if sort.eq_ignore_ascii_case("IsPlayed") => BaseItemOrder::IsPlayedAscending,
+        sort if sort.eq_ignore_ascii_case("SeriesSortName") => {
+            BaseItemOrder::SeriesSortNameAscending
         }
-        Some(sort) if sort.eq_ignore_ascii_case("CommunityRating") => {
-            if descending {
-                BaseItemOrder::CommunityRatingDescending
-            } else {
-                BaseItemOrder::CommunityRatingAscending
-            }
+        sort if sort.eq_ignore_ascii_case("VideoBitRate") => BaseItemOrder::VideoBitRateAscending,
+        sort if sort.eq_ignore_ascii_case("AirTime") => BaseItemOrder::AirTimeAscending,
+        sort if sort.eq_ignore_ascii_case("Studio") => BaseItemOrder::StudioAscending,
+        sort if sort.eq_ignore_ascii_case("IsFavoriteOrLiked") => {
+            BaseItemOrder::IsFavoriteOrLikedAscending
         }
-        Some(sort) if sort.eq_ignore_ascii_case("CriticRating") => {
-            if descending {
-                BaseItemOrder::CriticRatingDescending
-            } else {
-                BaseItemOrder::CriticRatingAscending
-            }
+        sort if sort.eq_ignore_ascii_case("DateLastContentAdded") => {
+            BaseItemOrder::DateLastContentAddedAscending
         }
-        Some(sort) if sort.eq_ignore_ascii_case("Runtime") => {
-            if descending {
-                BaseItemOrder::RuntimeTicksDescending
-            } else {
-                BaseItemOrder::RuntimeTicksAscending
-            }
+        sort if sort.eq_ignore_ascii_case("ParentIndexNumber") => {
+            BaseItemOrder::ParentIndexNumberAscending
         }
-        Some(sort)
-            if sort.eq_ignore_ascii_case("SortName") || sort.eq_ignore_ascii_case("Name") =>
-        {
-            if descending {
-                BaseItemOrder::SortNameDescending
-            } else {
-                BaseItemOrder::SortName
-            }
+        sort if sort.eq_ignore_ascii_case("IndexNumber") => BaseItemOrder::IndexNumberAscending,
+        sort if sort.eq_ignore_ascii_case("SortName") || sort.eq_ignore_ascii_case("Name") => {
+            BaseItemOrder::SortName
         }
-        _ => BaseItemOrder::default(),
+        _ => return BaseItemOrder::default(),
+    };
+    if order == SortOrder::Descending {
+        known_sort.descending()
+    } else {
+        known_sort
     }
 }
 
@@ -1199,6 +1197,57 @@ mod tests {
         assert_eq!(
             item_order(&["PremiereDate".to_owned()], &["Descending".to_owned()]),
             BaseItemOrder::PremiereDateDescending
+        );
+    }
+
+    #[test]
+    fn item_order_maps_all_requested_official_fields() {
+        let ascending_fields = [
+            (
+                "AiredEpisodeOrder",
+                BaseItemOrder::AiredEpisodeOrderAscending,
+            ),
+            ("Album", BaseItemOrder::AlbumAscending),
+            ("AlbumArtist", BaseItemOrder::AlbumArtistAscending),
+            ("Artist", BaseItemOrder::ArtistAscending),
+            ("OfficialRating", BaseItemOrder::OfficialRatingAscending),
+            ("StartDate", BaseItemOrder::StartDateAscending),
+            ("IsFolder", BaseItemOrder::IsFolderAscending),
+            ("IsUnplayed", BaseItemOrder::IsUnplayedAscending),
+            ("IsPlayed", BaseItemOrder::IsPlayedAscending),
+            ("SeriesSortName", BaseItemOrder::SeriesSortNameAscending),
+            ("VideoBitRate", BaseItemOrder::VideoBitRateAscending),
+            ("AirTime", BaseItemOrder::AirTimeAscending),
+            ("Studio", BaseItemOrder::StudioAscending),
+            (
+                "IsFavoriteOrLiked",
+                BaseItemOrder::IsFavoriteOrLikedAscending,
+            ),
+            (
+                "DateLastContentAdded",
+                BaseItemOrder::DateLastContentAddedAscending,
+            ),
+            (
+                "ParentIndexNumber",
+                BaseItemOrder::ParentIndexNumberAscending,
+            ),
+            ("IndexNumber", BaseItemOrder::IndexNumberAscending),
+        ];
+        for (field, ascending) in ascending_fields {
+            assert_eq!(
+                item_order(&[field.to_owned()], &[]),
+                ascending,
+                "{field} should map with the requested order"
+            );
+            assert_eq!(
+                item_order(&[field.to_owned()], &["Descending".to_owned()]),
+                ascending.descending(),
+                "{field} should preserve Descending"
+            );
+        }
+        assert_eq!(
+            item_order(&["UnknownSortField".to_owned()], &[]),
+            BaseItemOrder::SortName
         );
     }
 }

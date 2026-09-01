@@ -51,6 +51,7 @@ mod m20260822_000048_add_provider_configuration;
 mod m20260822_000049_create_media_segments;
 mod m20260824_000050_add_media_stream_color_range;
 mod m20260827_000051_seed_startup_defaults;
+mod m20260901_000052_add_official_server_configuration_fields;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -149,6 +150,7 @@ pub use m20260822_000048_add_provider_configuration::Migration as AddProviderCon
 pub use m20260822_000049_create_media_segments::Migration as CreateMediaSegmentsMigration;
 pub use m20260824_000050_add_media_stream_color_range::Migration as AddMediaStreamColorRangeMigration;
 pub use m20260827_000051_seed_startup_defaults::Migration as SeedStartupDefaultsMigration;
+pub use m20260901_000052_add_official_server_configuration_fields::Migration as AddOfficialServerConfigurationFieldsMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -211,6 +213,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260822_000049_create_media_segments::Migration),
             Box::new(m20260824_000050_add_media_stream_color_range::Migration),
             Box::new(m20260827_000051_seed_startup_defaults::Migration),
+            Box::new(m20260901_000052_add_official_server_configuration_fields::Migration),
         ]
     }
 }
