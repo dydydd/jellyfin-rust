@@ -3,9 +3,9 @@ use jellyfin_data::{
     ServerConfigurationUpdate, StartupConfigurationUpdate,
 };
 use jellyfin_migration::{
-    AddClientLogUploadConfigurationMigration, AddPlaystateResumeConfigurationMigration,
-    AddPluginRepositoriesMigration, AddRemoteAccessConfigurationMigration,
-    CreateServerConfigurationMigration,
+    AddClientLogUploadConfigurationMigration, AddOfficialServerConfigurationFieldsMigration,
+    AddPlaystateResumeConfigurationMigration, AddPluginRepositoriesMigration,
+    AddRemoteAccessConfigurationMigration, CreateServerConfigurationMigration,
 };
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -222,6 +222,14 @@ async fn assert_configuration_migrations_are_idempotent(schema: &SchemaManager<'
         .up(schema)
         .await
         .expect("remote-access configuration DDL must remain idempotent");
+    AddOfficialServerConfigurationFieldsMigration
+        .up(schema)
+        .await
+        .expect("reapplying official configuration DDL must succeed");
+    AddOfficialServerConfigurationFieldsMigration
+        .up(schema)
+        .await
+        .expect("official configuration DDL must remain idempotent");
 }
 
 async fn assert_content_type_updates(
@@ -371,6 +379,32 @@ async fn assert_server_configuration_update(
     assert_eq!(updated.tmdb_api_key, "tmdb-test-key");
     assert!(updated.quick_connect_available);
     assert_eq!(updated.omdb_api_key, "omdb-test-key");
+    assert_eq!(updated.log_file_retention_days, 45);
+    assert!(updated.enable_metrics);
+    assert!(!updated.enable_normalized_item_by_name_ids);
+    assert_eq!(updated.metadata_path, "/var/lib/jellyfin/metadata");
+    assert_eq!(updated.sort_replace_characters, json!([".", "+", "%", "!"]));
+    assert_eq!(updated.sort_remove_characters, json!(["&", "-", "'"]));
+    assert_eq!(updated.sort_remove_words, json!(["the", "a"]));
+    assert_eq!(updated.inactive_session_threshold, 12);
+    assert_eq!(updated.library_monitor_delay, 90);
+    assert_eq!(updated.library_update_duration, 45);
+    assert_eq!(updated.cache_size, Some(2_000));
+    assert_eq!(updated.image_saving_convention, 1);
+    assert!(updated.save_metadata_hidden);
+    assert_eq!(updated.remote_client_bitrate_limit, 4_500_000);
+    assert!(updated.enable_folder_view);
+    assert!(updated.enable_grouping_movies_into_collections);
+    assert!(updated.enable_grouping_shows_into_collections);
+    assert!(!updated.display_specials_within_seasons);
+    assert!(!updated.enable_external_content_in_suggestions);
+    assert_eq!(
+        updated.cors_hosts,
+        json!(["https://app.example.test", "http://localhost:8096"])
+    );
+    assert_eq!(updated.activity_log_retention_days, Some(90));
+    assert_eq!(updated.library_scan_fanout_concurrency, 4);
+    assert_eq!(updated.library_metadata_refresh_concurrency, 6);
     assert_eq!(updated.created_at, before.created_at);
     assert!(updated.row_version > before.row_version);
     assert_eq!(second.load().await.expect("reloaded full update"), updated);
@@ -447,6 +481,29 @@ fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
         tmdb_api_key: "tmdb-test-key".to_owned(),
         quick_connect_available: true,
         omdb_api_key: "omdb-test-key".to_owned(),
+        log_file_retention_days: 45,
+        enable_metrics: true,
+        enable_normalized_item_by_name_ids: false,
+        metadata_path: "/var/lib/jellyfin/metadata".to_owned(),
+        sort_replace_characters: json!([".", "+", "%", "!"]),
+        sort_remove_characters: json!(["&", "-", "'"]),
+        sort_remove_words: json!(["the", "a"]),
+        inactive_session_threshold: 12,
+        library_monitor_delay: 90,
+        library_update_duration: 45,
+        cache_size: Some(2_000),
+        image_saving_convention: 1,
+        save_metadata_hidden: true,
+        remote_client_bitrate_limit: 4_500_000,
+        enable_folder_view: true,
+        enable_grouping_movies_into_collections: true,
+        enable_grouping_shows_into_collections: true,
+        display_specials_within_seasons: false,
+        enable_external_content_in_suggestions: false,
+        cors_hosts: json!(["https://app.example.test", "http://localhost:8096"]),
+        activity_log_retention_days: Some(90),
+        library_scan_fanout_concurrency: 4,
+        library_metadata_refresh_concurrency: 6,
     }
 }
 

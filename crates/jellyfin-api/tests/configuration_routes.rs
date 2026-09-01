@@ -399,6 +399,41 @@ async fn exercise_configuration_routes(database_name: &str) {
     updated.insert("MaxAudiobookResume".to_owned(), json!(11));
     updated.insert("AllowClientLogUpload".to_owned(), json!(true));
     updated.insert("QuickConnectAvailable".to_owned(), json!(false));
+    updated.insert("LogFileRetentionDays".to_owned(), json!(45));
+    updated.insert("EnableMetrics".to_owned(), json!(true));
+    updated.insert("EnableNormalizedItemByNameIds".to_owned(), json!(false));
+    updated.insert("MetadataPath".to_owned(), json!("/media/metadata"));
+    updated.insert(
+        "SortReplaceCharacters".to_owned(),
+        json!([".", "+", "%", "!"]),
+    );
+    updated.insert("SortRemoveCharacters".to_owned(), json!(["&", "-", "'"]));
+    updated.insert("SortRemoveWords".to_owned(), json!(["the", "a"]));
+    updated.insert("InactiveSessionThreshold".to_owned(), json!(12));
+    updated.insert("LibraryMonitorDelay".to_owned(), json!(90));
+    updated.insert("LibraryUpdateDuration".to_owned(), json!(45));
+    updated.insert("CacheSize".to_owned(), json!(2_000));
+    updated.insert("ImageSavingConvention".to_owned(), json!("Compatible"));
+    updated.insert("SaveMetadataHidden".to_owned(), json!(true));
+    updated.insert("RemoteClientBitrateLimit".to_owned(), json!(4_500_000));
+    updated.insert("EnableFolderView".to_owned(), json!(true));
+    updated.insert(
+        "EnableGroupingMoviesIntoCollections".to_owned(),
+        json!(true),
+    );
+    updated.insert("EnableGroupingShowsIntoCollections".to_owned(), json!(true));
+    updated.insert("DisplaySpecialsWithinSeasons".to_owned(), json!(false));
+    updated.insert(
+        "EnableExternalContentInSuggestions".to_owned(),
+        json!(false),
+    );
+    updated.insert(
+        "CorsHosts".to_owned(),
+        json!(["https://app.example.test", "http://localhost:8096"]),
+    );
+    updated.insert("ActivityLogRetentionDays".to_owned(), json!(90));
+    updated.insert("LibraryScanFanoutConcurrency".to_owned(), json!(4));
+    updated.insert("LibraryMetadataRefreshConcurrency".to_owned(), json!(6));
     updated["TrickplayOptions"]["Interval"] = json!(2_500);
     updated["TrickplayOptions"]["WidthResolutions"] = json!([320, 640]);
 
@@ -462,6 +497,32 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(saved["MaxAudiobookResume"], 11);
     assert_eq!(saved["AllowClientLogUpload"], true);
     assert_eq!(saved["QuickConnectAvailable"], false);
+    assert_eq!(saved["LogFileRetentionDays"], 45);
+    assert_eq!(saved["EnableMetrics"], true);
+    assert_eq!(saved["EnableNormalizedItemByNameIds"], false);
+    assert_eq!(saved["MetadataPath"], "/media/metadata");
+    assert_eq!(saved["SortReplaceCharacters"], json!([".", "+", "%", "!"]));
+    assert_eq!(saved["SortRemoveCharacters"], json!(["&", "-", "'"]));
+    assert_eq!(saved["SortRemoveWords"], json!(["the", "a"]));
+    assert_eq!(saved["InactiveSessionThreshold"], 12);
+    assert_eq!(saved["LibraryMonitorDelay"], 90);
+    assert_eq!(saved["LibraryUpdateDuration"], 45);
+    assert_eq!(saved["CacheSize"], 2_000);
+    assert_eq!(saved["ImageSavingConvention"], "Compatible");
+    assert_eq!(saved["SaveMetadataHidden"], true);
+    assert_eq!(saved["RemoteClientBitrateLimit"], 4_500_000);
+    assert_eq!(saved["EnableFolderView"], true);
+    assert_eq!(saved["EnableGroupingMoviesIntoCollections"], true);
+    assert_eq!(saved["EnableGroupingShowsIntoCollections"], true);
+    assert_eq!(saved["DisplaySpecialsWithinSeasons"], false);
+    assert_eq!(saved["EnableExternalContentInSuggestions"], false);
+    assert_eq!(
+        saved["CorsHosts"],
+        json!(["https://app.example.test", "http://localhost:8096"])
+    );
+    assert_eq!(saved["ActivityLogRetentionDays"], 90);
+    assert_eq!(saved["LibraryScanFanoutConcurrency"], 4);
+    assert_eq!(saved["LibraryMetadataRefreshConcurrency"], 6);
     assert_eq!(saved["TrickplayOptions"]["Interval"], 2_500);
     assert_eq!(
         saved["TrickplayOptions"]["WidthResolutions"],

@@ -7,7 +7,8 @@ use axum::{
 };
 use jellyfin_data::{ServerConfigurationUpdate, entities::server_configuration};
 use jellyfin_model::{
-    MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration, TrickplayOptions,
+    ImageSavingConvention, MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration,
+    TrickplayOptions,
 };
 use serde_json::Value;
 
@@ -124,6 +125,34 @@ fn server_configuration(
         tmdb_api_key: model.tmdb_api_key,
         omdb_api_key: model.omdb_api_key,
         quick_connect_available: model.quick_connect_available,
+        log_file_retention_days: model.log_file_retention_days,
+        enable_metrics: model.enable_metrics,
+        enable_normalized_item_by_name_ids: model.enable_normalized_item_by_name_ids,
+        metadata_path: model.metadata_path,
+        sort_replace_characters: serde_json::from_value(model.sort_replace_characters)
+            .map_err(|_| ApiError::Internal)?,
+        sort_remove_characters: serde_json::from_value(model.sort_remove_characters)
+            .map_err(|_| ApiError::Internal)?,
+        sort_remove_words: serde_json::from_value(model.sort_remove_words)
+            .map_err(|_| ApiError::Internal)?,
+        inactive_session_threshold: model.inactive_session_threshold,
+        library_monitor_delay: model.library_monitor_delay,
+        library_update_duration: model.library_update_duration,
+        cache_size: model
+            .cache_size
+            .unwrap_or_else(|| ServerConfiguration::default().cache_size),
+        image_saving_convention: image_saving_convention(model.image_saving_convention)?,
+        save_metadata_hidden: model.save_metadata_hidden,
+        remote_client_bitrate_limit: model.remote_client_bitrate_limit,
+        enable_folder_view: model.enable_folder_view,
+        enable_grouping_movies_into_collections: model.enable_grouping_movies_into_collections,
+        enable_grouping_shows_into_collections: model.enable_grouping_shows_into_collections,
+        display_specials_within_seasons: model.display_specials_within_seasons,
+        enable_external_content_in_suggestions: model.enable_external_content_in_suggestions,
+        cors_hosts: serde_json::from_value(model.cors_hosts).map_err(|_| ApiError::Internal)?,
+        activity_log_retention_days: model.activity_log_retention_days,
+        library_scan_fanout_concurrency: model.library_scan_fanout_concurrency,
+        library_metadata_refresh_concurrency: model.library_metadata_refresh_concurrency,
         ..ServerConfiguration::default()
     })
 }
@@ -154,5 +183,54 @@ fn server_configuration_update(
         tmdb_api_key: configuration.tmdb_api_key,
         quick_connect_available: configuration.quick_connect_available,
         omdb_api_key: configuration.omdb_api_key,
+        log_file_retention_days: configuration.log_file_retention_days,
+        enable_metrics: configuration.enable_metrics,
+        enable_normalized_item_by_name_ids: configuration.enable_normalized_item_by_name_ids,
+        metadata_path: configuration.metadata_path,
+        sort_replace_characters: serde_json::to_value(configuration.sort_replace_characters)
+            .map_err(|_| ApiError::Internal)?,
+        sort_remove_characters: serde_json::to_value(configuration.sort_remove_characters)
+            .map_err(|_| ApiError::Internal)?,
+        sort_remove_words: serde_json::to_value(configuration.sort_remove_words)
+            .map_err(|_| ApiError::Internal)?,
+        inactive_session_threshold: configuration.inactive_session_threshold,
+        library_monitor_delay: configuration.library_monitor_delay,
+        library_update_duration: configuration.library_update_duration,
+        cache_size: Some(configuration.cache_size),
+        image_saving_convention: image_saving_convention_code(
+            configuration.image_saving_convention,
+        ),
+        save_metadata_hidden: configuration.save_metadata_hidden,
+        remote_client_bitrate_limit: configuration.remote_client_bitrate_limit,
+        enable_folder_view: configuration.enable_folder_view,
+        enable_grouping_movies_into_collections: configuration
+            .enable_grouping_movies_into_collections,
+        enable_grouping_shows_into_collections: configuration
+            .enable_grouping_shows_into_collections,
+        display_specials_within_seasons: configuration.display_specials_within_seasons,
+        enable_external_content_in_suggestions: configuration
+            .enable_external_content_in_suggestions,
+        cors_hosts: serde_json::to_value(configuration.cors_hosts)
+            .map_err(|_| ApiError::Internal)?,
+        activity_log_retention_days: configuration.activity_log_retention_days,
+        library_scan_fanout_concurrency: configuration.library_scan_fanout_concurrency,
+        library_metadata_refresh_concurrency: configuration.library_metadata_refresh_concurrency,
     })
+}
+
+const IMAGE_SAVING_CONVENTION_COMPATIBLE: i16 = 1;
+
+fn image_saving_convention_code(convention: ImageSavingConvention) -> i16 {
+    match convention {
+        ImageSavingConvention::Legacy => 0,
+        ImageSavingConvention::Compatible => IMAGE_SAVING_CONVENTION_COMPATIBLE,
+    }
+}
+
+fn image_saving_convention(code: i16) -> Result<ImageSavingConvention, ApiError> {
+    match code {
+        0 => Ok(ImageSavingConvention::Legacy),
+        IMAGE_SAVING_CONVENTION_COMPATIBLE => Ok(ImageSavingConvention::Compatible),
+        _ => Err(ApiError::Internal),
+    }
 }

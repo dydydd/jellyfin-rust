@@ -106,6 +106,74 @@ pub enum BaseItemOrder {
     CriticRatingDescending,
     RuntimeTicksAscending,
     RuntimeTicksDescending,
+    AiredEpisodeOrderAscending,
+    AiredEpisodeOrderDescending,
+    AlbumAscending,
+    AlbumDescending,
+    AlbumArtistAscending,
+    AlbumArtistDescending,
+    ArtistAscending,
+    ArtistDescending,
+    OfficialRatingAscending,
+    OfficialRatingDescending,
+    StartDateAscending,
+    StartDateDescending,
+    IsFolderAscending,
+    IsFolderDescending,
+    IsUnplayedAscending,
+    IsUnplayedDescending,
+    IsPlayedAscending,
+    IsPlayedDescending,
+    SeriesSortNameAscending,
+    SeriesSortNameDescending,
+    VideoBitRateAscending,
+    VideoBitRateDescending,
+    AirTimeAscending,
+    AirTimeDescending,
+    StudioAscending,
+    StudioDescending,
+    IsFavoriteOrLikedAscending,
+    IsFavoriteOrLikedDescending,
+    DateLastContentAddedAscending,
+    DateLastContentAddedDescending,
+    ParentIndexNumberAscending,
+    ParentIndexNumberDescending,
+    IndexNumberAscending,
+    IndexNumberDescending,
+}
+
+impl BaseItemOrder {
+    #[must_use]
+    pub const fn descending(self) -> Self {
+        match self {
+            Self::SortName => Self::SortNameDescending,
+            Self::DateCreatedAscending => Self::DateCreatedDescending,
+            Self::DatePlayedAscending => Self::DatePlayedDescending,
+            Self::PremiereDateAscending => Self::PremiereDateDescending,
+            Self::PlayCountAscending => Self::PlayCountDescending,
+            Self::CommunityRatingAscending => Self::CommunityRatingDescending,
+            Self::CriticRatingAscending => Self::CriticRatingDescending,
+            Self::RuntimeTicksAscending => Self::RuntimeTicksDescending,
+            Self::AiredEpisodeOrderAscending => Self::AiredEpisodeOrderDescending,
+            Self::AlbumAscending => Self::AlbumDescending,
+            Self::AlbumArtistAscending => Self::AlbumArtistDescending,
+            Self::ArtistAscending => Self::ArtistDescending,
+            Self::OfficialRatingAscending => Self::OfficialRatingDescending,
+            Self::StartDateAscending => Self::StartDateDescending,
+            Self::IsFolderAscending => Self::IsFolderDescending,
+            Self::IsUnplayedAscending => Self::IsUnplayedDescending,
+            Self::IsPlayedAscending => Self::IsPlayedDescending,
+            Self::SeriesSortNameAscending => Self::SeriesSortNameDescending,
+            Self::VideoBitRateAscending => Self::VideoBitRateDescending,
+            Self::AirTimeAscending => Self::AirTimeDescending,
+            Self::StudioAscending => Self::StudioDescending,
+            Self::IsFavoriteOrLikedAscending => Self::IsFavoriteOrLikedDescending,
+            Self::DateLastContentAddedAscending => Self::DateLastContentAddedDescending,
+            Self::ParentIndexNumberAscending => Self::ParentIndexNumberDescending,
+            Self::IndexNumberAscending => Self::IndexNumberDescending,
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -833,6 +901,18 @@ impl BaseItemRepository {
                 self.query_not_resumable(user_id, query).await
             };
         }
+        let requires_user_id = matches!(
+            query.order,
+            BaseItemOrder::IsUnplayedAscending
+                | BaseItemOrder::IsUnplayedDescending
+                | BaseItemOrder::IsPlayedAscending
+                | BaseItemOrder::IsPlayedDescending
+                | BaseItemOrder::IsFavoriteOrLikedAscending
+                | BaseItemOrder::IsFavoriteOrLikedDescending
+        );
+        if requires_user_id && query.user_id.is_none() {
+            return Err(BaseItemError::UserRequired);
+        }
         if matches!(
             query.order,
             BaseItemOrder::DatePlayedAscending | BaseItemOrder::DatePlayedDescending
@@ -850,6 +930,40 @@ impl BaseItemRepository {
                 | BaseItemOrder::CriticRatingDescending
                 | BaseItemOrder::RuntimeTicksAscending
                 | BaseItemOrder::RuntimeTicksDescending
+                | BaseItemOrder::IsUnplayedAscending
+                | BaseItemOrder::IsUnplayedDescending
+                | BaseItemOrder::IsPlayedAscending
+                | BaseItemOrder::IsPlayedDescending
+                | BaseItemOrder::IsFavoriteOrLikedAscending
+                | BaseItemOrder::IsFavoriteOrLikedDescending
+                | BaseItemOrder::AlbumArtistAscending
+                | BaseItemOrder::AlbumArtistDescending
+                | BaseItemOrder::ArtistAscending
+                | BaseItemOrder::ArtistDescending
+                | BaseItemOrder::StudioAscending
+                | BaseItemOrder::StudioDescending
+                | BaseItemOrder::VideoBitRateAscending
+                | BaseItemOrder::VideoBitRateDescending
+                | BaseItemOrder::AiredEpisodeOrderAscending
+                | BaseItemOrder::AiredEpisodeOrderDescending
+                | BaseItemOrder::AlbumAscending
+                | BaseItemOrder::AlbumDescending
+                | BaseItemOrder::OfficialRatingAscending
+                | BaseItemOrder::OfficialRatingDescending
+                | BaseItemOrder::StartDateAscending
+                | BaseItemOrder::StartDateDescending
+                | BaseItemOrder::IsFolderAscending
+                | BaseItemOrder::IsFolderDescending
+                | BaseItemOrder::SeriesSortNameAscending
+                | BaseItemOrder::SeriesSortNameDescending
+                | BaseItemOrder::AirTimeAscending
+                | BaseItemOrder::AirTimeDescending
+                | BaseItemOrder::DateLastContentAddedAscending
+                | BaseItemOrder::DateLastContentAddedDescending
+                | BaseItemOrder::ParentIndexNumberAscending
+                | BaseItemOrder::ParentIndexNumberDescending
+                | BaseItemOrder::IndexNumberAscending
+                | BaseItemOrder::IndexNumberDescending
         ) {
             return self.query_by_extended_sort(query).await;
         }
@@ -1286,6 +1400,64 @@ impl BaseItemRepository {
             BaseItemOrder::CriticRatingDescending => "critic_rating DESC NULLS LAST, sort_name, id",
             BaseItemOrder::RuntimeTicksAscending => "runtime_ticks ASC NULLS LAST, sort_name, id",
             BaseItemOrder::RuntimeTicksDescending => "runtime_ticks DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::AiredEpisodeOrderAscending => {
+                "aired_episode_order ASC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::AiredEpisodeOrderDescending => {
+                "aired_episode_order DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::AlbumAscending => "album ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::AlbumDescending => "album DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::AlbumArtistAscending => "album_artist ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::AlbumArtistDescending => "album_artist DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::ArtistAscending => "artist ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::ArtistDescending => "artist DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::OfficialRatingAscending => {
+                "official_rating ASC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::OfficialRatingDescending => {
+                "official_rating DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::StartDateAscending => "start_date ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::StartDateDescending => "start_date DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::IsFolderAscending => "is_folder ASC, sort_name, id",
+            BaseItemOrder::IsFolderDescending => "is_folder DESC, sort_name, id",
+            BaseItemOrder::IsUnplayedAscending => "is_unplayed ASC, sort_name, id",
+            BaseItemOrder::IsUnplayedDescending => "is_unplayed DESC, sort_name, id",
+            BaseItemOrder::IsPlayedAscending => "is_played ASC, sort_name, id",
+            BaseItemOrder::IsPlayedDescending => "is_played DESC, sort_name, id",
+            BaseItemOrder::SeriesSortNameAscending => {
+                "series_sort_name ASC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::SeriesSortNameDescending => {
+                "series_sort_name DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::VideoBitRateAscending => "video_bit_rate ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::VideoBitRateDescending => {
+                "video_bit_rate DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::AirTimeAscending => "sort_name ASC, id",
+            BaseItemOrder::AirTimeDescending => "sort_name DESC, id",
+            BaseItemOrder::StudioAscending => "studio ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::StudioDescending => "studio DESC NULLS LAST, sort_name, id",
+            BaseItemOrder::IsFavoriteOrLikedAscending => "is_favorite_or_liked ASC, sort_name, id",
+            BaseItemOrder::IsFavoriteOrLikedDescending => {
+                "is_favorite_or_liked DESC, sort_name, id"
+            }
+            BaseItemOrder::DateLastContentAddedAscending => {
+                "date_last_content_added ASC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::DateLastContentAddedDescending => {
+                "date_last_content_added DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::ParentIndexNumberAscending => {
+                "parent_index_number ASC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::ParentIndexNumberDescending => {
+                "parent_index_number DESC NULLS LAST, sort_name, id"
+            }
+            BaseItemOrder::IndexNumberAscending => "index_number ASC NULLS LAST, sort_name, id",
+            BaseItemOrder::IndexNumberDescending => "index_number DESC NULLS LAST, sort_name, id",
             _ => unreachable!("extended-sort query only handles extended orders"),
         };
         self.query_raw_page(cte, values, "filtered", order, "ExtendedSort", query)
@@ -2243,8 +2415,79 @@ fn date_played_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Ve
 
 fn extended_sort_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = Vec::new();
-    let mut sql = String::from(
-        "WITH filtered AS (\
+    let uses_item_value_sort = matches!(
+        query.order,
+        BaseItemOrder::ArtistAscending
+            | BaseItemOrder::ArtistDescending
+            | BaseItemOrder::AlbumArtistAscending
+            | BaseItemOrder::AlbumArtistDescending
+            | BaseItemOrder::StudioAscending
+            | BaseItemOrder::StudioDescending
+    );
+    let uses_video_bit_rate_sort = matches!(
+        query.order,
+        BaseItemOrder::VideoBitRateAscending | BaseItemOrder::VideoBitRateDescending
+    );
+    let uses_user_data_sort = matches!(
+        query.order,
+        BaseItemOrder::IsUnplayedAscending
+            | BaseItemOrder::IsUnplayedDescending
+            | BaseItemOrder::IsPlayedAscending
+            | BaseItemOrder::IsPlayedDescending
+            | BaseItemOrder::IsFavoriteOrLikedAscending
+            | BaseItemOrder::IsFavoriteOrLikedDescending
+    );
+    let uses_series_sort = matches!(
+        query.order,
+        BaseItemOrder::SeriesSortNameAscending | BaseItemOrder::SeriesSortNameDescending
+    );
+    let mut sql = String::from("WITH ");
+    if uses_item_value_sort {
+        sql.push_str(
+            "item_value_sorts AS (\
+                 SELECT map.item_id, \
+                        MIN(CASE WHEN item_value.type = 0 THEN item_value.clean_value END) AS artist, \
+                        MIN(CASE WHEN item_value.type = 1 THEN item_value.clean_value END) AS album_artist, \
+                        MIN(CASE WHEN item_value.type = 3 THEN item_value.clean_value END) AS studio \
+                 FROM jellyfin.item_value_map AS map \
+                 JOIN jellyfin.item_values AS item_value \
+                   ON item_value.item_value_id = map.item_value_id \
+                 WHERE item_value.type IN (0, 1, 3) \
+                 GROUP BY map.item_id\
+             ), ",
+        );
+    }
+    if uses_video_bit_rate_sort {
+        sql.push_str(
+            "video_bit_rate_sorts AS (\
+                 SELECT stream.item_id, MAX(stream.bit_rate) AS video_bit_rate \
+                 FROM jellyfin.media_streams AS stream \
+                 JOIN jellyfin.base_items AS version ON version.id = stream.item_id \
+                 WHERE stream.stream_type = 1 \
+                 GROUP BY stream.item_id\
+             ), ",
+        );
+    }
+    if uses_user_data_sort {
+        let Some(user_id) = query.user_id else {
+            unreachable!("user-data sort queries require a user id");
+        };
+        values.push(user_id.into());
+        let _ = write!(
+            sql,
+            "user_data_sorts AS (\
+                 SELECT item_id, \
+                        MAX((is_favorite OR likes = true)::int) AS is_favorite_or_liked, \
+                        MAX(played::int) AS is_played \
+                 FROM jellyfin.user_data \
+                 WHERE user_id = ${} \
+                 GROUP BY item_id\
+             ), ",
+            values.len()
+        );
+    }
+    sql.push_str(
+        "filtered AS (\
              SELECT item.*, \
                     COALESCE((
                         SELECT MAX(progress.play_count) \
@@ -2252,18 +2495,74 @@ fn extended_sort_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
                         WHERE progress.item_id = item.id \
                           AND progress.user_id = ",
     );
-    let Some(user_id) = query.user_id else {
-        unreachable!("extended-sort queries require a user id");
-    };
-    values.push(user_id.into());
-    let _ = write!(sql, "${}", values.len());
+    if !uses_user_data_sort {
+        let Some(user_id) = query.user_id else {
+            unreachable!("extended-sort queries require a user id");
+        };
+        values.push(user_id.into());
+        let _ = write!(sql, "${}", values.len());
+    } else {
+        sql.push_str("$1");
+    }
     sql.push_str(
         "), 0)::bigint AS play_count, \
          COALESCE((item.data ->> 'CommunityRating')::double precision, 0.0) AS community_rating, \
-         COALESCE((item.data ->> 'CriticRating')::double precision, 0.0) AS critic_rating \
-         FROM jellyfin.base_items AS item \
-         WHERE item.item_type <> 'PLACEHOLDER'",
+         COALESCE((item.data ->> 'CriticRating')::double precision, 0.0) AS critic_rating,",
     );
+    if uses_item_value_sort {
+        sql.push_str(
+            " item_value_sorts.artist AS artist, \
+              item_value_sorts.album_artist AS album_artist, \
+              item_value_sorts.studio AS studio,",
+        );
+    }
+    if uses_video_bit_rate_sort {
+        sql.push_str(" video_bit_rate_sorts.video_bit_rate AS video_bit_rate,");
+    }
+    if uses_user_data_sort {
+        sql.push_str(
+            " COALESCE(user_data_sorts.is_favorite_or_liked, 0)::boolean AS is_favorite_or_liked, \
+             COALESCE(user_data_sorts.is_played, 0)::boolean AS is_played, \
+             NOT COALESCE(user_data_sorts.is_played, 0)::boolean AS is_unplayed,",
+        );
+    }
+    if uses_series_sort {
+        sql.push_str(
+            " COALESCE(NULLIF(item.data ->> 'SeriesName', ''), series.sort_name, \
+              series.clean_name, series.name) AS series_sort_name,",
+        );
+    }
+    sql.push_str(
+        " NULLIF(item.data ->> 'Album', '') AS album, \
+         NULLIF(item.data ->> 'StartDate', '')::timestamptz AS start_date, \
+         NULLIF(item.data ->> 'DateLastMediaAdded', '')::timestamptz AS date_last_content_added, \
+         CASE \
+             WHEN item.item_type <> 'Episode' THEN NULL \
+             WHEN COALESCE(item.parent_index_number, -1) = 0 THEN \
+                 (COALESCE(NULLIF(item.data ->> 'AirsAfterSeasonNumber', '')::integer, \
+                           NULLIF(item.data ->> 'AirsBeforeSeasonNumber', '')::integer, 0)::bigint \
+                  * 1000000000) \
+                 + CASE WHEN item.data ->> 'AirsAfterSeasonNumber' IS NOT NULL THEN 1000000 ELSE 0 END \
+                 + (COALESCE(NULLIF(item.data ->> 'AirsBeforeEpisodeNumber', '')::integer, 0)::bigint * 1000) \
+                 + COALESCE(item.index_number, 0) \
+             ELSE ((COALESCE(item.parent_index_number, -1)::bigint * 1000) \
+                   + COALESCE(item.index_number, -1)) \
+         END AS aired_episode_order \
+         FROM jellyfin.base_items AS item",
+    );
+    if uses_item_value_sort {
+        sql.push_str(" LEFT JOIN item_value_sorts ON item_value_sorts.item_id = item.id");
+    }
+    if uses_video_bit_rate_sort {
+        sql.push_str(" LEFT JOIN video_bit_rate_sorts ON video_bit_rate_sorts.item_id = item.id");
+    }
+    if uses_user_data_sort {
+        sql.push_str(" LEFT JOIN user_data_sorts ON user_data_sorts.item_id = item.id");
+    }
+    if uses_series_sort {
+        sql.push_str(" LEFT JOIN jellyfin.base_items AS series ON series.id = item.series_id");
+    }
+    sql.push_str(" WHERE item.item_type <> 'PLACEHOLDER'");
     append_default_owned_filter(&mut sql);
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
