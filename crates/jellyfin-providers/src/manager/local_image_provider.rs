@@ -22,7 +22,11 @@ impl LocalImageProvider {
         let containing_folder = item
             .containing_folder_path
             .as_deref()
-            .or_else(|| item.path.as_deref().and_then(|p| Path::new(p).parent()?.to_str()))
+            .or_else(|| {
+                item.path
+                    .as_deref()
+                    .and_then(|p| Path::new(p).parent()?.to_str())
+            })
             .unwrap_or("");
 
         let item_stem = item
@@ -48,9 +52,20 @@ impl LocalImageProvider {
 
         // 2. Backdrops / Fanart
         let backdrop_names = &[
-            "backdrop", "fanart", "background", "art",
-            "backdrop1", "backdrop2", "backdrop3", "backdrop4", "backdrop5",
-            "fanart1", "fanart2", "fanart3", "fanart4", "fanart5",
+            "backdrop",
+            "fanart",
+            "background",
+            "art",
+            "backdrop1",
+            "backdrop2",
+            "backdrop3",
+            "backdrop4",
+            "backdrop5",
+            "fanart1",
+            "fanart2",
+            "fanart3",
+            "fanart4",
+            "fanart5",
         ];
         Self::find_images(
             containing_folder,
@@ -192,9 +207,7 @@ impl LocalImageProvider {
             if !folder.is_empty() {
                 for ext in SUPPORTED_IMAGE_EXTENSIONS {
                     let candidate = format!("{folder}/{name}.{ext}");
-                    if file_exists(&candidate)
-                        && !results.iter().any(|r| r.path == candidate)
-                    {
+                    if file_exists(&candidate) && !results.iter().any(|r| r.path == candidate) {
                         results.push(LocalImageInfo::new(candidate, image_type));
                         break;
                     }
@@ -207,9 +220,7 @@ impl LocalImageProvider {
             {
                 for ext in SUPPORTED_IMAGE_EXTENSIONS {
                     let candidate = format!("{folder}/{s}-{name}.{ext}");
-                    if file_exists(&candidate)
-                        && !results.iter().any(|r| r.path == candidate)
-                    {
+                    if file_exists(&candidate) && !results.iter().any(|r| r.path == candidate) {
                         results.push(LocalImageInfo::new(candidate, image_type));
                         break;
                     }
@@ -224,9 +235,7 @@ impl LocalImageProvider {
         {
             for ext in SUPPORTED_IMAGE_EXTENSIONS {
                 let candidate = format!("{folder}/{s}.{ext}");
-                if file_exists(&candidate)
-                    && !results.iter().any(|r| r.path == candidate)
-                {
+                if file_exists(&candidate) && !results.iter().any(|r| r.path == candidate) {
                     results.push(LocalImageInfo::new(candidate, image_type));
                     break;
                 }

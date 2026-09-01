@@ -66,6 +66,7 @@ pub struct PluginRegistry {
     plugins: Arc<Mutex<Vec<InstalledPlugin>>>,
 }
 
+#[allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 impl PluginRegistry {
     #[must_use]
     pub fn new(plugins: Vec<PluginInfo>) -> Self {
@@ -155,7 +156,8 @@ impl PluginRegistry {
         let original_len = plugins.len();
         plugins.retain(|plugin| {
             plugin.info.id != plugin_id
-                || version.is_some_and(|version| !version.eq_ignore_ascii_case(&plugin.info.version))
+                || version
+                    .is_some_and(|version| !version.eq_ignore_ascii_case(&plugin.info.version))
         });
         Ok(plugins.len() != original_len)
     }
@@ -413,15 +415,9 @@ mod tests {
         let registry = PluginRegistry::new(vec![plugin("Test", 1)]);
 
         assert!(registry.disable(plugin_id, "1.0.0.0").unwrap());
-        assert_eq!(
-            registry.plugins()[0].status,
-            PluginStatus::Disabled
-        );
+        assert_eq!(registry.plugins()[0].status, PluginStatus::Disabled);
         assert!(registry.enable(plugin_id, "1.0.0.0").unwrap());
-        assert_eq!(
-            registry.plugins()[0].status,
-            PluginStatus::Active
-        );
+        assert_eq!(registry.plugins()[0].status, PluginStatus::Active);
         assert!(!registry.enable(Uuid::from_u128(2), "1.0.0.0").unwrap());
         assert!(registry.uninstall(plugin_id, None).unwrap());
         assert!(registry.plugins().is_empty());
@@ -434,11 +430,13 @@ mod tests {
         let registry = PluginRegistry::new(vec![plugin("Test", 1)]);
 
         assert_eq!(registry.configuration(plugin_id).unwrap(), Some(json!({})));
-        assert_eq!(
-            registry.manifest(plugin_id).unwrap().unwrap().id,
-            plugin_id
+        assert_eq!(registry.manifest(plugin_id).unwrap().unwrap().id, plugin_id);
+        assert!(
+            registry
+                .configuration(Uuid::from_u128(2))
+                .unwrap()
+                .is_none()
         );
-        assert!(registry.configuration(Uuid::from_u128(2)).unwrap().is_none());
         assert!(registry.manifest(Uuid::from_u128(2)).unwrap().is_none());
     }
 

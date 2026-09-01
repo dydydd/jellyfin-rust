@@ -27,6 +27,7 @@ impl EpisodeExpression {
     }
 
     /// Creates a configurable episode expression and compiles its regex.
+    #[allow(clippy::result_large_err)]
     pub fn try_new(
         expression: impl Into<String>,
         by_date: bool,
@@ -57,6 +58,7 @@ impl EpisodeExpression {
     ///
     /// If compilation fails, both the expression and compiled regex remain
     /// unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn set_expression(
         &mut self,
         expression: impl Into<String>,
@@ -89,6 +91,7 @@ impl EpisodeExpression {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn compile_expression(expression: &str) -> Result<Regex, fancy_regex::Error> {
     RegexBuilder::new(expression).case_insensitive(true).build()
 }

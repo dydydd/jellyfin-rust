@@ -26,10 +26,7 @@ fn ffmpeg_version_matrix_matches_official_cases() {
         ("FFmpegV44Output", Some(FfmpegVersion::new(4, 4))),
         ("FFmpegV432Output", Some(FfmpegVersion::with_patch(4, 3, 2))),
         ("FFmpegGitUnknownOutput2", Some(FfmpegVersion::new(4, 4))),
-        (
-            "FFmpegGitWithoutLibpostprocOutput",
-            None,
-        ),
+        ("FFmpegGitWithoutLibpostprocOutput", None),
         ("FFmpegGitUnknownOutput", None),
     ];
     for (name, expected) in cases {

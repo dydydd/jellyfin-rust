@@ -876,6 +876,7 @@ impl SyncPlayManager {
         (events.applied, events.state_update)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn ready_with_events(
         &self,
         session_id: &str,

@@ -14,16 +14,10 @@ async fn guide_refresh_runs_the_complete_schedules_direct_chain() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("test server bind");
-    let port = listener
-        .local_addr()
-        .expect("test server address")
-        .port();
+    let port = listener.local_addr().expect("test server address").port();
     let server = tokio::spawn(async move {
         let responses = [
-            (
-                "/token",
-                r#"{"code":0,"token":"test-token"}"#.as_bytes(),
-            ),
+            ("/token", r#"{"code":0,"token":"test-token"}"#.as_bytes()),
             (
                 "/lineups/TEST-LINEUP",
                 r#"{"map":[{"stationID":"S1","channel":"1"}],"stations":[]}"#.as_bytes(),
@@ -60,15 +54,19 @@ async fn guide_refresh_runs_the_complete_schedules_direct_chain() {
         }
     });
 
-    let mut configuration = LiveTvConfiguration::default();
-    configuration.guide_days = Some(1);
-    configuration.listing_providers.push(ListingProviderConfiguration {
-        provider_type: Some("SchedulesDirect".to_owned()),
-        username: Some("test-user".to_owned()),
-        password: Some("test-password".to_owned()),
-        listings_id: Some("TEST-LINEUP".to_owned()),
-        ..ListingProviderConfiguration::default()
-    });
+    let mut configuration = LiveTvConfiguration {
+        guide_days: Some(1),
+        ..Default::default()
+    };
+    configuration
+        .listing_providers
+        .push(ListingProviderConfiguration {
+            provider_type: Some("SchedulesDirect".to_owned()),
+            username: Some("test-user".to_owned()),
+            password: Some("test-password".to_owned()),
+            listings_id: Some("TEST-LINEUP".to_owned()),
+            ..ListingProviderConfiguration::default()
+        });
     let service = GuideRefreshService::new(
         Arc::new(MemoryListingsConfigurationStore::new(configuration)),
         SchedulesDirectClient::with_base_url(format!("http://127.0.0.1:{port}")),

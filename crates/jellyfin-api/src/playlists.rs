@@ -121,7 +121,7 @@ pub(crate) async fn create(
     // `OpenAccess = false`.
     let is_public = body
         .as_ref()
-        .map_or(false, |body| body.is_public.unwrap_or(true));
+        .is_some_and(|body| body.is_public.unwrap_or(true));
     let requested_user_id = query.user_id.or_else(|| body.as_ref()?.user_id);
     let owner_user_id = identity.target_user_id(requested_user_id)?;
     if owner_user_id.is_nil() {

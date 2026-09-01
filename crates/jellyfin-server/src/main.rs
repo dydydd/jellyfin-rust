@@ -158,10 +158,10 @@ async fn ensure_initial_user(
 }
 
 fn ffprobe_path_for(ffmpeg_path: &Path) -> PathBuf {
-    let file_name = ffmpeg_path
-        .file_name()
-        .map(|name| name.to_string_lossy().replace("ffmpeg", "ffprobe"))
-        .unwrap_or_else(|| "ffprobe".to_owned());
+    let file_name = ffmpeg_path.file_name().map_or_else(
+        || "ffprobe".to_owned(),
+        |name| name.to_string_lossy().replace("ffmpeg", "ffprobe"),
+    );
     ffmpeg_path.with_file_name(file_name)
 }
 

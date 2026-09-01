@@ -1,7 +1,7 @@
-use std::collections::HashSet;
 use jellyfin_model::ImageType;
 use jellyfin_providers::manager::item_image_provider::{ImageItem, ImageItemKind};
 use jellyfin_providers::manager::local_image_provider::LocalImageProvider;
+use std::collections::HashSet;
 
 #[test]
 fn local_image_provider_discovers_movie_artwork() {
@@ -22,12 +22,36 @@ fn local_image_provider_discovers_movie_artwork() {
 
     let discovered = LocalImageProvider::get_images(&item, |p| files.contains(p));
 
-    assert!(discovered.iter().any(|img| img.image_type == ImageType::Primary && img.path.ends_with("poster.jpg")));
-    assert!(discovered.iter().any(|img| img.image_type == ImageType::Backdrop && img.path.ends_with("fanart.png")));
-    assert!(discovered.iter().any(|img| img.image_type == ImageType::Banner && img.path.ends_with("banner.jpg")));
-    assert!(discovered.iter().any(|img| img.image_type == ImageType::Logo && img.path.ends_with("logo.png")));
-    assert!(discovered.iter().any(|img| img.image_type == ImageType::Art && img.path.ends_with("clearart.png")));
-    assert!(discovered.iter().any(|img| img.image_type == ImageType::Disc && img.path.ends_with("disc.png")));
+    assert!(
+        discovered
+            .iter()
+            .any(|img| img.image_type == ImageType::Primary && img.path.ends_with("poster.jpg"))
+    );
+    assert!(
+        discovered
+            .iter()
+            .any(|img| img.image_type == ImageType::Backdrop && img.path.ends_with("fanart.png"))
+    );
+    assert!(
+        discovered
+            .iter()
+            .any(|img| img.image_type == ImageType::Banner && img.path.ends_with("banner.jpg"))
+    );
+    assert!(
+        discovered
+            .iter()
+            .any(|img| img.image_type == ImageType::Logo && img.path.ends_with("logo.png"))
+    );
+    assert!(
+        discovered
+            .iter()
+            .any(|img| img.image_type == ImageType::Art && img.path.ends_with("clearart.png"))
+    );
+    assert!(
+        discovered
+            .iter()
+            .any(|img| img.image_type == ImageType::Disc && img.path.ends_with("disc.png"))
+    );
 }
 
 #[test]
@@ -43,8 +67,16 @@ fn local_image_provider_discovers_season_artwork_from_series() {
         |p| files.contains(p),
     );
     assert_eq!(season_1.len(), 2);
-    assert!(season_1.iter().any(|img| img.image_type == ImageType::Primary));
-    assert!(season_1.iter().any(|img| img.image_type == ImageType::Backdrop));
+    assert!(
+        season_1
+            .iter()
+            .any(|img| img.image_type == ImageType::Primary)
+    );
+    assert!(
+        season_1
+            .iter()
+            .any(|img| img.image_type == ImageType::Backdrop)
+    );
 
     let specials = LocalImageProvider::get_season_images_from_series_folder(
         "/media/tv/Breaking Bad",

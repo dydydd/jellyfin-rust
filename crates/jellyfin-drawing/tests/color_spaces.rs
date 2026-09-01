@@ -34,7 +34,7 @@ fn detects_grayscale_images_correctly() {
 fn extracts_icc_profile_from_jpeg_app2_segment() {
     let mut jpeg = Vec::new();
     jpeg.extend_from_slice(&[0xFF, 0xD8]); // SOI
-    
+
     // APP2 segment with ICC_PROFILE
     let dummy_icc = b"ICC_DUMMY_PROFILE_DATA_FOR_TEST";
     let mut app2 = Vec::new();
@@ -58,7 +58,7 @@ fn extracts_icc_profile_from_jpeg_app2_segment() {
 fn extracts_icc_profile_from_webp_iccp_chunk() {
     let mut webp = Vec::new();
     let dummy_icc = b"WEBP_ICC_TEST_DATA";
-    
+
     webp.extend_from_slice(b"RIFF");
     let total_len = (4 + 8 + dummy_icc.len()) as u32;
     webp.extend_from_slice(&total_len.to_le_bytes());
@@ -95,7 +95,10 @@ fn embed_splits_profiles_larger_than_one_chunk() {
     let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xD9];
 
     embed_icc_profile(&mut jpeg, &profile);
-    assert_eq!(extract_icc_profile(&jpeg).as_deref(), Some(profile.as_slice()));
+    assert_eq!(
+        extract_icc_profile(&jpeg).as_deref(),
+        Some(profile.as_slice())
+    );
 }
 
 #[test]

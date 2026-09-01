@@ -205,8 +205,8 @@ impl VttParser {
                 cursor += 1;
                 continue;
             }
-            let Some(timeline_index) = (cursor..lines.len())
-                .find(|index| lines[*index].contains("-->"))
+            let Some(timeline_index) =
+                (cursor..lines.len()).find(|index| lines[*index].contains("-->"))
             else {
                 break;
             };

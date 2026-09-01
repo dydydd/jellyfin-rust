@@ -83,8 +83,8 @@ impl UserDataService {
             .get(item_id)
             .await?
             .ok_or(UserDataServiceError::ItemNotFound)?;
-        let policy: UserPolicy = serde_json::from_value(user.policy)
-            .map_err(UserDataServiceError::InvalidPolicy)?;
+        let policy: UserPolicy =
+            serde_json::from_value(user.policy).map_err(UserDataServiceError::InvalidPolicy)?;
         if !self.is_visible_with_policy(&item, &policy).await? {
             return Err(UserDataServiceError::ItemNotFound);
         }

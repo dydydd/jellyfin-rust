@@ -61,24 +61,78 @@ fn startup_routines_match_the_official_set() {
 #[test]
 fn startup_routines_carry_the_official_names_and_guids() {
     let expected = [
-        ("CreateNetworkConfiguration", Some("9B354818-94D5-4B68-AC49-E35CB85F9D84")),
-        ("MigrateNetworkConfiguration", Some("4FB5C950-1991-11EE-9B4B-0800200C9A66")),
-        ("MigrateMusicBrainzTimeout", Some("A6DCACF4-C057-4Ef9-80D3-61CEF9DDB4F0")),
-        ("MigrateEncodingOptions", Some("A8E61960-7726-4450-8F3D-82C12DAABBCB")),
-        ("RenameEnableGroupingIntoCollections", Some("E73B777D-CD5C-4E71-957A-B86B3660B7CF")),
-        ("DisableTranscodingThrottling", Some("4124C2CD-E939-4FFB-9BE9-9B311C413638")),
-        ("CreateUserLoggingConfigFile", Some("EF103419-8451-40D8-9F34-D1A8E93A1679")),
-        ("MigrateActivityLogDb", Some("3793eb59-bc8c-456c-8b9f-bd5a62a42978")),
-        ("RemoveDuplicateExtras", Some("ACBE17B7-8435-4A83-8B64-6FCF162CB9BD")),
-        ("AddDefaultPluginRepository", Some("EB58EBEE-9514-4B9B-8225-12E1A40020DF")),
-        ("MigrateUserDb", Some("5C4B82A2-F053-4009-BD05-B6FCAD82F14C")),
-        ("ReaddDefaultPluginRepository", Some("5F86E7F6-D966-4C77-849D-7A7B40B68C4E")),
-        ("MigrateDisplayPreferencesDb", Some("06387815-C3CC-421F-A888-FB5F9992BEA8")),
-        ("RemoveDownloadImagesInAdvance", Some("A81F75E0-8F43-416F-A5E8-516CCAB4D8CC")),
-        ("MigrateAuthenticationDb", Some("5BD72F41-E6F3-4F60-90AA-09869ABE0E22")),
-        ("FixPlaylistOwner", Some("615DFA9E-2497-4DBB-A472-61938B752C5B")),
-        ("AddDefaultCastReceivers", Some("34A1A1C4-5572-418E-A2F8-32CDFE2668E8")),
-        ("UpdateDefaultPluginRepository", Some("852816E0-2712-49A9-9240-C6FC5FCAD1A8")),
+        (
+            "CreateNetworkConfiguration",
+            Some("9B354818-94D5-4B68-AC49-E35CB85F9D84"),
+        ),
+        (
+            "MigrateNetworkConfiguration",
+            Some("4FB5C950-1991-11EE-9B4B-0800200C9A66"),
+        ),
+        (
+            "MigrateMusicBrainzTimeout",
+            Some("A6DCACF4-C057-4Ef9-80D3-61CEF9DDB4F0"),
+        ),
+        (
+            "MigrateEncodingOptions",
+            Some("A8E61960-7726-4450-8F3D-82C12DAABBCB"),
+        ),
+        (
+            "RenameEnableGroupingIntoCollections",
+            Some("E73B777D-CD5C-4E71-957A-B86B3660B7CF"),
+        ),
+        (
+            "DisableTranscodingThrottling",
+            Some("4124C2CD-E939-4FFB-9BE9-9B311C413638"),
+        ),
+        (
+            "CreateUserLoggingConfigFile",
+            Some("EF103419-8451-40D8-9F34-D1A8E93A1679"),
+        ),
+        (
+            "MigrateActivityLogDb",
+            Some("3793eb59-bc8c-456c-8b9f-bd5a62a42978"),
+        ),
+        (
+            "RemoveDuplicateExtras",
+            Some("ACBE17B7-8435-4A83-8B64-6FCF162CB9BD"),
+        ),
+        (
+            "AddDefaultPluginRepository",
+            Some("EB58EBEE-9514-4B9B-8225-12E1A40020DF"),
+        ),
+        (
+            "MigrateUserDb",
+            Some("5C4B82A2-F053-4009-BD05-B6FCAD82F14C"),
+        ),
+        (
+            "ReaddDefaultPluginRepository",
+            Some("5F86E7F6-D966-4C77-849D-7A7B40B68C4E"),
+        ),
+        (
+            "MigrateDisplayPreferencesDb",
+            Some("06387815-C3CC-421F-A888-FB5F9992BEA8"),
+        ),
+        (
+            "RemoveDownloadImagesInAdvance",
+            Some("A81F75E0-8F43-416F-A5E8-516CCAB4D8CC"),
+        ),
+        (
+            "MigrateAuthenticationDb",
+            Some("5BD72F41-E6F3-4F60-90AA-09869ABE0E22"),
+        ),
+        (
+            "FixPlaylistOwner",
+            Some("615DFA9E-2497-4DBB-A472-61938B752C5B"),
+        ),
+        (
+            "AddDefaultCastReceivers",
+            Some("34A1A1C4-5572-418E-A2F8-32CDFE2668E8"),
+        ),
+        (
+            "UpdateDefaultPluginRepository",
+            Some("852816E0-2712-49A9-9240-C6FC5FCAD1A8"),
+        ),
         ("FixAudioData", Some("CF6FABC2-9FBE-4933-84A5-FFE52EF22A58")),
     ];
 

@@ -61,6 +61,12 @@ fn synthesizes_loopback_when_no_interfaces_available() {
     assert_eq!(loopbacks[0].address.to_string(), "127.0.0.1");
     assert_eq!(loopbacks[1].address.to_string(), "::1");
     assert_eq!(manager.interfaces().len(), 2);
-    assert_eq!(manager.get_bind_address_for_ip(Some(ip("192.168.1.50")), false), "127.0.0.1");
-    assert_eq!(manager.get_bind_address_for_ip(Some(ip("2001:db8::1")), false), "::1");
+    assert_eq!(
+        manager.get_bind_address_for_ip(Some(ip("192.168.1.50")), false),
+        "127.0.0.1"
+    );
+    assert_eq!(
+        manager.get_bind_address_for_ip(Some(ip("2001:db8::1")), false),
+        "::1"
+    );
 }

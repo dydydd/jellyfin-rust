@@ -4,7 +4,6 @@ use jellyfin_data::{
     ScoredBaseItemPage, ServerConfigurationRepository,
     entities::{base_item, user},
 };
-use jellyfin_extensions::StringExtensions;
 use jellyfin_model::UserPolicy;
 use sea_orm::DatabaseConnection;
 use serde_json::Value;
@@ -614,7 +613,7 @@ fn normalized_tags(values: &[String]) -> Vec<String> {
         .iter()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
-        .map(|value| value.clean_value())
+        .map(jellyfin_extensions::StringExtensions::clean_value)
         .filter(|value| !value.is_empty())
         .collect()
 }

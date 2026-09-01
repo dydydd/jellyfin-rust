@@ -106,6 +106,7 @@ async fn default_query_excludes_owned_non_extra_items_and_matches_original_title
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn played_filter_rolls_up_series_seasons_and_box_sets() {
     let _guard = TEST_LOCK.lock().await;
     let database = prepare_database().await;
@@ -271,6 +272,7 @@ async fn played_filter_rolls_up_series_seasons_and_box_sets() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn resumable_filter_rolls_up_partially_watched_series_and_seasons() {
     let _guard = TEST_LOCK.lock().await;
     let database = prepare_database().await;
@@ -383,6 +385,7 @@ async fn resumable_filter_rolls_up_partially_watched_series_and_seasons() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn parental_control_filters_inherit_ratings_tags_and_unrated_type() {
     let _guard = TEST_LOCK.lock().await;
     let database = prepare_database().await;

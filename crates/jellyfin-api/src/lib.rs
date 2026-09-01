@@ -614,6 +614,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+#[allow(clippy::too_many_lines)]
 fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let index_path = state.web_directory.join("index.html");
 

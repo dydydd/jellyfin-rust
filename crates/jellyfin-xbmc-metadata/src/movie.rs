@@ -411,7 +411,23 @@ fn extract_provider_key(tag: &str) -> Option<&str> {
     let lower = tag.to_ascii_lowercase();
     if matches!(
         lower.as_str(),
-        "uniqueid" | "fileinfo" | "aspectratio" | "id" | "thumb" | "art" | "fanart" | "set" | "actor" | "director" | "writer" | "credits" | "genre" | "studio" | "country" | "trailer" | "ratings"
+        "uniqueid"
+            | "fileinfo"
+            | "aspectratio"
+            | "id"
+            | "thumb"
+            | "art"
+            | "fanart"
+            | "set"
+            | "actor"
+            | "director"
+            | "writer"
+            | "credits"
+            | "genre"
+            | "studio"
+            | "country"
+            | "trailer"
+            | "ratings"
     ) {
         return None;
     }

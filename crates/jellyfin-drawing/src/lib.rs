@@ -1154,30 +1154,33 @@ fn encode_image(
     let encode_result = match format {
         ImageFormat::Jpg => match image {
             DynamicImage::ImageLuma8(luma) => {
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality).write_image(
-                    luma.as_raw(),
-                    luma.width(),
-                    luma.height(),
-                    image::ExtendedColorType::L8,
-                )
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
+                    .write_image(
+                        luma.as_raw(),
+                        luma.width(),
+                        luma.height(),
+                        image::ExtendedColorType::L8,
+                    )
             }
             DynamicImage::ImageLumaA8(la) => {
                 let luma = DynamicImage::ImageLumaA8(la.clone()).into_luma8();
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality).write_image(
-                    luma.as_raw(),
-                    luma.width(),
-                    luma.height(),
-                    image::ExtendedColorType::L8,
-                )
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
+                    .write_image(
+                        luma.as_raw(),
+                        luma.width(),
+                        luma.height(),
+                        image::ExtendedColorType::L8,
+                    )
             }
             _ => {
                 let rgb = image.to_rgb8();
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality).write_image(
-                    rgb.as_raw(),
-                    rgb.width(),
-                    rgb.height(),
-                    image::ExtendedColorType::Rgb8,
-                )
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
+                    .write_image(
+                        rgb.as_raw(),
+                        rgb.width(),
+                        rgb.height(),
+                        image::ExtendedColorType::Rgb8,
+                    )
             }
         },
         format => image.write_to(&mut Cursor::new(&mut encoded), decoder_format(format)?),
@@ -1187,7 +1190,9 @@ fn encode_image(
         source,
     })?;
 
-    if format == ImageFormat::Jpg && let Some(profile) = icc_profile {
+    if format == ImageFormat::Jpg
+        && let Some(profile) = icc_profile
+    {
         embed_icc_profile(&mut encoded, profile);
     }
 
@@ -1343,7 +1348,9 @@ pub fn extract_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
                     && data[null_pos + 1] == 0
                 {
                     let compressed = &data[null_pos + 2..];
-                    if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec_zlib(compressed) {
+                    if let Ok(decompressed) =
+                        miniz_oxide::inflate::decompress_to_vec_zlib(compressed)
+                    {
                         return Some(decompressed);
                     }
                 }
@@ -1426,7 +1433,9 @@ pub fn embed_icc_profile(jpeg: &mut Vec<u8>, profile: &[u8]) {
 /// # Errors
 ///
 /// Returns an error when reading the file fails.
-pub fn extract_icc_profile_from_file(path: impl AsRef<Path>) -> Result<Option<Vec<u8>>, std::io::Error> {
+pub fn extract_icc_profile_from_file(
+    path: impl AsRef<Path>,
+) -> Result<Option<Vec<u8>>, std::io::Error> {
     let bytes = fs::read(path)?;
     Ok(extract_icc_profile(&bytes))
 }

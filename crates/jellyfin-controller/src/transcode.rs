@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 /// Target codecs and limits for one `FFmpeg` transcode job.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct TranscodeTarget {
     pub is_video: bool,
     pub hwaccel: Option<String>,
@@ -85,11 +86,7 @@ pub struct HlsVariant {
 
 impl HlsVariant {
     #[must_use]
-    pub fn new(
-        bandwidth: u64,
-        resolution: impl Into<String>,
-        url: impl Into<String>,
-    ) -> Self {
+    pub fn new(bandwidth: u64, resolution: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             bandwidth,
             resolution: resolution.into(),
@@ -457,16 +454,17 @@ impl TranscodeJobRegistry {
     ) -> TranscodeJobHandle {
         let job_id = job_id.into();
         let handle = self.register(job_id.clone());
-        self.jobs
+        if let Some(entry) = self
+            .jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_mut(&job_id)
-            .map(|entry| {
-                entry.info.device_id = non_empty(device_id);
-                entry.info.play_session_id = non_empty(play_session_id);
-                entry.info.path = non_empty(path);
-                entry.info.is_hls = true;
-            });
+        {
+            entry.info.device_id = non_empty(device_id);
+            entry.info.play_session_id = non_empty(play_session_id);
+            entry.info.path = non_empty(path);
+            entry.info.is_hls = true;
+        }
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -481,14 +479,15 @@ impl TranscodeJobRegistry {
         if device_id.trim().is_empty() || play_session_id.trim().is_empty() {
             return;
         }
-        self.jobs
+        if let Some(entry) = self
+            .jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_mut(job_id)
-            .map(|entry| {
-                entry.info.device_id = Some(device_id.to_owned());
-                entry.info.play_session_id = Some(play_session_id.to_owned());
-            });
+        {
+            entry.info.device_id = Some(device_id.to_owned());
+            entry.info.play_session_id = Some(play_session_id.to_owned());
+        }
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -564,8 +563,7 @@ impl TranscodeJobRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .filter(|entry| {
-                entry.handle.running()
-                    && now.duration_since(entry.info.last_ping) > timeout
+                entry.handle.running() && now.duration_since(entry.info.last_ping) > timeout
             })
             .map(|entry| entry.info.id.clone())
             .collect::<Vec<_>>();
@@ -644,7 +642,11 @@ pub fn hls_job_id(
     digest.update(target.max_height.unwrap_or_default().to_le_bytes());
     digest.update(target.hwaccel.as_deref().unwrap_or_default().as_bytes());
     digest.update(target.subtitle_index.unwrap_or_default().to_le_bytes());
-    digest.update([target.burn_subtitles as u8, target.audio_normalize as u8, target.tonemap_hdr as u8]);
+    digest.update([
+        u8::from(target.burn_subtitles),
+        u8::from(target.audio_normalize),
+        u8::from(target.tonemap_hdr),
+    ]);
     digest.update(settings.segment_length_ms.to_le_bytes());
     digest.update(settings.container.as_bytes());
     let bytes = digest.finalize();
@@ -705,11 +707,7 @@ pub fn build_main_playlist(
 /// Creates a single-variant master playlist for compatibility callers.
 #[must_use]
 pub fn build_master_playlist(main_url: &str) -> String {
-    build_variant_master_playlist(&[HlsVariant::new(
-        8_000_000,
-        "1920x1080",
-        main_url,
-    )])
+    build_variant_master_playlist(&[HlsVariant::new(8_000_000, "1920x1080", main_url)])
 }
 
 /// Creates an HLS master playlist advertising one or more renditions.

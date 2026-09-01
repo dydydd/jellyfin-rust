@@ -723,9 +723,7 @@ fn refresh_local<C: ItemImageProviderCapability + ?Sized>(
         }
 
         let replacing = refresh_options.is_replacing(image_type);
-        if item.has_image(image_type)
-            && (!replacing || downloaded_images.contains(&image_type))
-        {
+        if item.has_image(image_type) && (!replacing || downloaded_images.contains(&image_type)) {
             continue;
         }
 

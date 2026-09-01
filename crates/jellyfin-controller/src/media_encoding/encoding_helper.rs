@@ -325,9 +325,8 @@ impl EncodingHelper {
     #[must_use]
     pub fn infer_audio_codec(&self, container: &str) -> String {
         match container.trim().to_ascii_lowercase().as_str() {
-            "" => "aac".to_owned(),
             "ogg" | "oga" | "ogv" | "webm" | "webma" => "opus".to_owned(),
-            "m4a" | "m4b" | "mp4" | "mov" | "mkv" | "mka" => "aac".to_owned(),
+            "" | "m4a" | "m4b" | "mp4" | "mov" | "mkv" | "mka" => "aac".to_owned(),
             "ts" | "avi" | "flv" | "f4v" | "swf" => "mp3".to_owned(),
             value => value.to_owned(),
         }
@@ -402,8 +401,6 @@ impl EncodingHelper {
             Some("-bsf:v h264_mp4toannexb".to_owned())
         } else if codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265") {
             Some("-bsf:v hevc_mp4toannexb".to_owned())
-        } else if codec.eq_ignore_ascii_case("av1") {
-            None
         } else {
             None
         }

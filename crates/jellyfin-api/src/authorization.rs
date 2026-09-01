@@ -251,6 +251,7 @@ async fn require_elevated_with_remote(
 }
 
 #[allow(clippy::match_same_arms)]
+#[allow(clippy::too_many_lines)]
 fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     let segments = path
         .split('/')

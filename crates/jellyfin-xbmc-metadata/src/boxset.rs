@@ -5,9 +5,7 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use jellyfin_model::ProviderIdMap;
 use roxmltree::{Document, Node};
 
-use crate::movie::{
-    NfoImage, NfoLocalImage, NfoParseError,
-};
+use crate::movie::{NfoImage, NfoLocalImage, NfoParseError};
 
 /// Reference to an item inside a collection or playlist.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

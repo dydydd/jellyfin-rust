@@ -6,6 +6,6 @@ pub mod lyrics;
 pub mod manager;
 pub mod media_info;
 pub mod omdb;
+pub mod photo;
 pub mod tmdb;
 pub mod tv;
-pub mod photo;

@@ -1,4 +1,3 @@
-use std::path::Path;
 use jellyfin_xbmc_metadata::{
     boxset::parse_box_set_xml,
     location::{
@@ -9,6 +8,7 @@ use jellyfin_xbmc_metadata::{
     movie::parse_movie_nfo,
     playlist::parse_playlist_xml,
 };
+use std::path::Path;
 
 #[test]
 fn parses_boxset_xml_with_collection_items_and_metadata() {
@@ -48,7 +48,10 @@ fn parses_boxset_xml_with_collection_items_and_metadata() {
     assert_eq!(boxset.studios, vec!["Marvel Studios"]);
     assert!(boxset.tags.contains(&"Superhero".to_owned()));
     assert!(boxset.tags.contains(&"Comic Book".to_owned()));
-    assert_eq!(boxset.provider_ids.get("Tmdb").map(String::as_str), Some("86311"));
+    assert_eq!(
+        boxset.provider_ids.get("Tmdb").map(String::as_str),
+        Some("86311")
+    );
     assert_eq!(boxset.collection_items.len(), 2);
     assert_eq!(
         boxset.collection_items[0].path.as_deref(),
@@ -88,7 +91,10 @@ fn parses_playlist_xml_with_items_and_shares() {
 
     let playlist = parse_playlist_xml(xml).expect("parse playlist xml");
     assert_eq!(playlist.name.as_deref(), Some("Road Trip Hits"));
-    assert_eq!(playlist.overview.as_deref(), Some("Best tracks for driving"));
+    assert_eq!(
+        playlist.overview.as_deref(),
+        Some("Best tracks for driving")
+    );
     assert_eq!(playlist.playlist_media_type.as_deref(), Some("Audio"));
     assert_eq!(playlist.playlist_items.len(), 1);
     assert_eq!(
@@ -126,19 +132,37 @@ fn parses_movie_nfo_sortname_tags_displayorder_and_dynamic_provider_ids() {
     assert_eq!(movie.display_order.as_deref(), Some("Original"));
     assert!(movie.tags.contains(&"Mind-Bending".to_owned()));
     assert!(movie.tags.contains(&"Neo-Noir".to_owned()));
-    assert_eq!(movie.provider_ids.get("AniDB").map(String::as_str), Some("12345"));
-    assert_eq!(movie.provider_ids.get("Tvmaze").map(String::as_str), Some("67890"));
-    assert_eq!(movie.provider_ids.get("Zap2It").map(String::as_str), Some("SH010101"));
-    assert_eq!(movie.provider_ids.get("Customprovider").map(String::as_str), Some("CUSTOM999"));
+    assert_eq!(
+        movie.provider_ids.get("AniDB").map(String::as_str),
+        Some("12345")
+    );
+    assert_eq!(
+        movie.provider_ids.get("Tvmaze").map(String::as_str),
+        Some("67890")
+    );
+    assert_eq!(
+        movie.provider_ids.get("Zap2It").map(String::as_str),
+        Some("SH010101")
+    );
+    assert_eq!(
+        movie.provider_ids.get("Customprovider").map(String::as_str),
+        Some("CUSTOM999")
+    );
 }
 
 #[test]
 fn verifies_nfo_save_paths_for_all_item_types() {
     let ep = Path::new("/tv/Show/Season 1/Show - S01E01.mkv");
-    assert_eq!(episode_nfo_save_paths(ep), vec![Path::new("/tv/Show/Season 1/Show - S01E01.nfo")]);
+    assert_eq!(
+        episode_nfo_save_paths(ep),
+        vec![Path::new("/tv/Show/Season 1/Show - S01E01.nfo")]
+    );
 
     let series = Path::new("/tv/Show");
-    assert_eq!(series_nfo_save_paths(series), vec![Path::new("/tv/Show/tvshow.nfo")]);
+    assert_eq!(
+        series_nfo_save_paths(series),
+        vec![Path::new("/tv/Show/tvshow.nfo")]
+    );
 
     let season = Path::new("/tv/Show/Season 01");
     let season_paths = season_nfo_save_paths(season, Some(1));
@@ -146,10 +170,16 @@ fn verifies_nfo_save_paths_for_all_item_types() {
     assert!(season_paths.contains(&Path::new("/tv/Show/Season 01/season01.nfo").to_path_buf()));
 
     let artist = Path::new("/music/Artist");
-    assert_eq!(artist_nfo_save_paths(artist), vec![Path::new("/music/Artist/artist.nfo")]);
+    assert_eq!(
+        artist_nfo_save_paths(artist),
+        vec![Path::new("/music/Artist/artist.nfo")]
+    );
 
     let album = Path::new("/music/Artist/Album");
-    assert_eq!(album_nfo_save_paths(album), vec![Path::new("/music/Artist/Album/album.nfo")]);
+    assert_eq!(
+        album_nfo_save_paths(album),
+        vec![Path::new("/music/Artist/Album/album.nfo")]
+    );
 
     let boxset = Path::new("/collections/MCU");
     assert_eq!(
@@ -161,5 +191,8 @@ fn verifies_nfo_save_paths_for_all_item_types() {
     );
 
     let playlist = Path::new("/playlists/Party");
-    assert_eq!(playlist_nfo_save_paths(playlist), vec![Path::new("/playlists/Party/playlist.xml")]);
+    assert_eq!(
+        playlist_nfo_save_paths(playlist),
+        vec![Path::new("/playlists/Party/playlist.xml")]
+    );
 }

@@ -31,7 +31,11 @@ async fn prefixed_unknown_api_routes_fail_closed() {
     let app = app();
 
     for uri in ["/api/not-a-route", "/emby/not-a-route", "/api/System/Logs"] {
-        assert_eq!(get(&app, uri).await.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        assert_eq!(
+            get(&app, uri).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{uri}"
+        );
     }
 }
 
@@ -45,7 +49,11 @@ fn app() -> Router {
 
 async fn get(app: &Router, uri: &str) -> axum::response::Response {
     app.clone()
-        .oneshot(Request::get(uri).body(Body::empty()).expect("valid request"))
+        .oneshot(
+            Request::get(uri)
+                .body(Body::empty())
+                .expect("valid request"),
+        )
         .await
         .expect("router must respond")
 }

@@ -90,15 +90,15 @@ impl AudioBookFilePathParser {
                     .name("chapter")
                     .and_then(|value| value.as_str().parse().ok());
             }
-            if result.part_number.is_none() {
-                if let Some(part) = captures.name("part") {
-                    // C# excludes a trailing number preceded by "chapter " or
-                    // "ch " with `(?<!ch(?:apter) )`; fancy-regex's lookbehind
-                    // is unreliable here, so keep the equivalent fixed-width check.
-                    let prefix = stem[..part.start()].to_ascii_lowercase();
-                    if !(prefix.ends_with("chapter ") || prefix.ends_with("ch ")) {
-                        result.part_number = part.as_str().parse().ok();
-                    }
+            if result.part_number.is_none()
+                && let Some(part) = captures.name("part")
+            {
+                // C# excludes a trailing number preceded by "chapter " or
+                // "ch " with `(?<!ch(?:apter) )`; fancy-regex's lookbehind
+                // is unreliable here, so keep the equivalent fixed-width check.
+                let prefix = stem[..part.start()].to_ascii_lowercase();
+                if !(prefix.ends_with("chapter ") || prefix.ends_with("ch ")) {
+                    result.part_number = part.as_str().parse().ok();
                 }
             }
         }

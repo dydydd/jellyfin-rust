@@ -450,7 +450,7 @@ mod tests {
                 original: Some("https://example.test/original.jpg".to_owned()),
             }),
             externals: TvMazeExternals {
-                thetvdb: Some(121361),
+                thetvdb: Some(121_361),
                 imdb: Some("tt0944947".to_owned()),
                 tvrage: Some(24493),
             },

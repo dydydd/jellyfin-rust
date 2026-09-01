@@ -924,7 +924,10 @@ impl StartupMigrationRunner {
     ///
     /// Returns `DbErr` when the migration bookkeeping table cannot be created
     /// or a routine's SQL fails.
-    pub async fn run(manager: &SchemaManager<'_>, is_new_setup: bool) -> Result<Vec<String>, DbErr> {
+    pub async fn run(
+        manager: &SchemaManager<'_>,
+        is_new_setup: bool,
+    ) -> Result<Vec<String>, DbErr> {
         let connection = manager.get_connection();
 
         connection
@@ -977,7 +980,10 @@ impl StartupMigrationRunner {
         Ok(applied_now)
     }
 
-    async fn mark_applied(connection: &impl ConnectionTrait, routine_id: &str) -> Result<(), DbErr> {
+    async fn mark_applied(
+        connection: &impl ConnectionTrait,
+        routine_id: &str,
+    ) -> Result<(), DbErr> {
         connection
             .execute(Statement::from_sql_and_values(
                 DbBackend::Postgres,

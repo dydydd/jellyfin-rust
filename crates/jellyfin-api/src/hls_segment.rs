@@ -293,6 +293,7 @@ fn master_variants(query: &TranscodeQuery, main_url: &str) -> Vec<HlsVariant> {
             ];
         }
     };
+    #[allow(clippy::cast_sign_loss)]
     let bandwidth = query
         .video_bitrate
         .map_or(8_000_000, |bitrate| bitrate.max(1)) as u64;
@@ -405,11 +406,9 @@ async fn start_hls_job(
         &settings,
     );
     let job = match (query.device_id.as_deref(), query.play_session_id.as_deref()) {
-        (Some(device_id), Some(play_session_id)) => {
-            state
-                .transcode_jobs
-                .register_for_session_with_path(job_id, device_id, play_session_id, &input)
-        }
+        (Some(device_id), Some(play_session_id)) => state
+            .transcode_jobs
+            .register_for_session_with_path(job_id, device_id, play_session_id, &input),
         _ => state.transcode_jobs.register(job_id),
     };
     let jobs = state.transcode_jobs.clone();

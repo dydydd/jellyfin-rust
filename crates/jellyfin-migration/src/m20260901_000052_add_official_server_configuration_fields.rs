@@ -5,6 +5,7 @@ pub struct Migration;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
+    #[allow(clippy::needless_raw_string_hashes)]
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
             .get_connection()
@@ -44,6 +45,7 @@ impl MigrationTrait for Migration {
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        #[allow(clippy::needless_raw_string_hashes)]
         manager
             .get_connection()
             .execute_unprepared(

@@ -16,6 +16,7 @@ pub struct StartupConfigurationUpdate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ServerConfigurationUpdate {
     pub server_name: String,
     pub ui_culture: String,
@@ -442,6 +443,7 @@ impl ServerConfigurationRepository {
     /// # Errors
     ///
     /// Returns a missing-singleton or database error.
+    #[allow(clippy::too_many_lines)]
     pub async fn update_server_configuration(
         &self,
         update: ServerConfigurationUpdate,

@@ -25,7 +25,5 @@ pub use nfo::{
     MetadataNfoError, NfoDocumentKind, NfoFetchError, NfoMetadata, SeriesStatus, fetch_nfo_file,
     parse_nfo,
 };
-pub use playlist::{
-    PlaylistNfo, PlaylistShare, parse_playlist_xml, parse_playlist_xml_file,
-};
+pub use playlist::{PlaylistNfo, PlaylistShare, parse_playlist_xml, parse_playlist_xml_file};
 pub use writer::{NfoSaveKind, movie_nfo_xml, nfo_save_path, nfo_xml, save_movie_nfo, save_nfo};

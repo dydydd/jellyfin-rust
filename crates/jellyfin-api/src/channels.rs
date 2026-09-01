@@ -206,8 +206,7 @@ pub(crate) async fn channel_items(
     let parent_id = query.folder_id.unwrap_or(channel_id);
     if parent_id != channel_id {
         let folder = repository.get(parent_id).await?.ok_or(ApiError::NotFound)?;
-        if !folder.is_folder
-            || !is_descendant_of_channel(&repository, folder.id, channel_id).await?
+        if !folder.is_folder || !is_descendant_of_channel(repository, folder.id, channel_id).await?
         {
             return Err(ApiError::NotFound);
         }
@@ -250,7 +249,7 @@ pub(crate) async fn latest_channel_items(
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let repository = &state.base_items;
-    let item_ids = channel_descendant_item_ids(&repository, &query.channel_ids).await?;
+    let item_ids = channel_descendant_item_ids(repository, &query.channel_ids).await?;
     let ids = if item_ids.is_empty() {
         vec![Uuid::nil()]
     } else {

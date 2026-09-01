@@ -40,10 +40,7 @@ pub fn series_nfo_save_paths(series_path: &Path) -> Vec<PathBuf> {
 
 /// Returns the NFO paths for a season.
 #[must_use]
-pub fn season_nfo_save_paths(
-    season_path: &Path,
-    season_number: Option<i32>,
-) -> Vec<PathBuf> {
+pub fn season_nfo_save_paths(season_path: &Path, season_number: Option<i32>) -> Vec<PathBuf> {
     let mut paths = vec![season_path.join("season.nfo")];
     if let Some(num) = season_number {
         if num == 0 {
@@ -87,7 +84,10 @@ pub fn resolve_nfo_file<F>(candidates: &[PathBuf], mut file_exists: F) -> Option
 where
     F: FnMut(&Path) -> bool,
 {
-    candidates.iter().find(|p| file_exists(p.as_path())).cloned()
+    candidates
+        .iter()
+        .find(|p| file_exists(p.as_path()))
+        .cloned()
 }
 
 fn file_movie_paths(path: &str, separator: char, mixed: bool) -> Vec<PathBuf> {

@@ -574,7 +574,10 @@ fn refresh_images_local_provider_does_not_overwrite_existing_images() {
     let mut item = item_with_images(ImageType::Primary, 1, false);
     let existing = item.images_of(ImageType::Primary).remove(0).path.clone();
     let mut capability = FixtureCapability {
-        local_images: vec![LocalImageInfo::new("/media/local/poster.jpg", ImageType::Primary)],
+        local_images: vec![LocalImageInfo::new(
+            "/media/local/poster.jpg",
+            ImageType::Primary,
+        )],
         ..FixtureCapability::default()
     };
 
@@ -595,7 +598,10 @@ fn refresh_images_local_provider_does_not_overwrite_existing_images() {
 fn refresh_images_local_provider_skips_disabled_image_types() {
     let mut item = ImageItem::default();
     let mut capability = FixtureCapability {
-        local_images: vec![LocalImageInfo::new("/media/local/logo.png", ImageType::Logo)],
+        local_images: vec![LocalImageInfo::new(
+            "/media/local/logo.png",
+            ImageType::Logo,
+        )],
         ..FixtureCapability::default()
     };
 

@@ -549,9 +549,10 @@ fn apply_hdr10_plus_flags(streams: &mut [MediaStream], frames: Option<&Value>) {
         .iter_mut()
         .filter(|stream| stream.stream_type == MediaStreamType::Video)
     {
-        let frame = frames.iter().filter_map(Value::as_object).find(|frame| {
-            int32(frame, "stream_index") == Some(stream.index)
-        });
+        let frame = frames
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|frame| int32(frame, "stream_index") == Some(stream.index));
         let has_hdr10_plus = frame
             .and_then(|frame| frame.get("side_data_list"))
             .and_then(Value::as_array)

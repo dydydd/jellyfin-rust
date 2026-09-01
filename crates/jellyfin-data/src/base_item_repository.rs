@@ -177,6 +177,7 @@ impl BaseItemOrder {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BaseItemQuery {
     pub ids: Vec<Uuid>,
     pub exclude_ids: Vec<Uuid>,
@@ -2413,6 +2414,7 @@ fn date_played_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Ve
     (sql, values)
 }
 
+#[allow(clippy::too_many_lines, clippy::if_not_else)]
 fn extended_sort_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = Vec::new();
     let uses_item_value_sort = matches!(
@@ -3541,11 +3543,12 @@ fn stream_match_condition(alias: &str, stream_type: i16, languages: Option<&[Str
             .iter()
             .any(|language| language.eq_ignore_ascii_case("und"));
         if has_und {
-            condition.push_str(&format!(
+            let _ = write!(
+                condition,
                 " AND (stream.language IN ({values}) OR stream.language IS NULL)"
-            ));
+            );
         } else {
-            condition.push_str(&format!(" AND stream.language IN ({values})"));
+            let _ = write!(condition, " AND stream.language IN ({values})");
         }
     }
     condition.push(')');
