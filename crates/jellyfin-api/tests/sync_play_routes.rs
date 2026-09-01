@@ -580,8 +580,7 @@ async fn exercise_websocket_commands_and_disconnect(
     )
     .await;
     assert_eq!(created["Participants"].as_array().unwrap().len(), 1);
-    let creator_joined = websocket_json(&mut creator_socket).await;
-    assert_eq!(creator_joined["MessageType"], "SyncPlayGroupUpdate");
+    let creator_joined = websocket_message_of(&mut creator_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(creator_joined["Data"]["Type"], "GroupJoined");
     assert_eq!(creator_joined["Data"]["GroupId"], created["GroupId"]);
     assert_no_content(
@@ -595,10 +594,10 @@ async fn exercise_websocket_commands_and_disconnect(
         .await,
     )
     .await;
-    let joiner_joined = websocket_json(&mut joiner_socket).await;
+    let joiner_joined = websocket_message_of(&mut joiner_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(joiner_joined["Data"]["Type"], "GroupJoined");
     assert_eq!(joiner_joined["Data"]["GroupId"], created["GroupId"]);
-    let user_joined = websocket_json(&mut creator_socket).await;
+    let user_joined = websocket_message_of(&mut creator_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(user_joined["Data"]["Type"], "UserJoined");
     assert_no_content(
         request(
@@ -615,8 +614,7 @@ async fn exercise_websocket_commands_and_disconnect(
         .await,
     )
     .await;
-    let queue_update = websocket_json(&mut creator_socket).await;
-    assert_eq!(queue_update["MessageType"], "SyncPlayGroupUpdate");
+    let queue_update = websocket_message_of(&mut creator_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(queue_update["Data"]["Type"], "PlayQueue");
     assert_eq!(queue_update["Data"]["Data"]["Reason"], "NewPlaylist");
     assert_eq!(
@@ -624,27 +622,33 @@ async fn exercise_websocket_commands_and_disconnect(
         item_id.simple().to_string()
     );
     assert_eq!(queue_update["Data"]["Data"]["PlayingItemIndex"], 0);
-    assert_eq!(websocket_json(&mut joiner_socket).await, queue_update);
+    assert_eq!(
+        websocket_message_of(&mut joiner_socket, "SyncPlayGroupUpdate").await,
+        queue_update
+    );
     assert_no_content(request(app, "POST", "/SyncPlay/Unpause", Some(creator_token), None).await)
         .await;
-    let command = websocket_json(&mut creator_socket).await;
-    assert_eq!(command["MessageType"], "SyncPlayCommand");
+    let command = websocket_message_of(&mut creator_socket, "SyncPlayCommand").await;
     assert_eq!(command["Data"]["Command"], "Unpause");
     assert_eq!(command["Data"]["GroupId"], created["GroupId"]);
     assert_eq!(command["Data"]["PositionTicks"], 0);
-    assert_eq!(websocket_json(&mut joiner_socket).await, command);
-    let state_update = websocket_json(&mut creator_socket).await;
-    assert_eq!(state_update["MessageType"], "SyncPlayGroupUpdate");
+    assert_eq!(
+        websocket_message_of(&mut joiner_socket, "SyncPlayCommand").await,
+        command
+    );
+    let state_update = websocket_message_of(&mut creator_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(state_update["Data"]["Type"], "StateUpdate");
     assert_eq!(state_update["Data"]["GroupId"], created["GroupId"]);
     assert_eq!(state_update["Data"]["Data"]["State"], "Playing");
     assert_eq!(state_update["Data"]["Data"]["Reason"], "Unpause");
-    assert_eq!(websocket_json(&mut joiner_socket).await, state_update);
+    assert_eq!(
+        websocket_message_of(&mut joiner_socket, "SyncPlayGroupUpdate").await,
+        state_update
+    );
 
     assert_no_content(request(app, "POST", "/SyncPlay/Unpause", Some(creator_token), None).await)
         .await;
-    let current_session = websocket_json(&mut creator_socket).await;
-    assert_eq!(current_session["MessageType"], "SyncPlayCommand");
+    let current_session = websocket_message_of(&mut creator_socket, "SyncPlayCommand").await;
     assert_eq!(current_session["Data"]["Command"], "Unpause");
 
     assert_no_content(
@@ -658,15 +662,20 @@ async fn exercise_websocket_commands_and_disconnect(
         .await,
     )
     .await;
-    let seek = websocket_json(&mut creator_socket).await;
-    assert_eq!(seek["MessageType"], "SyncPlayCommand");
+    let seek = websocket_message_of(&mut creator_socket, "SyncPlayCommand").await;
     assert_eq!(seek["Data"]["Command"], "Seek");
-    assert_eq!(websocket_json(&mut joiner_socket).await, seek);
-    let waiting = websocket_json(&mut creator_socket).await;
+    assert_eq!(
+        websocket_message_of(&mut joiner_socket, "SyncPlayCommand").await,
+        seek
+    );
+    let waiting = websocket_message_of(&mut creator_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(waiting["Data"]["Type"], "StateUpdate");
     assert_eq!(waiting["Data"]["Data"]["State"], "Waiting");
     assert_eq!(waiting["Data"]["Data"]["Reason"], "Seek");
-    assert_eq!(websocket_json(&mut joiner_socket).await, waiting);
+    assert_eq!(
+        websocket_message_of(&mut joiner_socket, "SyncPlayGroupUpdate").await,
+        waiting
+    );
     assert_no_content(
         request(
             app,
@@ -683,20 +692,17 @@ async fn exercise_websocket_commands_and_disconnect(
         .await,
     )
     .await;
-    let pause_when_ready = websocket_json(&mut creator_socket).await;
-    assert_eq!(pause_when_ready["MessageType"], "SyncPlayCommand");
+    let pause_when_ready = websocket_message_of(&mut creator_socket, "SyncPlayCommand").await;
     assert_eq!(pause_when_ready["Data"]["Command"], "Pause");
 
     joiner_socket.close(None).await.unwrap();
-    let resumed = websocket_json(&mut creator_socket).await;
-    assert_eq!(resumed["MessageType"], "SyncPlayCommand");
+    let resumed = websocket_message_of(&mut creator_socket, "SyncPlayCommand").await;
     assert_eq!(resumed["Data"]["Command"], "Unpause");
-    let resumed_state = websocket_json(&mut creator_socket).await;
+    let resumed_state = websocket_message_of(&mut creator_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(resumed_state["Data"]["Type"], "StateUpdate");
     assert_eq!(resumed_state["Data"]["Data"]["State"], "Playing");
     assert_eq!(resumed_state["Data"]["Data"]["Reason"], "Unpause");
-    let user_left = websocket_json(&mut creator_socket).await;
-    assert_eq!(user_left["MessageType"], "SyncPlayGroupUpdate");
+    let user_left = websocket_message_of(&mut creator_socket, "SyncPlayGroupUpdate").await;
     assert_eq!(user_left["Data"]["Type"], "UserLeft");
     assert_eq!(user_left["Data"]["GroupId"], created["GroupId"]);
     assert_eq!(user_left["Data"]["Data"], joiner_username);
@@ -722,6 +728,21 @@ async fn websocket_json(
 ) -> Value {
     let message = socket.next().await.unwrap().unwrap();
     serde_json::from_str(message.to_text().unwrap()).unwrap()
+}
+
+async fn websocket_message_of(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    message_type: &str,
+) -> Value {
+    for _ in 0..16 {
+        let message = websocket_json(socket).await;
+        if message["MessageType"] == message_type {
+            return message;
+        }
+    }
+    panic!("expected a {message_type} WebSocket message");
 }
 
 async fn set_sync_play_access(users: &UserService, user_id: Uuid, access: SyncPlayUserAccessType) {

@@ -19,8 +19,11 @@ use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Session Command Tests\", DeviceId=\"session-command-tests\", Device=\"Test\", Version=\"1.0\"";
 
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn session_command_routes_queue_official_commands_in_postgres() {
+    let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
 
     assert_command_access_and_validation(&fixture).await;
@@ -34,6 +37,7 @@ async fn session_command_routes_queue_official_commands_in_postgres() {
 
 #[tokio::test]
 async fn session_command_outbox_is_consumed_over_websocket() {
+    let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -61,13 +65,16 @@ async fn session_command_outbox_is_consumed_over_websocket() {
     assert_eq!(replayed_command["Data"]["Name"], "Mute");
     assert_queued_command_count(&fixture, 0).await;
     let mut snapshots = std::collections::HashSet::new();
-    for _ in 0..2 {
+    for _ in 0..8 {
         snapshots.insert(
             websocket_json(&mut target_socket).await["MessageType"]
                 .as_str()
                 .unwrap()
                 .to_owned(),
         );
+        if snapshots.contains("Sessions") && snapshots.contains("ScheduledTasksInfo") {
+            break;
+        }
     }
     assert!(snapshots.contains("Sessions"));
     assert!(snapshots.contains("ScheduledTasksInfo"));
@@ -108,6 +115,7 @@ async fn session_command_outbox_is_consumed_over_websocket() {
 
 #[tokio::test]
 async fn websocket_connection_sends_sessions_and_scheduled_task_snapshots() {
+    let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

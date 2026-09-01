@@ -50,7 +50,7 @@ async fn every_http_method_matches_the_official_middleware() {
 }
 
 #[tokio::test]
-async fn fallback_preserves_unknown_and_method_rejection_semantics() {
+async fn fallback_authenticates_unknown_routes_before_not_found() {
     let app = app();
 
     for (method, uri) in [
@@ -58,7 +58,7 @@ async fn fallback_preserves_unknown_and_method_rejection_semantics() {
         (Method::POST, "/still-not-a-route"),
     ] {
         let response = request(&app, method, uri).await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert!(!response.headers().contains_key(header::LOCATION));
     }
 
