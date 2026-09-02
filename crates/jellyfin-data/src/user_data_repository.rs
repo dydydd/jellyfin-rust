@@ -1093,6 +1093,24 @@ impl UserDataRepository {
             .await?)
     }
 
+    /// Removes detached user data retained longer than the official window.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when deletion fails.
+    pub async fn delete_detached_before(
+        &self,
+        item_id: Uuid,
+        cutoff: DateTime<Utc>,
+    ) -> Result<u64, UserDataError> {
+        let result = user_data::Entity::delete_many()
+            .filter(user_data::Column::ItemId.eq(item_id))
+            .filter(user_data::Column::RetentionDate.lt(cutoff))
+            .exec(&self.database)
+            .await?;
+        Ok(result.rows_affected)
+    }
+
     /// Loads one exact `(item, user, key)` row.
     ///
     /// # Errors

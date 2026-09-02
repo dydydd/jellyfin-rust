@@ -1620,6 +1620,7 @@ dependencies = [
  "jellyfin-data",
  "jellyfin-drawing",
  "jellyfin-extensions",
+ "jellyfin-live-tv",
  "jellyfin-media-encoding",
  "jellyfin-media-encoding-hls",
  "jellyfin-media-encoding-keyframes",

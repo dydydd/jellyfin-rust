@@ -30,10 +30,10 @@ use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, BaseItemImageRepository, BaseItemRepository, DeviceOptionsRepository,
     DeviceRepository, DisplayPreferenceRepository, DisplayPreferenceStoreError,
-    ItemUpdateStoreError, ItemValueRepository, NamedConfigurationRepository,
-    NamedConfigurationStoreError, PersonRepository, QuickConnectRepository,
-    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
-    SessionCommandStoreError, entities::user,
+    ItemUpdateStoreError, ItemValueRepository, KeyframeDataRepository,
+    NamedConfigurationRepository, NamedConfigurationStoreError, PersonRepository,
+    QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
+    SessionCommandRepository, SessionCommandStoreError, UserDataRepository, entities::user,
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
 use jellyfin_live_tv::{
@@ -151,6 +151,7 @@ pub struct AppState {
     pub(crate) item_images: ItemImageService,
     pub(crate) metadata_refresh: MetadataRefreshService,
     pub(crate) base_items: BaseItemRepository,
+    pub(crate) keyframes: KeyframeDataRepository,
     pub(crate) item_values: ItemValueRepository,
     pub(crate) people: PersonRepository,
     pub(crate) base_item_images: BaseItemImageRepository,
@@ -212,10 +213,15 @@ impl AppState {
     pub fn new(database: DatabaseConnection, server_name: String, local_address: String) -> Self {
         let library_scan = LibraryScanService::new(database.clone());
         let scheduled_tasks = ScheduledTaskService::with_default_executors(library_scan.clone());
+        let trickplay = TrickplayService::new(
+            database.clone(),
+            PathBuf::from("programdata").join("trickplay"),
+        );
         let item_images = ItemImageService::new(database.clone());
         let metadata_refresh =
             MetadataRefreshService::new(database.clone(), Some(item_images.clone()));
         let base_items = BaseItemRepository::new(database.clone());
+        let keyframes = KeyframeDataRepository::new(database.clone());
         let item_values = ItemValueRepository::new(database.clone());
         let people = PersonRepository::new(database.clone());
         let base_item_images = BaseItemImageRepository::new(database.clone());
@@ -261,6 +267,7 @@ impl AppState {
             item_images,
             metadata_refresh,
             base_items,
+            keyframes,
             item_values,
             people,
             base_item_images,
@@ -293,10 +300,7 @@ impl AppState {
             library_scan,
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
-            trickplay: TrickplayService::new(
-                database.clone(),
-                PathBuf::from("programdata").join("trickplay"),
-            ),
+            trickplay,
             client_event_logger: ClientEventLogger::new("logs"),
             named_configurations: if matches!(database, DatabaseConnection::Disconnected) {
                 None
@@ -346,6 +350,15 @@ impl AppState {
             });
         }));
         state.scheduled_tasks.start_scheduler();
+        state.scheduled_tasks.with_maintenance_executors(
+            state.database.clone(),
+            state.activity_logs.clone(),
+            state.people.clone(),
+            UserDataRepository::new(state.database.clone()),
+            state.keyframes.clone(),
+            state.trickplay.clone(),
+            state.live_tv_guide.clone(),
+        );
         let transcode_jobs = state.transcode_jobs.clone();
         let transcode_directory = state.transcode_directory.clone();
         tokio::spawn(async move {
@@ -373,6 +386,13 @@ impl AppState {
             .expect("startup state is uniquely owned during construction")
             .get_mut()
             .user_id = Some(user_id);
+        self
+    }
+
+    /// Replaces the activity-log retention window used by maintenance tasks.
+    #[must_use]
+    pub fn with_activity_log_retention_days(self, days: i32) -> Self {
+        self.scheduled_tasks.set_activity_log_retention_days(days);
         self
     }
 
@@ -500,6 +520,7 @@ impl AppState {
         self.client_event_logger = ClientEventLogger::new(log_directory);
         self.scheduled_tasks
             .set_log_directory(self.system_logs.directory());
+        self.scheduled_tasks.set_activity_log_retention_days(30);
         self
     }
 
@@ -563,6 +584,8 @@ impl AppState {
         self.transcode_directory = transcode_directory.into();
         self.scheduled_tasks
             .set_transcode_directory(self.transcode_directory.as_path());
+        self.scheduled_tasks
+            .set_trickplay_directory(self.program_data_directory.join("trickplay"));
         self
     }
 

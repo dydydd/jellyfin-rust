@@ -78,6 +78,11 @@ async fn main() -> anyhow::Result<()> {
     .with_omdb_api_key(omdb_api_key)
     .with_quick_connect_available(persisted_configuration.quick_connect_available)
     .with_startup_user(initial_user.id)
+    .with_activity_log_retention_days(
+        persisted_configuration
+            .activity_log_retention_days
+            .unwrap_or(30),
+    )
     .with_ffmpeg_path(ffmpeg_path)
     .with_encoder_capabilities(encoder_capabilities)
     .with_system_commands(|command| {

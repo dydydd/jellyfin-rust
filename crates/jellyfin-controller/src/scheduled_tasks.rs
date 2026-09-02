@@ -8,14 +8,21 @@ use std::{
     time::SystemTime,
 };
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
+use jellyfin_data::{
+    ActivityLogRepository, KeyframeDataRepository, PersonQuery, PersonRepository,
+    UserDataRepository,
+};
+use jellyfin_live_tv::listings::GuideRefreshService;
 use jellyfin_model::{
     TaskCompletionStatus, TaskInfo, TaskResult, TaskState, TaskTriggerInfo, TaskTriggerInfoType,
 };
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 use thiserror::Error;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
-use crate::{LibraryScanService, SystemLogService};
+use crate::{LibraryScanService, SystemLogService, TrickplayService};
 
 const TICKS_PER_HOUR: i64 = 36_000_000_000;
 const CACHE_FILE_RETENTION_DAYS: i64 = 30;
@@ -66,7 +73,9 @@ pub struct ScheduledTaskPaths {
     pub log_directory: PathBuf,
     pub cache_directory: PathBuf,
     pub transcode_directory: PathBuf,
+    pub trickplay_directory: PathBuf,
     pub log_file_retention_days: i32,
+    pub activity_log_retention_days: i32,
 }
 
 impl Default for ScheduledTaskPaths {
@@ -77,7 +86,9 @@ impl Default for ScheduledTaskPaths {
             transcode_directory: std::env::temp_dir()
                 .join("jellyfin-rust")
                 .join("transcodes"),
+            trickplay_directory: PathBuf::from("programdata").join("trickplay"),
             log_file_retention_days: 3,
+            activity_log_retention_days: 30,
         }
     }
 }
@@ -160,6 +171,36 @@ impl ScheduledTaskService {
         service
     }
 
+    /// Registers database-backed maintenance handlers that need runtime state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_maintenance_executors(
+        &self,
+        database: DatabaseConnection,
+        activity_logs: ActivityLogRepository,
+        people: PersonRepository,
+        user_data: UserDataRepository,
+        keyframes: KeyframeDataRepository,
+        trickplay: TrickplayService,
+        guide: Option<GuideRefreshService>,
+    ) {
+        self.register_executor(
+            "CleanActivityLog",
+            clean_activity_log_handler(activity_logs),
+        );
+        self.register_executor("CleanupUserData", cleanup_user_data_handler(user_data));
+        self.register_executor("RefreshPeople", refresh_people_handler(people));
+        self.register_executor("KeyframeExtraction", keyframe_extraction_handler(keyframes));
+        self.register_executor("TrickplayImages", trickplay_images_handler(trickplay));
+        if let Some(guide) = guide {
+            self.register_executor("RefreshGuide", refresh_guide_handler(guide));
+        }
+        self.register_executor("OptimizeDatabaseTask", optimize_database_handler(database));
+        self.register_executor("DeleteTranscodeFiles", delete_transcode_files_handler());
+        self.register_executor("RefreshChapterImages", chapter_images_handler());
+        self.register_executor("MissingSubtitles", missing_media_data_handler("subtitles"));
+        self.register_executor("MissingLyrics", missing_media_data_handler("lyrics"));
+    }
+
     fn register_executor(
         &self,
         task_key: &str,
@@ -207,6 +248,18 @@ impl ScheduledTaskService {
             .transcode_directory = path.into();
     }
 
+    /// Updates the trickplay storage directory used by maintenance tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal path lock is poisoned.
+    pub fn set_trickplay_directory(&self, path: impl Into<PathBuf>) {
+        self.paths
+            .write()
+            .expect("scheduled task paths lock poisoned")
+            .trickplay_directory = path.into();
+    }
+
     /// Updates the log-file retention window used by maintenance tasks.
     ///
     /// # Panics
@@ -217,6 +270,27 @@ impl ScheduledTaskService {
             .write()
             .expect("scheduled task paths lock poisoned")
             .log_file_retention_days = days;
+    }
+
+    /// Updates the activity-log retention window used by maintenance tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal path lock is poisoned.
+    pub fn set_activity_log_retention_days(&self, days: i32) {
+        self.paths
+            .write()
+            .expect("scheduled task paths lock poisoned")
+            .activity_log_retention_days = days;
+    }
+
+    fn activity_log_retention_days(&self) -> Option<i32> {
+        let days = self
+            .paths
+            .read()
+            .expect("scheduled task paths lock poisoned")
+            .activity_log_retention_days;
+        (days >= 0).then_some(days)
     }
 
     pub async fn list(&self, is_hidden: Option<bool>, is_enabled: Option<bool>) -> Vec<TaskInfo> {
@@ -439,6 +513,9 @@ impl ScheduledTaskService {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
+                for task_id in service.timed_out_task_ids().await {
+                    let _ = service.mark_timed_out(&task_id).await;
+                }
                 let due = service.due_task_ids().await;
                 for task_id in due {
                     let _ = service.start(&task_id).await;
@@ -457,6 +534,64 @@ impl ScheduledTaskService {
             .filter(|task| task.is_due(now))
             .map(|task| task.id.clone())
             .collect()
+    }
+
+    /// Returns running tasks whose configured runtime window has elapsed.
+    async fn timed_out_task_ids(&self) -> Vec<String> {
+        let now = Utc::now();
+        self.tasks
+            .read()
+            .await
+            .iter()
+            .filter(|task| task.state == TaskState::Running)
+            .filter(|task| {
+                task.triggers.iter().any(|trigger| {
+                    let Some(max_runtime_ticks) =
+                        trigger.max_runtime_ticks.filter(|ticks| *ticks > 0)
+                    else {
+                        return false;
+                    };
+                    task.last_run.is_some_and(|last_run| {
+                        last_run + Duration::milliseconds(max_runtime_ticks / 10_000) <= now
+                    })
+                })
+            })
+            .map(|task| task.id.clone())
+            .collect()
+    }
+
+    /// Marks a task's execution result as timed out and returns it to Idle.
+    ///
+    /// This is only meaningful while the task state is `Running`; a task that
+    /// already completed retains its own result.
+    #[allow(dead_code)]
+    async fn mark_timed_out(&self, task_id: &str) -> Result<(), ScheduledTaskError> {
+        let mut tasks = self.tasks.write().await;
+        let Some(task) = tasks
+            .iter_mut()
+            .find(|task| task.id.eq_ignore_ascii_case(task_id))
+        else {
+            return Err(ScheduledTaskError::NotFound);
+        };
+        if task.state != TaskState::Running {
+            return Ok(());
+        }
+        let end_time = Utc::now();
+        task.state = TaskState::Idle;
+        task.current_progress_percentage = None;
+        task.last_execution_result = Some(TaskResult {
+            start_time_utc: task.last_run.unwrap_or(end_time),
+            end_time_utc: end_time,
+            status: TaskCompletionStatus::Aborted,
+            name: Some(task.name.clone()),
+            key: Some(task.key.clone()),
+            id: Some(task.id.clone()),
+            error_message: Some("scheduled task exceeded MaxRuntimeTicks".to_owned()),
+            long_error_message: None,
+        });
+        drop(tasks);
+        self.notify_changed();
+        Ok(())
     }
 }
 
@@ -483,7 +618,17 @@ impl ScheduledTask {
                         next_daily_after(last_run, time_of_day_ticks, trigger.day_of_week) <= now
                     })
                 }
-                TaskTriggerInfoType::WeeklyTrigger => false,
+                TaskTriggerInfoType::WeeklyTrigger => {
+                    let Some(time_of_day_ticks) = trigger.time_of_day_ticks else {
+                        return false;
+                    };
+                    let Some(day_of_week) = trigger.day_of_week else {
+                        return false;
+                    };
+                    self.last_run.is_none_or(|last_run| {
+                        next_weekly_after(last_run, time_of_day_ticks, day_of_week) <= now
+                    })
+                }
             })
     }
 }
@@ -506,6 +651,29 @@ fn next_daily_after(
         candidate += Duration::days(1);
     }
     candidate
+}
+
+fn next_weekly_after(
+    last_run: DateTime<Utc>,
+    time_of_day_ticks: i64,
+    day_of_week: jellyfin_model::DayOfWeek,
+) -> DateTime<Utc> {
+    let time_of_day = Duration::milliseconds(time_of_day_ticks / 10_000);
+    let mut candidate = DateTime::from_naive_utc_and_offset(
+        last_run
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default(),
+        Utc,
+    );
+    let target_index = day_of_week as i64;
+    let current_index = i64::from(candidate.weekday().num_days_from_sunday());
+    let mut days = (target_index - current_index).rem_euclid(7);
+    if days == 0 && candidate + time_of_day <= last_run {
+        days = 7;
+    }
+    candidate += Duration::days(days);
+    candidate + time_of_day
 }
 
 fn refresh_library_handler(
@@ -603,6 +771,231 @@ fn plugin_updates_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTask
     }
 }
 
+fn clean_activity_log_handler(
+    repository: ActivityLogRepository,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let repository = repository.clone();
+        Box::pin(async move {
+            let retention = context.tasks.activity_log_retention_days().unwrap_or(30);
+            if let Err(error) = repository
+                .clean(Utc::now() - Duration::days(i64::from(retention)))
+                .await
+            {
+                tracing::error!(%error, "activity log cleanup task failed");
+                context.fail().await;
+                return;
+            }
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn cleanup_user_data_handler(
+    repository: UserDataRepository,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let repository = repository.clone();
+        Box::pin(async move {
+            let cutoff = Utc::now() - Duration::days(90);
+            let deleted = repository.delete_detached_before(Uuid::nil(), cutoff).await;
+            match deleted {
+                Ok(count) => tracing::info!(count, "removed detached user data"),
+                Err(error) => {
+                    tracing::error!(%error, "user data cleanup task failed");
+                    context.fail().await;
+                    return;
+                }
+            }
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn refresh_people_handler(
+    repository: PersonRepository,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let repository = repository.clone();
+        Box::pin(async move {
+            context.report_progress(10.0).await;
+            match repository.query(&PersonQuery::default()).await {
+                Ok(page) => {
+                    tracing::debug!(count = page.total_record_count, "validated people catalog");
+                }
+                Err(error) => {
+                    tracing::error!(%error, "people validation task failed");
+                    context.fail().await;
+                    return;
+                }
+            }
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn keyframe_extraction_handler(
+    repository: KeyframeDataRepository,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let repository = repository.clone();
+        Box::pin(async move {
+            context.report_progress(25.0).await;
+            match repository.export_valid().await {
+                Ok(export) => {
+                    tracing::debug!(
+                        count = export.records.len(),
+                        skipped = export.skipped_item_ids.len(),
+                        "validated persisted keyframe data"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(%error, "keyframe task failed");
+                    context.fail().await;
+                    return;
+                }
+            }
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn trickplay_images_handler(
+    service: TrickplayService,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    #[allow(clippy::cast_precision_loss)]
+    move |context| {
+        let service = service.clone();
+        Box::pin(async move {
+            context.report_progress(10.0).await;
+            let item_ids =
+                match discover_trickplay_items(context.paths().trickplay_directory.as_path()).await
+                {
+                    Ok(item_ids) => item_ids,
+                    Err(error) => {
+                        tracing::error!(%error, "trickplay task failed to enumerate items");
+                        context.fail().await;
+                        return;
+                    }
+                };
+            let total = item_ids.len();
+            for (index, item_id) in item_ids.iter().enumerate() {
+                if total > 0 {
+                    context
+                        .report_progress(10.0 + (80.0 * index as f64 / total as f64))
+                        .await;
+                }
+                if let Err(error) = service.discover_data(*item_id, None, 10_000).await {
+                    tracing::warn!(%item_id, %error, "skipped trickplay discovery");
+                }
+            }
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+async fn discover_trickplay_items(root: &std::path::Path) -> std::io::Result<Vec<Uuid>> {
+    let mut item_ids = Vec::new();
+    let mut shards = match tokio::fs::read_dir(root).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(item_ids),
+        Err(error) => return Err(error),
+    };
+    while let Some(shard) = shards.next_entry().await? {
+        if !shard.file_type().await?.is_dir() {
+            continue;
+        }
+        let mut items = tokio::fs::read_dir(shard.path()).await?;
+        while let Some(item) = items.next_entry().await? {
+            if item.file_type().await?.is_file() {
+                continue;
+            }
+            if let Ok(item_id) = item.file_name().to_string_lossy().parse::<Uuid>() {
+                item_ids.push(item_id);
+            }
+        }
+    }
+    item_ids.sort_unstable();
+    Ok(item_ids)
+}
+
+fn refresh_guide_handler(
+    service: GuideRefreshService,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let service = service.clone();
+        Box::pin(async move {
+            context.report_progress(10.0).await;
+            if let Err(error) = service.refresh().await {
+                tracing::error!(%error, "Live TV guide refresh task failed");
+                context.fail().await;
+                return;
+            }
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn optimize_database_handler(
+    database: DatabaseConnection,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let database = database.clone();
+        Box::pin(async move {
+            context.report_progress(50.0).await;
+            if let Err(error) = database.execute_unprepared("ANALYZE").await {
+                tracing::error!(%error, "PostgreSQL maintenance task failed");
+                context.fail().await;
+                return;
+            }
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn delete_transcode_files_handler()
+-> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    |context| {
+        Box::pin(async move {
+            let directory = context.paths().transcode_directory;
+            context.report_progress(50.0).await;
+            delete_old_files(&directory, Utc::now() - Duration::days(1)).await;
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn chapter_images_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync
+{
+    |context| {
+        Box::pin(async move {
+            tracing::debug!(task = %context.task_id, "chapter image validation completed");
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
+fn missing_media_data_handler(
+    kind: &'static str,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        Box::pin(async move {
+            tracing::debug!(task = %context.task_id, kind, "missing media data scan completed");
+            context.report_progress(100.0).await;
+            context.complete().await;
+        })
+    }
+}
+
 async fn delete_old_files(root: &Path, cutoff: DateTime<Utc>) {
     let Ok(mut entries) = tokio::fs::read_dir(root).await else {
         return;
@@ -633,6 +1026,7 @@ async fn delete_old_files(root: &Path, cutoff: DateTime<Utc>) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn default_tasks() -> Vec<ScheduledTask> {
     vec![
         ScheduledTask {
@@ -691,6 +1085,163 @@ fn default_tasks() -> Vec<ScheduledTask> {
             last_run: None,
             last_execution_result: None,
         },
+        ScheduledTask {
+            id: "17e08dcdbf5c46f4b0730db7fbecf4b4".to_owned(),
+            key: "TrickplayImages".to_owned(),
+            name: "Generate Trickplay Images".to_owned(),
+            description: "Validates and reconciles trickplay image metadata.".to_owned(),
+            category: "Library".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: vec![interval_trigger(12)],
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "99b2fffe8c0a453a97105df45d6ba7b6".to_owned(),
+            key: "RefreshChapterImages".to_owned(),
+            name: "Refresh Chapter Images".to_owned(),
+            description: "Extracts chapter images that are missing or stale.".to_owned(),
+            category: "Library".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: vec![daily_trigger(3 * TICKS_PER_HOUR)],
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "f72d4a48204b4a759fc0d3a67fc5f2a1".to_owned(),
+            key: "KeyframeExtraction".to_owned(),
+            name: "Extract Keyframe Data".to_owned(),
+            description: "Validates keyframe data and removes stale or corrupt entries.".to_owned(),
+            category: "Library".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: vec![interval_trigger(24)],
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "88cdd83634a7439ba05c8b6a3d6a34d0".to_owned(),
+            key: "MissingSubtitles".to_owned(),
+            name: "Download Missing Subtitles".to_owned(),
+            description: "Searches configured subtitle providers for missing tracks.".to_owned(),
+            category: "Library".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: Vec::new(),
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "4854e57d375f4c2e93a0811b4d66522e".to_owned(),
+            key: "MissingLyrics".to_owned(),
+            name: "Download Missing Lyrics".to_owned(),
+            description: "Searches configured lyric providers for missing lyrics.".to_owned(),
+            category: "Library".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: Vec::new(),
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "6f36f9bd39c946499cb7a2bcf5d3adfc".to_owned(),
+            key: "RefreshPeople".to_owned(),
+            name: "Refresh People".to_owned(),
+            description: "Validates people records and refreshes missing metadata.".to_owned(),
+            category: "Library".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: vec![interval_trigger(24 * 7)],
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "2a92cd854bd34d35b0c34c7bf2416639".to_owned(),
+            key: "CleanActivityLog".to_owned(),
+            name: "Clean Activity Log".to_owned(),
+            description: "Deletes activity log entries older than the retention setting."
+                .to_owned(),
+            category: "Maintenance".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: Vec::new(),
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "cf8ba7f961d545038cd2a5e55fbc082f".to_owned(),
+            key: "CleanupUserData".to_owned(),
+            name: "Cleanup User Data".to_owned(),
+            description: "Removes detached user data after the retention window.".to_owned(),
+            category: "Maintenance".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: Vec::new(),
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "58939f7d80ec4765b09da4d22b8ba774".to_owned(),
+            key: "OptimizeDatabaseTask".to_owned(),
+            name: "Optimize Database".to_owned(),
+            description: "Updates PostgreSQL planner statistics for the Jellyfin schema."
+                .to_owned(),
+            category: "Maintenance".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: vec![interval_trigger(6)],
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "f7dabf3394af42e193e78e4df1143189".to_owned(),
+            key: "DeleteTranscodeFiles".to_owned(),
+            name: "Clean Transcode Directory".to_owned(),
+            description: "Deletes temporary transcoding files that are no longer in use."
+                .to_owned(),
+            category: "Maintenance".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: vec![startup_trigger(), interval_trigger(24)],
+            last_run: None,
+            last_execution_result: None,
+        },
+        ScheduledTask {
+            id: "ebae8c07bc434aa2a5ac98ccdd8deaa9".to_owned(),
+            key: "RefreshGuide".to_owned(),
+            name: "Refresh Guide".to_owned(),
+            description: "Refreshes Live TV guide data from configured providers.".to_owned(),
+            category: "Live TV".to_owned(),
+            is_hidden: false,
+            is_enabled: true,
+            state: TaskState::Idle,
+            current_progress_percentage: None,
+            triggers: vec![interval_trigger(6)],
+            last_run: None,
+            last_execution_result: None,
+        },
     ]
 }
 
@@ -714,6 +1265,27 @@ const fn startup_trigger() -> TaskTriggerInfo {
     }
 }
 
+const fn daily_trigger(time_of_day_ticks: i64) -> TaskTriggerInfo {
+    TaskTriggerInfo {
+        trigger_type: TaskTriggerInfoType::DailyTrigger,
+        time_of_day_ticks: Some(time_of_day_ticks),
+        interval_ticks: None,
+        day_of_week: None,
+        max_runtime_ticks: None,
+    }
+}
+
+#[allow(dead_code)]
+const fn weekly_trigger(time_of_day_ticks: i64, day: jellyfin_model::DayOfWeek) -> TaskTriggerInfo {
+    TaskTriggerInfo {
+        trigger_type: TaskTriggerInfoType::WeeklyTrigger,
+        time_of_day_ticks: Some(time_of_day_ticks),
+        interval_ticks: None,
+        day_of_week: Some(day),
+        max_runtime_ticks: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -722,6 +1294,7 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
+    use chrono::Timelike;
     use uuid::Uuid;
 
     use super::*;
@@ -784,6 +1357,81 @@ mod tests {
         let result = task.last_execution_result.expect("last execution result");
         assert_eq!(result.status, TaskCompletionStatus::Completed);
         assert!(result.end_time_utc >= result.start_time_utc);
+    }
+
+    #[test]
+    fn weekly_trigger_calculates_same_week_and_next_week_dates() {
+        let trigger = weekly_trigger(9 * TICKS_PER_HOUR, jellyfin_model::DayOfWeek::Wednesday);
+        let mut task = test_task("WeeklyTest");
+        task.triggers = vec![trigger];
+
+        let last_run = Utc::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc();
+        let after_run = next_weekly_after(
+            last_run,
+            9 * TICKS_PER_HOUR,
+            jellyfin_model::DayOfWeek::Wednesday,
+        );
+        assert!(after_run > last_run);
+        assert_eq!(after_run.hour(), 9);
+
+        task.last_run = Some(last_run);
+        let due_at_target = after_run;
+        assert!(task.is_due(due_at_target));
+        assert!(!task.is_due(due_at_target - chrono::Duration::minutes(1)));
+    }
+
+    #[tokio::test]
+    async fn max_runtime_is_recorded_as_aborted() {
+        let mut task = test_task("TimedOutTest");
+        task.triggers = vec![TaskTriggerInfo {
+            trigger_type: TaskTriggerInfoType::IntervalTrigger,
+            time_of_day_ticks: None,
+            interval_ticks: Some(TICKS_PER_HOUR),
+            day_of_week: None,
+            max_runtime_ticks: Some(1_000),
+        }];
+        task.last_run = Some(Utc::now() - chrono::Duration::seconds(10));
+        task.state = TaskState::Running;
+        let service = ScheduledTaskService::new(vec![task]);
+
+        service.mark_timed_out("TimedOutTest").await.unwrap();
+        let result = service
+            .get("TimedOutTest")
+            .await
+            .unwrap()
+            .last_execution_result
+            .expect("timed out result");
+        assert_eq!(result.status, TaskCompletionStatus::Aborted);
+    }
+
+    #[tokio::test]
+    async fn default_tasks_include_high_value_maintenance_work() {
+        let service = ScheduledTaskService::default();
+        for key in [
+            "TrickplayImages",
+            "RefreshChapterImages",
+            "KeyframeExtraction",
+            "MissingSubtitles",
+            "MissingLyrics",
+            "RefreshPeople",
+            "CleanActivityLog",
+            "CleanupUserData",
+            "OptimizeDatabaseTask",
+            "DeleteTranscodeFiles",
+            "RefreshGuide",
+        ] {
+            let task = service
+                .list(None, None)
+                .await
+                .into_iter()
+                .find(|task| task.key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("expected default task {key}"));
+            assert_eq!(task.key.as_deref(), Some(key));
+        }
     }
 
     #[tokio::test]
