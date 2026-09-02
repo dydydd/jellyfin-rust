@@ -54,7 +54,7 @@ pub struct AuthenticationResult {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RemoteIp(IpAddr);
+pub(crate) struct RemoteIp(pub IpAddr);
 
 impl<S: Sync> FromRequestParts<S> for RemoteIp {
     type Rejection = Infallible;

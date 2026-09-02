@@ -474,6 +474,45 @@ impl TranscodeJobRegistry {
         handle
     }
 
+    /// Returns the shared handle for an already-registered job, if any.
+    ///
+    /// Repeated HLS playlist requests identify the same transcode by a stable
+    /// job id; this keeps those requests attached to the existing process.
+    #[must_use]
+    pub fn reuse(
+        &self,
+        job_id: impl Into<String>,
+        device_id: &str,
+        play_session_id: &str,
+        path: &str,
+    ) -> Option<TranscodeJobHandle> {
+        let job_id = job_id.into();
+        let handle = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&job_id)
+            .map(|entry| entry.handle.clone())?;
+        if !device_id.trim().is_empty() && !play_session_id.trim().is_empty() {
+            self.associate(&job_id, device_id, play_session_id);
+        }
+        if let Some(entry) = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&job_id)
+            && entry
+                .info
+                .path
+                .as_ref()
+                .is_none_or(|existing| existing != path)
+        {
+            entry.info.path = non_empty(path);
+            entry.info.is_hls = true;
+        }
+        Some(handle)
+    }
+
     /// Associates an already running job with a playback session.
     pub fn associate(&self, job_id: &str, device_id: &str, play_session_id: &str) {
         if device_id.trim().is_empty() || play_session_id.trim().is_empty() {
@@ -975,6 +1014,38 @@ mod tests {
         let paused = registry.get("play-session-1").expect("job metadata");
         assert!(paused.is_user_paused);
         assert_eq!(registry.list().len(), 1);
+    }
+
+    #[test]
+    fn registry_reuses_existing_job_handle_and_updates_session() {
+        let registry = TranscodeJobRegistry::new();
+        let first = registry.register_for_session_with_path(
+            "job-reuse",
+            "device-1",
+            "play-session-1",
+            "/media/video.mkv",
+        );
+        let reused = registry
+            .reuse(
+                "job-reuse",
+                "device-2",
+                "play-session-2",
+                "/media/video.mkv",
+            )
+            .expect("existing job");
+
+        assert_eq!(first.running(), reused.running());
+        assert_eq!(
+            registry.get("play-session-2").map(|job| job.id),
+            Some("job-reuse".to_owned())
+        );
+        assert_eq!(registry.list().len(), 1);
+
+        assert!(
+            registry
+                .reuse("missing-job", "device", "session", "/media/video.mkv")
+                .is_none()
+        );
     }
 
     #[tokio::test]

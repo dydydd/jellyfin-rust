@@ -346,6 +346,19 @@ impl AppState {
             });
         }));
         state.scheduled_tasks.start_scheduler();
+        let transcode_jobs = state.transcode_jobs.clone();
+        let transcode_directory = state.transcode_directory.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                for job_id in transcode_jobs
+                    .stop_stale_jobs(tokio::time::Duration::from_secs(15 * 60))
+                    .await
+                {
+                    hls_segment::cleanup_transcode_job(&transcode_directory, &job_id).await;
+                }
+            }
+        });
         state
     }
 

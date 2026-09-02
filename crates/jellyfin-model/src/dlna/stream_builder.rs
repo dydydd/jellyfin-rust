@@ -221,6 +221,9 @@ impl Default for DeviceProfile {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaOptions {
+    pub enable_transcoding: bool,
+    pub enable_playback_remuxing: bool,
+    pub force_remote_source_transcoding: bool,
     pub enable_direct_play: bool,
     pub enable_direct_stream: bool,
     pub force_direct_play: bool,
@@ -244,6 +247,9 @@ pub struct MediaOptions {
 impl Default for MediaOptions {
     fn default() -> Self {
         Self {
+            enable_transcoding: true,
+            enable_playback_remuxing: true,
+            force_remote_source_transcoding: false,
             enable_direct_play: true,
             enable_direct_stream: true,
             force_direct_play: false,
@@ -430,7 +436,9 @@ impl StreamBuilder {
             {
                 continue;
             }
-            let mut stream = self.build_video_stream(source, options);
+            let Some(mut stream) = self.build_video_stream(source, options) else {
+                continue;
+            };
             stream.device_id.clone_from(&options.device_id);
             stream.device_profile_id = options.profile.id.map(|id| id.simple().to_string());
             streams.push((index, stream));
@@ -445,7 +453,11 @@ impl StreamBuilder {
         Ok(streams.into_iter().next().map(|(_, stream)| stream))
     }
 
-    fn build_video_stream(&self, source: &MediaSourceInfo, options: &MediaOptions) -> StreamInfo {
+    fn build_video_stream(
+        &self,
+        source: &MediaSourceInfo,
+        options: &MediaOptions,
+    ) -> Option<StreamInfo> {
         let mut stream = StreamInfo::new(options.item_id, DlnaProfileType::Video);
         stream.media_source = Some(source.clone());
         stream.run_time_ticks = source.run_time_ticks;
@@ -469,14 +481,18 @@ impl StreamBuilder {
 
         let bitrate_exceeded =
             bitrate_limit_exceeded(source, options.max_bitrate(false).unwrap_or_default());
+        let force_remote_transcoding = options.force_remote_source_transcoding && source.is_remote;
         let direct_play_eligible = options.enable_direct_play
+            && !force_remote_transcoding
             && (options.force_direct_play || !bitrate_exceeded)
             && !matches!(
                 source.video_type,
                 Some(super::VideoType::Dvd | super::VideoType::BluRay)
             );
-        let direct_stream_eligible =
-            options.enable_direct_stream && (options.force_direct_stream || !bitrate_exceeded);
+        let direct_stream_eligible = options.enable_direct_stream
+            && options.enable_playback_remuxing
+            && !force_remote_transcoding
+            && (options.force_direct_stream || !bitrate_exceeded);
         let mut reasons = if bitrate_exceeded {
             TranscodeReason::CONTAINER_BITRATE_EXCEEDS_LIMIT
         } else {
@@ -513,7 +529,6 @@ impl StreamBuilder {
         } else {
             None
         };
-
         if let Some(direct) = direct {
             reasons |= direct.reasons;
             if let Some(method) = direct.method {
@@ -582,12 +597,16 @@ impl StreamBuilder {
                     stream.subtitle_format = Some(profile.format);
                 }
                 stream.transcode_reasons = reasons;
-                return stream;
+                return Some(stream);
             }
         }
 
         stream.transcode_reasons = reasons;
-        if let Some(profile) = choose_video_transcoding_profile(source, video, audio, options) {
+        if let Some(profile) = options
+            .enable_transcoding
+            .then(|| choose_video_transcoding_profile(source, video, audio, options))
+            .flatten()
+        {
             apply_transcoding_profile(&mut stream, profile);
             build_video_targets(
                 &mut stream,
@@ -619,7 +638,7 @@ impl StreamBuilder {
                 apply_general_transcoding_conditions(&mut stream, &profile.conditions, None);
             }
         }
-        stream
+        options.enable_transcoding.then_some(stream)
     }
 
     fn build_audio_stream(
@@ -656,7 +675,14 @@ impl StreamBuilder {
         let audio_stream = source
             .default_audio_stream(None)
             .ok_or(StreamBuilderError::MissingAudioStream)?;
-        let direct = audio_direct_play_profile(source, audio_stream, options);
+        let force_remote_transcoding = options.force_remote_source_transcoding && source.is_remote;
+        let mut direct = audio_direct_play_profile(source, audio_stream, options);
+        if force_remote_transcoding || !options.enable_playback_remuxing {
+            direct.method = match direct.method {
+                Some(PlayMethod::DirectStream) => None,
+                method => method,
+            };
+        }
         let mut reasons = direct.reasons;
 
         if direct.method == Some(PlayMethod::DirectPlay) {
@@ -713,7 +739,11 @@ impl StreamBuilder {
                 && profile.context == options.context
                 && self.can_encode_audio(profile)
         });
-        if let Some(profile) = transcoding_profile {
+        if let Some(profile) = options
+            .enable_transcoding
+            .then_some(transcoding_profile)
+            .flatten()
+        {
             if !source.supports_transcoding {
                 return Ok(None);
             }
@@ -1471,12 +1501,7 @@ fn build_video_targets(
         output_audio,
         stream,
     );
-    stream.audio_bitrate = Some(
-        stream
-            .audio_bitrate
-            .unwrap_or(audio_bitrate)
-            .min(audio_bitrate),
-    );
+    stream.audio_bitrate = Some(audio_bitrate);
 
     let target_audio_codecs = stream.audio_codecs.clone();
     for codec_profile in options

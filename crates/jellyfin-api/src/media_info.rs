@@ -23,6 +23,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
+use crate::authentication::RemoteIp;
 use crate::{ApiError, AppState, authentication, user_library};
 
 const DEFAULT_BITRATE_TEST_SIZE: i64 = 102_400;
@@ -120,6 +121,7 @@ pub(crate) async fn bitrate_test(
 
 pub(crate) async fn get_playback_info(
     State(state): State<Arc<AppState>>,
+    RemoteIp(remote_ip): RemoteIp,
     headers: axum::http::HeaderMap,
     Path(item_id): Path<Uuid>,
     query: Result<Query<PlaybackInfoQuery>, QueryRejection>,
@@ -136,6 +138,7 @@ pub(crate) async fn get_playback_info(
         None,
         &identity.device.device_id,
         &identity.access_token,
+        remote_ip,
     )
     .await
     .map(Json)
@@ -143,6 +146,7 @@ pub(crate) async fn get_playback_info(
 
 pub(crate) async fn post_playback_info(
     State(state): State<Arc<AppState>>,
+    RemoteIp(remote_ip): RemoteIp,
     headers: axum::http::HeaderMap,
     Path(item_id): Path<Uuid>,
     query: Result<Query<PlaybackInfoQuery>, QueryRejection>,
@@ -172,6 +176,7 @@ pub(crate) async fn post_playback_info(
         body.as_ref().and_then(|body| body.device_profile.as_ref()),
         &identity.device.device_id,
         &identity.access_token,
+        remote_ip,
     )
     .await
     .map(Json)
@@ -254,7 +259,10 @@ async fn playback_info(
     device_profile: Option<&DeviceProfile>,
     device_id: &str,
     access_token: &str,
+    remote_ip: std::net::IpAddr,
 ) -> Result<PlaybackInfoResponse, ApiError> {
+    let play_session_id = Uuid::new_v4().simple().to_string();
+    let mut max_streaming_bitrate = max_streaming_bitrate;
     let mut media_sources = media_sources(
         state,
         authenticated_user,
@@ -265,17 +273,21 @@ async fn playback_info(
     .await?;
     apply_stream_builder(
         &mut media_sources,
+        authenticated_user,
+        state,
         item_id,
         device_profile,
-        max_streaming_bitrate,
+        &mut max_streaming_bitrate,
         device_id,
         access_token,
         state.system_info.local_address.as_deref(),
+        &play_session_id,
+        remote_ip,
     );
     sort_media_sources(&mut media_sources, max_streaming_bitrate, item_id);
     Ok(PlaybackInfoResponse {
         media_sources,
-        play_session_id: Uuid::new_v4().simple().to_string(),
+        play_session_id,
         error_code: None,
     })
 }
@@ -351,14 +363,19 @@ fn sort_media_sources(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_stream_builder(
     media_sources: &mut [MediaSourceInfo],
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    state: &AppState,
     item_id: Uuid,
     device_profile: Option<&DeviceProfile>,
-    max_streaming_bitrate: Option<i32>,
+    max_streaming_bitrate: &mut Option<i32>,
     device_id: &str,
     access_token: &str,
     base_url: Option<&str>,
+    play_session_id: &str,
+    remote_ip: std::net::IpAddr,
 ) {
     let Some(profile) = device_profile else {
         return;
@@ -366,7 +383,29 @@ fn apply_stream_builder(
     let is_video = media_sources
         .first()
         .is_some_and(|source| source.video_stream().is_some());
+    let policy: jellyfin_model::UserPolicy =
+        serde_json::from_value(authenticated_user.policy.clone()).unwrap_or_default();
+    let remote_client_bitrate_limit = policy.remote_client_bitrate_limit;
+    if !state.network_manager.is_in_local_network(remote_ip) && remote_client_bitrate_limit > 0 {
+        *max_streaming_bitrate = Some(
+            max_streaming_bitrate.map_or(remote_client_bitrate_limit, |bitrate| {
+                bitrate.min(remote_client_bitrate_limit)
+            }),
+        );
+    }
+    let is_audio = media_sources
+        .first()
+        .is_some_and(|source| source.video_stream().is_none());
     let options = MediaOptions {
+        enable_transcoding: if is_audio {
+            policy.enable_audio_playback_transcoding
+        } else {
+            policy.enable_audio_playback_transcoding
+                || policy.enable_video_playback_transcoding
+                || policy.enable_playback_remuxing
+        },
+        enable_playback_remuxing: policy.enable_playback_remuxing,
+        force_remote_source_transcoding: policy.force_remote_source_transcoding,
         item_id,
         media_sources: media_sources.to_vec(),
         profile: profile.clone(),
@@ -375,8 +414,8 @@ fn apply_stream_builder(
             .and_then(|source| source.id.as_deref())
             .map(str::to_owned),
         device_id: Some(device_id.to_owned()),
-        max_bitrate: max_streaming_bitrate,
-        audio_transcoding_bitrate: max_streaming_bitrate,
+        max_bitrate: *max_streaming_bitrate,
+        audio_transcoding_bitrate: *max_streaming_bitrate,
         context: EncodingContext::Streaming,
         ..MediaOptions::default()
     };
@@ -387,23 +426,34 @@ fn apply_stream_builder(
     } else {
         builder.get_optimal_audio_stream(&options)
     };
-    let Ok(Some(stream)) = stream else {
+    let Ok(Some(mut stream)) = stream else {
         return;
     };
-    if stream.play_method == PlayMethod::DirectPlay {
-        return;
-    }
-    let url = stream.to_url(base_url, Some(access_token), None);
-    if !url.is_empty()
-        && let Some(source_id) = stream.media_source_id()
-        && let Some(source) = media_sources.iter_mut().find(|source| {
-            source
-                .id
-                .as_deref()
-                .is_some_and(|id| id.eq_ignore_ascii_case(source_id))
+    stream.play_session_id = Some(play_session_id.to_owned());
+    if let Some(source) = media_sources.iter_mut().find(|source| {
+        source.id.as_deref().is_some_and(|id| {
+            stream
+                .media_source_id()
+                .is_some_and(|stream_id| id.eq_ignore_ascii_case(stream_id))
         })
-    {
-        source.transcoding_url = Some(url);
+    }) {
+        source.supports_transcoding = policy_can_transcode(&policy, is_audio);
+        if stream.play_method != PlayMethod::DirectPlay && policy_can_transcode(&policy, is_audio) {
+            let url = stream.to_url(base_url, Some(access_token), None);
+            if !url.is_empty() {
+                source.transcoding_url = Some(url);
+            }
+        }
+    }
+}
+
+const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: bool) -> bool {
+    if is_audio {
+        policy.enable_audio_playback_transcoding
+    } else {
+        policy.enable_audio_playback_transcoding
+            || policy.enable_video_playback_transcoding
+            || policy.enable_playback_remuxing
     }
 }
 
@@ -505,6 +555,10 @@ const fn bitrate_test_block() -> [u8; REPEATING_BLOCK_SIZE] {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::AppState;
+
     use jellyfin_model::{
         DeviceProfile, DlnaProfileType, EncodingContext, MediaStream, MediaStreamProtocol,
         MediaStreamType, TranscodingProfile,
@@ -554,8 +608,8 @@ mod tests {
         assert_eq!(sources[0].id, direct_play_id);
     }
 
-    #[test]
-    fn playback_info_uses_client_profile_and_exposes_transcoding_url() {
+    #[tokio::test]
+    async fn playback_info_uses_client_profile_and_exposes_transcoding_url() {
         let item_id = Uuid::new_v4();
         let source = MediaSourceInfo {
             id: Some(item_id.simple().to_string()),
@@ -602,12 +656,16 @@ mod tests {
 
         apply_stream_builder(
             &mut sources,
+            &test_user(),
+            &test_state(),
             item_id,
             Some(&profile),
-            None,
+            &mut None,
             "device-id",
             "access-token",
             Some("http://127.0.0.1:8096"),
+            "play-session-id",
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         );
 
         let url = sources[0]
@@ -631,5 +689,41 @@ mod tests {
             supports_transcoding: true,
             ..MediaSourceInfo::default()
         }
+    }
+
+    fn test_user() -> jellyfin_data::entities::user::Model {
+        jellyfin_data::entities::user::Model {
+            id: Uuid::new_v4(),
+            username: "Playback Test".to_owned(),
+            normalized_username: "playback test".to_owned(),
+            password_hash: None,
+            must_update_password: false,
+            enable_local_password: false,
+            is_administrator: true,
+            is_hidden: false,
+            is_disabled: false,
+            enable_auto_login: false,
+            last_login_date: None,
+            last_activity_date: None,
+            invalid_login_attempt_count: 0,
+            login_attempts_before_lockout: 0,
+            authentication_provider_id: "Default".to_owned(),
+            password_reset_provider_id: "Default".to_owned(),
+            policy: serde_json::json!({}),
+            preferences: serde_json::json!({}),
+            row_version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn test_state() -> Arc<AppState> {
+        let database = sea_orm::DatabaseConnection::Disconnected;
+        AppState::new(
+            database,
+            "Playback Test".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )
+        .into()
     }
 }

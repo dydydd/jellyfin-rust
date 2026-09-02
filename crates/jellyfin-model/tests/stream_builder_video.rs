@@ -410,6 +410,30 @@ fn explicit_streams_require_media_source_and_forced_modes_bypass_profiles() {
     assert_eq!(result.audio_stream_index, Some(1));
 }
 
+#[test]
+fn user_policy_flags_gate_remote_direct_play_and_transcoding() {
+    let mut options = base_options();
+    options.media_sources[0].is_remote = true;
+    options.force_remote_source_transcoding = true;
+    let result = build(&options);
+    assert_eq!(result.play_method, PlayMethod::Transcode);
+
+    let mut options = base_options();
+    options.enable_transcoding = false;
+    options.media_sources[0].media_streams[0].codec = Some("vp9".into());
+    let result = StreamBuilder::default()
+        .get_optimal_video_stream(&options)
+        .unwrap();
+    assert!(result.is_none());
+
+    let mut options = base_options();
+    options.media_sources[0].container = Some("mkv".into());
+    options.enable_direct_stream = true;
+    options.enable_playback_remuxing = false;
+    let result = build(&options);
+    assert_eq!(result.play_method, PlayMethod::Transcode);
+}
+
 fn base_options() -> MediaOptions {
     MediaOptions {
         item_id: Uuid::new_v4(),

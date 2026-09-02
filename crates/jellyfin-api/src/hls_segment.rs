@@ -428,7 +428,7 @@ async fn start_hls_job(
     .map_err(|_| ApiError::Internal)
 }
 
-async fn cleanup_transcode_job(root: &FilePath, job_id: &str) {
+pub(crate) async fn cleanup_transcode_job(root: &FilePath, job_id: &str) {
     if job_id.is_empty() {
         return;
     }
