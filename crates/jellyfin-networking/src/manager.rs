@@ -456,8 +456,7 @@ impl NetworkManager {
     }
 
     fn initialize_overrides(&mut self) {
-        let entries = self.config.published_server_uri_by_subnet.clone();
-        for entry in entries {
+        for entry in self.config.published_server_uri_by_subnet.clone() {
             let Some((identifier, replacement)) = entry.split_once('=') else {
                 continue;
             };
@@ -471,13 +470,13 @@ impl NetworkManager {
             if identifier.eq_ignore_ascii_case("external") {
                 self.add_any_override(&replacement, false, true);
             } else if identifier.eq_ignore_ascii_case("internal") {
-                for subnet in self.lan_subnets.clone() {
+                for &subnet in &self.lan_subnets {
                     self.published_server_urls.push(PublishedServerUriOverride {
                         data: IpData {
                             address: subnet.base_address(),
                             subnet,
                         },
-                        uri: replacement.clone(),
+                        uri: replacement.to_owned(),
                         internal: true,
                         external: false,
                     });

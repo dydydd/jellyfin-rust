@@ -157,16 +157,17 @@ fn metadata_item_from_omdb(item: &OmdbItem) -> MetadataItem {
     if let Some(imdb_id) = item.imdb_id.as_deref().filter(|id| !id.is_empty()) {
         provider_ids.insert("Imdb".to_owned(), imdb_id.to_owned());
     }
+    let title = item.title.clone();
     MetadataItem {
         core: EpisodeMetadata {
-            name: item.title.clone(),
+            name: title.clone(),
             overview: item.plot.clone(),
             index_number: item.episode,
             parent_index_number: item.season,
             provider_ids,
             ..EpisodeMetadata::default()
         },
-        original_title: item.title.clone(),
+        original_title: title,
         official_rating: item.rated.clone(),
         tagline: None,
         genres: split_omdb_list(item.genre.as_deref()),

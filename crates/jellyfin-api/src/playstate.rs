@@ -438,7 +438,7 @@ async fn record_device_playback_progress(
     session: &AuthenticatedSession,
     info: PlaybackProgressInfo,
 ) -> Result<(), ApiError> {
-    let update = PlaybackProgressUpdate::from(info.clone());
+    let update = PlaybackProgressUpdate::from(&info);
     state
         .playstate
         .report_playback_progress(&session.user, update)
@@ -453,7 +453,7 @@ async fn record_device_playback_start(
     info: PlaybackStartInfo,
 ) -> Result<(), ApiError> {
     let item_id = info.item_id;
-    let update = PlaybackStartUpdate::from(info.clone());
+    let update = PlaybackStartUpdate::from(&info);
     state
         .playstate
         .report_playback_start(&session.user, update)
@@ -729,6 +729,18 @@ impl From<PlaybackProgressInfo> for PlaybackProgressUpdate {
     }
 }
 
+impl From<&PlaybackProgressInfo> for PlaybackProgressUpdate {
+    fn from(info: &PlaybackProgressInfo) -> Self {
+        Self {
+            item_id: info.item_id,
+            media_source_id: info.media_source_id.clone(),
+            position_ticks: info.position_ticks,
+            audio_stream_index: info.audio_stream_index,
+            subtitle_stream_index: info.subtitle_stream_index,
+        }
+    }
+}
+
 impl From<PlaybackStopInfo> for PlaybackStopUpdate {
     fn from(info: PlaybackStopInfo) -> Self {
         Self {
@@ -745,6 +757,15 @@ impl From<PlaybackStartInfo> for PlaybackStartUpdate {
         Self {
             item_id: info.item_id,
             media_source_id: info.media_source_id,
+        }
+    }
+}
+
+impl From<&PlaybackStartInfo> for PlaybackStartUpdate {
+    fn from(info: &PlaybackStartInfo) -> Self {
+        Self {
+            item_id: info.item_id,
+            media_source_id: info.media_source_id.clone(),
         }
     }
 }

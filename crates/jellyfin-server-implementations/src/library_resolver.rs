@@ -297,7 +297,7 @@ impl LibraryItemResolver for AudioLibraryResolver {
                 .collect::<Vec<_>>();
             let resolver = AudioResolver::new(self.naming_options.clone());
             return resolver
-                .resolve(&AudioResolveArgs {
+                .resolve(AudioResolveArgs {
                     collection_type: args.collection_type,
                     file_info: AudioFileSystemEntry::new(args.path, true),
                     file_system_children: children,

@@ -139,11 +139,18 @@ impl VideoListResolver {
         if videos.len() < 2 {
             return videos;
         }
-        let parser = EpisodePathParser::new(self.options.clone());
         let mut groups: Vec<(String, Vec<VideoInfo>)> = Vec::new();
         let mut result = Vec::new();
         for video in videos {
-            let parsed = parser.parse(&video.files[0].path, false);
+            let parsed = EpisodePathParser::parse_borrowed(
+                &video.files[0].path,
+                &self.options,
+                false,
+                None,
+                None,
+                None,
+                true,
+            );
             let key = if parsed.is_by_date {
                 match (parsed.year, parsed.month, parsed.day) {
                     (Some(year), Some(month), Some(day)) => {

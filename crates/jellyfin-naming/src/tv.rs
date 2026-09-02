@@ -251,6 +251,26 @@ impl EpisodePathParser {
         supports_absolute_numbers: Option<bool>,
         fill_extended_info: bool,
     ) -> EpisodePathParserResult {
+        Self::parse_borrowed(
+            path,
+            &self.options,
+            is_directory,
+            is_named,
+            is_optimistic,
+            supports_absolute_numbers,
+            fill_extended_info,
+        )
+    }
+
+    pub fn parse_borrowed(
+        path: &str,
+        options: &NamingOptions,
+        is_directory: bool,
+        is_named: Option<bool>,
+        is_optimistic: Option<bool>,
+        supports_absolute_numbers: Option<bool>,
+        fill_extended_info: bool,
+    ) -> EpisodePathParserResult {
         let owned_path;
         let path = if is_directory {
             owned_path = format!("{path}.mp4");
@@ -259,8 +279,7 @@ impl EpisodePathParser {
             path
         };
 
-        let mut result = self
-            .options
+        let mut result = options
             .episode_expressions
             .iter()
             .filter(|expression| {
@@ -275,7 +294,7 @@ impl EpisodePathParser {
             .unwrap_or_default();
 
         if result.success && fill_extended_info {
-            self.fill_additional(path, &mut result);
+            Self::fill_additional_with(path, options, &mut result);
             result.series_name = result
                 .series_name
                 .take()
@@ -285,12 +304,15 @@ impl EpisodePathParser {
         result
     }
 
-    fn fill_additional(&self, path: &str, result: &mut EpisodePathParserResult) {
-        for expression in self
-            .options
+    fn fill_additional_with(
+        path: &str,
+        options: &NamingOptions,
+        result: &mut EpisodePathParserResult,
+    ) {
+        for expression in options
             .episode_expressions
             .iter()
-            .chain(&self.options.multiple_episode_expressions)
+            .chain(&options.multiple_episode_expressions)
             .filter(|expression| expression.is_named)
         {
             let Some(additional) = parse_expression(path, expression).filter(|value| value.success)
@@ -588,8 +610,9 @@ impl EpisodeResolver {
                 ("Tmdb", "tmdbid"),
             ],
         );
-        let parsed = EpisodePathParser::new(self.options.clone()).parse_with_options(
+        let parsed = EpisodePathParser::parse_borrowed(
             path,
+            &self.options,
             is_directory,
             is_named,
             is_optimistic,

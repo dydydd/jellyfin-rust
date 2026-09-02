@@ -70,7 +70,7 @@ fn only_books_directories_use_audiobook_directory_resolution() {
         file_system_children: vec![entry("/parent/title.mp3", false)],
         parent: AudioParentContext::None,
     };
-    assert!(resolver.resolve(&args).is_none());
+    assert!(resolver.resolve(args).is_none());
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn multiple_resolution_retains_leftovers_and_top_parent_context() {
     let result = resolver
         .resolve_multiple(
             AudioParentContext::folder(true),
-            &entries,
+            entries,
             Some(CollectionType::Books),
         )
         .expect("books collection should produce a multi-item result");
@@ -124,7 +124,7 @@ fn multiple_resolution_uses_parsed_book_name_and_year() {
     let result = resolver
         .resolve_multiple(
             AudioParentContext::folder(false),
-            &entries,
+            entries,
             Some(CollectionType::Books),
         )
         .expect("books collection should produce a multi-item result");
@@ -144,7 +144,7 @@ fn multiple_resolution_marks_multiple_named_books_as_mixed() {
     let result = resolver
         .resolve_multiple(
             AudioParentContext::folder(false),
-            &entries,
+            entries,
             Some(CollectionType::Books),
         )
         .expect("books collection should produce a multi-item result");
@@ -167,7 +167,7 @@ fn resolve_directory(
             )
         })
         .collect();
-    resolver().resolve(&AudioResolveArgs {
+    resolver().resolve(AudioResolveArgs {
         collection_type,
         file_info: entry(parent, true),
         file_system_children: children,

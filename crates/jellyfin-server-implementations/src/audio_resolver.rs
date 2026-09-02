@@ -83,14 +83,14 @@ impl AudioResolver {
 
     /// Resolves a directory as one navigable audiobook.
     #[must_use]
-    pub fn resolve(&self, args: &AudioResolveArgs) -> Option<ResolvedAudioBook> {
+    pub fn resolve(&self, args: AudioResolveArgs) -> Option<ResolvedAudioBook> {
         if !args.file_info.is_directory || args.collection_type != Some(CollectionType::Books) {
             return None;
         }
 
         let mut result = self.resolve_multiple_audio(
             args.parent,
-            &args.file_system_children,
+            args.file_system_children,
             args.collection_type,
             false,
         )?;
@@ -109,7 +109,7 @@ impl AudioResolver {
     pub fn resolve_multiple(
         &self,
         parent: AudioParentContext,
-        entries: &[AudioFileSystemEntry],
+        entries: Vec<AudioFileSystemEntry>,
         collection_type: Option<CollectionType>,
     ) -> Option<MultipleAudioResolverResult> {
         self.resolve_multiple_audio(parent, entries, collection_type, true)
@@ -118,7 +118,7 @@ impl AudioResolver {
     fn resolve_multiple_audio(
         &self,
         parent: AudioParentContext,
-        entries: &[AudioFileSystemEntry],
+        entries: Vec<AudioFileSystemEntry>,
         collection_type: Option<CollectionType>,
         parse_name: bool,
     ) -> Option<MultipleAudioResolverResult> {
@@ -126,10 +126,8 @@ impl AudioResolver {
             return None;
         }
 
-        let (directories, files): (Vec<_>, Vec<_>) = entries
-            .iter()
-            .cloned()
-            .partition(|entry| entry.is_directory);
+        let (directories, files): (Vec<_>, Vec<_>) =
+            entries.into_iter().partition(|entry| entry.is_directory);
         let naming_files = files
             .iter()
             .map(|entry| StackFileInfo::new(&entry.full_name, false))

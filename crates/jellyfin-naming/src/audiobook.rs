@@ -79,9 +79,13 @@ impl AudioBookFilePathParser {
 
     #[must_use]
     pub fn parse(&self, path: &str) -> AudioBookFilePathParserResult {
+        Self::parse_with(path, &self.options)
+    }
+
+    fn parse_with(path: &str, options: &NamingOptions) -> AudioBookFilePathParserResult {
         let stem = file_stem(file_name(path));
         let mut result = AudioBookFilePathParserResult::default();
-        for expression in &self.options.audio_book_parts_regexes {
+        for expression in &options.audio_book_parts_regexes {
             let Some(captures) = expression.captures(stem).ok().flatten() else {
                 continue;
             };
@@ -118,6 +122,10 @@ impl AudioBookResolver {
 
     #[must_use]
     pub fn resolve(&self, path: &str) -> Option<AudioBookFileInfo> {
+        Self::resolve_with(path, &self.options)
+    }
+
+    fn resolve_with(path: &str, options: &NamingOptions) -> Option<AudioBookFileInfo> {
         if path.is_empty() {
             return None;
         }
@@ -127,15 +135,14 @@ impl AudioBookResolver {
             return None;
         }
         let extension = extension(filename)?;
-        if !self
-            .options
+        if !options
             .audio_file_extensions
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(extension))
         {
             return None;
         }
-        let parsed = AudioBookFilePathParser::new(self.options.clone()).parse(path);
+        let parsed = AudioBookFilePathParser::parse_with(path, options);
         Some(AudioBookFileInfo::with_numbers(
             path,
             extension.trim_start_matches('.'),
@@ -163,9 +170,13 @@ impl AudioBookNameParser {
 
     #[must_use]
     pub fn parse(&self, value: &str) -> AudioBookNameParserResult {
+        Self::parse_with(value, &self.options)
+    }
+
+    fn parse_with(value: &str, options: &NamingOptions) -> AudioBookNameParserResult {
         let mut result = AudioBookNameParserResult::default();
         let mut found_name = false;
-        for expression in &self.options.audio_book_name_regexes {
+        for expression in &options.audio_book_name_regexes {
             let Some(captures) = expression.captures(value).ok().flatten() else {
                 continue;
             };
@@ -216,10 +227,10 @@ impl AudioBookListResolver {
 
     #[must_use]
     pub fn resolve(&self, files: &[StackFileInfo]) -> Vec<AudioBookInfo> {
-        let resolver = AudioBookResolver::new(self.options.clone());
+        let resolver = &self.options;
         let resolved = files
             .iter()
-            .filter_map(|file| resolver.resolve(&file.path))
+            .filter_map(|file| AudioBookResolver::resolve_with(&file.path, resolver))
             .collect::<Vec<_>>();
         StackResolver::resolve_audio_books(resolved)
             .into_iter()
@@ -227,10 +238,10 @@ impl AudioBookListResolver {
                 let mut stack_files = stack
                     .files
                     .iter()
-                    .filter_map(|path| resolver.resolve(path))
+                    .filter_map(|path| AudioBookResolver::resolve_with(path, resolver))
                     .collect::<Vec<_>>();
                 stack_files.sort();
-                let parsed_name = AudioBookNameParser::new(self.options.clone()).parse(&stack.name);
+                let parsed_name = AudioBookNameParser::parse_with(&stack.name, &self.options);
                 let (files, extras, alternate_versions) =
                     organize_files(stack_files, &parsed_name.name);
                 AudioBookInfo {

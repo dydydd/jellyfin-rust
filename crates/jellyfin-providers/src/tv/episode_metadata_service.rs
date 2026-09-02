@@ -337,7 +337,8 @@ fn merge_optional<T: Clone>(source: Option<&T>, target: &mut Option<T>, replace_
 
 fn merge_string_array(source: &[String], target: &mut Vec<String>, replace_data: bool) {
     if replace_data || target.is_empty() {
-        target.clone_from(&source.to_vec());
+        target.clear();
+        target.extend(source.iter().cloned());
         return;
     }
     for value in source {

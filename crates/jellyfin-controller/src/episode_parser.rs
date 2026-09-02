@@ -20,7 +20,8 @@ pub fn parse_episode(path: &Path) -> EpisodeParseResult {
 
     let path_str = path.to_string_lossy();
     let options = NamingOptions::default();
-    let parsed = EpisodePathParser::new(options.clone()).parse(&path_str, false);
+    let parsed =
+        EpisodePathParser::parse_borrowed(&path_str, &options, false, None, None, None, true);
     result.season_number = parsed.season_number;
     result.episode_number = parsed.episode_number;
     result.ending_episode_number = parsed.ending_episode_number;

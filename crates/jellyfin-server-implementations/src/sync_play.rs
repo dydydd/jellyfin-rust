@@ -155,7 +155,7 @@ impl SyncPlayManager {
         updates.push(group_update(
             vec![session.session_id],
             id,
-            info.clone(),
+            &info,
             GroupUpdateType::GroupJoined,
         ));
         (info, updates)

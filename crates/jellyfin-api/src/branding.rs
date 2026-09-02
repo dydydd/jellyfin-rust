@@ -55,11 +55,11 @@ pub(crate) struct BrandingOptionsDto {
     pub(crate) splashscreen_enabled: bool,
 }
 
-impl From<&BrandingOptions> for BrandingOptionsDto {
-    fn from(branding: &BrandingOptions) -> Self {
+impl From<BrandingOptions> for BrandingOptionsDto {
+    fn from(mut branding: BrandingOptions) -> Self {
         Self {
-            login_disclaimer: branding.login_disclaimer.clone(),
-            custom_css: branding.custom_css.clone(),
+            login_disclaimer: branding.login_disclaimer.take(),
+            custom_css: branding.custom_css.take(),
             splashscreen_enabled: branding.splashscreen_enabled,
         }
     }
@@ -77,7 +77,7 @@ pub(crate) async fn get_configuration(
     let branding = branding_options(&state).await?;
     Ok((
         [(header::CONTENT_TYPE, JSON_UTF8)],
-        Json(BrandingOptionsDto::from(&branding)),
+        Json(BrandingOptionsDto::from(branding)),
     ))
 }
 
@@ -95,7 +95,7 @@ pub(crate) async fn update_configuration(
     branding.login_disclaimer = request.login_disclaimer;
     branding.custom_css = request.custom_css;
     branding.splashscreen_enabled = request.splashscreen_enabled;
-    save_branding_options(&state, &branding).await?;
+    save_branding_options(&state, branding).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -189,7 +189,7 @@ pub(crate) async fn upload_splashscreen(
         return Err(error);
     }
     branding.splashscreen_location = Some(target.to_string_lossy().into_owned());
-    if let Err(error) = save_branding_options(&state, &branding).await {
+    if let Err(error) = save_branding_options(&state, branding).await {
         if let Some(backup) = backup {
             let _ = tokio::fs::rename(backup, &target).await;
         } else {
@@ -218,7 +218,7 @@ pub(crate) async fn delete_splashscreen(
     match tokio::fs::remove_file(path).await {
         Ok(()) => {
             branding.splashscreen_location = None;
-            save_branding_options(&state, &branding).await?;
+            save_branding_options(&state, branding).await?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(ApiError::Internal),
@@ -282,15 +282,15 @@ async fn branding_options(state: &AppState) -> Result<BrandingOptions, ApiError>
 
 async fn save_branding_options(
     state: &AppState,
-    branding: &BrandingOptions,
+    branding: BrandingOptions,
 ) -> Result<(), ApiError> {
     if let Some(repository) = &state.named_configurations {
-        let configuration = serde_json::to_value(branding).map_err(|_| ApiError::Internal)?;
+        let configuration = serde_json::to_value(&branding).map_err(|_| ApiError::Internal)?;
         repository
             .save(BRANDING_CONFIGURATION_KEY, configuration)
             .await?;
     }
 
-    *state.branding.write().await = branding.clone();
+    *state.branding.write().await = branding;
     Ok(())
 }

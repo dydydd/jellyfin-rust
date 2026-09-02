@@ -589,8 +589,6 @@ fn session_info(device: device::Model, user_name: String, server_id: &str) -> Se
         serde_json::from_value(device.additional_users).unwrap_or_default();
     let now_playing_queue: Vec<serde_json::Value> =
         serde_json::from_value(device.now_playing_queue).unwrap_or_default();
-    let playable_media_types = capabilities.playable_media_types.clone();
-    let supported_commands = capabilities.supported_commands.clone();
     SessionInfoDto {
         play_state,
         additional_users,
@@ -615,9 +613,9 @@ fn session_info(device: device::Model, user_name: String, server_id: &str) -> Se
         server_id: Some(server_id.to_owned()),
         user_primary_image_tag: None,
         now_viewing_item: device.now_viewing_item,
+        playable_media_types: capabilities.playable_media_types.clone(),
+        supported_commands: capabilities.supported_commands.clone(),
         capabilities,
-        playable_media_types,
-        supported_commands,
     }
 }
 
