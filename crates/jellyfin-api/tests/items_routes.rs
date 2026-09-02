@@ -80,7 +80,7 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     MediaStreamService::new(fixture.database.clone())
         .save_media_streams(
             media.id,
-            &[
+            vec![
                 MediaStream {
                     index: 0,
                     stream_type: MediaStreamType::Video,
@@ -127,7 +127,7 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     MediaAttachmentService::new(fixture.database.clone())
         .save_media_attachments(
             media.id,
-            &[MediaAttachment {
+            vec![MediaAttachment {
                 index: 4,
                 codec: Some("mjpeg".to_owned()),
                 file_name: Some("poster.jpg".to_owned()),
@@ -560,7 +560,7 @@ async fn advanced_items_filters_are_applied_to_the_public_query() {
     streams
         .save_media_streams(
             sd.id,
-            &[MediaStream {
+            vec![MediaStream {
                 index: 0,
                 stream_type: MediaStreamType::Video,
                 width: Some(640),
@@ -573,7 +573,7 @@ async fn advanced_items_filters_are_applied_to_the_public_query() {
     streams
         .save_media_streams(
             hd.id,
-            &[MediaStream {
+            vec![MediaStream {
                 index: 0,
                 stream_type: MediaStreamType::Video,
                 width: Some(1920),
@@ -586,7 +586,7 @@ async fn advanced_items_filters_are_applied_to_the_public_query() {
     streams
         .save_media_streams(
             four_k.id,
-            &[MediaStream {
+            vec![MediaStream {
                 index: 0,
                 stream_type: MediaStreamType::Video,
                 width: Some(3840),
@@ -599,7 +599,7 @@ async fn advanced_items_filters_are_applied_to_the_public_query() {
     streams
         .save_media_streams(
             audio.id,
-            &[MediaStream {
+            vec![MediaStream {
                 index: 0,
                 stream_type: MediaStreamType::Audio,
                 language: Some("eng".to_owned()),

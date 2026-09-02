@@ -260,11 +260,7 @@ async fn ensure_master_playlist(
     }
 
     let (item_id, media_type) = media_type_item_id(uri)?;
-    let job_id = query
-        .job_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .map_or_else(|| compute_job_id(item_id, query, media_type), str::to_owned);
+    let job_id = existing_or_computed_job_id(query, item_id, media_type);
     let main_url = format!(
         "main.m3u8?{}&jobId={}",
         uri.query().unwrap_or_default(),
@@ -317,11 +313,7 @@ async fn ensure_main_playlist(
     }
 
     let (item_id, media_type) = media_type_item_id(uri)?;
-    let job_id = query
-        .job_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .map_or_else(|| compute_job_id(item_id, query, media_type), str::to_owned);
+    let job_id = existing_or_computed_job_id(query, item_id, media_type);
     start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
     let path = resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.m3u8"))?;
     serve_file_if_exists(path, headers).await
@@ -479,6 +471,14 @@ fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
         .parse::<Uuid>()
         .map_err(|_| ApiError::InvalidRequest)?;
     Ok((item_id, media_type))
+}
+
+fn existing_or_computed_job_id(query: &TranscodeQuery, item_id: Uuid, media_type: &str) -> String {
+    query
+        .job_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .map_or_else(|| compute_job_id(item_id, query, media_type), str::to_owned)
 }
 
 fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, media_type: &str) -> String {

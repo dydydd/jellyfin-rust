@@ -716,7 +716,7 @@ fn append_string_list_filter(
         if index > 0 {
             sql.push_str(", ");
         }
-        values.push(item.clone().into());
+        values.push(item.as_str().into());
         sql.push('$');
         sql.push_str(&values.len().to_string());
     }

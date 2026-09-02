@@ -592,7 +592,7 @@ impl Fixture {
         MediaStreamService::new(database.clone())
             .save_media_streams(
                 item.id,
-                &[
+                vec![
                     MediaStream {
                         index: 0,
                         stream_type: MediaStreamType::Video,

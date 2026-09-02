@@ -119,9 +119,7 @@ pub(crate) async fn universal(
         None,
         query.start_time_ticks,
     );
-    let job = state
-        .transcode_jobs
-        .register(output.to_string_lossy().into_owned());
+    let job = state.transcode_jobs.register(output.to_string_lossy());
     run_ffmpeg(&command, &job)
         .await
         .map_err(|_| ApiError::UnsupportedMediaType)?;

@@ -380,7 +380,7 @@ async fn path_overlaps(
               LIMIT 1",
             [
                 json!(candidate.ancestors).into(),
-                candidate.normalized_path.clone().into(),
+                candidate.normalized_path.as_str().into(),
             ],
         ))
         .await?

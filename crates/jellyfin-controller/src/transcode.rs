@@ -412,8 +412,8 @@ impl TranscodeJobRegistry {
     }
 
     /// Registers a job and returns its shared handle.
-    pub fn register(&self, job_id: impl Into<String>) -> TranscodeJobHandle {
-        let job_id = job_id.into();
+    pub fn register(&self, job_id: impl AsRef<str>) -> TranscodeJobHandle {
+        let job_id = job_id.as_ref().to_owned();
         let handle = TranscodeJobHandle {
             running: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -439,7 +439,7 @@ impl TranscodeJobRegistry {
         play_session_id: &str,
     ) -> TranscodeJobHandle {
         let job_id = job_id.into();
-        let handle = self.register(job_id.clone());
+        let handle = self.register(&job_id);
         self.associate(&job_id, device_id, play_session_id);
         handle
     }
@@ -453,7 +453,7 @@ impl TranscodeJobRegistry {
         path: &str,
     ) -> TranscodeJobHandle {
         let job_id = job_id.into();
-        let handle = self.register(job_id.clone());
+        let handle = self.register(&job_id);
         if let Some(entry) = self
             .jobs
             .lock()
@@ -919,7 +919,7 @@ mod tests {
                 Some("source"),
                 Some(100),
                 &target,
-                &settings
+                &settings,
             )
         );
     }

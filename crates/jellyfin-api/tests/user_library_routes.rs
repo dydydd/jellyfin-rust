@@ -738,7 +738,7 @@ async fn save_media_source_metadata(database: &DatabaseConnection, item_id: Uuid
     MediaStreamService::new(database.clone())
         .save_media_streams(
             item_id,
-            &[MediaStream {
+            vec![MediaStream {
                 index: 0,
                 stream_type: MediaStreamType::Audio,
                 codec: Some("ac3".to_owned()),
@@ -753,7 +753,7 @@ async fn save_media_source_metadata(database: &DatabaseConnection, item_id: Uuid
     MediaAttachmentService::new(database.clone())
         .save_media_attachments(
             item_id,
-            &[MediaAttachment {
+            vec![MediaAttachment {
                 index: 4,
                 codec: Some("mjpeg".to_owned()),
                 file_name: Some("poster.jpg".to_owned()),
@@ -845,7 +845,7 @@ async fn create_stream_defaults_video(
     MediaStreamService::new(fixture.database.clone())
         .save_media_streams(
             video.id,
-            &[
+            vec![
                 MediaStream {
                     index: 0,
                     stream_type: MediaStreamType::Video,

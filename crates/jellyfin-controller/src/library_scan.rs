@@ -627,7 +627,7 @@ impl LibraryScanService {
                 if let Some(path) = path.to_str() {
                     seen_paths.insert(path.to_owned());
                 }
-                children.push(candidate.clone());
+                children.push(candidate);
                 files.push((path, media_kind));
             }
 
@@ -1088,19 +1088,18 @@ impl LibraryScanService {
             self.items.update(updated).await?;
             return Ok(());
         }
-        let mut item = NewBaseItem::new(stable_id, item_type);
         let path = extra.path;
+        let media_type = match extra.media_kind {
+            ExtraMediaKind::Audio => "Audio",
+            _ => "Video",
+        };
+        let mut item = NewBaseItem::new(stable_id, item_type);
         item.path = Some(path.clone());
         item.parent_id = Some(owner_id);
-        item.name = Some(extra.name.clone());
-        item.sort_name = Some(extra.name);
-        item.media_type = Some(
-            match extra.media_kind {
-                ExtraMediaKind::Audio => "Audio",
-                _ => "Video",
-            }
-            .to_owned(),
-        );
+        let name = extra.name;
+        item.name = Some(name.clone());
+        item.sort_name = Some(name);
+        item.media_type = Some(media_type.to_owned());
         item.is_folder = false;
         item.is_virtual_item = false;
         item.presentation_unique_key = Some(path);
@@ -1653,16 +1652,17 @@ impl LibraryScanService {
 
     async fn probe_keyframes(&self, path: &str) -> Option<KeyframeData> {
         let probe_path = self.probe_path.clone();
-        let path = path.to_owned();
-        let log_path = path.clone();
-        match tokio::task::spawn_blocking(move || extract_keyframes(&probe_path, &path)).await {
+        let probe_input = path.to_owned();
+        match tokio::task::spawn_blocking(move || extract_keyframes(&probe_path, &probe_input))
+            .await
+        {
             Ok(Ok(keyframes)) => Some(keyframes),
             Ok(Err(error)) => {
-                tracing::debug!(path = log_path, error = %error, "keyframe extraction failed during library scan");
+                tracing::debug!(path, error = %error, "keyframe extraction failed during library scan");
                 None
             }
             Err(error) => {
-                tracing::debug!(path = log_path, error = %error, "keyframe extraction task failed during library scan");
+                tracing::debug!(path, error = %error, "keyframe extraction task failed during library scan");
                 None
             }
         }
@@ -1854,18 +1854,19 @@ impl LibraryScanService {
 
     async fn probe_media_info(&self, path: &str, media_kind: MediaKind) -> Option<MediaInfo> {
         let probe_path = self.probe_path.clone();
-        let path = path.to_owned();
-        let log_path = path.clone();
-        match tokio::task::spawn_blocking(move || probe_media_info(&probe_path, &path, media_kind))
-            .await
+        let probe_input = path.to_owned();
+        match tokio::task::spawn_blocking(move || {
+            probe_media_info(&probe_path, &probe_input, media_kind)
+        })
+        .await
         {
             Ok(Ok(media_info)) => Some(media_info),
             Ok(Err(error)) => {
-                tracing::debug!(path = log_path, error = %error, "media probe failed during library scan");
+                tracing::debug!(path, error = %error, "media probe failed during library scan");
                 None
             }
             Err(error) => {
-                tracing::debug!(path = log_path, error = %error, "media probe task failed during library scan");
+                tracing::debug!(path, error = %error, "media probe task failed during library scan");
                 None
             }
         }
@@ -2701,12 +2702,13 @@ fn merged_media_item_data(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    let container = media_info
+        .and_then(|info| info.container.as_deref())
+        .map(str::to_owned)
+        .or_else(|| path_extension(path));
     object.insert(
         "Container".to_owned(),
-        media_info
-            .and_then(|info| info.container.clone())
-            .or_else(|| path_extension(path))
-            .map_or(Value::Null, Value::String),
+        container.map_or(Value::Null, Value::String),
     );
     if let Some(bitrate) = media_info.and_then(|info| info.bitrate) {
         object.insert("Bitrate".to_owned(), json!(bitrate));
@@ -2867,7 +2869,7 @@ fn external_stream_from_resolved(
     if stream.codec.as_deref().is_none_or(str::is_empty) {
         stream.codec = stream.path.as_deref().and_then(path_extension);
     }
-    mapper.to_persisted(&stream)
+    mapper.to_persisted(stream)
 }
 
 fn attachment_from_probe(attachment: &ProbedMediaAttachment) -> PersistedMediaAttachment {

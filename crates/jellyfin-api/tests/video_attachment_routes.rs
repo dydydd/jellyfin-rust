@@ -130,7 +130,7 @@ impl Fixture {
         MediaAttachmentService::new(database.clone())
             .save_media_attachments(
                 item.id,
-                &[MediaAttachment {
+                vec![MediaAttachment {
                     index: 4,
                     codec: Some("ttf".to_owned()),
                     file_name: Some("font.ttf".to_owned()),

@@ -45,15 +45,15 @@ impl MediaAttachmentMapper {
     }
 
     #[must_use]
-    pub fn to_persisted(self, attachment: &MediaAttachment) -> PersistedMediaAttachment {
+    pub fn to_persisted(self, attachment: MediaAttachment) -> PersistedMediaAttachment {
         PersistedMediaAttachment {
             attachment_index: attachment.index,
-            codec: attachment.codec.clone(),
-            codec_tag: attachment.codec_tag.clone(),
-            comment: attachment.comment.clone(),
-            file_name: attachment.file_name.clone(),
-            mime_type: attachment.mime_type.clone(),
-            delivery_url: attachment.delivery_url.clone(),
+            codec: attachment.codec,
+            codec_tag: attachment.codec_tag,
+            comment: attachment.comment,
+            file_name: attachment.file_name,
+            mime_type: attachment.mime_type,
+            delivery_url: attachment.delivery_url,
         }
     }
 }
@@ -82,10 +82,10 @@ impl MediaAttachmentService {
     pub async fn save_media_attachments(
         &self,
         item_id: Uuid,
-        attachments: &[MediaAttachment],
+        attachments: Vec<MediaAttachment>,
     ) -> Result<Vec<MediaAttachment>, MediaAttachmentServiceError> {
         let persisted = attachments
-            .iter()
+            .into_iter()
             .map(|attachment| self.mapper.to_persisted(attachment))
             .collect::<Vec<_>>();
         let stored = self.repository.replace(item_id, &persisted).await?;

@@ -65,7 +65,7 @@ impl TrickplayService {
     pub fn new(database: DatabaseConnection, storage_directory: impl Into<PathBuf>) -> Self {
         Self {
             repository: TrickplayInfoRepository::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
+            items: BaseItemRepository::new(database),
             storage_directory: storage_directory.into(),
         }
     }
@@ -392,7 +392,7 @@ impl TrickplayService {
             let inputs = images[start..start + plan.thumbnails_per_tile].to_vec();
             let output = output_directory.join(format!("{tile_index}.jpg"));
             create_trickplay_tile(
-                &inputs,
+                inputs,
                 output,
                 plan.width,
                 plan.height,
@@ -557,7 +557,7 @@ fn tile_error(source: image::ImageError) -> std::io::Error {
 }
 
 async fn create_trickplay_tile(
-    inputs: &[PathBuf],
+    inputs: Vec<PathBuf>,
     output: PathBuf,
     width: u32,
     height: u32,
@@ -565,8 +565,6 @@ async fn create_trickplay_tile(
     tile_height: u32,
     quality: i32,
 ) -> Result<(), std::io::Error> {
-    let inputs = inputs.to_vec();
-    let output = output.clone();
     tokio::task::spawn_blocking(move || {
         let mut canvas = image::RgbaImage::new(
             width.saturating_mul(tile_width),

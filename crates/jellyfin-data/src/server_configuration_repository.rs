@@ -339,7 +339,7 @@ impl ServerConfigurationRepository {
                 library_scan_fanout_concurrency, library_metadata_refresh_concurrency,
                 row_version, created_at, updated_at
             ",
-            [id.clone().into()],
+            [id.as_str().into()],
         );
         server_configuration::Model::find_by_statement(statement)
             .one(&self.database)

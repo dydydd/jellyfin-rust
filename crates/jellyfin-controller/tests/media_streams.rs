@@ -140,7 +140,7 @@ fn api_streams_save_to_persisted_repository_shape() {
         ..MediaStream::default()
     };
 
-    let persisted = mapper.to_persisted(&stream);
+    let persisted = mapper.to_persisted(stream);
 
     assert_eq!(persisted.stream_index, -1);
     assert_eq!(persisted.stream_type, PersistedMediaStreamType::Subtitle);

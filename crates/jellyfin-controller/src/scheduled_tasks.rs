@@ -753,11 +753,11 @@ fn refresh_library_handler(
 #[allow(clippy::cast_precision_loss)]
 fn clean_log_files_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync
 {
-    |context| {
+    move |context| {
+        let paths = Arc::new(context.paths());
         Box::pin(async move {
-            let paths = context.paths();
-            let log_directory = paths.log_directory.clone();
-            let logs = SystemLogService::new(log_directory.as_path());
+            let paths = paths.as_ref();
+            let logs = SystemLogService::new(paths.log_directory.as_path());
             let cutoff = Utc::now() - Duration::days(paths.log_file_retention_days.max(0).into());
             let candidates = logs
                 .list()
@@ -772,7 +772,7 @@ fn clean_log_files_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTas
                         .report_progress(100.0 * index as f64 / total as f64)
                         .await;
                 }
-                let _ = tokio::fs::remove_file(log_directory.join(&file.name)).await;
+                let _ = tokio::fs::remove_file(paths.log_directory.join(&file.name)).await;
             }
             context.report_progress(100.0).await;
             context.complete().await;

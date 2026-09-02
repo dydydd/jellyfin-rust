@@ -268,7 +268,7 @@ impl TmdbClient {
     {
         let key = self.api_key()?;
         let mut query = query.to_vec();
-        query.push(("api_key", key.as_str()));
+        query.push(("api_key", key));
         let url = format!("{}{path}", self.base_url);
         self.http
             .get(&url)
@@ -283,11 +283,11 @@ impl TmdbClient {
             .map_err(MetadataProviderError::Http)
     }
 
-    fn api_key(&self) -> Result<String, MetadataProviderError> {
+    fn api_key(&self) -> Result<&str, MetadataProviderError> {
         if self.api_key.trim().is_empty() {
             return Err(MetadataProviderError::NoApiKey);
         }
-        Ok(self.api_key.clone())
+        Ok(&self.api_key)
     }
 }
 
@@ -1503,8 +1503,7 @@ fn provider_ids_from_data(data: Option<&Value>) -> ProviderIdMap {
 }
 
 fn person_extra_data(existing: Option<&Value>, details: &TmdbPersonDetails) -> Value {
-    let existing = existing.cloned();
-    let mut object = metadata_object(existing.as_ref());
+    let mut object = metadata_object(existing);
     set_string(&mut object, "HomePageUrl", details.homepage.as_deref());
     set_string(&mut object, "EndDate", details.deathday.as_deref());
     if let Some(place) = details
@@ -1707,13 +1706,14 @@ fn episode_data_with_rating(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let mut provider_ids = object
-        .get("ProviderIds")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    provider_ids.insert("Tmdb".to_owned(), Value::String(tmdb_id.to_owned()));
-    object.insert("ProviderIds".to_owned(), Value::Object(provider_ids));
+    if let Some(provider_ids) = object.get_mut("ProviderIds").and_then(Value::as_object_mut) {
+        provider_ids.insert("Tmdb".to_owned(), Value::String(tmdb_id.to_owned()));
+    } else {
+        object.insert(
+            "ProviderIds".to_owned(),
+            json!({ "Tmdb": tmdb_id.to_owned() }),
+        );
+    }
     if community_rating > 0.0 {
         object.insert("CommunityRating".to_owned(), json!(community_rating));
     }
@@ -1837,9 +1837,10 @@ impl Named for TmdbCompany {
 
 fn keyword_names(keywords: &TmdbKeywordResults) -> Vec<String> {
     keywords
-        .all()
-        .into_iter()
-        .filter_map(|keyword| keyword.name)
+        .keywords
+        .iter()
+        .chain(keywords.results.iter())
+        .filter_map(|keyword| keyword.name.clone())
         .filter(|name| !name.trim().is_empty())
         .collect()
 }
@@ -2190,14 +2191,6 @@ struct TmdbVideo {
 struct TmdbKeywordResults {
     keywords: Vec<TmdbKeyword>,
     results: Vec<TmdbKeyword>,
-}
-
-impl TmdbKeywordResults {
-    fn all(&self) -> Vec<TmdbKeyword> {
-        let mut keywords = self.keywords.clone();
-        keywords.extend(self.results.clone());
-        keywords
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

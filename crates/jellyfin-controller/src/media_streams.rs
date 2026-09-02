@@ -143,16 +143,17 @@ where
     }
 
     #[must_use]
-    pub fn to_persisted(&self, stream: &MediaStream) -> PersistedMediaStream {
+    pub fn to_persisted(&self, mut stream: MediaStream) -> PersistedMediaStream {
+        let path = save_path(&self.path_mapper, stream.path.as_deref());
         PersistedMediaStream {
             stream_index: stream.index,
             stream_type: model_type_to_persisted(stream.stream_type),
-            codec: stream.codec.clone(),
-            language: stream.language.clone(),
-            channel_layout: stream.channel_layout.clone(),
-            profile: stream.profile.clone(),
-            aspect_ratio: stream.aspect_ratio.clone(),
-            path: save_path(&self.path_mapper, stream.path.as_deref()),
+            codec: stream.codec.take(),
+            language: stream.language.take(),
+            channel_layout: stream.channel_layout.take(),
+            profile: stream.profile.take(),
+            aspect_ratio: stream.aspect_ratio.take(),
+            path,
             is_interlaced: Some(stream.is_interlaced),
             bit_rate: stream.bit_rate,
             channels: stream.channels,
@@ -166,21 +167,21 @@ where
             average_frame_rate: stream.average_frame_rate,
             real_frame_rate: stream.real_frame_rate,
             level: stream.level.map(f64_to_f32),
-            pixel_format: stream.pixel_format.clone(),
+            pixel_format: stream.pixel_format.take(),
             bit_depth: stream.bit_depth,
             is_anamorphic: stream.is_anamorphic,
             ref_frames: stream.ref_frames,
-            codec_tag: stream.codec_tag.clone(),
-            comment: stream.comment.clone(),
-            nal_length_size: stream.nal_length_size.clone(),
+            codec_tag: stream.codec_tag.take(),
+            comment: stream.comment.take(),
+            nal_length_size: stream.nal_length_size.take(),
             is_avc: stream.is_avc,
-            title: stream.title.clone(),
-            time_base: stream.time_base.clone(),
-            codec_time_base: stream.codec_time_base.clone(),
-            color_range: stream.color_range.clone(),
-            color_primaries: stream.color_primaries.clone(),
-            color_space: stream.color_space.clone(),
-            color_transfer: stream.color_transfer.clone(),
+            title: stream.title.take(),
+            time_base: stream.time_base.take(),
+            codec_time_base: stream.codec_time_base.take(),
+            color_range: stream.color_range.take(),
+            color_primaries: stream.color_primaries.take(),
+            color_space: stream.color_space.take(),
+            color_transfer: stream.color_transfer.take(),
             dv_version_major: stream.dv_version_major,
             dv_version_minor: stream.dv_version_minor,
             dv_profile: stream.dv_profile,
@@ -230,10 +231,10 @@ where
     pub async fn save_media_streams(
         &self,
         item_id: Uuid,
-        streams: &[MediaStream],
+        streams: Vec<MediaStream>,
     ) -> Result<Vec<MediaStream>, MediaStreamServiceError> {
         let persisted = streams
-            .iter()
+            .into_iter()
             .map(|stream| self.mapper.to_persisted(stream))
             .collect::<Vec<_>>();
         let stored = self.repository.replace(item_id, &persisted).await?;

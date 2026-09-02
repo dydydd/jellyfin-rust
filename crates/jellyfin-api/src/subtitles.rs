@@ -247,7 +247,7 @@ pub(crate) async fn upload_subtitle(
     });
     if let Err(error) = state
         .media_streams
-        .save_media_streams(item_id, &streams)
+        .save_media_streams(item_id, streams)
         .await
     {
         let _ = tokio::fs::remove_file(path).await;
