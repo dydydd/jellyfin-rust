@@ -318,11 +318,18 @@ async fn assert_recent_scope(fixture: &Fixture) {
 }
 
 async fn assert_device_filter(fixture: &Fixture) {
-    let uri = format!(
-        "/Sessions?deviceId={}",
-        fixture.user_device_id.to_lowercase()
-    );
-    let filtered = body_json(fixture.get(&uri, Some(&fixture.admin_token)).await).await;
+    let filtered = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Sessions?deviceId={}",
+                    fixture.user_device_id.to_lowercase()
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
     assert_device_ids(&filtered, &[&fixture.user_device_id]);
 }
 
@@ -404,7 +411,7 @@ fn assert_device_ids(sessions: &Value, expected: &[&str]) {
         .map(|value| (*value).to_owned())
         .collect::<Vec<_>>();
     expected.sort();
-    assert_eq!(actual, expected, "sessions={sessions:#?}");
+    assert_eq!(actual, expected);
 }
 
 fn device_ids(sessions: &Value) -> Vec<String> {
