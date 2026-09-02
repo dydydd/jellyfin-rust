@@ -74,12 +74,21 @@ pub(crate) async fn providers(
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
     let api_key = state.tmdb_api_key.read().await.clone();
+    let metadata_options = metadata_options_for(&state);
     Ok(Json(
         state
             .item_lookup
-            .remote_image_providers(item_id, &api_key)
+            .remote_image_providers(item_id, &api_key, &metadata_options)
             .await?,
     ))
+}
+
+fn metadata_options_for(state: &AppState) -> jellyfin_model::MetadataOptions {
+    let _ = state;
+    jellyfin_model::MetadataOptions::official_defaults()
+        .into_iter()
+        .find(|options| options.item_type == "Movie")
+        .unwrap_or_default()
 }
 
 pub(crate) async fn download(

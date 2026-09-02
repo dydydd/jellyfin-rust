@@ -2480,6 +2480,14 @@ fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static 
             StatusCode::INTERNAL_SERVER_ERROR,
             "Google Books metadata provider failed",
         ),
+        ItemLookupError::TvMaze(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "TV Maze metadata provider failed",
+        ),
+        ItemLookupError::MusicBrainz(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "MusicBrainz metadata provider failed",
+        ),
     }
 }
 

@@ -34,10 +34,11 @@ pub(crate) async fn remote_search(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let kind = remote_search_kind(&uri);
     let api_key = state.tmdb_api_key.read().await.clone();
+    let metadata_options = metadata_options_for(&state, kind);
     Ok(Json(
         state
             .item_lookup
-            .remote_search(kind, request, &api_key)
+            .remote_search(kind, request, &api_key, &metadata_options)
             .await?,
     ))
 }
@@ -54,16 +55,24 @@ pub(crate) async fn remote_search_elevated(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let kind = remote_search_kind(&uri);
     let api_key = state.tmdb_api_key.read().await.clone();
+    let metadata_options = metadata_options_for(&state, kind);
     Ok(Json(
         state
             .item_lookup
-            .remote_search(kind, request, &api_key)
+            .remote_search(kind, request, &api_key, &metadata_options)
             .await?,
     ))
 }
 
 fn remote_search_kind(uri: &axum::http::Uri) -> &str {
     uri.path().rsplit('/').next().unwrap_or_default()
+}
+
+fn metadata_options_for(_state: &AppState, kind: &str) -> jellyfin_model::MetadataOptions {
+    jellyfin_model::MetadataOptions::official_defaults()
+        .into_iter()
+        .find(|options| options.item_type.eq_ignore_ascii_case(kind))
+        .unwrap_or_default()
 }
 
 pub(crate) async fn apply_remote_search(

@@ -4,9 +4,10 @@ use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
     ItemUpdateStoreError,
 };
-use jellyfin_model::MetadataProvider;
+use jellyfin_model::{MetadataProvider, RemoteSearchResult};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -26,14 +27,14 @@ pub enum MusicBrainzProviderError {
 }
 
 #[derive(Clone)]
-struct MusicBrainzClient {
+pub(crate) struct MusicBrainzClient {
     http: reqwest::Client,
     base_url: String,
 }
 
 impl MusicBrainzClient {
     #[must_use]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_base_url(MUSIC_BRAINZ_API_BASE_URL)
     }
 
@@ -77,6 +78,91 @@ impl MusicBrainzClient {
             .json()
             .await
             .map_err(|_| MusicBrainzProviderError::Json)
+    }
+
+    pub(crate) async fn get_json_query<T>(
+        &self,
+        endpoint: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, MusicBrainzProviderError>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        self.http
+            .get(format!("{}{endpoint}", self.base_url))
+            .query(query)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+            .map_err(|_| MusicBrainzProviderError::Json)
+    }
+
+    pub(crate) async fn search_artists(
+        &self,
+        name: &str,
+    ) -> Result<Vec<RemoteSearchResult>, MusicBrainzProviderError> {
+        let response = self
+            .get_json_query::<ArtistSearchResponse>(
+                "/artist",
+                &[
+                    ("query", &format!("\"{name}\"")),
+                    ("limit", "20"),
+                    ("fmt", "json"),
+                ],
+            )
+            .await?;
+        Ok(response
+            .artists
+            .into_iter()
+            .map(|artist| RemoteSearchResult {
+                name: artist.name,
+                r#type: Some("MusicArtist".to_owned()),
+                provider_ids: HashMap::from([(
+                    MetadataProvider::MusicBrainzArtist.as_str().to_owned(),
+                    artist.id,
+                )]),
+                search_provider_name: Some("MusicBrainz".to_owned()),
+                ..RemoteSearchResult::default()
+            })
+            .collect())
+    }
+
+    pub(crate) async fn search_release_groups(
+        &self,
+        name: &str,
+    ) -> Result<Vec<RemoteSearchResult>, MusicBrainzProviderError> {
+        let response = self
+            .get_json_query::<ReleaseGroupSearchResponse>(
+                "/release-group",
+                &[
+                    ("query", &format!("\"{name}\"")),
+                    ("limit", "20"),
+                    ("fmt", "json"),
+                ],
+            )
+            .await?;
+        Ok(response
+            .release_groups
+            .into_iter()
+            .map(|release_group| RemoteSearchResult {
+                name: release_group.title,
+                r#type: Some("MusicAlbum".to_owned()),
+                provider_ids: HashMap::from([(
+                    MetadataProvider::MusicBrainzReleaseGroup
+                        .as_str()
+                        .to_owned(),
+                    release_group.id,
+                )]),
+                production_year: release_group
+                    .first_release_date
+                    .as_deref()
+                    .and_then(|date| date.get(..4).and_then(|year| year.parse().ok())),
+                search_provider_name: Some("MusicBrainz".to_owned()),
+                ..RemoteSearchResult::default()
+            })
+            .collect())
     }
 }
 
@@ -398,14 +484,29 @@ fn provider_id(data: Option<&Value>, provider: MetadataProvider) -> Option<Strin
 #[derive(Debug, Default, Deserialize)]
 struct ArtistResponse {
     id: String,
+    name: Option<String>,
     disambiguation: Option<String>,
     annotation: Option<Value>,
     tags: Vec<Tag>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct ArtistSearchResponse {
+    #[serde(default)]
+    artists: Vec<ArtistResponse>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct ReleaseGroupSearchResponse {
+    #[serde(default)]
+    release_groups: Vec<ReleaseGroupResponse>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct ReleaseGroupResponse {
     id: String,
+    title: Option<String>,
     first_release_date: Option<String>,
     annotation: Option<Value>,
     tags: Vec<Tag>,
