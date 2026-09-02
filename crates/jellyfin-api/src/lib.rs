@@ -9,22 +9,22 @@ use axum::{
     routing::{delete, get, post},
 };
 use jellyfin_controller::{
-    ArtistError, ArtistService, CollectionError, CollectionService, DashboardError, DashboardPage,
-    DashboardService, EnvironmentError, EnvironmentService, GenreError, GenreService,
-    InstalledPlugin, ItemImageError, ItemImageService, ItemLookupError, ItemLookupService,
-    ItemUpdateError, ItemUpdateService, LibraryControllerError, LibraryControllerService,
-    LibraryScanError, LibraryScanService, LocalizationService, MediaAttachmentService,
-    MediaAttachmentServiceError, MediaSegmentError, MediaSegmentManagerService, MediaStreamService,
-    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MetadataRefreshService,
-    MusicGenreError, MusicGenreService, PackageError, PackageService, PersonError, PersonService,
-    PlaylistError, PlaylistService, PlaystateError, PlaystateService, PluginRegistry,
-    PostgresSessionStore, ScheduledTaskError, ScheduledTaskService, SearchManager, SearchProvider,
-    StudioError, StudioService, SubtitleManager, SubtitleProvider, SystemLogError,
-    SystemLogService, SystemStorageService, TranscodeJobRegistry, TrickplayError, TrickplayService,
-    UserDataService, UserDataServiceError, UserError, UserLibraryError, UserLibraryService,
-    UserService, UserViewManagerError, UserViewManagerService, VideoError, VideoService,
-    VirtualFolderService, VirtualFolderServiceError, YearError, YearService,
-    client_event::ClientEventLogger,
+    ArtistError, ArtistService, ChapterImageService, CollectionError, CollectionService,
+    DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
+    GenreError, GenreService, InstalledPlugin, ItemImageError, ItemImageService, ItemLookupError,
+    ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
+    LibraryControllerService, LibraryScanError, LibraryScanService, LocalizationService,
+    MediaAttachmentService, MediaAttachmentServiceError, MediaSegmentError,
+    MediaSegmentManagerService, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
+    MetadataEditorService, MetadataRefreshService, MusicGenreError, MusicGenreService,
+    PackageError, PackageService, PersonError, PersonService, PlaylistError, PlaylistService,
+    PlaystateError, PlaystateService, PluginRegistry, PostgresSessionStore, ScheduledTaskError,
+    ScheduledTaskService, SearchManager, SearchProvider, StudioError, StudioService,
+    SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
+    TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
+    UserViewManagerService, VideoError, VideoService, VirtualFolderService,
+    VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
@@ -184,6 +184,7 @@ pub struct AppState {
     pub(crate) system_logs: SystemLogService,
     pub(crate) system_storage: SystemStorageService,
     pub(crate) trickplay: TrickplayService,
+    pub(crate) chapter_images: ChapterImageService,
     pub(crate) client_event_logger: ClientEventLogger,
     pub(crate) named_configurations: Option<NamedConfigurationRepository>,
     pub(crate) program_data_directory: PathBuf,
@@ -216,6 +217,11 @@ impl AppState {
         let trickplay = TrickplayService::new(
             database.clone(),
             PathBuf::from("programdata").join("trickplay"),
+        );
+        let chapter_images = ChapterImageService::new(
+            database.clone(),
+            PathBuf::from("programdata").join("chapter-images"),
+            PathBuf::from("ffmpeg"),
         );
         let item_images = ItemImageService::new(database.clone());
         let metadata_refresh =
@@ -301,6 +307,7 @@ impl AppState {
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
             trickplay,
+            chapter_images,
             client_event_logger: ClientEventLogger::new("logs"),
             named_configurations: if matches!(database, DatabaseConnection::Disconnected) {
                 None
@@ -357,6 +364,7 @@ impl AppState {
             UserDataRepository::new(state.database.clone()),
             state.keyframes.clone(),
             state.trickplay.clone(),
+            state.chapter_images.clone(),
             state.live_tv_guide.clone(),
         );
         let transcode_jobs = state.transcode_jobs.clone();
@@ -555,9 +563,13 @@ impl AppState {
             ImageProcessor::with_concurrency::<4>(self.image_cache_directory.as_path());
         self.trickplay
             .set_storage_directory(self.program_data_directory.join("trickplay"));
+        self.chapter_images
+            .set_storage_directory(self.program_data_directory.join("chapter-images"));
         self.cache_directory = cache_directory.into();
         self.scheduled_tasks
             .set_cache_directory(self.cache_directory.as_path());
+        self.scheduled_tasks
+            .set_chapter_images_directory(self.program_data_directory.join("chapter-images"));
         self
     }
 
@@ -595,6 +607,17 @@ impl AppState {
         self.ffmpeg_path = ffmpeg_path.into();
         self.library_scan
             .set_ffmpeg_path(self.ffmpeg_path.as_path());
+        self.chapter_images
+            .set_ffmpeg_path(self.ffmpeg_path.as_path());
+        self.scheduled_tasks
+            .set_ffmpeg_path(self.ffmpeg_path.clone());
+        self
+    }
+
+    /// Replaces the trickplay generation settings used by maintenance tasks.
+    #[must_use]
+    pub fn with_trickplay_options(self, options: jellyfin_model::TrickplayOptions) -> Self {
+        self.scheduled_tasks.set_trickplay_options(options);
         self
     }
 

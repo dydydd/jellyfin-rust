@@ -13,6 +13,7 @@ use jellyfin_live_tv::listings::{
     GuideRefreshService, JsonListingsConfigurationStore, SchedulesDirectClient,
 };
 use jellyfin_media_encoding::encoder::MediaEncoder;
+use jellyfin_model::TrickplayOptions;
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use sea_orm::ConnectionTrait;
 use tracing::info;
@@ -45,6 +46,10 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| persisted_configuration.tmdb_api_key.clone());
     let omdb_api_key = std::env::var("JELLYFIN_OMDB_API_KEY")
         .unwrap_or_else(|_| persisted_configuration.omdb_api_key.clone());
+    let trickplay_options = serde_json::from_value::<TrickplayOptions>(
+        persisted_configuration.trickplay_options.clone(),
+    )
+    .unwrap_or_default();
     BaseItemRepository::new(database.clone())
         .ensure_user_root()
         .await
@@ -84,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(30),
     )
     .with_ffmpeg_path(ffmpeg_path)
+    .with_trickplay_options(trickplay_options)
     .with_encoder_capabilities(encoder_capabilities)
     .with_system_commands(|command| {
         std::thread::spawn(move || {

@@ -1,15 +1,19 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
+    process::Stdio,
 };
 
+use image::{GenericImageView, ImageEncoder, ImageReader, imageops};
 use jellyfin_data::{
-    NewTrickplayInfo, TrickplayInfo, TrickplayInfoRepository, TrickplayInfoStoreError,
+    BaseItemError, BaseItemQuery, BaseItemRepository, NewTrickplayInfo, TrickplayInfo,
+    TrickplayInfoRepository, TrickplayInfoStoreError,
 };
-use jellyfin_model::TrickplayInfoDto;
+use jellyfin_drawing::ImageInspectionError;
+use jellyfin_model::{TrickplayInfoDto, configuration::TrickplayOptions};
 use sea_orm::DatabaseConnection;
 use thiserror::Error;
-use tokio::fs;
+use tokio::{fs, process::Command};
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -17,13 +21,42 @@ pub enum TrickplayError {
     #[error(transparent)]
     Store(#[from] TrickplayInfoStoreError),
     #[error(transparent)]
+    Catalog(#[from] BaseItemError),
+    #[error(transparent)]
+    Image(#[from] ImageInspectionError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("failed to generate trickplay images: {stderr}")]
+    Ffmpeg { stderr: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrickplayGenerationRequest {
+    pub item_id: Uuid,
+    pub source_path: String,
+    pub width: i32,
+    pub tile_width: i32,
+    pub tile_height: i32,
+    pub interval_ms: i32,
+    pub jpeg_quality: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TilePlan {
+    pub input_count: usize,
+    pub tile_count: usize,
+    pub thumbnails_per_tile: usize,
+    pub width: u32,
+    pub height: u32,
+    pub tile_width: u32,
+    pub tile_height: u32,
 }
 
 /// Reads trickplay metadata and maps it to Jellyfin's playlist and tile layout.
 #[derive(Clone)]
 pub struct TrickplayService {
     repository: TrickplayInfoRepository,
+    items: BaseItemRepository,
     storage_directory: PathBuf,
 }
 
@@ -31,7 +64,8 @@ impl TrickplayService {
     #[must_use]
     pub fn new(database: DatabaseConnection, storage_directory: impl Into<PathBuf>) -> Self {
         Self {
-            repository: TrickplayInfoRepository::new(database),
+            repository: TrickplayInfoRepository::new(database.clone()),
+            items: BaseItemRepository::new(database.clone()),
             storage_directory: storage_directory.into(),
         }
     }
@@ -201,6 +235,196 @@ impl TrickplayService {
             index,
         )))
     }
+
+    /// Generates tiles for every configured resolution.
+    ///
+    /// Missing or absent sources are skipped, while generation failures for
+    /// one resolution are logged and do not stop the remaining resolutions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalog error when the item cannot be loaded.
+    pub async fn generate_for_item(
+        &self,
+        item_id: Uuid,
+        options: &TrickplayOptions,
+        ffmpeg_path: impl AsRef<Path>,
+        work_root: impl AsRef<Path>,
+    ) -> Result<(), TrickplayError> {
+        let Some(item) = self.items.get(item_id).await? else {
+            return Ok(());
+        };
+        let Some(path) = item.path.filter(|path| !path.trim().is_empty()) else {
+            return Ok(());
+        };
+        if !fs::try_exists(Path::new(&path)).await.unwrap_or_default() {
+            return Ok(());
+        }
+        let interval = options.interval.max(1_000);
+        let work_root = work_root.as_ref();
+        for requested_width in options.width_resolutions.iter().copied() {
+            let request = TrickplayGenerationRequest {
+                item_id,
+                source_path: path.clone(),
+                width: even_width(requested_width),
+                tile_width: options.tile_width.clamp(1, 255),
+                tile_height: options.tile_height.clamp(1, 255),
+                interval_ms: interval,
+                jpeg_quality: options.jpeg_quality.clamp(1, 100),
+            };
+            if let Err(error) = self
+                .generate_resolution(&request, &ffmpeg_path, work_root)
+                .await
+            {
+                tracing::warn!(item_id = %item_id, width = request.width, %error, "skipped trickplay resolution");
+            }
+        }
+        Ok(())
+    }
+
+    /// Generates tiles for all eligible library videos.
+    ///
+    /// Item failures are contained by [`Self::generate_for_item`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalog error when the video query cannot be loaded.
+    pub async fn generate_for_library(
+        &self,
+        options: &TrickplayOptions,
+        ffmpeg_path: impl Into<PathBuf>,
+        work_root: impl AsRef<Path>,
+    ) -> Result<(), TrickplayError> {
+        let query = BaseItemQuery {
+            is_folder: Some(false),
+            is_virtual_item: Some(false),
+            media_types: vec!["Video".to_owned()],
+            ..BaseItemQuery::default()
+        };
+        let page = self.items.query(&query).await?;
+        let ffmpeg_path = ffmpeg_path.into();
+        let work_root = work_root.as_ref();
+        for item in page.items {
+            self.generate_for_item(item.id, options, &ffmpeg_path, work_root)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Generates one trickplay resolution and persists its metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O, process, image, or persistence failures for one resolution.
+    pub async fn generate_resolution(
+        &self,
+        request: &TrickplayGenerationRequest,
+        ffmpeg_path: impl AsRef<Path>,
+        work_root: impl AsRef<Path>,
+    ) -> Result<(), TrickplayError> {
+        let work_directory = work_root
+            .as_ref()
+            .join(format!("trickplay-{}", Uuid::new_v4()));
+        fs::create_dir_all(&work_directory).await?;
+        let result = self
+            .generate_resolution_in(request, ffmpeg_path, &work_directory)
+            .await;
+        let _ = fs::remove_dir_all(&work_directory).await;
+        result
+    }
+
+    async fn generate_resolution_in(
+        &self,
+        request: &TrickplayGenerationRequest,
+        ffmpeg_path: impl AsRef<Path>,
+        work_directory: &Path,
+    ) -> Result<(), TrickplayError> {
+        let seconds = format_seconds(request.interval_ms);
+        let command = Command::new(ffmpeg_path.as_ref())
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                &request.source_path,
+                "-vf",
+                &format!("fps=1/{seconds},scale={}:-2:flags=lanczos", request.width),
+                "-vsync",
+                "0",
+                "-frame_pts",
+                "1",
+                "-q:v",
+                &request.jpeg_quality.to_string(),
+            ])
+            .arg(work_directory.join("%08d.jpg"))
+            .stdin(Stdio::null())
+            .output()
+            .await?;
+        if !command.status.success() {
+            return Err(TrickplayError::Ffmpeg {
+                stderr: String::from_utf8_lossy(&command.stderr).into_owned(),
+            });
+        }
+        let images = jpeg_tiles(work_directory).await?;
+        if images.is_empty() {
+            return Err(TrickplayError::Ffmpeg {
+                stderr: "ffmpeg generated no thumbnails".to_owned(),
+            });
+        }
+        let (_, thumbnail_height) = jellyfin_drawing::inspect_dimensions(&images[0]).await?;
+        let plan = TilePlan::new(
+            images.len(),
+            request.width,
+            thumbnail_height,
+            request.tile_width,
+            request.tile_height,
+        );
+        let output_directory = internal_item_directory(&self.storage_directory, request.item_id)
+            .join(format!(
+                "{} - {}x{}",
+                request.width, plan.tile_width, plan.tile_height
+            ));
+        let _ = fs::remove_dir_all(&output_directory).await;
+        fs::create_dir_all(&output_directory).await?;
+        for tile_index in 0..plan.tile_count {
+            let start = tile_index * plan.thumbnails_per_tile;
+            let inputs = images[start..start + plan.thumbnails_per_tile].to_vec();
+            let output = output_directory.join(format!("{tile_index}.jpg"));
+            create_trickplay_tile(
+                &inputs,
+                output,
+                plan.width,
+                plan.height,
+                plan.tile_width,
+                plan.tile_height,
+                request.jpeg_quality,
+            )
+            .await?;
+        }
+        let bandwidth = tile_bandwidth(
+            &output_directory,
+            plan.tile_width,
+            plan.tile_height,
+            request.interval_ms,
+        )
+        .await?;
+        self.repository
+            .upsert(
+                request.item_id,
+                NewTrickplayInfo {
+                    width: i32::try_from(request.width).unwrap_or(0),
+                    height: i32::try_from(plan.height).unwrap_or(0),
+                    tile_width: i32::try_from(plan.tile_width).unwrap_or(0),
+                    tile_height: i32::try_from(plan.tile_height).unwrap_or(0),
+                    thumbnail_count: i32::try_from(images.len()).unwrap_or(0),
+                    interval: request.interval_ms,
+                    bandwidth: i32::try_from(bandwidth).unwrap_or(i32::MAX),
+                },
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 pub type TrickplayManifest = BTreeMap<String, BTreeMap<i32, TrickplayInfoDto>>;
@@ -290,6 +514,126 @@ fn internal_tile_path(root: &Path, info: TrickplayInfo, index: i32) -> PathBuf {
 fn internal_item_directory(root: &Path, item_id: Uuid) -> PathBuf {
     let id = item_id.hyphenated().to_string();
     root.join(&id[..2]).join(id)
+}
+
+impl TilePlan {
+    #[must_use]
+    pub fn new(
+        input_count: usize,
+        width: i32,
+        thumbnail_height: u32,
+        tile_width: i32,
+        tile_height: i32,
+    ) -> Self {
+        let tile_width = usize::try_from(tile_width.max(1)).unwrap_or(1);
+        let tile_height = usize::try_from(tile_height.max(1)).unwrap_or(1);
+        let thumbnails_per_tile = tile_width.saturating_mul(tile_height);
+        let tile_count = input_count.div_ceil(thumbnails_per_tile);
+        let width = u32::try_from(width.max(2)).unwrap_or(2);
+        Self {
+            input_count,
+            tile_count,
+            thumbnails_per_tile,
+            width,
+            height: thumbnail_height.max(1),
+            tile_width: u32::try_from(tile_width).unwrap_or(1),
+            tile_height: u32::try_from(tile_height).unwrap_or(1),
+        }
+    }
+}
+
+fn even_width(width: i32) -> i32 {
+    width.max(2) / 2 * 2
+}
+
+fn format_seconds(milliseconds: i32) -> String {
+    let seconds = milliseconds / 1_000;
+    let fraction = milliseconds % 1_000;
+    format!("{seconds}.{fraction:03}")
+}
+
+fn tile_error(source: image::ImageError) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, source)
+}
+
+async fn create_trickplay_tile(
+    inputs: &[PathBuf],
+    output: PathBuf,
+    width: u32,
+    height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    quality: i32,
+) -> Result<(), std::io::Error> {
+    let inputs = inputs.to_vec();
+    let output = output.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut canvas = image::RgbaImage::new(
+            width.saturating_mul(tile_width),
+            height.saturating_mul(tile_height),
+        );
+        for (index, path) in inputs.iter().enumerate() {
+            let image = ImageReader::open(path)?
+                .with_guessed_format()?
+                .decode()
+                .map_err(tile_error)?;
+            if image.dimensions() != (width, height) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "trickplay thumbnail dimensions differ",
+                ));
+            }
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+            let x = index % tile_width;
+            let y = index / tile_width;
+            imageops::overlay(
+                &mut canvas,
+                &image.to_rgba8(),
+                i64::from(x.saturating_mul(width)),
+                i64::from(y.saturating_mul(height)),
+            );
+        }
+        let mut encoded = Vec::new();
+        let rgb = image::DynamicImage::ImageRgba8(canvas).to_rgb8();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(
+            &mut encoded,
+            u8::try_from(quality.clamp(1, 100)).unwrap_or(90),
+        )
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(tile_error)?;
+        std::fs::write(output, encoded)?;
+        Ok(())
+    })
+    .await?
+}
+
+async fn tile_bandwidth(
+    output_directory: &Path,
+    tile_width: u32,
+    tile_height: u32,
+    interval_ms: i32,
+) -> Result<i64, std::io::Error> {
+    let thumbnails_per_tile = i64::from(tile_width).saturating_mul(i64::from(tile_height));
+    let interval = i64::from(interval_ms.max(1_000));
+    let mut entries = fs::read_dir(output_directory).await?;
+    let mut bandwidth = 0_i64;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+        let bytes = i64::try_from(fs::metadata(entry.path()).await?.len()).unwrap_or(i64::MAX);
+        let rate = bytes
+            .saturating_mul(8_000)
+            .checked_div(thumbnails_per_tile.saturating_mul(interval))
+            .unwrap_or(i64::MAX);
+        bandwidth = bandwidth.max(rate);
+    }
+    Ok(bandwidth)
 }
 
 fn parse_resolution_directory(name: &str) -> Option<(i32, i32, i32)> {
@@ -486,5 +830,23 @@ mod tests {
         assert_eq!(round_ratio_ties_even(2_500, 1_000), 2);
         assert_eq!(round_ratio_ties_even(3_500, 1_000), 4);
         assert_eq!(round_ratio_ties_even(3_499, 1_000), 3);
+    }
+
+    #[test]
+    fn generation_tile_plan_covers_partial_final_tile() {
+        let plan = TilePlan::new(7, 320, 40, 3, 3);
+        assert_eq!(plan.input_count, 7);
+        assert_eq!(plan.tile_count, 1);
+        assert_eq!(plan.thumbnails_per_tile, 9);
+        assert_eq!(plan.width, 320);
+        assert_eq!(plan.height, 40);
+    }
+
+    #[test]
+    fn generation_prepares_configured_interval_and_even_width() {
+        assert_eq!(even_width(320), 320);
+        assert_eq!(even_width(321), 320);
+        assert_eq!(even_width(1), 2);
+        assert_eq!(format_seconds(10_500), "10.500");
     }
 }

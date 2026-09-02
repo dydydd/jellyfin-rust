@@ -1,5 +1,7 @@
 use sea_orm::entity::prelude::*;
 
+use chrono::{DateTime, Utc};
+
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "chapters", schema_name = "jellyfin")]
 pub struct Model {
@@ -10,6 +12,8 @@ pub struct Model {
     pub start_position_ticks: i64,
     pub end_position_ticks: i64,
     pub name: Option<String>,
+    pub image_path: Option<String>,
+    pub image_date_modified: Option<DateTime<Utc>>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

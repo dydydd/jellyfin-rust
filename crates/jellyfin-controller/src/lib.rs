@@ -1,5 +1,6 @@
 mod artists;
 mod audio_db;
+mod chapter_images;
 pub mod client_event;
 mod collections;
 mod dashboard;
@@ -59,6 +60,7 @@ mod virtual_folders;
 mod years;
 
 pub use artists::{Artist, ArtistError, ArtistPage, ArtistService, ArtistValueKind};
+pub use chapter_images::{ChapterImageError, ChapterImageService};
 pub use collections::{CollectionError, CollectionService};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
@@ -106,7 +108,10 @@ pub use studios::{Studio, StudioError, StudioPage, StudioService};
 pub use subtitles::{SubtitleManager, SubtitleProvider, SubtitleResponse, SubtitleSearchRequest};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
 pub use system_storage::SystemStorageService;
-pub use trickplay::{TrickplayError, TrickplayManifest, TrickplayManifests, TrickplayService};
+pub use trickplay::{
+    TilePlan, TrickplayError, TrickplayGenerationRequest, TrickplayManifest, TrickplayManifests,
+    TrickplayService,
+};
 pub use tv_maze::{TvMazeMetadataProvider, TvMazeProviderError};
 pub use user_data::{UserDataService, UserDataServiceError, UserDataUpdate};
 pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};

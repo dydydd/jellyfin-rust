@@ -16,13 +16,14 @@ use jellyfin_data::{
 use jellyfin_live_tv::listings::GuideRefreshService;
 use jellyfin_model::{
     TaskCompletionStatus, TaskInfo, TaskResult, TaskState, TaskTriggerInfo, TaskTriggerInfoType,
+    TrickplayOptions,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::{LibraryScanService, SystemLogService, TrickplayService};
+use crate::{ChapterImageService, LibraryScanService, SystemLogService, TrickplayService};
 
 const TICKS_PER_HOUR: i64 = 36_000_000_000;
 const CACHE_FILE_RETENTION_DAYS: i64 = 30;
@@ -74,6 +75,9 @@ pub struct ScheduledTaskPaths {
     pub cache_directory: PathBuf,
     pub transcode_directory: PathBuf,
     pub trickplay_directory: PathBuf,
+    pub chapter_images_directory: PathBuf,
+    pub ffmpeg_path: PathBuf,
+    pub trickplay_options: TrickplayOptions,
     pub log_file_retention_days: i32,
     pub activity_log_retention_days: i32,
 }
@@ -87,6 +91,9 @@ impl Default for ScheduledTaskPaths {
                 .join("jellyfin-rust")
                 .join("transcodes"),
             trickplay_directory: PathBuf::from("programdata").join("trickplay"),
+            chapter_images_directory: PathBuf::from("programdata").join("chapter-images"),
+            ffmpeg_path: PathBuf::from("ffmpeg"),
+            trickplay_options: TrickplayOptions::default(),
             log_file_retention_days: 3,
             activity_log_retention_days: 30,
         }
@@ -181,6 +188,7 @@ impl ScheduledTaskService {
         user_data: UserDataRepository,
         keyframes: KeyframeDataRepository,
         trickplay: TrickplayService,
+        chapter_images: ChapterImageService,
         guide: Option<GuideRefreshService>,
     ) {
         self.register_executor(
@@ -196,7 +204,10 @@ impl ScheduledTaskService {
         }
         self.register_executor("OptimizeDatabaseTask", optimize_database_handler(database));
         self.register_executor("DeleteTranscodeFiles", delete_transcode_files_handler());
-        self.register_executor("RefreshChapterImages", chapter_images_handler());
+        self.register_executor(
+            "RefreshChapterImages",
+            chapter_images_handler(chapter_images),
+        );
         self.register_executor("MissingSubtitles", missing_media_data_handler("subtitles"));
         self.register_executor("MissingLyrics", missing_media_data_handler("lyrics"));
     }
@@ -258,6 +269,42 @@ impl ScheduledTaskService {
             .write()
             .expect("scheduled task paths lock poisoned")
             .trickplay_directory = path.into();
+    }
+
+    /// Updates the chapter-image storage directory used by maintenance tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal path lock is poisoned.
+    pub fn set_chapter_images_directory(&self, path: impl Into<PathBuf>) {
+        self.paths
+            .write()
+            .expect("scheduled task paths lock poisoned")
+            .chapter_images_directory = path.into();
+    }
+
+    /// Updates the `FFmpeg` binary used by media-generation tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal path lock is poisoned.
+    pub fn set_ffmpeg_path(&self, path: impl Into<PathBuf>) {
+        self.paths
+            .write()
+            .expect("scheduled task paths lock poisoned")
+            .ffmpeg_path = path.into();
+    }
+
+    /// Updates the trickplay settings used by generation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal path lock is poisoned.
+    pub fn set_trickplay_options(&self, options: TrickplayOptions) {
+        self.paths
+            .write()
+            .expect("scheduled task paths lock poisoned")
+            .trickplay_options = options;
     }
 
     /// Updates the log-file retention window used by maintenance tasks.
@@ -872,56 +919,23 @@ fn trickplay_images_handler(
         let service = service.clone();
         Box::pin(async move {
             context.report_progress(10.0).await;
-            let item_ids =
-                match discover_trickplay_items(context.paths().trickplay_directory.as_path()).await
-                {
-                    Ok(item_ids) => item_ids,
-                    Err(error) => {
-                        tracing::error!(%error, "trickplay task failed to enumerate items");
-                        context.fail().await;
-                        return;
-                    }
-                };
-            let total = item_ids.len();
-            for (index, item_id) in item_ids.iter().enumerate() {
-                if total > 0 {
-                    context
-                        .report_progress(10.0 + (80.0 * index as f64 / total as f64))
-                        .await;
-                }
-                if let Err(error) = service.discover_data(*item_id, None, 10_000).await {
-                    tracing::warn!(%item_id, %error, "skipped trickplay discovery");
-                }
+            let paths = context.paths();
+            if let Err(error) = service
+                .generate_for_library(
+                    &paths.trickplay_options,
+                    &paths.ffmpeg_path,
+                    paths.cache_directory.join("trickplay"),
+                )
+                .await
+            {
+                tracing::error!(%error, "trickplay task failed");
+                context.fail().await;
+                return;
             }
             context.report_progress(100.0).await;
             context.complete().await;
         })
     }
-}
-
-async fn discover_trickplay_items(root: &std::path::Path) -> std::io::Result<Vec<Uuid>> {
-    let mut item_ids = Vec::new();
-    let mut shards = match tokio::fs::read_dir(root).await {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(item_ids),
-        Err(error) => return Err(error),
-    };
-    while let Some(shard) = shards.next_entry().await? {
-        if !shard.file_type().await?.is_dir() {
-            continue;
-        }
-        let mut items = tokio::fs::read_dir(shard.path()).await?;
-        while let Some(item) = items.next_entry().await? {
-            if item.file_type().await?.is_file() {
-                continue;
-            }
-            if let Ok(item_id) = item.file_name().to_string_lossy().parse::<Uuid>() {
-                item_ids.push(item_id);
-            }
-        }
-    }
-    item_ids.sort_unstable();
-    Ok(item_ids)
 }
 
 fn refresh_guide_handler(
@@ -973,11 +987,21 @@ fn delete_transcode_files_handler()
     }
 }
 
-fn chapter_images_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync
-{
-    |context| {
+fn chapter_images_handler(
+    service: ChapterImageService,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let service = service.clone();
         Box::pin(async move {
-            tracing::debug!(task = %context.task_id, "chapter image validation completed");
+            context.report_progress(10.0).await;
+            let storage_directory = context.paths().chapter_images_directory;
+            let mut service = service;
+            service.set_storage_directory(storage_directory);
+            if let Err(error) = service.refresh_all().await {
+                tracing::error!(%error, "chapter image task failed");
+                context.fail().await;
+                return;
+            }
             context.report_progress(100.0).await;
             context.complete().await;
         })

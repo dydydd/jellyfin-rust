@@ -5,6 +5,8 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
+use chrono::{DateTime, Utc};
+
 use crate::entities::chapter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +25,8 @@ pub struct ChapterRecord {
     pub start_position_ticks: i64,
     pub end_position_ticks: i64,
     pub name: Option<String>,
+    pub image_path: Option<String>,
+    pub image_date_modified: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Error)]
@@ -76,6 +80,8 @@ impl ChapterRepository {
                 start_position_ticks: Set(chapter.start_position_ticks),
                 end_position_ticks: Set(chapter.end_position_ticks),
                 name: Set(chapter.name),
+                image_path: Set(None),
+                image_date_modified: Set(None),
             }
             .insert(&transaction)
             .await?;
@@ -86,6 +92,8 @@ impl ChapterRepository {
                 start_position_ticks: model.start_position_ticks,
                 end_position_ticks: model.end_position_ticks,
                 name: model.name,
+                image_path: model.image_path,
+                image_date_modified: model.image_date_modified,
             });
         }
         transaction.commit().await?;
@@ -110,6 +118,28 @@ impl ChapterRepository {
             .map(Into::into)
             .collect())
     }
+
+    /// Updates the generated-image metadata for one chapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the update fails.
+    pub async fn set_image_data(
+        &self,
+        chapter_id: Uuid,
+        image_path: impl Into<String>,
+        image_date_modified: DateTime<Utc>,
+    ) -> Result<(), ChapterStoreError> {
+        chapter::ActiveModel {
+            id: Set(chapter_id),
+            image_path: Set(Some(image_path.into())),
+            image_date_modified: Set(Some(image_date_modified)),
+            ..Default::default()
+        }
+        .update(&self.database)
+        .await?;
+        Ok(())
+    }
 }
 
 impl From<chapter::Model> for ChapterRecord {
@@ -121,6 +151,8 @@ impl From<chapter::Model> for ChapterRecord {
             start_position_ticks: chapter.start_position_ticks,
             end_position_ticks: chapter.end_position_ticks,
             name: chapter.name,
+            image_path: chapter.image_path,
+            image_date_modified: chapter.image_date_modified,
         }
     }
 }

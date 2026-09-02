@@ -1617,6 +1617,7 @@ name = "jellyfin-controller"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "image",
  "jellyfin-data",
  "jellyfin-drawing",
  "jellyfin-extensions",
@@ -1794,8 +1795,10 @@ dependencies = [
  "jellyfin-data",
  "jellyfin-live-tv",
  "jellyfin-media-encoding",
+ "jellyfin-model",
  "jellyfin-networking",
  "sea-orm",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
