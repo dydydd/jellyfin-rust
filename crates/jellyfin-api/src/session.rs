@@ -98,11 +98,7 @@ pub(crate) async fn list(
 ) -> Result<Json<Vec<SessionInfoDto>>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    if query.controllable_by_user_id.is_some() {
-        return Ok(Json(Vec::new()));
-    }
-
-    let mut device_query = DeviceQuery {
+    let device_query = DeviceQuery {
         device_id: query.device_id.filter(|device_id| !device_id.is_empty()),
         is_active: Some(true),
         active_since: query
@@ -111,17 +107,45 @@ pub(crate) async fn list(
             .map(|seconds| Utc::now() - Duration::seconds(seconds)),
         ..DeviceQuery::default()
     };
-    if let authentication::AuthenticatedIdentity::Device(session) = &identity
-        && !session.user.is_administrator
-    {
-        device_query.user_id = Some(session.user.id);
-    }
-
     let page = state.devices.query(&device_query).await?;
+    let is_api_key = matches!(identity, authentication::AuthenticatedIdentity::ApiKey(_));
+    let authenticated_user = match &identity {
+        authentication::AuthenticatedIdentity::Device(session) => Some(&session.user),
+        authentication::AuthenticatedIdentity::ApiKey(_) => None,
+    };
+    let is_admin = is_api_key || authenticated_user.is_some_and(|user| user.is_administrator);
     let mut sessions = Vec::with_capacity(page.items.len());
     for device in page.items {
         let user = state.users.get(device.user_id).await?;
-        sessions.push(session_info(device, user.username, state.server_id()));
+        let session_id = jellyfin_session_id(&device.app_name, &device.device_id);
+        let connected = state.web_sockets.is_connected(&session_id).await;
+        sessions.push(session_info(
+            device,
+            user.username,
+            state.server_id(),
+            connected,
+        ));
+    }
+    let mut sessions = filter_controllable_sessions(
+        sessions,
+        authenticated_user,
+        is_api_key,
+        is_admin,
+        query.controllable_by_user_id,
+        &state,
+    )
+    .await?;
+    if let authentication::AuthenticatedIdentity::Device(session) = &identity
+        && !session.user.is_administrator
+    {
+        let viewer_id = session.user.id;
+        sessions.retain(|session| {
+            session.user_id == viewer_id
+                || session
+                    .additional_users
+                    .iter()
+                    .any(|additional| additional.user_id == viewer_id)
+        });
     }
     Ok(Json(sessions))
 }
@@ -137,7 +161,66 @@ pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInf
     let mut sessions = Vec::with_capacity(page.items.len());
     for device in page.items {
         let user = state.users.get(device.user_id).await?;
-        sessions.push(session_info(device, user.username, state.server_id()));
+        let session_id = jellyfin_session_id(&device.app_name, &device.device_id);
+        let connected = state.web_sockets.is_connected(&session_id).await;
+        sessions.push(session_info(
+            device,
+            user.username,
+            state.server_id(),
+            connected,
+        ));
+    }
+    Ok(sessions)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn filter_controllable_sessions(
+    mut sessions: Vec<SessionInfoDto>,
+    authenticated_user: Option<&jellyfin_data::entities::user::Model>,
+    is_api_key: bool,
+    is_admin: bool,
+    controllable_by_user_id: Option<Uuid>,
+    state: &AppState,
+) -> Result<Vec<SessionInfoDto>, ApiError> {
+    let policy = authenticated_user
+        .map(authentication::stored_user_policy)
+        .transpose()?;
+    let can_control_others = is_api_key
+        || policy
+            .as_ref()
+            .is_some_and(|policy| policy.enable_remote_control_of_other_users);
+    if !is_api_key && let Some(user) = authenticated_user {
+        sessions.retain(|session| session.user_id == user.id || can_control_others);
+    }
+    if let Some(controllable_user_id) = controllable_by_user_id {
+        let controlled_user = state
+            .users
+            .get(controllable_user_id)
+            .await
+            .ok()
+            .filter(|user| !user.is_hidden && !user.is_disabled);
+        let Some(controlled_user) = controlled_user else {
+            return Ok(Vec::new());
+        };
+        let controlled_policy = authentication::stored_user_policy(&controlled_user)?;
+        sessions.retain(|session| session.supports_remote_control);
+        if is_admin {
+            return Ok(sessions);
+        }
+        if !controlled_policy.enable_shared_device_control {
+            sessions.retain(|session| !session.user_id.is_nil());
+        }
+        if !can_control_others {
+            let viewer_id = authenticated_user.map(|user| user.id);
+            sessions.retain(|session| {
+                session.user_id == Uuid::nil()
+                    || viewer_id.is_some_and(|viewer_id| session.user_id == viewer_id)
+                    || session
+                        .additional_users
+                        .iter()
+                        .any(|additional| Some(additional.user_id) == viewer_id)
+            });
+        }
     }
     Ok(sessions)
 }
@@ -159,6 +242,7 @@ pub(crate) async fn send_system_command(
 ) -> Result<StatusCode, ApiError> {
     let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
     let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enforce_remote_control(&state, &controller, &session_id).await?;
     enqueue_general_command(
         &state,
         &session_id,
@@ -186,6 +270,7 @@ pub(crate) async fn display_content(
     let item_id = required_query_value(query.id)?;
     let item_name = required_query_value(query.name)?;
     let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enforce_remote_control(&state, &controller, &session_id).await?;
     enqueue_general_command(
         &state,
         &session_id,
@@ -260,6 +345,7 @@ pub(crate) async fn send_full_general_command(
 ) -> Result<StatusCode, ApiError> {
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enforce_remote_control(&state, &controller, &session_id).await?;
     let Json(mut command) = request.map_err(|_| ApiError::InvalidRequest)?;
     command.controlling_user_id = controller.user.id;
     enqueue_general_command(&state, &session_id, &controller, command).await?;
@@ -275,6 +361,7 @@ pub(crate) async fn send_message_command(
 ) -> Result<StatusCode, ApiError> {
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enforce_remote_control(&state, &controller, &session_id).await?;
     let Json(command) = request.map_err(|_| ApiError::InvalidRequest)?;
     let text = command
         .text
@@ -317,6 +404,7 @@ pub(crate) async fn send_play_command(
     }
 
     let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enforce_remote_control(&state, &controller, &session_id).await?;
     enqueue_session_command(
         &state,
         &session_id,
@@ -347,6 +435,7 @@ pub(crate) async fn send_playstate_command(
     let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    enforce_remote_control(&state, &controller, &session_id).await?;
     enqueue_session_command(
         &state,
         &session_id,
@@ -510,6 +599,34 @@ fn required_query_value(value: Option<String>) -> Result<String, ApiError> {
         .ok_or(ApiError::InvalidRequest)
 }
 
+async fn enforce_remote_control(
+    state: &AppState,
+    controller: &authentication::AuthenticatedSession,
+    target_session_id: &str,
+) -> Result<(), ApiError> {
+    if controller.user.is_administrator
+        || authentication::stored_user_policy(&controller.user)?
+            .enable_remote_control_of_other_users
+    {
+        return Ok(());
+    }
+    let target = find_active_session(state, target_session_id).await?;
+    let target_user = state.users.get(target.user_id).await?;
+    let target_shares =
+        authentication::stored_user_policy(&target_user)?.enable_shared_device_control;
+    let additional_users: Vec<SessionUserInfo> =
+        serde_json::from_value(target.additional_users.clone()).unwrap_or_default();
+    if target.user_id == controller.user.id
+        || target_shares
+            && additional_users
+                .iter()
+                .any(|additional| additional.user_id == controller.user.id)
+    {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden)
+}
+
 async fn enqueue_general_command(
     state: &AppState,
     target_session_id: &str,
@@ -581,7 +698,12 @@ async fn find_active_session(
         .ok_or(ApiError::SessionNotFound)
 }
 
-fn session_info(device: device::Model, user_name: String, server_id: &str) -> SessionInfoDto {
+fn session_info(
+    device: device::Model,
+    user_name: String,
+    server_id: &str,
+    has_web_socket: bool,
+) -> SessionInfoDto {
     let capabilities: ClientCapabilitiesDto =
         serde_json::from_value(device.capabilities).unwrap_or_default();
     let play_state: PlayerStateInfo = serde_json::from_value(device.play_state).unwrap_or_default();
@@ -607,8 +729,8 @@ fn session_info(device: device::Model, user_name: String, server_id: &str) -> Se
         device_id: Some(device.device_id),
         application_version: Some(device.app_version),
         is_active: device.is_active,
-        supports_media_control: false,
-        supports_remote_control: false,
+        supports_media_control: capabilities.supports_media_control && has_web_socket,
+        supports_remote_control: capabilities.supports_media_control && has_web_socket,
         now_playing_queue,
         has_custom_device_name: false,
         playlist_item_id: device.playlist_item_id,

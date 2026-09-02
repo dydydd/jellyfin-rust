@@ -52,6 +52,14 @@ impl WebSocketHub {
         }
     }
 
+    pub(crate) async fn is_connected(&self, session_id: &str) -> bool {
+        self.sessions
+            .read()
+            .await
+            .get(session_id)
+            .is_some_and(|sender| sender.receiver_count() > 0)
+    }
+
     pub(crate) async fn send<T: serde::Serialize>(
         &self,
         session_ids: &[String],
