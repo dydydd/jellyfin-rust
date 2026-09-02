@@ -486,6 +486,10 @@ impl Fixture {
             ))
             .await
             .expect("target session creation");
+        devices
+            .add_additional_user(target.id, user.id, &user.username)
+            .await
+            .expect("controller must share the target session");
         let api_key = ApiKeyRepository::new(database.clone())
             .create(&format!("session-command-key-{suffix}"))
             .await
