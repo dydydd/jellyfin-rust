@@ -390,13 +390,32 @@ pub(crate) async fn available_options(
 ) -> Result<Json<LibraryOptionsResultDto>, ApiError> {
     authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let _ = query.is_new_library;
+    let is_new_library = query.is_new_library;
+    let metadata_savers = ["Nfo"]
+        .into_iter()
+        .map(|name| jellyfin_model::LibraryOptionInfoDto {
+            name: Some(name.to_owned()),
+            default_enabled: !is_new_library,
+        })
+        .collect();
+    let metadata_readers = ["Nfo"].into_iter().map(option_info).collect();
+    let subtitle_fetchers: Vec<jellyfin_model::LibraryOptionInfoDto> = Vec::new();
+    let lyric_fetchers: Vec<jellyfin_model::LibraryOptionInfoDto> = Vec::new();
+    let media_segment_providers = Vec::new();
     Ok(Json(LibraryOptionsResultDto {
+        metadata_savers,
+        metadata_readers,
+        subtitle_fetchers,
+        lyric_fetchers,
+        media_segment_providers,
         type_options: representative_item_types(query.library_content_type)
             .into_iter()
             .map(|item_type| LibraryTypeOptionsDto {
                 item_type: Some(item_type.to_owned()),
                 default_image_options: default_image_options(item_type),
+                metadata_fetchers: metadata_fetchers(item_type, is_new_library),
+                image_fetchers: image_fetchers(item_type, is_new_library),
+                similar_item_providers: similar_item_providers(item_type),
                 ..LibraryTypeOptionsDto::default()
             })
             .collect(),
@@ -458,7 +477,99 @@ pub(crate) async fn updated_media(
     if request.updates.iter().any(|update| update.path.is_none()) {
         return Err(ApiError::InvalidRequest);
     }
+    // The official endpoint reports each path to the library monitor.  This
+    // implementation has no asynchronous file-system monitor yet, so trigger
+    // an equivalent library scan immediately rather than returning a no-op.
+    if !request.updates.is_empty() {
+        let summary = state.library_scan.scan_all().await?;
+        crate::websocket::broadcast_library_changed(
+            &state,
+            &summary.added_ids,
+            &summary.removed_ids,
+            &summary.changed_ids,
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn option_info(name: &str) -> jellyfin_model::LibraryOptionInfoDto {
+    jellyfin_model::LibraryOptionInfoDto {
+        name: Some(name.to_owned()),
+        default_enabled: true,
+    }
+}
+
+fn metadata_fetchers(item_type: &str, is_new: bool) -> Vec<jellyfin_model::LibraryOptionInfoDto> {
+    let names: &[&str] = match item_type {
+        "Movie" | "Series" | "Season" | "Episode" => &["TheMovieDb", "TheTVDB", "OMDb"],
+        "MusicArtist" | "MusicAlbum" | "Audio" | "MusicVideo" => &["TheAudioDB", "MusicBrainz"],
+        "Book" | "AudioBook" => &["GoogleBooks"],
+        _ => &[],
+    };
+    names
+        .iter()
+        .map(|name| jellyfin_model::LibraryOptionInfoDto {
+            name: Some((*name).to_owned()),
+            // New libraries enable the canonical provider for each media
+            // family by default; optional fallbacks remain opt-in. Existing
+            // libraries preserve the historical enabled default.
+            default_enabled: !is_new
+                || match item_type {
+                    "Movie" | "Series" | "Season" | "Episode" => {
+                        matches!(*name, "TheMovieDb" | "TheTVDB")
+                    }
+                    "MusicArtist" | "MusicAlbum" | "Audio" | "MusicVideo" => {
+                        matches!(*name, "TheAudioDB" | "MusicBrainz")
+                    }
+                    "Book" | "AudioBook" => *name == "GoogleBooks",
+                    _ => false,
+                },
+        })
+        .collect()
+}
+
+fn image_fetchers(item_type: &str, is_new: bool) -> Vec<jellyfin_model::LibraryOptionInfoDto> {
+    if matches!(
+        item_type,
+        "Movie" | "Series" | "Season" | "Episode" | "MusicArtist" | "MusicAlbum"
+    ) {
+        {
+            let mut providers = vec![jellyfin_model::LibraryOptionInfoDto {
+                name: Some("TheMovieDb".to_owned()),
+                default_enabled: true,
+            }];
+            if matches!(item_type, "Series" | "Season" | "Episode") {
+                providers.push(jellyfin_model::LibraryOptionInfoDto {
+                    name: Some("TheTVDB".to_owned()),
+                    default_enabled: true,
+                });
+            }
+            if matches!(item_type, "MusicArtist" | "MusicAlbum") {
+                providers.extend([
+                    jellyfin_model::LibraryOptionInfoDto {
+                        name: Some("TheAudioDB".to_owned()),
+                        default_enabled: true,
+                    },
+                    jellyfin_model::LibraryOptionInfoDto {
+                        name: Some("Image Extractor".to_owned()),
+                        default_enabled: !is_new,
+                    },
+                ]);
+            }
+            providers
+        }
+    } else {
+        Vec::new()
+    }
+}
+
+fn similar_item_providers(item_type: &str) -> Vec<jellyfin_model::LibraryOptionInfoDto> {
+    if matches!(item_type, "Movie" | "Series" | "MusicAlbum") {
+        vec![option_info("TheMovieDb")]
+    } else {
+        Vec::new()
+    }
 }
 
 pub(crate) async fn delete_item(
