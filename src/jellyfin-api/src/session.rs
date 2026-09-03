@@ -85,6 +85,9 @@ impl Default for CapabilitiesQuery {
             playable_media_types: Vec::new(),
             supported_commands: Vec::new(),
             supports_media_control: false,
+            // The capabilities query parameter defaults to true in the
+            // official SessionController. This differs from the DTO's serde
+            // default, which remains false when omitted from JSON.
             supports_persistent_identifier: true,
         }
     }
@@ -98,8 +101,17 @@ pub(crate) async fn list(
 ) -> Result<Json<Vec<SessionInfoDto>>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    if query.controllable_by_user_id.is_some() {
-        return Ok(Json(Vec::new()));
+    let controllable_user_id = query.controllable_by_user_id;
+    if let Some(target_user_id) = controllable_user_id {
+        let (requester_id, is_admin) = match &identity {
+            authentication::AuthenticatedIdentity::Device(session) => {
+                (session.user.id, session.user.is_administrator)
+            }
+            authentication::AuthenticatedIdentity::ApiKey(_) => (Uuid::nil(), true),
+        };
+        if !is_admin && requester_id != target_user_id {
+            return Err(ApiError::Forbidden);
+        }
     }
 
     let mut device_query = DeviceQuery {
@@ -119,9 +131,54 @@ pub(crate) async fn list(
 
     let page = state.devices.query(&device_query).await?;
     let mut sessions = Vec::with_capacity(page.items.len());
+    let controllable_policy = if let Some(target_user_id) = controllable_user_id {
+        let target_user = match state.users.get(target_user_id).await {
+            Ok(user) => user,
+            // Jellyfin treats an unknown controllable user as an empty
+            // session result rather than surfacing a 404 from the user store.
+            Err(jellyfin_controller::UserError::NotFound) => return Ok(Json(Vec::new())),
+            Err(error) => return Err(error.into()),
+        };
+        Some(authentication::stored_user_policy(&target_user)?)
+    } else {
+        None
+    };
     for device in page.items {
+        if let Some(target_user_id) = controllable_user_id {
+            let supports_remote =
+                serde_json::from_value::<ClientCapabilitiesDto>(device.capabilities.clone())
+                    .unwrap_or_default()
+                    .supports_media_control
+                    && device.is_active;
+            if !supports_remote {
+                continue;
+            }
+            let additional: Vec<SessionUserInfo> =
+                serde_json::from_value(device.additional_users.clone()).unwrap_or_default();
+            let contains_target = device.user_id == target_user_id
+                || additional.iter().any(|u| u.user_id == target_user_id);
+            if !contains_target {
+                continue;
+            }
+            if controllable_policy
+                .as_ref()
+                .is_some_and(|p| !p.enable_shared_device_control)
+                && device.user_id != target_user_id
+            {
+                continue;
+            }
+        }
         let user = state.users.get(device.user_id).await?;
-        sessions.push(session_info(device, user.username, state.server_id()));
+        let connected = state
+            .web_sockets
+            .is_connected(&jellyfin_session_id(&device.app_name, &device.device_id))
+            .await;
+        sessions.push(session_info(
+            device,
+            user.username,
+            state.server_id(),
+            connected,
+        ));
     }
     Ok(Json(sessions))
 }
@@ -137,7 +194,16 @@ pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInf
     let mut sessions = Vec::with_capacity(page.items.len());
     for device in page.items {
         let user = state.users.get(device.user_id).await?;
-        sessions.push(session_info(device, user.username, state.server_id()));
+        let connected = state
+            .web_sockets
+            .is_connected(&jellyfin_session_id(&device.app_name, &device.device_id))
+            .await;
+        sessions.push(session_info(
+            device,
+            user.username,
+            state.server_id(),
+            connected,
+        ));
     }
     Ok(sessions)
 }
@@ -589,7 +655,12 @@ async fn find_active_session(
         .ok_or(ApiError::SessionNotFound)
 }
 
-fn session_info(device: device::Model, user_name: String, server_id: &str) -> SessionInfoDto {
+fn session_info(
+    device: device::Model,
+    user_name: String,
+    server_id: &str,
+    has_open_websocket: bool,
+) -> SessionInfoDto {
     let capabilities: ClientCapabilitiesDto =
         serde_json::from_value(device.capabilities).unwrap_or_default();
     let play_state: PlayerStateInfo = serde_json::from_value(device.play_state).unwrap_or_default();
@@ -613,8 +684,8 @@ fn session_info(device: device::Model, user_name: String, server_id: &str) -> Se
         device_id: Some(device.device_id),
         application_version: Some(device.app_version),
         is_active: device.is_active,
-        supports_media_control: false,
-        supports_remote_control: false,
+        supports_media_control: capabilities.supports_media_control && has_open_websocket,
+        supports_remote_control: capabilities.supports_media_control && has_open_websocket,
         now_playing_queue,
         has_custom_device_name: false,
         playlist_item_id: device.playlist_item_id,
