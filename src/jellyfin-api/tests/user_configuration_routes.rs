@@ -71,6 +71,7 @@ async fn exercise_user_configuration_routes(database_name: &str) {
 
 struct Fixture {
     app: axum::Router,
+    database: DatabaseConnection,
     user_id: Uuid,
     other_user_id: Uuid,
     admin_token: String,
@@ -98,8 +99,9 @@ impl Fixture {
         let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
 
         Self {
+            database: database.clone(),
             app: jellyfin_api::router(AppState::new(
-                database,
+                database.clone(),
                 "User Configuration Test Server".to_owned(),
                 "http://127.0.0.1:8096".to_owned(),
             )),
@@ -187,6 +189,43 @@ async fn assert_self_update(fixture: &Fixture) {
     assert_eq!(configuration["HidePlayedInLatest"], false);
     assert_eq!(configuration["RememberAudioSelections"], true);
     assert_eq!(configuration["CastReceiverId"], "living-room");
+
+    // Jellyfin denies self-service mutations when the user's policy disables
+    // EnableUserPreferenceAccess, while administrators retain access.
+    let users = UserService::new(fixture.database.clone());
+    let mut policy = jellyfin_model::UserPolicy::default();
+    policy.enable_user_preference_access = false;
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("disable preference access");
+    let denied_configuration = request(
+        &fixture.app,
+        "POST",
+        "/Users/Configuration",
+        Some(&fixture.user_token),
+        configuration_body(|configuration| configuration.display_missing_episodes = false),
+    )
+    .await;
+    assert_eq!(denied_configuration.status(), StatusCode::FORBIDDEN);
+    let denied_profile = request(
+        &fixture.app,
+        "POST",
+        "/Users",
+        Some(&fixture.user_token),
+        serde_json::json!({ "Name": "renamed-while-denied", "Configuration": {} }),
+    )
+    .await;
+    assert_eq!(denied_profile.status(), StatusCode::FORBIDDEN);
+    let denied_password = request(
+        &fixture.app,
+        "POST",
+        "/Users/Password",
+        Some(&fixture.user_token),
+        serde_json::json!({ "ResetPassword": true }),
+    )
+    .await;
+    assert_eq!(denied_password.status(), StatusCode::FORBIDDEN);
 }
 
 async fn assert_admin_legacy_update(fixture: &Fixture) {

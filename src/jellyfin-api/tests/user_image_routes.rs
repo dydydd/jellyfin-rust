@@ -107,6 +107,29 @@ async fn exercise_user_image_routes(database_name: &str) {
     let png = png_fixture();
     let encoded_png = BASE64_STANDARD.encode(&png);
 
+    let mut restricted_policy = jellyfin_model::UserPolicy::default();
+    restricted_policy.enable_user_preference_access = false;
+    users
+        .update_policy(user.id, &restricted_policy)
+        .await
+        .expect("disable preference access");
+    assert_eq!(
+        post_image(
+            &app,
+            "/UserImage",
+            Some(&user_token),
+            "image/png",
+            &encoded_png,
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    users
+        .update_policy(user.id, &jellyfin_model::UserPolicy::default())
+        .await
+        .expect("restore preference access");
+
     assert_eq!(
         post_image(&app, "/UserImage", None, "image/png", "Zmlyc3Q=")
             .await

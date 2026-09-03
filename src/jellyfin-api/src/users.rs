@@ -292,9 +292,7 @@ async fn post_user_image_for(
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    if !authenticated_user.is_administrator && authenticated_user.id != target.id {
-        return Err(ApiError::Forbidden);
-    }
+    assert_can_update_user(&authenticated_user, &target)?;
     let extension = MimeTypes::try_get_image_extension(
         headers
             .get(header::CONTENT_TYPE)
@@ -380,9 +378,7 @@ async fn delete_user_image_for(
     target_id: Uuid,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    if !authenticated_user.is_administrator && authenticated_user.id != target.id {
-        return Err(ApiError::Forbidden);
-    }
+    assert_can_update_user(&authenticated_user, &target)?;
     let removed = state
         .users
         .clear_profile_image(target.id)
@@ -432,13 +428,17 @@ async fn update_with_id(
     target_id: Uuid,
     request: Result<Json<UserDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    if !authenticated_user.is_administrator && authenticated_user.id != target_id {
-        return Err(ApiError::Forbidden);
-    }
-    state.users.get(target_id).await?;
+    let target = state.users.get(target_id).await?;
+    assert_can_update_user(&authenticated_user, &target)?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let name = request.name.as_deref().ok_or(ApiError::InvalidRequest)?;
-    state.users.rename(target_id, name).await?;
+    if target.username != name {
+        state.users.rename(target_id, name).await?;
+    }
+    state
+        .users
+        .update_configuration(target_id, &request.configuration)
+        .await?;
     let dto = user_to_dto_with_server_id(state, state.users.get(target_id).await?);
     crate::websocket::broadcast_user_updated(
         state,
@@ -476,9 +476,7 @@ async fn update_configuration_with_id(
     request: Result<Json<UserConfiguration>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    if !authenticated_user.is_administrator && authenticated_user.id != target.id {
-        return Err(ApiError::Forbidden);
-    }
+    assert_can_update_user(&authenticated_user, &target)?;
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
     state
         .users
@@ -524,9 +522,7 @@ async fn update_password_with_id(
 ) -> Result<StatusCode, ApiError> {
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let mut target = state.users.get(target_id).await?;
-    if !authenticated.user.is_administrator && authenticated.user.id != target_id {
-        return Err(ApiError::Forbidden);
-    }
+    assert_can_update_user(&authenticated.user, &target)?;
     if authenticated.user.id == target_id && !request.reset_password {
         target =
             verify_current_password(state, target, request.current_pw.unwrap_or_default()).await?;
@@ -590,6 +586,28 @@ async fn require_administrator(
     let authenticated = authentication::authenticated_session(state, headers).await?;
     if authenticated.user.is_administrator {
         Ok(authenticated.user)
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
+
+/// Matches Jellyfin's `RequestHelpers.AssertCanUpdateUser` semantics for
+/// profile, configuration, password and image mutations. Administrators may
+/// update any user; non-administrators may only update themselves when their
+/// persisted policy enables user preference access.
+fn assert_can_update_user(
+    authenticated_user: &user::Model,
+    target_user: &user::Model,
+) -> Result<(), ApiError> {
+    if authenticated_user.is_administrator {
+        return Ok(());
+    }
+    if authenticated_user.id != target_user.id {
+        return Err(ApiError::Forbidden);
+    }
+    let policy = authentication::stored_user_policy(target_user)?;
+    if policy.enable_user_preference_access {
+        Ok(())
     } else {
         Err(ApiError::Forbidden)
     }
