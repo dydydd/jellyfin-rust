@@ -3,6 +3,8 @@ use jellyfin_data::{
     ItemValueRepository, PlaylistRepository, PlaylistStoreError,
     entities::{base_item, item_value, user},
 };
+use jellyfin_model::UserPolicy;
+use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -26,6 +28,138 @@ pub enum LibraryControllerError {
     ItemValue(#[from] ItemValueError),
     #[error(transparent)]
     Playlist(#[from] PlaylistStoreError),
+}
+
+fn item_can_download(item: &base_item::Model) -> bool {
+    if item.is_folder || item.is_virtual_item || item.path.as_deref().is_none_or(str::is_empty) {
+        return false;
+    }
+    if !matches!(
+        item.item_type.as_str(),
+        "Audio"
+            | "AudioBook"
+            | "Book"
+            | "Episode"
+            | "Movie"
+            | "MusicVideo"
+            | "Photo"
+            | "Trailer"
+            | "Video"
+    ) {
+        return false;
+    }
+    let video_type = item
+        .data
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("VideoType").or_else(|| object.get("video_type")));
+    !matches!(video_type, Some(Value::String(value)) if value.eq_ignore_ascii_case("Dvd") || value.eq_ignore_ascii_case("BluRay"))
+        && !matches!(video_type, Some(Value::Number(value)) if value.as_i64().is_some_and(|value| value == 2 || value == 3))
+}
+
+/// Mirrors the conservative part of `BaseItem.CanDelete()`: virtual and
+/// aggregate metadata entries are projections, not user-owned files.  Only
+/// concrete file/folder items (with a real local path) may reach the delete
+/// repository operation.
+fn item_can_delete(item: &base_item::Model) -> bool {
+    if item.id == jellyfin_data::USER_ROOT_FOLDER_ID
+        || item.is_virtual_item
+        || item.path.as_deref().is_none_or(str::is_empty)
+    {
+        return false;
+    }
+    !matches!(
+        item.item_type.as_str(),
+        "UserView"
+            | "CollectionFolder"
+            | "AggregateFolder"
+            | "UserRootFolder"
+            | "Person"
+            | "Genre"
+            | "Studio"
+            | "MusicArtist"
+            | "MusicAlbum"
+            | "BoxSet"
+            | "Playlist"
+            | "Channel"
+            | "Program"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{item_can_delete, item_can_download};
+    use jellyfin_data::entities::base_item;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn item(
+        item_type: &str,
+        path: Option<&str>,
+        data: Option<serde_json::Value>,
+    ) -> base_item::Model {
+        let now = chrono::Utc::now();
+        base_item::Model {
+            id: Uuid::new_v4(),
+            item_type: item_type.to_owned(),
+            data,
+            path: path.map(str::to_owned),
+            parent_id: None,
+            top_parent_id: None,
+            name: None,
+            clean_name: None,
+            sort_name: None,
+            media_type: None,
+            overview: None,
+            official_rating: None,
+            index_number: None,
+            parent_index_number: None,
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: false,
+            is_virtual_item: false,
+            presentation_unique_key: None,
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: now,
+            date_modified: now,
+            row_version: 0,
+        }
+    }
+
+    #[test]
+    fn can_download_matches_file_backed_media_and_rejects_discs() {
+        assert!(item_can_download(&item("Movie", Some("/movie.mkv"), None)));
+        assert!(!item_can_download(&item("Movie", None, None)));
+        assert!(!item_can_download(&item("Folder", Some("/folder"), None)));
+        assert!(!item_can_download(&item(
+            "Movie",
+            Some("/disc"),
+            Some(json!({"VideoType": "Dvd"}))
+        )));
+        assert!(!item_can_download(&item(
+            "Movie",
+            Some("/disc"),
+            Some(json!({"VideoType": 3}))
+        )));
+    }
+
+    #[test]
+    fn can_delete_rejects_virtual_and_aggregate_items() {
+        assert!(item_can_delete(&item("Movie", Some("/movie.mkv"), None)));
+        assert!(!item_can_delete(&item("UserView", Some("/view"), None)));
+        assert!(!item_can_delete(&item(
+            "CollectionFolder",
+            Some("/library"),
+            None
+        )));
+        let mut virtual_item = item("Movie", Some("/virtual"), None);
+        virtual_item.is_virtual_item = true;
+        assert!(!item_can_delete(&virtual_item));
+    }
 }
 
 /// Coordinates `LibraryController` authorization with persisted item queries.
@@ -136,9 +270,15 @@ impl LibraryControllerService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<String, LibraryControllerError> {
-        self.item(authenticated_user, target_user_id, item_id)
-            .await?
-            .path
+        let item = self
+            .item(authenticated_user, target_user_id, item_id)
+            .await?;
+        let policy: UserPolicy = serde_json::from_value(authenticated_user.policy.clone())
+            .map_err(UserError::PolicySerialization)?;
+        if !policy.enable_content_downloading || !item_can_download(&item) {
+            return Err(LibraryControllerError::Forbidden);
+        }
+        item.path
             .filter(|path| !path.is_empty())
             .ok_or(LibraryControllerError::FileNotFound)
     }
@@ -322,7 +462,7 @@ impl LibraryControllerService {
         Ok(self.items.item_counts(user_id, is_favorite).await?)
     }
 
-    /// Atomically deletes complete item subtrees for an administrator.
+    /// Atomically deletes complete item subtrees and their source files.
     ///
     /// # Errors
     ///
@@ -332,11 +472,74 @@ impl LibraryControllerService {
         authenticated_user: &user::Model,
         item_ids: &[Uuid],
     ) -> Result<(), LibraryControllerError> {
-        if !authenticated_user.is_administrator {
-            return Err(LibraryControllerError::Forbidden);
+        let policy: UserPolicy = serde_json::from_value(authenticated_user.policy.clone())
+            .map_err(UserError::PolicySerialization)?;
+        let mut paths = Vec::new();
+        for &item_id in item_ids {
+            let item = self
+                .items
+                .get(item_id)
+                .await?
+                .ok_or(LibraryControllerError::ItemNotFound)?;
+            if !item_can_delete(&item) {
+                return Err(LibraryControllerError::Forbidden);
+            }
+            if !authenticated_user.is_administrator
+                && !self.deletion_folder_allowed(item_id, &policy).await?
+            {
+                return Err(LibraryControllerError::Forbidden);
+            }
+            if let Some(path) = item.path.filter(|path| !path.is_empty()) {
+                paths.push(path);
+            }
+            for descendant in self.items.descendants(item_id).await? {
+                if let Some(path) = descendant.item.path.filter(|path| !path.is_empty()) {
+                    paths.push(path);
+                }
+            }
         }
         self.items.delete_many(item_ids).await?;
+        for path in paths {
+            let path = std::path::Path::new(&path);
+            let result = if path.is_dir() {
+                tokio::fs::remove_dir_all(path).await
+            } else {
+                tokio::fs::remove_file(path).await
+            };
+            if let Err(error) = result
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %path.display(), %error, "failed to remove deleted library item file");
+            }
+        }
         Ok(())
+    }
+
+    async fn deletion_folder_allowed(
+        &self,
+        item_id: Uuid,
+        policy: &UserPolicy,
+    ) -> Result<bool, LibraryControllerError> {
+        if policy.enable_content_deletion {
+            return Ok(item_id != jellyfin_data::USER_ROOT_FOLDER_ID);
+        }
+        let allowed = policy
+            .enable_content_deletion_from_folders
+            .iter()
+            .filter_map(|id| Uuid::parse_str(id).ok())
+            .collect::<std::collections::HashSet<_>>();
+        if allowed.is_empty() {
+            return Ok(false);
+        }
+        if allowed.contains(&item_id) {
+            return Ok(true);
+        }
+        Ok(self
+            .items
+            .ancestors(item_id)
+            .await?
+            .into_iter()
+            .any(|entry| allowed.contains(&entry.item.id)))
     }
 
     async fn validate_user(
