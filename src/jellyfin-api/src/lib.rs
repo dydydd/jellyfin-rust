@@ -204,6 +204,7 @@ pub struct AppState {
     pub(crate) tmdb_api_key: Arc<tokio::sync::RwLock<Arc<str>>>,
     pub(crate) omdb_api_key: Arc<tokio::sync::RwLock<Arc<str>>>,
     pub(crate) system_command: Arc<dyn Fn(SystemCommand) + Send + Sync>,
+    pub(crate) metrics_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -347,6 +348,7 @@ impl AppState {
             tmdb_api_key: Arc::new(tokio::sync::RwLock::new(Arc::from(""))),
             omdb_api_key: Arc::new(tokio::sync::RwLock::new(Arc::from("2c9d9507"))),
             system_command: Arc::new(|_| {}),
+            metrics_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         state.scheduled_tasks.add_change_listener(Arc::new(move || {
             let tasks = scheduled_tasks.shared_handle();
@@ -406,6 +408,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the scheduled-task log retention window.
+    #[must_use]
+    pub fn with_log_file_retention_days(self, days: i32) -> Self {
+        self.scheduled_tasks.set_log_file_retention_days(days);
+        self
+    }
+
     /// Uses `PostgreSQL` as the source of truth for server startup configuration.
     ///
     /// The repository singleton must be loaded successfully before attaching it.
@@ -435,6 +444,14 @@ impl AppState {
     #[must_use]
     pub fn with_quick_connect_available(self, available: bool) -> Self {
         self.quick_connect_capability.set_enabled(available);
+        self
+    }
+
+    /// Enables or disables the Prometheus metrics endpoint at runtime.
+    #[must_use]
+    pub fn with_metrics_enabled(self, enabled: bool) -> Self {
+        self.metrics_enabled
+            .store(enabled, std::sync::atomic::Ordering::Release);
         self
     }
 
@@ -571,6 +588,8 @@ impl AppState {
             .set_cache_directory(self.cache_directory.as_path());
         self.scheduled_tasks
             .set_chapter_images_directory(self.program_data_directory.join("chapter-images"));
+        self.scheduled_tasks
+            .set_task_state_path(self.program_data_directory.join("scheduled-tasks.json"));
         self
     }
 
@@ -584,7 +603,10 @@ impl AppState {
     /// Replaces the Schedules Direct guide refresh service used by Live TV.
     #[must_use]
     pub fn with_guide_refresh_service(mut self, service: GuideRefreshService) -> Self {
-        self.live_tv_guide = Some(Arc::new(service));
+        let service = Arc::new(service);
+        self.scheduled_tasks
+            .register_refresh_guide_executor(Arc::clone(&service));
+        self.live_tv_guide = Some(service);
         self
     }
 
@@ -653,6 +675,22 @@ impl AppState {
             tracing::error!(%error, "library watcher failed to start");
         }
         self
+    }
+
+    /// Performs best-effort asynchronous cleanup before the HTTP host stops.
+    ///
+    /// The notification is sent before cancelling transcodes so connected
+    /// clients can close their WebSocket gracefully while the server drains
+    /// in-flight HTTP requests.
+    pub async fn prepare_for_shutdown(&self, command: SystemCommand) {
+        self.web_sockets.notify_shutdown(command);
+        let stopped = self.transcode_jobs.stop_all().await;
+        if !stopped.is_empty() {
+            tracing::info!(
+                jobs = stopped.len(),
+                "stopped transcode jobs during shutdown"
+            );
+        }
     }
 
     pub(crate) fn server_id(&self) -> &str {
@@ -999,6 +1037,7 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/Document", post(client_log::document))
         .route("/ClientLog/Document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
+        .route("/metrics", get(metrics))
         .route("/ScheduledTasks", get(scheduled_tasks::list))
         .route(
             "/ScheduledTasks/Running/{task_id}",
@@ -1009,6 +1048,22 @@ fn system_routes() -> Router<Arc<AppState>> {
             post(scheduled_tasks::update_triggers),
         )
         .route("/ScheduledTasks/{task_id}", get(scheduled_tasks::get))
+}
+
+async fn metrics(State(state): State<Arc<AppState>>) -> Response {
+    use std::sync::atomic::Ordering;
+    if !state.metrics_enabled.load(Ordering::Acquire) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let body = "# HELP jellyfin_up Jellyfin Rust server availability\n# TYPE jellyfin_up gauge\njellyfin_up 1\n";
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        body,
+    )
+        .into_response()
 }
 
 fn sync_play_routes() -> Router<Arc<AppState>> {
@@ -2261,6 +2316,10 @@ impl IntoResponse for ApiError {
             Self::ScheduledTask(ScheduledTaskError::NotFound) => {
                 (StatusCode::NOT_FOUND, "Scheduled task not found")
             }
+            Self::ScheduledTask(ScheduledTaskError::ExecutorUnavailable) => (
+                StatusCode::NOT_IMPLEMENTED,
+                "Scheduled task executor unavailable",
+            ),
             Self::LibraryScan(error) => library_scan_error_response(&error),
             Self::Package(PackageError::NotFound) => (StatusCode::NOT_FOUND, "Package not found"),
             Self::Trickplay(error) => trickplay_error_response(&error),

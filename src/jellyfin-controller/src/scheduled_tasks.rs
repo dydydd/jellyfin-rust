@@ -33,6 +33,8 @@ const TEMP_FILE_RETENTION_DAYS: i64 = 1;
 pub enum ScheduledTaskError {
     #[error("scheduled task was not found")]
     NotFound,
+    #[error("scheduled task executor is unavailable")]
+    ExecutorUnavailable,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +73,7 @@ impl ScheduledTask {
 /// Filesystem locations used by maintenance scheduled tasks.
 #[derive(Debug, Clone)]
 pub struct ScheduledTaskPaths {
+    pub task_state_path: Option<Arc<PathBuf>>,
     pub log_directory: Arc<PathBuf>,
     pub cache_directory: Arc<PathBuf>,
     pub transcode_directory: Arc<PathBuf>,
@@ -85,6 +88,7 @@ pub struct ScheduledTaskPaths {
 impl Default for ScheduledTaskPaths {
     fn default() -> Self {
         Self {
+            task_state_path: None,
             log_directory: Arc::new(PathBuf::from("logs")),
             cache_directory: Arc::new(PathBuf::from("cache")),
             transcode_directory: Arc::new(
@@ -233,6 +237,14 @@ impl ScheduledTaskService {
         self.register_executor("MissingLyrics", missing_media_data_handler("lyrics"));
     }
 
+    /// Registers the Live TV guide refresh executor after the guide service is
+    /// constructed.  The API state builder wires this service after the
+    /// maintenance executors, so registration must also happen here rather
+    /// than relying on an earlier `None` snapshot.
+    pub fn register_refresh_guide_executor(&self, guide: Arc<GuideRefreshService>) {
+        self.register_executor("RefreshGuide", refresh_guide_handler(guide));
+    }
+
     fn register_executor(
         &self,
         task_key: &str,
@@ -257,6 +269,17 @@ impl ScheduledTaskService {
                 .expect("scheduled task paths lock poisoned"),
         )
         .log_directory = Arc::new(path.into());
+    }
+
+    /// Sets the JSON file used to persist task triggers and execution history.
+    pub fn set_task_state_path(&self, path: impl Into<PathBuf>) {
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .task_state_path = Some(Arc::new(path.into()));
     }
 
     /// Updates the cache directory used by maintenance tasks.
@@ -459,7 +482,28 @@ impl ScheduledTaskService {
                 tasks: self.shared_handle(),
             };
             tokio::spawn(async move { executor(context).await });
+        } else {
+            // Never leave a task marked Running when no runtime executor was
+            // registered (for example optional Live TV/plugin services).
+            let mut tasks = self.tasks.write().await;
+            if let Some(task) = tasks.iter_mut().find(|task| task.id == task_id) {
+                task.state = TaskState::Idle;
+                task.current_progress_percentage = None;
+                task.last_execution_result = Some(TaskResult {
+                    start_time_utc: task.last_run.unwrap_or_else(Utc::now),
+                    end_time_utc: Utc::now(),
+                    status: TaskCompletionStatus::Failed,
+                    name: Some(task.name.clone()),
+                    key: Some(task.key.clone()),
+                    id: Some(task.id.clone()),
+                    error_message: Some("Task executor is unavailable".to_owned()),
+                    long_error_message: None,
+                });
+            }
+            self.notify_changed();
+            return Err(ScheduledTaskError::ExecutorUnavailable);
         }
+        self.persist_state().await;
         self.notify_changed();
         Ok(())
     }
@@ -491,25 +535,28 @@ impl ScheduledTaskService {
         task_id: &str,
         status: TaskCompletionStatus,
     ) -> Result<(), ScheduledTaskError> {
-        let mut tasks = self.tasks.write().await;
-        let task = tasks
-            .iter_mut()
-            .find(|task| task.id.eq_ignore_ascii_case(task_id))
-            .ok_or(ScheduledTaskError::NotFound)?;
-        let end_time = Utc::now();
-        let start_time = task.last_run.unwrap_or(end_time);
-        task.current_progress_percentage = Some(100.0);
-        task.last_execution_result = Some(TaskResult {
-            start_time_utc: start_time,
-            end_time_utc: end_time,
-            status,
-            name: Some(task.name.clone()),
-            key: Some(task.key.clone()),
-            id: Some(task.id.clone()),
-            error_message: None,
-            long_error_message: None,
-        });
+        {
+            let mut tasks = self.tasks.write().await;
+            let task = tasks
+                .iter_mut()
+                .find(|task| task.id.eq_ignore_ascii_case(task_id))
+                .ok_or(ScheduledTaskError::NotFound)?;
+            let end_time = Utc::now();
+            let start_time = task.last_run.unwrap_or(end_time);
+            task.current_progress_percentage = Some(100.0);
+            task.last_execution_result = Some(TaskResult {
+                start_time_utc: start_time,
+                end_time_utc: end_time,
+                status,
+                name: Some(task.name.clone()),
+                key: Some(task.key.clone()),
+                id: Some(task.id.clone()),
+                error_message: None,
+                long_error_message: None,
+            });
+        }
         self.notify_changed();
+        self.persist_state().await;
         Ok(())
     }
 
@@ -568,13 +615,16 @@ impl ScheduledTaskService {
         task_id: &str,
         triggers: Vec<TaskTriggerInfo>,
     ) -> Result<(), ScheduledTaskError> {
-        let mut tasks = self.tasks.write().await;
-        let task = tasks
-            .iter_mut()
-            .find(|task| task.id.eq_ignore_ascii_case(task_id))
-            .ok_or(ScheduledTaskError::NotFound)?;
-        task.triggers = triggers;
+        {
+            let mut tasks = self.tasks.write().await;
+            let task = tasks
+                .iter_mut()
+                .find(|task| task.id.eq_ignore_ascii_case(task_id))
+                .ok_or(ScheduledTaskError::NotFound)?;
+            task.triggers = triggers;
+        }
         self.notify_changed();
+        self.persist_state().await;
         Ok(())
     }
 
@@ -594,6 +644,7 @@ impl ScheduledTaskService {
         }
         let service = self.shared_handle();
         tokio::spawn(async move {
+            service.load_persisted_state().await;
             let now = Utc::now();
             let mut tasks = service.tasks.write().await;
             for task in tasks.iter_mut() {
@@ -691,8 +742,76 @@ impl ScheduledTaskService {
         });
         drop(tasks);
         self.notify_changed();
+        self.persist_state().await;
         Ok(())
     }
+
+    async fn load_persisted_state(&self) {
+        let path = self
+            .paths
+            .read()
+            .expect("scheduled task paths lock poisoned")
+            .task_state_path
+            .as_ref()
+            .map(|p| p.as_ref().clone());
+        let Some(path) = path else { return };
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let Ok(saved) = serde_json::from_slice::<Vec<PersistedTaskState>>(&bytes) else {
+            return;
+        };
+        let mut tasks = self.tasks.write().await;
+        for state in saved {
+            if let Some(task) = tasks.iter_mut().find(|task| task.id == state.id) {
+                task.is_enabled = state.is_enabled;
+                task.triggers = state.triggers;
+                task.last_run = state.last_run;
+                task.last_execution_result = state.last_execution_result;
+            }
+        }
+    }
+
+    async fn persist_state(&self) {
+        let path = self
+            .paths
+            .read()
+            .expect("scheduled task paths lock poisoned")
+            .task_state_path
+            .as_ref()
+            .map(|p| p.as_ref().clone());
+        let Some(path) = path else { return };
+        let tasks = self.tasks.read().await;
+        let saved = tasks
+            .iter()
+            .map(|task| PersistedTaskState {
+                id: task.id.clone(),
+                is_enabled: task.is_enabled,
+                triggers: task.triggers.clone(),
+                last_run: task.last_run,
+                last_execution_result: task.last_execution_result.clone(),
+            })
+            .collect::<Vec<_>>();
+        let Ok(json) = serde_json::to_vec_pretty(&saved) else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let temporary = path.with_extension("json.tmp");
+        if std::fs::write(&temporary, json).is_ok() {
+            let _ = std::fs::rename(temporary, path);
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedTaskState {
+    id: String,
+    is_enabled: bool,
+    triggers: Vec<TaskTriggerInfo>,
+    last_run: Option<DateTime<Utc>>,
+    last_execution_result: Option<TaskResult>,
 }
 
 impl ScheduledTask {
@@ -860,12 +979,8 @@ fn plugin_updates_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTask
     |context| {
         Box::pin(async move {
             context.report_progress(0.0).await;
-            tracing::info!(
-                task = %context.task_id,
-                "plugin update check completed without package manager changes"
-            );
-            context.report_progress(100.0).await;
-            context.complete().await;
+            tracing::warn!(task = %context.task_id, "plugin update service is unavailable");
+            context.fail().await;
         })
     }
 }
@@ -1074,9 +1189,8 @@ fn missing_media_data_handler(
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
     move |context| {
         Box::pin(async move {
-            tracing::debug!(task = %context.task_id, kind, "missing media data scan completed");
-            context.report_progress(100.0).await;
-            context.complete().await;
+            tracing::warn!(task = %context.task_id, kind, "missing media data service is unavailable");
+            context.fail().await;
         })
     }
 }
@@ -1442,6 +1556,30 @@ mod tests {
         let result = task.last_execution_result.expect("last execution result");
         assert_eq!(result.status, TaskCompletionStatus::Completed);
         assert!(result.end_time_utc >= result.start_time_utc);
+    }
+
+    #[tokio::test]
+    async fn task_triggers_and_history_survive_service_restart() {
+        let root = temporary_directory("scheduled-task-state");
+        let path = root.join("tasks.json");
+        let mut task = test_task("PersistedTask");
+        task.triggers = vec![interval_trigger(1)];
+        let service = ScheduledTaskService::new(vec![task]);
+        service.set_task_state_path(&path);
+        service.register_executor("PersistedTask", |context| {
+            Box::pin(async move { context.complete().await })
+        });
+        service.start("PersistedTask").await.unwrap();
+        wait_for_idle(&service, "PersistedTask").await;
+        assert!(path.exists());
+
+        let restored = ScheduledTaskService::new(vec![test_task("PersistedTask")]);
+        restored.set_task_state_path(&path);
+        restored.load_persisted_state().await;
+        let info = restored.get("PersistedTask").await.unwrap();
+        assert!(info.last_execution_result.is_some());
+        assert_eq!(info.triggers.len(), 1);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

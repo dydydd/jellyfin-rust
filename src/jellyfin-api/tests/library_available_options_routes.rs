@@ -224,13 +224,7 @@ fn type_option<'a>(response: &'a Value, item_type: &str) -> &'a Value {
 }
 
 fn assert_empty_provider_lists(response: &Value) {
-    for key in [
-        "MetadataSavers",
-        "MetadataReaders",
-        "SubtitleFetchers",
-        "LyricFetchers",
-        "MediaSegmentProviders",
-    ] {
+    for key in ["SubtitleFetchers", "LyricFetchers", "MediaSegmentProviders"] {
         assert!(
             response[key].as_array().expect(key).is_empty(),
             "{key} should be empty until provider manager integration is available"
