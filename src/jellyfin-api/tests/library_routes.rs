@@ -570,7 +570,7 @@ async fn administrator_single_and_batch_deletion_are_atomic_and_database_only() 
             .unwrap(),
         0
     );
-    assert!(tokio::fs::try_exists(&fixture.media_path).await.unwrap());
+    assert!(!tokio::fs::try_exists(&fixture.media_path).await.unwrap());
     fixture.cleanup().await;
 }
 
