@@ -1,5 +1,9 @@
 #![allow(clippy::too_many_lines)]
-use std::{fs::File, io::Write, path::Path};
+use std::{
+    fs::File,
+    io::{Read, Write},
+    path::Path,
+};
 
 use axum::{
     body::{Body, Bytes},
@@ -86,6 +90,12 @@ async fn exercise_backup_routes(database_name: &str) {
                 "Database": true
             }
         }),
+        &[
+            ("Data/", b""),
+            ("Data/metadata/", b""),
+            ("Data/subtitles/", b""),
+            ("Database/users.json", b"[]"),
+        ],
     );
     tokio::fs::write(backup_directory.join("not-a-backup.zip"), b"not a zip")
         .await
@@ -124,9 +134,20 @@ async fn exercise_backup_routes(database_name: &str) {
         StatusCode::NO_CONTENT
     );
 
+    assert_eq!(
+        fixture
+            .get(
+                "/Backup/Manifest?path=%2Ftmp%2Fevil%2Fjellyfin-backup-20260724090000.zip",
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
     let manifest = fixture
         .get(
-            "/Backup/Manifest?path=%2Ftmp%2Fevil%2Fjellyfin-backup-20260724090000.zip",
+            "/Backup/Manifest?path=jellyfin-backup-20260724090000.zip",
             Some(&fixture.admin_token),
         )
         .await;
@@ -290,11 +311,40 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
 }
 
 async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_path: &Path) {
+    tokio::fs::write(fixture.program_data.join("system.json"), b"configuration")
+        .await
+        .expect("program data fixture");
+    tokio::fs::create_dir_all(fixture.program_data.join("trickplay"))
+        .await
+        .expect("trickplay fixture directory");
+    tokio::fs::write(
+        fixture.program_data.join("trickplay").join("preview.bin"),
+        b"trickplay",
+    )
+    .await
+    .expect("trickplay fixture");
+    tokio::fs::create_dir_all(fixture.program_data.join("subtitles"))
+        .await
+        .expect("subtitle fixture directory");
+    tokio::fs::write(
+        fixture.program_data.join("subtitles").join("subtitle.srt"),
+        b"subtitle",
+    )
+    .await
+    .expect("subtitle fixture");
+    let metadata_directory = fixture.storage_root.join("metadata");
+    tokio::fs::create_dir_all(&metadata_directory)
+        .await
+        .expect("metadata fixture directory");
+    tokio::fs::write(metadata_directory.join("poster.jpg"), b"metadata")
+        .await
+        .expect("metadata fixture");
+
     let create_body = json!({
         "Metadata": true,
         "Trickplay": true,
         "Subtitles": false,
-        "Database": true
+        "Database": false
     });
     assert_eq!(
         fixture
@@ -321,12 +371,32 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
     assert_eq!(created["Options"]["Metadata"], true);
     assert_eq!(created["Options"]["Trickplay"], true);
     assert_eq!(created["Options"]["Subtitles"], false);
-    assert_eq!(created["Options"]["Database"], true);
+    assert_eq!(created["Options"]["Database"], false);
     let created_path = Path::new(created["Path"].as_str().expect("created backup path"));
     assert!(created_path.starts_with(fixture.program_data.join("backups")));
     assert_eq!(
         created_path.extension().and_then(|value| value.to_str()),
         Some("zip")
+    );
+    assert_archive_contents(created_path);
+
+    let database_backup = fixture
+        .post_json(
+            "/Backup/Create",
+            Some(&fixture.admin_token),
+            &json!({
+                "Metadata": false,
+                "Trickplay": false,
+                "Subtitles": false,
+                "Database": true
+            }),
+        )
+        .await;
+    assert_eq!(database_backup.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(
+        String::from_utf8(body_bytes(database_backup).await.to_vec())
+            .unwrap()
+            .contains("PostgreSQL backup")
     );
 
     let created_manifest = fixture
@@ -387,11 +457,29 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             .post_json("/Backup/Restore", Some(&fixture.admin_token), &restore_body)
             .await
             .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::NOT_IMPLEMENTED
     );
+
+    let created_restore = fixture
+        .post_json(
+            "/Backup/Restore",
+            Some(&fixture.admin_token),
+            &json!({
+                "ArchiveFileName": created_path.file_name().unwrap().to_string_lossy()
+            }),
+        )
+        .await;
+    assert_eq!(created_restore.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(
+        String::from_utf8(body_bytes(created_restore).await.to_vec())
+            .unwrap()
+            .contains("no data was changed")
+    );
+
+    assert_restore_rejects_invalid_archives(fixture).await;
 }
 
-fn create_backup_archive(path: &Path, manifest: &Value) {
+fn create_backup_archive(path: &Path, manifest: &Value, entries: &[(&str, &[u8])]) {
     let file = File::create(path).expect("backup archive file");
     let mut archive = ZipWriter::new(file);
     archive
@@ -404,7 +492,113 @@ fn create_backup_archive(path: &Path, manifest: &Value) {
                 .as_bytes(),
         )
         .expect("write manifest");
+    for (name, contents) in entries {
+        if name.ends_with('/') {
+            archive
+                .add_directory(*name, SimpleFileOptions::default())
+                .expect("archive directory");
+        } else {
+            archive
+                .start_file(*name, SimpleFileOptions::default())
+                .expect("archive entry");
+            archive.write_all(contents).expect("archive contents");
+        }
+    }
     archive.finish().expect("finish archive");
+}
+
+fn assert_archive_contents(path: &Path) {
+    let file = File::open(path).expect("created backup archive");
+    let mut archive = zip::ZipArchive::new(file).expect("valid created ZIP");
+    let names = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_owned())
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| name == "manifest.json"));
+    assert!(names.iter().any(|name| name == "Data/system.json"));
+    assert!(names.iter().any(|name| name == "Data/metadata/poster.jpg"));
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "Data/trickplay/preview.bin")
+    );
+    assert!(!names.iter().any(|name| name.starts_with("Data/subtitles/")));
+    assert!(!names.iter().any(|name| name.starts_with("Data/backups/")));
+
+    let mut contents = String::new();
+    archive
+        .by_name("Data/system.json")
+        .unwrap()
+        .read_to_string(&mut contents)
+        .unwrap();
+    assert_eq!(contents, "configuration");
+}
+
+async fn assert_restore_rejects_invalid_archives(fixture: &Fixture) {
+    let backup_directory = fixture.program_data.join("backups");
+    let corrupt = fixture
+        .post_json(
+            "/Backup/Restore",
+            Some(&fixture.admin_token),
+            &json!({ "ArchiveFileName": "not-a-backup.zip" }),
+        )
+        .await;
+    assert_eq!(corrupt.status(), StatusCode::BAD_REQUEST);
+
+    let unsafe_path = backup_directory.join("unsafe.zip");
+    create_backup_archive(
+        &unsafe_path,
+        &json!({
+            "ServerVersion": env!("CARGO_PKG_VERSION"),
+            "BackupEngineVersion": "1.0",
+            "DateCreated": "2026-07-24T09:00:00Z",
+            "Options": {
+                "Metadata": false,
+                "Trickplay": false,
+                "Subtitles": false,
+                "Database": false
+            }
+        }),
+        &[("Data/", b""), ("Data/../../escape", b"unsafe")],
+    );
+    assert_eq!(
+        fixture
+            .post_json(
+                "/Backup/Restore",
+                Some(&fixture.admin_token),
+                &json!({ "ArchiveFileName": "unsafe.zip" }),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let future_path = backup_directory.join("future-engine.zip");
+    create_backup_archive(
+        &future_path,
+        &json!({
+            "ServerVersion": env!("CARGO_PKG_VERSION"),
+            "BackupEngineVersion": "999.0",
+            "DateCreated": "2026-07-24T09:00:00Z",
+            "Options": {
+                "Metadata": false,
+                "Trickplay": false,
+                "Subtitles": false,
+                "Database": false
+            }
+        }),
+        &[("Data/", b"")],
+    );
+    assert_eq!(
+        fixture
+            .post_json(
+                "/Backup/Restore",
+                Some(&fixture.admin_token),
+                &json!({ "ArchiveFileName": "future-engine.zip" }),
+            )
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
