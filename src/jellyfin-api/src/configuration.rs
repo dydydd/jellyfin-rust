@@ -43,6 +43,21 @@ pub(crate) async fn update(
     state
         .quick_connect_capability
         .set_enabled(updated.quick_connect_available);
+    state
+        .metrics_enabled
+        .store(updated.enable_metrics, std::sync::atomic::Ordering::Release);
+    state
+        .scheduled_tasks
+        .set_log_file_retention_days(updated.log_file_retention_days);
+    state
+        .scheduled_tasks
+        .set_activity_log_retention_days(updated.activity_log_retention_days.unwrap_or(30));
+    state.scheduled_tasks.set_trickplay_options(
+        serde_json::from_value(updated.trickplay_options).map_err(|_| ApiError::Internal)?,
+    );
+    state
+        .library_scan
+        .set_fanout_concurrency(updated.library_scan_fanout_concurrency.max(1) as usize);
     Ok(StatusCode::NO_CONTENT)
 }
 
