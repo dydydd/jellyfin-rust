@@ -441,8 +441,16 @@ async fn record_device_playback_progress(
     let update = PlaybackProgressUpdate::from(&info);
     state
         .playstate
-        .report_playback_progress(&session.user, update)
+        .report_playback_progress(&session.user, update.clone())
         .await?;
+    for additional in additional_user_ids(&session.device.additional_users) {
+        if let Ok(user) = state.users.get(additional).await {
+            state
+                .playstate
+                .report_playback_progress(&user, update.clone())
+                .await?;
+        }
+    }
     persist_session_playback_state(state, session, info).await?;
     Ok(())
 }
@@ -456,8 +464,16 @@ async fn record_device_playback_start(
     let update = PlaybackStartUpdate::from(&info);
     state
         .playstate
-        .report_playback_start(&session.user, update)
+        .report_playback_start(&session.user, update.clone())
         .await?;
+    for additional in additional_user_ids(&session.device.additional_users) {
+        if let Ok(user) = state.users.get(additional).await {
+            state
+                .playstate
+                .report_playback_start(&user, update.clone())
+                .await?;
+        }
+    }
     persist_session_playback_state(state, session, info).await?;
     log_playback_activity(state, session, item_id, "start").await;
     Ok(())
@@ -478,14 +494,36 @@ async fn record_device_playback_stop(
     let update = PlaybackStopUpdate::from(info);
     state
         .playstate
-        .report_playback_stop(&session.user, update)
+        .report_playback_stop(&session.user, update.clone())
         .await?;
+    for additional in additional_user_ids(&session.device.additional_users) {
+        if let Ok(user) = state.users.get(additional).await {
+            state
+                .playstate
+                .report_playback_stop(&user, update.clone())
+                .await?;
+        }
+    }
     state
         .devices
         .clear_playback_state(session.device.id)
         .await?;
     log_playback_activity(state, session, item_id, "stop").await;
     Ok(())
+}
+
+fn additional_user_ids(value: &Value) -> Vec<Uuid> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .get("UserId")
+                .and_then(Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())
+        })
+        .collect()
 }
 
 async fn log_playback_activity(
