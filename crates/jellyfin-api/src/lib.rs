@@ -353,7 +353,9 @@ impl AppState {
             let sockets = Arc::clone(&web_sockets);
             tokio::spawn(async move {
                 let infos = tasks.list(None, None).await;
-                sockets.send_all("ScheduledTasksInfo", &infos).await;
+                sockets
+                    .send_to_administrators("ScheduledTasksInfo", &infos)
+                    .await;
             });
         }));
         state.scheduled_tasks.start_scheduler();

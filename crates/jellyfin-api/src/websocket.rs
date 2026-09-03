@@ -26,7 +26,22 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(12);
 
 #[derive(Debug, Default)]
 pub(crate) struct WebSocketHub {
-    sessions: RwLock<HashMap<String, broadcast::Sender<Arc<str>>>>,
+    sessions: RwLock<HashMap<Uuid, WebSocketSession>>,
+}
+
+#[derive(Debug)]
+struct WebSocketSession {
+    session_id: String,
+    sender: broadcast::Sender<Arc<str>>,
+    user_ids: HashSet<Uuid>,
+    authenticated_user_id: Uuid,
+    is_administrator: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SessionRecipient {
+    user_id: Uuid,
+    is_administrator: bool,
 }
 
 impl WebSocketHub {
@@ -34,30 +49,51 @@ impl WebSocketHub {
         Self::default()
     }
 
-    async fn subscribe(&self, session_id: &str) -> broadcast::Receiver<Arc<str>> {
+    async fn subscribe(
+        &self,
+        session_id: &str,
+        authenticated_user_id: Uuid,
+        is_administrator: bool,
+        additional_user_ids: impl IntoIterator<Item = Uuid>,
+    ) -> (Uuid, broadcast::Receiver<Arc<str>>) {
         let mut sessions = self.sessions.write().await;
-        sessions
-            .entry(session_id.to_owned())
-            .or_insert_with(|| broadcast::channel(64).0)
-            .subscribe()
+        let connection_id = Uuid::new_v4();
+        let mut user_ids = additional_user_ids.into_iter().collect::<HashSet<_>>();
+        user_ids.insert(authenticated_user_id);
+        let sender = broadcast::channel(64).0;
+        let receiver = sender.subscribe();
+        sessions.insert(
+            connection_id,
+            WebSocketSession {
+                session_id: session_id.to_owned(),
+                sender,
+                user_ids,
+                authenticated_user_id,
+                is_administrator,
+            },
+        );
+        (connection_id, receiver)
     }
 
-    async fn unsubscribe(&self, session_id: &str) {
+    async fn unsubscribe(&self, connection_id: Uuid) -> bool {
         let mut sessions = self.sessions.write().await;
-        if sessions
-            .get(session_id)
-            .is_some_and(|sender| sender.receiver_count() == 0)
-        {
-            sessions.remove(session_id);
-        }
+        let session_id = sessions
+            .remove(&connection_id)
+            .map(|session| session.session_id);
+        session_id.is_some_and(|removed_session_id| {
+            !sessions
+                .values()
+                .any(|session| session.session_id == removed_session_id)
+        })
     }
 
-    pub(crate) async fn is_connected(&self, session_id: &str) -> bool {
+    #[cfg(test)]
+    async fn is_connected(&self, session_id: &str) -> bool {
         self.sessions
             .read()
             .await
-            .get(session_id)
-            .is_some_and(|sender| sender.receiver_count() > 0)
+            .values()
+            .any(|session| session.session_id == session_id && session.sender.receiver_count() > 0)
     }
 
     pub(crate) async fn send<T: serde::Serialize>(
@@ -71,10 +107,117 @@ impl WebSocketHub {
         };
         let message = Arc::<str>::from(websocket_message(message_type, &data));
         let sessions = self.sessions.read().await;
-        for session_id in session_ids {
-            if let Some(sender) = sessions.get(session_id) {
-                let _ = sender.send(Arc::clone(&message));
+        for session in sessions.values() {
+            if session_ids.contains(&session.session_id) {
+                let _ = session.sender.send(Arc::clone(&message));
             }
+        }
+    }
+
+    async fn send_to_users<T: serde::Serialize>(
+        &self,
+        user_ids: &[Uuid],
+        message_type: &str,
+        data: &T,
+    ) {
+        let Ok(data) = serde_json::to_value(data) else {
+            return;
+        };
+        let message = Arc::<str>::from(websocket_message(message_type, &data));
+        let sessions = self.sessions.read().await;
+        for session in sessions.values() {
+            if user_ids
+                .iter()
+                .any(|user_id| session.user_ids.contains(user_id))
+            {
+                let _ = session.sender.send(Arc::clone(&message));
+            }
+        }
+    }
+
+    pub(crate) async fn send_to_administrators<T: serde::Serialize>(
+        &self,
+        message_type: &str,
+        data: &T,
+    ) {
+        let Ok(data) = serde_json::to_value(data) else {
+            return;
+        };
+        let message = Arc::<str>::from(websocket_message(message_type, &data));
+        let sessions = self.sessions.read().await;
+        for session in sessions.values().filter(|session| session.is_administrator) {
+            let _ = session.sender.send(Arc::clone(&message));
+        }
+    }
+
+    async fn set_user_administrator(&self, user_id: Uuid, is_administrator: bool) {
+        for session in self
+            .sessions
+            .write()
+            .await
+            .values_mut()
+            .filter(|session| session.authenticated_user_id == user_id)
+        {
+            session.is_administrator = is_administrator;
+        }
+    }
+
+    pub(crate) async fn add_session_user(&self, session_id: &str, user_id: Uuid) {
+        for session in self
+            .sessions
+            .write()
+            .await
+            .values_mut()
+            .filter(|session| session.session_id == session_id)
+        {
+            session.user_ids.insert(user_id);
+        }
+    }
+
+    pub(crate) async fn remove_session_user(&self, session_id: &str, user_id: Uuid) {
+        for session in self
+            .sessions
+            .write()
+            .await
+            .values_mut()
+            .filter(|session| session.session_id == session_id)
+        {
+            if session.authenticated_user_id != user_id {
+                session.user_ids.remove(&user_id);
+            }
+        }
+    }
+
+    async fn recipients(&self) -> Vec<(Uuid, SessionRecipient)> {
+        self.sessions
+            .read()
+            .await
+            .iter()
+            .filter(|(_, session)| session.sender.receiver_count() > 0)
+            .map(|(connection_id, session)| {
+                (
+                    *connection_id,
+                    SessionRecipient {
+                        user_id: session.authenticated_user_id,
+                        is_administrator: session.is_administrator,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    async fn send_connection<T: serde::Serialize>(
+        &self,
+        connection_id: Uuid,
+        message_type: &str,
+        data: &T,
+    ) {
+        let Ok(data) = serde_json::to_value(data) else {
+            return;
+        };
+        let message = Arc::<str>::from(websocket_message(message_type, &data));
+        if let Some(session) = self.sessions.read().await.get(&connection_id) {
+            let _ = session.sender.send(message);
         }
     }
 
@@ -86,24 +229,14 @@ impl WebSocketHub {
     ) -> bool {
         let message = websocket_message(message_type, data);
         let sessions = self.sessions.read().await;
-        let Some(sender) = sessions.get(session_id) else {
-            return false;
-        };
-        if sender.receiver_count() == 0 {
-            return false;
+        let mut sent = false;
+        for session in sessions
+            .values()
+            .filter(|session| session.session_id == session_id)
+        {
+            sent |= session.sender.send(Arc::from(message.clone())).is_ok();
         }
-        sender.send(Arc::from(message)).is_ok()
-    }
-
-    pub(crate) async fn send_all<T: serde::Serialize>(&self, message_type: &str, data: &T) {
-        let Ok(data) = serde_json::to_value(data) else {
-            return;
-        };
-        let message = Arc::<str>::from(websocket_message(message_type, &data));
-        let sessions = self.sessions.read().await;
-        for sender in sessions.values() {
-            let _ = sender.send(Arc::clone(&message));
-        }
+        sent
     }
 }
 
@@ -128,21 +261,49 @@ pub(crate) async fn connect(
         &authenticated.device.app_name,
         &authenticated.device.device_id,
     );
+    let user_id = authenticated.user.id;
+    let is_administrator = authenticated.user.is_administrator;
+    let additional_user_ids = serde_json::from_value::<Vec<jellyfin_model::SessionUserInfo>>(
+        authenticated.device.additional_users,
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|user| user.user_id)
+    .collect::<Vec<_>>();
 
-    Ok(upgrade.on_upgrade(move |socket| serve(socket, state, session_id)))
+    Ok(upgrade.on_upgrade(move |socket| {
+        serve(
+            socket,
+            state,
+            session_id,
+            user_id,
+            is_administrator,
+            additional_user_ids,
+        )
+    }))
 }
 
-async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, session_id: String) {
-    let mut outbound = state.web_sockets.subscribe(&session_id).await;
+async fn serve(
+    mut socket: axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+    session_id: String,
+    user_id: Uuid,
+    is_administrator: bool,
+    additional_user_ids: Vec<Uuid>,
+) {
+    let (connection_id, mut outbound) = state
+        .web_sockets
+        .subscribe(&session_id, user_id, is_administrator, additional_user_ids)
+        .await;
     state.sync_play.websocket_connected(&session_id).await;
     if send_force_keep_alive(&mut socket).await.is_err() {
         drop(outbound);
-        disconnect(&state, &session_id).await;
+        disconnect(&state, &session_id, connection_id).await;
         return;
     }
     if !drain_session_commands(&mut socket, &state, &session_id).await {
         drop(outbound);
-        disconnect(&state, &session_id).await;
+        disconnect(&state, &session_id, connection_id).await;
         return;
     }
     broadcast_sessions(&state).await;
@@ -221,7 +382,7 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
         }
     }
     drop(outbound);
-    disconnect(&state, &session_id).await;
+    disconnect(&state, &session_id, connection_id).await;
 }
 
 async fn drain_session_commands(
@@ -245,8 +406,10 @@ async fn drain_session_commands(
     true
 }
 
-async fn disconnect(state: &AppState, session_id: &str) {
-    state.web_sockets.unsubscribe(session_id).await;
+async fn disconnect(state: &AppState, session_id: &str, connection_id: Uuid) {
+    if !state.web_sockets.unsubscribe(connection_id).await {
+        return;
+    }
     let Some(departure) = state
         .sync_play
         .websocket_disconnected_with_departure(session_id)
@@ -280,15 +443,36 @@ pub(crate) async fn broadcast_sync_play_departure(state: &AppState, departure: S
 
 pub(crate) async fn broadcast_sessions(state: &AppState) {
     if let Ok(sessions) = crate::session::all_session_infos(state).await {
-        state.web_sockets.send_all("Sessions", &sessions).await;
+        for (connection_id, recipient) in state.web_sockets.recipients().await {
+            let visible = sessions
+                .iter()
+                .filter(|session| session_visible_to(session, recipient))
+                .collect::<Vec<_>>();
+            state
+                .web_sockets
+                .send_connection(connection_id, "Sessions", &visible)
+                .await;
+        }
     }
+}
+
+fn session_visible_to(
+    session: &jellyfin_model::SessionInfoDto,
+    recipient: SessionRecipient,
+) -> bool {
+    recipient.is_administrator
+        || session.user_id == recipient.user_id
+        || session
+            .additional_users
+            .iter()
+            .any(|user| user.user_id == recipient.user_id)
 }
 
 pub(crate) async fn broadcast_scheduled_tasks_info(state: &AppState) {
     let tasks = state.scheduled_tasks.list(None, None).await;
     state
         .web_sockets
-        .send_all("ScheduledTasksInfo", &tasks)
+        .send_to_administrators("ScheduledTasksInfo", &tasks)
         .await;
 }
 
@@ -298,22 +482,59 @@ pub(crate) async fn broadcast_library_changed(
     removed: &[Uuid],
     updated: &[Uuid],
 ) {
-    let strings = |ids: &[Uuid]| {
-        ids.iter()
-            .map(|id| id.simple().to_string())
-            .collect::<Vec<_>>()
-    };
-    state
-        .web_sockets
-        .send_all(
-            "LibraryChanged",
-            &json!({
-                "ItemsAdded": strings(added),
-                "ItemsRemoved": strings(removed),
-                "ItemsUpdated": strings(updated),
-            }),
-        )
-        .await;
+    let empty_change = added.is_empty() && removed.is_empty() && updated.is_empty();
+    for (connection_id, recipient) in state.web_sockets.recipients().await {
+        let (visible_added, visible_removed, visible_updated) = if recipient.is_administrator {
+            (added.to_vec(), removed.to_vec(), updated.to_vec())
+        } else {
+            (
+                visible_library_item_ids(state, recipient.user_id, added).await,
+                // Once an item has been removed there is no reliable policy
+                // context left with which to prove that it was visible. Do not
+                // disclose its identifier to ordinary users.
+                Vec::new(),
+                visible_library_item_ids(state, recipient.user_id, updated).await,
+            )
+        };
+        if !empty_change
+            && visible_added.is_empty()
+            && visible_removed.is_empty()
+            && visible_updated.is_empty()
+        {
+            continue;
+        }
+        state
+            .web_sockets
+            .send_connection(
+                connection_id,
+                "LibraryChanged",
+                &json!({
+                    "ItemsAdded": guid_strings(&visible_added),
+                    "ItemsRemoved": guid_strings(&visible_removed),
+                    "ItemsUpdated": guid_strings(&visible_updated),
+                }),
+            )
+            .await;
+    }
+}
+
+async fn visible_library_item_ids(state: &AppState, user_id: Uuid, ids: &[Uuid]) -> Vec<Uuid> {
+    let mut visible = Vec::with_capacity(ids.len());
+    for item_id in ids {
+        if state
+            .user_data
+            .visible_item(user_id, *item_id)
+            .await
+            .is_ok()
+        {
+            visible.push(*item_id);
+        }
+    }
+    visible
+}
+
+fn guid_strings(ids: &[Uuid]) -> Vec<String> {
+    ids.iter().map(|id| id.simple().to_string()).collect()
 }
 
 pub(crate) async fn broadcast_user_data_changed(
@@ -324,7 +545,8 @@ pub(crate) async fn broadcast_user_data_changed(
 ) {
     state
         .web_sockets
-        .send_all(
+        .send_to_users(
+            &[user_id],
             "UserDataChanged",
             &json!({
                 "UserId": user_id.simple().to_string(),
@@ -336,13 +558,37 @@ pub(crate) async fn broadcast_user_data_changed(
 }
 
 pub(crate) async fn broadcast_user_updated(state: &AppState, user: &serde_json::Value) {
-    state.web_sockets.send_all("UserUpdated", user).await;
+    let Some(user_id) = user
+        .get("Id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|id| Uuid::parse_str(id).ok())
+    else {
+        return;
+    };
+    let is_administrator = state
+        .users
+        .get(user_id)
+        .await
+        .is_ok_and(|user| user.is_administrator);
+    state
+        .web_sockets
+        .set_user_administrator(user_id, is_administrator)
+        .await;
+    state
+        .web_sockets
+        .send_to_users(&[user_id], "UserUpdated", user)
+        .await;
 }
 
 pub(crate) async fn broadcast_user_deleted(state: &AppState, user_id: Uuid) {
     state
         .web_sockets
-        .send_all(
+        .set_user_administrator(user_id, false)
+        .await;
+    state
+        .web_sockets
+        .send_to_users(
+            &[user_id],
             "UserDeleted",
             &json!({ "Id": user_id.simple().to_string() }),
         )
@@ -352,7 +598,7 @@ pub(crate) async fn broadcast_user_deleted(state: &AppState, user_id: Uuid) {
 pub(crate) async fn broadcast_refresh_progress(state: &AppState, item_id: Uuid, progress: f64) {
     state
         .web_sockets
-        .send_all(
+        .send_to_administrators(
             "RefreshProgress",
             &json!({
                 "ItemId": item_id.simple().to_string(),
@@ -426,8 +672,12 @@ async fn handle_inbound(payload: &[u8], subscriptions: &mut HashSet<String>, sta
 
 #[cfg(test)]
 mod tests {
-    use super::is_keep_alive;
+    use super::{SessionRecipient, WebSocketHub, is_keep_alive, session_visible_to};
+    use chrono::Utc;
+    use jellyfin_model::{ClientCapabilitiesDto, PlayerStateInfo, SessionInfoDto, SessionUserInfo};
     use std::collections::HashSet;
+    use tokio::time::{Duration, timeout};
+    use uuid::Uuid;
 
     use super::should_deliver_message;
 
@@ -448,5 +698,194 @@ mod tests {
 
         let library_message = r#"{"MessageType":"LibraryChanged","Data":{"ItemsAdded":[]}}"#;
         assert!(should_deliver_message(library_message, &subscriptions));
+    }
+
+    #[tokio::test]
+    async fn private_user_messages_do_not_cross_user_or_admin_boundaries() {
+        let hub = WebSocketHub::new();
+        let first_user = Uuid::new_v4();
+        let second_user = Uuid::new_v4();
+        let administrator = Uuid::new_v4();
+        let (_, mut first) = hub.subscribe("first", first_user, false, []).await;
+        let (_, mut second) = hub.subscribe("second", second_user, false, []).await;
+        let (_, mut admin) = hub.subscribe("admin", administrator, true, []).await;
+
+        hub.send_to_users(
+            &[first_user],
+            "UserDataChanged",
+            &serde_json::json!({ "UserId": first_user }),
+        )
+        .await;
+
+        let delivered = first.recv().await.expect("target user must receive update");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&delivered).unwrap()["MessageType"],
+            "UserDataChanged"
+        );
+        assert!(
+            timeout(Duration::from_millis(25), second.recv())
+                .await
+                .is_err()
+        );
+        assert!(
+            timeout(Duration::from_millis(25), admin.recv())
+                .await
+                .is_err()
+        );
+
+        hub.add_session_user("second", first_user).await;
+        hub.send_to_users(&[first_user], "UserDataChanged", &serde_json::json!({}))
+            .await;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&second.recv().await.unwrap()).unwrap()["MessageType"],
+            "UserDataChanged"
+        );
+        hub.remove_session_user("second", first_user).await;
+        hub.send_to_users(&[first_user], "UserDataChanged", &serde_json::json!({}))
+            .await;
+        assert!(
+            timeout(Duration::from_millis(25), second.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_commands_reach_each_socket_and_disconnect_only_after_the_last_one() {
+        let hub = WebSocketHub::new();
+        let user_id = Uuid::new_v4();
+        let (first_connection, mut first) =
+            hub.subscribe("shared-session", user_id, false, []).await;
+        let (second_connection, mut second) =
+            hub.subscribe("shared-session", user_id, false, []).await;
+
+        assert!(
+            hub.send_command(
+                "shared-session",
+                "GeneralCommand",
+                &serde_json::json!({ "Name": "GoHome" }),
+            )
+            .await
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&first.recv().await.unwrap()).unwrap()["MessageType"],
+            "GeneralCommand"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&second.recv().await.unwrap()).unwrap()["MessageType"],
+            "GeneralCommand"
+        );
+
+        drop(first);
+        assert!(!hub.unsubscribe(first_connection).await);
+        assert!(hub.is_connected("shared-session").await);
+        drop(second);
+        assert!(hub.unsubscribe(second_connection).await);
+        assert!(!hub.is_connected("shared-session").await);
+    }
+
+    #[tokio::test]
+    async fn administrative_messages_are_only_delivered_to_administrators() {
+        let hub = WebSocketHub::new();
+        let (_, mut ordinary) = hub.subscribe("ordinary", Uuid::new_v4(), false, []).await;
+        let administrator_id = Uuid::new_v4();
+        let (_, mut administrator) = hub.subscribe("admin", administrator_id, true, []).await;
+
+        hub.send_to_administrators("ScheduledTasksInfo", &serde_json::json!([]))
+            .await;
+
+        let delivered = administrator
+            .recv()
+            .await
+            .expect("administrator must receive task information");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&delivered).unwrap()["MessageType"],
+            "ScheduledTasksInfo"
+        );
+        assert!(
+            timeout(Duration::from_millis(25), ordinary.recv())
+                .await
+                .is_err()
+        );
+
+        hub.set_user_administrator(administrator_id, false).await;
+        hub.send_to_administrators("ScheduledTasksInfo", &serde_json::json!([]))
+            .await;
+        assert!(
+            timeout(Duration::from_millis(25), administrator.recv())
+                .await
+                .is_err(),
+            "demoted users must immediately lose administrator broadcasts"
+        );
+    }
+
+    #[test]
+    fn ordinary_session_snapshots_are_private_and_administrators_see_all() {
+        let first_user = Uuid::new_v4();
+        let second_user = Uuid::new_v4();
+        let shared_user = Uuid::new_v4();
+        let first_session = session_info(first_user, &[shared_user]);
+        let second_session = session_info(second_user, &[]);
+        let first_recipient = SessionRecipient {
+            user_id: first_user,
+            is_administrator: false,
+        };
+        let second_recipient = SessionRecipient {
+            user_id: second_user,
+            is_administrator: false,
+        };
+        let shared_recipient = SessionRecipient {
+            user_id: shared_user,
+            is_administrator: false,
+        };
+        let administrator = SessionRecipient {
+            user_id: Uuid::new_v4(),
+            is_administrator: true,
+        };
+
+        assert!(session_visible_to(&first_session, first_recipient));
+        assert!(!session_visible_to(&second_session, first_recipient));
+        assert!(session_visible_to(&second_session, second_recipient));
+        assert!(!session_visible_to(&first_session, second_recipient));
+        assert!(session_visible_to(&first_session, shared_recipient));
+        assert!(session_visible_to(&first_session, administrator));
+        assert!(session_visible_to(&second_session, administrator));
+    }
+
+    fn session_info(user_id: Uuid, additional_user_ids: &[Uuid]) -> SessionInfoDto {
+        SessionInfoDto {
+            play_state: PlayerStateInfo::default(),
+            additional_users: additional_user_ids
+                .iter()
+                .map(|user_id| SessionUserInfo {
+                    user_id: *user_id,
+                    user_name: String::new(),
+                })
+                .collect(),
+            capabilities: ClientCapabilitiesDto::default(),
+            playable_media_types: Vec::new(),
+            id: None,
+            user_id,
+            user_name: None,
+            client: None,
+            last_activity_date: Utc::now(),
+            last_playback_check_in: Utc::now(),
+            last_paused_date: None,
+            device_name: None,
+            device_type: None,
+            now_playing_item: None,
+            device_id: None,
+            application_version: None,
+            is_active: true,
+            supports_media_control: false,
+            supports_remote_control: false,
+            now_playing_queue: Vec::new(),
+            has_custom_device_name: false,
+            playlist_item_id: None,
+            server_id: None,
+            user_primary_image_tag: None,
+            now_viewing_item: None,
+            supported_commands: Vec::new(),
+        }
     }
 }

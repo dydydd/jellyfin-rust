@@ -383,6 +383,10 @@ pub(crate) async fn add_user_to_session(
     {
         return Err(ApiError::SessionNotFound);
     }
+    state
+        .web_sockets
+        .add_session_user(&session_id, user.id)
+        .await;
     crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -407,6 +411,10 @@ pub(crate) async fn remove_user_from_session(
     {
         return Err(ApiError::SessionNotFound);
     }
+    state
+        .web_sockets
+        .remove_session_user(&session_id, user_id)
+        .await;
     crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }

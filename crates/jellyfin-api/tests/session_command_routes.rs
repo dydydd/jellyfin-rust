@@ -64,20 +64,10 @@ async fn session_command_outbox_is_consumed_over_websocket() {
     assert_eq!(replayed_command["MessageType"], "GeneralCommand");
     assert_eq!(replayed_command["Data"]["Name"], "Mute");
     assert_queued_command_count(&fixture, 0).await;
-    let mut snapshots = std::collections::HashSet::new();
-    for _ in 0..8 {
-        snapshots.insert(
-            websocket_json(&mut target_socket).await["MessageType"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        );
-        if snapshots.contains("Sessions") && snapshots.contains("ScheduledTasksInfo") {
-            break;
-        }
-    }
-    assert!(snapshots.contains("Sessions"));
-    assert!(snapshots.contains("ScheduledTasksInfo"));
+    assert_eq!(
+        websocket_json(&mut target_socket).await["MessageType"],
+        "Sessions"
+    );
 
     fixture.post_command("Command/GoHome", Body::empty()).await;
     let general_command = websocket_json(&mut target_socket).await;
@@ -114,7 +104,7 @@ async fn session_command_outbox_is_consumed_over_websocket() {
 }
 
 #[tokio::test]
-async fn websocket_connection_sends_sessions_and_scheduled_task_snapshots() {
+async fn ordinary_websocket_only_receives_its_session_snapshot() {
     let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -135,17 +125,19 @@ async fn websocket_connection_sends_sessions_and_scheduled_task_snapshots() {
         "ForceKeepAlive"
     );
 
-    let mut snapshots = std::collections::HashSet::new();
-    for _ in 0..2 {
-        snapshots.insert(
-            websocket_json(&mut socket).await["MessageType"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        );
-    }
-    assert!(snapshots.contains("Sessions"));
-    assert!(snapshots.contains("ScheduledTasksInfo"));
+    let sessions = websocket_json(&mut socket).await;
+    assert_eq!(sessions["MessageType"], "Sessions");
+    assert_eq!(sessions["Data"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        sessions["Data"][0]["UserId"],
+        fixture.other_id.simple().to_string()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), socket.next())
+            .await
+            .is_err(),
+        "ordinary users must not receive ScheduledTasksInfo"
+    );
 
     socket.close(None).await.unwrap();
     server.abort();
