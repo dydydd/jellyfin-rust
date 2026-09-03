@@ -9,7 +9,7 @@ description = "Network address parsing and subnet utilities for Jellyfin"
 path = "src/lib.rs"
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
 
 [lints.rust]
 unsafe_code = "forbid"
-

@@ -650,6 +650,21 @@ impl TranscodeJobRegistry {
         job_ids
     }
 
+    /// Cancels and removes every registered transcode job during host shutdown.
+    pub async fn stop_all(&self) -> Vec<String> {
+        let job_ids = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for job_id in &job_ids {
+            self.stop(job_id).await;
+        }
+        job_ids
+    }
+
     pub fn remove(&self, job_id: &str) {
         self.jobs
             .lock()
@@ -1122,5 +1137,30 @@ mod tests {
         assert!(running_job.await.unwrap().is_ok());
         assert!(!job.running());
         assert!(!registry.is_running("job-1"));
+    }
+
+    #[tokio::test]
+    async fn stop_all_cancels_every_running_job() {
+        let registry = TranscodeJobRegistry::new();
+        let first = registry.register("job-1");
+        let second = registry.register("job-2");
+        let command = FfmpegCommand {
+            program: PathBuf::from("sleep"),
+            arguments: vec!["30".to_owned()],
+        };
+        let first_job = first.shared_handle();
+        let first_command = command.clone();
+        let first_task = tokio::spawn(async move { run_ffmpeg(&first_command, &first_job).await });
+        let second_job = second.shared_handle();
+        let second_task = tokio::spawn(async move { run_ffmpeg(&command, &second_job).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut stopped = registry.stop_all().await;
+        stopped.sort_unstable();
+
+        assert_eq!(stopped, vec!["job-1", "job-2"]);
+        assert!(first_task.await.unwrap().is_ok());
+        assert!(second_task.await.unwrap().is_ok());
+        assert!(registry.list().is_empty());
     }
 }

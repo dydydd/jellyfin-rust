@@ -97,6 +97,7 @@ struct PublishedServerUriOverride {
 }
 
 /// Deterministic network policy and bind-address manager.
+#[derive(Clone)]
 pub struct NetworkManager {
     config: NetworkConfiguration,
     interfaces: Vec<NetworkInterface>,
@@ -105,6 +106,8 @@ pub struct NetworkManager {
     remote_address_filter: Vec<IpNetwork>,
     published_server_urls: Vec<PublishedServerUriOverride>,
     resolver: Arc<dyn HostResolver>,
+    known_proxy_addresses: Vec<IpAddr>,
+    known_proxy_networks: Vec<IpNetwork>,
 }
 
 impl NetworkManager {
@@ -130,7 +133,10 @@ impl NetworkManager {
             remote_address_filter: Vec::new(),
             published_server_urls: Vec::new(),
             resolver: Arc::new(resolver),
+            known_proxy_addresses: Vec::new(),
+            known_proxy_networks: Vec::new(),
         };
+        manager.initialize_known_proxies();
         manager.initialize();
         manager
     }
@@ -152,6 +158,88 @@ impl NetworkManager {
     #[must_use]
     pub const fn config(&self) -> &NetworkConfiguration {
         &self.config
+    }
+
+    /// Returns whether an address belongs to the configured trusted proxy set.
+    ///
+    /// Forwarded headers are only safe to consume when the immediate peer is
+    /// explicitly configured as a proxy (or belongs to a configured proxy
+    /// network). An empty proxy list deliberately trusts no forwarded headers.
+    #[must_use]
+    pub fn is_known_proxy(&self, address: IpAddr) -> bool {
+        let address = match address {
+            IpAddr::V6(value) => value
+                .to_ipv4_mapped()
+                .map(IpAddr::V4)
+                .unwrap_or(IpAddr::V6(value)),
+            value => value,
+        };
+        self.known_proxy_addresses.contains(&address)
+            || self
+                .known_proxy_networks
+                .iter()
+                .any(|network| network.contains(address))
+    }
+
+    fn initialize_known_proxies(&mut self) {
+        let entries = self.config.known_proxies.clone();
+        let (enable_ipv4, enable_ipv6) = (self.config.enable_ipv4, self.config.enable_ipv6);
+        for entry in entries {
+            if let Ok(network) = entry.parse::<IpNetwork>() {
+                self.add_known_proxy(network.base_address(), network.prefix_length());
+                continue;
+            }
+            let Some(host) = try_parse_host(&entry, enable_ipv4, enable_ipv6) else {
+                continue;
+            };
+            match host {
+                ParsedHost::Address(address) => {
+                    self.add_known_proxy(
+                        address,
+                        match address {
+                            IpAddr::V4(_) => 32,
+                            IpAddr::V6(_) => 128,
+                        },
+                    );
+                }
+                ParsedHost::Name(name) => {
+                    for address in self.resolver.resolve(&name) {
+                        self.add_known_proxy(
+                            address,
+                            match address {
+                                IpAddr::V4(_) => 32,
+                                IpAddr::V6(_) => 128,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn add_known_proxy(&mut self, address: IpAddr, prefix_length: u8) {
+        let (address, prefix_length) = match address {
+            IpAddr::V6(value) => value
+                .to_ipv4_mapped()
+                .map_or((IpAddr::V6(value), prefix_length), |value| {
+                    (IpAddr::V4(value), prefix_length.saturating_sub(96))
+                }),
+            value => (value, prefix_length),
+        };
+        if matches!(address, IpAddr::V4(_)) && !self.config.enable_ipv4
+            || matches!(address, IpAddr::V6(_)) && !self.config.enable_ipv6
+        {
+            return;
+        }
+        let full = match address {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        if prefix_length == full {
+            self.known_proxy_addresses.push(address);
+        } else if let Ok(network) = IpNetwork::new(address, prefix_length) {
+            self.known_proxy_networks.push(network);
+        }
     }
 
     #[must_use]

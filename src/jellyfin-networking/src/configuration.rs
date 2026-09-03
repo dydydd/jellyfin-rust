@@ -1,5 +1,6 @@
 /// Jellyfin's network-facing server configuration.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct NetworkConfiguration {
     base_url: String,
     pub enable_https: bool,
@@ -11,7 +12,9 @@ pub struct NetworkConfiguration {
     pub public_http_port: u16,
     pub public_https_port: u16,
     pub auto_discovery: bool,
+    #[serde(rename = "EnableIPv4", alias = "EnableIpv4")]
     pub enable_ipv4: bool,
+    #[serde(rename = "EnableIPv6", alias = "EnableIpv6")]
     pub enable_ipv6: bool,
     pub enable_remote_access: bool,
     pub local_network_subnets: Vec<String>,
@@ -21,7 +24,12 @@ pub struct NetworkConfiguration {
     pub virtual_interface_names: Vec<String>,
     pub enable_published_server_uri_by_request: bool,
     pub published_server_uri_by_subnet: Vec<String>,
+    #[serde(rename = "RemoteIPFilter", alias = "RemoteIpFilter")]
     pub remote_ip_filter: Vec<String>,
+    #[serde(
+        rename = "IsRemoteIPFilterBlacklist",
+        alias = "IsRemoteIpFilterBlacklist"
+    )]
     pub is_remote_ip_filter_blacklist: bool,
 }
 

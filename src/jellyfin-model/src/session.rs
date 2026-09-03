@@ -105,7 +105,7 @@ impl Default for ClientCapabilitiesDto {
             playable_media_types: Vec::new(),
             supported_commands: Vec::new(),
             supports_media_control: false,
-            supports_persistent_identifier: true,
+            supports_persistent_identifier: false,
             device_profile: None,
             app_store_url: None,
             icon_url: None,

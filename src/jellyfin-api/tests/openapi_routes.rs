@@ -55,7 +55,10 @@ async fn openapi_document_describes_the_real_public_system_slice() {
     let paths = document["paths"]
         .as_object()
         .expect("OpenAPI paths must be an object");
-    assert_eq!(paths.len(), 4);
+    assert!(
+        paths.len() >= 300,
+        "OpenAPI should inventory the real API routes"
+    );
     assert_operation(&document, "/health", "get", "GetHealth");
     assert_operation(
         &document,
@@ -66,6 +69,19 @@ async fn openapi_document_describes_the_real_public_system_slice() {
     assert_operation(&document, "/System/Ping", "get", "GetPingSystem");
     assert_operation(&document, "/System/Ping", "post", "PostPingSystem");
     assert_operation(&document, "/api-docs/openapi.json", "get", "GetOpenApiSpec");
+    assert_operation(
+        &document,
+        "/Users/AuthenticateByName",
+        "post",
+        "postUsersAuthenticateByName",
+    );
+    assert_operation(
+        &document,
+        "/Items/{item_id}/Download",
+        "get",
+        "getItems_item_id_Download",
+    );
+    assert_operation(&document, "/Sessions", "get", "getSessions");
 
     assert_eq!(
         document["paths"]["/System/Info/Public"]["get"]["responses"]["200"]["content"]["application/json"]

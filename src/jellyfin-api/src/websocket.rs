@@ -13,20 +13,21 @@ use jellyfin_server_implementations::{
 };
 use serde_json::json;
 use tokio::{
-    sync::{RwLock, broadcast},
+    sync::{RwLock, broadcast, watch},
     time::{Duration, Instant, MissedTickBehavior},
 };
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, session::jellyfin_session_id};
+use crate::{ApiError, AppState, SystemCommand, authentication, session::jellyfin_session_id};
 
 const LOST_TIMEOUT: Duration = Duration::from_secs(60);
 const FORCE_KEEP_ALIVE_AFTER: Duration = Duration::from_secs(45);
 const WATCH_INTERVAL: Duration = Duration::from_secs(12);
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct WebSocketHub {
     sessions: RwLock<HashMap<Uuid, WebSocketSession>>,
+    shutdown: watch::Sender<Option<SystemCommand>>,
 }
 
 #[derive(Debug)]
@@ -46,7 +47,18 @@ struct SessionRecipient {
 
 impl WebSocketHub {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            shutdown: watch::channel(None).0,
+        }
+    }
+
+    pub(crate) fn subscribe_shutdown(&self) -> watch::Receiver<Option<SystemCommand>> {
+        self.shutdown.subscribe()
+    }
+
+    pub(crate) fn notify_shutdown(&self, command: SystemCommand) {
+        self.shutdown.send_replace(Some(command));
     }
 
     async fn subscribe(
@@ -87,8 +99,7 @@ impl WebSocketHub {
         })
     }
 
-    #[cfg(test)]
-    async fn is_connected(&self, session_id: &str) -> bool {
+    pub(crate) async fn is_connected(&self, session_id: &str) -> bool {
         self.sessions
             .read()
             .await
@@ -291,6 +302,7 @@ async fn serve(
     is_administrator: bool,
     additional_user_ids: Vec<Uuid>,
 ) {
+    let mut shutdown = state.web_sockets.subscribe_shutdown();
     let (connection_id, mut outbound) = state
         .web_sockets
         .subscribe(&session_id, user_id, is_administrator, additional_user_ids)
@@ -325,6 +337,17 @@ async fn serve(
     watchdog.tick().await;
     loop {
         tokio::select! {
+            command = wait_for_shutdown(&mut shutdown) => {
+                let message_type = match command {
+                    Some(SystemCommand::Restart) => "ServerRestarting",
+                    Some(SystemCommand::Shutdown) => "ServerShuttingDown",
+                    None => break,
+                };
+                let message = websocket_message(message_type, &serde_json::Value::Null);
+                let _ = socket.send(Message::Text(message.into())).await;
+                let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
             _ = watchdog.tick() => {
                 let elapsed = last_keep_alive.elapsed();
                 if elapsed >= LOST_TIMEOUT {
@@ -383,6 +406,16 @@ async fn serve(
     }
     drop(outbound);
     disconnect(&state, &session_id, connection_id).await;
+}
+
+async fn wait_for_shutdown(
+    shutdown: &mut watch::Receiver<Option<SystemCommand>>,
+) -> Option<SystemCommand> {
+    shutdown
+        .wait_for(Option::is_some)
+        .await
+        .ok()
+        .and_then(|command| *command)
 }
 
 async fn drain_session_commands(
@@ -673,6 +706,7 @@ async fn handle_inbound(payload: &[u8], subscriptions: &mut HashSet<String>, sta
 #[cfg(test)]
 mod tests {
     use super::{SessionRecipient, WebSocketHub, is_keep_alive, session_visible_to};
+    use crate::SystemCommand;
     use chrono::Utc;
     use jellyfin_model::{ClientCapabilitiesDto, PlayerStateInfo, SessionInfoDto, SessionUserInfo};
     use std::collections::HashSet;
@@ -816,6 +850,29 @@ mod tests {
                 .await
                 .is_err(),
             "demoted users must immediately lose administrator broadcasts"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_notification_reaches_all_connected_socket_tasks() {
+        let hub = WebSocketHub::new();
+        let mut first = hub.subscribe_shutdown();
+        let mut second = hub.subscribe_shutdown();
+
+        hub.notify_shutdown(SystemCommand::Restart);
+        let mut late_subscriber = hub.subscribe_shutdown();
+
+        assert_eq!(
+            *first.wait_for(Option::is_some).await.unwrap(),
+            Some(SystemCommand::Restart)
+        );
+        assert_eq!(
+            *second.wait_for(Option::is_some).await.unwrap(),
+            Some(SystemCommand::Restart)
+        );
+        assert_eq!(
+            *late_subscriber.wait_for(Option::is_some).await.unwrap(),
+            Some(SystemCommand::Restart)
         );
     }
 

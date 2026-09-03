@@ -1773,6 +1773,9 @@ dependencies = [
 [[package]]
 name = "jellyfin-networking"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "jellyfin-providers"
@@ -1801,6 +1804,8 @@ dependencies = [
  "sea-orm",
  "serde_json",
  "tokio",
+ "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
 ]

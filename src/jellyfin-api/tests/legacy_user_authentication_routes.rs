@@ -142,6 +142,16 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
         authentication["SessionInfo"]["Client"],
         "Legacy Authentication Tests"
     );
+    assert_eq!(
+        authentication["SessionInfo"]["Id"],
+        jellyfin_session_id("Legacy Authentication Tests", "legacy-auth-tests")
+    );
+    assert_eq!(
+        authentication["SessionInfo"]["UserId"],
+        user.id.simple().to_string()
+    );
+    assert!(authentication["SessionInfo"]["Capabilities"].is_object());
+    assert!(authentication["SessionInfo"]["PlayState"].is_object());
     let access_token = authentication["AccessToken"]
         .as_str()
         .expect("access token")
@@ -193,6 +203,25 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
     );
 
     database.close().await.expect("database pool cleanup");
+}
+
+fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
+    use md5::{Digest, Md5};
+    use std::fmt::Write as _;
+
+    let mut hasher = Md5::new();
+    for unit in format!("{app_name}{device_id}").encode_utf16() {
+        hasher.update(unit.to_le_bytes());
+    }
+    let bytes = hasher.finalize();
+    let mut result = format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[3], bytes[2], bytes[1], bytes[0], bytes[5], bytes[4], bytes[7], bytes[6]
+    );
+    for byte in &bytes[8..] {
+        write!(result, "{byte:02x}").expect("writing a String cannot fail");
+    }
+    result
 }
 
 async fn post(app: &axum::Router, uri: &str) -> axum::response::Response {

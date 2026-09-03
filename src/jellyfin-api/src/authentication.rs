@@ -16,10 +16,12 @@ use jellyfin_data::{
     NewActivityLog,
     entities::{api_key, device, user},
 };
-use jellyfin_model::{DynamicDayOfWeek, SyncPlayUserAccessType, UserPolicy};
+use jellyfin_model::{
+    ClientCapabilitiesDto, DynamicDayOfWeek, PlayerStateInfo, SessionInfoDto, SessionUserInfo,
+    SyncPlayUserAccessType, UserPolicy,
+};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, user_to_dto};
@@ -48,7 +50,7 @@ pub struct AuthenticateUserQuery {
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticationResult {
     user: jellyfin_model::UserDto,
-    session_info: Value,
+    session_info: SessionInfoDto,
     access_token: String,
     server_id: String,
 }
@@ -204,16 +206,45 @@ fn authentication_result_from_device(
     session: device::Model,
 ) -> AuthenticationResult {
     let user_id = user.id;
-    let session_info = json!({
-        "Id": session.id.to_string(),
-        "UserId": user_id.simple().to_string(),
-        "UserName": &user.username,
-        "Client": &session.app_name,
-        "ApplicationVersion": &session.app_version,
-        "DeviceName": &session.device_name,
-        "DeviceId": &session.device_id,
-        "IsActive": session.is_active,
-    });
+    let capabilities: ClientCapabilitiesDto =
+        serde_json::from_value(session.capabilities.clone()).unwrap_or_default();
+    let play_state: PlayerStateInfo =
+        serde_json::from_value(session.play_state.clone()).unwrap_or_default();
+    let additional_users: Vec<SessionUserInfo> =
+        serde_json::from_value(session.additional_users.clone()).unwrap_or_default();
+    let now_playing_queue =
+        serde_json::from_value(session.now_playing_queue.clone()).unwrap_or_default();
+    let session_info = SessionInfoDto {
+        play_state,
+        additional_users,
+        playable_media_types: capabilities.playable_media_types.clone(),
+        id: Some(crate::session::jellyfin_session_id(
+            &session.app_name,
+            &session.device_id,
+        )),
+        user_id,
+        user_name: Some(user.username.clone()),
+        client: Some(session.app_name.clone()),
+        last_activity_date: session.date_last_activity,
+        last_playback_check_in: session.date_last_activity,
+        last_paused_date: session.date_last_paused,
+        device_name: Some(session.device_name.clone()),
+        device_type: None,
+        now_playing_item: session.now_playing_item.clone(),
+        device_id: Some(session.device_id.clone()),
+        application_version: Some(session.app_version.clone()),
+        is_active: session.is_active,
+        supports_media_control: capabilities.supports_media_control,
+        supports_remote_control: capabilities.supports_media_control,
+        now_playing_queue,
+        has_custom_device_name: false,
+        playlist_item_id: session.playlist_item_id.clone(),
+        server_id: Some(state.server_id().to_owned()),
+        user_primary_image_tag: None,
+        now_viewing_item: session.now_viewing_item.clone(),
+        supported_commands: capabilities.supported_commands.clone(),
+        capabilities,
+    };
     let mut user_dto = user_to_dto(user);
     user_dto.server_id = Some(state.server_id().to_owned());
     AuthenticationResult {
