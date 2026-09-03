@@ -28,7 +28,7 @@ pub struct TunerHostManager {
 
 impl TunerHostManager {
     #[must_use]
-    pub fn new(database: sea_orm::DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self::from_repository(TunerHostRepository::new(database))
     }
 

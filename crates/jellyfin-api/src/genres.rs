@@ -108,7 +108,7 @@ pub(crate) async fn list(
         .await?;
     let items = page
         .genres
-        .iter()
+        .into_iter()
         .map(|genre| user_library::genre_to_dto(genre, state.server_id()))
         .collect::<Vec<_>>();
     let total_record_count = if enable_total_record_count {
@@ -138,7 +138,7 @@ pub(crate) async fn get(
         .genres
         .get(&authenticated.user, target_user_id, &genre_name)
         .await?;
-    Ok(Json(user_library::genre_to_dto(&genre, state.server_id())))
+    Ok(Json(user_library::genre_to_dto(genre, state.server_id())))
 }
 
 pub(crate) async fn get_image(

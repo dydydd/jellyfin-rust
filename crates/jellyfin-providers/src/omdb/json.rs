@@ -14,7 +14,7 @@ impl JsonOmdbConverter {
     /// Returns an error for malformed JSON or an incompatible field type.
     pub fn deserialize_item(input: &str) -> Result<OmdbItem, OmdbJsonError> {
         let value = serde_json::from_str(input)?;
-        OmdbItem::from_value(&value)
+        OmdbItem::from_value(value)
     }
 
     /// Deserializes a full-season response.
@@ -24,7 +24,7 @@ impl JsonOmdbConverter {
     /// Returns an error for malformed JSON or an incompatible field type.
     pub fn deserialize_season(input: &str) -> Result<OmdbSeason, OmdbJsonError> {
         let value = serde_json::from_str(input)?;
-        OmdbSeason::from_value(&value)
+        OmdbSeason::from_value(value)
     }
 
     /// Serializes a title, episode, or search-result response.
@@ -52,7 +52,7 @@ impl JsonOmdbConverter {
     /// Returns an error for malformed JSON or a non-string value.
     pub fn deserialize_nullable_string(input: &str) -> Result<Option<String>, OmdbJsonError> {
         let value = serde_json::from_str(input)?;
-        optional_string(&value, "value")
+        optional_string(value, "value")
     }
 
     /// Applies the official nullable-integer conversion to a JSON value.
@@ -62,7 +62,7 @@ impl JsonOmdbConverter {
     /// Returns an error for malformed JSON or a value that cannot be converted to `i32`.
     pub fn deserialize_nullable_i32(input: &str) -> Result<Option<i32>, OmdbJsonError> {
         let value = serde_json::from_str(input)?;
-        optional_i32(&value, "value")
+        optional_i32(value, "value")
     }
 }
 
@@ -159,38 +159,38 @@ impl OmdbItem {
             .ok()
     }
 
-    fn from_value(value: &Value) -> Result<Self, OmdbJsonError> {
-        let object = expect_object(value, "root")?;
+    fn from_value(value: Value) -> Result<Self, OmdbJsonError> {
+        let mut object = expect_object(value, "root")?;
         Ok(Self {
-            title: field_string(object, "Title")?,
-            year: field_string(object, "Year")?,
-            rated: field_string(object, "Rated")?,
-            released: field_string(object, "Released")?,
-            season: field_i32(object, "Season")?,
-            episode: field_i32(object, "Episode")?,
-            runtime: field_string(object, "Runtime")?,
-            genre: field_string_or_array(object, "Genre")?,
-            director: field_string_or_array(object, "Director")?,
-            writer: field_string_or_array(object, "Writer")?,
-            actors: field_string_or_array(object, "Actors")?,
-            plot: field_string(object, "Plot")?,
-            language: field_string_or_array(object, "Language")?,
-            country: field_string_or_array(object, "Country")?,
-            awards: field_string(object, "Awards")?,
-            poster: field_string(object, "Poster")?,
-            ratings: field_ratings(object, "Ratings")?,
-            metascore: field_string(object, "Metascore")?,
-            imdb_rating: field_string(object, "imdbRating")?,
-            imdb_votes: field_string(object, "imdbVotes")?,
-            imdb_id: field_string(object, "imdbID")?,
-            series_id: field_string(object, "seriesID")?,
-            media_type: field_string(object, "Type")?,
-            dvd: field_string(object, "DVD")?,
-            box_office: field_string(object, "BoxOffice")?,
-            production: field_string(object, "Production")?,
-            website: field_string(object, "Website")?,
-            response: field_string(object, "Response")?,
-            error: field_string(object, "Error")?,
+            title: field_string(&mut object, "Title")?,
+            year: field_string(&mut object, "Year")?,
+            rated: field_string(&mut object, "Rated")?,
+            released: field_string(&mut object, "Released")?,
+            season: field_i32(&mut object, "Season")?,
+            episode: field_i32(&mut object, "Episode")?,
+            runtime: field_string(&mut object, "Runtime")?,
+            genre: field_string_or_array(&mut object, "Genre")?,
+            director: field_string_or_array(&mut object, "Director")?,
+            writer: field_string_or_array(&mut object, "Writer")?,
+            actors: field_string_or_array(&mut object, "Actors")?,
+            plot: field_string(&mut object, "Plot")?,
+            language: field_string_or_array(&mut object, "Language")?,
+            country: field_string_or_array(&mut object, "Country")?,
+            awards: field_string(&mut object, "Awards")?,
+            poster: field_string(&mut object, "Poster")?,
+            ratings: field_ratings(&mut object, "Ratings")?,
+            metascore: field_string(&mut object, "Metascore")?,
+            imdb_rating: field_string(&mut object, "imdbRating")?,
+            imdb_votes: field_string(&mut object, "imdbVotes")?,
+            imdb_id: field_string(&mut object, "imdbID")?,
+            series_id: field_string(&mut object, "seriesID")?,
+            media_type: field_string(&mut object, "Type")?,
+            dvd: field_string(&mut object, "DVD")?,
+            box_office: field_string(&mut object, "BoxOffice")?,
+            production: field_string(&mut object, "Production")?,
+            website: field_string(&mut object, "Website")?,
+            response: field_string(&mut object, "Response")?,
+            error: field_string(&mut object, "Error")?,
         })
     }
 
@@ -242,11 +242,11 @@ pub struct OmdbRating {
 }
 
 impl OmdbRating {
-    fn from_value(value: &Value) -> Result<Self, OmdbJsonError> {
-        let object = expect_object(value, "Ratings[]")?;
+    fn from_value(value: Value) -> Result<Self, OmdbJsonError> {
+        let mut object = expect_object(value, "Ratings[]")?;
         Ok(Self {
-            source: field_string(object, "Source")?,
-            value: field_string(object, "Value")?,
+            source: field_string(&mut object, "Source")?,
+            value: field_string(&mut object, "Value")?,
         })
     }
 
@@ -271,16 +271,16 @@ pub struct OmdbSeason {
 }
 
 impl OmdbSeason {
-    fn from_value(value: &Value) -> Result<Self, OmdbJsonError> {
-        let object = expect_object(value, "root")?;
+    fn from_value(value: Value) -> Result<Self, OmdbJsonError> {
+        let mut object = expect_object(value, "root")?;
         Ok(Self {
-            title: field_string(object, "Title")?,
-            series_id: field_string(object, "seriesID")?,
-            season: field_i32(object, "Season")?,
-            total_seasons: field_i32(object, "totalSeasons")?,
-            episodes: field_items(object, "Episodes")?,
-            response: field_string(object, "Response")?,
-            error: field_string(object, "Error")?,
+            title: field_string(&mut object, "Title")?,
+            series_id: field_string(&mut object, "seriesID")?,
+            season: field_i32(&mut object, "Season")?,
+            total_seasons: field_i32(&mut object, "totalSeasons")?,
+            episodes: field_items(&mut object, "Episodes")?,
+            response: field_string(&mut object, "Response")?,
+            error: field_string(&mut object, "Error")?,
         })
     }
 
@@ -353,30 +353,30 @@ impl From<serde_json::Error> for OmdbJsonError {
     }
 }
 
-fn expect_object<'a>(
-    value: &'a Value,
-    field: &'static str,
-) -> Result<&'a Map<String, Value>, OmdbJsonError> {
-    value.as_object().ok_or(OmdbJsonError::InvalidType {
-        field,
-        expected: "an object",
-    })
+fn expect_object(value: Value, field: &'static str) -> Result<Map<String, Value>, OmdbJsonError> {
+    match value {
+        Value::Object(object) => Ok(object),
+        _ => Err(OmdbJsonError::InvalidType {
+            field,
+            expected: "an object",
+        }),
+    }
 }
 
 fn field_string(
-    object: &Map<String, Value>,
+    object: &mut Map<String, Value>,
     field: &'static str,
 ) -> Result<Option<String>, OmdbJsonError> {
     object
-        .get(field)
+        .remove(field)
         .map_or(Ok(None), |value| optional_string(value, field))
 }
 
-fn optional_string(value: &Value, field: &'static str) -> Result<Option<String>, OmdbJsonError> {
+fn optional_string(value: Value, field: &'static str) -> Result<Option<String>, OmdbJsonError> {
     match value {
         Value::Null => Ok(None),
         Value::String(value) if value.eq_ignore_ascii_case("N/A") => Ok(None),
-        Value::String(value) => Ok(Some(value.clone())),
+        Value::String(value) => Ok(Some(value)),
         _ => Err(OmdbJsonError::InvalidType {
             field,
             expected: "a string or null",
@@ -385,51 +385,44 @@ fn optional_string(value: &Value, field: &'static str) -> Result<Option<String>,
 }
 
 fn field_string_or_array(
-    object: &Map<String, Value>,
+    object: &mut Map<String, Value>,
     field: &'static str,
 ) -> Result<Option<String>, OmdbJsonError> {
-    let Some(value) = object.get(field) else {
+    let Some(value) = object.remove(field) else {
         return Ok(None);
     };
-    if !value.is_array() {
-        return optional_string(value, field);
+    match value {
+        Value::Array(values) => {
+            let values = values
+                .into_iter()
+                .map(|value| optional_string(value, field))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            Ok((!values.is_empty()).then(|| values.join(", ")))
+        }
+        value => optional_string(value, field),
     }
-
-    let values = value
-        .as_array()
-        .expect("array checked above")
-        .iter()
-        .map(|value| optional_string(value, field))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    Ok((!values.is_empty()).then(|| values.join(", ")))
 }
 
 fn field_i32(
-    object: &Map<String, Value>,
+    object: &mut Map<String, Value>,
     field: &'static str,
 ) -> Result<Option<i32>, OmdbJsonError> {
     object
-        .get(field)
+        .remove(field)
         .map_or(Ok(None), |value| optional_i32(value, field))
 }
 
-fn optional_i32(value: &Value, field: &'static str) -> Result<Option<i32>, OmdbJsonError> {
+fn optional_i32(value: Value, field: &'static str) -> Result<Option<i32>, OmdbJsonError> {
     match value {
         Value::Null => Ok(None),
         Value::String(value) if value.eq_ignore_ascii_case("N/A") => Ok(None),
-        Value::String(value) => {
-            value
-                .trim()
-                .parse::<i32>()
-                .map(Some)
-                .map_err(|_| OmdbJsonError::InvalidInteger {
-                    field,
-                    value: value.clone(),
-                })
-        }
+        Value::String(value) => match value.trim().parse::<i32>() {
+            Ok(value) => Ok(Some(value)),
+            Err(_) => Err(OmdbJsonError::InvalidInteger { field, value }),
+        },
         Value::Number(value) => value
             .as_i64()
             .and_then(|value| i32::try_from(value).ok())
@@ -446,17 +439,17 @@ fn optional_i32(value: &Value, field: &'static str) -> Result<Option<i32>, OmdbJ
 }
 
 fn field_ratings(
-    object: &Map<String, Value>,
+    object: &mut Map<String, Value>,
     field: &'static str,
 ) -> Result<Option<Vec<OmdbRating>>, OmdbJsonError> {
-    let Some(value) = object.get(field) else {
+    let Some(value) = object.remove(field) else {
         return Ok(None);
     };
     match value {
         Value::Null => Ok(None),
         Value::String(value) if value.eq_ignore_ascii_case("N/A") => Ok(None),
         Value::Array(values) => values
-            .iter()
+            .into_iter()
             .map(OmdbRating::from_value)
             .collect::<Result<Vec<_>, _>>()
             .map(Some),
@@ -468,17 +461,17 @@ fn field_ratings(
 }
 
 fn field_items(
-    object: &Map<String, Value>,
+    object: &mut Map<String, Value>,
     field: &'static str,
 ) -> Result<Option<Vec<OmdbItem>>, OmdbJsonError> {
-    let Some(value) = object.get(field) else {
+    let Some(value) = object.remove(field) else {
         return Ok(None);
     };
     match value {
         Value::Null => Ok(None),
         Value::String(value) if value.eq_ignore_ascii_case("N/A") => Ok(None),
         Value::Array(values) => values
-            .iter()
+            .into_iter()
             .map(OmdbItem::from_value)
             .collect::<Result<Vec<_>, _>>()
             .map(Some),

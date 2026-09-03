@@ -133,18 +133,18 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
 /// Fetches `OMDb` metadata and merges it into movie and series items.
 pub struct OmdbMetadataProvider {
     client: OmdbClient,
-    items: BaseItemRepository,
-    values: ItemValueRepository,
-    updates: ItemUpdateRepository,
+    items: std::sync::Arc<BaseItemRepository>,
+    values: std::sync::Arc<ItemValueRepository>,
+    updates: std::sync::Arc<ItemUpdateRepository>,
 }
 
 impl OmdbMetadataProvider {
     #[must_use]
     pub fn new(
         api_key: impl Into<String>,
-        items: BaseItemRepository,
-        values: ItemValueRepository,
-        updates: ItemUpdateRepository,
+        items: std::sync::Arc<BaseItemRepository>,
+        values: std::sync::Arc<ItemValueRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
     ) -> Self {
         Self {
             client: OmdbClient::new(api_key),
@@ -170,11 +170,18 @@ impl OmdbMetadataProvider {
             return Ok(false);
         };
         let omdb = self.client.fetch(&imdb_id).await?;
-        self.apply(item.id, &omdb).await?;
+        self.apply(item.id, omdb).await?;
         Ok(true)
     }
 
-    async fn apply(&self, item_id: Uuid, omdb: &OmdbItem) -> Result<(), OmdbMetadataProviderError> {
+    async fn apply(
+        &self,
+        item_id: Uuid,
+        mut omdb: OmdbItem,
+    ) -> Result<(), OmdbMetadataProviderError> {
+        let release_date = omdb.release_date();
+        let language = omdb.language.take();
+        let website = omdb.website.take();
         let mut result = MetadataResult::default();
         MetadataService::merge_omdb_item(
             omdb,
@@ -224,18 +231,28 @@ impl OmdbMetadataProvider {
             std::mem::take(&mut result.item.core.overview).filter(|value| !value.trim().is_empty());
         item.official_rating = std::mem::take(&mut result.item.official_rating);
         item.production_year = result.item.production_year;
-        if let Some(date) = omdb.release_date()
+        if let Some(date) = release_date
             && let Some(premiere_date) = omdb_date_to_utc(date)
         {
             item.premiere_date = Some(premiere_date);
         }
-        item.data = Some(omdb_extra_data(item.data.as_ref(), omdb, &result));
+        item.data = Some(omdb_extra_data(
+            item.data.as_ref(),
+            language,
+            website,
+            &result,
+        ));
         self.items.update(item).await?;
         Ok(())
     }
 }
 
-fn omdb_extra_data(existing: Option<&Value>, omdb: &OmdbItem, result: &MetadataResult) -> Value {
+fn omdb_extra_data(
+    existing: Option<&Value>,
+    language: Option<String>,
+    website: Option<String>,
+    result: &MetadataResult,
+) -> Value {
     let mut object = existing
         .and_then(Value::as_object)
         .cloned()
@@ -249,19 +266,23 @@ fn omdb_extra_data(existing: Option<&Value>, omdb: &OmdbItem, result: &MetadataR
     {
         object.insert("OriginalTitle".to_owned(), json!(original_title));
     }
-    if let Some(language) = omdb
-        .language
-        .as_deref()
-        .and_then(|language| language.split(',').next())
-        .map(str::trim)
-        .filter(|language| !language.is_empty())
-    {
-        object.insert("OriginalLanguage".to_owned(), json!(language));
+    if let Some(language) = language.and_then(first_list_value) {
+        object.insert("OriginalLanguage".to_owned(), Value::String(language));
     }
-    if let Some(website) = omdb.website.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("HomePageUrl".to_owned(), json!(website));
+    if let Some(website) = website.filter(|value| !value.is_empty()) {
+        object.insert("HomePageUrl".to_owned(), Value::String(website));
     }
     Value::Object(object)
+}
+
+fn first_list_value(mut value: String) -> Option<String> {
+    if let Some(comma) = value.find(',') {
+        value.truncate(comma);
+    }
+    let leading_whitespace = value.len() - value.trim_start().len();
+    value.drain(..leading_whitespace);
+    value.truncate(value.trim_end().len());
+    (!value.is_empty()).then_some(value)
 }
 
 fn omdb_date_to_utc(date: jellyfin_providers::omdb::OmdbDate) -> Option<DateTime<Utc>> {

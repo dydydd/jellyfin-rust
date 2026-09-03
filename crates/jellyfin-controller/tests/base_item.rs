@@ -228,7 +228,7 @@ fn get_all_versions_from_any_version_returns_every_version_once() {
 fn propagate_played_state_marks_alternates_and_resets_position_by_default() {
     let (group, primary, alternate1, alternate2) = setup_version_group();
     let updates = group
-        .propagate_played_state(primary, true, true, &HashMap::new())
+        .propagate_played_state(primary, true, true, HashMap::new())
         .unwrap();
 
     assert_eq!(updates.len(), 2);
@@ -252,7 +252,7 @@ fn propagate_played_state_marks_alternates_and_resets_position_by_default() {
 fn propagate_played_state_without_reset_leaves_position_untouched() {
     let (group, primary, _, _) = setup_version_group();
     let updates = group
-        .propagate_played_state(primary, true, false, &HashMap::new())
+        .propagate_played_state(primary, true, false, HashMap::new())
         .unwrap();
 
     assert_eq!(updates.len(), 2);
@@ -281,7 +281,7 @@ fn propagate_unwatched_clears_all_watched_state_on_versions() {
     let existing = HashMap::from([(alternate1, first), (alternate2, second)]);
 
     let updates = group
-        .propagate_played_state(primary, false, true, &existing)
+        .propagate_played_state(primary, false, true, existing)
         .unwrap();
 
     assert_eq!(updates.len(), 2);
@@ -304,7 +304,7 @@ fn propagate_played_state_single_version_does_nothing() {
 
     assert!(
         group
-            .propagate_played_state(solo_id, true, true, &HashMap::new())
+            .propagate_played_state(solo_id, true, true, HashMap::new())
             .unwrap()
             .is_empty()
     );

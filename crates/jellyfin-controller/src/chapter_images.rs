@@ -1,13 +1,13 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
 };
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemQuery, BaseItemRepository, ChapterRepository, ChapterStoreError,
 };
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use tokio::{fs, process::Command};
 use uuid::Uuid;
@@ -41,27 +41,28 @@ pub struct ChapterImageService {
     items: BaseItemRepository,
     chapters: ChapterRepository,
     ffmpeg_path: PathBuf,
-    storage_directory: PathBuf,
+    storage_directory: Arc<PathBuf>,
 }
 
 impl ChapterImageService {
     #[must_use]
     pub fn new(
-        database: DatabaseConnection,
+        database: impl Into<jellyfin_data::SharedDatabase>,
         storage_directory: impl Into<PathBuf>,
         ffmpeg_path: impl Into<PathBuf>,
     ) -> Self {
+        let database = database.into();
         Self {
-            items: BaseItemRepository::new(database.clone()),
+            items: BaseItemRepository::new(Arc::clone(&database)),
             chapters: ChapterRepository::new(database),
             ffmpeg_path: ffmpeg_path.into(),
-            storage_directory: storage_directory.into(),
+            storage_directory: Arc::new(storage_directory.into()),
         }
     }
 
     /// Replaces the directory used to store generated chapter images.
     pub fn set_storage_directory(&mut self, storage_directory: impl Into<PathBuf>) {
-        self.storage_directory = storage_directory.into();
+        self.storage_directory = Arc::new(storage_directory.into());
     }
 
     /// Replaces the `FFmpeg` binary used by extraction.
@@ -78,6 +79,20 @@ impl ChapterImageService {
     ///
     /// Returns a catalog error when the video query cannot be loaded.
     pub async fn refresh_all(&self) -> Result<(), ChapterImageError> {
+        self.refresh_all_with_paths(&self.storage_directory, &self.ffmpeg_path)
+            .await
+    }
+
+    /// Extracts chapter images using a per-run storage directory and `FFmpeg` binary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalog error when the video query cannot be loaded.
+    pub async fn refresh_all_with_paths(
+        &self,
+        storage_directory: &Path,
+        ffmpeg_path: &Path,
+    ) -> Result<(), ChapterImageError> {
         let query = BaseItemQuery {
             is_folder: Some(false),
             is_virtual_item: Some(false),
@@ -86,8 +101,14 @@ impl ChapterImageService {
         };
         let page = self.items.query(&query).await?;
         for item in page.items {
-            self.refresh_item(&item.id, item.path.as_deref(), item.runtime_ticks)
-                .await;
+            self.refresh_item_with_paths(
+                &item.id,
+                item.path.as_deref(),
+                item.runtime_ticks,
+                storage_directory,
+                ffmpeg_path,
+            )
+            .await;
         }
         Ok(())
     }
@@ -98,6 +119,24 @@ impl ChapterImageService {
         item_id: &Uuid,
         source_path: Option<&str>,
         runtime_ticks: Option<i64>,
+    ) {
+        self.refresh_item_with_paths(
+            item_id,
+            source_path,
+            runtime_ticks,
+            &self.storage_directory,
+            &self.ffmpeg_path,
+        )
+        .await;
+    }
+
+    async fn refresh_item_with_paths(
+        &self,
+        item_id: &Uuid,
+        source_path: Option<&str>,
+        runtime_ticks: Option<i64>,
+        storage_directory: &Path,
+        ffmpeg_path: &Path,
     ) {
         let Some(path) = source_path.filter(|path| !path.trim().is_empty()) else {
             return;
@@ -115,8 +154,7 @@ impl ChapterImageService {
             let task = ChapterImageTask {
                 chapter_id: chapter.id,
                 source_path: path.to_owned(),
-                output_path: self
-                    .image_path(*item_id, Utc::now(), chapter.id)
+                output_path: Self::image_path(storage_directory, *item_id, Utc::now(), chapter.id)
                     .to_string_lossy()
                     .into_owned(),
                 position_seconds: chapter_image_position_seconds(
@@ -124,7 +162,7 @@ impl ChapterImageService {
                     runtime_ticks,
                 ),
             };
-            if let Err(error) = self.generate(task).await {
+            if let Err(error) = self.generate_with_ffmpeg(task, ffmpeg_path).await {
                 tracing::warn!(
                     item_id = %item_id,
                     chapter_id = %chapter.id,
@@ -141,6 +179,14 @@ impl ChapterImageService {
     ///
     /// Returns I/O, process, or persistence failures for one chapter.
     pub async fn generate(&self, task: ChapterImageTask) -> Result<(), ChapterImageError> {
+        self.generate_with_ffmpeg(task, &self.ffmpeg_path).await
+    }
+
+    async fn generate_with_ffmpeg(
+        &self,
+        task: ChapterImageTask,
+        ffmpeg_path: &Path,
+    ) -> Result<(), ChapterImageError> {
         if fs::try_exists(Path::new(&task.output_path))
             .await
             .unwrap_or_default()
@@ -151,7 +197,7 @@ impl ChapterImageService {
             fs::create_dir_all(parent).await?;
         }
         let seconds = format_seconds(task.position_seconds);
-        let output = Command::new(&self.ffmpeg_path)
+        let output = Command::new(ffmpeg_path)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -183,12 +229,17 @@ impl ChapterImageService {
         Ok(())
     }
 
-    fn image_path(&self, item_id: Uuid, date_modified: DateTime<Utc>, chapter_id: Uuid) -> PathBuf {
+    fn image_path(
+        storage_directory: &Path,
+        item_id: Uuid,
+        date_modified: DateTime<Utc>,
+        chapter_id: Uuid,
+    ) -> PathBuf {
         let modified = date_modified
             .timestamp_nanos_opt()
             .unwrap_or_default()
             .to_string();
-        self.storage_directory
+        storage_directory
             .join(format!("{:02x}", item_id.as_bytes()[0]))
             .join(item_id.simple().to_string())
             .join(format!("{modified}_{}.jpg", chapter_id.simple()))

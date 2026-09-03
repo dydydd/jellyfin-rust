@@ -88,13 +88,16 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
 /// Fetches `TheAudioDB` artist and album metadata for music library items.
 pub struct AudioDbMetadataProvider {
     client: AudioDbClient,
-    items: BaseItemRepository,
-    updates: ItemUpdateRepository,
+    items: std::sync::Arc<BaseItemRepository>,
+    updates: std::sync::Arc<ItemUpdateRepository>,
 }
 
 impl AudioDbMetadataProvider {
     #[must_use]
-    pub fn new(items: BaseItemRepository, updates: ItemUpdateRepository) -> Self {
+    pub fn new(
+        items: std::sync::Arc<BaseItemRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
+    ) -> Self {
         Self {
             client: AudioDbClient::new(),
             items,

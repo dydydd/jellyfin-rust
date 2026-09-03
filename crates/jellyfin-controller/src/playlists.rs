@@ -3,7 +3,6 @@ use jellyfin_data::{
     PlaylistRecord, PlaylistRepository, PlaylistStoreError, PlaylistUserPermission,
     entities::base_item,
 };
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -45,10 +44,11 @@ pub struct PlaylistItemPage {
 
 impl PlaylistService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            items: BaseItemRepository::new(database.clone()),
-            playlists: PlaylistRepository::new(database.clone()),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            playlists: PlaylistRepository::new(std::sync::Arc::clone(&database)),
             links: LinkedChildRepository::new(database),
         }
     }

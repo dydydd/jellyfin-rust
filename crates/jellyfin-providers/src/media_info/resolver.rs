@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use jellyfin_model::{MediaProtocol, MediaStream, MediaStreamType, MimeTypes};
 use jellyfin_naming::{
     DlnaProfileType, ExternalPathParser, ExternalPathParserResult, LocalizationManager,
@@ -74,7 +76,7 @@ pub trait ExternalMediaInfoCapability {
 }
 
 pub(crate) struct ExternalStreamResolver<'a, L: LocalizationManager + ?Sized> {
-    naming_options: NamingOptions,
+    naming_options: Arc<NamingOptions>,
     path_parser: ExternalPathParser<'a, L>,
     profile_type: DlnaProfileType,
     stream_type: MediaStreamType,
@@ -82,13 +84,17 @@ pub(crate) struct ExternalStreamResolver<'a, L: LocalizationManager + ?Sized> {
 
 impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
     pub(crate) fn new(
-        naming_options: NamingOptions,
+        naming_options: impl Into<Arc<NamingOptions>>,
         localization_manager: &'a L,
         profile_type: DlnaProfileType,
         stream_type: MediaStreamType,
     ) -> Self {
-        let path_parser =
-            ExternalPathParser::new(naming_options.clone(), localization_manager, profile_type);
+        let naming_options = naming_options.into();
+        let path_parser = ExternalPathParser::new(
+            Arc::clone(&naming_options),
+            localization_manager,
+            profile_type,
+        );
         Self {
             naming_options,
             path_parser,
@@ -177,7 +183,7 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
         let mut next_index = request.start_index;
         let mut resolved = Vec::new();
 
-        for path_stream in path_streams {
+        for mut path_stream in path_streams {
             let Some(path) = path_stream.stream.path.as_deref() else {
                 continue;
             };
@@ -192,11 +198,12 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
             };
             let is_single_stream = media_streams.len() == 1;
 
-            for mut media_stream in media_streams {
-                if media_stream.stream_type != self.stream_type {
-                    continue;
-                }
-
+            let mut matching_streams = media_streams
+                .into_iter()
+                .filter(|stream| stream.stream_type == self.stream_type)
+                .peekable();
+            while let Some(mut media_stream) = matching_streams.next() {
+                let is_last = matching_streams.peek().is_none();
                 media_stream.index = next_index;
                 next_index = next_index.saturating_add(1);
                 if is_single_stream {
@@ -204,10 +211,15 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
                     media_stream.is_forced |= path_stream.stream.is_forced;
                     media_stream.is_hearing_impaired |= path_stream.stream.is_hearing_impaired;
                 }
-                merge_path_metadata(&mut media_stream, &path_stream.stream);
+                merge_path_metadata(&mut media_stream, &mut path_stream.stream, is_last);
+                let mime_type = if is_last {
+                    std::mem::take(&mut path_stream.mime_type)
+                } else {
+                    path_stream.mime_type.clone()
+                };
                 resolved.push(ResolvedExternalStream {
                     stream: media_stream,
-                    mime_type: path_stream.mime_type.clone(),
+                    mime_type,
                 });
             }
         }
@@ -216,14 +228,33 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalStreamResolver<'a, L> {
     }
 }
 
-fn merge_path_metadata(media_stream: &mut MediaStream, path_stream: &MediaStream) {
-    media_stream.path.clone_from(&path_stream.path);
+fn merge_path_metadata(
+    media_stream: &mut MediaStream,
+    path_stream: &mut MediaStream,
+    take_owned_fields: bool,
+) {
+    if take_owned_fields {
+        media_stream.path = path_stream.path.take();
+    } else {
+        media_stream.path.clone_from(&path_stream.path);
+    }
     media_stream.is_external = true;
     if media_stream.title.as_deref().is_none_or(str::is_empty) {
-        media_stream.title = non_empty(path_stream.title.as_deref()).map(ToOwned::to_owned);
+        media_stream.title = if take_owned_fields {
+            path_stream.title.take().filter(|value| !value.is_empty())
+        } else {
+            non_empty(path_stream.title.as_deref()).map(ToOwned::to_owned)
+        };
     }
     if media_stream.language.as_deref().is_none_or(str::is_empty) {
-        media_stream.language = non_empty(path_stream.language.as_deref()).map(ToOwned::to_owned);
+        media_stream.language = if take_owned_fields {
+            path_stream
+                .language
+                .take()
+                .filter(|value| !value.is_empty())
+        } else {
+            non_empty(path_stream.language.as_deref()).map(ToOwned::to_owned)
+        };
     }
 }
 

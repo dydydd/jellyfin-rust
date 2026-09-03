@@ -123,7 +123,7 @@ async fn authenticate_username_password(
     request.is_local_network = state.network_manager.is_in_local_network(remote_ip);
     let session = state
         .session_manager
-        .authenticate_new_session_internal(&request, true)
+        .authenticate_new_session_internal(request, true)
         .await
         .map_err(|error| session_error_to_api(&error))?;
     Ok(Json(authentication_result_from_device(
@@ -450,8 +450,7 @@ pub(crate) async fn authenticated_identity(
 }
 
 pub(crate) fn stored_user_policy(user: &user::Model) -> Result<UserPolicy, ApiError> {
-    let mut policy: UserPolicy =
-        serde_json::from_value(user.policy.clone()).map_err(|_| ApiError::Internal)?;
+    let mut policy = UserPolicy::deserialize(&user.policy).map_err(|_| ApiError::Internal)?;
     policy.invalid_login_attempt_count = user.invalid_login_attempt_count;
     policy.login_attempts_before_lockout = user.login_attempts_before_lockout;
     policy.is_administrator = user.is_administrator;

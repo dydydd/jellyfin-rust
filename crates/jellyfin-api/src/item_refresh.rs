@@ -78,8 +78,8 @@ pub(crate) async fn refresh(
         || query.image_refresh_mode != MetadataRefreshMode::None
     {
         crate::websocket::broadcast_refresh_progress(&state, item_id, 40.0).await;
-        let tmdb_api_key = state.tmdb_api_key.read().await.clone();
-        let omdb_api_key = state.omdb_api_key.read().await.clone();
+        let tmdb_api_key = Arc::clone(&*state.tmdb_api_key.read().await);
+        let omdb_api_key = Arc::clone(&*state.omdb_api_key.read().await);
         if let Err(error) = state
             .metadata_refresh
             .refresh(

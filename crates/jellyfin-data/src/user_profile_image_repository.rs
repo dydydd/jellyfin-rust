@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sea_orm::{DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
+use sea_orm::{DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -29,13 +29,15 @@ pub enum UserProfileImageStoreError {
 /// PostgreSQL-backed one-to-one user profile-image storage.
 #[derive(Clone)]
 pub struct UserProfileImageRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl UserProfileImageRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Atomically inserts or replaces the image path for one user.
@@ -73,7 +75,7 @@ impl UserProfileImageRepository {
             ],
         );
         user_profile_image::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| {
                 UserProfileImageStoreError::Database(DbErr::RecordNotFound(
@@ -92,7 +94,7 @@ impl UserProfileImageRepository {
         user_id: Uuid,
     ) -> Result<Option<user_profile_image::Model>, UserProfileImageStoreError> {
         Ok(user_profile_image::Entity::find_by_id(user_id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -118,7 +120,7 @@ impl UserProfileImageRepository {
             [user_id.into()],
         );
         Ok(user_profile_image::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 }

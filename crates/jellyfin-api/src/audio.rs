@@ -95,7 +95,7 @@ pub(crate) async fn universal(
         || query.start_time_ticks.is_some_and(|ticks| ticks != 0)
         || query.transcoding_container.is_some();
     if supports_direct && !requires_transcode {
-        return serve_path(&headers, path, request).await;
+        return serve_path(headers, path, request).await;
     }
 
     let codec = query.audio_codec.as_deref().unwrap_or("aac").to_owned();
@@ -123,7 +123,7 @@ pub(crate) async fn universal(
     run_ffmpeg(&command, &job)
         .await
         .map_err(|_| ApiError::UnsupportedMediaType)?;
-    serve_path(&headers, &output.to_string_lossy(), request).await
+    serve_path(headers, &output.to_string_lossy(), request).await
 }
 
 fn audio_container(codec: &str) -> &str {
@@ -170,11 +170,11 @@ async fn stream_file(
     if !query.static_stream.unwrap_or(true) {
         return Err(ApiError::UnsupportedMediaType);
     }
-    serve_path(&headers, &path, request).await
+    serve_path(headers, &path, request).await
 }
 
 pub(crate) async fn serve_path(
-    headers: &HeaderMap,
+    mut headers: HeaderMap,
     path: &str,
     mut request: Request<Body>,
 ) -> Result<Response, ApiError> {
@@ -185,8 +185,8 @@ pub(crate) async fn serve_path(
         axum::http::header::IF_MODIFIED_SINCE,
         axum::http::header::IF_UNMODIFIED_SINCE,
     ] {
-        if let Some(value) = headers.get(&name) {
-            request.headers_mut().insert(name, value.clone());
+        if let Some(value) = headers.remove(&name) {
+            request.headers_mut().insert(name, value);
         }
     }
     let response = match ServeFile::new(path)

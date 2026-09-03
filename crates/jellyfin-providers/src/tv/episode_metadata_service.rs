@@ -197,25 +197,34 @@ impl EpisodeMetadataService {
         episode: &mut EpisodeMetadata,
         parents: EpisodeParentContext<'_>,
     ) -> bool {
-        let original = ParentFields::from(&*episode);
+        let mut changed = false;
         if let Some(series) = parents.series {
-            episode.series_name = non_empty(Some(&series.name)).map(ToOwned::to_owned);
-            episode.series_id = non_empty(Some(&series.id)).map(ToOwned::to_owned);
-            episode
-                .series_presentation_unique_key
-                .clone_from(&series.presentation_unique_key);
+            changed |= replace_with_non_empty(&mut episode.series_name, &series.name);
+            changed |= replace_with_non_empty(&mut episode.series_id, &series.id);
+            if episode.series_presentation_unique_key != series.presentation_unique_key {
+                episode
+                    .series_presentation_unique_key
+                    .clone_from(&series.presentation_unique_key);
+                changed = true;
+            }
         }
         if let Some(season) = resolved_season(episode, parents) {
-            episode.season_name = non_empty(Some(&season.name)).map(ToOwned::to_owned);
-            episode.season_id = non_empty(Some(&season.id)).map(ToOwned::to_owned);
+            changed |= replace_with_non_empty(&mut episode.season_name, &season.name);
+            changed |= replace_with_non_empty(&mut episode.season_id, &season.id);
         } else {
-            episode.season_name = Some(episode.parent_index_number.map_or_else(
+            let season_name = episode.parent_index_number.map_or_else(
                 || "Season Unknown".to_owned(),
                 |number| format!("Season {number}"),
-            ));
-            episode.season_id = None;
+            );
+            if episode.season_name.as_deref() != Some(&season_name) {
+                episode.season_name = Some(season_name);
+                changed = true;
+            }
+            if episode.season_id.take().is_some() {
+                changed = true;
+            }
         }
-        original != ParentFields::from(&*episode)
+        changed
     }
 
     /// Refreshes episode metadata using an injected external provider.
@@ -230,33 +239,189 @@ impl EpisodeMetadataService {
         capability: &C,
     ) -> Result<EpisodeRefreshOutcome, C::Error> {
         let lookup = Self::lookup_info(episode, parents, options);
-        let original = episode.clone();
         let provider_result = capability.get_metadata(&lookup).await?;
         let provider_returned_metadata = provider_result
             .as_ref()
             .is_some_and(|result| result.has_metadata);
 
+        let mut metadata_changed = false;
         if let Some(provider_result) = provider_result.filter(|result| result.has_metadata) {
-            let mut target = EpisodeMetadataResult {
-                item: std::mem::take(episode),
-                has_metadata: false,
-            };
-            Self::merge_data(&provider_result, &mut target, options.replace_data, true);
-            let existing = EpisodeMetadataResult {
-                item: original.clone(),
-                has_metadata: true,
-            };
-            Self::merge_data(&existing, &mut target, false, false);
-            *episode = target.item;
+            metadata_changed |=
+                merge_owned_metadata(provider_result.item, episode, options.replace_data);
         }
-        let _ = Self::sync_parent_context(episode, parents);
+        metadata_changed |= Self::sync_parent_context(episode, parents);
 
         Ok(EpisodeRefreshOutcome {
             lookup,
             provider_returned_metadata,
-            metadata_changed: *episode != original,
+            metadata_changed,
         })
     }
+}
+
+fn merge_owned_metadata(
+    source: EpisodeMetadata,
+    target: &mut EpisodeMetadata,
+    replace_data: bool,
+) -> bool {
+    let mut changed = false;
+    changed |= merge_owned_non_blank(source.name, &mut target.name, replace_data);
+    changed |= merge_owned_optional(source.overview, &mut target.overview, replace_data);
+    changed |= merge_owned_optional(source.index_number, &mut target.index_number, replace_data);
+    changed |= merge_owned_optional(
+        source.parent_index_number,
+        &mut target.parent_index_number,
+        true,
+    );
+    changed |= merge_owned_optional(
+        source.premiere_date,
+        &mut target.premiere_date,
+        replace_data,
+    );
+    changed |= merge_owned_optional(
+        source.production_year,
+        &mut target.production_year,
+        replace_data,
+    );
+    changed |= merge_owned_optional(
+        source.community_rating,
+        &mut target.community_rating,
+        replace_data,
+    );
+    changed |= merge_owned_optional(
+        source.runtime_ticks,
+        &mut target.runtime_ticks,
+        replace_data,
+    );
+    changed |= merge_owned_string_array(
+        source.remote_trailers,
+        &mut target.remote_trailers,
+        replace_data,
+    );
+    changed |=
+        merge_owned_provider_ids(source.provider_ids, &mut target.provider_ids, replace_data);
+    changed |= merge_owned_optional(
+        source.airs_before_season_number,
+        &mut target.airs_before_season_number,
+        replace_data,
+    );
+    changed |= merge_owned_optional(
+        source.airs_after_season_number,
+        &mut target.airs_after_season_number,
+        replace_data,
+    );
+    changed |= merge_owned_optional(
+        source.airs_before_episode_number,
+        &mut target.airs_before_episode_number,
+        replace_data,
+    );
+    changed |= merge_owned_optional(
+        source.index_number_end,
+        &mut target.index_number_end,
+        replace_data,
+    );
+    changed
+}
+
+fn merge_owned_optional<T: PartialEq>(
+    source: Option<T>,
+    target: &mut Option<T>,
+    replace_data: bool,
+) -> bool {
+    let Some(source) = source else {
+        return false;
+    };
+    if (replace_data || target.is_none()) && target.as_ref() != Some(&source) {
+        *target = Some(source);
+        return true;
+    }
+    false
+}
+
+fn merge_owned_non_blank(
+    source: Option<String>,
+    target: &mut Option<String>,
+    replace_data: bool,
+) -> bool {
+    let Some(source) = source.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+    if (replace_data || target.as_deref().is_none_or(str::is_empty))
+        && target.as_ref() != Some(&source)
+    {
+        *target = Some(source);
+        return true;
+    }
+    false
+}
+
+fn merge_owned_string_array(
+    mut source: Vec<String>,
+    target: &mut Vec<String>,
+    replace_data: bool,
+) -> bool {
+    if source.is_empty() {
+        return false;
+    }
+    if !replace_data {
+        let mut changed = false;
+        for value in source {
+            if !target.contains(&value) {
+                target.push(value);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    let unchanged = source
+        .iter()
+        .chain(
+            target
+                .iter()
+                .filter(|value| !source.iter().any(|existing| existing == *value)),
+        )
+        .eq(target.iter());
+    for value in std::mem::take(target) {
+        if !source.contains(&value) {
+            source.push(value);
+        }
+    }
+    *target = source;
+    !unchanged
+}
+
+fn merge_owned_provider_ids(
+    source: ProviderIdMap,
+    target: &mut ProviderIdMap,
+    replace_data: bool,
+) -> bool {
+    let mut changed = false;
+    for (key, value) in source {
+        if let Some(existing) = target
+            .iter_mut()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(&key))
+            .map(|(_, value)| value)
+        {
+            if replace_data && *existing != value {
+                *existing = value;
+                changed = true;
+            }
+        } else {
+            target.insert(key, value);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn replace_with_non_empty(target: &mut Option<String>, source: &str) -> bool {
+    let replacement = non_empty(Some(source));
+    if target.as_deref() == replacement {
+        return false;
+    }
+    *target = replacement.map(ToOwned::to_owned);
+    true
 }
 
 fn merge_base_fields(source: &EpisodeMetadata, target: &mut EpisodeMetadata, replace_data: bool) {
@@ -357,18 +522,15 @@ fn merge_non_blank(source: Option<&str>, target: &mut Option<String>, replace_da
 }
 
 fn merge_provider_id(target: &mut ProviderIdMap, key: &str, value: &str, replace_data: bool) {
-    let existing_key = target
-        .keys()
-        .find(|existing| existing.eq_ignore_ascii_case(key))
-        .cloned();
-    match existing_key {
-        Some(existing_key) if replace_data => {
-            target.insert(existing_key, value.to_owned());
+    if let Some((_, existing_value)) = target
+        .iter_mut()
+        .find(|(existing_key, _)| existing_key.eq_ignore_ascii_case(key))
+    {
+        if replace_data {
+            *existing_value = value.to_owned();
         }
-        Some(_) => {}
-        None => {
-            target.insert(key.to_owned(), value.to_owned());
-        }
+    } else {
+        target.insert(key.to_owned(), value.to_owned());
     }
 }
 
@@ -395,25 +557,4 @@ fn resolved_season<'a>(
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.is_empty())
-}
-
-#[derive(PartialEq)]
-struct ParentFields {
-    series_name: Option<String>,
-    season_name: Option<String>,
-    series_id: Option<String>,
-    season_id: Option<String>,
-    series_presentation_unique_key: Option<String>,
-}
-
-impl From<&EpisodeMetadata> for ParentFields {
-    fn from(episode: &EpisodeMetadata) -> Self {
-        Self {
-            series_name: episode.series_name.clone(),
-            season_name: episode.season_name.clone(),
-            series_id: episode.series_id.clone(),
-            season_id: episode.season_id.clone(),
-            series_presentation_unique_key: episode.series_presentation_unique_key.clone(),
-        }
-    }
 }

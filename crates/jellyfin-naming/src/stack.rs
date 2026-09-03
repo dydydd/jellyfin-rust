@@ -107,29 +107,28 @@ pub struct StackResolver;
 impl StackResolver {
     #[must_use]
     pub fn resolve_audio_books(files: Vec<AudioBookFileInfo>) -> Vec<FileStack> {
-        let mut stacks: Vec<(String, FileStack)> = Vec::new();
+        let mut stacks: Vec<FileStack> = Vec::new();
         for file in files {
             let directory = parent_path(&file.path);
             if directory.is_empty() {
                 let path = file.path;
                 let name = file_stem(file_name(&path)).to_owned();
-                stacks.push((path.clone(), FileStack::new(name, false, vec![path])));
+                stacks.push(FileStack::new(name, false, vec![path]));
                 continue;
             }
-            if let Some((_, stack)) = stacks
-                .iter_mut()
-                .find(|(candidate, _)| candidate == directory)
-            {
+            if let Some(stack) = stacks.iter_mut().find(|stack| {
+                stack
+                    .files
+                    .first()
+                    .is_some_and(|path| parent_path(path) == directory)
+            }) {
                 stack.files.push(file.path);
             } else {
                 let name = file_name(directory).to_owned();
-                stacks.push((
-                    directory.to_owned(),
-                    FileStack::new(name, false, vec![file.path]),
-                ));
+                stacks.push(FileStack::new(name, false, vec![file.path]));
             }
         }
-        stacks.into_iter().map(|(_, stack)| stack).collect()
+        stacks
     }
 
     #[must_use]

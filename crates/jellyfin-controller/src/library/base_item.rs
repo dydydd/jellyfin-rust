@@ -338,6 +338,7 @@ impl VersionGroup {
                 id: item.id.simple().to_string(),
                 item_id: item.id,
                 name: get_media_source_name(&item.path, true, common_prefix.as_deref()),
+                // ALLOW: the returned DTO owns its path while the version graph remains reusable.
                 path: item.path.clone(),
                 width: item.width,
             })
@@ -360,7 +361,7 @@ impl VersionGroup {
         source_id: Uuid,
         played: bool,
         reset_position: bool,
-        existing_user_data: &HashMap<Uuid, UserItemData>,
+        mut existing_user_data: HashMap<Uuid, UserItemData>,
     ) -> Result<Vec<VersionPlaybackUpdate>, VersionGroupError> {
         let mut updates = Vec::new();
         for item in self.all_versions(source_id)? {
@@ -372,8 +373,7 @@ impl VersionGroup {
                     item_id: item.id,
                     playback_position_ticks: reset_position.then_some(0),
                 });
-            } else if let Some(existing) = existing_user_data.get(&item.id) {
-                let mut user_data = existing.clone();
+            } else if let Some(mut user_data) = existing_user_data.remove(&item.id) {
                 user_data.reset_played_state();
                 updates.push(VersionPlaybackUpdate::MarkUnplayed {
                     item_id: item.id,

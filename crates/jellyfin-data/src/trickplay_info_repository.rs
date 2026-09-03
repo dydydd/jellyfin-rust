@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr,
-    EntityTrait, FromQueryResult, QueryFilter, QueryOrder, Statement, TransactionTrait, Value,
-    sea_query::OnConflict,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult,
+    QueryFilter, QueryOrder, Statement, TransactionTrait, Value, sea_query::OnConflict,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -53,13 +52,15 @@ pub enum TrickplayInfoStoreError {
 
 #[derive(Clone)]
 pub struct TrickplayInfoRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl TrickplayInfoRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Loads metadata for one item and thumbnail width.
@@ -73,7 +74,7 @@ impl TrickplayInfoRepository {
         width: i32,
     ) -> Result<Option<TrickplayInfo>, TrickplayInfoStoreError> {
         Ok(trickplay_info::Entity::find_by_id((item_id, width))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .map(TrickplayInfo::from))
     }
@@ -148,7 +149,7 @@ impl TrickplayInfoRepository {
             ),
             values,
         ))
-        .all(&self.database)
+        .all(self.database.as_ref())
         .await?;
 
         for row in rows {
@@ -174,7 +175,7 @@ impl TrickplayInfoRepository {
     pub async fn delete_for_item(&self, item_id: Uuid) -> Result<bool, TrickplayInfoStoreError> {
         let result = trickplay_info::Entity::delete_many()
             .filter(trickplay_info::Column::ItemId.eq(item_id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         Ok(result.rows_affected > 0)
     }

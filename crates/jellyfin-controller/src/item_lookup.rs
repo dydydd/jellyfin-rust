@@ -5,7 +5,6 @@ use jellyfin_model::{
     ExternalIdInfo, ImageProviderInfo, ImageType, RemoteImageResult, RemoteSearchResult,
     order_by_language_descending,
 };
-use sea_orm::DatabaseConnection;
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -63,7 +62,7 @@ pub struct ItemLookupService {
 
 impl ItemLookupService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self {
             items: BaseItemRepository::new(database),
         }
@@ -291,7 +290,7 @@ impl ItemLookupService {
             "Person" => vec![ImageType::Profile],
             _ => return Ok(Vec::new()),
         };
-        Ok([TMDB_PROVIDER_NAME, "TV Maze", "TheAudioDB"]
+        let provider_names = [TMDB_PROVIDER_NAME, "TV Maze", "TheAudioDB"]
             .into_iter()
             .filter(|name| {
                 !metadata_options
@@ -306,9 +305,30 @@ impl ItemLookupService {
                         .iter()
                         .any(|ordered| ordered.eq_ignore_ascii_case(name))
             })
-            .map(|name| ImageProviderInfo {
-                name: name.to_owned(),
-                supported_images: supported_images.clone(),
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut remaining = provider_names.len();
+        let mut supported_images = Some(supported_images);
+        Ok(provider_names
+            .into_iter()
+            .map(|name| {
+                remaining -= 1;
+                let images = if remaining == 0 {
+                    supported_images
+                        .take()
+                        .expect("supported image types must be available")
+                } else {
+                    // ALLOW: each provider response owns its image-type list; the final provider
+                    // takes the original list to avoid one unnecessary allocation.
+                    supported_images
+                        .as_ref()
+                        .expect("supported image types must be available")
+                        .clone()
+                };
+                ImageProviderInfo {
+                    name,
+                    supported_images: images,
+                }
             })
             .collect())
     }
@@ -433,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_search_without_api_key_returns_empty() {
-        let service = ItemLookupService::new(DatabaseConnection::Disconnected);
+        let service = ItemLookupService::new(sea_orm::DatabaseConnection::Disconnected);
         let results = service
             .remote_search(
                 "Movie",

@@ -355,18 +355,18 @@ impl ImageProcessor {
     /// encoding fails.
     pub async fn process(
         &self,
-        source: &ImageSource,
-        request: &ImageProcessingRequest,
+        source: ImageSource,
+        request: ImageProcessingRequest,
     ) -> Result<ProcessedImage, ImageProcessingError> {
         let normalized = NormalizedRequest::new(request)?;
         let source_format = format_from_path(&source.path);
 
         ensure_source_exists(&source.path).await?;
-        if normalized.can_return_original(source, source_format)
+        if normalized.can_return_original(&source, source_format)
             && let Some(format) = source_format
         {
             return Ok(ProcessedImage {
-                path: source.path.clone(),
+                path: source.path,
                 mime_type: format.mime_type(),
                 date_modified: source.date_modified,
             });
@@ -375,7 +375,7 @@ impl ImageProcessor {
         let output_format = normalized.output_format(source_format)?;
         let cache_path = cache_path(
             self.cache_directory.as_path(),
-            source,
+            &source,
             &normalized,
             output_format,
         );
@@ -391,18 +391,18 @@ impl ImageProcessor {
             return Ok(result);
         }
 
-        let source_path = source.path.clone();
-        let task_cache_path = cache_path.clone();
-        tokio::task::spawn_blocking(move || {
+        let source_path = source.path;
+        let cache_path = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            process_to_cache(&source_path, &task_cache_path, &normalized, output_format)
+            process_to_cache(&source_path, &cache_path, &normalized, output_format)?;
+            Ok::<_, ImageProcessingError>(cache_path)
         })
         .await??;
 
         cached_result(&cache_path, output_format)
             .await?
             .ok_or_else(|| ImageProcessingError::FileAccess {
-                path: cache_path.clone(),
+                path: cache_path,
                 source: std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "encoded cache file disappeared",
@@ -550,7 +550,7 @@ struct NormalizedRequest {
 }
 
 impl NormalizedRequest {
-    fn new(request: &ImageProcessingRequest) -> Result<Self, ImageProcessingError> {
+    fn new(request: ImageProcessingRequest) -> Result<Self, ImageProcessingError> {
         if !(1..=100).contains(&request.quality) {
             return Err(ImageProcessingError::InvalidQuality(request.quality));
         }
@@ -591,7 +591,7 @@ impl NormalizedRequest {
             fill_height: nonzero(request.fill_height),
             quality: request.quality,
             format: request.format,
-            supported_formats: request.supported_formats.clone(),
+            supported_formats: request.supported_formats,
             blur: nonzero(request.blur),
             background_color,
             foreground_opacity,
@@ -1163,14 +1163,9 @@ fn encode_image(
                     )
             }
             DynamicImage::ImageLumaA8(la) => {
-                let luma = DynamicImage::ImageLumaA8(la.clone()).into_luma8();
+                let luma = la.pixels().map(|pixel| pixel.0[0]).collect::<Vec<_>>();
                 image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
-                    .write_image(
-                        luma.as_raw(),
-                        luma.width(),
-                        luma.height(),
-                        image::ExtendedColorType::L8,
-                    )
+                    .write_image(&luma, la.width(), la.height(), image::ExtendedColorType::L8)
             }
             _ => {
                 let rgb = image.to_rgb8();

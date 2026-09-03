@@ -42,8 +42,9 @@ fn delete_listings_provider_deletes_provider() {
 #[test]
 fn file_store_removes_only_the_target_and_preserves_unknown_configuration() {
     let fixture = ConfigurationFixture::new();
-    let store = Arc::new(JsonListingsConfigurationStore::new(&fixture.path));
-    let manager = ListingsManager::new(store.clone());
+    let store: Arc<dyn ListingsConfigurationStore> =
+        Arc::new(JsonListingsConfigurationStore::new(&fixture.path));
+    let manager = ListingsManager::new(Arc::clone(&store));
     let mut provider_extra = BTreeMap::new();
     provider_extra.insert(
         "FutureProviderOption".to_owned(),
@@ -91,8 +92,9 @@ fn file_store_removes_only_the_target_and_preserves_unknown_configuration() {
 #[test]
 fn unknown_and_repeated_deletes_are_idempotent_and_do_not_rewrite_the_file() {
     let fixture = ConfigurationFixture::new();
-    let store = Arc::new(JsonListingsConfigurationStore::new(&fixture.path));
-    let manager = ListingsManager::new(store.clone());
+    let store: Arc<dyn ListingsConfigurationStore> =
+        Arc::new(JsonListingsConfigurationStore::new(&fixture.path));
+    let manager = ListingsManager::new(Arc::clone(&store));
     store
         .mutate(&mut |configuration| {
             configuration.listing_providers = vec![provider("target", "XmlTv")];
@@ -133,8 +135,9 @@ fn concurrent_deletes_do_not_restore_providers_removed_by_other_threads() {
     const DELETE_COUNT: usize = 16;
 
     let fixture = ConfigurationFixture::new();
-    let store = Arc::new(JsonListingsConfigurationStore::new(&fixture.path));
-    let manager = Arc::new(ListingsManager::new(store.clone()));
+    let store: Arc<dyn ListingsConfigurationStore> =
+        Arc::new(JsonListingsConfigurationStore::new(&fixture.path));
+    let manager = Arc::new(ListingsManager::new(Arc::clone(&store)));
     store
         .mutate(&mut |configuration| {
             configuration.listing_providers = (0..DELETE_COUNT)
@@ -151,8 +154,8 @@ fn concurrent_deletes_do_not_restore_providers_removed_by_other_threads() {
     let barrier = Arc::new(Barrier::new(DELETE_COUNT + 1));
     let workers = (0..DELETE_COUNT)
         .map(|index| {
-            let manager = manager.clone();
-            let barrier = barrier.clone();
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
                 manager

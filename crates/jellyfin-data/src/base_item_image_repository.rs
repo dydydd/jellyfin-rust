@@ -1,10 +1,10 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr,
-    EntityTrait, FromQueryResult, QueryFilter, QueryOrder, QuerySelect, Statement,
-    TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseTransaction, DbBackend, DbErr, EntityTrait,
+    FromQueryResult, QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -195,13 +195,15 @@ pub enum BaseItemImageStoreError {
 /// PostgreSQL-backed base-item image storage.
 #[derive(Clone)]
 pub struct BaseItemImageRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl BaseItemImageRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Lists one item's images in stable type/index order.
@@ -214,7 +216,7 @@ impl BaseItemImageRepository {
             .filter(base_item_image::Column::ItemId.eq(item_id))
             .order_by_asc(base_item_image::Column::ImageType)
             .order_by_asc(base_item_image::Column::ImageIndex)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         rows.into_iter().map(BaseItemImage::try_from).collect()
     }
@@ -236,7 +238,7 @@ impl BaseItemImageRepository {
             .order_by_asc(base_item_image::Column::ItemId)
             .order_by_asc(base_item_image::Column::ImageType)
             .order_by_asc(base_item_image::Column::ImageIndex)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         rows.into_iter().map(BaseItemImage::try_from).collect()
     }
@@ -254,7 +256,7 @@ impl BaseItemImageRepository {
             .filter(base_item_image::Column::ItemId.eq(item_id))
             .filter(base_item_image::Column::ImageType.eq(BaseItemImageType::Primary.as_i16()))
             .filter(base_item_image::Column::ImageIndex.eq(0))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .map(BaseItemImage::try_from)
             .transpose()
@@ -274,7 +276,7 @@ impl BaseItemImageRepository {
         let image_index = i32::try_from(image_index)
             .map_err(|_| BaseItemImageStoreError::ImageIndexOutOfRange { value: image_index })?;
         base_item_image::Entity::find_by_id((item_id, image_type.as_i16(), image_index))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .map(BaseItemImage::try_from)
             .transpose()
@@ -301,7 +303,7 @@ impl BaseItemImageRepository {
             .order_by_asc(base_item_image::Column::ImageIndex)
             .offset(ordinal)
             .limit(1)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .map(BaseItemImage::try_from)
             .transpose()
@@ -489,7 +491,7 @@ impl BaseItemImageRepository {
             ],
         );
         base_item_image::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .map(BaseItemImage::try_from)
             .transpose()
@@ -554,7 +556,7 @@ impl BaseItemImageRepository {
             ],
         );
         base_item_image::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .map(BaseItemImage::try_from)
             .transpose()
@@ -581,9 +583,16 @@ impl BaseItemImageRepository {
             });
         }
         image.image_index = 0;
-        let validated = validate_images(std::slice::from_ref(&image))?
-            .pop()
-            .ok_or_else(|| DbErr::Custom("validated upload image was missing".to_owned()))?;
+        let image_type = image.image_type;
+        let validated = validate_image(
+            image.image_type,
+            image.image_index,
+            Cow::Owned(image.path),
+            image.date_modified,
+            image.width,
+            image.height,
+            image.blurhash.map(Cow::Owned),
+        )?;
         let transaction = self.database.begin().await?;
         let owner = transaction
             .query_one(Statement::from_sql_and_values(
@@ -596,7 +605,7 @@ impl BaseItemImageRepository {
             return Err(BaseItemImageStoreError::BaseItemNotFound { item_id });
         }
 
-        let image_index = if image.image_type == BaseItemImageType::Backdrop {
+        let image_index = if image_type == BaseItemImageType::Backdrop {
             let row = transaction
                 .query_one(Statement::from_sql_and_values(
                     DbBackend::Postgres,
@@ -605,7 +614,7 @@ impl BaseItemImageRepository {
                     FROM jellyfin.base_item_images
                     WHERE item_id = $1 AND image_type = $2
                     ",
-                    [item_id.into(), image.image_type.as_i16().into()],
+                    [item_id.into(), image_type.as_i16().into()],
                 ))
                 .await?
                 .ok_or_else(|| DbErr::Custom("backdrop index aggregate was missing".to_owned()))?;
@@ -620,7 +629,7 @@ impl BaseItemImageRepository {
         };
 
         let replaced =
-            base_item_image::Entity::find_by_id((item_id, image.image_type.as_i16(), image_index))
+            base_item_image::Entity::find_by_id((item_id, image_type.as_i16(), image_index))
                 .one(&transaction)
                 .await?
                 .map(BaseItemImage::try_from)
@@ -646,11 +655,11 @@ impl BaseItemImageRepository {
                 item_id.into(),
                 validated.image_type.into(),
                 image_index.into(),
-                validated.path.into(),
+                validated.path.into_owned().into(),
                 validated.date_modified.into(),
                 validated.width.into(),
                 validated.height.into(),
-                validated.blurhash.into(),
+                validated.blurhash.map(Cow::into_owned).into(),
             ],
         );
         let current = base_item_image::Model::find_by_statement(statement)
@@ -711,7 +720,7 @@ impl BaseItemImageRepository {
                         AND input.image_index = stored.image_index
                   )
                 ",
-                [item_id.into(), payload.clone().into()],
+                [item_id.into(), Value::from(payload.as_str()).into()],
             ))
             .await?;
 
@@ -767,64 +776,79 @@ impl BaseItemImageRepository {
 }
 
 #[derive(Debug)]
-struct ValidatedImage {
+struct ValidatedImage<'a> {
     image_type: i16,
     image_index: i32,
-    path: String,
+    path: Cow<'a, str>,
     date_modified: DateTime<Utc>,
     width: Option<i32>,
     height: Option<i32>,
-    blurhash: Option<String>,
+    blurhash: Option<Cow<'a, str>>,
 }
 
-impl ValidatedImage {
+impl ValidatedImage<'_> {
     fn to_json(&self) -> Value {
         json!({
             "image_type": self.image_type,
             "image_index": self.image_index,
-            "path": self.path,
+            "path": self.path.as_ref(),
             "date_modified": self.date_modified.to_rfc3339_opts(SecondsFormat::AutoSi, true),
             "width": self.width,
             "height": self.height,
-            "blurhash": self.blurhash,
+            "blurhash": self.blurhash.as_deref(),
         })
     }
 }
 
 fn validate_images(
     images: &[NewBaseItemImage],
-) -> Result<Vec<ValidatedImage>, BaseItemImageStoreError> {
+) -> Result<Vec<ValidatedImage<'_>>, BaseItemImageStoreError> {
     let mut keys = HashSet::with_capacity(images.len());
     images
         .iter()
         .map(|image| {
-            if image.path.trim().is_empty() {
-                return Err(BaseItemImageStoreError::EmptyPath);
-            }
             if !keys.insert((image.image_type, image.image_index)) {
                 return Err(BaseItemImageStoreError::DuplicateImage {
                     image_type: image.image_type,
                     image_index: image.image_index,
                 });
             }
-            let image_index = i32::try_from(image.image_index).map_err(|_| {
-                BaseItemImageStoreError::ImageIndexOutOfRange {
-                    value: image.image_index,
-                }
-            })?;
-            let width = validate_dimension("width", image.width)?;
-            let height = validate_dimension("height", image.height)?;
-            Ok(ValidatedImage {
-                image_type: image.image_type.as_i16(),
-                image_index,
-                path: image.path.clone(),
-                date_modified: image.date_modified,
-                width,
-                height,
-                blurhash: image.blurhash.clone(),
-            })
+            validate_image(
+                image.image_type,
+                image.image_index,
+                Cow::Borrowed(&image.path),
+                image.date_modified,
+                image.width,
+                image.height,
+                image.blurhash.as_deref().map(Cow::Borrowed),
+            )
         })
         .collect()
+}
+
+fn validate_image<'a>(
+    image_type: BaseItemImageType,
+    image_index: u32,
+    path: Cow<'a, str>,
+    date_modified: DateTime<Utc>,
+    width: Option<u32>,
+    height: Option<u32>,
+    blurhash: Option<Cow<'a, str>>,
+) -> Result<ValidatedImage<'a>, BaseItemImageStoreError> {
+    if path.trim().is_empty() {
+        return Err(BaseItemImageStoreError::EmptyPath);
+    }
+    let image_index = i32::try_from(image_index)
+        .map_err(|_| BaseItemImageStoreError::ImageIndexOutOfRange { value: image_index })?;
+    Ok(ValidatedImage {
+        image_type: image_type.as_i16(),
+        image_index,
+        path,
+        date_modified,
+        width: validate_dimension("width", width)?,
+        height: validate_dimension("height", height)?,
+        blurhash,
+    })
 }
 
 fn validate_dimension(

@@ -130,6 +130,40 @@ impl SchedulesDirectClient {
         Ok(response.json().await?)
     }
 
+    pub(crate) async fn schedules_for_stations<'a>(
+        &self,
+        token: &str,
+        station_ids: impl IntoIterator<Item = &'a str>,
+        dates: &'a [String],
+    ) -> Result<Vec<ScheduleDay>, SchedulesDirectClientError> {
+        #[derive(serde::Serialize)]
+        struct BorrowedScheduleRequest<'a> {
+            #[serde(rename = "stationID")]
+            station_id: &'a str,
+            date: &'a [String],
+        }
+
+        let requests = station_ids
+            .into_iter()
+            .map(|station_id| BorrowedScheduleRequest {
+                station_id,
+                date: dates,
+            })
+            .collect::<Vec<_>>();
+        let response = self
+            .http
+            .post(format!("{}/schedules", self.base_url))
+            .header("token", token)
+            .json(&requests)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(SchedulesDirectClientError::Http(status));
+        }
+        Ok(response.json().await?)
+    }
+
     /// Fetches program metadata for one or more program identifiers.
     ///
     /// # Errors

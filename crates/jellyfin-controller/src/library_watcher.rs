@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -11,16 +12,16 @@ use crate::{LibraryScanService, VirtualFolderService};
 const DEBOUNCE_SECS: u64 = 5;
 
 pub struct LibraryWatcher {
-    scan: LibraryScanService,
-    folders: VirtualFolderService,
+    scan: Arc<LibraryScanService>,
+    folders: Arc<VirtualFolderService>,
     paths: Vec<PathBuf>,
 }
 
 impl LibraryWatcher {
     #[must_use]
     pub fn new(
-        scan: LibraryScanService,
-        folders: VirtualFolderService,
+        scan: Arc<LibraryScanService>,
+        folders: Arc<VirtualFolderService>,
         paths: Vec<PathBuf>,
     ) -> Self {
         Self {
@@ -67,7 +68,7 @@ impl LibraryWatcher {
                 loop {
                     match rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(Ok(event)) => {
-                            if let Some(path) = relevant_event_path(&event) {
+                            if let Some(path) = relevant_event_path(event) {
                                 pending.push(path);
                                 last_event = std::time::Instant::now();
                             }
@@ -152,18 +153,16 @@ pub enum LibraryWatcherError {
     Thread(std::io::Error),
 }
 
-fn relevant_event_path(event: &Event) -> Option<PathBuf> {
+fn relevant_event_path(event: Event) -> Option<PathBuf> {
     match event.kind {
         EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_) => {}
         _ => return None,
     }
-    event.paths.first().and_then(|p| {
-        if is_library_media_path(p) {
-            Some(p.clone())
-        } else {
-            None
-        }
-    })
+    event
+        .paths
+        .into_iter()
+        .next()
+        .filter(|path| is_library_media_path(path))
 }
 
 fn is_library_media_path(path: &Path) -> bool {

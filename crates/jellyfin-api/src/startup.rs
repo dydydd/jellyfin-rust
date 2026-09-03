@@ -90,7 +90,10 @@ pub(crate) async fn snapshot(state: &AppState) -> Result<StartupSnapshot, ApiErr
 }
 
 pub(crate) async fn is_completed(state: &AppState) -> Result<bool, ApiError> {
-    Ok(snapshot(state).await?.completed)
+    if let Some(repository) = &state.startup_repository {
+        return Ok(repository.load().await?.is_startup_wizard_completed);
+    }
+    Ok(state.startup.lock().await.completed)
 }
 
 pub(crate) async fn get_configuration(
@@ -191,7 +194,9 @@ pub(crate) async fn update_user(
         .password
         .filter(|password| !password.trim().is_empty())
         .ok_or(ApiError::InvalidRequest)?;
-    let name = request.name.unwrap_or_else(|| user.username.clone());
+    let name = request
+        .name
+        .unwrap_or_else(|| std::mem::take(&mut user.username));
     let authentication = state.authentication;
     let user = tokio::task::spawn_blocking(move || {
         authentication.change_password(&mut user, &password);

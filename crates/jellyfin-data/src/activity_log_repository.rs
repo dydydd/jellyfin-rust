@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use sea_orm::{
     ActiveModelTrait,
     ActiveValue::NotSet,
-    ColumnTrait, DatabaseConnection, DbErr, DeleteResult, EntityTrait, JoinType, Order,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Select, Set,
+    ColumnTrait, DbErr, DeleteResult, EntityTrait, JoinType, Order, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, RelationTrait, Select, Set,
     sea_query::{Expr, extension::postgres::PgExpr},
 };
 use thiserror::Error;
@@ -100,13 +100,15 @@ pub enum ActivityLogError {
 /// PostgreSQL-backed activity log persistence and query operations.
 #[derive(Clone)]
 pub struct ActivityLogRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl ActivityLogRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Creates one activity log entry.
@@ -137,7 +139,7 @@ impl ActivityLogRepository {
             log_severity: Set(entry.log_severity),
             row_version: NotSet,
         }
-        .insert(&self.database)
+        .insert(self.database.as_ref())
         .await?)
     }
 
@@ -161,13 +163,13 @@ impl ActivityLogRepository {
         }
 
         entries = apply_filters(entries, query);
-        let total_record_count = entries.clone().count(&self.database).await?;
+        let total_record_count = entries.clone().count(self.database.as_ref()).await?;
         entries = apply_ordering(entries, &query.order_by);
 
         let items = entries
             .offset(query.skip.unwrap_or(0))
             .limit(query.limit.unwrap_or(DEFAULT_PAGE_SIZE))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
 
         Ok(ActivityLogPage {
@@ -185,7 +187,7 @@ impl ActivityLogRepository {
     pub async fn clean(&self, cutoff: DateTime<Utc>) -> Result<u64, ActivityLogError> {
         let DeleteResult { rows_affected } = activity_log::Entity::delete_many()
             .filter(activity_log::Column::DateCreated.lte(cutoff))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         Ok(rows_affected)
     }

@@ -337,14 +337,14 @@ impl StreamBuilder {
     }
 
     #[must_use]
-    pub fn get_subtitle_profile(
+    pub fn get_subtitle_profile<'a>(
         &self,
-        subtitle: &MediaStream,
-        profiles: &[SubtitleProfile],
+        subtitle: &'a MediaStream,
+        profiles: &'a [SubtitleProfile],
         method: PlayMethod,
         output_container: Option<&str>,
         protocol: Option<MediaStreamProtocol>,
-    ) -> SubtitleProfile {
+    ) -> SelectedSubtitleProfile<'a> {
         select_subtitle_profile(
             subtitle,
             profiles,
@@ -360,6 +360,34 @@ impl StreamBuilder {
         &self,
         options: &MediaOptions,
     ) -> Result<Option<StreamInfo>, StreamBuilderError> {
+        self.select_optimal_audio_stream(options).map(|selection| {
+            selection.map(|(index, mut stream)| {
+                // ALLOW: the borrowed API must preserve its input while the result owns a source.
+                stream.media_source = Some(options.media_sources[index].clone());
+                stream
+            })
+        })
+    }
+
+    /// Selects an audio stream by temporarily moving its source out of `options`.
+    ///
+    /// The returned index identifies where callers can restore the source after
+    /// consuming the stream decision.
+    pub fn take_optimal_audio_stream(
+        &self,
+        options: &mut MediaOptions,
+    ) -> Result<Option<(usize, StreamInfo)>, StreamBuilderError> {
+        let selection = self.select_optimal_audio_stream(options)?;
+        Ok(selection.map(|(index, mut stream)| {
+            stream.media_source = Some(options.media_sources.remove(index));
+            (index, stream)
+        }))
+    }
+
+    fn select_optimal_audio_stream(
+        &self,
+        options: &MediaOptions,
+    ) -> Result<Option<(usize, StreamInfo)>, StreamBuilderError> {
         if options.item_id.is_nil()
             && options
                 .device_id
@@ -387,24 +415,55 @@ impl StreamBuilder {
             if let Some(mut stream) = self.build_audio_stream(source, options)? {
                 stream.device_id.clone_from(&options.device_id);
                 stream.device_profile_id = options.profile.id.map(|id| id.simple().to_string());
-                streams.push((index, stream));
+                streams.push((index, source, stream));
             }
         }
 
-        streams.sort_by(|(left_index, left), (right_index, right)| {
-            audio_stream_rank(left, max_bitrate, *left_index).cmp(&audio_stream_rank(
-                right,
-                max_bitrate,
-                *right_index,
-            ))
-        });
-        Ok(streams.into_iter().next().map(|(_, stream)| stream))
+        streams.sort_by(
+            |(left_index, left_source, left), (right_index, right_source, right)| {
+                audio_stream_rank(left, left_source, max_bitrate, *left_index).cmp(
+                    &audio_stream_rank(right, right_source, max_bitrate, *right_index),
+                )
+            },
+        );
+        Ok(streams
+            .into_iter()
+            .next()
+            .map(|(index, _, stream)| (index, stream)))
     }
 
     pub fn get_optimal_video_stream(
         &self,
         options: &MediaOptions,
     ) -> Result<Option<StreamInfo>, StreamBuilderError> {
+        self.select_optimal_video_stream(options).map(|selection| {
+            selection.map(|(index, mut stream)| {
+                // ALLOW: the borrowed API must preserve its input while the result owns a source.
+                stream.media_source = Some(options.media_sources[index].clone());
+                stream
+            })
+        })
+    }
+
+    /// Selects a video stream by temporarily moving its source out of `options`.
+    ///
+    /// The returned index identifies where callers can restore the source after
+    /// consuming the stream decision.
+    pub fn take_optimal_video_stream(
+        &self,
+        options: &mut MediaOptions,
+    ) -> Result<Option<(usize, StreamInfo)>, StreamBuilderError> {
+        let selection = self.select_optimal_video_stream(options)?;
+        Ok(selection.map(|(index, mut stream)| {
+            stream.media_source = Some(options.media_sources.remove(index));
+            (index, stream)
+        }))
+    }
+
+    fn select_optimal_video_stream(
+        &self,
+        options: &MediaOptions,
+    ) -> Result<Option<(usize, StreamInfo)>, StreamBuilderError> {
         if options.item_id.is_nil()
             && options
                 .device_id
@@ -441,16 +500,19 @@ impl StreamBuilder {
             };
             stream.device_id.clone_from(&options.device_id);
             stream.device_profile_id = options.profile.id.map(|id| id.simple().to_string());
-            streams.push((index, stream));
+            streams.push((index, source, stream));
         }
-        streams.sort_by(|(left_index, left), (right_index, right)| {
-            audio_stream_rank(left, max_bitrate, *left_index).cmp(&audio_stream_rank(
-                right,
-                max_bitrate,
-                *right_index,
-            ))
-        });
-        Ok(streams.into_iter().next().map(|(_, stream)| stream))
+        streams.sort_by(
+            |(left_index, left_source, left), (right_index, right_source, right)| {
+                audio_stream_rank(left, left_source, max_bitrate, *left_index).cmp(
+                    &audio_stream_rank(right, right_source, max_bitrate, *right_index),
+                )
+            },
+        );
+        Ok(streams
+            .into_iter()
+            .next()
+            .map(|(index, _, stream)| (index, stream)))
     }
 
     fn build_video_stream(
@@ -459,7 +521,6 @@ impl StreamBuilder {
         options: &MediaOptions,
     ) -> Option<StreamInfo> {
         let mut stream = StreamInfo::new(options.item_id, DlnaProfileType::Video);
-        stream.media_source = Some(source.clone());
         stream.run_time_ticks = source.run_time_ticks;
         stream.context = options.context;
         stream.always_burn_in_subtitle_when_transcoding =
@@ -594,7 +655,7 @@ impl StreamBuilder {
                         None,
                     );
                     stream.subtitle_delivery_method = profile.method;
-                    stream.subtitle_format = Some(profile.format);
+                    stream.subtitle_format = Some(profile.format.to_owned());
                 }
                 stream.transcode_reasons = reasons;
                 return Some(stream);
@@ -628,8 +689,8 @@ impl StreamBuilder {
                     Some(profile.protocol),
                 );
                 stream.subtitle_delivery_method = subtitle_profile.method;
-                stream.subtitle_format = Some(subtitle_profile.format.clone());
-                stream.subtitle_codecs = vec![subtitle_profile.format];
+                stream.subtitle_format = Some(subtitle_profile.format.to_owned());
+                stream.subtitle_codecs = vec![subtitle_profile.format.to_owned()];
             }
             if intersects(
                 stream.transcode_reasons,
@@ -647,7 +708,6 @@ impl StreamBuilder {
         options: &MediaOptions,
     ) -> Result<Option<StreamInfo>, StreamBuilderError> {
         let mut stream = StreamInfo::new(options.item_id, DlnaProfileType::Audio);
-        stream.media_source = Some(source.clone());
         stream.run_time_ticks = source.run_time_ticks;
         stream.context = options.context;
 
@@ -1462,7 +1522,7 @@ fn build_video_targets(
     }
 
     let use_sub_container = stream.sub_protocol == MediaStreamProtocol::Hls;
-    let target_video_codecs = stream.video_codecs.clone();
+    let target_video_codecs = std::mem::take(&mut stream.video_codecs);
     for codec_profile in options
         .profile
         .codec_profiles
@@ -1479,7 +1539,8 @@ fn build_video_targets(
         })
         .rev()
     {
-        for codec in &target_video_codecs {
+        for codec_index in (0..target_video_codecs.len()).rev() {
+            let codec = &target_video_codecs[codec_index];
             if codec_profile.contains_video_codec(Some(codec), container, use_sub_container) {
                 apply_general_transcoding_conditions(
                     stream,
@@ -1489,6 +1550,7 @@ fn build_video_targets(
             }
         }
     }
+    stream.video_codecs = target_video_codecs;
 
     stream.global_max_audio_channels = if channels_exceed {
         stream.transcoding_max_audio_channels
@@ -1503,7 +1565,7 @@ fn build_video_targets(
     );
     stream.audio_bitrate = Some(audio_bitrate);
 
-    let target_audio_codecs = stream.audio_codecs.clone();
+    let target_audio_codecs = std::mem::take(&mut stream.audio_codecs);
     for codec_profile in options
         .profile
         .codec_profiles
@@ -1516,7 +1578,8 @@ fn build_video_targets(
         })
         .rev()
     {
-        for codec in &target_audio_codecs {
+        for codec_index in (0..target_audio_codecs.len()).rev() {
+            let codec = &target_audio_codecs[codec_index];
             if codec_profile.contains_audio_codec(Some(codec), container) {
                 apply_general_transcoding_conditions(
                     stream,
@@ -1527,6 +1590,7 @@ fn build_video_targets(
             }
         }
     }
+    stream.audio_codecs = target_audio_codecs;
 
     if let Some(max_bitrate) = options.max_bitrate(false) {
         let available = max_bitrate - stream.audio_bitrate.unwrap_or_default();
@@ -1610,14 +1674,20 @@ const fn max_audio_bitrate_for_total(total: i64) -> i32 {
     }
 }
 
-fn select_subtitle_profile(
-    subtitle: &MediaStream,
-    profiles: &[SubtitleProfile],
+#[derive(Clone, Copy)]
+pub struct SelectedSubtitleProfile<'a> {
+    pub format: &'a str,
+    pub method: SubtitleDeliveryMethod,
+}
+
+fn select_subtitle_profile<'a>(
+    subtitle: &'a MediaStream,
+    profiles: &'a [SubtitleProfile],
     method: PlayMethod,
     output_container: Option<&str>,
     protocol: Option<MediaStreamProtocol>,
     can_extract_subtitles: bool,
-) -> SubtitleProfile {
+) -> SelectedSubtitleProfile<'a> {
     let can_embed = if subtitle.is_external {
         method == PlayMethod::Transcode
             && protocol != Some(MediaStreamProtocol::Hls)
@@ -1641,14 +1711,20 @@ fn select_subtitle_profile(
                     .format
                     .eq_ignore_ascii_case(subtitle.codec.as_deref().unwrap_or_default())
         }) {
-            return profile.clone();
+            return SelectedSubtitleProfile {
+                format: &profile.format,
+                method: profile.method,
+            };
         }
         if let Some(profile) = profiles
             .iter()
             .filter(eligible)
             .find(|profile| subtitle.supports_subtitle_conversion_to(&profile.format))
         {
-            return profile.clone();
+            return SelectedSubtitleProfile {
+                format: &profile.format,
+                method: profile.method,
+            };
         }
     }
 
@@ -1687,13 +1763,15 @@ fn select_subtitle_profile(
                     && subtitle.supports_external_stream
                     && subtitle.supports_subtitle_conversion_to(&profile.format))
         }) {
-            return profile.clone();
+            return SelectedSubtitleProfile {
+                format: &profile.format,
+                method: profile.method,
+            };
         }
     }
-    SubtitleProfile {
-        format: subtitle.codec.clone().unwrap_or_default(),
+    SelectedSubtitleProfile {
+        format: subtitle.codec.as_deref().unwrap_or_default(),
         method: SubtitleDeliveryMethod::Encode,
-        ..SubtitleProfile::default()
     }
 }
 
@@ -2193,19 +2271,23 @@ fn normalize_container(
     Some(input.to_owned())
 }
 
-fn audio_stream_rank(stream: &StreamInfo, max_bitrate: i64, index: usize) -> AudioStreamRank {
-    let source = stream.media_source.as_ref();
+fn audio_stream_rank(
+    stream: &StreamInfo,
+    source: &MediaSourceInfo,
+    max_bitrate: i64,
+    index: usize,
+) -> AudioStreamRank {
     AudioStreamRank {
         direct_file: !(stream.play_method == PlayMethod::DirectPlay
-            && source.is_some_and(|source| source.protocol == MediaProtocol::File)),
+            && source.protocol == MediaProtocol::File),
         direct: !matches!(
             stream.play_method,
             PlayMethod::DirectPlay | PlayMethod::DirectStream
         ),
-        file: !source.is_some_and(|source| source.protocol == MediaProtocol::File),
+        file: source.protocol != MediaProtocol::File,
         bitrate_distance: if max_bitrate > 0 {
             source
-                .and_then(|source| source.bitrate)
+                .bitrate
                 .map_or(0, |bitrate| (i64::from(bitrate) - max_bitrate).abs())
         } else {
             0

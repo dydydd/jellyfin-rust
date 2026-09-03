@@ -261,7 +261,6 @@ fn map_program(
         genres,
         flags,
         episode_title,
-        image_url: image_url.clone(),
         has_image: Some(image_url.is_some()),
         production_year: child_text(node, "date").and_then(|date| parse_year(&date)),
         series_id: episode_number
@@ -271,6 +270,7 @@ fn map_program(
         episode_number,
         ..ProgramInfo::default()
     };
+    program.image_url = image_url;
     if program
         .show_id
         .as_ref()

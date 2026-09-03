@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
-    DbBackend, DbErr, DeleteResult, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, Statement, sea_query::Expr,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DbBackend, DbErr,
+    DeleteResult, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set,
+    Statement, sea_query::Expr,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -36,13 +36,15 @@ pub enum AuthenticationStoreError {
 /// Persistence operations for server API keys.
 #[derive(Clone)]
 pub struct ApiKeyRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl ApiKeyRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Creates a key and returns its recoverable access token.
@@ -65,7 +67,7 @@ impl ApiKeyRepository {
             name: Set(name.to_owned()),
             access_token: Set(new_access_token()),
         }
-        .insert(&self.database)
+        .insert(self.database.as_ref())
         .await?)
     }
 
@@ -77,7 +79,7 @@ impl ApiKeyRepository {
     pub async fn list(&self) -> Result<Vec<api_key::Model>, AuthenticationStoreError> {
         Ok(api_key::Entity::find()
             .order_by_asc(api_key::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -92,7 +94,7 @@ impl ApiKeyRepository {
     ) -> Result<Option<api_key::Model>, AuthenticationStoreError> {
         Ok(api_key::Entity::find()
             .filter(api_key::Column::AccessToken.eq(token))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -109,7 +111,7 @@ impl ApiKeyRepository {
         Ok(api_key::Entity::update_many()
             .col_expr(api_key::Column::DateLastActivity, Expr::value(at))
             .filter(api_key::Column::AccessToken.eq(token))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -122,7 +124,7 @@ impl ApiKeyRepository {
     pub async fn revoke(&self, token: &str) -> Result<u64, AuthenticationStoreError> {
         let DeleteResult { rows_affected } = api_key::Entity::delete_many()
             .filter(api_key::Column::AccessToken.eq(token))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         Ok(rows_affected)
     }
@@ -180,13 +182,15 @@ pub struct DevicePage {
 /// Persistence and query operations for authenticated devices.
 #[derive(Clone)]
 pub struct DeviceRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl DeviceRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Creates a device with a new recoverable access token.
@@ -224,7 +228,7 @@ impl DeviceRepository {
         new_device: NewDevice,
         is_active: bool,
     ) -> Result<device::Model, AuthenticationStoreError> {
-        Self::insert_with(&self.database, new_device, is_active).await
+        Self::insert_with(self.database.as_ref(), new_device, is_active).await
     }
 
     pub(crate) async fn insert_with<C: sea_orm::ConnectionTrait>(
@@ -270,7 +274,7 @@ impl DeviceRepository {
     ) -> Result<Option<device::Model>, AuthenticationStoreError> {
         Ok(device::Entity::find()
             .filter(device::Column::AccessToken.eq(access_token))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -289,7 +293,7 @@ impl DeviceRepository {
         if let Some(token) = except_access_token {
             devices = devices.filter(device::Column::AccessToken.ne(token));
         }
-        Ok(devices.exec(&self.database).await?.rows_affected)
+        Ok(devices.exec(self.database.as_ref()).await?.rows_affected)
     }
 
     /// Deletes a device authentication record by exact access token.
@@ -303,7 +307,7 @@ impl DeviceRepository {
     ) -> Result<u64, AuthenticationStoreError> {
         Ok(device::Entity::delete_many()
             .filter(device::Column::AccessToken.eq(access_token))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -319,7 +323,7 @@ impl DeviceRepository {
     ) -> Result<u64, AuthenticationStoreError> {
         Ok(device::Entity::delete_many()
             .filter(device::Column::DeviceId.eq(device_id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -343,7 +347,7 @@ impl DeviceRepository {
                 "lower(device_id) = lower($1::text)",
                 [device_id.to_owned()],
             ))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -376,14 +380,14 @@ impl DeviceRepository {
             devices = devices.filter(device::Column::DateLastActivity.gte(active_since));
         }
 
-        let total_record_count = devices.clone().count(&self.database).await?;
+        let total_record_count = devices.clone().count(self.database.as_ref()).await?;
         devices = devices
             .order_by_asc(device::Column::Id)
             .offset(query.skip.unwrap_or(0));
         if let Some(limit) = query.limit.filter(|limit| *limit > 0) {
             devices = devices.limit(limit);
         }
-        let items = devices.all(&self.database).await?;
+        let items = devices.all(self.database.as_ref()).await?;
 
         Ok(DevicePage {
             start_index: query.skip,
@@ -404,7 +408,7 @@ impl DeviceRepository {
         Ok(device::Entity::find()
             .filter(device::Column::DeviceId.eq(device_id))
             .order_by_desc(device::Column::DateLastActivity)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -440,7 +444,7 @@ impl DeviceRepository {
             date_last_activity: Set(model.date_last_activity),
             date_last_paused: Set(model.date_last_paused),
         };
-        Ok(active.update(&self.database).await?)
+        Ok(active.update(self.database.as_ref()).await?)
     }
 
     /// Persists client capabilities for a device session identified by token.
@@ -461,7 +465,7 @@ impl DeviceRepository {
             .col_expr(device::Column::Capabilities, Expr::value(capabilities))
             .col_expr(device::Column::DateModified, Expr::value(Utc::now()))
             .filter(device::Column::AccessToken.eq(access_token))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -524,7 +528,7 @@ impl DeviceRepository {
             .col_expr(device::Column::DateLastActivity, Expr::value(now))
             .col_expr(device::Column::DateLastPaused, date_last_paused)
             .filter(device::Column::Id.eq(id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -554,7 +558,7 @@ impl DeviceRepository {
                 Expr::value(Option::<DateTime<Utc>>::None),
             )
             .filter(device::Column::Id.eq(id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -578,7 +582,7 @@ impl DeviceRepository {
             .col_expr(device::Column::DateModified, Expr::value(Utc::now()))
             .col_expr(device::Column::DateLastActivity, Expr::value(Utc::now()))
             .filter(device::Column::Id.eq(id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -670,7 +674,7 @@ impl DeviceRepository {
     /// Returns a database error when deletion fails.
     pub async fn delete(&self, id: i64) -> Result<u64, AuthenticationStoreError> {
         Ok(device::Entity::delete_by_id(id)
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -679,13 +683,15 @@ impl DeviceRepository {
 /// Persistence operations for custom device options.
 #[derive(Clone)]
 pub struct DeviceOptionsRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl DeviceOptionsRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Finds custom options for an exact device identifier.
@@ -699,7 +705,7 @@ impl DeviceOptionsRepository {
     ) -> Result<Option<device_option::Model>, AuthenticationStoreError> {
         Ok(device_option::Entity::find()
             .filter(device_option::Column::DeviceId.eq(device_id))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -708,16 +714,17 @@ impl DeviceOptionsRepository {
     /// # Errors
     ///
     /// Returns a database error when lookup fails.
-    pub async fn find_by_device_ids(
+    pub async fn find_by_device_ids<'a>(
         &self,
-        device_ids: &[String],
+        device_ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<Vec<device_option::Model>, AuthenticationStoreError> {
+        let device_ids = device_ids.into_iter().collect::<Vec<_>>();
         if device_ids.is_empty() {
             return Ok(Vec::new());
         }
         Ok(device_option::Entity::find()
-            .filter(device_option::Column::DeviceId.is_in(device_ids.iter().cloned()))
-            .all(&self.database)
+            .filter(device_option::Column::DeviceId.is_in(device_ids))
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -746,7 +753,7 @@ impl DeviceOptionsRepository {
                 .update_column(device_option::Column::CustomName)
                 .to_owned(),
         )
-        .exec_with_returning(&self.database)
+        .exec_with_returning(self.database.as_ref())
         .await?)
     }
 }

@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, RwLock},
 };
 
 use image::{GenericImageView, ImageEncoder, ImageReader, imageops};
@@ -11,7 +12,6 @@ use jellyfin_data::{
 };
 use jellyfin_drawing::ImageInspectionError;
 use jellyfin_model::{TrickplayInfoDto, configuration::TrickplayOptions};
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use tokio::{fs, process::Command};
 use uuid::Uuid;
@@ -33,7 +33,7 @@ pub enum TrickplayError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrickplayGenerationRequest {
     pub item_id: Uuid,
-    pub source_path: String,
+    pub source_path: Arc<str>,
     pub width: i32,
     pub tile_width: i32,
     pub tile_height: i32,
@@ -53,26 +53,42 @@ pub struct TilePlan {
 }
 
 /// Reads trickplay metadata and maps it to Jellyfin's playlist and tile layout.
-#[derive(Clone)]
 pub struct TrickplayService {
     repository: TrickplayInfoRepository,
     items: BaseItemRepository,
-    storage_directory: PathBuf,
+    storage_directory: RwLock<Arc<PathBuf>>,
 }
 
 impl TrickplayService {
     #[must_use]
-    pub fn new(database: DatabaseConnection, storage_directory: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        storage_directory: impl Into<PathBuf>,
+    ) -> Self {
+        let database = database.into();
         Self {
-            repository: TrickplayInfoRepository::new(database.clone()),
+            repository: TrickplayInfoRepository::new(std::sync::Arc::clone(&database)),
             items: BaseItemRepository::new(database),
-            storage_directory: storage_directory.into(),
+            storage_directory: RwLock::new(Arc::new(storage_directory.into())),
         }
     }
 
     /// Replaces the directory used by trickplay read/write operations.
-    pub fn set_storage_directory(&mut self, storage_directory: impl Into<PathBuf>) {
-        self.storage_directory = storage_directory.into();
+    pub fn set_storage_directory(&self, storage_directory: impl Into<PathBuf>) {
+        *self
+            .storage_directory
+            .write()
+            .expect("trickplay storage directory lock poisoned") =
+            Arc::new(storage_directory.into());
+    }
+
+    fn storage_directory(&self) -> Arc<PathBuf> {
+        Arc::clone(
+            &self
+                .storage_directory
+                .read()
+                .expect("trickplay storage directory lock poisoned"),
+        )
     }
 
     /// Builds the official image-only HLS playlist for one resolution.
@@ -132,7 +148,8 @@ impl TrickplayService {
     /// Returns a persistence error when trickplay metadata cannot be deleted.
     pub async fn delete_data(&self, item_id: Uuid) -> Result<bool, TrickplayError> {
         let deleted = self.repository.delete_for_item(item_id).await?;
-        let directory = internal_item_directory(&self.storage_directory, item_id);
+        let storage_directory = self.storage_directory();
+        let directory = internal_item_directory(storage_directory.as_path(), item_id);
         match fs::remove_dir_all(&directory).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -161,7 +178,8 @@ impl TrickplayService {
         runtime_ticks: Option<i64>,
         configured_interval: i32,
     ) -> Result<Vec<TrickplayInfo>, TrickplayError> {
-        let item_directory = internal_item_directory(&self.storage_directory, item_id);
+        let storage_directory = self.storage_directory();
+        let item_directory = internal_item_directory(storage_directory.as_path(), item_id);
         let mut present_widths = Vec::new();
         let mut discovered = Vec::new();
         let mut directories = match fs::read_dir(&item_directory).await {
@@ -230,7 +248,7 @@ impl TrickplayService {
             return Ok(None);
         };
         Ok(Some(internal_tile_path(
-            &self.storage_directory,
+            self.storage_directory().as_path(),
             info,
             index,
         )))
@@ -260,12 +278,13 @@ impl TrickplayService {
         if !fs::try_exists(Path::new(&path)).await.unwrap_or_default() {
             return Ok(());
         }
+        let source_path = Arc::<str>::from(path);
         let interval = options.interval.max(1_000);
         let work_root = work_root.as_ref();
         for requested_width in options.width_resolutions.iter().copied() {
             let request = TrickplayGenerationRequest {
                 item_id,
-                source_path: path.clone(),
+                source_path: Arc::clone(&source_path),
                 width: even_width(requested_width),
                 tile_width: options.tile_width.clamp(1, 255),
                 tile_height: options.tile_height.clamp(1, 255),
@@ -347,7 +366,7 @@ impl TrickplayService {
                 "error",
                 "-y",
                 "-i",
-                &request.source_path,
+                request.source_path.as_ref(),
                 "-vf",
                 &format!("fps=1/{seconds},scale={}:-2:flags=lanczos", request.width),
                 "-vsync",
@@ -380,8 +399,9 @@ impl TrickplayService {
             request.tile_width,
             request.tile_height,
         );
-        let output_directory = internal_item_directory(&self.storage_directory, request.item_id)
-            .join(format!(
+        let storage_directory = self.storage_directory();
+        let output_directory =
+            internal_item_directory(storage_directory.as_path(), request.item_id).join(format!(
                 "{} - {}x{}",
                 request.width, plan.tile_width, plan.tile_height
             ));

@@ -233,8 +233,8 @@ fn parse_movie_node(
         "studio" => push_unique_text(node, &mut movie.studios),
         "country" => extend_slash_values(node, &mut movie.production_locations),
         "credits" => parse_credits(node, movie),
-        "director" => parse_person_array(node, &PersonKind::Director, movie),
-        "writer" => parse_person_array(node, &PersonKind::Writer, movie),
+        "director" => parse_person_array(node, || PersonKind::Director, movie),
+        "writer" => parse_person_array(node, || PersonKind::Writer, movie),
         "actor" => parse_actor(node, movie),
         "set" => parse_set(node, movie),
         "id" => parse_id_node(node, movie),
@@ -537,7 +537,7 @@ fn parse_actor(node: Node<'_, '_>, movie: &mut MovieNfo) {
     });
 }
 
-fn parse_person_array(node: Node<'_, '_>, kind: &PersonKind, movie: &mut MovieNfo) {
+fn parse_person_array(node: Node<'_, '_>, kind: impl Fn() -> PersonKind, movie: &mut MovieNfo) {
     let Some(value) = normalized_text(node) else {
         return;
     };
@@ -545,7 +545,7 @@ fn parse_person_array(node: Node<'_, '_>, kind: &PersonKind, movie: &mut MovieNf
         movie.people.push(NfoPerson {
             name,
             role: String::new(),
-            kind: kind.clone(),
+            kind: kind(),
             sort_order: None,
             image_url: None,
         });

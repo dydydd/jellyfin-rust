@@ -402,14 +402,28 @@ pub fn merge_bluray_info(
     media_streams: &mut Vec<MediaStream>,
     bluray_info: &BlurayDiscInfo,
 ) {
-    let ffprobe_video_stream = media_streams
-        .iter()
-        .find(|stream| stream.stream_type == MediaStreamType::Video)
-        .cloned();
-    let mut rebuilt = media_streams
-        .iter()
+    // The input stream list is replaced below, so move only the ffprobe fields
+    // needed to enrich the rebuilt Blu-ray stream instead of cloning a full stream.
+    let ffprobe_video_fields = media_streams
+        .iter_mut()
+        .find(|stream| stream.stream_type == MediaStreamType::Video && !stream.is_external)
+        .map(|stream| {
+            (
+                stream.codec.take(),
+                stream.bit_rate,
+                stream.width,
+                stream.height,
+                stream.color_range.take(),
+                stream.color_space.take(),
+                stream.color_transfer.take(),
+                stream.color_primaries.take(),
+                stream.hdr10_plus_present_flag,
+                stream.bit_depth,
+            )
+        });
+    let mut rebuilt = std::mem::take(media_streams)
+        .into_iter()
         .filter(|stream| stream.is_external)
-        .cloned()
         .collect::<Vec<_>>();
     rebuilt.extend(bluray_info.media_streams.iter().cloned());
     for (index, stream) in rebuilt.iter_mut().enumerate() {
@@ -430,7 +444,19 @@ pub fn merge_bluray_info(
             .collect();
     }
 
-    let Some(ffprobe) = ffprobe_video_stream else {
+    let Some((
+        codec,
+        bit_rate,
+        width,
+        height,
+        color_range,
+        color_space,
+        color_transfer,
+        color_primaries,
+        hdr10_plus_present_flag,
+        bit_depth,
+    )) = ffprobe_video_fields
+    else {
         return;
     };
     let Some(bluray) = media_streams
@@ -439,16 +465,16 @@ pub fn merge_bluray_info(
     else {
         return;
     };
-    bluray.codec = ffprobe.codec;
-    fill_zero(&mut bluray.bit_rate, ffprobe.bit_rate);
-    fill_zero(&mut bluray.width, ffprobe.width);
-    fill_zero(&mut bluray.height, ffprobe.height);
-    bluray.color_range = ffprobe.color_range;
-    bluray.color_space = ffprobe.color_space;
-    bluray.color_transfer = ffprobe.color_transfer;
-    bluray.color_primaries = ffprobe.color_primaries;
-    bluray.hdr10_plus_present_flag = ffprobe.hdr10_plus_present_flag;
-    bluray.bit_depth = ffprobe.bit_depth;
+    bluray.codec = codec;
+    fill_zero(&mut bluray.bit_rate, bit_rate);
+    fill_zero(&mut bluray.width, width);
+    fill_zero(&mut bluray.height, height);
+    bluray.color_range = color_range;
+    bluray.color_space = color_space;
+    bluray.color_transfer = color_transfer;
+    bluray.color_primaries = color_primaries;
+    bluray.hdr10_plus_present_flag = hdr10_plus_present_flag;
+    bluray.bit_depth = bit_depth;
 }
 
 fn fill_zero(target: &mut Option<i32>, fallback: Option<i32>) {

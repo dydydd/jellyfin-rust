@@ -58,9 +58,10 @@ pub(crate) async fn update(
         target_user_and_client(&state, &headers, &uri, &display_preferences_id, query).await?;
     let Json(mut preferences) = request.map_err(|_| ApiError::InvalidRequest)?;
     preferences.id = Some(item_id.to_string());
-    preferences.client = Some(client.clone());
+    preferences.client = Some(client);
     normalize_official_defaults(&mut preferences);
-    let preferences = serde_json::to_value(preferences).map_err(|_| ApiError::Internal)?;
+    let client = preferences.client.as_deref().unwrap_or_default();
+    let preferences = serde_json::to_value(&preferences).map_err(|_| ApiError::Internal)?;
     state
         .display_preferences
         .upsert(target_user_id, item_id, &client, preferences)

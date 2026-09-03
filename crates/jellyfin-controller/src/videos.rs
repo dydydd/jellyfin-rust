@@ -1,5 +1,4 @@
 use jellyfin_data::{BaseItemError, BaseItemRepository, entities::user};
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -28,13 +27,13 @@ pub struct VideoService {
 
 impl VideoService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self::with_item_type_registry(database, ItemTypeRegistry::default())
     }
 
     #[must_use]
     pub fn with_item_type_registry(
-        database: DatabaseConnection,
+        database: impl Into<jellyfin_data::SharedDatabase>,
         item_types: ItemTypeRegistry,
     ) -> Self {
         Self {

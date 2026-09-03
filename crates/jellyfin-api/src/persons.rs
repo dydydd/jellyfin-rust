@@ -102,7 +102,7 @@ pub(crate) async fn list(
         .await?;
     let items = page
         .people
-        .iter()
+        .into_iter()
         .map(|person| user_library::person_to_dto(person, state.server_id()))
         .collect::<Vec<_>>();
     Ok(Json(user_library::BaseItemQueryResult {
@@ -124,10 +124,7 @@ pub(crate) async fn get(
         .persons
         .get(&authenticated.user, target_user_id, &name)
         .await?;
-    Ok(Json(user_library::person_to_dto(
-        &person,
-        state.server_id(),
-    )))
+    Ok(Json(user_library::person_to_dto(person, state.server_id())))
 }
 
 pub(crate) async fn get_image(

@@ -883,11 +883,11 @@ fn download_singular<C: ItemImageProviderCapability + ?Sized>(
     result: &mut ImageRefreshResult,
     capability: &mut C,
 ) -> Result<bool, C::Error> {
-    let eligible = images.iter().filter(|image| {
+    let mut eligible = images.iter().filter(|image| {
         image.image_type == image_type && image.width.is_none_or(|width| width >= min_width)
     });
     if enable_image_stub(item) {
-        if let Some(url) = eligible.clone().find_map(|image| image.url.as_deref()) {
+        if let Some(url) = eligible.find_map(|image| image.url.as_deref()) {
             save_image_stub(item, image_type, url);
             result.image_updated = true;
             return Ok(true);

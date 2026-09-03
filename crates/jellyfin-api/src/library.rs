@@ -105,11 +105,11 @@ pub(crate) struct ThemeMediaResult {
 #[derive(Debug, Serialize)]
 pub(crate) struct AllThemeMediaResult {
     #[serde(rename = "ThemeSongsResult")]
-    theme_songs: ThemeMediaResult,
+    theme_songs: Arc<ThemeMediaResult>,
     #[serde(rename = "ThemeVideosResult")]
     theme_videos: ThemeMediaResult,
     #[serde(rename = "SoundtrackSongsResult")]
-    soundtrack_songs: ThemeMediaResult,
+    soundtrack_songs: Arc<ThemeMediaResult>,
 }
 
 pub(crate) async fn file(
@@ -135,7 +135,14 @@ pub(crate) async fn theme_songs(
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
     Ok(Json(
-        theme_result(state, headers, item_id, query, RelatedItemKind::ThemeSong).await?,
+        theme_result(
+            &state,
+            &headers,
+            item_id,
+            query.user_id,
+            RelatedItemKind::ThemeSong,
+        )
+        .await?,
     ))
 }
 
@@ -146,7 +153,14 @@ pub(crate) async fn theme_videos(
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
     Ok(Json(
-        theme_result(state, headers, item_id, query, RelatedItemKind::ThemeVideo).await?,
+        theme_result(
+            &state,
+            &headers,
+            item_id,
+            query.user_id,
+            RelatedItemKind::ThemeVideo,
+        )
+        .await?,
     ))
 }
 
@@ -156,18 +170,27 @@ pub(crate) async fn theme_media(
     Path(item_id): Path<Uuid>,
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<AllThemeMediaResult>, ApiError> {
-    let theme_songs = theme_result(
-        state.clone(),
-        headers.clone(),
+    let theme_songs = Arc::new(
+        theme_result(
+            &state,
+            &headers,
+            item_id,
+            query.user_id,
+            RelatedItemKind::ThemeSong,
+        )
+        .await?,
+    );
+    let theme_videos = theme_result(
+        &state,
+        &headers,
         item_id,
-        query.clone(),
-        RelatedItemKind::ThemeSong,
+        query.user_id,
+        RelatedItemKind::ThemeVideo,
     )
     .await?;
-    let theme_videos =
-        theme_result(state, headers, item_id, query, RelatedItemKind::ThemeVideo).await?;
     Ok(Json(AllThemeMediaResult {
-        theme_songs: theme_songs.clone(),
+        // ALLOW: both response properties intentionally expose the same read-only result.
+        theme_songs: Arc::clone(&theme_songs),
         theme_videos,
         soundtrack_songs: theme_songs,
     }))
@@ -465,14 +488,14 @@ pub(crate) async fn delete_items(
 }
 
 async fn theme_result(
-    state: Arc<AppState>,
-    headers: HeaderMap,
+    state: &AppState,
+    headers: &HeaderMap,
     item_id: Uuid,
-    query: LibraryQuery,
+    target_user_id_hint: Option<Uuid>,
     kind: RelatedItemKind,
 ) -> Result<ThemeMediaResult, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let authenticated = authentication::authenticated_session(state, headers).await?;
+    let target_user_id = target_user_id_hint.unwrap_or(authenticated.user.id);
     let _owner = state
         .library_controller
         .item(&authenticated.user, target_user_id, item_id)
@@ -494,7 +517,7 @@ async fn theme_result(
 
 async fn file_response(
     state: Arc<AppState>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     item_id: Uuid,
     attachment: bool,
 ) -> Result<Response, ApiError> {
@@ -508,8 +531,8 @@ async fn file_response(
         .body(Body::empty())
         .map_err(|_| ApiError::Internal)?;
     for name in [header::RANGE, header::IF_RANGE] {
-        if let Some(value) = headers.get(&name) {
-            file_request.headers_mut().insert(name, value.clone());
+        if let Some(value) = headers.remove(&name) {
+            file_request.headers_mut().insert(name, value);
         }
     }
     let response = match ServeFile::new(&path)

@@ -92,7 +92,7 @@ pub(crate) async fn list(
     Ok(Json(user_library::BaseItemQueryResult {
         items: page
             .years
-            .iter()
+            .into_iter()
             .map(|year| user_library::year_to_dto(year, state.server_id()))
             .collect(),
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
@@ -117,7 +117,7 @@ pub(crate) async fn get(
         .await?;
     Ok(Json(match year {
         YearItem::Persisted(item) => user_library::item_to_dto(item, state.server_id()),
-        YearItem::Virtual(year) => user_library::year_to_dto(&year, state.server_id()),
+        YearItem::Virtual(year) => user_library::year_to_dto(year, state.server_id()),
     }))
 }
 

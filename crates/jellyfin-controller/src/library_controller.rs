@@ -3,7 +3,6 @@ use jellyfin_data::{
     ItemValueRepository, PlaylistRepository, PlaylistStoreError,
     entities::{base_item, item_value, user},
 };
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -41,19 +40,20 @@ pub struct LibraryControllerService {
 
 impl LibraryControllerService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self::with_item_type_registry(database, ItemTypeRegistry::default())
     }
 
     #[must_use]
     pub fn with_item_type_registry(
-        database: DatabaseConnection,
+        database: impl Into<jellyfin_data::SharedDatabase>,
         item_types: ItemTypeRegistry,
     ) -> Self {
+        let database = database.into();
         Self {
-            users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
-            item_values: ItemValueRepository::new(database.clone()),
+            users: UserService::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            item_values: ItemValueRepository::new(std::sync::Arc::clone(&database)),
             playlists: PlaylistRepository::new(database),
             item_types,
         }

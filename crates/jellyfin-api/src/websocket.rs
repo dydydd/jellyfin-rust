@@ -26,7 +26,7 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(12);
 
 #[derive(Debug, Default)]
 pub(crate) struct WebSocketHub {
-    sessions: RwLock<HashMap<String, broadcast::Sender<String>>>,
+    sessions: RwLock<HashMap<String, broadcast::Sender<Arc<str>>>>,
 }
 
 impl WebSocketHub {
@@ -34,7 +34,7 @@ impl WebSocketHub {
         Self::default()
     }
 
-    async fn subscribe(&self, session_id: &str) -> broadcast::Receiver<String> {
+    async fn subscribe(&self, session_id: &str) -> broadcast::Receiver<Arc<str>> {
         let mut sessions = self.sessions.write().await;
         sessions
             .entry(session_id.to_owned())
@@ -69,11 +69,11 @@ impl WebSocketHub {
         let Ok(data) = serde_json::to_value(data) else {
             return;
         };
-        let message = websocket_message(message_type, &data);
+        let message = Arc::<str>::from(websocket_message(message_type, &data));
         let sessions = self.sessions.read().await;
         for session_id in session_ids {
             if let Some(sender) = sessions.get(session_id) {
-                let _ = sender.send(message.clone());
+                let _ = sender.send(Arc::clone(&message));
             }
         }
     }
@@ -92,17 +92,17 @@ impl WebSocketHub {
         if sender.receiver_count() == 0 {
             return false;
         }
-        sender.send(message).is_ok()
+        sender.send(Arc::from(message)).is_ok()
     }
 
     pub(crate) async fn send_all<T: serde::Serialize>(&self, message_type: &str, data: &T) {
         let Ok(data) = serde_json::to_value(data) else {
             return;
         };
-        let message = websocket_message(message_type, &data);
+        let message = Arc::<str>::from(websocket_message(message_type, &data));
         let sessions = self.sessions.read().await;
         for sender in sessions.values() {
-            let _ = sender.send(message.clone());
+            let _ = sender.send(Arc::clone(&message));
         }
     }
 }
@@ -207,7 +207,10 @@ async fn serve(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>, s
             message = outbound.recv() => { match message {
                 Ok(message) => {
                     if should_deliver_message(&message, &subscriptions)
-                        && socket.send(Message::Text(message.into())).await.is_err()
+                        && socket
+                            .send(Message::Text(message.as_ref().into()))
+                            .await
+                            .is_err()
                     {
                         break;
                     }

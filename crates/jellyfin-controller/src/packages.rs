@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use jellyfin_model::PackageInfo;
 use thiserror::Error;
 use uuid::Uuid;
@@ -10,18 +12,24 @@ pub enum PackageError {
 
 #[derive(Clone, Default)]
 pub struct PackageService {
-    packages: Vec<PackageInfo>,
+    packages: Arc<[Arc<PackageInfo>]>,
 }
 
 impl PackageService {
     #[must_use]
     pub fn new(packages: Vec<PackageInfo>) -> Self {
-        Self { packages }
+        Self {
+            packages: packages
+                .into_iter()
+                .map(Arc::new)
+                .collect::<Vec<_>>()
+                .into(),
+        }
     }
 
     #[must_use]
-    pub fn list(&self) -> Vec<PackageInfo> {
-        self.packages.clone()
+    pub fn list(&self) -> Arc<[Arc<PackageInfo>]> {
+        Arc::clone(&self.packages)
     }
 
     /// Finds a package by assembly GUID when supplied, otherwise by
@@ -34,14 +42,14 @@ impl PackageService {
         &self,
         name: &str,
         assembly_guid: Option<Uuid>,
-    ) -> Result<PackageInfo, PackageError> {
+    ) -> Result<Arc<PackageInfo>, PackageError> {
         self.packages
             .iter()
             .find(|package| match assembly_guid.filter(|id| !id.is_nil()) {
                 Some(id) => package.id == id,
                 None => package.name.eq_ignore_ascii_case(name),
             })
-            .cloned()
+            .map(Arc::clone)
             .ok_or(PackageError::NotFound)
     }
 
@@ -59,7 +67,7 @@ impl PackageService {
         assembly_guid: Option<Uuid>,
         version: Option<&str>,
         repository_url: Option<&str>,
-    ) -> Result<PackageInfo, PackageError> {
+    ) -> Result<Arc<PackageInfo>, PackageError> {
         let package = self.get(name, assembly_guid)?;
         if package.versions.iter().any(|candidate| {
             version_matches(candidate, version) && repository_matches(candidate, repository_url)

@@ -5,7 +5,7 @@ use jellyfin_data::{
     entities::{base_item, server_configuration, user, user_data},
 };
 use jellyfin_model::UserConfiguration;
-use sea_orm::DatabaseConnection;
+use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -130,11 +130,12 @@ pub struct PlaystateService {
 
 impl PlaystateService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
-            user_data: UserDataRepository::new(database.clone()),
+            users: UserService::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            user_data: UserDataRepository::new(std::sync::Arc::clone(&database)),
             server_configuration: ServerConfigurationRepository::new(database),
         }
     }
@@ -285,8 +286,7 @@ impl PlaystateService {
         else {
             return Ok(None);
         };
-        let configuration: UserConfiguration =
-            serde_json::from_value(user.preferences.clone()).unwrap_or_default();
+        let configuration = UserConfiguration::deserialize(&user.preferences).unwrap_or_default();
         let playstate_configuration = self.playstate_configuration().await?;
         let patch =
             playback_progress_patch(&configuration, &update, &item, &playstate_configuration);

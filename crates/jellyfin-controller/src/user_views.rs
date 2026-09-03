@@ -1,7 +1,6 @@
 use jellyfin_data::{BaseItemError, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID};
 use jellyfin_model::{UserConfiguration, UserPolicy};
 use md5::{Digest, Md5};
-use sea_orm::DatabaseConnection;
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -32,7 +31,6 @@ pub struct UserViewItem {
     pub parent_id: Option<Uuid>,
     pub item_type: String,
     pub is_virtual_item: bool,
-    pub sort_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,10 +49,11 @@ pub struct UserViewManagerService {
 
 impl UserViewManagerService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self::with_services(
-            UserService::new(database.clone()),
-            VirtualFolderService::new(database.clone()),
+            UserService::new(std::sync::Arc::clone(&database)),
+            VirtualFolderService::new(std::sync::Arc::clone(&database)),
             BaseItemRepository::new(database),
         )
     }
@@ -114,8 +113,8 @@ impl UserViewManagerService {
             }
         }
 
-        add_grouped_view(&mut list, user_id, &movies, "Movies", preset_views);
-        add_grouped_view(&mut list, user_id, &tvshows, "TvShows", preset_views);
+        add_grouped_view(&mut list, user_id, movies, "Movies", preset_views);
+        add_grouped_view(&mut list, user_id, tvshows, "TvShows", preset_views);
 
         list.retain(|view| {
             !config.my_media_excludes.contains(&view.id)
@@ -142,7 +141,7 @@ impl UserViewManagerService {
             "ViewType": view.collection_type,
             "DisplayParentId": view.display_parent_id.map(|id| id.simple().to_string()),
             "UserId": user_id.simple().to_string(),
-            "ForcedSortName": view.sort_name,
+            "ForcedSortName": view.name,
         });
         if let Some(mut existing) = self.items.get(view.id).await? {
             let mut changed = false;
@@ -158,8 +157,8 @@ impl UserViewManagerService {
                 existing.name = Some(view.name.clone());
                 changed = true;
             }
-            if existing.sort_name.as_deref() != Some(view.sort_name.as_str()) {
-                existing.sort_name = Some(view.sort_name.clone());
+            if existing.sort_name.as_deref() != Some(view.name.as_str()) {
+                existing.sort_name = Some(view.name.clone());
                 changed = true;
             }
             if !existing.is_folder {
@@ -183,7 +182,7 @@ impl UserViewManagerService {
         let mut item = NewBaseItem::new(view.id, &view.item_type);
         item.parent_id = view.parent_id;
         item.name = Some(view.name.clone());
-        item.sort_name = Some(view.sort_name.clone());
+        item.sort_name = Some(view.name.clone());
         item.is_folder = true;
         item.is_virtual_item = true;
         item.presentation_unique_key = Some(format!("userview:{}", view.id.simple()));
@@ -252,30 +251,15 @@ fn parse_policy(value: Value) -> Result<UserPolicy, UserViewManagerError> {
     serde_json::from_value(value).map_err(UserViewManagerError::InvalidUserData)
 }
 
-fn collection_folder_view(folder: &VirtualFolder) -> UserViewItem {
-    UserViewItem {
-        id: folder.id,
-        name: folder.name.clone(),
-        collection_type: folder.collection_type.clone(),
-        display_parent_id: None,
-        parent_id: Some(USER_ROOT_FOLDER_ID),
-        item_type: "CollectionFolder".to_owned(),
-        is_virtual_item: false,
-        sort_name: folder.name.clone(),
-    }
-}
-
 fn collection_folder_view_owned(folder: VirtualFolder) -> UserViewItem {
-    let name = folder.name;
     UserViewItem {
         id: folder.id,
-        name: name.clone(),
+        name: folder.name,
         collection_type: folder.collection_type,
         display_parent_id: None,
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "CollectionFolder".to_owned(),
         is_virtual_item: false,
-        sort_name: name,
     }
 }
 
@@ -290,13 +274,12 @@ fn shadow_user_view(folder: VirtualFolder) -> UserViewItem {
     ));
     UserViewItem {
         id,
-        name: name.clone(),
+        name,
         collection_type,
         display_parent_id: Some(folder.id),
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
-        sort_name: name,
     }
 }
 
@@ -312,13 +295,12 @@ fn named_user_view(user_id: Uuid, folder: VirtualFolder) -> UserViewItem {
     ));
     UserViewItem {
         id,
-        name: name.clone(),
+        name,
         collection_type,
         display_parent_id: Some(folder.id),
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
-        sort_name: name,
     }
 }
 
@@ -332,14 +314,13 @@ fn grouped_user_view(user_id: Uuid, name: &str, collection_type: &str) -> UserVi
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
-        sort_name: name.to_owned(),
     }
 }
 
 fn add_grouped_view(
     list: &mut Vec<UserViewItem>,
     user_id: Uuid,
-    folders: &[VirtualFolder],
+    mut folders: Vec<VirtualFolder>,
     view_type: &str,
     preset_views: &[String],
 ) {
@@ -355,7 +336,9 @@ fn add_grouped_view(
             .iter()
             .any(|preset| preset.eq_ignore_ascii_case(view_type))
     {
-        list.push(collection_folder_view(&folders[0]));
+        list.push(collection_folder_view_owned(
+            folders.pop().expect("single folder checked above"),
+        ));
         return;
     }
     let collection_type = view_type.to_ascii_lowercase();
@@ -378,7 +361,7 @@ fn sort_views(views: &mut [UserViewItem], config: &UserConfiguration) {
     views.sort_by(|a, b| {
         ordered_index(a, &config.ordered_views)
             .cmp(&ordered_index(b, &config.ordered_views))
-            .then_with(|| a.sort_name.to_lowercase().cmp(&b.sort_name.to_lowercase()))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             .then_with(|| a.id.cmp(&b.id))
     });
 }

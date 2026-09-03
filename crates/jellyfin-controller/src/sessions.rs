@@ -9,6 +9,7 @@ use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, SessionStore, SessionStoreFuture,
     ValidatedAuthenticationRequest,
 };
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{UserError, UserService};
@@ -119,10 +120,11 @@ impl SessionStore for PostgresSessionStore {
             let authentication = self.authentication;
             let username = username.to_owned();
             let password = password.to_owned();
-            let logged_username = username.clone();
-            let verified = tokio::task::spawn_blocking(move || {
-                authentication.authenticate(&username, &password, Some(&mut user))?;
-                Ok::<_, AuthenticationError>(user)
+            let (verified, logged_username) = tokio::task::spawn_blocking(move || {
+                let verified = authentication
+                    .authenticate(&username, &password, Some(&mut user))
+                    .map(|_| user);
+                (verified, username)
             })
             .await?;
 
@@ -143,7 +145,7 @@ impl SessionStore for PostgresSessionStore {
                 Err(error) => return Err(error.into()),
             };
 
-            let policy: UserPolicy = serde_json::from_value(user.policy.clone())?;
+            let policy = UserPolicy::deserialize(&user.policy)?;
             if !policy.enable_remote_access && !request.is_local_network() {
                 return Err(PostgresSessionStoreError::RemoteAccess);
             }
@@ -151,7 +153,7 @@ impl SessionStore for PostgresSessionStore {
                 return Err(PostgresSessionStoreError::ParentalSchedule);
             }
 
-            let user = self.users.record_successful_authentication(&user).await?;
+            let user = self.users.record_successful_authentication(user).await?;
             if !self
                 .can_access_device(&policy, user.is_administrator, request.device_id())
                 .await?

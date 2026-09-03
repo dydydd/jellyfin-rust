@@ -365,11 +365,12 @@ fn normalize_stream(
     let title = stream_title(&tags, stream_type);
     let normalized_codec = normalize_subtitle_codec(&codec, stream_type);
     let flags = stream_flags(stream, stream_type, &normalized_codec);
+    let audio_spatial_format = spatial_format(profile.as_deref());
     let mut result = MediaStream {
         index: int32(stream, "index").unwrap_or_default(),
         stream_type,
         codec: normalized_codec,
-        profile: profile.clone(),
+        profile,
         width,
         height,
         aspect_ratio: (stream_type == MediaStreamType::Video)
@@ -397,7 +398,7 @@ fn normalize_stream(
         language: tag(&tags, "language").map(str::to_owned),
         title,
         channels: uint32(stream, "channels"),
-        audio_spatial_format: spatial_format(profile.as_deref()),
+        audio_spatial_format,
         dv_version_major: None,
         dv_version_minor: None,
         dv_profile: None,

@@ -367,22 +367,22 @@ fn collection_search_to_remote_result(result: TmdbSearchCollection) -> RemoteSea
 /// Fetches metadata from TMDB and updates the item.
 pub struct TmdbMetadataProvider {
     client: TmdbClient,
-    items: BaseItemRepository,
-    values: ItemValueRepository,
-    people: PersonRepository,
-    updates: ItemUpdateRepository,
-    images: Option<ItemImageService>,
+    items: std::sync::Arc<BaseItemRepository>,
+    values: std::sync::Arc<ItemValueRepository>,
+    people: std::sync::Arc<PersonRepository>,
+    updates: std::sync::Arc<ItemUpdateRepository>,
+    images: Option<std::sync::Arc<ItemImageService>>,
 }
 
 impl TmdbMetadataProvider {
     #[must_use]
     pub fn new(
         api_key: impl Into<String>,
-        items: BaseItemRepository,
-        values: ItemValueRepository,
-        people: PersonRepository,
-        updates: ItemUpdateRepository,
-        images: Option<ItemImageService>,
+        items: std::sync::Arc<BaseItemRepository>,
+        values: std::sync::Arc<ItemValueRepository>,
+        people: std::sync::Arc<PersonRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
+        images: Option<std::sync::Arc<ItemImageService>>,
     ) -> Self {
         Self {
             client: TmdbClient::new(api_key),
@@ -404,11 +404,13 @@ impl TmdbMetadataProvider {
             return Ok(false);
         };
 
+        if item.item_type == "Episode" {
+            return self.refresh_episode(item).await;
+        }
         match item.item_type.as_str() {
             "Movie" => self.refresh_movie(&item).await,
             "Series" => self.refresh_series(&item).await,
             "Season" => self.refresh_season_item(&item).await,
-            "Episode" => self.refresh_episode(&item).await,
             "BoxSet" => self.refresh_box_set(&item).await,
             "Person" => self.refresh_person(&item).await,
             _ => Ok(false),
@@ -471,11 +473,11 @@ impl TmdbMetadataProvider {
             return Ok(false);
         };
         let details = self.client.movie_details(tmdb_id).await?;
-        self.apply_movie_metadata(item.id, &details).await?;
+        let (poster_path, backdrop_path) = self.apply_movie_metadata(item.id, details).await?;
         self.save_remote_images(
             item.id,
-            details.poster_path.as_deref(),
-            details.backdrop_path.as_deref(),
+            poster_path.as_deref(),
+            backdrop_path.as_deref(),
             false,
         )
         .await;
@@ -487,12 +489,14 @@ impl TmdbMetadataProvider {
             return Ok(false);
         };
         let details = self.client.tv_details(tmdb_id).await?;
-        self.apply_tv_metadata(item.id, &details).await?;
-        self.refresh_season_metadata(item.id, &details).await?;
+        let season_count = details.number_of_seasons;
+        let (poster_path, backdrop_path) = self.apply_tv_metadata(item.id, details).await?;
+        self.refresh_season_metadata(item.id, tmdb_id, season_count)
+            .await?;
         self.save_remote_images(
             item.id,
-            details.poster_path.as_deref(),
-            details.backdrop_path.as_deref(),
+            poster_path.as_deref(),
+            backdrop_path.as_deref(),
             false,
         )
         .await;
@@ -516,7 +520,7 @@ impl TmdbMetadataProvider {
             .client
             .tv_season_details(series_tmdb_id, season_number)
             .await?;
-        self.apply_season_metadata(series.id, season_number, &season)
+        self.apply_season_metadata(series.id, season_number, season)
             .await?;
         Ok(true)
     }
@@ -570,7 +574,7 @@ impl TmdbMetadataProvider {
         Ok(results
             .into_iter()
             .next()
-            .and_then(|result| result.provider_ids.get("Tmdb").cloned())
+            .and_then(|mut result| result.provider_ids.remove("Tmdb"))
             .and_then(|id| id.parse::<i64>().ok()))
     }
 
@@ -593,7 +597,7 @@ impl TmdbMetadataProvider {
         Ok(results
             .into_iter()
             .next()
-            .and_then(|result| result.provider_ids.get("Tmdb").cloned())
+            .and_then(|mut result| result.provider_ids.remove("Tmdb"))
             .and_then(|id| id.parse::<i64>().ok()))
     }
 
@@ -615,7 +619,7 @@ impl TmdbMetadataProvider {
         Ok(results
             .into_iter()
             .next()
-            .and_then(|result| result.provider_ids.get("Tmdb").cloned())
+            .and_then(|mut result| result.provider_ids.remove("Tmdb"))
             .and_then(|id| id.parse::<i64>().ok()))
     }
 
@@ -635,27 +639,27 @@ impl TmdbMetadataProvider {
         Ok(results
             .into_iter()
             .next()
-            .and_then(|result| result.provider_ids.get("Tmdb").cloned())
+            .and_then(|mut result| result.provider_ids.remove("Tmdb"))
             .and_then(|id| id.parse::<i64>().ok()))
     }
 
     async fn apply_movie_metadata(
         &self,
         item_id: Uuid,
-        details: &TmdbMovieDetails,
-    ) -> Result<(), MetadataProviderError> {
-        let provider_ids = movie_provider_ids(details);
+        details: TmdbMovieDetails,
+    ) -> Result<(Option<String>, Option<String>), MetadataProviderError> {
+        let provider_ids = movie_provider_ids(&details);
         self.updates
             .update(
                 item_id,
                 ItemMetadataPatch {
-                    tags: Some(keyword_names(&details.keywords)),
-                    genres: Some(names(&details.genres)),
+                    tags: Some(into_keyword_names(details.keywords)),
+                    genres: Some(into_names(details.genres)),
                     provider_ids: Some(provider_ids),
                 },
             )
             .await?;
-        for studio in names(&details.production_companies) {
+        for studio in into_names(details.production_companies) {
             self.values
                 .link(item_id, ItemValueType::Studios, &studio)
                 .await?;
@@ -683,22 +687,31 @@ impl TmdbMetadataProvider {
             item.premiere_date = Some(premiere_date);
             item.production_year = Some(premiere_date.year());
         }
-        item.data = Some(movie_extra_data(item.data.as_ref(), details));
+        item.data = Some(movie_extra_data(
+            item.data.take(),
+            details.original_title.as_deref(),
+            details.original_language.as_deref(),
+            details.tagline.as_deref(),
+            details.status.as_deref(),
+            details.vote_average,
+            &details.production_countries,
+            &details.videos,
+        ));
         self.items.update(item).await?;
 
-        self.replace_people(item_id, &details.credits.cast, &details.credits.crew)
+        self.replace_owned_people(item_id, details.credits.cast, details.credits.crew)
             .await?;
-        Ok(())
+        Ok((details.poster_path, details.backdrop_path))
     }
 
     async fn apply_tv_metadata(
         &self,
         item_id: Uuid,
-        details: &TmdbTvDetails,
-    ) -> Result<(), MetadataProviderError> {
-        let provider_ids = tv_provider_ids(details);
-        let mut studios = names(&details.networks);
-        for studio in names(&details.production_companies) {
+        details: TmdbTvDetails,
+    ) -> Result<(Option<String>, Option<String>), MetadataProviderError> {
+        let provider_ids = tv_provider_ids(&details);
+        let mut studios = into_names(details.networks);
+        for studio in into_names(details.production_companies) {
             if !studios
                 .iter()
                 .any(|existing| existing.eq_ignore_ascii_case(&studio))
@@ -710,8 +723,8 @@ impl TmdbMetadataProvider {
             .update(
                 item_id,
                 ItemMetadataPatch {
-                    tags: Some(keyword_names(&details.keywords)),
-                    genres: Some(names(&details.genres)),
+                    tags: Some(into_keyword_names(details.keywords)),
+                    genres: Some(into_names(details.genres)),
                     provider_ids: Some(provider_ids),
                 },
             )
@@ -741,12 +754,24 @@ impl TmdbMetadataProvider {
             item.premiere_date = Some(premiere_date);
             item.production_year = Some(premiere_date.year());
         }
-        item.data = Some(tv_extra_data(item.data.as_ref(), details, &studios));
+        item.data = Some(tv_extra_data(
+            item.data.take(),
+            details.original_name.as_deref(),
+            details.original_language.as_deref(),
+            details.tagline.as_deref(),
+            details.status.as_deref(),
+            details.vote_average,
+            &details.production_countries,
+            &details.videos,
+            details.number_of_seasons,
+            details.number_of_episodes,
+            &studios,
+        ));
         self.items.update(item).await?;
 
-        self.replace_people(item_id, &details.credits.cast, &details.credits.crew)
+        self.replace_owned_people(item_id, details.credits.cast, details.credits.crew)
             .await?;
-        Ok(())
+        Ok((details.poster_path, details.backdrop_path))
     }
 
     async fn apply_box_set_metadata(
@@ -824,7 +849,7 @@ impl TmdbMetadataProvider {
         if let Some(birthday) = parse_tmdb_date(details.birthday.as_deref()) {
             item.premiere_date = Some(birthday);
         }
-        item.data = Some(person_extra_data(item.data.as_ref(), details));
+        item.data = Some(person_extra_data(item.data.take(), details));
         self.items.update(item).await?;
         Ok(())
     }
@@ -857,11 +882,9 @@ impl TmdbMetadataProvider {
         }
     }
 
-    async fn refresh_episode(
-        &self,
-        item: &base_item::Model,
-    ) -> Result<bool, MetadataProviderError> {
-        let parents = self.episode_parents(item).await?;
+    async fn refresh_episode(&self, item: base_item::Model) -> Result<bool, MetadataProviderError> {
+        let parents = self.episode_parents(&item).await?;
+        let item_id = item.id;
         let mut episode = episode_metadata_from_item(item);
         let outcome = EpisodeMetadataService::refresh(
             &mut episode,
@@ -880,7 +903,7 @@ impl TmdbMetadataProvider {
         )
         .await?;
         if outcome.metadata_changed || outcome.provider_returned_metadata {
-            self.apply_episode_metadata(item.id, &episode).await?;
+            self.apply_episode_metadata(item_id, &episode).await?;
         }
         Ok(outcome.provider_returned_metadata)
     }
@@ -896,18 +919,18 @@ impl TmdbMetadataProvider {
             None
         };
         let mut series_context = None;
-        if let Some(series_item) = &series {
+        if let Some(series_item) = series {
             let seasons = self
                 .items
                 .children(series_item.id)
                 .await?
                 .into_iter()
                 .filter(|item| item.item_type == "Season")
-                .map(|item| season_context_from_item(&item))
+                .map(season_context_from_item)
                 .collect::<Vec<_>>();
             series_context = Some(series_context_from_item(series_item, seasons));
         }
-        let season_context = season.as_ref().map(season_context_from_item);
+        let season_context = season.map(season_context_from_item);
         Ok(EpisodeParents {
             series: series_context,
             season: season_context,
@@ -973,7 +996,7 @@ impl TmdbMetadataProvider {
             item.series_presentation_unique_key = Some(series_presentation_unique_key.to_owned());
         }
 
-        let mut data = metadata_object(item.data.as_ref());
+        let mut data = metadata_object(item.data.take());
         upsert_i32(&mut data, "IndexNumberEnd", episode.index_number_end);
         upsert_i32(
             &mut data,
@@ -1025,20 +1048,21 @@ impl TmdbMetadataProvider {
     async fn refresh_season_metadata(
         &self,
         series_id: Uuid,
-        details: &TmdbTvDetails,
+        tmdb_series_id: i64,
+        season_count: Option<i32>,
     ) -> Result<(), MetadataProviderError> {
-        let Some(season_count) = details.number_of_seasons else {
+        let Some(season_count) = season_count else {
             return Ok(());
         };
         for season_number in 1..=season_count {
             let Ok(season) = self
                 .client
-                .tv_season_details(details.id, season_number)
+                .tv_season_details(tmdb_series_id, season_number)
                 .await
             else {
                 continue;
             };
-            self.apply_season_metadata(series_id, season_number, &season)
+            self.apply_season_metadata(series_id, season_number, season)
                 .await?;
         }
         Ok(())
@@ -1049,7 +1073,7 @@ impl TmdbMetadataProvider {
         &self,
         series_id: Uuid,
         season_number: i32,
-        season: &TmdbTvSeasonDetails,
+        mut season: TmdbTvSeasonDetails,
     ) -> Result<(), MetadataProviderError> {
         let season_items = self
             .items
@@ -1058,29 +1082,28 @@ impl TmdbMetadataProvider {
             .into_iter()
             .filter(|item| item.item_type == "Season" && item.index_number == Some(season_number))
             .collect::<Vec<_>>();
-        for season_item in season_items {
+        let season_item_count = season_items.len();
+        for (season_item_index, mut season_item) in season_items.into_iter().enumerate() {
+            let mut season_changed = false;
             if let Some(name) = season.name.as_deref().filter(|name| !name.is_empty())
                 && season_item.name.as_deref() != Some(name)
             {
-                let mut updated = season_item.clone();
-                updated.name = Some(name.to_owned());
-                updated.sort_name = Some(name.to_owned());
-                self.items.update(updated).await?;
+                season_item.name = Some(name.to_owned());
+                season_item.sort_name = Some(name.to_owned());
+                season_changed = true;
             }
             if let Some(overview) = season.overview.as_deref().filter(|value| !value.is_empty())
                 && season_item.overview.as_deref() != Some(overview)
             {
-                let mut updated = season_item.clone();
-                updated.overview = Some(overview.to_owned());
-                self.items.update(updated).await?;
+                season_item.overview = Some(overview.to_owned());
+                season_changed = true;
             }
             if let Some(premiere_date) = parse_tmdb_date(season.air_date.as_deref())
                 && season_item.premiere_date != Some(premiere_date)
             {
-                let mut updated = season_item.clone();
-                updated.premiere_date = Some(premiere_date);
-                updated.production_year = Some(premiere_date.year());
-                self.items.update(updated).await?;
+                season_item.premiere_date = Some(premiere_date);
+                season_item.production_year = Some(premiere_date.year());
+                season_changed = true;
             }
             if let Some(tvdb_id) = season
                 .external_ids
@@ -1088,16 +1111,18 @@ impl TmdbMetadataProvider {
                 .as_deref()
                 .filter(|value| !value.is_empty())
             {
-                let mut updated = season_item.clone();
-                let mut data = metadata_object(updated.data.as_ref());
-                let mut provider_ids = provider_ids_from_data(updated.data.as_ref());
+                let mut data = metadata_object(season_item.data.take());
+                let mut provider_ids = take_provider_ids(&mut data);
                 provider_ids.insert("Tvdb".to_owned(), tvdb_id.to_owned());
                 data.insert(
                     "ProviderIds".to_owned(),
                     serde_json::to_value(&provider_ids).unwrap_or_default(),
                 );
-                updated.data = Some(Value::Object(data));
-                self.items.update(updated).await?;
+                season_item.data = Some(Value::Object(data));
+                season_changed = true;
+            }
+            if season_changed {
+                season_item = self.items.update(season_item).await?;
             }
             if let Some(images) = &self.images
                 && let Some(url) =
@@ -1117,15 +1142,24 @@ impl TmdbMetadataProvider {
                     tracing::warn!(%error, "TMDB season primary image download failed");
                 }
             }
-            let episodes = self.items.children(season_item.id).await?;
+            let mut episodes = self
+                .items
+                .children(season_item.id)
+                .await?
+                .into_iter()
+                .map(Some)
+                .collect::<Vec<_>>();
             for remote in &season.episodes {
-                let Some(mut episode) = episodes
-                    .iter()
-                    .find(|item| item.index_number == Some(remote.episode_number))
-                    .cloned()
-                else {
+                let Some(episode_slot) = episodes.iter_mut().find(|episode| {
+                    episode
+                        .as_ref()
+                        .is_some_and(|item| item.index_number == Some(remote.episode_number))
+                }) else {
                     continue;
                 };
+                let mut episode = episode_slot
+                    .take()
+                    .expect("matching episode slot contains a model");
                 if let Some(name) = remote.name.as_deref().filter(|name| !name.is_empty()) {
                     episode.name = Some(name.to_owned());
                     episode.sort_name = Some(name.to_owned());
@@ -1141,7 +1175,7 @@ impl TmdbMetadataProvider {
                     episode.runtime_ticks = Some(i64::from(runtime) * 60 * 10_000_000);
                 }
                 episode.data = Some(episode_data_with_rating(
-                    episode.data.as_ref(),
+                    episode.data.take(),
                     &remote.id.to_string(),
                     remote.vote_average,
                     remote.vote_count,
@@ -1164,10 +1198,19 @@ impl TmdbMetadataProvider {
                         tracing::warn!(%error, "TMDB episode primary image download failed");
                     }
                 }
-                self.items.update(episode).await?;
+                *episode_slot = Some(self.items.update(episode).await?);
             }
-            self.replace_people(season_item.id, &season.credits.cast, &season.credits.crew)
+            if season_item_index + 1 == season_item_count {
+                self.replace_owned_people(
+                    season_item.id,
+                    std::mem::take(&mut season.credits.cast),
+                    std::mem::take(&mut season.credits.crew),
+                )
                 .await?;
+            } else {
+                self.replace_people(season_item.id, &season.credits.cast, &season.credits.crew)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -1211,6 +1254,60 @@ impl TmdbMetadataProvider {
                     item_id,
                     NewPerson {
                         name: member.name.clone(),
+                        provider_ids: json!({ "Tmdb": member.id.to_string() }),
+                    },
+                    person_type,
+                    member.job.as_deref(),
+                    Some(order),
+                    order,
+                )
+                .await?;
+            self.ensure_person_image(&person.name, member.profile_path.as_deref())
+                .await?;
+            order += 1;
+        }
+        Ok(())
+    }
+
+    async fn replace_owned_people(
+        &self,
+        item_id: Uuid,
+        cast: Vec<TmdbCast>,
+        crew: Vec<TmdbCrew>,
+    ) -> Result<(), MetadataProviderError> {
+        self.people.clear_credits(item_id).await?;
+        let mut order = 0;
+        for actor in cast {
+            let person = self
+                .people
+                .link(
+                    item_id,
+                    NewPerson {
+                        name: actor.name,
+                        provider_ids: json!({ "Tmdb": actor.id.to_string() }),
+                    },
+                    "Actor",
+                    actor.character.as_deref(),
+                    Some(actor.order),
+                    order,
+                )
+                .await?;
+            self.ensure_person_image(&person.name, actor.profile_path.as_deref())
+                .await?;
+            order += 1;
+        }
+        for member in crew {
+            let Some(person_type) =
+                crew_person_type(member.department.as_deref(), member.job.as_deref())
+            else {
+                continue;
+            };
+            let person = self
+                .people
+                .link(
+                    item_id,
+                    NewPerson {
+                        name: member.name,
                         provider_ids: json!({ "Tmdb": member.id.to_string() }),
                     },
                     person_type,
@@ -1345,7 +1442,7 @@ impl EpisodeMetadataCapability for TmdbEpisodeCapability<'_> {
             first
         };
         Ok(Some(EpisodeMetadataResult {
-            item: episode_metadata_from_details(&details, lookup),
+            item: episode_metadata_from_details(details, lookup),
             has_metadata: true,
         }))
     }
@@ -1387,32 +1484,35 @@ fn combine_episode_details(target: &mut TmdbEpisodeDetails, next: &TmdbEpisodeDe
     }
 }
 
-fn episode_metadata_from_item(item: &base_item::Model) -> EpisodeMetadata {
-    let data = metadata_object(item.data.as_ref());
+fn episode_metadata_from_item(item: base_item::Model) -> EpisodeMetadata {
+    let mut data = metadata_object(item.data);
+    let provider_ids = take_provider_ids(&mut data);
+    let series_name = take_data_string(&mut data, "SeriesName");
+    let season_name = take_data_string(&mut data, "SeasonName");
+    let series_id = take_data_string(&mut data, "SeriesId");
+    let season_id = take_data_string(&mut data, "SeasonId");
     EpisodeMetadata {
-        name: item.name.clone(),
-        overview: item.overview.clone(),
+        name: item.name,
+        overview: item.overview,
         index_number: item.index_number,
         parent_index_number: item.parent_index_number,
         index_number_end: data_i32(&data, "IndexNumberEnd"),
         airs_after_season_number: data_i32(&data, "AirsAfterSeasonNumber"),
         airs_before_season_number: data_i32(&data, "AirsBeforeSeasonNumber"),
         airs_before_episode_number: data_i32(&data, "AirsBeforeEpisodeNumber"),
-        provider_ids: provider_ids_from_data(item.data.as_ref()),
-        series_name: data_string(&data, "SeriesName"),
-        season_name: data_string(&data, "SeasonName"),
-        series_id: data_string(&data, "SeriesId")
-            .or_else(|| item.series_id.map(|id| id.simple().to_string())),
-        season_id: data_string(&data, "SeasonId")
-            .or_else(|| item.season_id.map(|id| id.simple().to_string())),
-        series_presentation_unique_key: item.series_presentation_unique_key.clone(),
+        provider_ids,
+        series_name,
+        season_name,
+        series_id: series_id.or_else(|| item.series_id.map(|id| id.simple().to_string())),
+        season_id: season_id.or_else(|| item.season_id.map(|id| id.simple().to_string())),
+        series_presentation_unique_key: item.series_presentation_unique_key,
         is_missing_episode: item.is_virtual_item,
         ..EpisodeMetadata::default()
     }
 }
 
 fn episode_metadata_from_details(
-    details: &TmdbEpisodeDetails,
+    details: TmdbEpisodeDetails,
     lookup: &EpisodeLookupInfo,
 ) -> EpisodeMetadata {
     let mut provider_ids = ProviderIdMap::new();
@@ -1442,9 +1542,10 @@ fn episode_metadata_from_details(
         provider_ids.insert("TvRage".to_owned(), tvrage_id.to_owned());
     }
     let premiere_date = parse_tmdb_date(details.air_date.as_deref());
+    let remote_trailers = trailer_urls(&details.videos);
     EpisodeMetadata {
-        name: details.name.clone(),
-        overview: details.overview.clone(),
+        name: details.name,
+        overview: details.overview,
         index_number: Some(details.episode_number),
         index_number_end: lookup.index_number_end,
         parent_index_number: Some(details.season_number),
@@ -1455,54 +1556,51 @@ fn episode_metadata_from_details(
         runtime_ticks: details
             .runtime
             .map(|minutes| i64::from(minutes) * 60 * 10_000_000),
-        remote_trailers: trailer_urls(&details.videos),
+        remote_trailers,
         ..EpisodeMetadata::default()
     }
 }
 
-fn season_context_from_item(item: &base_item::Model) -> SeasonContext {
+fn season_context_from_item(item: base_item::Model) -> SeasonContext {
+    let mut data = metadata_object(item.data);
     SeasonContext {
         id: item.id.simple().to_string(),
-        name: item.name.clone().unwrap_or_default(),
+        name: item.name.unwrap_or_default(),
         index_number: item.index_number,
-        provider_ids: provider_ids_from_data(item.data.as_ref()),
+        provider_ids: take_provider_ids(&mut data),
     }
 }
 
-fn series_context_from_item(item: &base_item::Model, seasons: Vec<SeasonContext>) -> SeriesContext {
-    let data = metadata_object(item.data.as_ref());
+fn series_context_from_item(item: base_item::Model, seasons: Vec<SeasonContext>) -> SeriesContext {
+    let mut data = metadata_object(item.data);
+    let display_order = take_data_string(&mut data, "DisplayOrder");
+    let provider_ids = take_provider_ids(&mut data);
     SeriesContext {
         id: item.id.simple().to_string(),
-        name: item.name.clone().unwrap_or_default(),
+        name: item.name.unwrap_or_default(),
         presentation_unique_key: item
             .series_presentation_unique_key
-            .clone()
-            .or_else(|| item.presentation_unique_key.clone()),
-        display_order: data_string(&data, "DisplayOrder"),
-        provider_ids: provider_ids_from_data(item.data.as_ref()),
+            .or(item.presentation_unique_key),
+        display_order,
+        provider_ids,
         seasons,
     }
 }
 
-fn provider_ids_from_data(data: Option<&Value>) -> ProviderIdMap {
-    data.and_then(Value::as_object)
-        .and_then(|object| object.get("ProviderIds"))
-        .and_then(Value::as_object)
-        .map(|object| {
-            object
-                .iter()
-                .filter_map(|(key, value)| {
-                    value
-                        .as_str()
-                        .filter(|value| !value.is_empty())
-                        .map(|value| (key.clone(), value.to_owned()))
-                })
-                .collect()
+fn take_provider_ids(data: &mut serde_json::Map<String, Value>) -> ProviderIdMap {
+    let Some(Value::Object(provider_ids)) = data.remove("ProviderIds") else {
+        return ProviderIdMap::new();
+    };
+    provider_ids
+        .into_iter()
+        .filter_map(|(key, value)| match value {
+            Value::String(value) if !value.is_empty() => Some((key, value)),
+            _ => None,
         })
-        .unwrap_or_default()
+        .collect()
 }
 
-fn person_extra_data(existing: Option<&Value>, details: &TmdbPersonDetails) -> Value {
+fn person_extra_data(existing: Option<Value>, details: &TmdbPersonDetails) -> Value {
     let mut object = metadata_object(existing);
     set_string(&mut object, "HomePageUrl", details.homepage.as_deref());
     set_string(&mut object, "EndDate", details.deathday.as_deref());
@@ -1533,8 +1631,11 @@ fn data_i32(data: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
         .and_then(|value| i32::try_from(value).ok())
 }
 
-fn data_string(data: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
-    data.get(key).and_then(Value::as_str).map(str::to_owned)
+fn take_data_string(data: &mut serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    match data.remove(key) {
+        Some(Value::String(value)) => Some(value),
+        _ => None,
+    }
 }
 
 fn trailer_urls(videos: &TmdbVideos) -> Vec<String> {
@@ -1664,48 +1765,43 @@ fn tv_provider_ids(details: &TmdbTvDetails) -> std::collections::BTreeMap<String
     ids
 }
 
-fn movie_extra_data(data: Option<&Value>, details: &TmdbMovieDetails) -> Value {
+#[allow(clippy::too_many_arguments)]
+fn movie_extra_data(
+    data: Option<Value>,
+    original_title: Option<&str>,
+    original_language: Option<&str>,
+    tagline: Option<&str>,
+    status: Option<&str>,
+    vote_average: f64,
+    production_countries: &[TmdbCountry],
+    videos: &TmdbVideos,
+) -> Value {
     let mut object = metadata_object(data);
-    set_string(
-        &mut object,
-        "OriginalTitle",
-        details.original_title.as_deref(),
-    );
-    set_string(
-        &mut object,
-        "OriginalLanguage",
-        details.original_language.as_deref(),
-    );
-    set_string(&mut object, "Tagline", details.tagline.as_deref());
-    set_string(&mut object, "Status", details.status.as_deref());
-    object.insert("CommunityRating".to_owned(), json!(details.vote_average));
+    set_string(&mut object, "OriginalTitle", original_title);
+    set_string(&mut object, "OriginalLanguage", original_language);
+    set_string(&mut object, "Tagline", tagline);
+    set_string(&mut object, "Status", status);
+    object.insert("CommunityRating".to_owned(), json!(vote_average));
     object.insert(
         "ProductionLocations".to_owned(),
         json!(
-            details
-                .production_countries
+            production_countries
                 .iter()
-                .filter_map(|country| country.name.clone())
+                .filter_map(|country| country.name.as_deref())
                 .collect::<Vec<_>>()
         ),
     );
-    object.insert(
-        "RemoteTrailers".to_owned(),
-        json!(trailers(&details.videos)),
-    );
+    object.insert("RemoteTrailers".to_owned(), json!(trailers(videos)));
     Value::Object(object)
 }
 
 fn episode_data_with_rating(
-    existing: Option<&Value>,
+    existing: Option<Value>,
     tmdb_id: &str,
     community_rating: f64,
     vote_count: i32,
 ) -> Value {
-    let mut object = existing
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let mut object = metadata_object(existing);
     if let Some(provider_ids) = object.get_mut("ProviderIds").and_then(Value::as_object_mut) {
         provider_ids.insert("Tmdb".to_owned(), Value::String(tmdb_id.to_owned()));
     } else {
@@ -1721,47 +1817,51 @@ fn episode_data_with_rating(
     Value::Object(object)
 }
 
-fn tv_extra_data(data: Option<&Value>, details: &TmdbTvDetails, studios: &[String]) -> Value {
+#[allow(clippy::too_many_arguments)]
+fn tv_extra_data(
+    data: Option<Value>,
+    original_name: Option<&str>,
+    original_language: Option<&str>,
+    tagline: Option<&str>,
+    status: Option<&str>,
+    vote_average: f64,
+    production_countries: &[TmdbCountry],
+    videos: &TmdbVideos,
+    number_of_seasons: Option<i32>,
+    number_of_episodes: Option<i32>,
+    studios: &[String],
+) -> Value {
     let mut object = metadata_object(data);
-    set_string(
-        &mut object,
-        "OriginalTitle",
-        details.original_name.as_deref(),
-    );
-    set_string(
-        &mut object,
-        "OriginalLanguage",
-        details.original_language.as_deref(),
-    );
-    set_string(&mut object, "Tagline", details.tagline.as_deref());
-    set_string(&mut object, "Status", details.status.as_deref());
-    object.insert("CommunityRating".to_owned(), json!(details.vote_average));
+    set_string(&mut object, "OriginalTitle", original_name);
+    set_string(&mut object, "OriginalLanguage", original_language);
+    set_string(&mut object, "Tagline", tagline);
+    set_string(&mut object, "Status", status);
+    object.insert("CommunityRating".to_owned(), json!(vote_average));
     object.insert(
         "ProductionLocations".to_owned(),
         json!(
-            details
-                .production_countries
+            production_countries
                 .iter()
-                .filter_map(|country| country.name.clone())
+                .filter_map(|country| country.name.as_deref())
                 .collect::<Vec<_>>()
         ),
     );
     object.insert("Studios".to_owned(), json!(studios));
-    object.insert(
-        "RemoteTrailers".to_owned(),
-        json!(trailers(&details.videos)),
-    );
-    if let Some(seasons) = details.number_of_seasons {
+    object.insert("RemoteTrailers".to_owned(), json!(trailers(videos)));
+    if let Some(seasons) = number_of_seasons {
         object.insert("NumberOfSeasons".to_owned(), json!(seasons));
     }
-    if let Some(episodes) = details.number_of_episodes {
+    if let Some(episodes) = number_of_episodes {
         object.insert("NumberOfEpisodes".to_owned(), json!(episodes));
     }
     Value::Object(object)
 }
 
-fn metadata_object(data: Option<&Value>) -> serde_json::Map<String, Value> {
-    data.and_then(Value::as_object).cloned().unwrap_or_default()
+fn metadata_object(data: Option<Value>) -> serde_json::Map<String, Value> {
+    match data {
+        Some(Value::Object(object)) => object,
+        _ => serde_json::Map::new(),
+    }
 }
 
 fn set_string(object: &mut serde_json::Map<String, Value>, key: &str, value: Option<&str>) {
@@ -1811,36 +1911,36 @@ fn tv_rating(content_ratings: &TmdbContentRatings) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn names<T: Named>(values: &[T]) -> Vec<String> {
+fn into_names<T: Named>(values: Vec<T>) -> Vec<String> {
     values
-        .iter()
-        .filter_map(Named::name)
+        .into_iter()
+        .filter_map(Named::into_name)
         .filter(|name| !name.trim().is_empty())
         .collect()
 }
 
 trait Named {
-    fn name(&self) -> Option<String>;
+    fn into_name(self) -> Option<String>;
 }
 
 impl Named for TmdbGenre {
-    fn name(&self) -> Option<String> {
-        self.name.clone()
+    fn into_name(self) -> Option<String> {
+        self.name
     }
 }
 
 impl Named for TmdbCompany {
-    fn name(&self) -> Option<String> {
-        self.name.clone()
+    fn into_name(self) -> Option<String> {
+        self.name
     }
 }
 
-fn keyword_names(keywords: &TmdbKeywordResults) -> Vec<String> {
+fn into_keyword_names(keywords: TmdbKeywordResults) -> Vec<String> {
     keywords
         .keywords
-        .iter()
-        .chain(keywords.results.iter())
-        .filter_map(|keyword| keyword.name.clone())
+        .into_iter()
+        .chain(keywords.results)
+        .filter_map(|keyword| keyword.name)
         .filter(|name| !name.trim().is_empty())
         .collect()
 }
@@ -2272,7 +2372,7 @@ mod tests {
     #[test]
     fn episode_data_keeps_existing_fields_and_adds_tmdb_rating() {
         let existing = json!({ "Container": "mkv" });
-        let data = episode_data_with_rating(Some(&existing), "12345", 8.4, 42);
+        let data = episode_data_with_rating(Some(existing), "12345", 8.4, 42);
 
         assert_eq!(data["Container"], "mkv");
         assert_eq!(data["ProviderIds"]["Tmdb"], "12345");
@@ -2347,7 +2447,7 @@ mod tests {
             ..EpisodeLookupInfo::default()
         };
 
-        let metadata = episode_metadata_from_details(&details, &lookup);
+        let metadata = episode_metadata_from_details(details, &lookup);
         assert_eq!(metadata.name.as_deref(), Some("Episode"));
         assert_eq!(metadata.parent_index_number, Some(2));
         assert_eq!(metadata.index_number_end, Some(4));

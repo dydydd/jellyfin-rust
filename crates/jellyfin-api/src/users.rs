@@ -523,17 +523,13 @@ async fn update_password_with_id(
     request: Result<Json<UpdateUserPassword>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    let target = state.users.get(target_id).await?;
+    let mut target = state.users.get(target_id).await?;
     if !authenticated.user.is_administrator && authenticated.user.id != target_id {
         return Err(ApiError::Forbidden);
     }
     if authenticated.user.id == target_id && !request.reset_password {
-        verify_current_password(
-            state,
-            target.clone(),
-            request.current_pw.unwrap_or_default(),
-        )
-        .await?;
+        target =
+            verify_current_password(state, target, request.current_pw.unwrap_or_default()).await?;
     }
 
     let new_password = if request.reset_password {
@@ -603,16 +599,18 @@ async fn verify_current_password(
     state: &AppState,
     mut user: user::Model,
     current_password: String,
-) -> Result<(), ApiError> {
+) -> Result<user::Model, ApiError> {
     let authentication = state.authentication;
-    let username = user.username.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        authentication.authenticate(&username, &current_password, Some(&mut user))
+    let (result, user) = tokio::task::spawn_blocking(move || {
+        let username = std::mem::take(&mut user.username);
+        let result = authentication.authenticate(&username, &current_password, Some(&mut user));
+        user.username = username;
+        (result, user)
     })
     .await
     .map_err(|_| ApiError::Internal)?;
     match result {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(user),
         Err(AuthenticationError::InvalidCredentials) => Err(ApiError::Forbidden),
         Err(error) => Err(error.into()),
     }

@@ -41,7 +41,7 @@ pub(crate) struct ConfigurationPageInfo {
 
 pub(crate) async fn configuration_page(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     Query(query): Query<ConfigurationPageQuery>,
 ) -> Result<Response, ApiError> {
     let name = query
@@ -54,8 +54,8 @@ pub(crate) async fn configuration_page(
         .body(Body::empty())
         .map_err(|_| ApiError::Internal)?;
     for name in [header::RANGE, header::IF_RANGE] {
-        if let Some(value) = headers.get(&name) {
-            request.headers_mut().insert(name, value.clone());
+        if let Some(value) = headers.remove(&name) {
+            request.headers_mut().insert(name, value);
         }
     }
     let response = match ServeFile::new(path).oneshot(request).await {

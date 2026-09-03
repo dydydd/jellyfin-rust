@@ -46,15 +46,15 @@ where
             .as_deref()
             .filter(|title| !title.trim().is_empty())
         {
-            let mut candidate = name.clone();
+            let original_len = name.len();
             if add_hyphen {
-                candidate.push_str(" -");
+                name.push_str(" -");
             }
 
-            candidate.push(' ');
-            candidate.push_str(episode_title);
-            if candidate.len() < MAX_RECORDING_FILE_NAME_BYTES {
-                name = candidate;
+            name.push(' ');
+            name.push_str(episode_title);
+            if name.len() >= MAX_RECORDING_FILE_NAME_BYTES {
+                name.truncate(original_len);
             }
         }
     } else if let Some(production_year) = info.production_year.filter(|_| info.is_movie) {

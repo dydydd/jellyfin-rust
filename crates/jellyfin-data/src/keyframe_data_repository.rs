@@ -1,6 +1,6 @@
 use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult,
-    QueryOrder, Statement, TransactionTrait,
+    ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryOrder, Statement,
+    TransactionTrait,
 };
 use serde_json::{Number, Value};
 use thiserror::Error;
@@ -52,13 +52,15 @@ pub enum KeyframeDataStoreError {
 /// PostgreSQL-backed keyframe data storage.
 #[derive(Clone)]
 pub struct KeyframeDataRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl KeyframeDataRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Inserts or atomically replaces one item's keyframe data.
@@ -130,7 +132,7 @@ impl KeyframeDataRepository {
         item_id: Uuid,
     ) -> Result<Option<KeyframeDataRecord>, KeyframeDataStoreError> {
         keyframe_data::Entity::find_by_id(item_id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .map(KeyframeDataRecord::try_from)
             .transpose()
@@ -149,7 +151,7 @@ impl KeyframeDataRepository {
     pub async fn export_valid(&self) -> Result<KeyframeDataExport, KeyframeDataStoreError> {
         let rows = keyframe_data::Entity::find()
             .order_by_asc(keyframe_data::Column::ItemId)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         let mut records = Vec::with_capacity(rows.len());
         let mut skipped_item_ids = Vec::new();
@@ -179,7 +181,7 @@ impl KeyframeDataRepository {
     /// Returns a database error when deletion fails.
     pub async fn delete(&self, item_id: Uuid) -> Result<bool, KeyframeDataStoreError> {
         let result = keyframe_data::Entity::delete_by_id(item_id)
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         Ok(result.rows_affected > 0)
     }

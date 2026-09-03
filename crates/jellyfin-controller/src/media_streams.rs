@@ -5,7 +5,6 @@ use jellyfin_data::{
     PersistedMediaStream, PersistedMediaStreamType,
 };
 use jellyfin_model::{MediaStream, MediaStreamType};
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -206,7 +205,7 @@ pub struct MediaStreamService<P = IdentityMediaStreamPathMapper> {
 
 impl MediaStreamService<IdentityMediaStreamPathMapper> {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self::with_mapper(database, MediaStreamMapper::default())
     }
 }
@@ -216,7 +215,10 @@ where
     P: MediaStreamPathMapper,
 {
     #[must_use]
-    pub fn with_mapper(database: DatabaseConnection, mapper: MediaStreamMapper<P>) -> Self {
+    pub fn with_mapper(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        mapper: MediaStreamMapper<P>,
+    ) -> Self {
         Self {
             repository: MediaStreamRepository::new(database),
             mapper,

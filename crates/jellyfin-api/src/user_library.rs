@@ -922,22 +922,22 @@ pub(crate) async fn load_relation_metadata(
     items: &[base_item::Model],
 ) -> Result<HashMap<Uuid, ItemRelationMetadata>, ApiError> {
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let genres = state
+    let mut genres = state
         .item_values
         .values_for_items(&item_ids, item_value::ItemValueType::Genre)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let tags = state
+    let mut tags = state
         .item_values
         .values_for_items(&item_ids, item_value::ItemValueType::Tags)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let studios = state
+    let mut studios = state
         .item_values
         .values_for_items(&item_ids, item_value::ItemValueType::Studios)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let people = state
+    let mut people = state
         .people
         .people_for_items(&item_ids)
         .await
@@ -945,27 +945,22 @@ pub(crate) async fn load_relation_metadata(
 
     let mut result = HashMap::with_capacity(items.len());
     for item in items {
-        let mut metadata = ItemRelationMetadata::default();
-        if let Some(values) = genres.get(&item.id) {
-            metadata.genres.clone_from(values);
-        }
-        if let Some(values) = tags.get(&item.id) {
-            metadata.tags.clone_from(values);
-        }
-        if let Some(values) = studios.get(&item.id) {
-            metadata.studios.clone_from(values);
-        }
-        if let Some(credits) = people.get(&item.id) {
-            metadata.people = credits
-                .iter()
+        let metadata = ItemRelationMetadata {
+            genres: genres.remove(&item.id).unwrap_or_default(),
+            people: people
+                .remove(&item.id)
+                .unwrap_or_default()
+                .into_iter()
                 .map(|credit| BaseItemPerson {
-                    name: credit.person.name.clone(),
+                    name: credit.person.name,
                     id: credit.person.id.simple().to_string(),
-                    role: credit.role.clone(),
-                    person_type: credit.person_type.clone(),
+                    role: credit.role,
+                    person_type: credit.person_type,
                 })
-                .collect();
-        }
+                .collect(),
+            tags: tags.remove(&item.id).unwrap_or_default(),
+            studios: studios.remove(&item.id).unwrap_or_default(),
+        };
         result.insert(item.id, metadata);
     }
     Ok(result)
@@ -1053,16 +1048,22 @@ pub(crate) fn project_item_dto_with_streams(
         original_language,
     );
 
-    if fields.media_sources
-        && let Some(source) = media_source_from_dto(
+    if fields.media_sources {
+        let source_streams = if fields.media_streams {
+            // ALLOW: the response schema requires owned streams in both projections.
+            media_streams.clone()
+        } else {
+            std::mem::take(&mut media_streams)
+        };
+        if let Some(source) = media_source_from_dto(
             dto,
-            &media_streams,
+            source_streams,
             media_attachments,
             default_audio_stream_index,
             default_subtitle_stream_index,
-        )
-    {
-        dto.media_sources = Some(vec![source]);
+        ) {
+            dto.media_sources = Some(vec![source]);
+        }
     }
     if fields.media_streams {
         dto.media_streams = Some(media_streams);
@@ -1071,7 +1072,7 @@ pub(crate) fn project_item_dto_with_streams(
 
 fn media_source_from_dto(
     dto: &BaseItemDto,
-    media_streams: &[MediaStream],
+    media_streams: Vec<MediaStream>,
     media_attachments: Vec<MediaAttachment>,
     default_audio_stream_index: Option<i32>,
     default_subtitle_stream_index: Option<i32>,
@@ -1094,7 +1095,7 @@ fn media_source_from_dto(
         container,
         source_type: MediaSourceType::Default,
         run_time_ticks: dto.run_time_ticks,
-        media_streams: media_streams.to_vec(),
+        media_streams,
         media_attachments,
         default_audio_stream_index,
         default_subtitle_stream_index,
@@ -1131,13 +1132,6 @@ fn apply_media_stream_defaults(
         })
         .filter(|index| is_valid_audio_stream_index(media_streams, *index))
         .or_else(|| default_audio_stream_index(media_streams, defaults, original_language));
-    let audio_language = default_audio_stream_index
-        .and_then(|index| {
-            media_streams.iter().find(|stream| {
-                stream.stream_type == MediaStreamType::Audio && stream.index == index
-            })
-        })
-        .and_then(|stream| stream.language.clone());
     if let Some(index) = remembered_user_data
         .and_then(|data| {
             (defaults.remembered_selections.subtitle
@@ -1150,6 +1144,13 @@ fn apply_media_stream_defaults(
         return (default_audio_stream_index, Some(index));
     }
 
+    let audio_stream_position = default_audio_stream_index.and_then(|index| {
+        media_streams.iter().position(|stream| {
+            stream.stream_type == MediaStreamType::Audio && stream.index == index
+        })
+    });
+    let audio_language =
+        audio_stream_position.and_then(|position| media_streams[position].language.take());
     let default_subtitle_stream_index = MediaStreamSelector::default_subtitle_stream_index(
         media_streams,
         &defaults.subtitle_languages,
@@ -1162,6 +1163,9 @@ fn apply_media_stream_defaults(
         defaults.subtitle_mode,
         audio_language.as_deref(),
     );
+    if let Some(position) = audio_stream_position {
+        media_streams[position].language = audio_language;
+    }
 
     (default_audio_stream_index, default_subtitle_stream_index)
 }
@@ -1294,9 +1298,11 @@ fn normalize_language(language: Option<&str>) -> Vec<String> {
 
     if let Some(culture) = LocalizationService.find_language_info(language) {
         if culture.name.contains('-') {
-            vec![culture.name]
+            // ALLOW: cache lookup returns a shared culture while the response owns its aliases.
+            vec![culture.name.clone()]
         } else {
-            culture.three_letter_iso_language_names
+            // ALLOW: cache lookup returns a shared culture while the response owns its aliases.
+            culture.three_letter_iso_language_names.clone()
         }
     } else {
         vec![language.to_owned()]
@@ -1325,16 +1331,19 @@ fn media_container_from_path(path: &str) -> Option<String> {
     (!extension.is_empty()).then(|| extension.to_owned())
 }
 
-pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseItemDto {
+pub(crate) fn music_genre_to_dto(genre: MusicGenre, server_id: &str) -> BaseItemDto {
+    let presentation_unique_key = Some(format!("MusicGenre-{}", genre.name));
+    let name = genre.name;
     BaseItemDto {
-        name: Some(genre.name.clone()),
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
         server_id: server_id.to_owned(),
         id: genre.id.simple().to_string(),
         playlist_item_id: None,
         item_type: "MusicGenre".to_owned(),
         etag: genre.id.simple().to_string(),
         date_created: None,
-        sort_name: Some(genre.name.clone()),
+        sort_name: Some(name),
         path: None,
         overview: None,
         media_type: None,
@@ -1347,7 +1356,7 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
         production_year: None,
         premiere_date: None,
         run_time_ticks: None,
-        presentation_unique_key: Some(format!("MusicGenre-{}", genre.name)),
+        presentation_unique_key,
         series_id: None,
         season_id: None,
         extra_type: None,
@@ -1368,20 +1377,23 @@ pub(crate) fn music_genre_to_dto(genre: &MusicGenre, server_id: &str) -> BaseIte
     }
 }
 
-pub(crate) fn genre_to_dto(genre: &Genre, server_id: &str) -> BaseItemDto {
+pub(crate) fn genre_to_dto(genre: Genre, server_id: &str) -> BaseItemDto {
     let (item_type, presentation_prefix) = match genre.kind {
         GenreKind::Genre => ("Genre", "Genre"),
         GenreKind::MusicGenre => ("MusicGenre", "MusicGenre"),
     };
+    let presentation_unique_key = Some(format!("{presentation_prefix}-{}", genre.name));
+    let name = genre.name;
     BaseItemDto {
-        name: Some(genre.name.clone()),
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
         server_id: server_id.to_owned(),
         id: genre.id.simple().to_string(),
         playlist_item_id: None,
         item_type: item_type.to_owned(),
         etag: genre.id.simple().to_string(),
         date_created: None,
-        sort_name: Some(genre.name.clone()),
+        sort_name: Some(name),
         path: None,
         overview: None,
         media_type: None,
@@ -1394,7 +1406,7 @@ pub(crate) fn genre_to_dto(genre: &Genre, server_id: &str) -> BaseItemDto {
         production_year: None,
         premiere_date: None,
         run_time_ticks: None,
-        presentation_unique_key: Some(format!("{presentation_prefix}-{}", genre.name)),
+        presentation_unique_key,
         series_id: None,
         season_id: None,
         extra_type: None,
@@ -1415,16 +1427,19 @@ pub(crate) fn genre_to_dto(genre: &Genre, server_id: &str) -> BaseItemDto {
     }
 }
 
-pub(crate) fn studio_to_dto(studio: &Studio, server_id: &str) -> BaseItemDto {
+pub(crate) fn studio_to_dto(studio: Studio, server_id: &str) -> BaseItemDto {
+    let presentation_unique_key = Some(format!("Studio-{}", studio.name));
+    let name = studio.name;
     BaseItemDto {
-        name: Some(studio.name.clone()),
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
         server_id: server_id.to_owned(),
         id: studio.id.simple().to_string(),
         playlist_item_id: None,
         item_type: "Studio".to_owned(),
         etag: studio.id.simple().to_string(),
         date_created: None,
-        sort_name: Some(studio.name.clone()),
+        sort_name: Some(name),
         path: None,
         overview: None,
         media_type: None,
@@ -1437,7 +1452,7 @@ pub(crate) fn studio_to_dto(studio: &Studio, server_id: &str) -> BaseItemDto {
         production_year: None,
         premiere_date: None,
         run_time_ticks: None,
-        presentation_unique_key: Some(format!("Studio-{}", studio.name)),
+        presentation_unique_key,
         series_id: None,
         season_id: None,
         extra_type: None,
@@ -1458,16 +1473,19 @@ pub(crate) fn studio_to_dto(studio: &Studio, server_id: &str) -> BaseItemDto {
     }
 }
 
-pub(crate) fn artist_to_dto(artist: &Artist, server_id: &str) -> BaseItemDto {
+pub(crate) fn artist_to_dto(artist: Artist, server_id: &str) -> BaseItemDto {
+    let presentation_unique_key = Some(format!("Artist-{}", artist.name));
+    let name = artist.name;
     BaseItemDto {
-        name: Some(artist.name.clone()),
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
         server_id: server_id.to_owned(),
         id: artist.id.simple().to_string(),
         playlist_item_id: None,
         item_type: "MusicArtist".to_owned(),
         etag: artist.id.simple().to_string(),
         date_created: None,
-        sort_name: Some(artist.name.clone()),
+        sort_name: Some(name),
         path: None,
         overview: None,
         media_type: None,
@@ -1480,7 +1498,7 @@ pub(crate) fn artist_to_dto(artist: &Artist, server_id: &str) -> BaseItemDto {
         production_year: None,
         premiere_date: None,
         run_time_ticks: None,
-        presentation_unique_key: Some(format!("Artist-{}", artist.name)),
+        presentation_unique_key,
         series_id: None,
         season_id: None,
         extra_type: None,
@@ -1501,16 +1519,20 @@ pub(crate) fn artist_to_dto(artist: &Artist, server_id: &str) -> BaseItemDto {
     }
 }
 
-pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
+pub(crate) fn person_to_dto(person: Person, server_id: &str) -> BaseItemDto {
+    let model = person.model;
+    let presentation_unique_key = Some(format!("Person-{}", model.name));
+    let name = model.name;
     BaseItemDto {
-        name: Some(person.model.name.clone()),
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
         server_id: server_id.to_owned(),
-        id: person.model.id.simple().to_string(),
+        id: model.id.simple().to_string(),
         playlist_item_id: None,
         item_type: "Person".to_owned(),
-        etag: person.model.row_version.to_string(),
-        date_created: Some(person.model.date_created.to_rfc3339()),
-        sort_name: Some(person.model.name.clone()),
+        etag: model.row_version.to_string(),
+        date_created: Some(model.date_created.to_rfc3339()),
+        sort_name: Some(name),
         path: None,
         overview: None,
         media_type: None,
@@ -1523,12 +1545,12 @@ pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
         production_year: None,
         premiere_date: None,
         run_time_ticks: None,
-        presentation_unique_key: Some(format!("Person-{}", person.model.name)),
+        presentation_unique_key,
         series_id: None,
         season_id: None,
         extra_type: None,
         has_lyrics: None,
-        provider_ids: Some(person.model.provider_ids.clone()),
+        provider_ids: Some(model.provider_ids),
         image_tags: HashMap::new(),
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
@@ -1544,16 +1566,19 @@ pub(crate) fn person_to_dto(person: &Person, server_id: &str) -> BaseItemDto {
     }
 }
 
-pub(crate) fn year_to_dto(year: &Year, server_id: &str) -> BaseItemDto {
+pub(crate) fn year_to_dto(year: Year, server_id: &str) -> BaseItemDto {
+    let presentation_unique_key = Some(format!("Year-{}", year.name));
+    let name = year.name;
     BaseItemDto {
-        name: Some(year.name.clone()),
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
         server_id: server_id.to_owned(),
         id: year.id.simple().to_string(),
         playlist_item_id: None,
         item_type: "Year".to_owned(),
         etag: year.id.simple().to_string(),
         date_created: None,
-        sort_name: Some(year.name.clone()),
+        sort_name: Some(name),
         path: None,
         overview: None,
         media_type: None,
@@ -1566,7 +1591,7 @@ pub(crate) fn year_to_dto(year: &Year, server_id: &str) -> BaseItemDto {
         production_year: None,
         premiere_date: None,
         run_time_ticks: None,
-        presentation_unique_key: Some(format!("Year-{}", year.name)),
+        presentation_unique_key,
         series_id: None,
         season_id: None,
         extra_type: None,

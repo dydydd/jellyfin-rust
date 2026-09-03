@@ -2,7 +2,6 @@ use jellyfin_data::{
     BaseItemError, BaseItemRepository, CollectionRepository, CollectionStoreError,
     LinkedChildRepository, LinkedChildStoreError,
 };
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -30,10 +29,11 @@ pub struct CollectionService {
 
 impl CollectionService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            items: BaseItemRepository::new(database.clone()),
-            collections: CollectionRepository::new(database.clone()),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            collections: CollectionRepository::new(std::sync::Arc::clone(&database)),
             linked_children: LinkedChildRepository::new(database),
         }
     }

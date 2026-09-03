@@ -137,8 +137,8 @@ pub struct AppState {
     pub(crate) sync_play: SyncPlayManager,
     pub(crate) web_sockets: Arc<websocket::WebSocketHub>,
     pub(crate) quick_connect:
-        QuickConnectManager<jellyfin_server_implementations::SystemQuickConnectCapability>,
-    pub(crate) quick_connect_capability: SystemQuickConnectCapability,
+        QuickConnectManager<Arc<jellyfin_server_implementations::SystemQuickConnectCapability>>,
+    pub(crate) quick_connect_capability: Arc<SystemQuickConnectCapability>,
     pub(crate) playstate: PlaystateService,
     pub(crate) playlists: PlaylistService,
     pub(crate) collections: CollectionService,
@@ -148,14 +148,12 @@ pub struct AppState {
     pub(crate) studios: StudioService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
-    pub(crate) item_images: ItemImageService,
+    pub(crate) item_images: Arc<ItemImageService>,
     pub(crate) metadata_refresh: MetadataRefreshService,
-    pub(crate) base_items: BaseItemRepository,
-    pub(crate) keyframes: KeyframeDataRepository,
+    pub(crate) base_items: Arc<BaseItemRepository>,
     pub(crate) item_values: ItemValueRepository,
     pub(crate) people: PersonRepository,
-    pub(crate) base_item_images: BaseItemImageRepository,
-    pub(crate) dto_images: PersistedDtoImageProjectionService<ItemImageService>,
+    pub(crate) dto_images: PersistedDtoImageProjectionService<Arc<ItemImageService>>,
     pub(crate) image_processor: ImageProcessor,
     pub(crate) item_lookup: ItemLookupService,
     pub(crate) item_update: ItemUpdateService,
@@ -172,19 +170,18 @@ pub struct AppState {
     pub(crate) videos: VideoService,
     pub(crate) years: YearService,
     pub(crate) tuner_hosts: TunerHostManager,
-    pub(crate) live_tv_guide: Option<GuideRefreshService>,
-    pub(crate) virtual_folders: VirtualFolderService,
+    pub(crate) live_tv_guide: Option<Arc<GuideRefreshService>>,
+    pub(crate) virtual_folders: Arc<VirtualFolderService>,
     pub(crate) user_views: UserViewManagerService,
     pub(crate) dashboard: DashboardService,
     pub(crate) environment: EnvironmentService,
     pub(crate) plugins: PluginRegistry,
     pub(crate) packages: PackageService,
     pub(crate) scheduled_tasks: ScheduledTaskService,
-    pub(crate) library_scan: LibraryScanService,
+    pub(crate) library_scan: Arc<LibraryScanService>,
     pub(crate) system_logs: SystemLogService,
     pub(crate) system_storage: SystemStorageService,
-    pub(crate) trickplay: TrickplayService,
-    pub(crate) chapter_images: ChapterImageService,
+    pub(crate) trickplay: Arc<TrickplayService>,
     pub(crate) client_event_logger: ClientEventLogger,
     pub(crate) named_configurations: Option<NamedConfigurationRepository>,
     pub(crate) program_data_directory: PathBuf,
@@ -193,126 +190,127 @@ pub struct AppState {
     pub(crate) cache_directory: PathBuf,
     pub(crate) internal_metadata_directory: PathBuf,
     pub(crate) network_manager: Arc<NetworkManager>,
-    pub(crate) transcode_directory: PathBuf,
-    pub(crate) ffmpeg_path: PathBuf,
+    pub(crate) transcode_directory: Arc<std::path::Path>,
+    pub(crate) ffmpeg_path: Arc<PathBuf>,
     pub(crate) encoder_capabilities: EncoderCapabilities,
-    pub(crate) transcode_jobs: TranscodeJobRegistry,
+    pub(crate) transcode_jobs: Arc<TranscodeJobRegistry>,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) session_manager: SessionManager<PostgresSessionStore>,
     pub(crate) branding: Arc<tokio::sync::RwLock<BrandingOptions>>,
     pub(crate) system_info: PublicSystemInfo,
     pub(crate) startup: Arc<Mutex<startup::StartupState>>,
     pub(crate) startup_repository: Option<ServerConfigurationRepository>,
-    pub(crate) database: DatabaseConnection,
-    pub(crate) tmdb_api_key: Arc<tokio::sync::RwLock<String>>,
-    pub(crate) omdb_api_key: Arc<tokio::sync::RwLock<String>>,
+    pub(crate) database: jellyfin_data::SharedDatabase,
+    pub(crate) tmdb_api_key: Arc<tokio::sync::RwLock<Arc<str>>>,
+    pub(crate) omdb_api_key: Arc<tokio::sync::RwLock<Arc<str>>>,
     pub(crate) system_command: Arc<dyn Fn(SystemCommand) + Send + Sync>,
 }
 
 impl AppState {
     #[allow(clippy::too_many_lines)]
-    pub fn new(database: DatabaseConnection, server_name: String, local_address: String) -> Self {
-        let library_scan = LibraryScanService::new(database.clone());
-        let scheduled_tasks = ScheduledTaskService::with_default_executors(library_scan.clone());
-        let trickplay = TrickplayService::new(
-            database.clone(),
+    pub fn new(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        server_name: String,
+        local_address: String,
+    ) -> Self {
+        let database = database.into();
+        let library_scan = Arc::new(LibraryScanService::new(Arc::clone(&database)));
+        let scheduled_tasks =
+            ScheduledTaskService::with_default_executors(Arc::clone(&library_scan));
+        let trickplay = Arc::new(TrickplayService::new(
+            Arc::clone(&database),
             PathBuf::from("programdata").join("trickplay"),
-        );
+        ));
         let chapter_images = ChapterImageService::new(
-            database.clone(),
+            Arc::clone(&database),
             PathBuf::from("programdata").join("chapter-images"),
             PathBuf::from("ffmpeg"),
         );
-        let item_images = ItemImageService::new(database.clone());
+        let item_images = Arc::new(ItemImageService::new(Arc::clone(&database)));
         let metadata_refresh =
-            MetadataRefreshService::new(database.clone(), Some(item_images.clone()));
-        let base_items = BaseItemRepository::new(database.clone());
-        let keyframes = KeyframeDataRepository::new(database.clone());
-        let item_values = ItemValueRepository::new(database.clone());
-        let people = PersonRepository::new(database.clone());
-        let base_item_images = BaseItemImageRepository::new(database.clone());
+            MetadataRefreshService::new(Arc::clone(&database), Some(Arc::clone(&item_images)));
+        let base_items = Arc::new(BaseItemRepository::new(Arc::clone(&database)));
+        let item_values = ItemValueRepository::new(Arc::clone(&database));
+        let people = PersonRepository::new(Arc::clone(&database));
         let web_sockets = Arc::new(websocket::WebSocketHub::new());
-        let quick_connect_capability = SystemQuickConnectCapability::new(true);
-        let user_library = UserLibraryService::new(database.clone());
-        let search = SearchManager::with_default_database(user_library.clone());
+        let quick_connect_capability = Arc::new(SystemQuickConnectCapability::new(true));
+        let user_library = UserLibraryService::new(Arc::clone(&database));
+        let search = SearchManager::with_default_database(Arc::clone(&database));
         let session_store = PostgresSessionStore::new(
-            UserService::new(database.clone()),
-            DeviceRepository::new(database.clone()),
-            ActivityLogRepository::new(database.clone()),
+            UserService::new(Arc::clone(&database)),
+            DeviceRepository::new(Arc::clone(&database)),
+            ActivityLogRepository::new(Arc::clone(&database)),
             DefaultAuthenticationProvider::new(),
         );
         let state = Self {
-            users: UserService::new(database.clone()),
-            activity_logs: ActivityLogRepository::new(database.clone()),
-            api_keys: ApiKeyRepository::new(database.clone()),
-            devices: DeviceRepository::new(database.clone()),
-            device_options: DeviceOptionsRepository::new(database.clone()),
-            display_preferences: DisplayPreferenceRepository::new(database.clone()),
-            session_commands: SessionCommandRepository::new(database.clone()),
+            users: UserService::new(Arc::clone(&database)),
+            activity_logs: ActivityLogRepository::new(Arc::clone(&database)),
+            api_keys: ApiKeyRepository::new(Arc::clone(&database)),
+            devices: DeviceRepository::new(Arc::clone(&database)),
+            device_options: DeviceOptionsRepository::new(Arc::clone(&database)),
+            display_preferences: DisplayPreferenceRepository::new(Arc::clone(&database)),
+            session_commands: SessionCommandRepository::new(Arc::clone(&database)),
             sync_play: SyncPlayManager::new(),
-            web_sockets: web_sockets.clone(),
+            web_sockets: Arc::clone(&web_sockets),
             quick_connect: QuickConnectManager::new(
-                QuickConnectRepository::new(database.clone()),
-                quick_connect_capability.clone(),
+                QuickConnectRepository::new(Arc::clone(&database)),
+                Arc::clone(&quick_connect_capability),
             ),
             quick_connect_capability,
-            playstate: PlaystateService::new(database.clone()),
-            playlists: PlaylistService::new(database.clone()),
-            collections: CollectionService::new(database.clone()),
-            user_data: UserDataService::new(database.clone()),
-            artists: ArtistService::new(database.clone()),
-            genres: GenreService::new(database.clone()),
-            studios: StudioService::new(database.clone()),
-            music_genres: MusicGenreService::new(database.clone()),
-            persons: PersonService::new(database.clone()),
+            playstate: PlaystateService::new(Arc::clone(&database)),
+            playlists: PlaylistService::new(Arc::clone(&database)),
+            collections: CollectionService::new(Arc::clone(&database)),
+            user_data: UserDataService::new(Arc::clone(&database)),
+            artists: ArtistService::new(Arc::clone(&database)),
+            genres: GenreService::new(Arc::clone(&database)),
+            studios: StudioService::new(Arc::clone(&database)),
+            music_genres: MusicGenreService::new(Arc::clone(&database)),
+            persons: PersonService::new(Arc::clone(&database)),
             dto_images: PersistedDtoImageProjectionService::new(
-                base_items.clone(),
-                base_item_images.clone(),
-                item_images.clone(),
+                BaseItemRepository::new(Arc::clone(&database)),
+                BaseItemImageRepository::new(Arc::clone(&database)),
+                Arc::clone(&item_images),
             ),
             item_images,
             metadata_refresh,
             base_items,
-            keyframes,
             item_values,
             people,
-            base_item_images,
             image_processor: ImageProcessor::with_concurrency::<4>(
                 PathBuf::from("cache").join("images"),
             ),
-            item_lookup: ItemLookupService::new(database.clone()),
-            item_update: ItemUpdateService::new(database.clone()),
-            metadata_editor: MetadataEditorService::new(database.clone()),
+            item_lookup: ItemLookupService::new(Arc::clone(&database)),
+            item_update: ItemUpdateService::new(Arc::clone(&database)),
+            metadata_editor: MetadataEditorService::new(Arc::clone(&database)),
             localization: LocalizationService,
-            server_configuration: ServerConfigurationRepository::new(database.clone()),
+            server_configuration: ServerConfigurationRepository::new(Arc::clone(&database)),
             user_library,
             search,
-            library_controller: LibraryControllerService::new(database.clone()),
-            media_attachments: MediaAttachmentService::new(database.clone()),
-            media_segments: MediaSegmentManagerService::new(database.clone()),
-            media_streams: MediaStreamService::new(database.clone()),
+            library_controller: LibraryControllerService::new(Arc::clone(&database)),
+            media_attachments: MediaAttachmentService::new(Arc::clone(&database)),
+            media_segments: MediaSegmentManagerService::new(Arc::clone(&database)),
+            media_streams: MediaStreamService::new(Arc::clone(&database)),
             subtitles: SubtitleManager::default(),
-            videos: VideoService::new(database.clone()),
-            years: YearService::new(database.clone()),
-            tuner_hosts: TunerHostManager::new(database.clone()),
+            videos: VideoService::new(Arc::clone(&database)),
+            years: YearService::new(Arc::clone(&database)),
+            tuner_hosts: TunerHostManager::new(Arc::clone(&database)),
             live_tv_guide: None,
-            virtual_folders: VirtualFolderService::new(database.clone()),
-            user_views: UserViewManagerService::new(database.clone()),
+            virtual_folders: Arc::new(VirtualFolderService::new(Arc::clone(&database))),
+            user_views: UserViewManagerService::new(Arc::clone(&database)),
             dashboard: DashboardService::default(),
             environment: EnvironmentService::new(),
             plugins: PluginRegistry::default(),
             packages: PackageService::default(),
-            scheduled_tasks: scheduled_tasks.clone(),
+            scheduled_tasks: scheduled_tasks.shared_handle(),
             library_scan,
             system_logs: SystemLogService::default(),
             system_storage: SystemStorageService::new(),
             trickplay,
-            chapter_images,
             client_event_logger: ClientEventLogger::new("logs"),
-            named_configurations: if matches!(database, DatabaseConnection::Disconnected) {
+            named_configurations: if matches!(database.as_ref(), DatabaseConnection::Disconnected) {
                 None
             } else {
-                Some(NamedConfigurationRepository::new(database.clone()))
+                Some(NamedConfigurationRepository::new(Arc::clone(&database)))
             },
             program_data_directory: PathBuf::from("programdata"),
             web_directory: PathBuf::from("web"),
@@ -323,18 +321,20 @@ impl AppState {
                 NetworkConfiguration::default(),
                 Vec::new(),
             )),
-            transcode_directory: std::env::temp_dir()
-                .join("jellyfin-rust")
-                .join("transcodes"),
-            ffmpeg_path: PathBuf::from("ffmpeg"),
+            transcode_directory: Arc::from(
+                std::env::temp_dir()
+                    .join("jellyfin-rust")
+                    .join("transcodes"),
+            ),
+            ffmpeg_path: Arc::new(PathBuf::from("ffmpeg")),
             encoder_capabilities: EncoderCapabilities::default(),
-            transcode_jobs: TranscodeJobRegistry::new(),
+            transcode_jobs: Arc::new(TranscodeJobRegistry::new()),
             authentication: DefaultAuthenticationProvider::new(),
             session_manager: SessionManager::new(session_store),
             branding: Arc::new(tokio::sync::RwLock::new(BrandingOptions::default())),
             system_info: PublicSystemInfo {
                 local_address: Some(local_address),
-                server_name: Some(server_name.clone()),
+                server_name: None,
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                 product_name: Some("Jellyfin Server".to_owned()),
                 id: Some(Uuid::new_v4().simple().to_string()),
@@ -344,13 +344,13 @@ impl AppState {
             startup: Arc::new(Mutex::new(startup::StartupState::new(server_name))),
             startup_repository: None,
             database,
-            tmdb_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
-            omdb_api_key: Arc::new(tokio::sync::RwLock::new("2c9d9507".to_owned())),
+            tmdb_api_key: Arc::new(tokio::sync::RwLock::new(Arc::from(""))),
+            omdb_api_key: Arc::new(tokio::sync::RwLock::new(Arc::from("2c9d9507"))),
             system_command: Arc::new(|_| {}),
         };
         state.scheduled_tasks.add_change_listener(Arc::new(move || {
-            let tasks = scheduled_tasks.clone();
-            let sockets = web_sockets.clone();
+            let tasks = scheduled_tasks.shared_handle();
+            let sockets = Arc::clone(&web_sockets);
             tokio::spawn(async move {
                 let infos = tasks.list(None, None).await;
                 sockets.send_all("ScheduledTasksInfo", &infos).await;
@@ -358,17 +358,17 @@ impl AppState {
         }));
         state.scheduled_tasks.start_scheduler();
         state.scheduled_tasks.with_maintenance_executors(
-            state.database.clone(),
-            state.activity_logs.clone(),
-            state.people.clone(),
-            UserDataRepository::new(state.database.clone()),
-            state.keyframes.clone(),
-            state.trickplay.clone(),
-            state.chapter_images.clone(),
-            state.live_tv_guide.clone(),
+            Arc::clone(&state.database),
+            ActivityLogRepository::new(Arc::clone(&state.database)),
+            PersonRepository::new(Arc::clone(&state.database)),
+            UserDataRepository::new(Arc::clone(&state.database)),
+            KeyframeDataRepository::new(Arc::clone(&state.database)),
+            Arc::clone(&state.trickplay),
+            chapter_images,
+            state.live_tv_guide.as_ref().map(Arc::clone),
         );
-        let transcode_jobs = state.transcode_jobs.clone();
-        let transcode_directory = state.transcode_directory.clone();
+        let transcode_jobs = Arc::clone(&state.transcode_jobs);
+        let transcode_directory = Arc::clone(&state.transcode_directory);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
@@ -418,14 +418,14 @@ impl AppState {
     /// Replaces the in-memory TMDB API key used by metadata providers.
     #[must_use]
     pub fn with_tmdb_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.tmdb_api_key = Arc::new(tokio::sync::RwLock::new(api_key.into()));
+        self.tmdb_api_key = Arc::new(tokio::sync::RwLock::new(Arc::from(api_key.into())));
         self
     }
 
     /// Replaces the `OMDb` API key used by metadata providers.
     #[must_use]
     pub fn with_omdb_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.omdb_api_key = Arc::new(tokio::sync::RwLock::new(api_key.into()));
+        self.omdb_api_key = Arc::new(tokio::sync::RwLock::new(Arc::from(api_key.into())));
         self
     }
 
@@ -548,23 +548,22 @@ impl AppState {
         self.internal_metadata_directory = internal_metadata_directory.into();
         self.library_scan
             .set_image_cache_directory(self.image_cache_directory.as_path());
-        self.item_images.set_storage_directories(
+        self.item_images = Arc::new(ItemImageService::with_storage_directories(
+            Arc::clone(&self.database),
             self.image_cache_directory.as_path(),
             self.internal_metadata_directory.as_path(),
-        );
+        ));
         self.metadata_refresh
-            .set_images(Some(self.item_images.clone()));
+            .set_images(Some(Arc::clone(&self.item_images)));
         self.dto_images = PersistedDtoImageProjectionService::new(
-            self.base_items.clone(),
-            self.base_item_images.clone(),
-            self.item_images.clone(),
+            BaseItemRepository::new(Arc::clone(&self.database)),
+            BaseItemImageRepository::new(Arc::clone(&self.database)),
+            Arc::clone(&self.item_images),
         );
         self.image_processor =
             ImageProcessor::with_concurrency::<4>(self.image_cache_directory.as_path());
         self.trickplay
             .set_storage_directory(self.program_data_directory.join("trickplay"));
-        self.chapter_images
-            .set_storage_directory(self.program_data_directory.join("chapter-images"));
         self.cache_directory = cache_directory.into();
         self.scheduled_tasks
             .set_cache_directory(self.cache_directory.as_path());
@@ -583,7 +582,7 @@ impl AppState {
     /// Replaces the Schedules Direct guide refresh service used by Live TV.
     #[must_use]
     pub fn with_guide_refresh_service(mut self, service: GuideRefreshService) -> Self {
-        self.live_tv_guide = Some(service);
+        self.live_tv_guide = Some(Arc::new(service));
         self
     }
 
@@ -593,9 +592,9 @@ impl AppState {
         mut self,
         transcode_directory: impl Into<std::path::PathBuf>,
     ) -> Self {
-        self.transcode_directory = transcode_directory.into();
+        self.transcode_directory = Arc::from(transcode_directory.into());
         self.scheduled_tasks
-            .set_transcode_directory(self.transcode_directory.as_path());
+            .set_transcode_directory(&*self.transcode_directory);
         self.scheduled_tasks
             .set_trickplay_directory(self.program_data_directory.join("trickplay"));
         self
@@ -604,13 +603,12 @@ impl AppState {
     /// Replaces the `FFmpeg` binary used for transcoding.
     #[must_use]
     pub fn with_ffmpeg_path(mut self, ffmpeg_path: impl Into<std::path::PathBuf>) -> Self {
-        self.ffmpeg_path = ffmpeg_path.into();
+        let ffmpeg_path = Arc::new(ffmpeg_path.into());
         self.library_scan
-            .set_ffmpeg_path(self.ffmpeg_path.as_path());
-        self.chapter_images
-            .set_ffmpeg_path(self.ffmpeg_path.as_path());
+            .set_shared_ffmpeg_path(Arc::clone(&ffmpeg_path));
         self.scheduled_tasks
-            .set_ffmpeg_path(self.ffmpeg_path.clone());
+            .set_shared_ffmpeg_path(Arc::clone(&ffmpeg_path));
+        self.ffmpeg_path = ffmpeg_path;
         self
     }
 
@@ -644,8 +642,8 @@ impl AppState {
             }
         };
         if let Err(error) = jellyfin_controller::library_watcher::LibraryWatcher::new(
-            self.library_scan.clone(),
-            self.virtual_folders.clone(),
+            Arc::clone(&self.library_scan),
+            Arc::clone(&self.virtual_folders),
             paths,
         )
         .start()
@@ -664,7 +662,7 @@ impl AppState {
 #[allow(clippy::needless_pass_by_value)]
 pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
-    let base = base_router(state.clone());
+    let base = base_router(Arc::clone(&state));
 
     Router::new()
         .nest("/api", base.clone())
@@ -976,13 +974,14 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/web",
             ServeDir::new(&state.web_directory).fallback(ServeFile::new(&index_path)),
         )
-        .fallback(robots::redirect_or_not_found)
-        .with_state(state.clone());
+        .fallback(robots::redirect_or_not_found);
 
-    router.layer(middleware::from_fn_with_state(
-        state,
-        authorization::require_route_auth,
-    ))
+    router
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            authorization::require_route_auth,
+        ))
+        .with_state(state)
 }
 
 fn system_routes() -> Router<Arc<AppState>> {

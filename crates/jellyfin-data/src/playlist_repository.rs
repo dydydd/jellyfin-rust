@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr,
-    EntityTrait, QueryFilter, QuerySelect, Statement, TransactionTrait, sea_query::Expr,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, QueryFilter,
+    QuerySelect, Statement, TransactionTrait, sea_query::Expr,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -44,13 +44,15 @@ pub enum PlaylistStoreError {
 
 #[derive(Clone)]
 pub struct PlaylistRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl PlaylistRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Creates a playlist, permissions, and initial ordered items atomically.
@@ -142,13 +144,13 @@ impl PlaylistRepository {
         playlist_id: Uuid,
     ) -> Result<Option<PlaylistRecord>, PlaylistStoreError> {
         let Some(metadata) = playlist::Entity::find_by_id(playlist_id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
         else {
             return Ok(None);
         };
         let item = base_item::Entity::find_by_id(playlist_id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(PlaylistStoreError::NotFound)?;
         let shares =

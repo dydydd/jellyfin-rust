@@ -4,7 +4,6 @@ use jellyfin_data::{
     entities::{base_item, item_value, user},
 };
 use md5::{Digest, Md5};
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -55,10 +54,11 @@ pub struct ArtistService {
 
 impl ArtistService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
+            users: UserService::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             item_values: ItemValueRepository::new(database),
         }
     }

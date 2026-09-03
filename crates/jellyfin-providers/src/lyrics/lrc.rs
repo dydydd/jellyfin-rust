@@ -65,7 +65,7 @@ impl LrcLyricParser {
             .split(['\r', '\n'])
             .filter(|line| !line.trim().is_empty())
         {
-            let line_tags = find_time_tags(raw_line, b'[', b']');
+            let mut line_tags = find_time_tags(raw_line, b'[', b']');
             if line_tags.is_empty() {
                 continue;
             }
@@ -80,13 +80,20 @@ impl LrcLyricParser {
                     time_tags,
                 });
             } else {
+                let last_tag = line_tags.pop().expect("multiple tags checked above");
                 for tag in line_tags {
                     parsed_lines.push(ParsedLine {
+                        // ALLOW: each timestamp expands into an independently owned DTO line.
                         text: lyric.clone(),
                         start: apply_offset(tag.milliseconds, offset),
                         time_tags: Vec::new(),
                     });
                 }
+                parsed_lines.push(ParsedLine {
+                    text: lyric,
+                    start: apply_offset(last_tag.milliseconds, offset),
+                    time_tags: Vec::new(),
+                });
             }
         }
 
@@ -96,13 +103,15 @@ impl LrcLyricParser {
 
         parsed_lines.sort_by_key(|line| line.start);
         let mut lyrics = Vec::with_capacity(parsed_lines.len());
+        let mut parsed_lines = parsed_lines.into_iter().peekable();
 
-        for (index, line) in parsed_lines.iter().enumerate() {
-            let next_line_start = parsed_lines.get(index + 1).map(|next| to_ticks(next.start));
+        while let Some(line) = parsed_lines.next() {
+            let next_line_start = parsed_lines.peek().map(|next| to_ticks(next.start));
+            let cues = build_cues(&line, next_line_start);
             lyrics.push(LyricLine {
-                text: line.text.clone(),
+                text: line.text,
                 start: Some(to_ticks(line.start)),
-                cues: build_cues(line, next_line_start),
+                cues,
             });
         }
 

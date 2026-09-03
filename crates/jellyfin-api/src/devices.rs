@@ -203,7 +203,8 @@ async fn device_info(
     let user = state.users.get(device.user_id).await?;
     let capabilities: ClientCapabilitiesDto =
         serde_json::from_value(device.capabilities).unwrap_or_default();
-    let icon_url = capabilities.icon_url.clone();
+    let mut capabilities = capabilities;
+    let icon_url = capabilities.icon_url.take();
     Ok(DeviceInfoDto {
         name: Some(device.device_name),
         custom_name,
@@ -225,11 +226,11 @@ async fn device_options_by_id(
 ) -> Result<HashMap<String, Option<String>>, ApiError> {
     let mut device_ids = devices
         .iter()
-        .map(|device| device.device_id.clone())
+        .map(|device| device.device_id.as_str())
         .collect::<Vec<_>>();
-    device_ids.sort();
+    device_ids.sort_unstable();
     device_ids.dedup();
-    let options = state.device_options.find_by_device_ids(&device_ids).await?;
+    let options = state.device_options.find_by_device_ids(device_ids).await?;
     Ok(options
         .into_iter()
         .map(|options| (options.device_id, options.custom_name))
@@ -255,7 +256,6 @@ fn can_access_device(policy: &UserPolicy, device: &device::Model) -> bool {
     {
         return true;
     }
-    let capabilities: ClientCapabilitiesDto =
-        serde_json::from_value(device.capabilities.clone()).unwrap_or_default();
+    let capabilities = ClientCapabilitiesDto::deserialize(&device.capabilities).unwrap_or_default();
     !capabilities.supports_persistent_identifier
 }

@@ -50,13 +50,23 @@ impl VideoListResolver {
         support_multi_version: bool,
         collection_type: Option<CollectionType>,
     ) -> Vec<VideoInfo> {
+        self.resolve_owned_with_options(videos.to_vec(), support_multi_version, collection_type)
+    }
+
+    #[must_use]
+    pub fn resolve_owned_with_options(
+        &self,
+        videos: Vec<VideoFileInfo>,
+        support_multi_version: bool,
+        collection_type: Option<CollectionType>,
+    ) -> Vec<VideoInfo> {
         let stack_files = videos
             .iter()
             .filter(|video| video.extra_type.is_none())
             .map(|video| StackFileInfo::new(&video.path, video.is_directory))
             .collect::<Vec<_>>();
         let stacks = StackResolver::resolve_owned(stack_files, &self.options);
-        let mut consumed = Vec::new();
+        let mut videos = videos.into_iter().map(Some).collect::<Vec<_>>();
         let mut media = Vec::new();
         for stack in stacks {
             let files = stack
@@ -65,11 +75,14 @@ impl VideoListResolver {
                 .filter_map(|path| {
                     videos
                         .iter()
-                        .find(|video| video.path.eq_ignore_ascii_case(path))
-                        .cloned()
+                        .position(|video| {
+                            video
+                                .as_ref()
+                                .is_some_and(|video| video.path.eq_ignore_ascii_case(path))
+                        })
+                        .and_then(|index| videos[index].take())
                 })
                 .collect::<Vec<_>>();
-            consumed.extend(stack.files);
             media.push(VideoInfo {
                 name: stack.name,
                 year: files.first().and_then(|file| file.year),
@@ -79,21 +92,17 @@ impl VideoListResolver {
             });
         }
         let mut extras = Vec::new();
-        for video in videos {
-            if consumed
-                .iter()
-                .any(|path| path.eq_ignore_ascii_case(&video.path))
-            {
-                continue;
-            }
+        for video in videos.into_iter().flatten() {
+            let extra_type = video.extra_type;
             let info = VideoInfo {
+                // ALLOW: the group and its retained file expose independent owned names.
                 name: video.name.clone(),
                 year: video.year,
-                files: vec![video.clone()],
+                files: vec![video],
                 alternate_versions: Vec::new(),
-                extra_type: video.extra_type,
+                extra_type,
             };
-            if video.extra_type.is_some() {
+            if extra_type.is_some() {
                 extras.push(info);
             } else {
                 media.push(info);
@@ -122,17 +131,17 @@ impl VideoListResolver {
         if folder.chars().count() <= 1 || !have_same_year(&videos) {
             return videos;
         }
-        let mut primary_path = None;
-        for video in &videos {
+        let mut primary_override = None;
+        for (index, video) in videos.iter().enumerate() {
             let stem = file_stem(&video.files[0]);
             if !eligible_for_multi_version(&folder, stem, &self.options) {
                 return videos;
             }
             if stem == folder {
-                primary_path = video.files.first().map(|file| file.path.clone());
+                primary_override = Some(index);
             }
         }
-        vec![organize_versions(videos, primary_path, Some(folder))]
+        vec![organize_versions(videos, primary_override, Some(folder))]
     }
 
     fn group_episodes(&self, videos: Vec<VideoInfo>) -> Vec<VideoInfo> {
@@ -206,21 +215,22 @@ fn eligible_for_multi_version(folder: &str, stem: &str, options: &NamingOptions)
 }
 
 fn organize_versions(
-    mut videos: Vec<VideoInfo>,
-    primary_override: Option<String>,
+    videos: Vec<VideoInfo>,
+    primary_override: Option<usize>,
     name_override: Option<String>,
 ) -> VideoInfo {
-    videos.sort_by(compare_versions);
+    let mut videos = videos.into_iter().enumerate().collect::<Vec<_>>();
+    videos.sort_by(|(_, left), (_, right)| compare_versions(left, right));
     let primary_index = primary_override
-        .and_then(|path| {
+        .and_then(|original_index| {
             videos
                 .iter()
-                .position(|video| video.files.first().is_some_and(|file| file.path == path))
+                .position(|(index, _)| *index == original_index)
         })
-        .or_else(|| videos.iter().position(|video| video.files.len() > 1))
+        .or_else(|| videos.iter().position(|(_, video)| video.files.len() > 1))
         .unwrap_or(0);
-    let mut primary = videos.remove(primary_index);
-    primary.alternate_versions = videos;
+    let mut primary = videos.remove(primary_index).1;
+    primary.alternate_versions = videos.into_iter().map(|(_, video)| video).collect();
     if let Some(name) = name_override {
         primary.name = name;
     }

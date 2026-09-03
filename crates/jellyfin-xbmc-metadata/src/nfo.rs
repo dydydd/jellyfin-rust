@@ -288,8 +288,8 @@ fn parse_node(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetad
                 .unwrap_or_default();
         }
         "mpaa" => metadata.official_rating = text(node),
-        "credits" | "writer" => parse_people(node, &PersonKind::Writer, metadata),
-        "director" => parse_people(node, &PersonKind::Director, metadata),
+        "credits" | "writer" => parse_people(node, || PersonKind::Writer, metadata),
+        "director" => parse_people(node, || PersonKind::Director, metadata),
         "actor" => parse_actor(node, metadata),
         "thumb" => parse_image(node, None, metadata),
         "fanart" => {
@@ -421,7 +421,7 @@ fn parse_actor(node: Node<'_, '_>, metadata: &mut NfoMetadata) {
     });
 }
 
-fn parse_people(node: Node<'_, '_>, kind: &PersonKind, metadata: &mut NfoMetadata) {
+fn parse_people(node: Node<'_, '_>, kind: impl Fn() -> PersonKind, metadata: &mut NfoMetadata) {
     let Some(value) = text(node) else {
         return;
     };
@@ -433,7 +433,7 @@ fn parse_people(node: Node<'_, '_>, kind: &PersonKind, metadata: &mut NfoMetadat
         metadata.people.push(NfoPerson {
             name: name.to_owned(),
             role: String::new(),
-            kind: kind.clone(),
+            kind: kind(),
             sort_order: None,
             image_url: None,
         });

@@ -86,16 +86,16 @@ pub trait QuickConnectCapability {
 }
 
 /// Default runtime capability backed by the system clock and cryptographic RNG.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SystemQuickConnectCapability {
-    enabled: Arc<AtomicBool>,
+    enabled: AtomicBool,
 }
 
 impl SystemQuickConnectCapability {
     #[must_use]
     pub fn new(enabled: bool) -> Self {
         Self {
-            enabled: Arc::new(AtomicBool::new(enabled)),
+            enabled: AtomicBool::new(enabled),
         }
     }
 
@@ -121,6 +121,24 @@ impl QuickConnectCapability for SystemQuickConnectCapability {
         let mut bytes = [0_u8; 32];
         rand::rng().fill_bytes(&mut bytes);
         encode_upper_hex(&bytes)
+    }
+}
+
+impl<C: QuickConnectCapability + ?Sized> QuickConnectCapability for Arc<C> {
+    fn is_enabled(&self) -> bool {
+        self.as_ref().is_enabled()
+    }
+
+    fn now(&self) -> DateTime<Utc> {
+        self.as_ref().now()
+    }
+
+    fn generate_code(&self) -> String {
+        self.as_ref().generate_code()
+    }
+
+    fn generate_secret(&self) -> String {
+        self.as_ref().generate_secret()
     }
 }
 
@@ -183,6 +201,7 @@ impl<C: QuickConnectCapability> QuickConnectManager<C> {
             let request = NewQuickConnectRequest {
                 code: self.capability.generate_code(),
                 secret: self.capability.generate_secret(),
+                // ALLOW: each retryable persistence request needs independent owned metadata.
                 device_id: authorization.device_id.clone(),
                 device_name: authorization.device_name.clone(),
                 app_name: authorization.app_name.clone(),

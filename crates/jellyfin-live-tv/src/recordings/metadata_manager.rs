@@ -64,7 +64,7 @@ pub enum RecordingMetadataError {
     EmptyPath,
     ParentTraversal(PathBuf),
     OutsideRecordingRoot {
-        root: PathBuf,
+        root: Arc<PathBuf>,
         path: PathBuf,
     },
     SymbolicLink(PathBuf),
@@ -175,7 +175,7 @@ impl From<xml::writer::Error> for RecordingMetadataError {
 
 /// Saves and reads Kodi-compatible NFO sidecars below one recording root.
 pub struct RecordingsMetadataManager {
-    recording_root: PathBuf,
+    recording_root: Arc<PathBuf>,
     options: RecordingMetadataOptions,
     clock: Arc<dyn RecordingMetadataClock>,
 }
@@ -212,7 +212,7 @@ impl RecordingsMetadataManager {
                 source,
             })?;
         Ok(Self {
-            recording_root,
+            recording_root: Arc::new(recording_root),
             options,
             clock,
         })
@@ -220,7 +220,7 @@ impl RecordingsMetadataManager {
 
     #[must_use]
     pub fn recording_root(&self) -> &Path {
-        &self.recording_root
+        self.recording_root.as_path()
     }
 
     /// Writes a recording sidecar and, for episodes, a series sidecar.
@@ -346,9 +346,9 @@ impl RecordingsMetadataManager {
             path: path.to_path_buf(),
             source,
         })?;
-        if !resolved.starts_with(&self.recording_root) {
+        if !resolved.starts_with(self.recording_root.as_path()) {
             return Err(RecordingMetadataError::OutsideRecordingRoot {
-                root: self.recording_root.clone(),
+                root: Arc::clone(&self.recording_root),
                 path: resolved,
             });
         }
@@ -374,31 +374,36 @@ impl RecordingsMetadataManager {
         } else {
             self.recording_root.join(path)
         };
-        let relative = match candidate.strip_prefix(&self.recording_root) {
+        let relative = match candidate.strip_prefix(self.recording_root.as_path()) {
             Ok(relative) => relative,
             Err(_) => {
                 return Err(RecordingMetadataError::OutsideRecordingRoot {
-                    root: self.recording_root.clone(),
+                    root: Arc::clone(&self.recording_root),
                     path: candidate,
                 });
             }
         };
 
-        let mut current = self.recording_root.clone();
-        for component in relative.components() {
-            current.push(component);
-            let metadata = match fs::symlink_metadata(&current) {
+        let depth = relative.components().count();
+        for current in candidate
+            .ancestors()
+            .take(depth)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            let metadata = match fs::symlink_metadata(current) {
                 Ok(metadata) => metadata,
                 Err(source) => {
                     return Err(RecordingMetadataError::Io {
                         operation: "inspect path component",
-                        path: current,
+                        path: current.to_path_buf(),
                         source,
                     });
                 }
             };
             if metadata.file_type().is_symlink() {
-                return Err(RecordingMetadataError::SymbolicLink(current));
+                return Err(RecordingMetadataError::SymbolicLink(current.to_path_buf()));
             }
         }
 
@@ -408,9 +413,9 @@ impl RecordingsMetadataManager {
                 path: candidate,
                 source,
             })?;
-        if !resolved.starts_with(&self.recording_root) {
+        if !resolved.starts_with(self.recording_root.as_path()) {
             return Err(RecordingMetadataError::OutsideRecordingRoot {
-                root: self.recording_root.clone(),
+                root: Arc::clone(&self.recording_root),
                 path: resolved,
             });
         }
@@ -649,19 +654,25 @@ fn write_known_provider_by_name<W: Write>(
     write_optional_element(writer, element, value)
 }
 
-fn recording_genres(timer: &TimerInfo) -> Vec<String> {
-    let mut genres = timer.genres.clone();
-    for (enabled, genre) in [
+fn recording_genres(timer: &TimerInfo) -> impl Iterator<Item = &str> {
+    let inferred = [
         (timer.is_sports, "Sports"),
         (timer.is_kids, "Kids"),
         (timer.is_kids, "Children"),
         (timer.is_news, "News"),
-    ] {
-        if enabled && !genres.iter().any(|value| value.eq_ignore_ascii_case(genre)) {
-            genres.push(genre.to_owned());
-        }
-    }
-    genres
+    ];
+    timer.genres.iter().map(String::as_str).chain(
+        inferred
+            .into_iter()
+            .filter(|(enabled, genre)| {
+                *enabled
+                    && !timer
+                        .genres
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(genre))
+            })
+            .map(|(_, genre)| genre),
+    )
 }
 
 fn non_empty(value: &str) -> Option<&str> {

@@ -190,17 +190,17 @@ pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemD
         parent_id,
         item_type,
         is_virtual_item,
-        sort_name,
     } = item;
     BaseItemDto {
-        name: Some(name),
+        // ALLOW: Jellyfin exposes name and sort name as independent owned fields.
+        name: Some(name.clone()),
         server_id: server_id.to_owned(),
         id: id.simple().to_string(),
         playlist_item_id: None,
         item_type,
         etag: id.simple().to_string(),
         date_created: None,
-        sort_name: Some(sort_name),
+        sort_name: Some(name),
         path: None,
         overview: None,
         media_type: None,

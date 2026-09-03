@@ -1,4 +1,4 @@
-use sea_orm::{DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
+use sea_orm::{DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -16,13 +16,15 @@ pub enum NamedConfigurationStoreError {
 
 #[derive(Clone)]
 pub struct NamedConfigurationRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl NamedConfigurationRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Loads a named configuration by canonical key.
@@ -36,11 +38,15 @@ impl NamedConfigurationRepository {
         &self,
         key: &str,
     ) -> Result<named_configuration::Model, NamedConfigurationStoreError> {
-        let key = canonical_key(key)?;
-        named_configuration::Entity::find_by_id(key.clone())
-            .one(&self.database)
+        let canonical = canonical_key(key)?;
+        if let Some(configuration) = named_configuration::Entity::find_by_id(canonical)
+            .one(self.database.as_ref())
             .await?
-            .ok_or(NamedConfigurationStoreError::NotFound(key))
+        {
+            Ok(configuration)
+        } else {
+            Err(NamedConfigurationStoreError::NotFound(canonical_key(key)?))
+        }
     }
 
     /// Inserts or atomically replaces a named configuration object.
@@ -70,7 +76,7 @@ impl NamedConfigurationRepository {
             [key.into(), configuration.into()],
         );
         named_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| NamedConfigurationStoreError::NotFound("<upsert>".to_owned()))
     }

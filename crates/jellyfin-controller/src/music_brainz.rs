@@ -183,13 +183,16 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
 /// Fetches `MusicBrainz` artist and release-group metadata for music items.
 pub struct MusicBrainzMetadataProvider {
     client: MusicBrainzClient,
-    items: BaseItemRepository,
-    updates: ItemUpdateRepository,
+    items: std::sync::Arc<BaseItemRepository>,
+    updates: std::sync::Arc<ItemUpdateRepository>,
 }
 
 impl MusicBrainzMetadataProvider {
     #[must_use]
-    pub fn new(items: BaseItemRepository, updates: ItemUpdateRepository) -> Self {
+    pub fn new(
+        items: std::sync::Arc<BaseItemRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
+    ) -> Self {
         Self {
             client: MusicBrainzClient::new(),
             items,
@@ -218,7 +221,7 @@ impl MusicBrainzMetadataProvider {
                         "/artist/{id}?inc=url-rels+tags+annotation&fmt=json"
                     ))
                     .await?;
-                self.apply_artist(item.id, &artist).await?;
+                self.apply_artist(item.id, artist).await?;
                 Ok(true)
             }
             "MusicAlbum" => {
@@ -234,7 +237,7 @@ impl MusicBrainzMetadataProvider {
                         "/release-group/{id}?inc=artists+releases+url-rels+tags+annotation&fmt=json"
                     ))
                     .await?;
-                self.apply_album(item.id, &album).await?;
+                self.apply_album(item.id, album).await?;
                 Ok(true)
             }
             "Audio" => {
@@ -249,7 +252,7 @@ impl MusicBrainzMetadataProvider {
                         "/recording/{id}?inc=artists+releases+tags+annotation&fmt=json"
                     ))
                     .await?;
-                self.apply_recording(item.id, &recording).await?;
+                self.apply_recording(item.id, recording).await?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -259,12 +262,12 @@ impl MusicBrainzMetadataProvider {
     async fn apply_artist(
         &self,
         item_id: Uuid,
-        artist: &ArtistResponse,
+        artist: ArtistResponse,
     ) -> Result<(), MusicBrainzProviderError> {
-        let genres = artist.tags.iter().map(|tag| tag.name.clone()).collect();
+        let genres = artist.tags.into_iter().map(|tag| tag.name).collect();
         let provider_ids = BTreeMap::from([(
             MetadataProvider::MusicBrainzArtist.as_str().to_owned(),
-            artist.id.clone(),
+            artist.id,
         )]);
         self.updates
             .update(
@@ -282,12 +285,12 @@ impl MusicBrainzMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(overview) = annotation_text(artist.annotation.as_ref())
-            .filter(|overview| !overview.trim().is_empty())
+        if let Some(overview) =
+            annotation_text_owned(artist.annotation).filter(|overview| !overview.trim().is_empty())
         {
             item.overview = Some(overview);
         }
-        item.data = Some(artist_data(item.data.as_ref(), artist));
+        item.data = Some(artist_data(item.data.take(), artist.disambiguation));
         self.items.update(item).await?;
         Ok(())
     }
@@ -295,14 +298,14 @@ impl MusicBrainzMetadataProvider {
     async fn apply_album(
         &self,
         item_id: Uuid,
-        album: &ReleaseGroupResponse,
+        album: ReleaseGroupResponse,
     ) -> Result<(), MusicBrainzProviderError> {
-        let genres = album.tags.iter().map(|tag| tag.name.clone()).collect();
+        let genres = album.tags.into_iter().map(|tag| tag.name).collect();
         let provider_ids = BTreeMap::from([(
             MetadataProvider::MusicBrainzReleaseGroup
                 .as_str()
                 .to_owned(),
-            album.id.clone(),
+            album.id,
         )]);
         self.updates
             .update(
@@ -324,8 +327,8 @@ impl MusicBrainzMetadataProvider {
             .first_release_date
             .as_deref()
             .and_then(|date| date.get(..4).and_then(|year| year.parse::<i32>().ok()));
-        if let Some(overview) = annotation_text(album.annotation.as_ref())
-            .filter(|overview| !overview.trim().is_empty())
+        if let Some(overview) =
+            annotation_text_owned(album.annotation).filter(|overview| !overview.trim().is_empty())
         {
             item.overview = Some(overview);
         }
@@ -336,18 +339,18 @@ impl MusicBrainzMetadataProvider {
     async fn apply_recording(
         &self,
         item_id: Uuid,
-        recording: &RecordingResponse,
+        mut recording: RecordingResponse,
     ) -> Result<(), MusicBrainzProviderError> {
-        let genres = recording
-            .tags
-            .iter()
-            .map(|tag| tag.name.clone())
+        let genres = std::mem::take(&mut recording.tags)
+            .into_iter()
+            .map(|tag| tag.name)
             .collect::<Vec<_>>();
-        let provider_ids = recording_provider_ids(recording);
+        let provider_ids = recording_provider_ids(&mut recording);
         self.updates
             .update(
                 item_id,
                 ItemMetadataPatch {
+                    // ALLOW: tags and genres are separate persisted relation sets.
                     tags: Some(genres.clone()),
                     genres: Some(genres),
                     provider_ids: Some(provider_ids),
@@ -360,11 +363,13 @@ impl MusicBrainzMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(title) = recording.title.as_deref().filter(|value| !value.is_empty()) {
-            item.name = Some(title.to_owned());
-            item.sort_name = Some(title.to_owned());
+        let recording_data = recording_data(item.data.take(), &mut recording);
+        if let Some(title) = recording.title.take().filter(|value| !value.is_empty()) {
+            // ALLOW: persisted name and sort name are independent owned fields.
+            item.name = Some(title.clone());
+            item.sort_name = Some(title);
         }
-        if let Some(overview) = annotation_text(recording.annotation.as_ref())
+        if let Some(overview) = annotation_text_owned(recording.annotation.take())
             .filter(|overview| !overview.trim().is_empty())
         {
             item.overview = Some(overview);
@@ -375,60 +380,52 @@ impl MusicBrainzMetadataProvider {
             .and_then(|release| release.date.as_deref())
             .and_then(|date| date.get(..4))
             .and_then(|year| year.parse::<i32>().ok());
-        item.data = Some(recording_data(item.data.as_ref(), recording));
+        item.data = Some(recording_data);
         self.items.update(item).await?;
         Ok(())
     }
 }
 
-fn recording_provider_ids(recording: &RecordingResponse) -> BTreeMap<String, String> {
+fn recording_provider_ids(recording: &mut RecordingResponse) -> BTreeMap<String, String> {
     let mut provider_ids = BTreeMap::from([(
         MetadataProvider::MusicBrainzRecording.as_str().to_owned(),
-        recording.id.clone(),
+        std::mem::take(&mut recording.id),
     )]);
-    if let Some(release) = recording.releases.first() {
+    if let Some(release) = recording.releases.first_mut() {
         provider_ids.insert(
             MetadataProvider::MusicBrainzAlbum.as_str().to_owned(),
-            release.id.clone(),
+            std::mem::take(&mut release.id),
         );
-        if let Some(release_group) = release
-            .release_group
-            .as_ref()
-            .map(|group| group.id.as_str())
-        {
+        if let Some(release_group) = release.release_group.take() {
             provider_ids.insert(
                 MetadataProvider::MusicBrainzReleaseGroup
                     .as_str()
                     .to_owned(),
-                release_group.to_owned(),
+                release_group.id,
             );
         }
     }
     if let Some(artist) = recording
         .artist_credit
-        .first()
-        .and_then(|credit| credit.artist.as_ref())
+        .first_mut()
+        .and_then(|credit| credit.artist.take())
     {
         provider_ids.insert(
             MetadataProvider::MusicBrainzArtist.as_str().to_owned(),
-            artist.id.clone(),
+            artist.id,
         );
     }
     provider_ids
 }
 
-fn recording_data(existing: Option<&Value>, recording: &RecordingResponse) -> Value {
-    let mut object = existing
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+fn recording_data(existing: Option<Value>, recording: &mut RecordingResponse) -> Value {
+    let mut object = metadata_object_owned(existing);
     if let Some(title) = recording.title.as_deref().filter(|value| !value.is_empty()) {
         object.insert("OriginalTitle".to_owned(), json!(title));
     }
-    let artists = recording
-        .artist_credit
-        .iter()
-        .filter_map(|credit| credit.name.clone())
+    let artists = std::mem::take(&mut recording.artist_credit)
+        .into_iter()
+        .filter_map(|credit| credit.name)
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     if !artists.is_empty() {
@@ -436,39 +433,41 @@ fn recording_data(existing: Option<&Value>, recording: &RecordingResponse) -> Va
     }
     if let Some(album) = recording
         .releases
-        .first()
-        .and_then(|release| release.title.as_deref())
-        .filter(|value| !value.is_empty())
+        .first_mut()
+        .and_then(|release| release.title.take().filter(|value| !value.is_empty()))
     {
         object.insert("Album".to_owned(), json!(album));
     }
     Value::Object(object)
 }
 
-fn artist_data(existing: Option<&Value>, artist: &ArtistResponse) -> Value {
-    let mut object = existing
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if let Some(name) = artist
-        .disambiguation
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
+fn artist_data(existing: Option<Value>, disambiguation: Option<String>) -> Value {
+    let mut object = metadata_object_owned(existing);
+    if let Some(name) = disambiguation.filter(|value| !value.is_empty()) {
         object.insert("Disambiguation".to_owned(), json!(name));
     }
     Value::Object(object)
 }
 
-fn annotation_text(value: Option<&Value>) -> Option<String> {
-    let value = value?;
-    match value {
-        Value::Object(object) => object
-            .get("text")
-            .or_else(|| object.get("content"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        Value::Array(values) => values.iter().find_map(|value| annotation_text(Some(value))),
+fn metadata_object_owned(existing: Option<Value>) -> serde_json::Map<String, Value> {
+    match existing {
+        Some(Value::Object(object)) => object,
+        _ => serde_json::Map::new(),
+    }
+}
+
+fn annotation_text_owned(value: Option<Value>) -> Option<String> {
+    match value? {
+        Value::Object(mut object) => object
+            .remove("text")
+            .or_else(|| object.remove("content"))
+            .and_then(|value| match value {
+                Value::String(value) => Some(value),
+                _ => None,
+            }),
+        Value::Array(values) => values
+            .into_iter()
+            .find_map(|value| annotation_text_owned(Some(value))),
         _ => None,
     }
 }
@@ -561,14 +560,14 @@ mod tests {
     #[test]
     fn annotation_text_accepts_object_and_array_shapes() {
         assert_eq!(
-            annotation_text(Some(&json!({ "text": "Artist notes" }))),
+            annotation_text_owned(Some(json!({ "text": "Artist notes" }))),
             Some("Artist notes".to_owned())
         );
         assert_eq!(
-            annotation_text(Some(&json!([{ "content": "Album notes" }]))),
+            annotation_text_owned(Some(json!([{ "content": "Album notes" }]))),
             Some("Album notes".to_owned())
         );
-        assert_eq!(annotation_text(Some(&json!(null))), None);
+        assert_eq!(annotation_text_owned(Some(json!(null))), None);
     }
 
     #[test]
@@ -591,7 +590,7 @@ mod tests {
 
     #[test]
     fn recording_provider_ids_map_related_musicbrainz_entities() {
-        let recording = RecordingResponse {
+        let mut recording = RecordingResponse {
             id: "recording-id".to_owned(),
             artist_credit: vec![ArtistCredit {
                 name: Some("Artist".to_owned()),
@@ -609,7 +608,7 @@ mod tests {
             ..RecordingResponse::default()
         };
 
-        let ids = recording_provider_ids(&recording);
+        let ids = recording_provider_ids(&mut recording);
         assert_eq!(ids["MusicBrainzRecording"], "recording-id");
         assert_eq!(ids["MusicBrainzArtist"], "artist-id");
         assert_eq!(ids["MusicBrainzAlbum"], "release-id");

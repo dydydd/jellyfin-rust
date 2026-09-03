@@ -132,17 +132,17 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
 /// Fetches series metadata from `TVMaze` and merges it into library items.
 pub struct TvMazeMetadataProvider {
     client: TvMazeClient,
-    items: BaseItemRepository,
-    values: ItemValueRepository,
-    updates: ItemUpdateRepository,
+    items: std::sync::Arc<BaseItemRepository>,
+    values: std::sync::Arc<ItemValueRepository>,
+    updates: std::sync::Arc<ItemUpdateRepository>,
 }
 
 impl TvMazeMetadataProvider {
     #[must_use]
     pub fn new(
-        items: BaseItemRepository,
-        values: ItemValueRepository,
-        updates: ItemUpdateRepository,
+        items: std::sync::Arc<BaseItemRepository>,
+        values: std::sync::Arc<ItemValueRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
     ) -> Self {
         Self {
             client: TvMazeClient::new(),
@@ -167,7 +167,7 @@ impl TvMazeMetadataProvider {
         let Some(show) = self.fetch_show(&item).await? else {
             return Ok(false);
         };
-        self.apply(item.id, &show).await?;
+        self.apply(item.id, show).await?;
         Ok(true)
     }
 
@@ -194,7 +194,7 @@ impl TvMazeMetadataProvider {
         if let Some(id) = search
             .into_iter()
             .next()
-            .and_then(|result| result.provider_ids.get("TvMaze").cloned())
+            .and_then(|mut result| result.provider_ids.remove("TvMaze"))
             .and_then(|id| id.parse::<i64>().ok())
         {
             return self.client.show(id).await.map(Some);
@@ -202,9 +202,9 @@ impl TvMazeMetadataProvider {
         Ok(None)
     }
 
-    async fn apply(&self, item_id: Uuid, show: &TvMazeShow) -> Result<(), TvMazeProviderError> {
-        let provider_ids = show_provider_ids(show);
-        let genres = show.genres.clone();
+    async fn apply(&self, item_id: Uuid, mut show: TvMazeShow) -> Result<(), TvMazeProviderError> {
+        let provider_ids = show_provider_ids(&show);
+        let genres = std::mem::take(&mut show.genres);
         self.updates
             .update(
                 item_id,
@@ -247,7 +247,7 @@ impl TvMazeMetadataProvider {
             .filter(|value| !value.is_empty());
         item.production_year = parse_year(show.premiered.as_deref());
         item.premiere_date = parse_date(show.premiered.as_deref());
-        item.data = Some(show_extra_data(item.data.as_ref(), show));
+        item.data = Some(show_extra_data(item.data.as_ref(), &show));
         self.items.update(item).await?;
         Ok(())
     }

@@ -33,24 +33,25 @@ async fn main() -> anyhow::Result<()> {
     jellyfin_data::migrate(&database)
         .await
         .context("failed to migrate PostgreSQL")?;
-    let startup_repository = ServerConfigurationRepository::new(database.clone());
+    let database = Arc::new(database);
+    let startup_repository = ServerConfigurationRepository::new(Arc::clone(&database));
     let server_id = startup_repository
         .ensure_server_id()
         .await
         .context("failed to load or create the server id")?;
-    let persisted_configuration = startup_repository
+    let mut persisted_configuration = startup_repository
         .load()
         .await
         .context("failed to load the PostgreSQL server configuration")?;
     let tmdb_api_key = std::env::var("JELLYFIN_TMDB_API_KEY")
-        .unwrap_or_else(|_| persisted_configuration.tmdb_api_key.clone());
+        .unwrap_or_else(|_| std::mem::take(&mut persisted_configuration.tmdb_api_key));
     let omdb_api_key = std::env::var("JELLYFIN_OMDB_API_KEY")
-        .unwrap_or_else(|_| persisted_configuration.omdb_api_key.clone());
-    let trickplay_options = serde_json::from_value::<TrickplayOptions>(
-        persisted_configuration.trickplay_options.clone(),
-    )
+        .unwrap_or_else(|_| std::mem::take(&mut persisted_configuration.omdb_api_key));
+    let trickplay_options = serde_json::from_value::<TrickplayOptions>(std::mem::take(
+        &mut persisted_configuration.trickplay_options,
+    ))
     .unwrap_or_default();
-    BaseItemRepository::new(database.clone())
+    BaseItemRepository::new(Arc::clone(&database))
         .ensure_user_root()
         .await
         .context("failed to initialize the user library root")?;
@@ -132,11 +133,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn ensure_initial_user(
-    database: &sea_orm::DatabaseConnection,
+    database: &jellyfin_data::SharedDatabase,
 ) -> anyhow::Result<jellyfin_data::entities::user::Model> {
     use sea_orm::{DbBackend, Statement};
 
-    let users = UserService::new(database.clone());
+    let users = UserService::new(Arc::clone(database));
     let admin = users
         .list_filtered(None, Some(false))
         .await?

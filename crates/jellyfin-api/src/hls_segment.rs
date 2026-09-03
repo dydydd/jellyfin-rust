@@ -8,8 +8,9 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{
-    HlsSegmentSettings, HlsVariant, TranscodeTarget, build_main_playlist,
-    build_variant_master_playlist, hls_command, hls_job_id, run_ffmpeg, wait_for_segment,
+    HlsJobIdInput, HlsSegmentSettings, HlsVariant, TranscodeTarget, build_main_playlist,
+    build_variant_master_playlist, hls_command, hls_job_id_from_input, run_ffmpeg,
+    wait_for_segment,
 };
 use jellyfin_extensions::PathHelper;
 use jellyfin_model::MimeTypes;
@@ -116,29 +117,29 @@ pub(crate) async fn audio(
         &state.transcode_directory,
         &format!("{segment_id}.{extension}"),
     )?;
-    serve_file(path, &headers).await
+    serve_file(path, headers).await
 }
 
 pub(crate) async fn audio_master_playlist(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     Path(_item_id): Path<Uuid>,
-    query: Query<TranscodeQuery>,
+    Query(query): Query<TranscodeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
-    ensure_master_playlist(&state, &headers, &uri, &query, &identity).await
+    ensure_master_playlist(&state, headers, &uri, query, &identity).await
 }
 
 pub(crate) async fn audio_main_playlist(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     Path(_item_id): Path<Uuid>,
-    query: Query<TranscodeQuery>,
+    Query(query): Query<TranscodeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
-    ensure_main_playlist(&state, &headers, &uri, &query, &identity).await
+    ensure_main_playlist(&state, headers, &uri, query, &identity).await
 }
 
 pub(crate) async fn audio_hls1_segment(
@@ -151,7 +152,7 @@ pub(crate) async fn audio_hls1_segment(
     let (segment_id, container) = parse_hls1_segment_file(&segment_file)?;
     serve_authenticated_hls1_segment(
         &state,
-        &headers,
+        headers,
         &uri,
         &playlist_id,
         segment_id,
@@ -169,10 +170,10 @@ pub(crate) async fn video(
 ) -> Result<Response, ApiError> {
     if let Some((playlist_id, stream_file)) = parse_stream_path(&legacy_path) {
         authorization::require_default(&state, &headers, &uri).await?;
-        return serve_playlist(&state, &headers, playlist_id, stream_file).await;
+        return serve_playlist(&state, headers, playlist_id, stream_file).await;
     }
 
-    serve_video_segment(&state, &headers, &legacy_path).await
+    serve_video_segment(&state, headers, &legacy_path).await
 }
 
 pub(crate) async fn video_live_playlist(
@@ -181,29 +182,29 @@ pub(crate) async fn video_live_playlist(
     Path(_item_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    serve_authenticated_playlist(&state, &headers, &uri, "live.m3u8").await
+    serve_authenticated_playlist(&state, headers, &uri, "live.m3u8").await
 }
 
 pub(crate) async fn video_master_playlist(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     Path(_item_id): Path<Uuid>,
-    query: Query<TranscodeQuery>,
+    Query(query): Query<TranscodeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
-    ensure_master_playlist(&state, &headers, &uri, &query, &identity).await
+    ensure_master_playlist(&state, headers, &uri, query, &identity).await
 }
 
 pub(crate) async fn video_main_playlist(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     Path(_item_id): Path<Uuid>,
-    query: Query<TranscodeQuery>,
+    Query(query): Query<TranscodeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
-    ensure_main_playlist(&state, &headers, &uri, &query, &identity).await
+    ensure_main_playlist(&state, headers, &uri, query, &identity).await
 }
 
 pub(crate) async fn video_hls1_segment(
@@ -216,7 +217,7 @@ pub(crate) async fn video_hls1_segment(
     let (segment_id, container) = parse_hls1_segment_file(&segment_file)?;
     serve_authenticated_hls1_segment(
         &state,
-        &headers,
+        headers,
         &uri,
         &playlist_id,
         segment_id,
@@ -249,9 +250,9 @@ pub(crate) async fn stop_active_encoding(
 
 async fn ensure_master_playlist(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     uri: &Uri,
-    query: &TranscodeQuery,
+    query: TranscodeQuery,
     identity: &crate::authentication::AuthenticatedIdentity,
 ) -> Result<Response, ApiError> {
     if query.job_id.is_none() && !query.has_transcode_parameters() {
@@ -260,16 +261,16 @@ async fn ensure_master_playlist(
     }
 
     let (item_id, media_type) = media_type_item_id(uri)?;
-    let job_id = existing_or_computed_job_id(query, item_id, media_type);
+    let job_id = existing_or_computed_job_id(&query, item_id);
     let main_url = format!(
         "main.m3u8?{}&jobId={}",
         uri.query().unwrap_or_default(),
         job_id
     );
+    let content = build_variant_master_playlist(&master_variants(&query, &main_url));
     start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
     let path =
         resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.master.m3u8"))?;
-    let content = build_variant_master_playlist(&master_variants(query, &main_url));
     tokio::fs::write(&path, content)
         .await
         .map_err(|_| ApiError::Internal)?;
@@ -302,9 +303,9 @@ fn master_variants(query: &TranscodeQuery, main_url: &str) -> Vec<HlsVariant> {
 
 async fn ensure_main_playlist(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     uri: &Uri,
-    query: &TranscodeQuery,
+    query: TranscodeQuery,
     identity: &crate::authentication::AuthenticatedIdentity,
 ) -> Result<Response, ApiError> {
     if query.job_id.is_none() && !query.has_transcode_parameters() {
@@ -313,7 +314,7 @@ async fn ensure_main_playlist(
     }
 
     let (item_id, media_type) = media_type_item_id(uri)?;
-    let job_id = existing_or_computed_job_id(query, item_id, media_type);
+    let job_id = existing_or_computed_job_id(&query, item_id);
     start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
     let path = resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.m3u8"))?;
     serve_file_if_exists(path, headers).await
@@ -321,7 +322,7 @@ async fn ensure_main_playlist(
 
 async fn start_hls_job(
     state: &AppState,
-    query: &TranscodeQuery,
+    query: TranscodeQuery,
     item_id: Uuid,
     job_id: &str,
     identity: &crate::authentication::AuthenticatedIdentity,
@@ -345,12 +346,9 @@ async fn start_hls_job(
     };
     let target = TranscodeTarget {
         is_video: media_type == "Videos",
-        hwaccel: query.hwaccel.clone(),
-        video_codec: query
-            .video_codec
-            .clone()
-            .or_else(|| Some("h264".to_owned())),
-        audio_codec: query.audio_codec.clone().or_else(|| Some("aac".to_owned())),
+        hwaccel: query.hwaccel,
+        video_codec: query.video_codec.or_else(|| Some("h264".to_owned())),
+        audio_codec: query.audio_codec.or_else(|| Some("aac".to_owned())),
         video_bitrate: query.video_bitrate,
         audio_bitrate: query.audio_bitrate,
         audio_channels: query.max_audio_channels,
@@ -366,10 +364,7 @@ async fn start_hls_job(
         start_time_ticks: query.start_time_ticks,
     };
     let settings = HlsSegmentSettings {
-        container: query
-            .segment_container
-            .clone()
-            .unwrap_or_else(|| "ts".to_owned()),
+        container: query.segment_container.unwrap_or_else(|| "ts".to_owned()),
         segment_length_ms: query.segment_length.unwrap_or(6_000),
         min_segments: query.min_segments.unwrap_or(2),
     };
@@ -403,7 +398,7 @@ async fn start_hls_job(
             .register_for_session_with_path(job_id, device_id, play_session_id, &input),
         _ => state.transcode_jobs.register(job_id),
     };
-    let jobs = state.transcode_jobs.clone();
+    let jobs = Arc::clone(&state.transcode_jobs);
     let finished_job_id = job_id.to_owned();
     tokio::spawn(async move {
         if let Err(error) = run_ffmpeg(&command, &job).await {
@@ -473,48 +468,34 @@ fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
     Ok((item_id, media_type))
 }
 
-fn existing_or_computed_job_id(query: &TranscodeQuery, item_id: Uuid, media_type: &str) -> String {
+fn existing_or_computed_job_id(query: &TranscodeQuery, item_id: Uuid) -> String {
     query
         .job_id
         .as_deref()
         .filter(|id| !id.is_empty())
-        .map_or_else(|| compute_job_id(item_id, query, media_type), str::to_owned)
+        .map_or_else(|| compute_job_id(item_id, query), str::to_owned)
 }
 
-fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, media_type: &str) -> String {
-    let target = TranscodeTarget {
-        is_video: media_type == "Videos",
-        hwaccel: query.hwaccel.clone(),
-        video_codec: query.video_codec.clone(),
-        audio_codec: query.audio_codec.clone(),
-        video_bitrate: query.video_bitrate,
-        audio_bitrate: query.audio_bitrate,
-        audio_channels: query.max_audio_channels,
-        audio_sample_rate: None,
-        audio_stream_index: query.audio_stream_index,
-        subtitle_index: query.subtitle_stream_index,
-        burn_subtitles: query.burn_subtitles.unwrap_or(false),
-        audio_normalize: query.audio_normalize.unwrap_or(false),
-        tonemap_hdr: query.enable_hdr_tone_mapping.unwrap_or(false),
-        max_width: query.max_width,
-        max_height: query.max_height,
-        max_framerate: query.max_framerate,
-        start_time_ticks: query.start_time_ticks,
-    };
-    let settings = HlsSegmentSettings {
-        container: query
-            .segment_container
-            .clone()
-            .unwrap_or_else(|| "ts".to_owned()),
-        segment_length_ms: query.segment_length.unwrap_or(6_000),
-        min_segments: query.min_segments.unwrap_or(2),
-    };
-    hls_job_id(
+fn compute_job_id(item_id: Uuid, query: &TranscodeQuery) -> String {
+    hls_job_id_from_input(
         item_id,
-        query.media_source_id.as_deref(),
-        query.start_time_ticks,
-        &target,
-        &settings,
+        HlsJobIdInput {
+            media_source_id: query.media_source_id.as_deref(),
+            start_time_ticks: query.start_time_ticks,
+            video_codec: query.video_codec.as_deref(),
+            audio_codec: query.audio_codec.as_deref(),
+            video_bitrate: query.video_bitrate,
+            audio_bitrate: query.audio_bitrate,
+            max_width: query.max_width,
+            max_height: query.max_height,
+            hwaccel: query.hwaccel.as_deref(),
+            subtitle_index: query.subtitle_stream_index,
+            burn_subtitles: query.burn_subtitles.unwrap_or(false),
+            audio_normalize: query.audio_normalize.unwrap_or(false),
+            tonemap_hdr: query.enable_hdr_tone_mapping.unwrap_or(false),
+            segment_length_ms: query.segment_length.unwrap_or(6_000),
+            container: query.segment_container.as_deref().unwrap_or("ts"),
+        },
     )
 }
 
@@ -563,7 +544,7 @@ fn parse_hls1_segment_file(path: &str) -> Result<(i32, &str), ApiError> {
 
 async fn serve_playlist(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     playlist_id: &str,
     stream_file: &str,
 ) -> Result<Response, ApiError> {
@@ -584,7 +565,7 @@ async fn serve_playlist(
 
 async fn serve_video_segment(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     legacy_path: &str,
 ) -> Result<Response, ApiError> {
     let (playlist_id, segment_file) = legacy_path
@@ -612,25 +593,25 @@ async fn serve_video_segment(
 
 async fn serve_authenticated_playlist(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     uri: &Uri,
     filename: &str,
 ) -> Result<Response, ApiError> {
-    authorization::require_default(state, headers, uri).await?;
+    authorization::require_default(state, &headers, uri).await?;
     let path = resolve_transcode_file(&state.transcode_directory, filename)?;
     serve_file(path, headers).await
 }
 
 async fn serve_authenticated_hls1_segment(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     uri: &Uri,
     playlist_id: &str,
     segment_id: i32,
     container: &str,
     query: DynamicSegmentQuery,
 ) -> Result<Response, ApiError> {
-    authorization::require_default(state, headers, uri).await?;
+    authorization::require_default(state, &headers, uri).await?;
     if query.runtime_ticks < 0
         || query.actual_segment_length_ticks <= 0
         || query.start_time_ticks.is_some_and(|ticks| ticks > 0)
@@ -648,7 +629,7 @@ async fn serve_authenticated_hls1_segment(
 
 async fn serve_file_if_exists(
     path: std::path::PathBuf,
-    headers: &HeaderMap,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     if !tokio::fs::try_exists(&path)
         .await
@@ -725,20 +706,21 @@ async fn find_playlist(
     Ok(None)
 }
 
-async fn serve_file(path: std::path::PathBuf, headers: &HeaderMap) -> Result<Response, ApiError> {
+async fn serve_file(
+    path: std::path::PathBuf,
+    mut headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let mut request = Request::builder()
         .method("GET")
         .body(Body::empty())
         .map_err(|_| ApiError::Internal)?;
-    if let Some(value) = headers.get(header::RANGE)
-        && if_range_allows(&path, headers.get(header::IF_RANGE)).await
-    {
-        request.headers_mut().insert(header::RANGE, value.clone());
+    let range_allowed = headers.contains_key(header::RANGE)
+        && if_range_allows(&path, headers.get(header::IF_RANGE)).await;
+    if range_allowed && let Some(value) = headers.remove(header::RANGE) {
+        request.headers_mut().insert(header::RANGE, value);
     }
-    if let Some(value) = headers.get(header::IF_RANGE) {
-        request
-            .headers_mut()
-            .insert(header::IF_RANGE, value.clone());
+    if let Some(value) = headers.remove(header::IF_RANGE) {
+        request.headers_mut().insert(header::IF_RANGE, value);
     }
     let response = match ServeFile::new(&path)
         .with_buf_chunk_size(64 * 1024)

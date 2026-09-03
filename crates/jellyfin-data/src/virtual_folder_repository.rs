@@ -1,8 +1,8 @@
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection,
-    DatabaseTransaction, DbBackend, DbErr, EntityTrait, LoaderTrait, QueryFilter, QueryOrder,
-    SqlErr, Statement, TransactionTrait,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseTransaction,
+    DbBackend, DbErr, EntityTrait, LoaderTrait, QueryFilter, QueryOrder, SqlErr, Statement,
+    TransactionTrait,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -52,13 +52,15 @@ pub enum VirtualFolderError {
 
 #[derive(Clone)]
 pub struct VirtualFolderRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl VirtualFolderRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Creates a virtual folder and its media paths atomically.
@@ -102,10 +104,10 @@ impl VirtualFolderRepository {
         let folders = virtual_folder::Entity::find()
             .order_by_asc(virtual_folder::Column::NormalizedName)
             .order_by_asc(virtual_folder::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         let related_paths = folders
-            .load_many(media_path::Entity, &self.database)
+            .load_many(media_path::Entity, self.database.as_ref())
             .await?;
         Ok(folders
             .into_iter()
@@ -129,7 +131,7 @@ impl VirtualFolderRepository {
         let normalized = normalized_name(name)?;
         let Some(folder) = virtual_folder::Entity::find()
             .filter(virtual_folder::Column::NormalizedName.eq(normalized))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
         else {
             return Ok(None);
@@ -137,7 +139,7 @@ impl VirtualFolderRepository {
         let paths = media_path::Entity::find()
             .filter(media_path::Column::VirtualFolderId.eq(folder.id))
             .order_by_asc(media_path::Column::NormalizedPath)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         Ok(Some(VirtualFolderWithPaths { folder, paths }))
     }
@@ -157,7 +159,7 @@ impl VirtualFolderRepository {
         let replacement = normalized_name(new_name)?;
         let Some(model) = virtual_folder::Entity::find()
             .filter(virtual_folder::Column::NormalizedName.eq(current))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
         else {
             return Err(VirtualFolderError::NotFound);
@@ -167,7 +169,7 @@ impl VirtualFolderRepository {
         active.normalized_name = Set(replacement);
         active.refresh_requested = Set(refresh_requested);
         active
-            .update(&self.database)
+            .update(self.database.as_ref())
             .await
             .map_err(map_database_error)
     }
@@ -185,7 +187,7 @@ impl VirtualFolderRepository {
         let normalized = normalized_name(name)?;
         let Some(folder) = virtual_folder::Entity::find()
             .filter(virtual_folder::Column::NormalizedName.eq(normalized))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
         else {
             return Err(VirtualFolderError::NotFound);
@@ -216,14 +218,14 @@ impl VirtualFolderRepository {
     /// Returns `NotFound` or a database error.
     pub async fn update_options(&self, id: Uuid, options: Value) -> Result<(), VirtualFolderError> {
         let Some(model) = virtual_folder::Entity::find_by_id(id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
         else {
             return Err(VirtualFolderError::NotFound);
         };
         let mut active: virtual_folder::ActiveModel = model.into();
         active.library_options = Set(options);
-        active.update(&self.database).await?;
+        active.update(self.database.as_ref()).await?;
         Ok(())
     }
 
@@ -284,7 +286,7 @@ impl VirtualFolderRepository {
         };
         let mut active: media_path::ActiveModel = path.into();
         active.path_info = Set(path_info);
-        active.update(&self.database).await?;
+        active.update(self.database.as_ref()).await?;
         Ok(())
     }
 

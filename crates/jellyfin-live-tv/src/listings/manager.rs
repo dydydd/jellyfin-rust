@@ -183,16 +183,16 @@ impl Default for LiveTvConfiguration {
 pub enum ListingsConfigurationError {
     Io {
         operation: &'static str,
-        path: PathBuf,
+        path: Arc<PathBuf>,
         source: std::io::Error,
     },
     InvalidJson {
-        path: PathBuf,
+        path: Arc<PathBuf>,
         source: serde_json::Error,
     },
     Serialize(serde_json::Error),
     LockPoisoned,
-    InvalidPath(PathBuf),
+    InvalidPath(Arc<PathBuf>),
 }
 
 impl fmt::Display for ListingsConfigurationError {
@@ -252,7 +252,7 @@ pub trait ListingsConfigurationStore: Send + Sync {
 
 /// JSON file-backed Live TV configuration store using atomic replacement.
 pub struct JsonListingsConfigurationStore {
-    path: PathBuf,
+    path: Arc<PathBuf>,
     update_lock: Mutex<()>,
 }
 
@@ -260,7 +260,7 @@ impl JsonListingsConfigurationStore {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
-            path: path.into(),
+            path: Arc::new(path.into()),
             update_lock: Mutex::new(()),
         }
     }
@@ -272,10 +272,10 @@ impl JsonListingsConfigurationStore {
     }
 
     fn load_unlocked(&self) -> Result<LiveTvConfiguration, ListingsConfigurationError> {
-        match fs::read(&self.path) {
+        match fs::read(self.path.as_path()) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| {
                 ListingsConfigurationError::InvalidJson {
-                    path: self.path.clone(),
+                    path: Arc::clone(&self.path),
                     source,
                 }
             }),
@@ -284,7 +284,7 @@ impl JsonListingsConfigurationStore {
             }
             Err(source) => Err(ListingsConfigurationError::Io {
                 operation: "read",
-                path: self.path.clone(),
+                path: Arc::clone(&self.path),
                 source,
             }),
         }
@@ -305,7 +305,7 @@ impl JsonListingsConfigurationStore {
             .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|source| ListingsConfigurationError::Io {
             operation: "create parent directory for",
-            path: self.path.clone(),
+            path: Arc::clone(&self.path),
             source,
         })?;
 
@@ -313,7 +313,7 @@ impl JsonListingsConfigurationStore {
             .path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| ListingsConfigurationError::InvalidPath(self.path.clone()))?;
+            .ok_or_else(|| ListingsConfigurationError::InvalidPath(Arc::clone(&self.path)))?;
         let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -433,7 +433,7 @@ impl ListingsManager {
 
 fn write_and_replace(
     temporary: &Path,
-    destination: &Path,
+    destination: &Arc<PathBuf>,
     bytes: &[u8],
 ) -> Result<(), ListingsConfigurationError> {
     let mut options = OpenOptions::new();
@@ -448,22 +448,24 @@ fn write_and_replace(
         .open(temporary)
         .map_err(|source| ListingsConfigurationError::Io {
             operation: "create temporary file for",
-            path: destination.to_path_buf(),
+            path: Arc::clone(destination),
             source,
         })?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|source| ListingsConfigurationError::Io {
             operation: "write temporary file for",
-            path: destination.to_path_buf(),
+            path: Arc::clone(destination),
             source,
         })?;
     drop(file);
 
-    fs::rename(temporary, destination).map_err(|source| ListingsConfigurationError::Io {
-        operation: "replace",
-        path: destination.to_path_buf(),
-        source,
+    fs::rename(temporary, destination.as_path()).map_err(|source| {
+        ListingsConfigurationError::Io {
+            operation: "replace",
+            path: Arc::clone(destination),
+            source,
+        }
     })?;
 
     #[cfg(unix)]
@@ -476,7 +478,7 @@ fn write_and_replace(
             .and_then(|directory| directory.sync_all())
             .map_err(|source| ListingsConfigurationError::Io {
                 operation: "sync parent directory for",
-                path: destination.to_path_buf(),
+                path: Arc::clone(destination),
                 source,
             })?;
     }

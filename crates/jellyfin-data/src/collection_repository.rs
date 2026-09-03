@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr,
-    EntityTrait, QueryFilter, Statement, TransactionTrait,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, QueryFilter,
+    Statement, TransactionTrait,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -29,13 +29,15 @@ pub enum CollectionStoreError {
 /// Atomic persistence used when creating a collection and its initial links.
 #[derive(Clone)]
 pub struct CollectionRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl CollectionRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Creates a `BoxSet` and all requested manual children in one transaction.

@@ -34,18 +34,15 @@ pub(crate) async fn update(
         .await?
         .require_administrator()?;
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
-    let api_key = configuration.tmdb_api_key.clone();
-    let omdb_api_key = configuration.omdb_api_key.clone();
-    let quick_connect_available = configuration.quick_connect_available;
-    state
+    let updated = state
         .server_configuration
         .update_server_configuration(server_configuration_update(configuration)?)
         .await?;
-    *state.tmdb_api_key.write().await = api_key;
-    *state.omdb_api_key.write().await = omdb_api_key;
+    *state.tmdb_api_key.write().await = Arc::from(updated.tmdb_api_key);
+    *state.omdb_api_key.write().await = Arc::from(updated.omdb_api_key);
     state
         .quick_connect_capability
-        .set_enabled(quick_connect_available);
+        .set_enabled(updated.quick_connect_available);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -20,7 +20,7 @@ impl MetadataServiceCapability for FixtureCapability {
 }
 
 fn merge(
-    source: &MetadataResult,
+    source: MetadataResult,
     mut target: MetadataResult,
     locked_fields: &[MetadataField],
     replace_data: bool,
@@ -63,7 +63,7 @@ fn merge_base_item_data_merge_metadata_settings_merges_when_set() {
             },
             people: None,
         };
-        let (actual, _) = merge(&source, target, &[], true, merge_metadata_settings);
+        let (actual, _) = merge(source, target, &[], true, merge_metadata_settings);
         if merge_metadata_settings {
             assert_eq!(
                 actual.item.locked_fields,
@@ -119,7 +119,8 @@ fn merge_base_item_data_runtime_respects_locked_fields() {
     };
 
     let (locked, _) = merge(
-        &source,
+        // ALLOW: the unit test exercises locked and unlocked branches from one fixture.
+        source.clone(),
         target.clone(),
         &[MetadataField::Runtime],
         true,
@@ -127,7 +128,7 @@ fn merge_base_item_data_runtime_respects_locked_fields() {
     );
     assert_eq!(locked.item.core.runtime_ticks, Some(1));
 
-    let (unlocked, _) = merge(&source, target, &[], true, false);
+    let (unlocked, _) = merge(source, target, &[], true, false);
     assert_eq!(unlocked.item.core.runtime_ticks, Some(2));
 }
 
@@ -181,7 +182,7 @@ fn test_string_merge(
     let mut target = MetadataResult::default();
     set_string(&mut target.item, property, old.map(str::to_owned));
     let locked = lock.map_or_else(Vec::new, |field| vec![field]);
-    let (actual, _) = merge(&source, target, &locked, replace_data, false);
+    let (actual, _) = merge(source, target, &locked, replace_data, false);
     get_string(&actual.item, property) == new
 }
 
@@ -308,7 +309,7 @@ fn test_array_merge(
         old.iter().map(ToString::to_string).collect(),
     );
     let locked = lock.map_or_else(Vec::new, |field| vec![field]);
-    let (actual, _) = merge(&source, target, &locked, replace_data, false);
+    let (actual, _) = merge(source, target, &locked, replace_data, false);
     get_array(&actual.item, property) == new.iter().map(ToString::to_string).collect::<Vec<_>>()
 }
 
@@ -446,7 +447,7 @@ fn test_simple_merge(
     set_simple(&mut source.item, property, new);
     let mut target = MetadataResult::default();
     set_simple(&mut target.item, property, old);
-    let (actual, _) = merge(&source, target, &[], replace_data, false);
+    let (actual, _) = merge(source, target, &[], replace_data, false);
     get_simple(&actual.item, property) == new
 }
 
@@ -527,7 +528,7 @@ fn test_trailer_merge(old: Vec<MediaUrl>, new: &[MediaUrl], replace_data: bool) 
         },
         people: None,
     };
-    let (actual, _) = merge(&source, target, &[], replace_data, false);
+    let (actual, _) = merge(source, target, &[], replace_data, false);
     actual.item.remote_trailers == new
 }
 
@@ -573,7 +574,7 @@ fn merge_provider_id_maps(
         },
         people: None,
     };
-    merge(&source, target, &[], replace_data, false)
+    merge(source, target, &[], replace_data, false)
         .0
         .item
         .core
@@ -626,7 +627,7 @@ fn merge_people(
         people: old,
     };
     let locked = lock.map_or_else(Vec::new, |field| vec![field]);
-    let (actual, capability) = merge(&source, target, &locked, replace_data, false);
+    let (actual, capability) = merge(source, target, &locked, replace_data, false);
     let matches_source = actual.people.as_deref() == new;
     (
         actual.people,
@@ -707,7 +708,7 @@ fn merge_omdb_item_passes_parsed_fields_through_official_merge_rules() {
     let mut target = MetadataResult::default();
     let capability = FixtureCapability::default();
 
-    MetadataService::merge_omdb_item(&omdb, &mut target, &[], false, &capability);
+    MetadataService::merge_omdb_item(omdb, &mut target, &[], false, &capability);
 
     assert_eq!(target.item.core.name.as_deref(), Some("The Matrix"));
     assert_eq!(

@@ -18,7 +18,7 @@ use jellyfin_model::{
     TaskCompletionStatus, TaskInfo, TaskResult, TaskState, TaskTriggerInfo, TaskTriggerInfoType,
     TrickplayOptions,
 };
-use sea_orm::{ConnectionTrait, DatabaseConnection};
+use sea_orm::ConnectionTrait;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -71,13 +71,13 @@ impl ScheduledTask {
 /// Filesystem locations used by maintenance scheduled tasks.
 #[derive(Debug, Clone)]
 pub struct ScheduledTaskPaths {
-    pub log_directory: PathBuf,
-    pub cache_directory: PathBuf,
-    pub transcode_directory: PathBuf,
-    pub trickplay_directory: PathBuf,
-    pub chapter_images_directory: PathBuf,
-    pub ffmpeg_path: PathBuf,
-    pub trickplay_options: TrickplayOptions,
+    pub log_directory: Arc<PathBuf>,
+    pub cache_directory: Arc<PathBuf>,
+    pub transcode_directory: Arc<PathBuf>,
+    pub trickplay_directory: Arc<PathBuf>,
+    pub chapter_images_directory: Arc<PathBuf>,
+    pub ffmpeg_path: Arc<PathBuf>,
+    pub trickplay_options: Arc<TrickplayOptions>,
     pub log_file_retention_days: i32,
     pub activity_log_retention_days: i32,
 }
@@ -85,15 +85,17 @@ pub struct ScheduledTaskPaths {
 impl Default for ScheduledTaskPaths {
     fn default() -> Self {
         Self {
-            log_directory: PathBuf::from("logs"),
-            cache_directory: PathBuf::from("cache"),
-            transcode_directory: std::env::temp_dir()
-                .join("jellyfin-rust")
-                .join("transcodes"),
-            trickplay_directory: PathBuf::from("programdata").join("trickplay"),
-            chapter_images_directory: PathBuf::from("programdata").join("chapter-images"),
-            ffmpeg_path: PathBuf::from("ffmpeg"),
-            trickplay_options: TrickplayOptions::default(),
+            log_directory: Arc::new(PathBuf::from("logs")),
+            cache_directory: Arc::new(PathBuf::from("cache")),
+            transcode_directory: Arc::new(
+                std::env::temp_dir()
+                    .join("jellyfin-rust")
+                    .join("transcodes"),
+            ),
+            trickplay_directory: Arc::new(PathBuf::from("programdata").join("trickplay")),
+            chapter_images_directory: Arc::new(PathBuf::from("programdata").join("chapter-images")),
+            ffmpeg_path: Arc::new(PathBuf::from("ffmpeg")),
+            trickplay_options: Arc::new(TrickplayOptions::default()),
             log_file_retention_days: 3,
             activity_log_retention_days: 30,
         }
@@ -131,12 +133,14 @@ impl ScheduledTaskRunContext {
         let _ = self.tasks.stop(&self.task_id).await;
     }
 
-    fn paths(&self) -> ScheduledTaskPaths {
-        self.tasks
-            .paths
-            .read()
-            .expect("scheduled task paths lock poisoned")
-            .clone()
+    fn paths(&self) -> Arc<ScheduledTaskPaths> {
+        Arc::clone(
+            &self
+                .tasks
+                .paths
+                .read()
+                .expect("scheduled task paths lock poisoned"),
+        )
     }
 }
 
@@ -144,7 +148,7 @@ impl ScheduledTaskRunContext {
 pub struct ScheduledTaskService {
     tasks: Arc<RwLock<Vec<ScheduledTask>>>,
     executors: Arc<std::sync::RwLock<HashMap<String, ScheduledTaskHandler>>>,
-    paths: Arc<std::sync::RwLock<ScheduledTaskPaths>>,
+    paths: Arc<std::sync::RwLock<Arc<ScheduledTaskPaths>>>,
     change_listeners: Arc<std::sync::RwLock<Vec<ScheduledTaskChangeListener>>>,
     scheduler_running: Arc<AtomicBool>,
 }
@@ -156,12 +160,26 @@ impl Default for ScheduledTaskService {
 }
 
 impl ScheduledTaskService {
+    /// Returns another handle to the same task state and scheduler.
+    #[must_use]
+    pub fn shared_handle(&self) -> Self {
+        Self {
+            tasks: Arc::clone(&self.tasks),
+            executors: Arc::clone(&self.executors),
+            paths: Arc::clone(&self.paths),
+            change_listeners: Arc::clone(&self.change_listeners),
+            scheduler_running: Arc::clone(&self.scheduler_running),
+        }
+    }
+
     #[must_use]
     pub fn new(tasks: Vec<ScheduledTask>) -> Self {
         Self {
             tasks: Arc::new(RwLock::new(tasks)),
             executors: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            paths: Arc::new(std::sync::RwLock::new(ScheduledTaskPaths::default())),
+            paths: Arc::new(std::sync::RwLock::new(Arc::new(
+                ScheduledTaskPaths::default(),
+            ))),
             change_listeners: Arc::new(std::sync::RwLock::new(Vec::new())),
             scheduler_running: Arc::new(AtomicBool::new(false)),
         }
@@ -169,7 +187,7 @@ impl ScheduledTaskService {
 
     /// Builds the service with official default tasks and their handlers.
     #[must_use]
-    pub fn with_default_executors(library_scan: LibraryScanService) -> Self {
+    pub fn with_default_executors(library_scan: Arc<LibraryScanService>) -> Self {
         let service = Self::default();
         service.register_executor("RefreshLibrary", refresh_library_handler(library_scan));
         service.register_executor("CleanLogFiles", clean_log_files_handler());
@@ -182,14 +200,14 @@ impl ScheduledTaskService {
     #[allow(clippy::too_many_arguments)]
     pub fn with_maintenance_executors(
         &self,
-        database: DatabaseConnection,
+        database: impl Into<jellyfin_data::SharedDatabase>,
         activity_logs: ActivityLogRepository,
         people: PersonRepository,
         user_data: UserDataRepository,
         keyframes: KeyframeDataRepository,
-        trickplay: TrickplayService,
+        trickplay: Arc<TrickplayService>,
         chapter_images: ChapterImageService,
-        guide: Option<GuideRefreshService>,
+        guide: Option<Arc<GuideRefreshService>>,
     ) {
         self.register_executor(
             "CleanActivityLog",
@@ -202,7 +220,10 @@ impl ScheduledTaskService {
         if let Some(guide) = guide {
             self.register_executor("RefreshGuide", refresh_guide_handler(guide));
         }
-        self.register_executor("OptimizeDatabaseTask", optimize_database_handler(database));
+        self.register_executor(
+            "OptimizeDatabaseTask",
+            optimize_database_handler(database.into()),
+        );
         self.register_executor("DeleteTranscodeFiles", delete_transcode_files_handler());
         self.register_executor(
             "RefreshChapterImages",
@@ -229,10 +250,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_log_directory(&self, path: impl Into<PathBuf>) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .log_directory = path.into();
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .log_directory = Arc::new(path.into());
     }
 
     /// Updates the cache directory used by maintenance tasks.
@@ -241,10 +265,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_cache_directory(&self, path: impl Into<PathBuf>) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .cache_directory = path.into();
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .cache_directory = Arc::new(path.into());
     }
 
     /// Updates the transcode directory used by maintenance tasks.
@@ -253,10 +280,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_transcode_directory(&self, path: impl Into<PathBuf>) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .transcode_directory = path.into();
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .transcode_directory = Arc::new(path.into());
     }
 
     /// Updates the trickplay storage directory used by maintenance tasks.
@@ -265,10 +295,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_trickplay_directory(&self, path: impl Into<PathBuf>) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .trickplay_directory = path.into();
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .trickplay_directory = Arc::new(path.into());
     }
 
     /// Updates the chapter-image storage directory used by maintenance tasks.
@@ -277,10 +310,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_chapter_images_directory(&self, path: impl Into<PathBuf>) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .chapter_images_directory = path.into();
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .chapter_images_directory = Arc::new(path.into());
     }
 
     /// Updates the `FFmpeg` binary used by media-generation tasks.
@@ -289,10 +325,17 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_ffmpeg_path(&self, path: impl Into<PathBuf>) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .ffmpeg_path = path.into();
+        self.set_shared_ffmpeg_path(Arc::new(path.into()));
+    }
+
+    pub fn set_shared_ffmpeg_path(&self, path: Arc<PathBuf>) {
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .ffmpeg_path = path;
     }
 
     /// Updates the trickplay settings used by generation.
@@ -301,10 +344,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_trickplay_options(&self, options: TrickplayOptions) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .trickplay_options = options;
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .trickplay_options = Arc::new(options);
     }
 
     /// Updates the log-file retention window used by maintenance tasks.
@@ -313,10 +359,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_log_file_retention_days(&self, days: i32) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .log_file_retention_days = days;
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .log_file_retention_days = days;
     }
 
     /// Updates the activity-log retention window used by maintenance tasks.
@@ -325,10 +374,13 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal path lock is poisoned.
     pub fn set_activity_log_retention_days(&self, days: i32) {
-        self.paths
-            .write()
-            .expect("scheduled task paths lock poisoned")
-            .activity_log_retention_days = days;
+        Arc::make_mut(
+            &mut self
+                .paths
+                .write()
+                .expect("scheduled task paths lock poisoned"),
+        )
+        .activity_log_retention_days = days;
     }
 
     fn activity_log_retention_days(&self) -> Option<i32> {
@@ -392,20 +444,19 @@ impl ScheduledTaskService {
             task.current_progress_percentage = None;
             task.last_run = Some(Utc::now());
             let task_id = task.id.clone();
-            let task_key = task.key.clone();
             let executor = self
                 .executors
                 .read()
                 .expect("scheduled task executor lock poisoned")
-                .get(&task_key.to_ascii_lowercase())
-                .cloned();
+                .get(&task.key.to_ascii_lowercase())
+                .map(Arc::clone);
             (task_id, executor)
         };
 
         if let Some(executor) = executor {
             let context = ScheduledTaskRunContext {
                 task_id,
-                tasks: self.clone(),
+                tasks: self.shared_handle(),
             };
             tokio::spawn(async move { executor(context).await });
         }
@@ -499,7 +550,9 @@ impl ScheduledTaskService {
             .change_listeners
             .read()
             .expect("scheduled task listener lock poisoned")
-            .clone();
+            .iter()
+            .map(Arc::clone)
+            .collect::<Vec<_>>();
         for listener in listeners {
             listener();
         }
@@ -539,7 +592,7 @@ impl ScheduledTaskService {
         {
             return;
         }
-        let service = self.clone();
+        let service = self.shared_handle();
         tokio::spawn(async move {
             let now = Utc::now();
             let mut tasks = service.tasks.write().await;
@@ -724,23 +777,22 @@ fn next_weekly_after(
 }
 
 fn refresh_library_handler(
-    scan: LibraryScanService,
+    scan: Arc<LibraryScanService>,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
     move |context| {
-        let scan = scan.clone();
+        let scan = Arc::clone(&scan);
         Box::pin(async move {
             context.report_progress(0.0).await;
-            let mut scan = scan;
-            let tasks = context.tasks.clone();
-            let task_id = context.task_id.clone();
-            scan.set_on_progress(Some(Arc::new(move |progress| {
-                let tasks = tasks.clone();
-                let task_id = task_id.clone();
+            let tasks = context.tasks.shared_handle();
+            let task_id = Arc::<str>::from(context.task_id.as_str());
+            let report_progress = move |progress| {
+                let tasks = tasks.shared_handle();
+                let task_id = Arc::clone(&task_id);
                 tokio::spawn(async move {
                     let _ = tasks.set_progress(&task_id, progress).await;
                 });
-            })));
-            if let Err(error) = scan.scan_all().await {
+            };
+            if let Err(error) = scan.scan_all_with_progress(&report_progress).await {
                 tracing::error!(%error, "library scan task failed");
                 context.fail().await;
                 return;
@@ -754,7 +806,7 @@ fn refresh_library_handler(
 fn clean_log_files_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync
 {
     move |context| {
-        let paths = Arc::new(context.paths());
+        let paths = context.paths();
         Box::pin(async move {
             let paths = paths.as_ref();
             let logs = SystemLogService::new(paths.log_directory.as_path());
@@ -821,8 +873,9 @@ fn plugin_updates_handler() -> impl Fn(ScheduledTaskRunContext) -> ScheduledTask
 fn clean_activity_log_handler(
     repository: ActivityLogRepository,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    let repository = Arc::new(repository);
     move |context| {
-        let repository = repository.clone();
+        let repository = Arc::clone(&repository);
         Box::pin(async move {
             let retention = context.tasks.activity_log_retention_days().unwrap_or(30);
             if let Err(error) = repository
@@ -842,8 +895,9 @@ fn clean_activity_log_handler(
 fn cleanup_user_data_handler(
     repository: UserDataRepository,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    let repository = Arc::new(repository);
     move |context| {
-        let repository = repository.clone();
+        let repository = Arc::clone(&repository);
         Box::pin(async move {
             let cutoff = Utc::now() - Duration::days(90);
             let deleted = repository.delete_detached_before(Uuid::nil(), cutoff).await;
@@ -864,8 +918,9 @@ fn cleanup_user_data_handler(
 fn refresh_people_handler(
     repository: PersonRepository,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    let repository = Arc::new(repository);
     move |context| {
-        let repository = repository.clone();
+        let repository = Arc::clone(&repository);
         Box::pin(async move {
             context.report_progress(10.0).await;
             match repository.query(&PersonQuery::default()).await {
@@ -887,8 +942,9 @@ fn refresh_people_handler(
 fn keyframe_extraction_handler(
     repository: KeyframeDataRepository,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    let repository = Arc::new(repository);
     move |context| {
-        let repository = repository.clone();
+        let repository = Arc::clone(&repository);
         Box::pin(async move {
             context.report_progress(25.0).await;
             match repository.export_valid().await {
@@ -912,18 +968,18 @@ fn keyframe_extraction_handler(
 }
 
 fn trickplay_images_handler(
-    service: TrickplayService,
+    service: Arc<TrickplayService>,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
     #[allow(clippy::cast_precision_loss)]
     move |context| {
-        let service = service.clone();
+        let service = Arc::clone(&service);
         Box::pin(async move {
             context.report_progress(10.0).await;
             let paths = context.paths();
             if let Err(error) = service
                 .generate_for_library(
-                    &paths.trickplay_options,
-                    &paths.ffmpeg_path,
+                    paths.trickplay_options.as_ref(),
+                    paths.ffmpeg_path.as_path(),
                     paths.cache_directory.join("trickplay"),
                 )
                 .await
@@ -939,10 +995,10 @@ fn trickplay_images_handler(
 }
 
 fn refresh_guide_handler(
-    service: GuideRefreshService,
+    service: Arc<GuideRefreshService>,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
     move |context| {
-        let service = service.clone();
+        let service = Arc::clone(&service);
         Box::pin(async move {
             context.report_progress(10.0).await;
             if let Err(error) = service.refresh().await {
@@ -957,10 +1013,10 @@ fn refresh_guide_handler(
 }
 
 fn optimize_database_handler(
-    database: DatabaseConnection,
+    database: jellyfin_data::SharedDatabase,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
     move |context| {
-        let database = database.clone();
+        let database = Arc::clone(&database);
         Box::pin(async move {
             context.report_progress(50.0).await;
             if let Err(error) = database.execute_unprepared("ANALYZE").await {
@@ -978,9 +1034,9 @@ fn delete_transcode_files_handler()
 -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
     |context| {
         Box::pin(async move {
-            let directory = context.paths().transcode_directory;
+            let paths = context.paths();
             context.report_progress(50.0).await;
-            delete_old_files(&directory, Utc::now() - Duration::days(1)).await;
+            delete_old_files(&paths.transcode_directory, Utc::now() - Duration::days(1)).await;
             context.report_progress(100.0).await;
             context.complete().await;
         })
@@ -990,14 +1046,19 @@ fn delete_transcode_files_handler()
 fn chapter_images_handler(
     service: ChapterImageService,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    let service = Arc::new(service);
     move |context| {
-        let service = service.clone();
+        let service = Arc::clone(&service);
         Box::pin(async move {
             context.report_progress(10.0).await;
-            let storage_directory = context.paths().chapter_images_directory;
-            let mut service = service;
-            service.set_storage_directory(storage_directory);
-            if let Err(error) = service.refresh_all().await {
+            let paths = context.paths();
+            if let Err(error) = service
+                .refresh_all_with_paths(
+                    paths.chapter_images_directory.as_path(),
+                    paths.ffmpeg_path.as_path(),
+                )
+                .await
+            {
                 tracing::error!(%error, "chapter image task failed");
                 context.fail().await;
                 return;

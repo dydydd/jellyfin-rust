@@ -546,10 +546,10 @@ async fn get_for(
                 &authenticated.user,
                 target_user_id,
                 &SearchProviderQuery {
-                    search_term: search_term.to_owned(),
-                    include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: query.exclude_item_types.clone(),
-                    media_types: query.media_types.clone(),
+                    search_term,
+                    include_item_types: &query.include_item_types,
+                    exclude_item_types: &query.exclude_item_types,
+                    media_types: &query.media_types,
                     parent_id: query.parent_id,
                     limit: requested_limit.map(|limit| limit.saturating_mul(3)),
                 },
@@ -560,7 +560,7 @@ async fn get_for(
                 .iter()
                 .map(|result| (result.item_id, result.score))
                 .collect::<HashMap<_, _>>();
-            let mut ids = query.ids.clone();
+            let mut ids = std::mem::take(&mut query.ids);
             for result in &search_results {
                 if !ids.contains(&result.item_id) {
                     ids.push(result.item_id);

@@ -7,11 +7,11 @@ use crate::{UserLibraryError, UserLibraryService};
 
 /// Search input passed to registered search providers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchProviderQuery {
-    pub search_term: String,
-    pub include_item_types: Vec<String>,
-    pub exclude_item_types: Vec<String>,
-    pub media_types: Vec<String>,
+pub struct SearchProviderQuery<'a> {
+    pub search_term: &'a str,
+    pub include_item_types: &'a [String],
+    pub exclude_item_types: &'a [String],
+    pub media_types: &'a [String],
     pub parent_id: Option<Uuid>,
     pub limit: Option<u64>,
 }
@@ -27,7 +27,7 @@ pub struct SearchResult {
 pub trait SearchProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn priority(&self) -> i32;
-    fn can_search(&self, query: &SearchProviderQuery) -> bool;
+    fn can_search(&self, query: &SearchProviderQuery<'_>) -> bool;
     fn is_external(&self) -> bool {
         false
     }
@@ -35,7 +35,7 @@ pub trait SearchProvider: Send + Sync {
         &'a self,
         authenticated_user: &'a user::Model,
         target_user_id: Uuid,
-        query: &'a SearchProviderQuery,
+        query: &'a SearchProviderQuery<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<SearchResult>, UserLibraryError>> + Send + 'a>>;
 }
 
@@ -56,8 +56,10 @@ impl SearchManager {
     }
 
     #[must_use]
-    pub fn with_default_database(user_library: UserLibraryService) -> Self {
-        Self::new(vec![Arc::new(DatabaseSearchProvider::new(user_library))])
+    pub fn with_default_database(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        Self::new(vec![Arc::new(DatabaseSearchProvider::new(
+            UserLibraryService::new(database),
+        ))])
     }
 
     #[must_use]
@@ -73,11 +75,11 @@ impl SearchManager {
     ///
     /// Provider failures are treated as empty results; persistence and user
     /// validation failures from the internal provider are propagated.
-    pub async fn search_results(
-        &self,
-        authenticated_user: &user::Model,
+    pub async fn search_results<'a>(
+        &'a self,
+        authenticated_user: &'a user::Model,
         target_user_id: Uuid,
-        query: &SearchProviderQuery,
+        query: &'a SearchProviderQuery<'a>,
     ) -> Result<Vec<SearchResult>, UserLibraryError> {
         let mut external_candidates = Vec::new();
         let mut internal_candidates = Vec::new();
@@ -148,7 +150,7 @@ impl SearchProvider for DatabaseSearchProvider {
         100
     }
 
-    fn can_search(&self, _query: &SearchProviderQuery) -> bool {
+    fn can_search(&self, _query: &SearchProviderQuery<'_>) -> bool {
         true
     }
 
@@ -156,7 +158,7 @@ impl SearchProvider for DatabaseSearchProvider {
         &'a self,
         authenticated_user: &'a user::Model,
         target_user_id: Uuid,
-        query: &'a SearchProviderQuery,
+        query: &'a SearchProviderQuery<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<SearchResult>, UserLibraryError>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -168,10 +170,10 @@ impl SearchProvider for DatabaseSearchProvider {
                     BaseItemQuery {
                         parent_id: query.parent_id,
                         recursive: true,
-                        search_term: Some(query.search_term.clone()),
-                        include_item_types: query.include_item_types.clone(),
-                        exclude_item_types: query.exclude_item_types.clone(),
-                        media_types: query.media_types.clone(),
+                        search_term: Some(query.search_term.to_owned()),
+                        include_item_types: query.include_item_types.to_vec(),
+                        exclude_item_types: query.exclude_item_types.to_vec(),
+                        media_types: query.media_types.to_vec(),
                         is_virtual_item: Some(false),
                         start_index: 0,
                         limit: query.limit,
@@ -206,7 +208,7 @@ mod tests {
             0
         }
 
-        fn can_search(&self, _query: &SearchProviderQuery) -> bool {
+        fn can_search(&self, _query: &SearchProviderQuery<'_>) -> bool {
             true
         }
 
@@ -214,7 +216,7 @@ mod tests {
             &'a self,
             _authenticated_user: &'a user::Model,
             _target_user_id: Uuid,
-            _query: &'a SearchProviderQuery,
+            _query: &'a SearchProviderQuery<'a>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<SearchResult>, UserLibraryError>> + Send + 'a>>
         {
             Box::pin(async move {
@@ -242,7 +244,7 @@ mod tests {
         // The unit test only exercises score aggregation, not database access.
         let manager = SearchManager::new(vec![Arc::new(FixedProvider)]);
         let query = SearchProviderQuery {
-            search_term: "matrix".to_owned(),
+            search_term: "matrix",
             limit: Some(10),
             ..SearchProviderQuery::default()
         };

@@ -61,7 +61,7 @@ pub struct ItemImageService {
 
 impl ItemImageService {
     #[must_use]
-    pub fn new(database: sea_orm::DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self::with_storage_directories(
             database,
             PathBuf::from("cache").join("images"),
@@ -71,7 +71,7 @@ impl ItemImageService {
 
     #[must_use]
     pub fn with_cache_directory(
-        database: sea_orm::DatabaseConnection,
+        database: impl Into<jellyfin_data::SharedDatabase>,
         cache_directory: impl Into<PathBuf>,
     ) -> Self {
         Self::with_storage_directories(database, cache_directory, PathBuf::from("metadata"))
@@ -79,7 +79,7 @@ impl ItemImageService {
 
     #[must_use]
     pub fn with_storage_directories(
-        database: sea_orm::DatabaseConnection,
+        database: impl Into<jellyfin_data::SharedDatabase>,
         cache_directory: impl Into<PathBuf>,
         internal_metadata_directory: impl Into<PathBuf>,
     ) -> Self {
@@ -426,7 +426,7 @@ impl ItemImageService {
         }
         let mut response = self
             .http
-            .get(url.clone())
+            .get(url)
             .send()
             .await
             .map_err(ItemImageError::RemoteDownload)?
@@ -462,7 +462,7 @@ impl ItemImageService {
         }
         let extension = jellyfin_model::MimeTypes::try_get_image_extension(content_type.as_deref())
             .or_else(|| {
-                Path::new(url.path())
+                Path::new(response.url().path())
                     .extension()
                     .and_then(|extension| extension.to_str())
                     .map(|extension| format!(".{extension}"))
@@ -620,13 +620,13 @@ async fn project_image(
             Err(_) => {}
         }
     }
-    let (size, width, height, blur_hash) = local_image_metadata(&image).await;
+    let (size, width, height) = local_image_metadata(&image).await;
     ImageInfo {
         image_type: model_image_type(image.image_type),
         image_index,
         image_tag: image_cache_tag(item_path.unwrap_or_default(), image.date_modified),
         path: image.path,
-        blur_hash,
+        blur_hash: image.blurhash,
         height,
         width,
         size,
@@ -639,24 +639,22 @@ fn local_metadata_needs_refresh(image: &BaseItemImage) -> bool {
         || image.blurhash.as_deref().is_none_or(str::is_empty)
 }
 
-async fn local_image_metadata(
-    image: &BaseItemImage,
-) -> (i64, Option<i32>, Option<i32>, Option<String>) {
+async fn local_image_metadata(image: &BaseItemImage) -> (i64, Option<i32>, Option<i32>) {
     if image
         .path
         .get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http"))
     {
-        return (0, None, None, None);
+        return (0, None, None);
     }
 
     let Ok(metadata) = tokio::fs::metadata(&image.path).await else {
-        return (0, None, None, None);
+        return (0, None, None);
     };
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
     let width = image.width.and_then(|value| i32::try_from(value).ok());
     let height = image.height.and_then(|value| i32::try_from(value).ok());
-    (size, width, height, image.blurhash.clone())
+    (size, width, height)
 }
 
 fn public_image_index(

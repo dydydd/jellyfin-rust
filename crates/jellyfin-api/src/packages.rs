@@ -32,7 +32,7 @@ pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-) -> Result<Json<Vec<PackageInfo>>, ApiError> {
+) -> Result<Json<Arc<[Arc<PackageInfo>]>>, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
     Ok(Json(state.packages.list()))
 }
@@ -43,7 +43,7 @@ pub(crate) async fn get(
     headers: HeaderMap,
     Path(name): Path<String>,
     Query(query): Query<PackageQuery>,
-) -> Result<Json<PackageInfo>, ApiError> {
+) -> Result<Json<Arc<PackageInfo>>, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
     Ok(Json(state.packages.get(&name, query.assembly_guid)?))
 }

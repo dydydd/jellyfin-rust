@@ -104,7 +104,7 @@ pub use virtual_folder_repository::{
     VirtualFolderWithPaths,
 };
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use jellyfin_migration::Migrator;
 use sea_orm::{
@@ -115,6 +115,8 @@ use sea_orm_migration::MigratorTrait;
 
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres:123456@127.0.0.1:5432/postgres";
 const MIGRATION_ADVISORY_LOCK_KEY: i64 = 0x4a45_4c4c_5946_494e;
+
+pub type SharedDatabase = Arc<DatabaseConnection>;
 
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {

@@ -386,7 +386,7 @@ pub(crate) async fn render_item_image(
         background_color: query.background_color,
         foreground_layer: query.foreground_layer,
     };
-    let processed = state.image_processor.process(&source, &request).await?;
+    let processed = state.image_processor.process(source, request).await?;
     build_response(headers, query.tag.as_deref(), processed).await
 }
 
@@ -414,7 +414,7 @@ pub(crate) async fn render_simple_image(
         supported_formats,
         ..ImageProcessingRequest::default()
     };
-    let processed = state.image_processor.process(&source, &request).await?;
+    let processed = state.image_processor.process(source, request).await?;
     build_response(headers, tag, processed).await
 }
 

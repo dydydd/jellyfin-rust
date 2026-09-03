@@ -47,7 +47,7 @@ pub(crate) async fn images(
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
 
-    let api_key = state.tmdb_api_key.read().await.clone();
+    let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let result = state
         .item_lookup
         .remote_images(
@@ -73,7 +73,7 @@ pub(crate) async fn providers(
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
-    let api_key = state.tmdb_api_key.read().await.clone();
+    let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let metadata_options = metadata_options_for(&state);
     Ok(Json(
         state
@@ -105,8 +105,7 @@ pub(crate) async fn download(
     let image_url = query.image_url.ok_or(ApiError::NotFound)?;
     ensure_item_exists(&state, item_id).await?;
 
-    let api_key = state.tmdb_api_key.read().await.clone();
-    if api_key.is_empty() {
+    if state.tmdb_api_key.read().await.is_empty() {
         return Err(BaseItemError::NotFound.into());
     }
     state

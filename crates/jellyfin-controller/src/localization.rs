@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::OnceLock,
 };
@@ -43,7 +44,7 @@ struct UiCulture {
 struct UiLocalizationData {
     options: Vec<LocalizationOption>,
     supported_cultures: Vec<String>,
-    bcp47_to_resource: Vec<(String, String)>,
+    bcp47_to_resource: Vec<(String, usize)>,
 }
 
 enum SeparatorResolution {
@@ -57,20 +58,20 @@ pub struct LocalizationService;
 
 impl LocalizationService {
     #[must_use]
-    pub fn countries(&self) -> Vec<CountryInfo> {
-        countries().to_vec()
+    pub fn countries(&self) -> &'static [CountryInfo] {
+        countries()
     }
 
     /// Returns every ISO 639-2 row, including cultures with duplicate display names.
     #[must_use]
-    pub fn cultures(&self) -> Vec<CultureDto> {
-        cultures().to_vec()
+    pub fn cultures(&self) -> &'static [CultureDto] {
+        cultures()
     }
 
     /// Returns cultures in the form used by Jellyfin's API and metadata editor.
     #[must_use]
-    pub fn distinct_sorted_cultures(&self) -> Vec<CultureDto> {
-        distinct_sorted_cultures().to_vec()
+    pub fn distinct_sorted_cultures(&self) -> &'static [CultureDto] {
+        distinct_sorted_cultures()
     }
 
     #[must_use]
@@ -82,32 +83,29 @@ impl LocalizationService {
     }
 
     #[must_use]
-    pub fn find_language_info(&self, language: &str) -> Option<CultureDto> {
+    pub fn find_language_info(&self, language: &str) -> Option<&'static CultureDto> {
         if language.is_empty() {
             return None;
         }
 
-        cultures()
-            .iter()
-            .find(|culture| {
-                culture.display_name.eq_ignore_ascii_case(language)
-                    || culture.name.eq_ignore_ascii_case(language)
-                    || culture
-                        .three_letter_iso_language_names
-                        .iter()
-                        .any(|name| name.eq_ignore_ascii_case(language))
-                    || culture
-                        .two_letter_iso_language_name
-                        .eq_ignore_ascii_case(language)
-            })
-            .cloned()
+        cultures().iter().find(|culture| {
+            culture.display_name.eq_ignore_ascii_case(language)
+                || culture.name.eq_ignore_ascii_case(language)
+                || culture
+                    .three_letter_iso_language_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(language))
+                || culture
+                    .two_letter_iso_language_name
+                    .eq_ignore_ascii_case(language)
+        })
     }
 
     #[must_use]
     pub fn language_display_name(&self, language: Option<&str>) -> Option<String> {
         let display_name = self
             .find_language_info(language?)
-            .map(|culture| culture.display_name)?;
+            .map(|culture| culture.display_name.as_str())?;
         Some(
             display_name
                 .split([';', ','])
@@ -167,14 +165,14 @@ impl LocalizationService {
 
     /// Returns every embedded server UI culture ordered by native display name.
     #[must_use]
-    pub fn localization_options(&self) -> Vec<LocalizationOption> {
-        ui_localization_data().options.clone()
+    pub fn localization_options(&self) -> &'static [LocalizationOption] {
+        &ui_localization_data().options
     }
 
     /// Returns embedded UI cultures that can be represented as BCP-47 codes.
     #[must_use]
-    pub fn supported_ui_cultures(&self) -> Vec<String> {
-        ui_localization_data().supported_cultures.clone()
+    pub fn supported_ui_cultures(&self) -> &'static [String] {
+        &ui_localization_data().supported_cultures
     }
 
     /// Looks up a UI phrase for a current culture. An absent culture selects
@@ -324,7 +322,7 @@ impl LocalizationService {
             .map(|system| system.country_code.as_str())
             .or_else(|| {
                 self.find_language_info(country_part)
-                    .map(|culture| culture.two_letter_iso_language_name)
+                    .map(|culture| culture.two_letter_iso_language_name.as_str())
                     .filter(|code| !code.is_empty())
                     .and_then(|code| {
                         rating_systems()
@@ -353,8 +351,13 @@ impl LocalizationManager for LocalizationService {
         let culture = LocalizationService::find_language_info(self, language)?;
         let three_letter_name = culture
             .three_letter_iso_language_name
-            .or_else(|| culture.three_letter_iso_language_names.first().cloned());
-        Some(LanguageInfo::new(culture.display_name, three_letter_name))
+            .as_ref()
+            .or_else(|| culture.three_letter_iso_language_names.first())
+            .cloned();
+        Some(LanguageInfo::new(
+            culture.display_name.clone(),
+            three_letter_name,
+        ))
     }
 }
 
@@ -475,27 +478,33 @@ fn ui_localization_data() -> &'static UiLocalizationData {
         );
 
         let mut options = cultures
-            .iter()
-            .map(|culture| LocalizationOption {
-                name: culture.name.clone(),
-                value: culture.value.clone(),
+            .into_iter()
+            .map(|culture| {
+                (
+                    LocalizationOption {
+                        name: culture.name,
+                        value: culture.value,
+                    },
+                    culture.supported,
+                )
             })
             .collect::<Vec<_>>();
-        options.sort_by_cached_key(|option| option.name.to_lowercase());
-        let supported_values = cultures
-            .iter()
-            .filter(|culture| culture.supported)
-            .map(|culture| culture.value.as_str())
-            .collect::<HashSet<_>>();
-        let supported_cultures = options
-            .iter()
-            .filter(|option| supported_values.contains(option.value.as_str()))
-            .map(|option| option.value.replace('_', "-"))
+        options.sort_by_cached_key(|(option, _)| option.name.to_lowercase());
+        let mut supported_cultures = Vec::new();
+        let options: Vec<LocalizationOption> = options
+            .into_iter()
+            .map(|(option, supported)| {
+                if supported {
+                    supported_cultures.push(option.value.replace('_', "-"));
+                }
+                option
+            })
             .collect();
-        let bcp47_to_resource = cultures
+        let bcp47_to_resource = options
             .iter()
-            .filter(|culture| culture.value.contains('_'))
-            .map(|culture| (culture.value.replace('_', "-"), culture.value.clone()))
+            .enumerate()
+            .filter(|(_, option)| option.value.contains('_'))
+            .map(|(index, option)| (option.value.replace('_', "-"), index))
             .collect();
         UiLocalizationData {
             options,
@@ -508,27 +517,28 @@ fn ui_localization_data() -> &'static UiLocalizationData {
 fn find_ui_string(culture: &str, phrase: &str) -> Option<&'static str> {
     let normalized = normalize_ui_culture(culture);
     ui_resources()
-        .get(&normalized)
+        .get(normalized.as_ref())
         .and_then(|dictionary| dictionary.get(&phrase.to_lowercase()))
         .map(String::as_str)
 }
 
-fn normalize_ui_culture(culture: &str) -> String {
-    if let Some((_, resource)) = ui_localization_data()
+fn normalize_ui_culture(culture: &str) -> Cow<'_, str> {
+    let data = ui_localization_data();
+    if let Some((_, resource_index)) = data
         .bcp47_to_resource
         .iter()
         .find(|(bcp47, _)| bcp47.eq_ignore_ascii_case(culture))
     {
-        return resource.clone();
+        return Cow::Borrowed(data.options[*resource_index].value.as_str());
     }
 
     if let Some(index) = culture.find(['-', '_']) {
         let language = culture[..index].to_lowercase();
         let region = culture[index + 1..].to_uppercase();
         let separator = char::from(culture.as_bytes()[index]);
-        format!("{language}{separator}{region}")
+        Cow::Owned(format!("{language}{separator}{region}"))
     } else {
-        culture.to_lowercase()
+        Cow::Owned(culture.to_lowercase())
     }
 }
 

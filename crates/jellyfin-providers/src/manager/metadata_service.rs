@@ -103,21 +103,21 @@ pub struct MetadataService;
 
 impl MetadataService {
     pub fn merge_base_item_data<C: MetadataServiceCapability + ?Sized>(
-        source_result: &MetadataResult,
+        mut source_result: MetadataResult,
         target_result: &mut MetadataResult,
         locked_fields: &[MetadataField],
         replace_data: bool,
         merge_metadata_settings: bool,
         capability: &C,
     ) {
-        let source = &source_result.item;
+        let source = &mut source_result.item;
         let target = &mut target_result.item;
         merge_scalar_fields(source, target, locked_fields, replace_data);
         merge_collection_fields(source, target, locked_fields, replace_data);
 
         if !locked_fields.contains(&MetadataField::Cast) {
             merge_people_results(
-                source_result.people.as_deref(),
+                source_result.people.take(),
                 &mut target_result.people,
                 replace_data,
                 capability,
@@ -131,7 +131,7 @@ impl MetadataService {
 
     /// Converts an OMDb response and merges it into an item's metadata.
     pub fn merge_omdb_item<C: MetadataServiceCapability + ?Sized>(
-        omdb: &OmdbItem,
+        omdb: OmdbItem,
         target: &mut MetadataResult,
         locked_fields: &[MetadataField],
         replace_data: bool,
@@ -142,7 +142,7 @@ impl MetadataService {
             people: None,
         };
         Self::merge_base_item_data(
-            &source,
+            source,
             target,
             locked_fields,
             replace_data,
@@ -152,29 +152,43 @@ impl MetadataService {
     }
 }
 
-fn metadata_item_from_omdb(item: &OmdbItem) -> MetadataItem {
+fn metadata_item_from_omdb(item: OmdbItem) -> MetadataItem {
+    let production_year = item.production_year();
+    let community_rating = item.imdb_score();
+    let critic_rating = item.metascore();
+    let OmdbItem {
+        title,
+        rated,
+        season,
+        episode,
+        genre,
+        plot,
+        imdb_id,
+        production,
+        ..
+    } = item;
     let mut provider_ids = ProviderIdMap::new();
-    if let Some(imdb_id) = item.imdb_id.as_deref().filter(|id| !id.is_empty()) {
-        provider_ids.insert("Imdb".to_owned(), imdb_id.to_owned());
+    if let Some(imdb_id) = imdb_id.filter(|id| !id.is_empty()) {
+        provider_ids.insert("Imdb".to_owned(), imdb_id);
     }
-    let title = item.title.clone();
     MetadataItem {
         core: EpisodeMetadata {
+            // ALLOW: Jellyfin exposes title and original title as independent owned fields.
             name: title.clone(),
-            overview: item.plot.clone(),
-            index_number: item.episode,
-            parent_index_number: item.season,
+            overview: plot,
+            index_number: episode,
+            parent_index_number: season,
             provider_ids,
             ..EpisodeMetadata::default()
         },
         original_title: title,
-        official_rating: item.rated.clone(),
+        official_rating: rated,
         tagline: None,
-        genres: split_omdb_list(item.genre.as_deref()),
-        studios: split_omdb_list(item.production.as_deref()),
-        production_year: item.production_year(),
-        community_rating: item.imdb_score(),
-        critic_rating: item.metascore(),
+        genres: split_omdb_list(genre.as_deref()),
+        studios: split_omdb_list(production.as_deref()),
+        production_year,
+        community_rating,
+        critic_rating,
         ..MetadataItem::default()
     }
 }
@@ -190,181 +204,177 @@ fn split_omdb_list(value: Option<&str>) -> Vec<String> {
 }
 
 fn merge_scalar_fields(
-    source: &MetadataItem,
+    source: &mut MetadataItem,
     target: &mut MetadataItem,
     locked_fields: &[MetadataField],
     replace_data: bool,
 ) {
     if !locked_fields.contains(&MetadataField::Name) {
-        merge_non_blank(
-            source.core.name.as_deref(),
-            &mut target.core.name,
-            replace_data,
-        );
+        merge_non_blank(&mut source.core.name, &mut target.core.name, replace_data);
     }
     merge_string(
-        source.original_title.as_ref(),
+        &mut source.original_title,
         &mut target.original_title,
         replace_data,
     );
     merge_string(
-        source.original_language.as_ref(),
+        &mut source.original_language,
         &mut target.original_language,
         replace_data,
     );
     merge_optional(
-        source.community_rating.as_ref(),
+        &mut source.community_rating,
         &mut target.community_rating,
         replace_data,
     );
-    merge_optional(source.end_date.as_ref(), &mut target.end_date, replace_data);
+    merge_optional(&mut source.end_date, &mut target.end_date, replace_data);
     merge_optional(
-        source.core.index_number.as_ref(),
+        &mut source.core.index_number,
         &mut target.core.index_number,
         replace_data,
     );
     if !locked_fields.contains(&MetadataField::OfficialRating) {
         merge_string(
-            source.official_rating.as_ref(),
+            &mut source.official_rating,
             &mut target.official_rating,
             replace_data,
         );
     }
     merge_string(
-        source.custom_rating.as_ref(),
+        &mut source.custom_rating,
         &mut target.custom_rating,
         replace_data,
     );
-    merge_string(source.tagline.as_ref(), &mut target.tagline, replace_data);
+    merge_string(&mut source.tagline, &mut target.tagline, replace_data);
     if !locked_fields.contains(&MetadataField::Overview) {
         merge_string(
-            source.core.overview.as_ref(),
+            &mut source.core.overview,
             &mut target.core.overview,
             replace_data,
         );
     }
     merge_optional(
-        source.core.parent_index_number.as_ref(),
+        &mut source.core.parent_index_number,
         &mut target.core.parent_index_number,
         replace_data,
     );
     merge_optional(
-        source.core.index_number_end.as_ref(),
+        &mut source.core.index_number_end,
         &mut target.core.index_number_end,
         replace_data,
     );
     merge_optional(
-        source.core.airs_before_season_number.as_ref(),
+        &mut source.core.airs_before_season_number,
         &mut target.core.airs_before_season_number,
         replace_data,
     );
     merge_optional(
-        source.core.airs_after_season_number.as_ref(),
+        &mut source.core.airs_after_season_number,
         &mut target.core.airs_after_season_number,
         replace_data,
     );
     merge_optional(
-        source.core.airs_before_episode_number.as_ref(),
+        &mut source.core.airs_before_episode_number,
         &mut target.core.airs_before_episode_number,
         replace_data,
     );
     merge_string(
-        source.core.series_name.as_ref(),
+        &mut source.core.series_name,
         &mut target.core.series_name,
         replace_data,
     );
     merge_string(
-        source.core.season_name.as_ref(),
+        &mut source.core.season_name,
         &mut target.core.season_name,
         replace_data,
     );
     merge_optional(
-        source.premiere_date.as_ref(),
+        &mut source.premiere_date,
         &mut target.premiere_date,
         replace_data,
     );
     merge_optional(
-        source.production_year.as_ref(),
+        &mut source.production_year,
         &mut target.production_year,
         replace_data,
     );
     if !locked_fields.contains(&MetadataField::Runtime) {
         merge_optional(
-            source.core.runtime_ticks.as_ref(),
+            &mut source.core.runtime_ticks,
             &mut target.core.runtime_ticks,
             replace_data,
         );
     }
     merge_optional(
-        source.critic_rating.as_ref(),
+        &mut source.critic_rating,
         &mut target.critic_rating,
         replace_data,
     );
     if source.video_3d_format.is_some() && (replace_data || target.video_3d_format.is_none()) {
-        target.video_3d_format = source.video_3d_format;
+        target.video_3d_format = source.video_3d_format.take();
     }
     merge_non_blank(
-        source.display_order.as_deref(),
+        &mut source.display_order,
         &mut target.display_order,
         replace_data,
     );
     merge_non_blank(
-        source.forced_sort_name.as_deref(),
+        &mut source.forced_sort_name,
         &mut target.forced_sort_name,
         replace_data,
     );
 }
 
 fn merge_collection_fields(
-    source: &MetadataItem,
+    source: &mut MetadataItem,
     target: &mut MetadataItem,
     locked_fields: &[MetadataField],
     replace_data: bool,
 ) {
     if !locked_fields.contains(&MetadataField::Genres) {
-        merge_string_array(&source.genres, &mut target.genres, replace_data);
+        merge_string_array(&mut source.genres, &mut target.genres, replace_data);
     }
     if !locked_fields.contains(&MetadataField::Studios) {
-        merge_string_array(&source.studios, &mut target.studios, replace_data);
+        merge_string_array(&mut source.studios, &mut target.studios, replace_data);
     }
     if !locked_fields.contains(&MetadataField::Tags) {
-        merge_string_array(&source.tags, &mut target.tags, replace_data);
+        merge_string_array(&mut source.tags, &mut target.tags, replace_data);
     }
     if !locked_fields.contains(&MetadataField::ProductionLocations) {
         merge_string_array(
-            &source.production_locations,
+            &mut source.production_locations,
             &mut target.production_locations,
             replace_data,
         );
     }
     merge_provider_ids(
-        &source.core.provider_ids,
+        &mut source.core.provider_ids,
         &mut target.core.provider_ids,
         replace_data,
     );
     merge_trailers(
-        &source.remote_trailers,
+        &mut source.remote_trailers,
         &mut target.remote_trailers,
         replace_data,
     );
     merge_string_array(
-        &source.album_artists,
+        &mut source.album_artists,
         &mut target.album_artists,
         replace_data,
     );
 }
 
 fn merge_metadata_settings_fields(
-    source: &MetadataItem,
+    source: &mut MetadataItem,
     target: &mut MetadataItem,
     replace_data: bool,
 ) {
     if replace_data || !target.is_locked {
         target.is_locked |= source.is_locked;
     }
-    for field in &source.locked_fields {
-        if !target.locked_fields.contains(field) {
-            target.locked_fields.push(*field);
+    for field in std::mem::take(&mut source.locked_fields) {
+        if !target.locked_fields.contains(&field) {
+            target.locked_fields.push(field);
         }
     }
     if source.date_created != 0 {
@@ -374,82 +384,84 @@ fn merge_metadata_settings_fields(
         target.date_modified = source.date_modified;
     }
     merge_string(
-        source.preferred_metadata_country_code.as_ref(),
+        &mut source.preferred_metadata_country_code,
         &mut target.preferred_metadata_country_code,
         replace_data,
     );
     merge_string(
-        source.preferred_metadata_language.as_ref(),
+        &mut source.preferred_metadata_language,
         &mut target.preferred_metadata_language,
         replace_data,
     );
 }
 
-fn merge_string(source: Option<&String>, target: &mut Option<String>, replace_data: bool) {
+fn merge_string(source: &mut Option<String>, target: &mut Option<String>, replace_data: bool) {
     if replace_data || target.as_deref().is_none_or(str::is_empty) {
-        target.clone_from(&source.cloned());
+        *target = source.take();
     }
 }
 
-fn merge_non_blank(source: Option<&str>, target: &mut Option<String>, replace_data: bool) {
+fn merge_non_blank(source: &mut Option<String>, target: &mut Option<String>, replace_data: bool) {
     if (replace_data || target.as_deref().is_none_or(str::is_empty))
-        && source.is_some_and(|value| !value.trim().is_empty())
+        && source
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
     {
-        *target = source.map(ToOwned::to_owned);
+        *target = source.take();
     }
 }
 
-fn merge_optional<T: Clone>(source: Option<&T>, target: &mut Option<T>, replace_data: bool) {
+fn merge_optional<T>(source: &mut Option<T>, target: &mut Option<T>, replace_data: bool) {
     if replace_data || target.is_none() {
-        target.clone_from(&source.cloned());
+        *target = source.take();
     }
 }
 
-fn merge_string_array(source: &[String], target: &mut Vec<String>, replace_data: bool) {
+fn merge_string_array(source: &mut Vec<String>, target: &mut Vec<String>, replace_data: bool) {
     if replace_data || target.is_empty() {
-        target.clone_from(&source.to_vec());
+        *target = std::mem::take(source);
         return;
     }
-    for value in source {
+    for value in source.drain(..) {
         if !target
             .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(value))
+            .any(|existing| existing.eq_ignore_ascii_case(&value))
         {
-            target.push(value.clone());
+            target.push(value);
         }
     }
 }
 
-fn merge_provider_ids(source: &ProviderIdMap, target: &mut ProviderIdMap, replace_data: bool) {
-    for (key, value) in source {
+fn merge_provider_ids(source: &mut ProviderIdMap, target: &mut ProviderIdMap, replace_data: bool) {
+    for (key, value) in std::mem::take(source) {
         if replace_data {
-            target.insert(key.clone(), value.clone());
+            target.insert(key, value);
         } else {
-            target.entry(key.clone()).or_insert_with(|| value.clone());
+            target.entry(key).or_insert(value);
         }
     }
 }
 
-fn merge_trailers(source: &[MediaUrl], target: &mut Vec<MediaUrl>, replace_data: bool) {
+fn merge_trailers(source: &mut Vec<MediaUrl>, target: &mut Vec<MediaUrl>, replace_data: bool) {
     if replace_data || target.is_empty() {
-        target.clone_from(&source.to_vec());
+        *target = std::mem::take(source);
         return;
     }
-    for trailer in source {
+    for trailer in source.drain(..) {
         if !target.iter().any(|existing| existing.url == trailer.url) {
-            target.push(trailer.clone());
+            target.push(trailer);
         }
     }
 }
 
 fn merge_people_results<C: MetadataServiceCapability + ?Sized>(
-    source: Option<&[PersonInfo]>,
+    source: Option<Vec<PersonInfo>>,
     target: &mut Option<Vec<PersonInfo>>,
     replace_data: bool,
     capability: &C,
 ) {
     if replace_data || target.as_ref().is_none_or(Vec::is_empty) {
-        *target = source.map(<[PersonInfo]>::to_vec);
+        *target = source;
         return;
     }
     let Some(source) = source.filter(|people| !people.is_empty()) else {
@@ -461,30 +473,53 @@ fn merge_people_results<C: MetadataServiceCapability + ?Sized>(
 }
 
 fn merge_people<C: MetadataServiceCapability + ?Sized>(
-    source: &[PersonInfo],
+    source: Vec<PersonInfo>,
     target: &mut [PersonInfo],
     capability: &C,
 ) {
-    for index in 0..target.len() {
-        let key = capability.person_key(&target[index].name);
-        let target_occurrence = target[..index]
-            .iter()
-            .filter(|candidate| capability.person_key(&candidate.name) == key)
-            .count();
-        let matching = source
-            .iter()
-            .filter(|person| capability.person_key(&person.name) == key)
-            .collect::<Vec<_>>();
-        let Some(source_person) = matching
-            .get(target_occurrence)
-            .copied()
-            .or_else(|| matching.first().copied())
-        else {
+    let source_keys = source
+        .iter()
+        .map(|person| capability.person_key(&person.name))
+        .collect::<Vec<_>>();
+    let selected_sources = (0..target.len())
+        .map(|index| {
+            let key = capability.person_key(&target[index].name);
+            let target_occurrence = target[..index]
+                .iter()
+                .filter(|candidate| capability.person_key(&candidate.name) == key)
+                .count();
+            source_keys
+                .iter()
+                .enumerate()
+                .filter_map(|(index, source_key)| (source_key == &key).then_some(index))
+                .nth(target_occurrence)
+                .or_else(|| source_keys.iter().position(|source_key| source_key == &key))
+        })
+        .collect::<Vec<_>>();
+    let mut remaining_uses = vec![0_usize; source.len()];
+    for source_index in selected_sources.iter().flatten() {
+        remaining_uses[*source_index] += 1;
+    }
+    let mut source = source.into_iter().map(Some).collect::<Vec<_>>();
+
+    for (target_person, source_index) in target.iter_mut().zip(selected_sources) {
+        let Some(source_index) = source_index else {
             continue;
         };
-        let target_person = &mut target[index];
+        remaining_uses[source_index] -= 1;
+        let mut source_person = if remaining_uses[source_index] == 0 {
+            source[source_index]
+                .take()
+                .expect("selected metadata person must remain available")
+        } else {
+            // ALLOW: one provider person fans out to multiple independently owned target rows.
+            source[source_index]
+                .as_ref()
+                .expect("selected metadata person must remain available")
+                .clone()
+        };
         merge_provider_ids(
-            &source_person.provider_ids,
+            &mut source_person.provider_ids,
             &mut target_person.provider_ids,
             false,
         );
@@ -493,7 +528,7 @@ fn merge_people<C: MetadataServiceCapability + ?Sized>(
             .as_deref()
             .is_none_or(|value| value.trim().is_empty())
         {
-            target_person.image_url.clone_from(&source_person.image_url);
+            target_person.image_url = source_person.image_url.take();
         }
         if target_person
             .role
@@ -504,7 +539,7 @@ fn merge_people<C: MetadataServiceCapability + ?Sized>(
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty())
         {
-            target_person.role.clone_from(&source_person.role);
+            target_person.role = source_person.role.take();
         }
         if target_person.sort_order.is_none() {
             target_person.sort_order = source_person.sort_order;

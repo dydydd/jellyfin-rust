@@ -4,7 +4,6 @@ use jellyfin_data::{
     entities::{base_item, item_value, user},
 };
 use md5::{Digest, Md5};
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -58,10 +57,11 @@ pub struct GenreService {
 
 impl GenreService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
+            users: UserService::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             item_values: ItemValueRepository::new(database),
         }
     }
@@ -90,27 +90,30 @@ impl GenreService {
         let Some(value) = value else {
             return Ok(virtual_genre(requested_name));
         };
+        let value_id = value.item_value_id;
+        let mut query = generic_genre_query(ItemValueQuery {
+            search_term: Some(value.value),
+            ..ItemValueQuery::default()
+        });
         let page = self
             .item_values
-            .query_values(
-                item_value::ItemValueType::Genre,
-                &generic_genre_query(ItemValueQuery {
-                    search_term: Some(value.value.clone()),
-                    ..ItemValueQuery::default()
-                }),
-            )
+            .query_values(item_value::ItemValueType::Genre, &query)
             .await?;
         let item_count = page
             .values
             .into_iter()
-            .find(|candidate| candidate.id == value.item_value_id)
+            .find(|candidate| candidate.id == value_id)
             .map_or(0, |candidate| candidate.item_count);
+        let value = query
+            .search_term
+            .take()
+            .expect("genre lookup always includes its normalized value");
         if item_count == 0 {
-            return Ok(virtual_genre(&value.value));
+            return Ok(virtual_genre(&value));
         }
         Ok(Genre {
-            id: value.item_value_id,
-            name: value.value,
+            id: value_id,
+            name: value,
             item_count,
             kind: GenreKind::Genre,
         })

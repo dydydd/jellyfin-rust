@@ -80,14 +80,15 @@ pub(crate) async fn filters2(
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
     let recursive = query.recursive.unwrap_or(true);
+    let is_music_filter = is_music_filter(&query.include_item_types);
     let item_query = ItemValueQuery {
         parent_id: scoped_parent_id(&query),
         recursive,
-        include_item_types: query.include_item_types.clone(),
+        include_item_types: query.include_item_types,
         user_id: Some(target_user_id),
         ..ItemValueQuery::default()
     };
-    let genres = if is_music_filter(&query.include_item_types) {
+    let genres = if is_music_filter {
         state
             .music_genres
             .list(&authenticated.user, target_user_id, item_query)
@@ -134,18 +135,10 @@ pub(crate) async fn filters_legacy(
     let item_query = BaseItemQuery {
         parent_id: Some(parent_id),
         recursive: true,
-        include_item_types: query.include_item_types.clone(),
-        media_types: query.media_types.clone(),
-        user_id: Some(target_user_id),
-        ..BaseItemQuery::default()
-    };
-    let value_query = ItemValueQuery {
-        parent_id: Some(parent_id),
-        recursive: true,
         include_item_types: query.include_item_types,
         media_types: query.media_types,
         user_id: Some(target_user_id),
-        ..ItemValueQuery::default()
+        ..BaseItemQuery::default()
     };
 
     let years = state
@@ -154,6 +147,14 @@ pub(crate) async fn filters_legacy(
         .await?
         .years;
     let official_ratings = state.base_items.official_ratings(&item_query).await?;
+    let value_query = ItemValueQuery {
+        parent_id: Some(parent_id),
+        recursive: true,
+        include_item_types: item_query.include_item_types,
+        media_types: item_query.media_types,
+        user_id: Some(target_user_id),
+        ..ItemValueQuery::default()
+    };
     let tags = state
         .item_values
         .query_values(item_value::ItemValueType::Tags, &value_query)

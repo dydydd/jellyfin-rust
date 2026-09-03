@@ -13,7 +13,7 @@ pub(crate) async fn cultures(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-) -> Result<Json<Vec<CultureDto>>, ApiError> {
+) -> Result<Json<&'static [CultureDto]>, ApiError> {
     authorization::require_first_time_setup_or_default(&state, &headers, &uri).await?;
     Ok(Json(state.localization.distinct_sorted_cultures()))
 }
@@ -22,7 +22,7 @@ pub(crate) async fn countries(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-) -> Result<Json<Vec<CountryInfo>>, ApiError> {
+) -> Result<Json<&'static [CountryInfo]>, ApiError> {
     authorization::require_first_time_setup_or_default(&state, &headers, &uri).await?;
     Ok(Json(state.localization.countries()))
 }
@@ -45,7 +45,7 @@ pub(crate) async fn options(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-) -> Result<Json<Vec<LocalizationOption>>, ApiError> {
+) -> Result<Json<&'static [LocalizationOption]>, ApiError> {
     authorization::require_first_time_setup_or_default(&state, &headers, &uri).await?;
     Ok(Json(state.localization.localization_options()))
 }

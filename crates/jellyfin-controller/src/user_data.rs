@@ -4,7 +4,6 @@ use jellyfin_data::{
     entities::{base_item, user_data},
 };
 use jellyfin_model::{UpdateUserItemDataDto, UserItemDataDto, UserPolicy};
-use sea_orm::DatabaseConnection;
 use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
@@ -51,10 +50,11 @@ pub struct UserDataService {
 
 impl UserDataService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
+            users: UserService::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             user_data: UserDataRepository::new(database),
         }
     }

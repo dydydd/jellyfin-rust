@@ -456,7 +456,8 @@ impl NetworkManager {
     }
 
     fn initialize_overrides(&mut self) {
-        for entry in self.config.published_server_uri_by_subnet.clone() {
+        let entries = std::mem::take(&mut self.config.published_server_uri_by_subnet);
+        for entry in &entries {
             let Some((identifier, replacement)) = entry.split_once('=') else {
                 continue;
             };
@@ -492,13 +493,14 @@ impl NetworkManager {
                 for data in self.try_parse_interface(identifier) {
                     self.published_server_urls.push(PublishedServerUriOverride {
                         data,
-                        uri: replacement.clone(),
+                        uri: replacement.to_owned(),
                         internal: true,
                         external: true,
                     });
                 }
             }
         }
+        self.config.published_server_uri_by_subnet = entries;
     }
 
     fn add_any_override(&mut self, uri: &str, internal: bool, external: bool) {

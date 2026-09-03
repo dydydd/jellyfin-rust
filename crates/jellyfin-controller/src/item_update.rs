@@ -12,7 +12,6 @@ use jellyfin_xbmc_metadata::{
     MovieNfo, MovieNfoLocation, MovieVideoType, movie_nfo_save_paths, parse_movie_nfo_file,
     save_movie_nfo,
 };
-use sea_orm::DatabaseConnection;
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -48,11 +47,14 @@ pub struct ItemUpdateService {
 
 impl ItemUpdateService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            repository: ItemUpdateRepository::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
-            server_configuration: ServerConfigurationRepository::new(database.clone()),
+            repository: ItemUpdateRepository::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            server_configuration: ServerConfigurationRepository::new(std::sync::Arc::clone(
+                &database,
+            )),
             virtual_folders: VirtualFolderRepository::new(database),
         }
     }
@@ -167,7 +169,8 @@ pub(crate) fn movie_nfo_from_item(item: &base_item::Model, mut existing: MovieNf
         .and_then(|data| data.get("OriginalTitle"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .or_else(|| existing.original_title.clone())
+        .or_else(|| existing.original_title.take())
+        // ALLOW: the NFO schema owns display and original-title fields independently.
         .or_else(|| item.name.clone());
     existing.original_title = original_title;
     if let Some(production_year) = item.production_year {

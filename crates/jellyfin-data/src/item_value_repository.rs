@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr,
-    EntityTrait, FromQueryResult, QueryFilter, QueryOrder, Statement, TransactionTrait,
-    Value as SeaValue, sea_query::OnConflict,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult,
+    QueryFilter, QueryOrder, Statement, TransactionTrait, Value as SeaValue, sea_query::OnConflict,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -73,13 +72,15 @@ pub struct ItemValuePage {
 /// associations.
 #[derive(Clone)]
 pub struct ItemValueRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl ItemValueRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Inserts a canonical item value, or returns the existing row whose
@@ -93,7 +94,7 @@ impl ItemValueRepository {
         value_type: item_value::ItemValueType,
         value: &str,
     ) -> Result<item_value::Model, ItemValueError> {
-        upsert_on(&self.database, value_type, value).await
+        upsert_on(self.database.as_ref(), value_type, value).await
     }
 
     /// Finds a value using exact, case-sensitive display text.
@@ -110,7 +111,7 @@ impl ItemValueRepository {
         Ok(item_value::Entity::find()
             .filter(item_value::Column::ValueType.eq(value_type))
             .filter(item_value::Column::Value.eq(value))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -129,7 +130,7 @@ impl ItemValueRepository {
         Ok(item_value::Entity::find()
             .filter(item_value::Column::ValueType.eq(value_type))
             .filter(item_value::Column::CleanValue.eq(clean_value))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -145,7 +146,7 @@ impl ItemValueRepository {
     ) -> Result<Option<item_value::Model>, ItemValueError> {
         Ok(item_value::Entity::find_by_id(id)
             .filter(item_value::Column::ValueType.eq(value_type))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -201,7 +202,7 @@ impl ItemValueRepository {
     ) -> Result<Vec<item_value::Model>, ItemValueError> {
         let ids = item_value_map::Entity::find()
             .filter(item_value_map::Column::ItemId.eq(item_id))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?
             .into_iter()
             .map(|mapping| mapping.item_value_id)
@@ -214,7 +215,7 @@ impl ItemValueRepository {
             .filter(item_value::Column::ValueType.eq(value_type))
             .order_by_asc(item_value::Column::CleanValue)
             .order_by_asc(item_value::Column::ItemValueId)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -279,7 +280,7 @@ impl ItemValueRepository {
         };
         let ids = item_value_map::Entity::find()
             .filter(item_value_map::Column::ItemValueId.eq(value.item_value_id))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?
             .into_iter()
             .map(|mapping| mapping.item_id)
@@ -291,7 +292,7 @@ impl ItemValueRepository {
             .filter(base_item::Column::Id.is_in(ids))
             .order_by_asc(base_item::Column::SortName)
             .order_by_asc(base_item::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -344,7 +345,7 @@ impl ItemValueRepository {
                 ),
                 values,
             ))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?,
         )
     }
@@ -357,7 +358,7 @@ impl ItemValueRepository {
     pub async fn clear_inherited_tags(&self) -> Result<(), ItemValueError> {
         item_value::Entity::delete_many()
             .filter(item_value::Column::ValueType.eq(item_value::ItemValueType::InheritedTags))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         Ok(())
     }

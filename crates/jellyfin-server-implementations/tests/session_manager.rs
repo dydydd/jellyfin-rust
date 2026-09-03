@@ -43,7 +43,7 @@ async fn new_session_fields_match_the_official_eight_state_contract() {
         let manager = SessionManager::new(RecordingStore::default());
         assert_eq!(
             manager
-                .authenticate_new_session_internal(&request, false)
+                .authenticate_new_session_internal(request, false)
                 .await,
             Err(SessionManagerError::Validation(expected))
         );
@@ -92,7 +92,7 @@ async fn validation_order_is_app_then_device_id_then_device_name_then_app_versio
         let manager = SessionManager::new(RecordingStore::default());
         assert_eq!(
             manager
-                .authenticate_new_session_internal(&request, false)
+                .authenticate_new_session_internal(request, false)
                 .await,
             Err(SessionManagerError::Validation(
                 SessionValidationError::MissingField(expected_field)
@@ -106,7 +106,7 @@ async fn valid_requests_are_forwarded_to_the_store_without_hardcoded_results() {
     let manager = SessionManager::new(RecordingStore::default());
     let request = AuthenticationRequest::new("app", "device-id", "device-name", "1.2.3");
     let result = manager
-        .authenticate_new_session_internal(&request, true)
+        .authenticate_new_session_internal(request, true)
         .await
         .unwrap();
     assert_eq!(result, "stored:device-id:true");
@@ -151,7 +151,7 @@ async fn store_errors_are_propagated_without_becoming_fake_successes() {
     assert_eq!(
         manager
             .authenticate_new_session_internal(
-                &AuthenticationRequest::new("app", "device", "name", "version"),
+                AuthenticationRequest::new("app", "device", "name", "version"),
                 false,
             )
             .await,

@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ActiveEnum, ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseConnection,
-    DatabaseTransaction, DbBackend, DbErr, EntityTrait, IntoActiveModel, QuerySelect, Statement,
-    TransactionTrait, sea_query::OnConflict,
+    ActiveEnum, ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseTransaction,
+    DbBackend, DbErr, EntityTrait, IntoActiveModel, QuerySelect, Statement, TransactionTrait,
+    sea_query::OnConflict,
 };
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -38,13 +38,15 @@ pub enum ItemUpdateStoreError {
 /// Atomically updates editable item metadata and its normalized query values.
 #[derive(Clone)]
 pub struct ItemUpdateRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl ItemUpdateRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Applies one partial metadata update under an item row lock.
@@ -68,7 +70,6 @@ impl ItemUpdateRepository {
             .await?
             .ok_or(ItemUpdateStoreError::NotFound)?;
         let mut item = item;
-        let data = patch_data(std::mem::take(&mut item.data), &patch)?;
 
         if let Some(tags) = patch.tags.as_deref() {
             replace_values(&transaction, item_id, item_value::ItemValueType::Tags, tags).await?;
@@ -82,6 +83,7 @@ impl ItemUpdateRepository {
             )
             .await?;
         }
+        let data = patch_data(std::mem::take(&mut item.data), patch)?;
 
         let mut active = item.into_active_model();
         active.data = Set(data);
@@ -93,7 +95,7 @@ impl ItemUpdateRepository {
 
 fn patch_data(
     data: Option<Value>,
-    patch: &ItemMetadataPatch,
+    patch: ItemMetadataPatch,
 ) -> Result<Option<Value>, ItemUpdateStoreError> {
     if patch.tags.is_none() && patch.genres.is_none() && patch.provider_ids.is_none() {
         return Ok(data);
@@ -103,28 +105,30 @@ fn patch_data(
         Some(Value::Object(object)) => object,
         Some(_) => return Err(ItemUpdateStoreError::InvalidMetadata),
     };
-    if let Some(tags) = patch.tags.as_ref() {
-        object.insert("Tags".to_owned(), strings_to_json(tags));
+    if let Some(tags) = patch.tags {
+        object.insert(
+            "Tags".to_owned(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
     }
-    if let Some(genres) = patch.genres.as_ref() {
-        object.insert("Genres".to_owned(), strings_to_json(genres));
+    if let Some(genres) = patch.genres {
+        object.insert(
+            "Genres".to_owned(),
+            Value::Array(genres.into_iter().map(Value::String).collect()),
+        );
     }
-    if let Some(provider_ids) = patch.provider_ids.as_ref() {
+    if let Some(provider_ids) = patch.provider_ids {
         object.insert(
             "ProviderIds".to_owned(),
             Value::Object(
                 provider_ids
-                    .iter()
-                    .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                    .into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
                     .collect(),
             ),
         );
     }
     Ok(Some(Value::Object(object)))
-}
-
-fn strings_to_json(values: &[String]) -> Value {
-    Value::Array(values.iter().cloned().map(Value::String).collect())
 }
 
 async fn replace_values(

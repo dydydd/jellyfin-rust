@@ -531,17 +531,17 @@ async fn log_playback_activity(
 async fn persist_session_playback_state<T>(
     state: &AppState,
     session: &AuthenticatedSession,
-    info: T,
+    mut info: T,
 ) -> Result<(), ApiError>
 where
     T: PlaybackSessionState,
 {
-    let now_playing_item = session_now_playing_item(state, info.item_id(), info.item()).await?;
+    let item_id = info.item_id();
+    let now_playing_item = session_now_playing_item(state, item_id, info.take_item()).await?;
     let media_source_id = info
-        .media_source_id()
+        .take_media_source_id()
         .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| (!info.item_id().is_nil()).then(|| info.item_id().simple().to_string()));
+        .or_else(|| (!item_id.is_nil()).then(|| item_id.simple().to_string()));
     let play_state = PlayerStateInfo {
         position_ticks: info.position_ticks(),
         can_seek: info.can_seek(),
@@ -554,10 +554,11 @@ where
         play_method: info.play_method(),
         repeat_mode: info.repeat_mode(),
         playback_order: info.playback_order(),
-        live_stream_id: info.live_stream_id().map(ToOwned::to_owned),
+        live_stream_id: info.take_live_stream_id(),
     };
     let play_state = serde_json::to_value(play_state).map_err(|_| ApiError::Internal)?;
-    let now_playing_queue = json!(info.now_playing_queue().unwrap_or_default());
+    let now_playing_queue = json!(info.take_now_playing_queue().unwrap_or_default());
+    let playlist_item_id = info.take_playlist_item_id();
     if state
         .devices
         .update_playback_state(
@@ -565,7 +566,7 @@ where
             play_state,
             now_playing_item,
             now_playing_queue,
-            info.playlist_item_id().map(ToOwned::to_owned),
+            playlist_item_id,
             info.is_paused(),
         )
         .await?
@@ -579,10 +580,10 @@ where
 async fn session_now_playing_item(
     state: &AppState,
     item_id: Uuid,
-    reported_item: Option<&Value>,
+    reported_item: Option<Value>,
 ) -> Result<Option<Value>, ApiError> {
     if let Some(item) = reported_item.filter(|value| value.is_object()) {
-        return Ok(Some(item.clone()));
+        return Ok(Some(item));
     }
     if item_id.is_nil() {
         return Ok(None);
@@ -598,8 +599,8 @@ async fn session_now_playing_item(
 
 trait PlaybackSessionState {
     fn item_id(&self) -> Uuid;
-    fn item(&self) -> Option<&Value>;
-    fn media_source_id(&self) -> Option<&str>;
+    fn take_item(&mut self) -> Option<Value>;
+    fn take_media_source_id(&mut self) -> Option<String>;
     fn position_ticks(&self) -> Option<i64>;
     fn audio_stream_index(&self) -> Option<i32>;
     fn subtitle_stream_index(&self) -> Option<i32>;
@@ -608,22 +609,22 @@ trait PlaybackSessionState {
     fn is_muted(&self) -> bool;
     fn volume_level(&self) -> Option<i32>;
     fn play_method(&self) -> Option<PlayMethod>;
-    fn live_stream_id(&self) -> Option<&str>;
+    fn take_live_stream_id(&mut self) -> Option<String>;
     fn repeat_mode(&self) -> RepeatMode;
     fn playback_order(&self) -> PlaybackOrder;
-    fn now_playing_queue(&self) -> Option<Vec<Value>>;
-    fn playlist_item_id(&self) -> Option<&str>;
+    fn take_now_playing_queue(&mut self) -> Option<Vec<Value>>;
+    fn take_playlist_item_id(&mut self) -> Option<String>;
 }
 
 impl PlaybackSessionState for PlaybackProgressInfo {
     fn item_id(&self) -> Uuid {
         self.item_id
     }
-    fn item(&self) -> Option<&Value> {
-        self.item.as_ref()
+    fn take_item(&mut self) -> Option<Value> {
+        self.item.take()
     }
-    fn media_source_id(&self) -> Option<&str> {
-        self.media_source_id.as_deref()
+    fn take_media_source_id(&mut self) -> Option<String> {
+        self.media_source_id.take()
     }
     fn position_ticks(&self) -> Option<i64> {
         self.position_ticks
@@ -649,8 +650,8 @@ impl PlaybackSessionState for PlaybackProgressInfo {
     fn play_method(&self) -> Option<PlayMethod> {
         self.play_method
     }
-    fn live_stream_id(&self) -> Option<&str> {
-        self.live_stream_id.as_deref()
+    fn take_live_stream_id(&mut self) -> Option<String> {
+        self.live_stream_id.take()
     }
     fn repeat_mode(&self) -> RepeatMode {
         self.repeat_mode
@@ -658,11 +659,11 @@ impl PlaybackSessionState for PlaybackProgressInfo {
     fn playback_order(&self) -> PlaybackOrder {
         self.playback_order
     }
-    fn now_playing_queue(&self) -> Option<Vec<Value>> {
-        self.now_playing_queue.clone()
+    fn take_now_playing_queue(&mut self) -> Option<Vec<Value>> {
+        self.now_playing_queue.take()
     }
-    fn playlist_item_id(&self) -> Option<&str> {
-        self.playlist_item_id.as_deref()
+    fn take_playlist_item_id(&mut self) -> Option<String> {
+        self.playlist_item_id.take()
     }
 }
 
@@ -670,11 +671,11 @@ impl PlaybackSessionState for PlaybackStartInfo {
     fn item_id(&self) -> Uuid {
         self.item_id
     }
-    fn item(&self) -> Option<&Value> {
-        self.item.as_ref()
+    fn take_item(&mut self) -> Option<Value> {
+        self.item.take()
     }
-    fn media_source_id(&self) -> Option<&str> {
-        self.media_source_id.as_deref()
+    fn take_media_source_id(&mut self) -> Option<String> {
+        self.media_source_id.take()
     }
     fn position_ticks(&self) -> Option<i64> {
         self.position_ticks
@@ -700,8 +701,8 @@ impl PlaybackSessionState for PlaybackStartInfo {
     fn play_method(&self) -> Option<PlayMethod> {
         self.play_method
     }
-    fn live_stream_id(&self) -> Option<&str> {
-        self.live_stream_id.as_deref()
+    fn take_live_stream_id(&mut self) -> Option<String> {
+        self.live_stream_id.take()
     }
     fn repeat_mode(&self) -> RepeatMode {
         self.repeat_mode
@@ -709,11 +710,11 @@ impl PlaybackSessionState for PlaybackStartInfo {
     fn playback_order(&self) -> PlaybackOrder {
         self.playback_order
     }
-    fn now_playing_queue(&self) -> Option<Vec<Value>> {
-        self.now_playing_queue.clone()
+    fn take_now_playing_queue(&mut self) -> Option<Vec<Value>> {
+        self.now_playing_queue.take()
     }
-    fn playlist_item_id(&self) -> Option<&str> {
-        self.playlist_item_id.as_deref()
+    fn take_playlist_item_id(&mut self) -> Option<String> {
+        self.playlist_item_id.take()
     }
 }
 

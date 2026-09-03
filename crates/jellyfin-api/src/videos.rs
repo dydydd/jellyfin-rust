@@ -80,7 +80,7 @@ async fn stream_file(
     if !query.static_stream.unwrap_or(true) {
         return Err(ApiError::UnsupportedMediaType);
     }
-    crate::audio::serve_path(&headers, &path, request).await
+    crate::audio::serve_path(headers, &path, request).await
 }
 
 pub(crate) async fn delete_alternate_sources(

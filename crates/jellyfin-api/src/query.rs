@@ -71,23 +71,16 @@ pub(crate) fn item_value_order(sort_by: &[String]) -> Result<ItemValueOrder, Api
 /// when fewer sort directions than fields are specified. With no requested
 /// directions, all fields sort ascending.
 pub(crate) fn get_order_by<T>(
-    sort_by: &[T],
+    sort_by: impl IntoIterator<Item = T>,
     requested_sort_order: &[SortOrder],
-) -> Vec<(T, SortOrder)>
-where
-    T: Clone,
-{
-    if sort_by.is_empty() {
-        return Vec::new();
-    }
-
+) -> Vec<(T, SortOrder)> {
     let default_order = requested_sort_order.first().copied().unwrap_or_default();
     sort_by
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(index, sort)| {
             (
-                sort.clone(),
+                sort,
                 requested_sort_order
                     .get(index)
                     .copied()
@@ -369,7 +362,7 @@ mod tests {
     #[test]
     fn get_order_by_matches_official_empty_case() {
         assert_eq!(
-            get_order_by::<TestType>(&[], &[]),
+            get_order_by::<TestType>([], &[]),
             Vec::<(TestType, SortOrder)>::new()
         );
     }
@@ -377,7 +370,7 @@ mod tests {
     #[test]
     fn get_order_by_defaults_every_field_to_ascending() {
         assert_eq!(
-            get_order_by(&[TestType::How, TestType::Much], &[]),
+            get_order_by([TestType::How, TestType::Much], &[]),
             [
                 (TestType::How, SortOrder::Ascending),
                 (TestType::Much, SortOrder::Ascending),
@@ -388,7 +381,7 @@ mod tests {
     #[test]
     fn get_order_by_reuses_first_requested_order_for_remaining_fields() {
         assert_eq!(
-            get_order_by(&[TestType::How, TestType::Much], &[SortOrder::Descending],),
+            get_order_by([TestType::How, TestType::Much], &[SortOrder::Descending],),
             [
                 (TestType::How, SortOrder::Descending),
                 (TestType::Much, SortOrder::Descending),

@@ -121,7 +121,7 @@ pub enum ItemTypeRegistrationError {
 /// registered plugin types.
 #[derive(Debug, Clone)]
 pub struct ItemTypeRegistry {
-    types: Arc<RwLock<HashMap<String, KnownItemType>>>,
+    types: Arc<RwLock<HashMap<Arc<str>, KnownItemType>>>,
 }
 
 impl Default for ItemTypeRegistry {
@@ -159,9 +159,13 @@ impl ItemTypeRegistry {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let canonical_name = canonical_name.into();
-        let names = std::iter::once(canonical_name.clone())
-            .chain(persisted_aliases.into_iter().map(Into::into))
+        let canonical_name = Arc::<str>::from(canonical_name.into());
+        let names = std::iter::once(Arc::clone(&canonical_name))
+            .chain(
+                persisted_aliases
+                    .into_iter()
+                    .map(|name| Arc::<str>::from(name.into())),
+            )
             .collect::<Vec<_>>();
         if names.iter().any(|name| !valid_type_name(name)) {
             return Err(ItemTypeRegistrationError::InvalidName);
@@ -174,20 +178,22 @@ impl ItemTypeRegistry {
         let mut unique_names = names;
         unique_names.sort_unstable();
         unique_names.dedup();
-        if let Some(duplicate) = unique_names
+        if let Some(duplicate_index) = unique_names
             .iter()
-            .find(|name| types.contains_key(name.as_str()))
+            .position(|name| types.contains_key(name.as_ref()))
         {
             return Err(ItemTypeRegistrationError::DuplicatePersistedName(
-                duplicate.clone(),
+                unique_names.swap_remove(duplicate_index).to_string(),
             ));
         }
 
-        let item_type = KnownItemType {
-            name: Arc::from(canonical_name),
-        };
         for name in unique_names {
-            types.insert(name, item_type.clone());
+            types.insert(
+                name,
+                KnownItemType {
+                    name: Arc::clone(&canonical_name),
+                },
+            );
         }
         Ok(())
     }
@@ -198,7 +204,9 @@ impl ItemTypeRegistry {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(persisted_name)
-            .cloned()
+            .map(|item_type| KnownItemType {
+                name: Arc::clone(&item_type.name),
+            })
     }
 
     /// Hydrates a raw persistence model only when its serialization type is

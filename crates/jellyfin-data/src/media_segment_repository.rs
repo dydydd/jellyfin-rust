@@ -1,6 +1,6 @@
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -45,13 +45,15 @@ pub enum MediaSegmentStoreError {
 /// PostgreSQL-backed persistence for Jellyfin media segments.
 #[derive(Clone)]
 pub struct MediaSegmentRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl MediaSegmentRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Inserts one media segment.
@@ -72,7 +74,7 @@ impl MediaSegmentRepository {
             end_ticks: Set(segment.end_ticks),
             segment_provider_id: Set(segment.segment_provider_id),
         }
-        .insert(&self.database)
+        .insert(self.database.as_ref())
         .await?;
         Ok(model.into())
     }
@@ -137,7 +139,7 @@ impl MediaSegmentRepository {
         Ok(query
             .order_by_asc(media_segment::Column::StartTicks)
             .order_by_asc(media_segment::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?
             .into_iter()
             .map(Into::into)
@@ -152,7 +154,7 @@ impl MediaSegmentRepository {
     pub async fn delete_for_item(&self, item_id: Uuid) -> Result<u64, MediaSegmentStoreError> {
         Ok(media_segment::Entity::delete_many()
             .filter(media_segment::Column::ItemId.eq(item_id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }
@@ -165,7 +167,7 @@ impl MediaSegmentRepository {
     pub async fn has_for_item(&self, item_id: Uuid) -> Result<bool, MediaSegmentStoreError> {
         Ok(media_segment::Entity::find()
             .filter(media_segment::Column::ItemId.eq(item_id))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .is_some())
     }

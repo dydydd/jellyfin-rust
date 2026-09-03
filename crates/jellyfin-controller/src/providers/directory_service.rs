@@ -95,7 +95,7 @@ impl FileSystem for LocalFileSystem {
 pub struct DirectoryService<F> {
     file_system: F,
     entry_cache: RwLock<HashMap<PathBuf, Arc<[FileSystemMetadata]>>>,
-    file_cache: RwLock<HashMap<PathBuf, FileSystemMetadata>>,
+    file_cache: RwLock<HashMap<PathBuf, Arc<FileSystemMetadata>>>,
     file_path_cache: RwLock<HashMap<PathBuf, Arc<[PathBuf]>>>,
 }
 
@@ -132,7 +132,7 @@ impl<F: FileSystem> DirectoryService<F> {
             .read()
             .map_err(cache_error)?
             .get(path)
-            .cloned()
+            .map(Arc::clone)
         {
             return Ok(entries);
         }
@@ -144,10 +144,11 @@ impl<F: FileSystem> DirectoryService<F> {
         };
         let entries = Arc::<[FileSystemMetadata]>::from(entries);
         let mut cache = self.entry_cache.write().map_err(cache_error)?;
-        Ok(cache
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::clone(&entries))
-            .clone())
+        Ok(Arc::<[FileSystemMetadata]>::clone(
+            cache
+                .entry(path.to_path_buf())
+                .or_insert_with(|| Arc::clone(&entries)),
+        ))
     }
 
     /// Returns cached direct child directories.
@@ -183,7 +184,7 @@ impl<F: FileSystem> DirectoryService<F> {
     /// # Errors
     ///
     /// Returns an underlying file-system or cache-lock error.
-    pub fn get_file(&self, path: impl AsRef<Path>) -> io::Result<Option<FileSystemMetadata>> {
+    pub fn get_file(&self, path: impl AsRef<Path>) -> io::Result<Option<Arc<FileSystemMetadata>>> {
         Ok(self
             .get_file_system_entry(path)?
             .filter(|entry| !entry.is_directory))
@@ -194,7 +195,10 @@ impl<F: FileSystem> DirectoryService<F> {
     /// # Errors
     ///
     /// Returns an underlying file-system or cache-lock error.
-    pub fn get_directory(&self, path: impl AsRef<Path>) -> io::Result<Option<FileSystemMetadata>> {
+    pub fn get_directory(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> io::Result<Option<Arc<FileSystemMetadata>>> {
         Ok(self
             .get_file_system_entry(path)?
             .filter(|entry| entry.is_directory))
@@ -208,14 +212,14 @@ impl<F: FileSystem> DirectoryService<F> {
     pub fn get_file_system_entry(
         &self,
         path: impl AsRef<Path>,
-    ) -> io::Result<Option<FileSystemMetadata>> {
+    ) -> io::Result<Option<Arc<FileSystemMetadata>>> {
         let path = path.as_ref();
         if let Some(entry) = self
             .file_cache
             .read()
             .map_err(cache_error)?
             .get(path)
-            .cloned()
+            .map(Arc::clone)
         {
             return Ok(Some(entry));
         }
@@ -225,10 +229,11 @@ impl<F: FileSystem> DirectoryService<F> {
             return Ok(None);
         }
 
+        let entry = Arc::new(entry);
         let mut cache = self.file_cache.write().map_err(cache_error)?;
-        Ok(Some(
-            cache.entry(path.to_path_buf()).or_insert(entry).clone(),
-        ))
+        Ok(Some(Arc::clone(
+            cache.entry(path.to_path_buf()).or_insert(entry),
+        )))
     }
 
     /// Returns sorted direct child file paths from the instance cache.
@@ -262,7 +267,7 @@ impl<F: FileSystem> DirectoryService<F> {
             .read()
             .map_err(cache_error)?
             .get(path)
-            .cloned()
+            .map(Arc::clone)
         {
             return Ok(paths);
         }
@@ -275,10 +280,11 @@ impl<F: FileSystem> DirectoryService<F> {
         paths.sort_unstable();
         let paths = Arc::<[PathBuf]>::from(paths);
         let mut cache = self.file_path_cache.write().map_err(cache_error)?;
-        Ok(cache
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::clone(&paths))
-            .clone())
+        Ok(Arc::<[PathBuf]>::clone(
+            cache
+                .entry(path.to_path_buf())
+                .or_insert_with(|| Arc::clone(&paths)),
+        ))
     }
 
     /// Returns whether `path` has at least one accessible direct child.

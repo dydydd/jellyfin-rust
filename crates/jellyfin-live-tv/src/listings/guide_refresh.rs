@@ -4,8 +4,8 @@ use chrono::{Duration, Utc};
 use thiserror::Error;
 
 use super::{
-    LineupsResponse, ListingsConfigurationError, ListingsConfigurationStore, ScheduleRequest,
-    SchedulesDirectClient, SchedulesDirectClientError,
+    LineupsResponse, ListingsConfigurationError, ListingsConfigurationStore, SchedulesDirectClient,
+    SchedulesDirectClientError,
 };
 
 /// Result of one Schedules Direct guide refresh.
@@ -55,9 +55,10 @@ impl GuideRefreshService {
     /// Schedules Direct error when any API call fails.
     pub async fn refresh(&self) -> Result<GuideRefreshSummary, GuideRefreshError> {
         let configuration = self.store.load()?;
+        let guide_days = configuration.guide_days.unwrap_or(7).clamp(1, 14);
         let provider = configuration
             .listing_providers
-            .iter()
+            .into_iter()
             .find(|provider| {
                 provider
                     .provider_type
@@ -92,7 +93,6 @@ impl GuideRefreshService {
             .ok_or(GuideRefreshError::MissingToken)?;
         let lineup = self.client.channel_lineup(&token, lineup_id).await?;
 
-        let guide_days = configuration.guide_days.unwrap_or(7).clamp(1, 14);
         let dates = (0..guide_days)
             .map(|day| {
                 (Utc::now().date_naive() + Duration::days(i64::from(day)))
@@ -108,16 +108,7 @@ impl GuideRefreshService {
         let channel_count = station_ids.len();
         let schedules = self
             .client
-            .schedules(
-                &token,
-                &station_ids
-                    .into_iter()
-                    .map(|station_id| ScheduleRequest {
-                        station_id: Some(station_id),
-                        date: dates.clone(),
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            .schedules_for_stations(&token, station_ids.iter().map(String::as_str), &dates)
             .await?;
         let program_count = schedules
             .iter()
@@ -125,9 +116,9 @@ impl GuideRefreshService {
             .sum::<usize>();
 
         let program_ids = schedules
-            .iter()
-            .flat_map(|day| day.programs.iter())
-            .filter_map(|program| program.program_id.clone())
+            .into_iter()
+            .flat_map(|day| day.programs)
+            .filter_map(|program| program.program_id)
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -136,8 +127,10 @@ impl GuideRefreshService {
         }
 
         Ok(GuideRefreshSummary {
-            provider_id: provider.id.clone(),
-            lineup_id: lineup_id.to_owned(),
+            provider_id: provider.id,
+            lineup_id: provider
+                .listings_id
+                .expect("validated lineup id remains present"),
             channels: channel_count,
             programs: program_count,
             refreshed_at: Utc::now(),

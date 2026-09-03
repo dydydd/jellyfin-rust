@@ -348,13 +348,15 @@ pub enum BaseItemError {
 /// PostgreSQL-backed item metadata and hierarchy persistence.
 #[derive(Clone)]
 pub struct BaseItemRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl BaseItemRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Returns the single persisted user-library root, creating it when the
@@ -508,7 +510,7 @@ impl BaseItemRepository {
     /// Returns a database error when the lookup fails.
     pub async fn get(&self, id: Uuid) -> Result<Option<base_item::Model>, BaseItemError> {
         Ok(base_item::Entity::find_by_id(id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -526,7 +528,7 @@ impl BaseItemRepository {
         }
         Ok(base_item::Entity::find()
             .filter(base_item::Column::Id.is_in(ids.iter().copied()))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -548,7 +550,7 @@ impl BaseItemRepository {
             .filter(base_item::Column::Name.eq(name))
             .order_by_asc(base_item::Column::IsVirtualItem)
             .order_by_asc(base_item::Column::Id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -590,7 +592,7 @@ impl BaseItemRepository {
             [source_item_id.into(), version_item_id.into()],
         );
         Ok(base_item::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -620,7 +622,7 @@ impl BaseItemRepository {
             .filter(base_item::Column::Path.is_in(paths.iter().cloned()))
             .order_by_asc(base_item::Column::SortName)
             .order_by_asc(base_item::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -751,7 +753,7 @@ impl BaseItemRepository {
     pub async fn exists_by_path(&self, path: &str) -> Result<bool, BaseItemError> {
         Ok(base_item::Entity::find()
             .filter(base_item::Column::Path.eq(path))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .is_some())
     }
@@ -767,7 +769,7 @@ impl BaseItemRepository {
             .filter(base_item::Column::Name.eq(year.to_string()))
             .order_by_asc(base_item::Column::SortName)
             .order_by_asc(base_item::Column::Id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -787,7 +789,7 @@ impl BaseItemRepository {
             .filter(base_item::Column::ItemType.ne("PLACEHOLDER"))
             .limit(1)
             .into_tuple::<Uuid>()
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .is_some())
     }
@@ -1147,7 +1149,7 @@ impl BaseItemRepository {
             select = select.filter(Expr::cust(condition));
         }
         let total_record_count = if total_count_enabled(query) {
-            Some(select.clone().count(&self.database).await?)
+            Some(select.clone().count(self.database.as_ref()).await?)
         } else {
             None
         };
@@ -1176,7 +1178,7 @@ impl BaseItemRepository {
         if let Some(limit) = query.limit {
             select = select.limit(limit);
         }
-        let items = select.all(&self.database).await?;
+        let items = select.all(self.database.as_ref()).await?;
         Ok(BaseItemPage {
             total_record_count: page_total_record_count(total_record_count, items.len()),
             items,
@@ -1246,7 +1248,7 @@ impl BaseItemRepository {
         );
         base_item::Model::find_by_statement(statement)
             .into_model::<BaseItemCounts>()
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| {
                 BaseItemError::Database(DbErr::RecordNotFound(
@@ -1623,7 +1625,7 @@ impl BaseItemRepository {
             page_sql,
             page_values,
         ))
-        .all(&self.database)
+        .all(self.database.as_ref())
         .await?;
         Ok(BaseItemPage {
             total_record_count: total.map_or_else(
@@ -1965,7 +1967,7 @@ impl BaseItemRepository {
             .filter(base_item::Column::ParentId.eq(id))
             .order_by_asc(base_item::Column::SortName)
             .order_by_asc(base_item::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -1978,9 +1980,9 @@ impl BaseItemRepository {
         let closure = ancestor_id::Entity::find()
             .filter(ancestor_id::Column::ItemId.eq(id))
             .order_by_asc(ancestor_id::Column::Depth)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
-        hierarchy_entries(closure, false, &self.database).await
+        hierarchy_entries(closure, false, self.database.as_ref()).await
     }
 
     /// Loads all descendants in stable depth and identifier order.
@@ -1996,9 +1998,9 @@ impl BaseItemRepository {
             .filter(ancestor_id::Column::ParentItemId.eq(id))
             .order_by_asc(ancestor_id::Column::Depth)
             .order_by_asc(ancestor_id::Column::ItemId)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
-        hierarchy_entries(closure, true, &self.database).await
+        hierarchy_entries(closure, true, self.database.as_ref()).await
     }
 
     /// Loads `BoxSet` items containing a specific child via manual linked children.
@@ -2071,7 +2073,7 @@ impl BaseItemRepository {
             sql,
             values,
         ))
-        .all(&self.database)
+        .all(self.database.as_ref())
         .await?;
         Ok(BaseItemPage {
             items,
@@ -2138,7 +2140,7 @@ impl BaseItemRepository {
             page_sql,
             page_values,
         ))
-        .all(&self.database)
+        .all(self.database.as_ref())
         .await?;
         Ok(ScoredBaseItemPage {
             items: items

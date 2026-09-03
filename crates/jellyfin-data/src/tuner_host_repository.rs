@@ -1,6 +1,5 @@
 use sea_orm::{
-    DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryOrder, Statement,
-    TransactionTrait,
+    DbBackend, DbErr, EntityTrait, FromQueryResult, QueryOrder, Statement, TransactionTrait,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -40,13 +39,15 @@ pub enum TunerHostStoreError {
 /// PostgreSQL-backed tuner-host configuration repository.
 #[derive(Clone)]
 pub struct TunerHostRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl TunerHostRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Inserts a new host or atomically updates an existing requested ID.
@@ -143,7 +144,7 @@ impl TunerHostRepository {
     pub async fn list(&self) -> Result<Vec<tuner_host::Model>, TunerHostStoreError> {
         Ok(tuner_host::Entity::find()
             .order_by_asc(tuner_host::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -157,7 +158,7 @@ impl TunerHostRepository {
             return Ok(false);
         };
         Ok(tuner_host::Entity::delete_by_id(id)
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected
             == 1)

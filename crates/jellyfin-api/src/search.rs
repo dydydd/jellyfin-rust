@@ -72,6 +72,7 @@ pub(crate) async fn hints(
     headers: HeaderMap,
     Query(query): Query<SearchHintsQuery>,
 ) -> Result<Json<SearchHintResult>, ApiError> {
+    let mut query = query;
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let search_term = query
         .search_term
@@ -83,11 +84,39 @@ pub(crate) async fn hints(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
-    let exclude_item_types = search_exclude_item_types(&query.exclude_item_types);
     let (source_start_index, source_limit) = source_page_bounds(&query);
+    let include_media = query.include_media.unwrap_or(true);
+    let include_people = query.include_people.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Person"])
+        && !excludes_hint_type(&query.exclude_item_types, &["Person"]);
+    let include_genres = query.include_genres.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Genre"])
+        && !excludes_hint_type(&query.exclude_item_types, &["Genre"]);
+    let include_music_genres = query.include_genres.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Genre", "MusicGenre"])
+        && !excludes_hint_type(&query.exclude_item_types, &["MusicGenre"]);
+    let include_studios = query.include_studios.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["Studio"])
+        && !excludes_hint_type(&query.exclude_item_types, &["Studio"]);
+    let include_artists = query.include_artists.unwrap_or(true)
+        && includes_hint_type(&query.include_item_types, &["MusicArtist"])
+        && !excludes_hint_type(&query.exclude_item_types, &["MusicArtist"]);
+    let mut remaining_media_type_consumers = [
+        include_media,
+        include_people,
+        include_genres,
+        include_music_genres,
+        include_studios,
+        include_artists,
+    ]
+    .into_iter()
+    .filter(|include| *include)
+    .count();
+    let exclude_item_types =
+        search_exclude_item_types(std::mem::take(&mut query.exclude_item_types));
     let mut result = SearchHintResult::default();
 
-    if query.include_media.unwrap_or(true) {
+    if include_media {
         let page = state
             .user_library
             .search_items(
@@ -97,9 +126,12 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    include_item_types: query.include_item_types.clone(),
-                    exclude_item_types: exclude_item_types.clone(),
-                    media_types: query.media_types.clone(),
+                    include_item_types: std::mem::take(&mut query.include_item_types),
+                    exclude_item_types,
+                    media_types: media_types_for_query(
+                        &mut query.media_types,
+                        &mut remaining_media_type_consumers,
+                    ),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
                     is_news: query.is_news,
@@ -117,10 +149,7 @@ pub(crate) async fn hints(
         result.search_hints.extend(media.search_hints);
     }
 
-    if query.include_people.unwrap_or(true)
-        && includes_hint_type(&query.include_item_types, &["Person"])
-        && !excludes_hint_type(&query.exclude_item_types, &["Person"])
-    {
+    if include_people {
         let page = state
             .persons
             .list(
@@ -130,7 +159,10 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    media_types: query.media_types.clone(),
+                    media_types: media_types_for_query(
+                        &mut query.media_types,
+                        &mut remaining_media_type_consumers,
+                    ),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
                     is_news: query.is_news,
@@ -151,10 +183,7 @@ pub(crate) async fn hints(
         );
     }
 
-    if query.include_genres.unwrap_or(true)
-        && includes_hint_type(&query.include_item_types, &["Genre"])
-        && !excludes_hint_type(&query.exclude_item_types, &["Genre"])
-    {
+    if include_genres {
         let page = state
             .genres
             .list(
@@ -164,7 +193,10 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    media_types: query.media_types.clone(),
+                    media_types: media_types_for_query(
+                        &mut query.media_types,
+                        &mut remaining_media_type_consumers,
+                    ),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
                     is_news: query.is_news,
@@ -185,10 +217,7 @@ pub(crate) async fn hints(
         );
     }
 
-    if query.include_genres.unwrap_or(true)
-        && includes_hint_type(&query.include_item_types, &["Genre", "MusicGenre"])
-        && !excludes_hint_type(&query.exclude_item_types, &["MusicGenre"])
-    {
+    if include_music_genres {
         let page = state
             .music_genres
             .list(
@@ -198,7 +227,10 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    media_types: query.media_types.clone(),
+                    media_types: media_types_for_query(
+                        &mut query.media_types,
+                        &mut remaining_media_type_consumers,
+                    ),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
                     is_news: query.is_news,
@@ -219,10 +251,7 @@ pub(crate) async fn hints(
         );
     }
 
-    if query.include_studios.unwrap_or(true)
-        && includes_hint_type(&query.include_item_types, &["Studio"])
-        && !excludes_hint_type(&query.exclude_item_types, &["Studio"])
-    {
+    if include_studios {
         let page = state
             .studios
             .list(
@@ -232,7 +261,10 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    media_types: query.media_types.clone(),
+                    media_types: media_types_for_query(
+                        &mut query.media_types,
+                        &mut remaining_media_type_consumers,
+                    ),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
                     is_news: query.is_news,
@@ -253,10 +285,7 @@ pub(crate) async fn hints(
         );
     }
 
-    if query.include_artists.unwrap_or(true)
-        && includes_hint_type(&query.include_item_types, &["MusicArtist"])
-        && !excludes_hint_type(&query.exclude_item_types, &["MusicArtist"])
-    {
+    if include_artists {
         let page = state
             .artists
             .list(
@@ -267,7 +296,10 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    media_types: query.media_types,
+                    media_types: media_types_for_query(
+                        &mut query.media_types,
+                        &mut remaining_media_type_consumers,
+                    ),
                     is_movie: query.is_movie,
                     is_series: query.is_series,
                     is_news: query.is_news,
@@ -316,8 +348,19 @@ fn paginate_search_hints(result: &mut SearchHintResult, start_index: u64, limit:
         .collect();
 }
 
-fn search_exclude_item_types(requested: &[String]) -> Vec<String> {
-    let mut exclude_item_types = requested.to_vec();
+fn media_types_for_query(
+    media_types: &mut Vec<String>,
+    remaining_consumers: &mut usize,
+) -> Vec<String> {
+    *remaining_consumers -= 1;
+    if *remaining_consumers == 0 {
+        std::mem::take(media_types)
+    } else {
+        media_types.clone()
+    }
+}
+
+fn search_exclude_item_types(mut exclude_item_types: Vec<String>) -> Vec<String> {
     for item_type in DEFAULT_EXCLUDE_ITEM_TYPES {
         if !exclude_item_types
             .iter()

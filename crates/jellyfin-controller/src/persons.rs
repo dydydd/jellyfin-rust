@@ -3,7 +3,6 @@ use jellyfin_data::{
     PersonRepository,
     entities::{base_item, person, user},
 };
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -46,10 +45,11 @@ pub struct PersonService {
 
 impl PersonService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            users: UserService::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
+            users: UserService::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             people: PersonRepository::new(database),
         }
     }

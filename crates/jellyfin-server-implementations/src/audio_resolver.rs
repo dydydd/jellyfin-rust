@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use jellyfin_model::CollectionType;
 use jellyfin_naming::{AudioBookInfo, AudioBookListResolver, NamingOptions, StackFileInfo};
 
@@ -72,13 +74,15 @@ pub struct MultipleAudioResolverResult {
 /// Applies Jellyfin's server-level audiobook directory policy on top of naming.
 #[derive(Debug, Clone)]
 pub struct AudioResolver {
-    naming_options: NamingOptions,
+    naming_options: Arc<NamingOptions>,
 }
 
 impl AudioResolver {
     #[must_use]
-    pub fn new(naming_options: NamingOptions) -> Self {
-        Self { naming_options }
+    pub fn new(naming_options: impl Into<Arc<NamingOptions>>) -> Self {
+        Self {
+            naming_options: naming_options.into(),
+        }
     }
 
     /// Resolves a directory as one navigable audiobook.
@@ -133,7 +137,7 @@ impl AudioResolver {
             .map(|entry| StackFileInfo::new(&entry.full_name, false))
             .collect::<Vec<_>>();
         let resolved =
-            AudioBookListResolver::new(self.naming_options.clone()).resolve(&naming_files);
+            AudioBookListResolver::new(Arc::clone(&self.naming_options)).resolve(&naming_files);
         let is_in_mixed_folder = resolved.len() > 1 || parent.is_top_parent();
 
         let mut extra_files = directories;

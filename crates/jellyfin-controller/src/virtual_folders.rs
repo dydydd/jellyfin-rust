@@ -4,7 +4,6 @@ use jellyfin_data::{
     NewMediaPath, NewVirtualFolder, VirtualFolderError, VirtualFolderRepository,
     VirtualFolderWithPaths,
 };
-use sea_orm::DatabaseConnection;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 use uuid::Uuid;
@@ -44,7 +43,7 @@ pub struct VirtualFolderService {
 
 impl VirtualFolderService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self {
             repository: VirtualFolderRepository::new(database),
         }
@@ -236,12 +235,12 @@ fn validate_path(path: &str) -> Result<(), VirtualFolderServiceError> {
 }
 
 fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
-    let path_infos = model
-        .paths
-        .iter()
-        .map(|path| path.path_info.clone())
-        .collect::<Vec<_>>();
-    let locations = model.paths.iter().map(|path| path.path.clone()).collect();
+    let mut path_infos = Vec::with_capacity(model.paths.len());
+    let mut locations = Vec::with_capacity(model.paths.len());
+    for path in model.paths {
+        path_infos.push(path.path_info);
+        locations.push(path.path);
+    }
     let mut options = model.folder.library_options;
     if let Some(object) = options.as_object_mut() {
         object.insert("PathInfos".to_owned(), Value::Array(path_infos));

@@ -1,8 +1,5 @@
 use chrono::Utc;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    Set,
-};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, Set};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -31,13 +28,15 @@ pub struct NewSessionCommand {
 
 #[derive(Clone)]
 pub struct SessionCommandRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl SessionCommandRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Appends a session command to the `PostgreSQL` outbox.
@@ -59,7 +58,7 @@ impl SessionCommandRepository {
             payload: Set(command.payload),
             date_created: Set(Utc::now()),
         }
-        .insert(&self.database)
+        .insert(self.database.as_ref())
         .await?)
     }
 
@@ -76,7 +75,7 @@ impl SessionCommandRepository {
             .filter(session_command::Column::TargetSessionId.eq(target_session_id))
             .order_by_asc(session_command::Column::DateCreated)
             .order_by_asc(session_command::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -91,7 +90,7 @@ impl SessionCommandRepository {
         }
         Ok(session_command::Entity::delete_many()
             .filter(session_command::Column::Id.is_in(ids.iter().copied()))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected)
     }

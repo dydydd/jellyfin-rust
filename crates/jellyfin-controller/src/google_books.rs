@@ -114,13 +114,16 @@ fn proxy_from_environment() -> Option<reqwest::Proxy> {
 /// Fetches book metadata from Google Books and merges it into library items.
 pub struct GoogleBooksMetadataProvider {
     client: GoogleBooksClient,
-    items: BaseItemRepository,
-    updates: ItemUpdateRepository,
+    items: std::sync::Arc<BaseItemRepository>,
+    updates: std::sync::Arc<ItemUpdateRepository>,
 }
 
 impl GoogleBooksMetadataProvider {
     #[must_use]
-    pub fn new(items: BaseItemRepository, updates: ItemUpdateRepository) -> Self {
+    pub fn new(
+        items: std::sync::Arc<BaseItemRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
+    ) -> Self {
         Self {
             client: GoogleBooksClient::new(),
             items,
@@ -143,7 +146,7 @@ impl GoogleBooksMetadataProvider {
         let Some(volume) = self.fetch_volume(&item).await? else {
             return Ok(false);
         };
-        self.apply(item.id, &volume).await?;
+        self.apply(item.id, volume).await?;
         Ok(true)
     }
 
@@ -166,7 +169,7 @@ impl GoogleBooksMetadataProvider {
                 .await?
                 .into_iter()
                 .next()
-                .and_then(|result| result.provider_ids.get("GoogleBooks").cloned())
+                .and_then(|mut result| result.provider_ids.remove("GoogleBooks"))
             {
                 return self.client.volume(&volume).await.map(Some);
             }
@@ -180,7 +183,7 @@ impl GoogleBooksMetadataProvider {
             .await?
             .into_iter()
             .next()
-            .and_then(|result| result.provider_ids.get("GoogleBooks").cloned())
+            .and_then(|mut result| result.provider_ids.remove("GoogleBooks"))
         {
             return self.client.volume(&id).await.map(Some);
         }
@@ -190,24 +193,23 @@ impl GoogleBooksMetadataProvider {
     async fn apply(
         &self,
         item_id: Uuid,
-        volume: &GoogleBookVolume,
+        volume: GoogleBookVolume,
     ) -> Result<(), GoogleBooksProviderError> {
-        let info = &volume.volume_info;
+        let mut info = volume.volume_info;
         let mut provider_ids =
-            std::collections::BTreeMap::from([("GoogleBooks".to_owned(), volume.id.clone())]);
-        if let Some(isbn) = isbn_identifier(info) {
+            std::collections::BTreeMap::from([("GoogleBooks".to_owned(), volume.id)]);
+        if let Some(isbn) = isbn_identifier(&info) {
             provider_ids.insert("ISBN".to_owned(), isbn);
         }
-        let categories = info
-            .categories
-            .iter()
+        let categories = std::mem::take(&mut info.categories)
+            .into_iter()
             .filter(|value| !value.trim().is_empty())
-            .cloned()
             .collect::<Vec<_>>();
         self.updates
             .update(
                 item_id,
                 ItemMetadataPatch {
+                    // ALLOW: tags and genres are independent owned database fields.
                     tags: Some(categories.clone()),
                     genres: Some(categories),
                     provider_ids: Some(provider_ids),
@@ -220,17 +222,17 @@ impl GoogleBooksMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(name) = full_title(info) {
+        if let Some(name) = full_title(&info) {
+            // ALLOW: name and sort name are independent owned database fields.
             item.sort_name = Some(name.clone());
             item.name = Some(name);
         }
         item.overview = info
             .description
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned);
+            .take()
+            .filter(|value| !value.trim().is_empty());
         item.production_year = parse_year(info.published_date.as_deref());
-        item.data = Some(book_extra_data(item.data.as_ref(), info));
+        item.data = Some(book_extra_data(item.data, info));
         self.items.update(item).await?;
         Ok(())
     }
@@ -297,25 +299,30 @@ fn isbn_identifier(info: &GoogleBookVolumeInfo) -> Option<String> {
     isbn("isbn_13").or_else(|| isbn("isbn_10"))
 }
 
-fn book_extra_data(existing: Option<&Value>, info: &GoogleBookVolumeInfo) -> Value {
+fn book_extra_data(existing: Option<Value>, info: GoogleBookVolumeInfo) -> Value {
     let mut object = existing
-        .and_then(Value::as_object)
-        .cloned()
+        .and_then(|existing| match existing {
+            Value::Object(object) => Some(object),
+            _ => None,
+        })
         .unwrap_or_default();
-    if let Some(title) = info.title.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("OriginalTitle".to_owned(), json!(title));
+    if let Some(title) = info.title.filter(|value| !value.is_empty()) {
+        object.insert("OriginalTitle".to_owned(), Value::String(title));
     }
     if !info.authors.is_empty() {
-        object.insert("Authors".to_owned(), json!(info.authors));
+        object.insert(
+            "Authors".to_owned(),
+            Value::Array(info.authors.into_iter().map(Value::String).collect()),
+        );
     }
-    if let Some(publisher) = info.publisher.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("Publisher".to_owned(), json!(publisher));
+    if let Some(publisher) = info.publisher.filter(|value| !value.is_empty()) {
+        object.insert("Publisher".to_owned(), Value::String(publisher));
     }
     if let Some(page_count) = info.page_count {
         object.insert("PageCount".to_owned(), json!(page_count));
     }
-    if let Some(language) = info.language.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("Language".to_owned(), json!(language));
+    if let Some(language) = info.language.filter(|value| !value.is_empty()) {
+        object.insert("Language".to_owned(), Value::String(language));
     }
     Value::Object(object)
 }

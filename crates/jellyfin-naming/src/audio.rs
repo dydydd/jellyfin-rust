@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 
@@ -18,13 +18,15 @@ pub fn is_audio_file(path: &str, options: &NamingOptions) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct AlbumParser {
-    options: NamingOptions,
+    options: Arc<NamingOptions>,
 }
 
 impl AlbumParser {
     #[must_use]
-    pub fn new(options: NamingOptions) -> Self {
-        Self { options }
+    pub fn new(options: impl Into<Arc<NamingOptions>>) -> Self {
+        Self {
+            options: options.into(),
+        }
     }
 
     #[must_use]

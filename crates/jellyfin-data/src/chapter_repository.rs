@@ -1,6 +1,6 @@
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -43,13 +43,15 @@ pub enum ChapterStoreError {
 
 #[derive(Clone)]
 pub struct ChapterRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl ChapterRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Replaces all chapters for one item in index order.
@@ -112,7 +114,7 @@ impl ChapterRepository {
         Ok(chapter::Entity::find()
             .filter(chapter::Column::ItemId.eq(item_id))
             .order_by_asc(chapter::Column::IndexNumber)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?
             .into_iter()
             .map(Into::into)
@@ -136,7 +138,7 @@ impl ChapterRepository {
             image_date_modified: Set(Some(image_date_modified)),
             ..Default::default()
         }
-        .update(&self.database)
+        .update(self.database.as_ref())
         .await?;
         Ok(())
     }

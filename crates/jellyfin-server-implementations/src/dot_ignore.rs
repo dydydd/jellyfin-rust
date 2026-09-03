@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
     time::SystemTime,
 };
 
@@ -38,8 +38,8 @@ struct ParsedIgnoreCacheEntry {
 /// Resolves hierarchical .ignore files with thread-safe lookup and rule caches.
 #[derive(Debug)]
 pub struct DotIgnoreIgnoreRule {
-    directory_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
-    rules_cache: Mutex<HashMap<PathBuf, ParsedIgnoreCacheEntry>>,
+    directory_cache: Mutex<HashMap<PathBuf, Option<Arc<PathBuf>>>>,
+    rules_cache: Mutex<HashMap<PathBuf, Arc<ParsedIgnoreCacheEntry>>>,
     directory_cache_capacity: usize,
     rules_cache_capacity: usize,
 }
@@ -145,14 +145,18 @@ impl DotIgnoreIgnoreRule {
                 })
                 .flatten();
             if let Some(cached) = parent_cached {
-                self.cache_directories(&checked_directories, cached.as_deref());
-                return Ok(cached.map(|path| path.join(IGNORE_FILE_NAME)));
+                let ignore_file = cached.as_ref().map(|path| path.join(IGNORE_FILE_NAME));
+                self.cache_directories(checked_directories, cached);
+                return Ok(ignore_file);
             }
 
             let ignore_file = current_directory.join(IGNORE_FILE_NAME);
             match fs::metadata(&ignore_file) {
                 Ok(metadata) if metadata.is_file() => {
-                    self.cache_directories(&checked_directories, Some(current_directory));
+                    self.cache_directories(
+                        checked_directories,
+                        Some(Arc::new(current_directory.to_path_buf())),
+                    );
                     return Ok(Some(ignore_file));
                 }
                 Ok(_) => {}
@@ -168,23 +172,26 @@ impl DotIgnoreIgnoreRule {
             }
         }
 
-        self.cache_directories(&checked_directories, None);
+        self.cache_directories(checked_directories, None);
         Ok(None)
     }
 
-    fn cache_directories(&self, directories: &[PathBuf], ignore_directory: Option<&Path>) {
+    fn cache_directories(&self, directories: Vec<PathBuf>, ignore_directory: Option<Arc<PathBuf>>) {
         let mut cache = lock_unpoisoned(&self.directory_cache);
         for directory in directories {
             insert_bounded(
                 &mut cache,
                 self.directory_cache_capacity,
-                directory.clone(),
-                ignore_directory.map(Path::to_path_buf),
+                directory,
+                ignore_directory.as_ref().map(Arc::clone),
             );
         }
     }
 
-    fn get_parsed_rules(&self, ignore_file: &Path) -> io::Result<Option<ParsedIgnoreCacheEntry>> {
+    fn get_parsed_rules(
+        &self,
+        ignore_file: &Path,
+    ) -> io::Result<Option<Arc<ParsedIgnoreCacheEntry>>> {
         let metadata = match fs::metadata(ignore_file) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => {
@@ -204,7 +211,7 @@ impl DotIgnoreIgnoreRule {
             && cached.modified == modified
             && cached.length == length
         {
-            return Ok(Some(cached.clone()));
+            return Ok(Some(Arc::clone(cached)));
         }
 
         let content = fs::read_to_string(ignore_file)?;
@@ -232,11 +239,12 @@ impl DotIgnoreIgnoreRule {
             }
         };
 
+        let parsed = Arc::new(parsed);
         insert_bounded(
             &mut lock_unpoisoned(&self.rules_cache),
             self.rules_cache_capacity,
             ignore_file.to_path_buf(),
-            parsed.clone(),
+            Arc::clone(&parsed),
         );
         Ok(Some(parsed))
     }

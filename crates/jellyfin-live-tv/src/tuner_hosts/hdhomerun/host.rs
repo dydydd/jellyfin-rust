@@ -143,18 +143,23 @@ impl HdHomerunHttpClient for ReqwestHdHomerunHttpClient {
         max_response_bytes: usize,
     ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HdHomerunHostError>> + Send + 'a>> {
         Box::pin(async move {
-            let mut response = self.client.get(url.clone()).send().await.map_err(|error| {
-                if error.is_timeout() {
-                    HdHomerunHostError::RequestTimedOut {
-                        url: url.to_string(),
+            let mut response = self
+                .client
+                .get(url.as_str())
+                .send()
+                .await
+                .map_err(|error| {
+                    if error.is_timeout() {
+                        HdHomerunHostError::RequestTimedOut {
+                            url: url.to_string(),
+                        }
+                    } else {
+                        HdHomerunHostError::HttpTransport {
+                            url: url.to_string(),
+                            message: error.to_string(),
+                        }
                     }
-                } else {
-                    HdHomerunHostError::HttpTransport {
-                        url: url.to_string(),
-                        message: error.to_string(),
-                    }
-                }
-            })?;
+                })?;
             let status = response.status().as_u16();
             if let Some(length) = response.content_length() {
                 let actual = usize::try_from(length).unwrap_or(usize::MAX);

@@ -1,4 +1,4 @@
-use sea_orm::{DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
+use sea_orm::{DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -72,13 +72,15 @@ pub enum ServerConfigurationStoreError {
 /// PostgreSQL-backed storage for the singleton server configuration.
 #[derive(Clone)]
 pub struct ServerConfigurationRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl ServerConfigurationRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Loads the singleton row seeded by the server-configuration migration.
@@ -89,7 +91,7 @@ impl ServerConfigurationRepository {
     /// seeded row was removed, or a database error when `PostgreSQL` fails.
     pub async fn load(&self) -> Result<server_configuration::Model, ServerConfigurationStoreError> {
         server_configuration::Entity::find_by_id(SERVER_CONFIGURATION_ID)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }
@@ -138,7 +140,7 @@ impl ServerConfigurationRepository {
             ],
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }
@@ -178,7 +180,7 @@ impl ServerConfigurationRepository {
             .to_owned(),
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }
@@ -247,7 +249,7 @@ impl ServerConfigurationRepository {
             ],
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }
@@ -289,7 +291,7 @@ impl ServerConfigurationRepository {
             [allow_client_log_upload.into()],
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }
@@ -342,7 +344,7 @@ impl ServerConfigurationRepository {
             [id.as_str().into()],
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)?;
         Ok(id)
@@ -383,7 +385,7 @@ impl ServerConfigurationRepository {
             [enable_remote_access.into()],
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }
@@ -427,7 +429,7 @@ impl ServerConfigurationRepository {
             [plugin_repositories.into()],
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }
@@ -556,7 +558,7 @@ impl ServerConfigurationRepository {
             ],
         );
         server_configuration::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(ServerConfigurationStoreError::MissingSingleton)
     }

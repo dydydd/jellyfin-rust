@@ -127,7 +127,8 @@ impl SyncPlayManager {
         group_name: String,
     ) -> (GroupInfoDto, Vec<SyncPlayGroupUpdate>) {
         let mut state = self.state.write().await;
-        let mut updates = remove_session_with_updates(&mut state, &session).unwrap_or_default();
+        let mut updates =
+            remove_session_with_updates(&mut state, &session.session_id).unwrap_or_default();
 
         let id = Uuid::new_v4();
         let participant = SyncPlayParticipant {
@@ -186,7 +187,9 @@ impl SyncPlayManager {
             .get(&session.session_id)
             .is_some_and(|id| *id != group_id)
         {
-            updates.extend(remove_session_with_updates(&mut state, &session).unwrap_or_default());
+            updates.extend(
+                remove_session_with_updates(&mut state, &session.session_id).unwrap_or_default(),
+            );
         }
 
         let mut participant = SyncPlayParticipant {
@@ -248,7 +251,7 @@ impl SyncPlayManager {
         session: &SyncPlaySession,
     ) -> Option<SyncPlayDeparture> {
         let mut state = self.state.write().await;
-        remove_session_with_departure(&mut state, session)
+        remove_session_with_departure(&mut state, &session.session_id)
     }
 
     pub async fn websocket_connected(&self, session_id: &str) {
@@ -285,14 +288,7 @@ impl SyncPlayManager {
             return None;
         }
         state.websocket_connections.remove(session_id);
-        let group_id = *state.session_groups.get(session_id)?;
-        let participant = state.groups.get(&group_id)?.participants.get(session_id)?;
-        let session = SyncPlaySession {
-            session_id: session_id.to_owned(),
-            user_id: participant.user_id,
-            user_name: participant.user_name.clone(),
-        };
-        remove_session_with_departure(&mut state, &session)
+        remove_session_with_departure(&mut state, session_id)
     }
 
     pub async fn list_groups(&self) -> Vec<GroupInfoDto> {
@@ -1199,24 +1195,24 @@ fn remove_session(state: &mut SyncPlayManagerState, session_id: &str) -> bool {
 
 fn remove_session_with_updates(
     state: &mut SyncPlayManagerState,
-    session: &SyncPlaySession,
+    session_id: &str,
 ) -> Option<Vec<SyncPlayGroupUpdate>> {
-    remove_session_with_departure(state, session).map(|departure| departure.membership_updates)
+    remove_session_with_departure(state, session_id).map(|departure| departure.membership_updates)
 }
 
 fn remove_session_with_departure(
     state: &mut SyncPlayManagerState,
-    session: &SyncPlaySession,
+    session_id: &str,
 ) -> Option<SyncPlayDeparture> {
-    let group_id = *state.session_groups.get(&session.session_id)?;
+    let group_id = *state.session_groups.get(session_id)?;
     let (playback_command, state_update) = {
         let group = state.groups.get_mut(&group_id)?;
-        departure_state_events(group, &session.session_id)
+        departure_state_events(group, session_id)
     };
 
-    let group_id = state.session_groups.remove(&session.session_id)?;
+    let group_id = state.session_groups.remove(session_id)?;
     let group = state.groups.get_mut(&group_id)?;
-    group.participants.remove(&session.session_id);
+    let participant = group.participants.remove(session_id)?;
     finish_wait_if_ready(group);
 
     let mut remaining_sessions = group.participants.keys().cloned().collect::<Vec<_>>();
@@ -1227,7 +1223,7 @@ fn remove_session_with_departure(
     }
 
     let mut updates = vec![group_update(
-        vec![session.session_id.clone()],
+        vec![session_id.to_owned()],
         group_id,
         group_id.to_string(),
         GroupUpdateType::GroupLeft,
@@ -1236,7 +1232,7 @@ fn remove_session_with_departure(
         updates.push(group_update(
             remaining_sessions,
             group_id,
-            session.user_name.clone(),
+            participant.user_name,
             GroupUpdateType::UserLeft,
         ));
     }
@@ -1441,7 +1437,7 @@ impl PlayQueueItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayQueue {
     playlist: Vec<PlayQueueItem>,
-    sorted_playlist: Option<Vec<PlayQueueItem>>,
+    sorted_playlist: Option<Vec<Uuid>>,
     playing_item_index: i32,
     repeat_mode: GroupRepeatMode,
     shuffle_mode: GroupShuffleMode,
@@ -1544,7 +1540,7 @@ impl PlayQueue {
             .collect::<Vec<_>>();
         self.playlist.extend(items.iter().copied());
         if let Some(sorted) = self.sorted_playlist.as_mut() {
-            sorted.extend(items);
+            sorted.extend(items.into_iter().map(|item| item.playlist_item_id));
         }
     }
 
@@ -1562,9 +1558,16 @@ impl PlayQueue {
             .splice(insertion_index..insertion_index, items.iter().copied());
         if let Some(sorted) = self.sorted_playlist.as_mut() {
             let sorted_index = playing_item
-                .and_then(|playing| sorted.iter().position(|item| *item == playing))
+                .and_then(|playing| {
+                    sorted
+                        .iter()
+                        .position(|item| *item == playing.playlist_item_id)
+                })
                 .map_or(0, |index| index + 1);
-            sorted.splice(sorted_index..sorted_index, items);
+            sorted.splice(
+                sorted_index..sorted_index,
+                items.into_iter().map(|item| item.playlist_item_id),
+            );
         }
     }
 
@@ -1577,7 +1580,7 @@ impl PlayQueue {
         if !clear_playing_item && let Some(playing_item) = playing_item {
             self.playlist.push(playing_item);
             if let Some(sorted) = self.sorted_playlist.as_mut() {
-                sorted.push(playing_item);
+                sorted.push(playing_item.playlist_item_id);
             }
             self.playing_item_index = 0;
         } else {
@@ -1590,7 +1593,7 @@ impl PlayQueue {
         self.playlist
             .retain(|item| !playlist_item_ids.contains(&item.playlist_item_id));
         if let Some(sorted) = self.sorted_playlist.as_mut() {
-            sorted.retain(|item| !playlist_item_ids.contains(&item.playlist_item_id));
+            sorted.retain(|item| !playlist_item_ids.contains(item));
         }
         let Some(playing_item) = playing_item else {
             return false;
@@ -1679,7 +1682,12 @@ impl PlayQueue {
     fn shuffle_playlist(&mut self) {
         let playing_item = self.playing_item();
         if self.sorted_playlist.is_none() {
-            self.sorted_playlist = Some(self.playlist.clone());
+            self.sorted_playlist = Some(
+                self.playlist
+                    .iter()
+                    .map(|item| item.playlist_item_id)
+                    .collect(),
+            );
         }
         if let Some(playing_item) = playing_item {
             self.playlist
@@ -1696,7 +1704,20 @@ impl PlayQueue {
     fn restore_sorted_playlist(&mut self) {
         let playing_item = self.playing_item();
         if let Some(sorted) = self.sorted_playlist.take() {
-            self.playlist = sorted;
+            let mut items = self
+                .playlist
+                .drain(..)
+                .map(|item| (item.playlist_item_id, item))
+                .collect::<HashMap<_, _>>();
+            self.playlist = sorted
+                .into_iter()
+                .filter_map(|playlist_item_id| items.remove(&playlist_item_id))
+                .collect();
+            debug_assert!(
+                items.is_empty(),
+                "sorted playlist and active queue diverged"
+            );
+            self.playlist.extend(items.into_values());
         }
         self.playing_item_index = playing_item
             .and_then(|playing| self.playlist.iter().position(|item| *item == playing))

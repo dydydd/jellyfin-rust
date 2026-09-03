@@ -1,8 +1,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, DbErr, DeleteResult,
-    EntityTrait, IntoActiveModel, ModelTrait, QueryFilter, QuerySelect, Set, SqlErr,
-    TransactionTrait,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DbErr, DeleteResult, EntityTrait,
+    IntoActiveModel, ModelTrait, QueryFilter, QuerySelect, Set, SqlErr, TransactionTrait,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -58,13 +57,15 @@ pub enum QuickConnectStoreError {
 /// PostgreSQL-backed Quick Connect state transitions.
 #[derive(Clone)]
 pub struct QuickConnectRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl QuickConnectRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Persists a pending request.
@@ -91,7 +92,7 @@ impl QuickConnectRepository {
             user_id: Set(None),
             authorized_device_id: Set(None),
         }
-        .insert(&self.database)
+        .insert(self.database.as_ref())
         .await
         .map_err(map_insert_error)
     }
@@ -109,7 +110,7 @@ impl QuickConnectRepository {
         Ok(quick_connect::Entity::find()
             .filter(quick_connect::Column::Secret.eq(secret))
             .filter(quick_connect::Column::ExpiresAt.gt(now))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -187,14 +188,14 @@ impl QuickConnectRepository {
             .filter(quick_connect::Column::Secret.eq(secret))
             .filter(quick_connect::Column::ExpiresAt.gt(now))
             .filter(quick_connect::Column::AuthorizedAt.is_not_null())
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(QuickConnectStoreError::NotFound)?;
         let device_id = request
             .authorized_device_id
             .ok_or(QuickConnectStoreError::NotFound)?;
         let device = device::Entity::find_by_id(device_id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(QuickConnectStoreError::NotFound)?;
         Ok(AuthorizedQuickConnect { request, device })
@@ -208,7 +209,7 @@ impl QuickConnectRepository {
     pub async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64, QuickConnectStoreError> {
         let DeleteResult { rows_affected } = quick_connect::Entity::delete_many()
             .filter(quick_connect::Column::ExpiresAt.lte(now))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         Ok(rows_affected)
     }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
@@ -102,6 +102,12 @@ pub trait ImageCacheTagProvider {
     fn get_image_cache_tag(&self, item: &DtoImageItem, image: &DtoImage) -> Option<String>;
 }
 
+impl<C: ImageCacheTagProvider + ?Sized> ImageCacheTagProvider for Arc<C> {
+    fn get_image_cache_tag(&self, item: &DtoImageItem, image: &DtoImage) -> Option<String> {
+        self.as_ref().get_image_cache_tag(item, image)
+    }
+}
+
 /// Failure while loading and projecting persisted item images.
 #[derive(Debug, Error)]
 pub enum PersistedDtoImageProjectionError {
@@ -162,10 +168,10 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
         item_id: Uuid,
         options: DtoImageOptions,
     ) -> Result<Option<DtoImageProjection>, PersistedDtoImageProjectionError> {
-        let Some(requested) = self.items.get(item_id).await? else {
+        let Some(mut requested) = self.items.get(item_id).await? else {
             return Ok(None);
         };
-        let requested_metadata = persisted_metadata(&requested)?;
+        let requested_metadata = persisted_metadata(&mut requested)?;
         let requested_kind = persisted_item_kind(&requested, &requested_metadata);
 
         let mut models = HashMap::from([(requested.id, requested)]);
@@ -186,13 +192,21 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
                 .push(persisted_image(image));
         }
 
+        let Some(requested) = models.remove(&item_id) else {
+            return Ok(None);
+        };
+        let requested = DtoImageItem {
+            id: item_id,
+            kind: persisted_item_kind(&requested, &requested_metadata),
+            images: images_by_item.remove(&item_id).unwrap_or_default(),
+            path: requested.path,
+            default_primary_image_aspect_ratio: requested_metadata
+                .default_primary_image_aspect_ratio,
+        };
+
         let mut projected_items = HashMap::with_capacity(models.len());
-        for (id, model) in models {
-            let metadata = if id == item_id {
-                requested_metadata.clone()
-            } else {
-                persisted_metadata(&model)?
-            };
+        for (id, mut model) in models {
+            let metadata = persisted_metadata(&mut model)?;
             projected_items.insert(
                 id,
                 DtoImageItem {
@@ -204,10 +218,6 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
                 },
             );
         }
-
-        let Some(requested) = projected_items.remove(&item_id) else {
-            return Ok(None);
-        };
         let service = DtoImageProjectionService::new(
             PreloadedDtoImageLibrary {
                 items: projected_items,
@@ -227,10 +237,10 @@ struct PersistedDtoImageMetadata {
 }
 
 fn persisted_metadata(
-    item: &base_item::Model,
+    item: &mut base_item::Model,
 ) -> Result<PersistedDtoImageMetadata, PersistedDtoImageProjectionError> {
     item.data
-        .clone()
+        .take()
         .map(serde_json::from_value)
         .transpose()
         .map(Option::unwrap_or_default)
@@ -356,8 +366,8 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
             .flatten();
         let mut image_tags = HashMap::new();
         let mut backdrop_image_tags = Vec::new();
-        if let Some(tag) = primary_image_tag.clone() {
-            image_tags.insert("Primary".to_owned(), tag);
+        if let Some(tag) = primary_image_tag.as_deref() {
+            image_tags.insert("Primary".to_owned(), tag.to_owned());
         }
         if options.enable_images {
             self.attach_image_tags(item, options, &mut image_tags, &mut backdrop_image_tags);

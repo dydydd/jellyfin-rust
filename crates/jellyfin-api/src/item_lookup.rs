@@ -33,7 +33,7 @@ pub(crate) async fn remote_search(
     authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let kind = remote_search_kind(&uri);
-    let api_key = state.tmdb_api_key.read().await.clone();
+    let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let metadata_options = metadata_options_for(&state, kind);
     Ok(Json(
         state
@@ -54,7 +54,7 @@ pub(crate) async fn remote_search_elevated(
         .require_administrator()?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let kind = remote_search_kind(&uri);
-    let api_key = state.tmdb_api_key.read().await.clone();
+    let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let metadata_options = metadata_options_for(&state, kind);
     Ok(Json(
         state

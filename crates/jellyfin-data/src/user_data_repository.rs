@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult, Order,
-    QueryFilter, QueryOrder, QuerySelect, Set, Statement, sea_query::OnConflict,
+    ColumnTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, Order, QueryFilter, QueryOrder,
+    QuerySelect, Set, Statement, sea_query::OnConflict,
 };
 use std::collections::HashMap;
 use thiserror::Error;
@@ -126,13 +126,15 @@ pub enum UserDataError {
 /// PostgreSQL-backed per-user media state.
 #[derive(Clone)]
 pub struct UserDataRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl UserDataRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Resolves a user-data row using current keys in priority order, then the
@@ -175,7 +177,7 @@ impl UserDataRepository {
             ],
         );
         Ok(user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -236,7 +238,7 @@ impl UserDataRepository {
             [user_id.into(), serde_json::json!(keys).into()],
         );
         let rows = user_data::Model::find_by_statement(statement)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         Ok(rows.into_iter().map(|row| (row.item_id, row)).collect())
     }
@@ -378,7 +380,7 @@ impl UserDataRepository {
             ],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| {
                 DbErr::RecordNotFound("generic user-data upsert returned no row".to_owned()).into()
@@ -442,7 +444,7 @@ impl UserDataRepository {
             ],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| {
                 DbErr::RecordNotFound("favorite upsert returned no row".to_owned()).into()
@@ -515,7 +517,7 @@ impl UserDataRepository {
             ],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| DbErr::RecordNotFound("rating upsert returned no row".to_owned()).into())
     }
@@ -615,7 +617,7 @@ impl UserDataRepository {
             ],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| {
                 DbErr::RecordNotFound("playback progress upsert returned no row".to_owned()).into()
@@ -689,7 +691,7 @@ impl UserDataRepository {
             ],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| {
                 DbErr::RecordNotFound("playback start upsert returned no row".to_owned()).into()
@@ -777,7 +779,7 @@ impl UserDataRepository {
             ],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| {
                 DbErr::RecordNotFound("playback stop upsert returned no row".to_owned()).into()
@@ -876,7 +878,7 @@ impl UserDataRepository {
             [source_item_id.into(), user_id.into(), reset_position.into()],
         );
         Ok(user_data::Model::find_by_statement(statement)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -962,7 +964,7 @@ impl UserDataRepository {
             [source_item_id.into(), user_id.into()],
         );
         Ok(user_data::Model::find_by_statement(statement)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -1016,7 +1018,7 @@ impl UserDataRepository {
             ],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| DbErr::RecordNotFound("mark played returned no row".to_owned()).into())
     }
@@ -1054,7 +1056,7 @@ impl UserDataRepository {
             [item_id.into(), user_id.into(), key.into()],
         );
         user_data::Model::find_by_statement(statement)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or_else(|| DbErr::RecordNotFound("mark unplayed returned no row".to_owned()).into())
     }
@@ -1089,7 +1091,7 @@ impl UserDataRepository {
                 ])
                 .to_owned(),
             )
-            .exec_with_returning(&self.database)
+            .exec_with_returning(self.database.as_ref())
             .await?)
     }
 
@@ -1106,7 +1108,7 @@ impl UserDataRepository {
         let result = user_data::Entity::delete_many()
             .filter(user_data::Column::ItemId.eq(item_id))
             .filter(user_data::Column::RetentionDate.lt(cutoff))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         Ok(result.rows_affected)
     }
@@ -1124,7 +1126,7 @@ impl UserDataRepository {
     ) -> Result<Option<user_data::Model>, UserDataError> {
         Ok(
             user_data::Entity::find_by_id((item_id, user_id, key.to_owned()))
-                .one(&self.database)
+                .one(self.database.as_ref())
                 .await?,
         )
     }
@@ -1143,7 +1145,7 @@ impl UserDataRepository {
             .filter(user_data::Column::ItemId.eq(item_id))
             .filter(user_data::Column::UserId.eq(user_id))
             .order_by_asc(user_data::Column::CustomDataKey)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -1159,11 +1161,12 @@ impl UserDataRepository {
         user_id: Uuid,
         keys: &[String],
     ) -> Result<Option<user_data::Model>, UserDataError> {
-        let rows = self.get_for_item(item_id, user_id).await?;
-        for key in keys {
-            if let Some(row) = rows.iter().find(|row| row.custom_data_key == *key) {
-                return Ok(Some(row.clone()));
-            }
+        let mut rows = self.get_for_item(item_id, user_id).await?;
+        if let Some(index) = keys
+            .iter()
+            .find_map(|key| rows.iter().position(|row| row.custom_data_key == *key))
+        {
+            return Ok(rows.swap_remove(index).into());
         }
         Ok(rows.into_iter().next())
     }
@@ -1228,7 +1231,7 @@ impl UserDataRepository {
         if let Some(limit) = query.limit {
             rows = rows.limit(limit);
         }
-        Ok(rows.all(&self.database).await?)
+        Ok(rows.all(self.database.as_ref()).await?)
     }
 }
 

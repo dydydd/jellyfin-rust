@@ -73,9 +73,10 @@ fn official_subtitle_profile_extraction_matrix() {
             ..SubtitleProfile::default()
         };
 
+        let profiles = [profile];
         let result = StreamBuilder::default()
             .with_subtitle_extraction_support(extraction_supported)
-            .get_subtitle_profile(&subtitle, &[profile], method, None, None);
+            .get_subtitle_profile(&subtitle, &profiles, method, None, None);
         assert_eq!(
             result.method, expected,
             "codec={codec}, extraction={extraction_supported}, external={is_external}, method={method:?}"

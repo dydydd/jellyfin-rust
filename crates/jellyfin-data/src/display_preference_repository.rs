@@ -1,7 +1,6 @@
 use chrono::Utc;
 use sea_orm::{
-    ActiveValue::NotSet, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set,
-    sea_query::OnConflict,
+    ActiveValue::NotSet, ColumnTrait, DbErr, EntityTrait, QueryFilter, Set, sea_query::OnConflict,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -27,13 +26,15 @@ pub enum DisplayPreferenceStoreError {
 
 #[derive(Clone)]
 pub struct DisplayPreferenceRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl DisplayPreferenceRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Finds stored display preferences for a user/item/client tuple.
@@ -53,7 +54,7 @@ impl DisplayPreferenceRepository {
             .filter(display_preference::Column::UserId.eq(user_id))
             .filter(display_preference::Column::ItemId.eq(item_id))
             .filter(display_preference::Column::Client.eq(client))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -101,7 +102,7 @@ impl DisplayPreferenceRepository {
                 ])
                 .to_owned(),
             )
-            .exec_with_returning(&self.database)
+            .exec_with_returning(self.database.as_ref())
             .await?,
         )
     }

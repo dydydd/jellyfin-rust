@@ -254,7 +254,7 @@ impl<R: ProbeProcessRunner> ExternalSourceProber<R> {
             .map_err(ExternalProbeError::ProcessStart)?;
         if output.exit_code != 0 {
             return Err(ExternalProbeError::ProcessFailed {
-                source_path: media_source.path.clone(),
+                source_path: request.source_path,
                 exit_code: output.exit_code,
                 standard_error: output.standard_error,
             });
@@ -324,6 +324,7 @@ fn input_argument(media_source: &ExternalMediaSource) -> String {
     if media_source.protocol == MediaProtocol::File && !media_source.path.contains("://") {
         format!("file:{}", media_source.path)
     } else {
+        // ALLOW: the process argument must own a path borrowed from the media source.
         media_source.path.clone()
     }
 }

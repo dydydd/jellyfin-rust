@@ -2,9 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    FromQueryResult, QueryFilter, QueryOrder, SqlErr, Statement, TransactionTrait,
-    Value as SeaValue, sea_query::OnConflict,
+    ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryFilter,
+    QueryOrder, SqlErr, Statement, TransactionTrait, Value as SeaValue, sea_query::OnConflict,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -89,13 +88,15 @@ pub enum PersonError {
 /// PostgreSQL-backed canonical people and their ordered base-item credits.
 #[derive(Clone)]
 pub struct PersonRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl PersonRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Atomically inserts a person or merges provider IDs into the existing
@@ -105,7 +106,7 @@ impl PersonRepository {
     ///
     /// Returns validation or database errors.
     pub async fn upsert(&self, input: NewPerson) -> Result<person::Model, PersonError> {
-        upsert_on(&self.database, input).await
+        upsert_on(self.database.as_ref(), input).await
     }
 
     /// Finds a person using exact case-sensitive display text.
@@ -117,7 +118,7 @@ impl PersonRepository {
         let name = validate_name(name)?;
         Ok(person::Entity::find()
             .filter(person::Column::Name.eq(name))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -130,7 +131,7 @@ impl PersonRepository {
         let clean_name = clean_name(name)?;
         Ok(person::Entity::find()
             .filter(person::Column::CleanName.eq(clean_name))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -156,7 +157,7 @@ impl PersonRepository {
                 "SELECT * FROM jellyfin.people WHERE provider_ids @> $1::jsonb ORDER BY clean_name, id",
                 [contained.into()],
             ))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -222,7 +223,7 @@ impl PersonRepository {
     pub async fn clear_credits(&self, item_id: Uuid) -> Result<usize, PersonError> {
         Ok(person_base_item_map::Entity::delete_many()
             .filter(person_base_item_map::Column::ItemId.eq(item_id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected
             .try_into()
@@ -239,14 +240,14 @@ impl PersonRepository {
             .filter(person_base_item_map::Column::ItemId.eq(item_id))
             .order_by_asc(person_base_item_map::Column::ListOrder)
             .order_by_asc(person_base_item_map::Column::PersonId)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         if mappings.is_empty() {
             return Ok(Vec::new());
         }
         let people = person::Entity::find()
             .filter(person::Column::Id.is_in(mappings.iter().map(|mapping| mapping.person_id)))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         let by_id: HashMap<Uuid, person::Model> = people
             .into_iter()
@@ -287,7 +288,7 @@ impl PersonRepository {
             .filter(person_base_item_map::Column::ItemId.is_in(item_ids.iter().copied()))
             .order_by_asc(person_base_item_map::Column::ListOrder)
             .order_by_asc(person_base_item_map::Column::PersonId)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         let person_ids = mappings
             .iter()
@@ -298,7 +299,7 @@ impl PersonRepository {
         } else {
             person::Entity::find()
                 .filter(person::Column::Id.is_in(person_ids))
-                .all(&self.database)
+                .all(self.database.as_ref())
                 .await?
         };
         let by_id: HashMap<Uuid, person::Model> = people
@@ -336,7 +337,7 @@ impl PersonRepository {
         };
         let item_ids: HashSet<Uuid> = person_base_item_map::Entity::find()
             .filter(person_base_item_map::Column::PersonId.eq(person.id))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?
             .into_iter()
             .map(|mapping| mapping.item_id)
@@ -348,7 +349,7 @@ impl PersonRepository {
             .filter(base_item::Column::Id.is_in(item_ids))
             .order_by_asc(base_item::Column::SortName)
             .order_by_asc(base_item::Column::Id)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -395,7 +396,7 @@ impl PersonRepository {
                 page_sql,
                 page_values,
             ))
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?,
             total_record_count: u64::try_from(count).unwrap_or_default(),
             start_index: query.start_index,
@@ -409,7 +410,7 @@ impl PersonRepository {
     /// Returns a database error.
     pub async fn delete(&self, id: Uuid) -> Result<bool, PersonError> {
         Ok(person::Entity::delete_by_id(id)
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?
             .rows_affected
             == 1)

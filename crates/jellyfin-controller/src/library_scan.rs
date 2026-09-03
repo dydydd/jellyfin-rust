@@ -3,12 +3,13 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::available_parallelism,
 };
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use jellyfin_data::{
     BaseItemError, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
     BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
@@ -45,10 +46,9 @@ use jellyfin_xbmc_metadata::{
     PersonKind as NfoPersonKind, movie_nfo_save_paths, parse_movie_nfo_file, parse_nfo,
 };
 use md5::{Digest, Md5};
-use sea_orm::DatabaseConnection;
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::{fs, sync::Semaphore};
+use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
@@ -94,7 +94,6 @@ pub enum LibraryScanError {
     AlreadyScanning,
 }
 
-#[derive(Clone)]
 pub struct LibraryScanService {
     folders: VirtualFolderRepository,
     items: BaseItemRepository,
@@ -106,59 +105,87 @@ pub struct LibraryScanService {
     chapters: ChapterRepository,
     keyframes: KeyframeDataRepository,
     values: ItemValueRepository,
-    probe_path: PathBuf,
-    ffmpeg_path: PathBuf,
-    image_cache_directory: PathBuf,
-    fanout_concurrency: usize,
-    on_progress: Option<Arc<dyn Fn(f64) + Send + Sync>>,
+    probe_path: Arc<PathBuf>,
+    ffmpeg_path: RwLock<Arc<PathBuf>>,
+    image_cache_directory: RwLock<Arc<PathBuf>>,
+    fanout_concurrency: AtomicUsize,
     is_scanning: Arc<AtomicBool>,
 }
 
 impl LibraryScanService {
-    pub fn set_on_progress(&mut self, callback: Option<Arc<dyn Fn(f64) + Send + Sync>>) {
-        self.on_progress = callback;
-    }
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self::with_probe_path(database, "ffprobe")
     }
 
     #[must_use]
-    pub fn with_probe_path(database: DatabaseConnection, probe_path: impl Into<PathBuf>) -> Self {
+    pub fn with_probe_path(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        probe_path: impl Into<PathBuf>,
+    ) -> Self {
+        let database = database.into();
         Self {
-            folders: VirtualFolderRepository::new(database.clone()),
-            items: BaseItemRepository::new(database.clone()),
-            streams: MediaStreamRepository::new(database.clone()),
-            attachments: MediaAttachmentRepository::new(database.clone()),
-            images: BaseItemImageRepository::new(database.clone()),
-            people: PersonRepository::new(database.clone()),
-            updates: ItemUpdateRepository::new(database.clone()),
-            chapters: ChapterRepository::new(database.clone()),
-            keyframes: KeyframeDataRepository::new(database.clone()),
+            folders: VirtualFolderRepository::new(Arc::clone(&database)),
+            items: BaseItemRepository::new(Arc::clone(&database)),
+            streams: MediaStreamRepository::new(Arc::clone(&database)),
+            attachments: MediaAttachmentRepository::new(Arc::clone(&database)),
+            images: BaseItemImageRepository::new(Arc::clone(&database)),
+            people: PersonRepository::new(Arc::clone(&database)),
+            updates: ItemUpdateRepository::new(Arc::clone(&database)),
+            chapters: ChapterRepository::new(Arc::clone(&database)),
+            keyframes: KeyframeDataRepository::new(Arc::clone(&database)),
             values: ItemValueRepository::new(database),
-            probe_path: probe_path.into(),
-            ffmpeg_path: PathBuf::from("ffmpeg"),
-            image_cache_directory: PathBuf::from("cache").join("images"),
-            fanout_concurrency: default_fanout_concurrency(),
-            on_progress: None,
+            probe_path: Arc::new(probe_path.into()),
+            ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
+            image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
+            fanout_concurrency: AtomicUsize::new(default_fanout_concurrency()),
             is_scanning: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn set_fanout_concurrency(&mut self, concurrency: usize) {
-        self.fanout_concurrency = concurrency;
+    pub fn set_fanout_concurrency(&self, concurrency: usize) {
+        self.fanout_concurrency
+            .store(concurrency, Ordering::Release);
     }
 
-    pub fn set_ffmpeg_path(&mut self, ffmpeg_path: impl Into<PathBuf>) {
-        self.ffmpeg_path = ffmpeg_path.into();
+    pub fn set_ffmpeg_path(&self, ffmpeg_path: impl Into<PathBuf>) {
+        self.set_shared_ffmpeg_path(Arc::new(ffmpeg_path.into()));
     }
 
-    pub fn set_image_cache_directory(&mut self, path: impl Into<PathBuf>) {
-        self.image_cache_directory = path.into();
+    pub fn set_shared_ffmpeg_path(&self, ffmpeg_path: Arc<PathBuf>) {
+        *self
+            .ffmpeg_path
+            .write()
+            .expect("library scan FFmpeg path lock poisoned") = ffmpeg_path;
+    }
+
+    pub fn set_image_cache_directory(&self, path: impl Into<PathBuf>) {
+        *self
+            .image_cache_directory
+            .write()
+            .expect("library scan image cache path lock poisoned") = Arc::new(path.into());
     }
 
     fn fanout_concurrency(&self) -> usize {
-        self.fanout_concurrency.max(1)
+        self.fanout_concurrency.load(Ordering::Acquire).max(1)
+    }
+
+    fn ffmpeg_path(&self) -> Arc<PathBuf> {
+        Arc::clone(
+            &self
+                .ffmpeg_path
+                .read()
+                .expect("library scan FFmpeg path lock poisoned"),
+        )
+    }
+
+    fn image_cache_directory(&self) -> Arc<PathBuf> {
+        Arc::clone(
+            &self
+                .image_cache_directory
+                .read()
+                .expect("library scan image cache path lock poisoned"),
+        )
     }
 
     /// Scans configured virtual-folder paths into directly playable base items.
@@ -184,31 +211,53 @@ impl LibraryScanService {
     ///
     /// Returns an error when any library scan fails.
     pub async fn scan_all(&self) -> Result<LibraryScanSummary, LibraryScanError> {
+        self.run_scan_all(None).await
+    }
+
+    /// Scans every configured library collection and reports progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any library scan fails.
+    pub async fn scan_all_with_progress(
+        &self,
+        on_progress: &(dyn Fn(f64) + Send + Sync),
+    ) -> Result<LibraryScanSummary, LibraryScanError> {
+        self.run_scan_all(Some(on_progress)).await
+    }
+
+    async fn run_scan_all(
+        &self,
+        on_progress: Option<&(dyn Fn(f64) + Send + Sync)>,
+    ) -> Result<LibraryScanSummary, LibraryScanError> {
         self.try_start_scan()?;
-        let result = self.scan_all_inner().await;
+        let result = self.scan_all_inner(on_progress).await;
         self.end_scan();
         result
     }
 
     #[allow(clippy::cast_precision_loss)]
-    async fn scan_all_inner(&self) -> Result<LibraryScanSummary, LibraryScanError> {
+    async fn scan_all_inner(
+        &self,
+        on_progress: Option<&(dyn Fn(f64) + Send + Sync)>,
+    ) -> Result<LibraryScanSummary, LibraryScanError> {
         self.items.ensure_user_root().await?;
         let folders = self.folders.list().await?;
         let total = folders.len();
         let mut summary = LibraryScanSummary::default();
-        for (i, folder) in folders.iter().enumerate() {
+        for (i, folder) in folders.into_iter().enumerate() {
             self.scan_one_folder(folder, &mut summary).await?;
-            if let Some(ref on_progress) = self.on_progress {
+            if let Some(on_progress) = on_progress {
                 on_progress((i + 1) as f64 / total as f64 * 90.0);
             }
         }
-        if let Some(ref on_progress) = self.on_progress {
+        if let Some(on_progress) = on_progress {
             on_progress(95.0);
         }
         if let Err(error) = self.values.clear_inherited_tags().await {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
         }
-        if let Some(ref on_progress) = self.on_progress {
+        if let Some(on_progress) = on_progress {
             on_progress(100.0);
         }
         Ok(summary)
@@ -237,27 +286,21 @@ impl LibraryScanService {
         let mut summary = LibraryScanSummary::default();
         let folders = self.folders.list().await?;
         if let Some(folder) = folders.into_iter().find(|f| f.folder.id == collection_id) {
-            self.scan_one_folder(&folder, &mut summary).await?;
-        }
-        if let Some(ref on_progress) = self.on_progress {
-            on_progress(95.0);
+            self.scan_one_folder(folder, &mut summary).await?;
         }
         if let Err(error) = self.values.clear_inherited_tags().await {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
-        }
-        if let Some(ref on_progress) = self.on_progress {
-            on_progress(100.0);
         }
         Ok(summary)
     }
 
     async fn scan_one_folder(
         &self,
-        folder: &VirtualFolderWithPaths,
+        mut folder: VirtualFolderWithPaths,
         summary: &mut LibraryScanSummary,
     ) -> Result<(), LibraryScanError> {
         let kind = ScanLibraryKind::from_collection_type(folder.folder.collection_type.as_deref());
-        let collection = self.ensure_collection_folder(folder).await?;
+        let collection = self.ensure_collection_folder(&mut folder).await?;
         summary.folders_seen += 1;
         let enabled = bool_option(&folder.folder.library_options, "Enabled", true);
         let allow_photos = collection_allows_photos(
@@ -356,13 +399,15 @@ impl LibraryScanService {
                 };
                 let season_key = format!("{}_{}", series_id.simple(), season_number);
                 let season_id = stable_item_id(&season_key, "Season");
-                let mut season = if let Some(season) = seasons
+                let season_id = if let Some(season) = seasons
                     .iter()
                     .find(|season| season.index_number == Some(season_number))
                 {
-                    season.clone()
+                    season.id
                 } else if let Some(season) = self.items.get(season_id).await? {
-                    season
+                    let season_id = season.id;
+                    seasons.push(season);
+                    season_id
                 } else {
                     let created = NewBaseItem {
                         id: season_id,
@@ -389,21 +434,10 @@ impl LibraryScanService {
                         series_presentation_unique_key: Some(series_id.simple().to_string()),
                     };
                     let created = self.items.create(created).await?;
-                    seasons.push(created.clone());
-                    created
+                    let season_id = created.id;
+                    seasons.push(created);
+                    season_id
                 };
-                if season.parent_id != Some(series_id) {
-                    season.parent_id = Some(series_id);
-                }
-                if season.series_id != Some(series_id) {
-                    season.series_id = Some(series_id);
-                }
-                if season.series_presentation_unique_key.as_deref()
-                    != Some(series_id.simple().to_string().as_str())
-                {
-                    season.series_presentation_unique_key = Some(series_id.simple().to_string());
-                }
-                let season_id = season.id;
                 let mut episode_changed = false;
                 if episode.parent_id != Some(season_id) {
                     episode.parent_id = Some(season_id);
@@ -604,8 +638,8 @@ impl LibraryScanService {
                     if !ignore_rule.should_ignore(&candidate, parent_context)
                         && !is_extras_directory(&path)
                     {
-                        children.push(candidate.clone());
-                        subdirectories.push(candidate);
+                        children.push(candidate);
+                        subdirectories.push(path);
                     }
                     continue;
                 }
@@ -678,12 +712,13 @@ impl LibraryScanService {
                 None => (directory.parent_id, LibraryParentKind::Folder),
             };
 
+            let child_parent_path = Arc::<str>::from(directory_path);
             for subdirectory in subdirectories {
                 stack.push(MusicScanEntry {
-                    path: PathBuf::from(&subdirectory.full_name),
+                    path: subdirectory,
                     parent_id: directory_id,
                     parent_kind: child_parent_kind,
-                    parent_path: Some(directory_path.clone()),
+                    parent_path: Some(Arc::clone(&child_parent_path)),
                     is_root: false,
                 });
             }
@@ -693,17 +728,15 @@ impl LibraryScanService {
                 .filter_map(|(path, _)| path.to_str().map(String::from))
                 .collect::<Vec<_>>();
             let existing = self.items.by_paths(&paths).await?;
-            let existing_by_path = Arc::new(
-                existing
-                    .into_iter()
-                    .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
-                    .collect::<HashMap<_, _>>(),
-            );
-            let extra_paths = Self::extra_paths_for_entries(&files, root)?;
+            let existing_by_path = existing
+                .into_iter()
+                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+                .collect::<HashMap<_, _>>();
+            let extra_entries = extra_entries_for_files(&files);
+            let extra_paths = Self::extra_paths_for_resolver_entries(&extra_entries, root)?;
             let regular_files = files
-                .iter()
-                .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
-                .cloned()
+                .into_iter()
+                .filter(|(path, _)| !extra_paths.contains(path.to_string_lossy().as_ref()))
                 .collect::<Vec<_>>();
             summary.items_added += self
                 .process_files(
@@ -715,7 +748,7 @@ impl LibraryScanService {
                     summary,
                 )
                 .await?;
-            self.ensure_extras(&files, kind, summary, seen_paths, root)
+            self.ensure_extras(&extra_entries, kind, summary, seen_paths, root)
                 .await?;
         }
         Ok(())
@@ -841,18 +874,16 @@ impl LibraryScanService {
             .filter_map(|(p, _)| p.to_str().map(String::from))
             .collect();
         let existing = self.items.by_paths(&paths).await?;
-        let existing_by_path = Arc::new(
-            existing
-                .into_iter()
-                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
-                .collect::<HashMap<_, _>>(),
-        );
+        let existing_by_path = existing
+            .into_iter()
+            .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+            .collect::<HashMap<_, _>>();
 
-        let extra_paths = Self::extra_paths_for_entries(&files, library_root)?;
+        let extra_entries = extra_entries_for_files(&files);
+        let extra_paths = Self::extra_paths_for_resolver_entries(&extra_entries, library_root)?;
         let regular_files = files
-            .iter()
-            .filter(|(path, _)| !extra_paths.contains(&path.to_string_lossy().into_owned()))
-            .cloned()
+            .into_iter()
+            .filter(|(path, _)| !extra_paths.contains(path.to_string_lossy().as_ref()))
             .collect::<Vec<_>>();
         summary.items_added += self
             .process_files(
@@ -866,7 +897,7 @@ impl LibraryScanService {
             .await?;
         self.group_scanned_video_entries(&regular_files, kind, library_root)
             .await?;
-        self.ensure_extras(&files, kind, summary, seen_paths, library_root)
+        self.ensure_extras(&extra_entries, kind, summary, seen_paths, library_root)
             .await?;
         Ok(())
     }
@@ -889,7 +920,7 @@ impl LibraryScanService {
         if items.len() < 2 {
             return Ok(());
         }
-        let by_path = items
+        let mut by_path = items
             .into_iter()
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect::<HashMap<_, _>>();
@@ -909,13 +940,16 @@ impl LibraryScanService {
         } else {
             Some(jellyfin_naming::video_list::CollectionType::Movies)
         };
-        let groups =
-            VideoListResolver::new(options).resolve_with_options(&videos, true, collection_type);
+        let groups = VideoListResolver::new(options).resolve_owned_with_options(
+            videos,
+            true,
+            collection_type,
+        );
         for group in groups {
             let Some(primary_path) = group.files.first().map(|file| file.path.as_str()) else {
                 continue;
             };
-            let Some(primary) = by_path.get(primary_path).cloned() else {
+            let Some(primary) = by_path.remove(primary_path) else {
                 continue;
             };
             let primary_id = primary.id;
@@ -938,7 +972,7 @@ impl LibraryScanService {
                     || updated_primary.sort_name.as_deref() != Some(group.name.as_str()))
             {
                 updated_primary.name = Some(group.name.clone());
-                updated_primary.sort_name = Some(group.name.clone());
+                updated_primary.sort_name = Some(group.name);
                 primary_changed = true;
             }
             if primary_changed {
@@ -955,7 +989,7 @@ impl LibraryScanService {
                 version_paths.extend(alternate.files.iter().map(|file| file.path.as_str()));
             }
             for path in version_paths {
-                let Some(mut item) = by_path.get(path).cloned() else {
+                let Some(mut item) = by_path.remove(path) else {
                     continue;
                 };
                 if item.primary_version_id == Some(primary_id) {
@@ -968,19 +1002,11 @@ impl LibraryScanService {
         Ok(())
     }
 
-    fn extra_paths_for_entries(
-        files: &[(PathBuf, MediaKind)],
+    fn extra_paths_for_resolver_entries(
+        entries: &[ExtraFileSystemEntry],
         library_root: &Path,
     ) -> Result<HashSet<String>, LibraryScanError> {
-        if files.is_empty() {
-            return Ok(HashSet::new());
-        }
         let options = NamingOptions::default();
-        let entries = files
-            .iter()
-            .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
-            .map(|(path, _)| ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false))
-            .collect::<Vec<_>>();
         let eligible_entries = entries
             .iter()
             .filter(|entry| {
@@ -1000,7 +1026,7 @@ impl LibraryScanService {
                 ExtraOwnerKind::Movie,
             );
             let extras = resolver
-                .find_extras(&owner, &entries, &reader)
+                .find_extras(&owner, entries, &reader)
                 .map_err(LibraryScanError::Io)?;
             for extra in extras {
                 extra_paths.insert(extra.path);
@@ -1011,7 +1037,7 @@ impl LibraryScanService {
 
     async fn ensure_extras(
         &self,
-        files: &[(PathBuf, MediaKind)],
+        entries: &[ExtraFileSystemEntry],
         kind: ScanLibraryKind,
         summary: &mut LibraryScanSummary,
         seen_paths: &mut HashSet<String>,
@@ -1021,11 +1047,6 @@ impl LibraryScanService {
             return Ok(());
         }
         let options = NamingOptions::default();
-        let entries = files
-            .iter()
-            .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
-            .map(|(path, _)| ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false))
-            .collect::<Vec<_>>();
         let eligible_entries = entries
             .iter()
             .filter(|entry| {
@@ -1044,10 +1065,9 @@ impl LibraryScanService {
                 ExtraOwnerKind::Movie,
             );
             let extras = resolver
-                .find_extras(&owner, &entries, &reader)
+                .find_extras(&owner, entries, &reader)
                 .map_err(LibraryScanError::Io)?;
             for extra in extras {
-                seen_paths.insert(extra.path.clone());
                 let owner_id = self
                     .items
                     .by_paths(std::slice::from_ref(&entry.full_name))
@@ -1055,9 +1075,12 @@ impl LibraryScanService {
                     .into_iter()
                     .next()
                     .map(|item| item.id);
-                if let Some(owner_id) = owner_id {
-                    self.ensure_extra_item(extra, owner_id, summary).await?;
-                }
+                let path = if let Some(owner_id) = owner_id {
+                    self.ensure_extra_item(extra, owner_id, summary).await?
+                } else {
+                    extra.path
+                };
+                seen_paths.insert(path);
             }
         }
         Ok(())
@@ -1068,7 +1091,7 @@ impl LibraryScanService {
         extra: ResolvedLibraryExtra,
         owner_id: Uuid,
         summary: &mut LibraryScanSummary,
-    ) -> Result<(), LibraryScanError> {
+    ) -> Result<String, LibraryScanError> {
         let item_type = match extra.media_kind {
             ExtraMediaKind::Audio => "Audio",
             ExtraMediaKind::Trailer => "Trailer",
@@ -1086,7 +1109,7 @@ impl LibraryScanService {
             updated.parent_id = Some(owner_id);
             updated.data = Some(serde_json::Value::Object(data));
             self.items.update(updated).await?;
-            return Ok(());
+            return Ok(extra.path);
         }
         let path = extra.path;
         let media_type = match extra.media_kind {
@@ -1104,9 +1127,12 @@ impl LibraryScanService {
         item.is_virtual_item = false;
         item.presentation_unique_key = Some(path);
         item.data = Some(serde_json::Value::Object(data));
-        self.items.create(item).await?;
+        let mut created = self.items.create(item).await?;
         summary.items_added += 1;
-        Ok(())
+        Ok(created
+            .path
+            .take()
+            .expect("new extra item always persists its path"))
     }
 
     async fn process_files(
@@ -1115,7 +1141,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         kind: ScanLibraryKind,
         library_root: &Path,
-        existing_by_path: Arc<HashMap<String, base_item::Model>>,
+        mut existing_by_path: HashMap<String, base_item::Model>,
         summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
@@ -1125,7 +1151,7 @@ impl LibraryScanService {
         if concurrency <= 1 {
             let mut added = 0;
             for (path, media_kind) in files {
-                let existing = path.to_str().and_then(|p| existing_by_path.get(p));
+                let existing = path.to_str().and_then(|p| existing_by_path.remove(p));
                 let (item_added, item_id) = self
                     .ensure_media_item(path, parent_id, *media_kind, kind, library_root, existing)
                     .await?;
@@ -1133,62 +1159,52 @@ impl LibraryScanService {
                     added += 1;
                     summary.added_ids.push(item_id);
                 }
-                if let Some(path_str) = path.to_str() {
-                    let item_type = if kind.is_tv() {
-                        media_kind.item_type()
-                    } else if *media_kind == MediaKind::Video {
-                        kind.video_item_type()
-                    } else {
-                        media_kind.item_type()
-                    };
-                    let known_id = existing_by_path
-                        .get(path_str)
-                        .map_or_else(|| stable_item_id(path_str, item_type), |item| item.id);
-                    summary.changed_ids.push(known_id);
+                if path.to_str().is_some() {
+                    summary.changed_ids.push(item_id);
                 }
             }
             return Ok(added);
         }
-        let semaphore = Arc::new(Semaphore::new(concurrency));
-        let mut handles = Vec::with_capacity(files.len());
-        for file in files {
-            let path = file.0.clone();
-            let media_kind = file.1;
-            let existing = path.to_str().and_then(|p| existing_by_path.get(p)).cloned();
-            let permit = Arc::clone(&semaphore)
-                .acquire_owned()
-                .await
-                .expect("semaphore closed");
-            let service = self.clone();
-            let library_root = library_root.to_path_buf();
-            handles.push(tokio::spawn(async move {
-                let _permit = permit;
-                service
-                    .ensure_media_item(
-                        &path,
-                        parent_id,
-                        media_kind,
-                        kind,
-                        &library_root,
-                        existing.as_ref(),
-                    )
-                    .await
-            }));
+        let mut files = files.iter();
+        let work = FuturesUnordered::new();
+        for (path, media_kind) in files.by_ref().take(concurrency) {
+            let existing = path
+                .to_str()
+                .and_then(|value| existing_by_path.remove(value));
+            work.push(self.ensure_media_item(
+                path,
+                parent_id,
+                *media_kind,
+                kind,
+                library_root,
+                existing,
+            ));
         }
+        let mut work = work;
         let mut added = 0;
-        for handle in handles {
-            match handle.await {
-                Ok(Ok((true, item_id))) => {
+        while let Some(result) = work.next().await {
+            if let Some((path, media_kind)) = files.next() {
+                let existing = path
+                    .to_str()
+                    .and_then(|value| existing_by_path.remove(value));
+                work.push(self.ensure_media_item(
+                    path,
+                    parent_id,
+                    *media_kind,
+                    kind,
+                    library_root,
+                    existing,
+                ));
+            }
+            match result {
+                Ok((true, item_id)) => {
                     added += 1;
                     summary.added_ids.push(item_id);
                     summary.changed_ids.push(item_id);
                 }
-                Ok(Ok((false, item_id))) => summary.changed_ids.push(item_id),
-                Ok(Err(error)) => {
-                    tracing::debug!(%error, "concurrent media item processing failed");
-                }
+                Ok((false, item_id)) => summary.changed_ids.push(item_id),
                 Err(error) => {
-                    tracing::debug!(%error, "concurrent media task join failed");
+                    tracing::debug!(%error, "concurrent media item processing failed");
                 }
             }
         }
@@ -1197,13 +1213,15 @@ impl LibraryScanService {
 
     async fn ensure_collection_folder(
         &self,
-        folder: &jellyfin_data::VirtualFolderWithPaths,
+        folder: &mut jellyfin_data::VirtualFolderWithPaths,
     ) -> Result<jellyfin_data::entities::base_item::Model, LibraryScanError> {
+        let name = std::mem::take(&mut folder.folder.name);
         if let Some(mut item) = self.items.get(folder.folder.id).await? {
             "CollectionFolder".clone_into(&mut item.item_type);
             item.parent_id = Some(USER_ROOT_FOLDER_ID);
-            item.name = Some(folder.folder.name.clone());
-            item.sort_name = Some(folder.folder.name.clone());
+            // ALLOW: persisted name and sort name are independent owned fields.
+            item.name = Some(name.clone());
+            item.sort_name = Some(name);
             item.media_type = None;
             item.is_folder = true;
             item.is_virtual_item = false;
@@ -1216,8 +1234,9 @@ impl LibraryScanService {
 
         let mut item = NewBaseItem::new(folder.folder.id, "CollectionFolder");
         item.parent_id = Some(USER_ROOT_FOLDER_ID);
-        item.name = Some(folder.folder.name.clone());
-        item.sort_name = item.name.clone();
+        // ALLOW: persisted name and sort name are independent owned fields.
+        item.name = Some(name.clone());
+        item.sort_name = Some(name);
         item.is_folder = true;
         item.data = Some(json!({
             "CollectionType": folder.folder.collection_type,
@@ -1233,12 +1252,12 @@ impl LibraryScanService {
         media_kind: MediaKind,
         kind: ScanLibraryKind,
         library_root: &Path,
-        existing: Option<&base_item::Model>,
+        existing: Option<base_item::Model>,
     ) -> Result<(bool, Uuid), LibraryScanError> {
         let Some(path_str) = path.to_str() else {
             return Ok((false, Uuid::nil()));
         };
-        if let Some(mut existing) = existing.cloned() {
+        if let Some(mut existing) = existing {
             if !kind.is_tv() {
                 let existing_id = existing.id;
                 let desired_type = if media_kind == MediaKind::Video {
@@ -1256,10 +1275,10 @@ impl LibraryScanService {
                     changed = true;
                 }
                 if media_kind.needs_probe()
-                    && let Some(media_info) = self
+                    && let Some(mut media_info) = self
                         .ensure_media_streams(existing.id, path_str, media_kind)
                         .await?
-                    && apply_probed_item_metadata(&mut existing, path_str, &media_info)
+                    && apply_probed_item_metadata(&mut existing, path_str, &mut media_info)
                 {
                     changed = true;
                 }
@@ -1310,10 +1329,10 @@ impl LibraryScanService {
         item.data = Some(media_item_data(path_str, None));
         let mut item = self.items.create(item).await?;
         if media_kind.needs_probe()
-            && let Some(media_info) = self
+            && let Some(mut media_info) = self
                 .ensure_media_streams(item.id, path_str, media_kind)
                 .await?
-            && apply_probed_item_metadata(&mut item, path_str, &media_info)
+            && apply_probed_item_metadata(&mut item, path_str, &mut media_info)
         {
             item = self.items.update(item).await?;
         }
@@ -1404,14 +1423,14 @@ impl LibraryScanService {
             if let Some(sid) = season_id {
                 existing.season_id = Some(sid);
             }
-            existing.series_presentation_unique_key = series_puk.clone();
+            existing.series_presentation_unique_key = series_puk;
             let nfo_changed = apply_episode_nfo_metadata(&mut existing, path);
             self.persist_scan_relations(existing.id, path_str, &existing.item_type, season_number)
                 .await?;
-            if let Some(media_info) = self
+            if let Some(mut media_info) = self
                 .ensure_media_streams(existing.id, path_str, media_kind)
                 .await?
-                && apply_probed_item_metadata(&mut existing, path_str, &media_info)
+                && apply_probed_item_metadata(&mut existing, path_str, &mut media_info)
             {
                 self.items.update(existing).await?;
             } else if nfo_changed {
@@ -1441,10 +1460,10 @@ impl LibraryScanService {
         }
         self.persist_scan_relations(item.id, path_str, &item.item_type, season_number)
             .await?;
-        if let Some(media_info) = self
+        if let Some(mut media_info) = self
             .ensure_media_streams(item.id, path_str, media_kind)
             .await?
-            && apply_probed_item_metadata(&mut item, path_str, &media_info)
+            && apply_probed_item_metadata(&mut item, path_str, &mut media_info)
         {
             let item_id = item.id;
             self.items.update(item).await?;
@@ -1610,12 +1629,22 @@ impl LibraryScanService {
         if !existing.is_empty() && (existing.len() != 1 || existing[0] != default_stream) {
             return Ok(None);
         }
-        let media_info = self.probe_media_info(path, media_kind).await;
-        let mut streams = media_info
-            .as_ref()
-            .map(streams_from_media_info)
-            .unwrap_or_default();
-        if let Some(media_info) = media_info.as_ref() {
+        let mut media_info = self.probe_media_info(path, media_kind).await;
+        let mut streams = Vec::new();
+        if let Some(media_info) = media_info.as_mut() {
+            let attachment_images = media_info
+                .media_attachments
+                .iter()
+                .filter_map(|attachment| {
+                    attachment_image_type(attachment)
+                        .map(|image_type| (attachment.index, image_type))
+                })
+                .collect::<Vec<_>>();
+            let video_stream_index = media_info
+                .media_streams
+                .iter()
+                .find(|stream| stream.stream_type == MediaStreamType::Video)
+                .map(|stream| stream.index);
             let probed_attachments = attachments_from_media_info(media_info);
             self.attachments
                 .replace(item_id, &probed_attachments)
@@ -1623,8 +1652,15 @@ impl LibraryScanService {
             self.chapters
                 .replace(item_id, chapters_from_media_info(media_info))
                 .await?;
-            self.discover_embedded_images(item_id, path, media_info)
-                .await?;
+            self.discover_embedded_images(
+                item_id,
+                path,
+                &attachment_images,
+                video_stream_index,
+                media_info.runtime_ticks,
+            )
+            .await?;
+            streams = streams_from_media_info(media_info);
         }
         if media_kind == MediaKind::Video
             && let Some(keyframes) = self.probe_keyframes(path).await
@@ -1651,10 +1687,12 @@ impl LibraryScanService {
     }
 
     async fn probe_keyframes(&self, path: &str) -> Option<KeyframeData> {
-        let probe_path = self.probe_path.clone();
+        let probe_path = Arc::clone(&self.probe_path);
         let probe_input = path.to_owned();
-        match tokio::task::spawn_blocking(move || extract_keyframes(&probe_path, &probe_input))
-            .await
+        match tokio::task::spawn_blocking(move || {
+            extract_keyframes(probe_path.as_path(), &probe_input)
+        })
+        .await
         {
             Ok(Ok(keyframes)) => Some(keyframes),
             Ok(Err(error)) => {
@@ -1730,9 +1768,12 @@ impl LibraryScanService {
         &self,
         item_id: Uuid,
         path: &str,
-        media_info: &MediaInfo,
+        attachment_images: &[(i32, BaseItemImageType)],
+        video_stream_index: Option<i32>,
+        runtime_ticks: Option<i64>,
     ) -> Result<(), LibraryScanError> {
-        tokio::fs::create_dir_all(&self.image_cache_directory).await?;
+        let image_cache_directory = self.image_cache_directory();
+        tokio::fs::create_dir_all(image_cache_directory.as_path()).await?;
         let mut has_primary = false;
         for image in self.images.list(item_id).await? {
             if image.image_type == BaseItemImageType::Primary {
@@ -1741,15 +1782,11 @@ impl LibraryScanService {
             }
         }
 
-        for attachment in &media_info.media_attachments {
-            let Some(image_type) = attachment_image_type(attachment) else {
-                continue;
-            };
-            let output = self
-                .image_cache_directory
-                .join(format!("embedded-{item_id}-{}.jpg", attachment.index));
+        for &(stream_index, image_type) in attachment_images {
+            let output =
+                image_cache_directory.join(format!("embedded-{item_id}-{stream_index}.jpg"));
             if self
-                .extract_attachment_image(path, attachment.index, &output)
+                .extract_attachment_image(path, stream_index, &output)
                 .await
             {
                 self.persist_generated_image(item_id, image_type, &output)
@@ -1760,19 +1797,12 @@ impl LibraryScanService {
             }
         }
 
-        if !has_primary
-            && let Some(video_stream) = media_info
-                .media_streams
-                .iter()
-                .find(|stream| stream.stream_type == MediaStreamType::Video)
-        {
-            let offset_ticks = media_info
-                .runtime_ticks
+        if !has_primary && let Some(video_stream_index) = video_stream_index {
+            let offset_ticks = runtime_ticks
                 .filter(|runtime| *runtime > 0)
                 .map_or(10 * 10_000_000, |runtime| runtime / 10);
-            let output = self
-                .image_cache_directory
-                .join(format!("screenshot-{item_id}-{}.jpg", video_stream.index));
+            let output = image_cache_directory
+                .join(format!("screenshot-{item_id}-{video_stream_index}.jpg"));
             if self.extract_video_frame(path, offset_ticks, &output).await {
                 self.persist_generated_image(item_id, BaseItemImageType::Primary, &output)
                     .await?;
@@ -1787,7 +1817,8 @@ impl LibraryScanService {
         stream_index: i32,
         output: &Path,
     ) -> bool {
-        let status = tokio::process::Command::new(&self.ffmpeg_path)
+        let ffmpeg_path = self.ffmpeg_path();
+        let status = tokio::process::Command::new(ffmpeg_path.as_path())
             .args([
                 "-y",
                 "-i",
@@ -1806,7 +1837,8 @@ impl LibraryScanService {
     #[allow(clippy::cast_precision_loss)]
     async fn extract_video_frame(&self, input: &str, offset_ticks: i64, output: &Path) -> bool {
         let seconds = format!("{:.6}", offset_ticks as f64 / 10_000_000.0);
-        let status = tokio::process::Command::new(&self.ffmpeg_path)
+        let ffmpeg_path = self.ffmpeg_path();
+        let status = tokio::process::Command::new(ffmpeg_path.as_path())
             .args(["-y", "-ss", &seconds, "-i", input, "-frames:v", "1"])
             .arg(output)
             .output()
@@ -1853,7 +1885,7 @@ impl LibraryScanService {
     }
 
     async fn probe_media_info(&self, path: &str, media_kind: MediaKind) -> Option<MediaInfo> {
-        let probe_path = self.probe_path.clone();
+        let probe_path = Arc::clone(&self.probe_path);
         let probe_input = path.to_owned();
         match tokio::task::spawn_blocking(move || {
             probe_media_info(&probe_path, &probe_input, media_kind)
@@ -1923,7 +1955,7 @@ struct MusicScanEntry {
     path: PathBuf,
     parent_id: Uuid,
     parent_kind: LibraryParentKind,
-    parent_path: Option<String>,
+    parent_path: Option<Arc<str>>,
     is_root: bool,
 }
 
@@ -2137,6 +2169,14 @@ fn clean_series_name(name: &str) -> String {
     name.trim().replace(['.', '_'], " ")
 }
 
+fn extra_entries_for_files(files: &[(PathBuf, MediaKind)]) -> Vec<ExtraFileSystemEntry> {
+    files
+        .iter()
+        .filter(|(_, media_kind)| matches!(media_kind, MediaKind::Video | MediaKind::Audio))
+        .map(|(path, _)| ExtraFileSystemEntry::new(path.to_string_lossy().into_owned(), false))
+        .collect()
+}
+
 fn bool_option(options: &Value, key: &str, default: bool) -> bool {
     options.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
@@ -2155,7 +2195,7 @@ fn collection_allows_photos(collection_type: Option<&str>, options: &Value) -> b
 fn apply_probed_item_metadata(
     item: &mut jellyfin_data::entities::base_item::Model,
     path: &str,
-    media_info: &MediaInfo,
+    media_info: &mut MediaInfo,
 ) -> bool {
     let mut changed = false;
     let data = merged_media_item_data(item.data.as_ref(), path, Some(media_info));
@@ -2184,13 +2224,13 @@ fn apply_probed_item_metadata(
     if let Some(overview) = media_info.overview.as_ref()
         && item.overview.as_deref() != Some(overview)
     {
-        item.overview = Some(overview.clone());
+        item.overview = media_info.overview.take();
         changed = true;
     }
     if let Some(sort_name) = media_info.forced_sort_name.as_ref()
         && item.sort_name.as_deref() != Some(sort_name)
     {
-        item.sort_name = Some(sort_name.clone());
+        item.sort_name = media_info.forced_sort_name.take();
         changed = true;
     }
     changed
@@ -2801,41 +2841,40 @@ fn probe_media_info(
     )
 }
 
-fn streams_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaStream> {
-    media_info
-        .media_streams
-        .iter()
+fn streams_from_media_info(media_info: &mut MediaInfo) -> Vec<PersistedMediaStream> {
+    std::mem::take(&mut media_info.media_streams)
+        .into_iter()
         .map(stream_from_probe)
         .collect()
 }
 
-fn attachments_from_media_info(media_info: &MediaInfo) -> Vec<PersistedMediaAttachment> {
-    media_info
-        .media_attachments
-        .iter()
+fn attachments_from_media_info(media_info: &mut MediaInfo) -> Vec<PersistedMediaAttachment> {
+    std::mem::take(&mut media_info.media_attachments)
+        .into_iter()
         .map(attachment_from_probe)
         .collect()
 }
 
-fn chapters_from_media_info(media_info: &MediaInfo) -> Vec<NewChapter> {
+fn chapters_from_media_info(media_info: &mut MediaInfo) -> Vec<NewChapter> {
     let runtime_ticks = media_info.runtime_ticks.unwrap_or_default();
-    media_info
-        .chapters
-        .iter()
-        .enumerate()
-        .map(|(index, chapter)| {
-            let end_position_ticks = media_info
-                .chapters
-                .get(index + 1)
-                .map_or(runtime_ticks, |next| next.start_position_ticks);
-            NewChapter {
-                index_number: i32::try_from(index).unwrap_or(i32::MAX),
-                start_position_ticks: chapter.start_position_ticks,
-                end_position_ticks: end_position_ticks.max(chapter.start_position_ticks),
-                name: chapter.name.clone(),
-            }
-        })
-        .collect()
+    let mut chapters = std::mem::take(&mut media_info.chapters)
+        .into_iter()
+        .peekable();
+    std::iter::from_fn(|| {
+        let chapter = chapters.next()?;
+        let end_position_ticks = chapters
+            .peek()
+            .map_or(runtime_ticks, |next| next.start_position_ticks);
+        Some((chapter, end_position_ticks))
+    })
+    .enumerate()
+    .map(|(index, (chapter, end_position_ticks))| NewChapter {
+        index_number: i32::try_from(index).unwrap_or(i32::MAX),
+        start_position_ticks: chapter.start_position_ticks,
+        end_position_ticks: end_position_ticks.max(chapter.start_position_ticks),
+        name: chapter.name,
+    })
+    .collect()
 }
 
 fn resolve_external_subtitle_streams_from_entries(
@@ -2872,56 +2911,64 @@ fn external_stream_from_resolved(
     mapper.to_persisted(stream)
 }
 
-fn attachment_from_probe(attachment: &ProbedMediaAttachment) -> PersistedMediaAttachment {
+fn attachment_from_probe(attachment: ProbedMediaAttachment) -> PersistedMediaAttachment {
     PersistedMediaAttachment {
         attachment_index: attachment.index,
-        codec: Some(attachment.codec.clone()),
-        codec_tag: attachment.codec_tag.clone(),
-        comment: attachment.comment.clone(),
-        file_name: attachment.file_name.clone(),
-        mime_type: attachment.mime_type.clone(),
+        codec: Some(attachment.codec),
+        codec_tag: attachment.codec_tag,
+        comment: attachment.comment,
+        file_name: attachment.file_name,
+        mime_type: attachment.mime_type,
         delivery_url: None,
     }
 }
 
-fn stream_from_probe(stream: &ProbedMediaStream) -> PersistedMediaStream {
+fn stream_from_probe(stream: ProbedMediaStream) -> PersistedMediaStream {
+    let is_interlaced = stream.is_interlaced();
+    let is_default = stream.is_default();
+    let is_forced = stream.is_forced();
+    let is_external = stream.is_external();
+    let is_original = stream.is_original();
+    let is_anamorphic = stream.is_anamorphic();
+    let is_avc = stream.is_avc();
+    let is_hearing_impaired = stream.is_hearing_impaired();
     PersistedMediaStream {
         stream_index: stream.index,
         stream_type: stream_type_from_probe(stream.stream_type),
-        codec: non_empty_string(&stream.codec),
-        language: stream.language.clone(),
+        codec: non_empty_owned_string(stream.codec),
+        language: stream.language,
         channel_layout: None,
-        profile: stream.profile.clone(),
-        aspect_ratio: stream.aspect_ratio.clone(),
+        profile: stream.profile,
+        aspect_ratio: stream.aspect_ratio,
         path: None,
-        is_interlaced: Some(stream.is_interlaced()),
+        is_interlaced: Some(is_interlaced),
         bit_rate: stream.bit_rate.and_then(i32_from_i64),
         channels: stream.channels.and_then(i32_from_u32),
         sample_rate: None,
-        is_default: stream.is_default(),
-        is_forced: stream.is_forced(),
-        is_external: stream.is_external(),
-        is_original: stream.is_original(),
+        is_default,
+        is_forced,
+        is_external,
+        is_original,
         height: stream.height,
         width: stream.width,
         average_frame_rate: stream.average_frame_rate,
         real_frame_rate: stream.real_frame_rate,
         level: stream.level.map(f64_to_f32),
-        pixel_format: stream.pixel_format.clone(),
+        pixel_format: stream.pixel_format,
         bit_depth: stream.bit_depth,
-        is_anamorphic: Some(stream.is_anamorphic()),
+        is_anamorphic: Some(is_anamorphic),
         ref_frames: stream.ref_frames,
         codec_tag: None,
         comment: None,
-        nal_length_size: stream.nal_length_size.clone(),
-        is_avc: Some(stream.is_avc()),
-        title: stream.title.clone(),
-        time_base: stream.time_base.clone(),
-        codec_time_base: stream.codec_time_base.clone(),
-        color_range: stream.color_range.clone(),
-        color_primaries: stream.color_primaries.clone(),
-        color_space: stream.color_space.clone(),
-        color_transfer: stream.color_transfer.clone(),
+        nal_length_size: stream.nal_length_size,
+        is_avc: Some(is_avc),
+        title: stream.title,
+        time_base: stream.time_base,
+        codec_time_base: stream.codec_time_base,
+        color_range: stream.color_range,
+        color_primaries: stream.color_primaries,
+        color_space: stream.color_space,
+        color_transfer: stream.color_transfer,
         dv_version_major: stream.dv_version_major,
         dv_version_minor: stream.dv_version_minor,
         dv_profile: stream.dv_profile,
@@ -2930,7 +2977,7 @@ fn stream_from_probe(stream: &ProbedMediaStream) -> PersistedMediaStream {
         el_present_flag: stream.el_present_flag,
         bl_present_flag: stream.bl_present_flag,
         dv_bl_signal_compatibility_id: stream.dv_bl_signal_compatibility_id,
-        is_hearing_impaired: Some(stream.is_hearing_impaired()),
+        is_hearing_impaired: Some(is_hearing_impaired),
         rotation: stream.rotation,
         hdr10_plus_present_flag: stream.hdr10_plus_present_flag,
     }
@@ -2954,8 +3001,8 @@ const fn stream_type_from_probe(stream_type: MediaStreamType) -> PersistedMediaS
     }
 }
 
-fn non_empty_string(value: &str) -> Option<String> {
-    (!value.is_empty()).then(|| value.to_owned())
+fn non_empty_owned_string(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
 }
 
 fn i32_from_i64(value: i64) -> Option<i32> {
@@ -3363,7 +3410,7 @@ mod tests {
 
     #[test]
     fn probed_media_streams_map_to_persisted_streams() {
-        let media_info = normalize_probe_json(
+        let mut media_info = normalize_probe_json(
             r#"{
                 "streams": [
                     {
@@ -3408,7 +3455,7 @@ mod tests {
         )
         .unwrap();
 
-        let streams = streams_from_media_info(&media_info);
+        let streams = streams_from_media_info(&mut media_info);
 
         assert_eq!(streams.len(), 3);
         let video = &streams[0];
@@ -3441,7 +3488,7 @@ mod tests {
 
     #[test]
     fn probed_streams_drop_persistence_values_that_do_not_fit() {
-        let media_info = normalize_probe_json(
+        let mut media_info = normalize_probe_json(
             r#"{
                 "streams": [{
                     "index": 0,
@@ -3458,7 +3505,7 @@ mod tests {
         )
         .unwrap();
 
-        let streams = streams_from_media_info(&media_info);
+        let streams = streams_from_media_info(&mut media_info);
 
         assert_eq!(streams[0].bit_rate, None);
     }
@@ -3510,7 +3557,7 @@ mod tests {
 
     #[test]
     fn probed_attachments_map_to_persisted_rows() {
-        let media_info = normalize_probe_json(
+        let mut media_info = normalize_probe_json(
             r#"{
                 "streams": [{
                     "index": 4,
@@ -3531,7 +3578,7 @@ mod tests {
         )
         .unwrap();
 
-        let attachments = attachments_from_media_info(&media_info);
+        let attachments = attachments_from_media_info(&mut media_info);
 
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].attachment_index, 4);
@@ -3594,7 +3641,7 @@ mod tests {
 
     #[test]
     fn probed_item_metadata_updates_runtime_and_embedded_fields() {
-        let media_info = normalize_probe_json(
+        let mut media_info = normalize_probe_json(
             r#"{
                 "streams": [],
                 "format": {
@@ -3651,7 +3698,7 @@ mod tests {
         assert!(apply_probed_item_metadata(
             &mut item,
             "/media/Movie.mkv",
-            &media_info
+            &mut media_info
         ));
 
         assert_eq!(item.runtime_ticks, Some(3_000_000_000));

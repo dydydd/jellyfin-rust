@@ -315,6 +315,13 @@ pub struct TranscodeJobHandle {
 }
 
 impl TranscodeJobHandle {
+    fn shared_handle(&self) -> Self {
+        Self {
+            running: Arc::clone(&self.running),
+            cancel: Arc::clone(&self.cancel),
+        }
+    }
+
     #[must_use]
     pub fn running(&self) -> bool {
         self.running.load(Ordering::Acquire)
@@ -424,7 +431,7 @@ impl TranscodeJobRegistry {
             .insert(
                 job_id.clone(),
                 TranscodeJobEntry {
-                    handle: handle.clone(),
+                    handle: handle.shared_handle(),
                     info: TranscodingJobInfo::new(job_id),
                 },
             );
@@ -492,7 +499,7 @@ impl TranscodeJobRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&job_id)
-            .map(|entry| entry.handle.clone())?;
+            .map(|entry| entry.handle.shared_handle())?;
         if !device_id.trim().is_empty() && !play_session_id.trim().is_empty() {
             self.associate(&job_id, device_id, play_session_id);
         }
@@ -619,7 +626,7 @@ impl TranscodeJobRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(job_id)
-            .map(|entry| entry.handle.clone());
+            .map(|entry| entry.handle.shared_handle());
         if let Some(handle) = handle {
             handle.cancel_and_wait().await;
         }
@@ -659,6 +666,26 @@ fn session_key(device_id: &str, play_session_id: &str) -> String {
     format!("{device_id}:{play_session_id}")
 }
 
+/// Borrowed values that determine a stable HLS transcode job identifier.
+#[derive(Clone, Copy, Debug)]
+pub struct HlsJobIdInput<'a> {
+    pub media_source_id: Option<&'a str>,
+    pub start_time_ticks: Option<i64>,
+    pub video_codec: Option<&'a str>,
+    pub audio_codec: Option<&'a str>,
+    pub video_bitrate: Option<i64>,
+    pub audio_bitrate: Option<i64>,
+    pub max_width: Option<i32>,
+    pub max_height: Option<i32>,
+    pub hwaccel: Option<&'a str>,
+    pub subtitle_index: Option<i32>,
+    pub burn_subtitles: bool,
+    pub audio_normalize: bool,
+    pub tonemap_hdr: bool,
+    pub segment_length_ms: i32,
+    pub container: &'a str,
+}
+
 /// Generates a stable job identifier for one transcode URL.
 #[must_use]
 pub fn hls_job_id(
@@ -668,26 +695,51 @@ pub fn hls_job_id(
     target: &TranscodeTarget,
     settings: &HlsSegmentSettings,
 ) -> String {
+    hls_job_id_from_input(
+        item_id,
+        HlsJobIdInput {
+            media_source_id,
+            start_time_ticks,
+            video_codec: target.video_codec.as_deref(),
+            audio_codec: target.audio_codec.as_deref(),
+            video_bitrate: target.video_bitrate,
+            audio_bitrate: target.audio_bitrate,
+            max_width: target.max_width,
+            max_height: target.max_height,
+            hwaccel: target.hwaccel.as_deref(),
+            subtitle_index: target.subtitle_index,
+            burn_subtitles: target.burn_subtitles,
+            audio_normalize: target.audio_normalize,
+            tonemap_hdr: target.tonemap_hdr,
+            segment_length_ms: settings.segment_length_ms,
+            container: &settings.container,
+        },
+    )
+}
+
+/// Generates a stable job identifier without allocating owned transcode settings.
+#[must_use]
+pub fn hls_job_id_from_input(item_id: Uuid, input: HlsJobIdInput<'_>) -> String {
     use md5::{Digest, Md5};
     let mut digest = Md5::new();
     digest.update(item_id.as_bytes());
-    digest.update(media_source_id.unwrap_or_default().as_bytes());
-    digest.update(start_time_ticks.unwrap_or_default().to_le_bytes());
-    digest.update(target.video_codec.as_deref().unwrap_or_default().as_bytes());
-    digest.update(target.audio_codec.as_deref().unwrap_or_default().as_bytes());
-    digest.update(target.video_bitrate.unwrap_or_default().to_le_bytes());
-    digest.update(target.audio_bitrate.unwrap_or_default().to_le_bytes());
-    digest.update(target.max_width.unwrap_or_default().to_le_bytes());
-    digest.update(target.max_height.unwrap_or_default().to_le_bytes());
-    digest.update(target.hwaccel.as_deref().unwrap_or_default().as_bytes());
-    digest.update(target.subtitle_index.unwrap_or_default().to_le_bytes());
+    digest.update(input.media_source_id.unwrap_or_default().as_bytes());
+    digest.update(input.start_time_ticks.unwrap_or_default().to_le_bytes());
+    digest.update(input.video_codec.unwrap_or_default().as_bytes());
+    digest.update(input.audio_codec.unwrap_or_default().as_bytes());
+    digest.update(input.video_bitrate.unwrap_or_default().to_le_bytes());
+    digest.update(input.audio_bitrate.unwrap_or_default().to_le_bytes());
+    digest.update(input.max_width.unwrap_or_default().to_le_bytes());
+    digest.update(input.max_height.unwrap_or_default().to_le_bytes());
+    digest.update(input.hwaccel.unwrap_or_default().as_bytes());
+    digest.update(input.subtitle_index.unwrap_or_default().to_le_bytes());
     digest.update([
-        u8::from(target.burn_subtitles),
-        u8::from(target.audio_normalize),
-        u8::from(target.tonemap_hdr),
+        u8::from(input.burn_subtitles),
+        u8::from(input.audio_normalize),
+        u8::from(input.tonemap_hdr),
     ]);
-    digest.update(settings.segment_length_ms.to_le_bytes());
-    digest.update(settings.container.as_bytes());
+    digest.update(input.segment_length_ms.to_le_bytes());
+    digest.update(input.container.as_bytes());
     let bytes = digest.finalize();
     let mut job_id = String::with_capacity(17);
     for byte in bytes.iter().take(8) {
@@ -1056,7 +1108,8 @@ mod tests {
             program: PathBuf::from("sleep"),
             arguments: vec!["30".to_owned()],
         };
-        let task_job = job.clone();
+        // ALLOW: the spawned test task shares only the cancellation atomics.
+        let task_job = job.shared_handle();
         let running_job = tokio::spawn(async move { run_ffmpeg(&command, &task_job).await });
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(job.running());

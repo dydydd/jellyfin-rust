@@ -76,7 +76,10 @@ fn file_paths_with_different_casing_return_the_correct_file() {
     let service = DirectoryService::new(file_system);
 
     assert_eq!(service.get_directory(LOWER_FILE).unwrap(), None);
-    assert_eq!(service.get_file(LOWER_FILE).unwrap(), Some(lower_metadata));
+    assert_eq!(
+        service.get_file(LOWER_FILE).unwrap().as_deref(),
+        Some(&lower_metadata)
+    );
     assert_eq!(service.get_directory(UPPER_FILE).unwrap(), None);
     assert_eq!(service.get_file(UPPER_FILE).unwrap(), None);
 }
@@ -97,8 +100,8 @@ fn directory_paths_with_different_casing_return_the_correct_directory() {
     let service = DirectoryService::new(file_system);
 
     assert_eq!(
-        service.get_directory(LOWER_DIRECTORY).unwrap(),
-        Some(lower_metadata)
+        service.get_directory(LOWER_DIRECTORY).unwrap().as_deref(),
+        Some(&lower_metadata)
     );
     assert_eq!(service.get_file(LOWER_DIRECTORY).unwrap(), None);
     assert_eq!(service.get_directory(UPPER_DIRECTORY).unwrap(), None);
@@ -118,8 +121,8 @@ fn cached_file_path_returns_the_cached_file() {
     file_system.set_info(PATH, new_metadata);
     let second_result = service.get_file(PATH).unwrap();
 
-    assert_eq!(result, Some(cached_metadata.clone()));
-    assert_eq!(second_result, Some(cached_metadata));
+    assert_eq!(result.as_deref(), Some(&cached_metadata));
+    assert_eq!(second_result.as_deref(), Some(&cached_metadata));
 }
 
 #[test]

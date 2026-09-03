@@ -155,17 +155,21 @@ pub(crate) async fn post_playback_info(
     let identity = authentication::authenticated_session(&state, &headers).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let body = optional_playback_body(body)?;
-    let target_user_id = query
-        .user_id
-        .or_else(|| body.as_ref().and_then(|body| body.user_id))
-        .unwrap_or(identity.user.id);
-    let media_source_id = query.media_source_id.as_deref().or_else(|| {
-        body.as_ref()
-            .and_then(|body| body.media_source_id.as_deref())
-    });
-    let max_streaming_bitrate = query
-        .max_streaming_bitrate
-        .or_else(|| body.as_ref().and_then(|body| body.max_streaming_bitrate));
+    let (body_user_id, body_media_source_id, body_max_streaming_bitrate, device_profile) = body
+        .map_or((None, None, None, None), |body| {
+            (
+                body.user_id,
+                body.media_source_id,
+                body.max_streaming_bitrate,
+                body.device_profile,
+            )
+        });
+    let target_user_id = query.user_id.or(body_user_id).unwrap_or(identity.user.id);
+    let media_source_id = query
+        .media_source_id
+        .as_deref()
+        .or(body_media_source_id.as_deref());
+    let max_streaming_bitrate = query.max_streaming_bitrate.or(body_max_streaming_bitrate);
     playback_info(
         &state,
         &identity.user,
@@ -173,7 +177,7 @@ pub(crate) async fn post_playback_info(
         item_id,
         media_source_id,
         max_streaming_bitrate,
-        body.as_ref().and_then(|body| body.device_profile.as_ref()),
+        device_profile,
         &identity.device.device_id,
         &identity.access_token,
         remote_ip,
@@ -256,7 +260,7 @@ async fn playback_info(
     item_id: Uuid,
     media_source_id: Option<&str>,
     max_streaming_bitrate: Option<i32>,
-    device_profile: Option<&DeviceProfile>,
+    device_profile: Option<DeviceProfile>,
     device_id: &str,
     access_token: &str,
     remote_ip: std::net::IpAddr,
@@ -365,11 +369,11 @@ fn sort_media_sources(
 
 #[allow(clippy::too_many_arguments)]
 fn apply_stream_builder(
-    media_sources: &mut [MediaSourceInfo],
+    media_sources: &mut Vec<MediaSourceInfo>,
     authenticated_user: &jellyfin_data::entities::user::Model,
     state: &AppState,
     item_id: Uuid,
-    device_profile: Option<&DeviceProfile>,
+    device_profile: Option<DeviceProfile>,
     max_streaming_bitrate: &mut Option<i32>,
     device_id: &str,
     access_token: &str,
@@ -383,8 +387,8 @@ fn apply_stream_builder(
     let is_video = media_sources
         .first()
         .is_some_and(|source| source.video_stream().is_some());
-    let policy: jellyfin_model::UserPolicy =
-        serde_json::from_value(authenticated_user.policy.clone()).unwrap_or_default();
+    let policy =
+        jellyfin_model::UserPolicy::deserialize(&authenticated_user.policy).unwrap_or_default();
     let remote_client_bitrate_limit = policy.remote_client_bitrate_limit;
     if !state.network_manager.is_in_local_network(remote_ip) && remote_client_bitrate_limit > 0 {
         *max_streaming_bitrate = Some(
@@ -396,7 +400,11 @@ fn apply_stream_builder(
     let is_audio = media_sources
         .first()
         .is_some_and(|source| source.video_stream().is_none());
-    let options = MediaOptions {
+    let media_source_id = media_sources
+        .first()
+        .and_then(|source| source.id.as_deref())
+        .map(str::to_owned);
+    let mut options = MediaOptions {
         enable_transcoding: if is_audio {
             policy.enable_audio_playback_transcoding
         } else {
@@ -407,12 +415,9 @@ fn apply_stream_builder(
         enable_playback_remuxing: policy.enable_playback_remuxing,
         force_remote_source_transcoding: policy.force_remote_source_transcoding,
         item_id,
-        media_sources: media_sources.to_vec(),
-        profile: profile.clone(),
-        media_source_id: media_sources
-            .first()
-            .and_then(|source| source.id.as_deref())
-            .map(str::to_owned),
+        media_sources: std::mem::take(media_sources),
+        profile,
+        media_source_id,
         device_id: Some(device_id.to_owned()),
         max_bitrate: *max_streaming_bitrate,
         audio_transcoding_bitrate: *max_streaming_bitrate,
@@ -421,30 +426,33 @@ fn apply_stream_builder(
     };
     let builder =
         StreamBuilder::with_encodable_audio_codecs(["aac", "mp3", "opus", "flac", "ac3", "eac3"]);
-    let stream = if is_video {
-        builder.get_optimal_video_stream(&options)
+    let selection = if is_video {
+        builder.take_optimal_video_stream(&mut options)
     } else {
-        builder.get_optimal_audio_stream(&options)
+        builder.take_optimal_audio_stream(&mut options)
     };
-    let Ok(Some(mut stream)) = stream else {
+    let Ok(Some((source_index, mut stream))) = selection else {
+        *media_sources = options.media_sources;
         return;
     };
     stream.play_session_id = Some(play_session_id.to_owned());
-    if let Some(source) = media_sources.iter_mut().find(|source| {
-        source.id.as_deref().is_some_and(|id| {
-            stream
-                .media_source_id()
-                .is_some_and(|stream_id| id.eq_ignore_ascii_case(stream_id))
-        })
-    }) {
+    if let Some(source) = stream.media_source.as_mut() {
         source.supports_transcoding = policy_can_transcode(&policy, is_audio);
-        if stream.play_method != PlayMethod::DirectPlay && policy_can_transcode(&policy, is_audio) {
-            let url = stream.to_url(base_url, Some(access_token), None);
-            if !url.is_empty() {
-                source.transcoding_url = Some(url);
-            }
+    }
+    if stream.play_method != PlayMethod::DirectPlay && policy_can_transcode(&policy, is_audio) {
+        let url = stream.to_url(base_url, Some(access_token), None);
+        if !url.is_empty()
+            && let Some(source) = stream.media_source.as_mut()
+        {
+            source.transcoding_url = Some(url);
         }
     }
+    let source = stream
+        .media_source
+        .take()
+        .expect("selected stream always owns its media source");
+    options.media_sources.insert(source_index, source);
+    *media_sources = options.media_sources;
 }
 
 const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: bool) -> bool {
@@ -659,7 +667,7 @@ mod tests {
             &test_user(),
             &test_state(),
             item_id,
-            Some(&profile),
+            Some(profile),
             &mut None,
             "device-id",
             "access-token",

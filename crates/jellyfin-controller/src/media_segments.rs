@@ -2,7 +2,6 @@ use jellyfin_data::{
     MediaSegmentRecord, MediaSegmentRepository, MediaSegmentStoreError, NewMediaSegment,
 };
 use jellyfin_model::{MediaSegmentDto, MediaSegmentType};
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -20,7 +19,7 @@ pub struct MediaSegmentManagerService {
 
 impl MediaSegmentManagerService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         Self {
             repository: MediaSegmentRepository::new(database),
         }

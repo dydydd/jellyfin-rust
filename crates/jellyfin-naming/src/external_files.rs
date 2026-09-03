@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::common::NamingOptions;
 
@@ -28,11 +30,11 @@ impl LanguageInfo {
         }
     }
 
-    fn parser_language(&self) -> Option<String> {
+    fn into_parser_language(self) -> Option<String> {
         if self.name.contains('-') {
-            Some(self.name.clone())
+            Some(self.name)
         } else {
-            self.three_letter_iso_language_name.clone()
+            self.three_letter_iso_language_name
         }
     }
 }
@@ -68,19 +70,19 @@ impl ExternalPathParserResult {
 
 /// Parses metadata tokens from external media paths.
 pub struct ExternalPathParser<'a, L: LocalizationManager + ?Sized> {
-    naming_options: NamingOptions,
+    naming_options: Arc<NamingOptions>,
     localization_manager: &'a L,
     profile_type: DlnaProfileType,
 }
 
 impl<'a, L: LocalizationManager + ?Sized> ExternalPathParser<'a, L> {
     pub fn new(
-        naming_options: NamingOptions,
+        naming_options: impl Into<Arc<NamingOptions>>,
         localization_manager: &'a L,
         profile_type: DlnaProfileType,
     ) -> Self {
         Self {
-            naming_options,
+            naming_options: naming_options.into(),
             localization_manager,
             profile_type,
         }
@@ -104,10 +106,13 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalPathParser<'a, L> {
         let mut extra_string = extra_string.to_owned();
 
         for separator in &self.naming_options.media_flag_delimiters {
-            let mut language_string = extra_string.clone();
+            let snapshot = std::mem::take(&mut extra_string);
+            let mut filtered = Cow::Borrowed(snapshot.as_str());
+            let mut language_end = snapshot.len();
             let mut title_string = String::new();
 
-            while !language_string.is_empty() {
+            while language_end > 0 {
+                let language_string = &snapshot[..language_end];
                 let Some(last_separator) = language_string.rfind(*separator) else {
                     break;
                 };
@@ -119,8 +124,12 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalPathParser<'a, L> {
                     &self.naming_options.media_default_flags,
                 ) {
                     result.is_default = true;
-                    extra_string = replace_case_insensitive(&extra_string, current_slice, "");
-                    language_string.truncate(last_separator);
+                    filtered = Cow::Owned(replace_case_insensitive(
+                        filtered.as_ref(),
+                        current_slice,
+                        "",
+                    ));
+                    language_end = last_separator;
                     continue;
                 }
 
@@ -129,25 +138,32 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalPathParser<'a, L> {
                     &self.naming_options.media_forced_flags,
                 ) {
                     result.is_forced = true;
-                    extra_string = replace_case_insensitive(&extra_string, current_slice, "");
-                    language_string.truncate(last_separator);
+                    filtered = Cow::Owned(replace_case_insensitive(
+                        filtered.as_ref(),
+                        current_slice,
+                        "",
+                    ));
+                    language_end = last_separator;
                     continue;
                 }
 
                 let culture = self
                     .localization_manager
                     .find_language_info(without_separator);
-                if let Some(culture) = culture.as_ref().filter(|_| result.language.is_none()) {
-                    result.language = culture.parser_language();
-                    extra_string = replace_case_insensitive(&extra_string, current_slice, "");
-                } else if let Some(culture) = culture
-                    .as_ref()
-                    .filter(|_| result.language.as_deref() == Some("hin"))
+                let hindi_hearing_impaired = result.language.as_deref() == Some("hin");
+                if let Some(culture) =
+                    culture.filter(|_| result.language.is_none() || hindi_hearing_impaired)
                 {
-                    // `hi` is both Hindi's ISO code and a hearing-impaired flag.
-                    result.is_hearing_impaired = true;
-                    result.language = culture.parser_language();
-                    extra_string = replace_case_insensitive(&extra_string, current_slice, "");
+                    if hindi_hearing_impaired {
+                        // `hi` is both Hindi's ISO code and a hearing-impaired flag.
+                        result.is_hearing_impaired = true;
+                    }
+                    result.language = culture.into_parser_language();
+                    filtered = Cow::Owned(replace_case_insensitive(
+                        filtered.as_ref(),
+                        current_slice,
+                        "",
+                    ));
                 } else if self
                     .naming_options
                     .media_hearing_impaired_flags
@@ -155,15 +171,23 @@ impl<'a, L: LocalizationManager + ?Sized> ExternalPathParser<'a, L> {
                     .any(|flag| without_separator.eq_ignore_ascii_case(flag))
                 {
                     result.is_hearing_impaired = true;
-                    extra_string = replace_case_insensitive(&extra_string, current_slice, "");
+                    filtered = Cow::Owned(replace_case_insensitive(
+                        filtered.as_ref(),
+                        current_slice,
+                        "",
+                    ));
                 } else {
                     title_string.insert_str(0, current_slice);
                 }
 
-                language_string.truncate(last_separator);
+                language_end = last_separator;
             }
 
             result.title = title_string.strip_prefix(*separator).map(ToOwned::to_owned);
+            extra_string = match filtered {
+                Cow::Borrowed(_) => snapshot,
+                Cow::Owned(filtered) => filtered,
+            };
         }
 
         Some(result)

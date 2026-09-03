@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::Arc};
 
 use crate::{NamingOptions, StackFileInfo, StackResolver};
 
@@ -207,13 +207,15 @@ pub struct AudioBookInfo {
 }
 
 pub struct AudioBookListResolver {
-    options: NamingOptions,
+    options: Arc<NamingOptions>,
 }
 
 impl AudioBookListResolver {
     #[must_use]
-    pub fn new(options: NamingOptions) -> Self {
-        Self { options }
+    pub fn new(options: impl Into<Arc<NamingOptions>>) -> Self {
+        Self {
+            options: options.into(),
+        }
     }
 
     #[must_use]

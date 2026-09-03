@@ -12,12 +12,13 @@ use jellyfin_model::{
 use md5::{Digest, Md5};
 use sea_orm::{
     ActiveValue::NotSet,
-    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    FromQueryResult, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, SqlErr, Statement,
-    TransactionTrait, TryInsertResult,
+    ColumnTrait, Condition, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, SqlErr, Statement, TransactionTrait,
+    TryInsertResult,
     sea_query::Value,
     sea_query::{Expr, OnConflict},
 };
+use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
 use uuid::Uuid;
@@ -62,12 +63,14 @@ pub enum UserError {
 
 #[derive(Clone)]
 pub struct UserService {
-    database: DatabaseConnection,
+    database: jellyfin_data::SharedDatabase,
 }
 
 impl UserService {
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Lists enabled authentication providers in Jellyfin's official order.
@@ -118,7 +121,7 @@ impl UserService {
         } else {
             user::Entity::find()
                 .filter(user::Column::NormalizedUsername.eq(normalize_username(entered_username)))
-                .one(&self.database)
+                .one(self.database.as_ref())
                 .await?
         };
 
@@ -149,7 +152,7 @@ impl UserService {
                     ])
                     .to_owned(),
             )
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         }
 
@@ -195,12 +198,14 @@ impl UserService {
             return Err(UserError::PasswordResetPinNotFound);
         }
 
-        let user_ids = resets.iter().map(|reset| reset.user_id).collect::<Vec<_>>();
-        let reset_ids = resets.iter().map(|reset| reset.id).collect::<Vec<_>>();
-        let users_reset = resets
-            .iter()
-            .map(|reset| reset.user_name.clone())
-            .collect::<Vec<_>>();
+        let mut user_ids = Vec::with_capacity(resets.len());
+        let mut reset_ids = Vec::with_capacity(resets.len());
+        let mut users_reset = Vec::with_capacity(resets.len());
+        for reset in resets {
+            user_ids.push(reset.user_id);
+            reset_ids.push(reset.id);
+            users_reset.push(reset.user_name);
+        }
         let updated = user::Entity::update_many()
             .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
             .filter(user::Column::Id.is_in(user_ids))
@@ -296,7 +301,7 @@ impl UserService {
                 .to_owned(),
         )
         .do_nothing()
-        .exec_with_returning(&self.database)
+        .exec_with_returning(self.database.as_ref())
         .await;
 
         // SeaORM 1.1 converts a zero-row `DO NOTHING RETURNING` result into
@@ -319,7 +324,7 @@ impl UserService {
     /// [`UserError::Database`] when the query fails.
     pub async fn get(&self, id: Uuid) -> Result<user::Model, UserError> {
         user::Entity::find_by_id(id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?
             .ok_or(UserError::NotFound)
     }
@@ -333,7 +338,7 @@ impl UserService {
         &self,
         user_id: Uuid,
     ) -> Result<Option<user_profile_image::Model>, UserProfileImageStoreError> {
-        UserProfileImageRepository::new(self.database.clone())
+        UserProfileImageRepository::new(std::sync::Arc::clone(&self.database))
             .get(user_id)
             .await
     }
@@ -347,7 +352,7 @@ impl UserService {
         &self,
         image: NewUserProfileImage,
     ) -> Result<user_profile_image::Model, UserProfileImageStoreError> {
-        UserProfileImageRepository::new(self.database.clone())
+        UserProfileImageRepository::new(std::sync::Arc::clone(&self.database))
             .upsert(image)
             .await
     }
@@ -365,7 +370,7 @@ impl UserService {
         &self,
         user_id: Uuid,
     ) -> Result<Option<user_profile_image::Model>, UserProfileImageStoreError> {
-        UserProfileImageRepository::new(self.database.clone())
+        UserProfileImageRepository::new(std::sync::Arc::clone(&self.database))
             .clear(user_id)
             .await
     }
@@ -382,7 +387,7 @@ impl UserService {
         }
         Ok(user::Entity::find()
             .filter(user::Column::NormalizedUsername.eq(normalize_username(name)))
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -395,7 +400,7 @@ impl UserService {
         Ok(user::Entity::find()
             .order_by_asc(user::Column::CreatedAt)
             .order_by_asc(user::Column::Id)
-            .one(&self.database)
+            .one(self.database.as_ref())
             .await?)
     }
 
@@ -427,14 +432,14 @@ impl UserService {
                     .add(user::Column::PasswordHash.is_null())
                     .add(user::Column::PasswordHash.eq("")),
             )
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await;
 
         match update {
             Ok(result) if result.rows_affected == 1 => self.get(id).await,
             Ok(_) => {
                 if user::Entity::find_by_id(id)
-                    .one(&self.database)
+                    .one(self.database.as_ref())
                     .await?
                     .is_some()
                 {
@@ -458,24 +463,24 @@ impl UserService {
     /// [`UserError::Database`] when the update fails.
     pub async fn record_successful_authentication(
         &self,
-        authenticated_user: &user::Model,
+        authenticated_user: user::Model,
     ) -> Result<user::Model, UserError> {
         let now = Utc::now();
-        let mut policy: UserPolicy = serde_json::from_value(authenticated_user.policy.clone())
+        let mut policy = UserPolicy::deserialize(&authenticated_user.policy)
             .map_err(UserError::PolicySerialization)?;
         policy.invalid_login_attempt_count = 0;
         let policy = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
         let result = user::Entity::update_many()
             .col_expr(
                 user::Column::PasswordHash,
-                Expr::value(authenticated_user.password_hash.clone()),
+                Expr::value(authenticated_user.password_hash),
             )
             .col_expr(user::Column::LastLoginDate, Expr::value(now))
             .col_expr(user::Column::LastActivityDate, Expr::value(now))
             .col_expr(user::Column::Policy, Expr::value(policy))
             .col_expr(user::Column::InvalidLoginAttemptCount, Expr::value(0))
             .filter(user::Column::Id.eq(authenticated_user.id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         if result.rows_affected == 0 {
             return Err(UserError::NotFound);
@@ -548,7 +553,7 @@ impl UserService {
                 Expr::value(normalize_username(name)),
             )
             .filter(user::Column::Id.eq(id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await;
         match update {
             Ok(result) if result.rows_affected == 1 => self.get(id).await,
@@ -579,7 +584,7 @@ impl UserService {
         let result = user::Entity::update_many()
             .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
             .filter(user::Column::Id.eq(id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         if result.rows_affected == 0 {
             return Err(UserError::NotFound);
@@ -643,14 +648,20 @@ impl UserService {
         id: Uuid,
         policy: &UserPolicy,
     ) -> Result<(user::Model, bool), UserError> {
-        let mut policy = policy.clone();
-        policy.login_attempts_before_lockout =
+        let login_attempts_before_lockout =
             normalized_login_attempts(policy.login_attempts_before_lockout);
         let authentication_provider_id =
             validate_policy_provider_id(policy.authentication_provider_id.as_deref())?;
         let password_reset_provider_id =
             validate_policy_provider_id(policy.password_reset_provider_id.as_deref())?;
-        let serialized = serde_json::to_value(&policy).map_err(UserError::PolicySerialization)?;
+        let mut serialized =
+            serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+        if let Some(object) = serialized.as_object_mut() {
+            object.insert(
+                "LoginAttemptsBeforeLockout".to_owned(),
+                json!(login_attempts_before_lockout),
+            );
+        }
 
         let transaction = self.database.begin().await?;
         transaction
@@ -707,7 +718,7 @@ impl UserService {
             )
             .col_expr(
                 user::Column::LoginAttemptsBeforeLockout,
-                Expr::value(policy.login_attempts_before_lockout),
+                Expr::value(login_attempts_before_lockout),
             )
             .col_expr(
                 user::Column::IsAdministrator,
@@ -756,7 +767,7 @@ impl UserService {
             )
             .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
             .filter(user::Column::Id.eq(id))
-            .exec(&self.database)
+            .exec(self.database.as_ref())
             .await?;
         if result.rows_affected == 0 {
             return Err(UserError::NotFound);
@@ -793,7 +804,7 @@ impl UserService {
         }
         Ok(query
             .order_by_asc(user::Column::NormalizedUsername)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 
@@ -807,7 +818,7 @@ impl UserService {
             .filter(user::Column::IsHidden.eq(false))
             .filter(user::Column::IsDisabled.eq(false))
             .order_by_asc(user::Column::NormalizedUsername)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?)
     }
 }

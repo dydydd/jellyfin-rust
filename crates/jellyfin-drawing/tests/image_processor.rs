@@ -35,14 +35,17 @@ fn processor(directory: &TempDir) -> ImageProcessor {
 #[tokio::test]
 async fn returns_original_for_default_request() {
     let (directory, source) = fixture(80, 40);
+    // ALLOW: the test retains expected source metadata after exercising the consuming API.
+    let expected_path = source.path.clone();
+    let expected_date_modified = source.date_modified;
     let result = processor(&directory)
-        .process(&source, &ImageProcessingRequest::default())
+        .process(source, ImageProcessingRequest::default())
         .await
         .expect("process original");
 
-    assert_eq!(result.path, source.path);
+    assert_eq!(result.path, expected_path);
     assert_eq!(result.mime_type, "image/png");
-    assert_eq!(result.date_modified, source.date_modified);
+    assert_eq!(result.date_modified, expected_date_modified);
 }
 
 #[tokio::test]
@@ -52,12 +55,14 @@ async fn max_width_resizes_without_changing_aspect_ratio() {
         max_width: Some(20),
         ..ImageProcessingRequest::default()
     };
+    // ALLOW: the test compares the output path with the consumed source path.
+    let source_path = source.path.clone();
     let result = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("resize image");
 
-    assert_ne!(result.path, source.path);
+    assert_ne!(result.path, source_path);
     assert_eq!(image::image_dimensions(result.path).unwrap(), (20, 10));
 }
 
@@ -70,7 +75,7 @@ async fn fill_preserves_aspect_ratio_without_cropping() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("fill image");
     let image = image::open(result.path).expect("decode result").to_rgba8();
@@ -89,7 +94,7 @@ async fn width_and_height_stretch_to_requested_dimensions() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("stretch image");
     let image = image::open(result.path).expect("decode result").to_rgba8();
@@ -108,7 +113,7 @@ async fn converts_format_and_uses_requested_jpeg_quality() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("convert image");
 
@@ -132,8 +137,9 @@ async fn reuses_stable_cache_file() {
         ..ImageProcessingRequest::default()
     };
     let processor = processor(&directory);
+    // ALLOW: the cache test intentionally submits identical owned inputs twice.
     let first = processor
-        .process(&source, &request)
+        .process(source.clone(), request.clone())
         .await
         .expect("first process");
     let first_bytes = fs::read(&first.path).expect("read first cache value");
@@ -141,7 +147,7 @@ async fn reuses_stable_cache_file() {
         .and_then(|metadata| metadata.modified())
         .expect("first cache modification time");
     let second = processor
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("second process");
 
@@ -161,7 +167,7 @@ async fn reports_corrupt_source_as_decode_error() {
         ..ImageProcessingRequest::default()
     };
     let error = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect_err("corrupt image must fail");
 
@@ -171,6 +177,8 @@ async fn reports_corrupt_source_as_decode_error() {
 #[tokio::test]
 async fn normalizes_empty_badges_and_draws_active_decorations() {
     let (directory, source) = fixture(80, 40);
+    // ALLOW: this test intentionally reuses one source across independent requests.
+    let expected_path = source.path.clone();
     let normalized = ImageProcessingRequest {
         percent_played: Some(100.0),
         unplayed_count: Some(0),
@@ -178,11 +186,11 @@ async fn normalizes_empty_badges_and_draws_active_decorations() {
     };
     assert_eq!(
         processor(&directory)
-            .process(&source, &normalized)
+            .process(source.clone(), normalized)
             .await
             .expect("inactive badges")
             .path,
-        source.path
+        expected_path
     );
 
     let decorated = ImageProcessingRequest {
@@ -190,7 +198,7 @@ async fn normalizes_empty_badges_and_draws_active_decorations() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&source, &decorated)
+        .process(source.clone(), decorated)
         .await
         .expect("percent played decoration");
     let result = image::open(result.path).unwrap().to_rgba8();
@@ -202,10 +210,10 @@ async fn normalizes_empty_badges_and_draws_active_decorations() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&source, &unplayed)
+        .process(source, unplayed)
         .await
         .expect("unplayed and foreground decorations");
-    assert_ne!(result.path, source.path);
+    assert_ne!(result.path, expected_path);
 }
 
 #[tokio::test]
@@ -221,7 +229,7 @@ async fn background_color_is_composited_beneath_transparency() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("apply background");
     let result = image::open(result.path).unwrap().to_rgba8();
@@ -243,7 +251,7 @@ async fn resize_preserves_transparency_when_png_is_supported() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("resize transparent source");
 
@@ -261,21 +269,32 @@ async fn resize_preserves_transparency_when_png_is_supported() {
 #[tokio::test]
 async fn supports_all_required_encoded_formats() {
     let (directory, source) = fixture(8, 4);
-    for format in [
+    let formats = [
         ImageFormat::Bmp,
         ImageFormat::Gif,
         ImageFormat::Jpg,
         ImageFormat::Png,
         ImageFormat::Webp,
-    ] {
+    ];
+    let mut source = Some(source);
+    for (index, format) in formats.into_iter().enumerate() {
         let request = ImageProcessingRequest {
             format: Some(format),
             quality: if format == ImageFormat::Png { 80 } else { 90 },
             max_width: Some(4),
             ..ImageProcessingRequest::default()
         };
+        // ALLOW: the format matrix needs an independent owned source for each case.
+        let source = if index + 1 == formats.len() {
+            source.take().expect("source remains for the final format")
+        } else {
+            source
+                .as_ref()
+                .expect("source remains during the format matrix")
+                .clone()
+        };
         let result = processor(&directory)
-            .process(&source, &request)
+            .process(source, request)
             .await
             .unwrap_or_else(|error| panic!("encode {format:?}: {error}"));
         assert_eq!(image::image_dimensions(result.path).unwrap(), (4, 2));
@@ -297,7 +316,7 @@ async fn gif_is_flattened_to_a_static_frame_when_transformed() {
         ..ImageProcessingRequest::default()
     };
     let result = processor(&directory)
-        .process(&gif, &request)
+        .process(gif, request)
         .await
         .expect("flatten gif");
 
@@ -316,7 +335,7 @@ async fn gif_without_transform_returns_original() {
         .expect("write gif fixture");
     let gif = ImageSource::new(gif_path.clone(), SystemTime::now()).with_dimensions(8, 4);
     let result = processor(&directory)
-        .process(&gif, &ImageProcessingRequest::default())
+        .process(gif, ImageProcessingRequest::default())
         .await
         .expect("serve gif unchanged");
 
@@ -331,12 +350,14 @@ async fn chooses_first_supported_format_and_does_not_return_unaccepted_source() 
         supported_formats: vec![ImageFormat::Bmp, ImageFormat::Jpg],
         ..ImageProcessingRequest::default()
     };
+    // ALLOW: the test compares the output path with the consumed source path.
+    let source_path = source.path.clone();
     let result = processor(&directory)
-        .process(&source, &request)
+        .process(source, request)
         .await
         .expect("negotiate format");
 
-    assert_ne!(result.path, source.path);
+    assert_ne!(result.path, source_path);
     assert_eq!(result.mime_type, "image/bmp");
     assert_eq!(result.path.extension().unwrap(), "bmp");
 }

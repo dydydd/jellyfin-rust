@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, sync::Arc};
 
 use jellyfin_model::CollectionType;
 use jellyfin_naming::{AlbumParser, NamingOptions, is_audio_file};
@@ -108,10 +108,10 @@ impl LibraryResolverChain {
 
     #[must_use]
     pub fn default_music_chain() -> Self {
-        let options = NamingOptions::default();
+        let options = Arc::new(NamingOptions::default());
         Self::new(vec![
-            Box::new(MusicArtistResolver::new(options.clone())),
-            Box::new(MusicAlbumResolver::new(options.clone())),
+            Box::new(MusicArtistResolver::new(Arc::clone(&options))),
+            Box::new(MusicAlbumResolver::new(Arc::clone(&options))),
             Box::new(AudioLibraryResolver::new(options)),
         ])
     }
@@ -133,7 +133,7 @@ pub struct MusicArtistResolver {
 
 impl MusicArtistResolver {
     #[must_use]
-    pub fn new(naming_options: NamingOptions) -> Self {
+    pub fn new(naming_options: impl Into<Arc<NamingOptions>>) -> Self {
         Self {
             album_resolver: MusicAlbumResolver::new(naming_options),
         }
@@ -185,15 +185,16 @@ impl LibraryItemResolver for MusicArtistResolver {
 /// files, or a multi-disc container whose subfolders hold the actual tracks.
 #[derive(Debug, Clone)]
 pub struct MusicAlbumResolver {
-    naming_options: NamingOptions,
+    naming_options: Arc<NamingOptions>,
     album_parser: AlbumParser,
 }
 
 impl MusicAlbumResolver {
     #[must_use]
-    pub fn new(naming_options: NamingOptions) -> Self {
+    pub fn new(naming_options: impl Into<Arc<NamingOptions>>) -> Self {
+        let naming_options = naming_options.into();
         Self {
-            album_parser: AlbumParser::new(naming_options.clone()),
+            album_parser: AlbumParser::new(Arc::clone(&naming_options)),
             naming_options,
         }
     }
@@ -270,13 +271,15 @@ impl LibraryItemResolver for MusicAlbumResolver {
 /// Official `AudioResolver` subset for music and audiobook files.
 #[derive(Debug, Clone)]
 pub struct AudioLibraryResolver {
-    naming_options: NamingOptions,
+    naming_options: Arc<NamingOptions>,
 }
 
 impl AudioLibraryResolver {
     #[must_use]
-    pub const fn new(naming_options: NamingOptions) -> Self {
-        Self { naming_options }
+    pub fn new(naming_options: impl Into<Arc<NamingOptions>>) -> Self {
+        Self {
+            naming_options: naming_options.into(),
+        }
     }
 }
 
@@ -295,7 +298,7 @@ impl LibraryItemResolver for AudioLibraryResolver {
                 .iter()
                 .map(|entry| AudioFileSystemEntry::new(&entry.full_name, entry.is_directory))
                 .collect::<Vec<_>>();
-            let resolver = AudioResolver::new(self.naming_options.clone());
+            let resolver = AudioResolver::new(Arc::clone(&self.naming_options));
             return resolver
                 .resolve(AudioResolveArgs {
                     collection_type: args.collection_type,

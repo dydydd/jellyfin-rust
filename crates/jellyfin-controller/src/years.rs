@@ -3,7 +3,6 @@ use jellyfin_data::{
     entities::{base_item, user},
 };
 use md5::{Digest, Md5};
-use sea_orm::DatabaseConnection;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -51,9 +50,10 @@ pub struct YearService {
 
 impl YearService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            users: UserService::new(database.clone()),
+            users: UserService::new(std::sync::Arc::clone(&database)),
             items: BaseItemRepository::new(database),
         }
     }

@@ -6,7 +6,6 @@ use jellyfin_data::{
     entities::base_item,
 };
 use jellyfin_model::{CollectionType, MetadataEditorInfo, NameValuePair};
-use sea_orm::DatabaseConnection;
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -47,10 +46,13 @@ pub struct MetadataEditorService {
 
 impl MetadataEditorService {
     #[must_use]
-    pub fn new(database: DatabaseConnection) -> Self {
+    pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        let database = database.into();
         Self {
-            items: BaseItemRepository::new(database.clone()),
-            server_configuration: ServerConfigurationRepository::new(database.clone()),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            server_configuration: ServerConfigurationRepository::new(std::sync::Arc::clone(
+                &database,
+            )),
             virtual_folders: VirtualFolderRepository::new(database),
             localization: LocalizationService,
         }
@@ -75,8 +77,8 @@ impl MetadataEditorService {
             parental_rating_options: self
                 .localization
                 .parental_ratings(&configuration.metadata_country_code),
-            countries: self.localization.countries(),
-            cultures: self.localization.distinct_sorted_cultures(),
+            countries: self.localization.countries().to_vec(),
+            cultures: self.localization.distinct_sorted_cultures().to_vec(),
             external_id_infos: jellyfin_providers::external_id::external_id_infos(&item.item_type),
             ..MetadataEditorInfo::default()
         };

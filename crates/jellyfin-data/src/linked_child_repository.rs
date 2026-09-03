@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use sea_orm::{
     ActiveValue::Set,
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+    TransactionTrait,
     sea_query::{NullOrdering, OnConflict, Order},
 };
 use thiserror::Error;
@@ -46,13 +46,15 @@ pub enum LinkedChildStoreError {
 
 #[derive(Clone)]
 pub struct LinkedChildRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl LinkedChildRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Lists one parent's links in their persisted presentation order.
@@ -69,7 +71,7 @@ impl LinkedChildRepository {
                 NullOrdering::Last,
             )
             .order_by_asc(linked_child::Column::ChildId)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?
             .into_iter()
             .map(LinkedChild::try_from)

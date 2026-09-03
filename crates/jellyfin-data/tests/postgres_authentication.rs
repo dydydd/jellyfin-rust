@@ -507,8 +507,9 @@ async fn test_device_options(database: &DatabaseConnection) {
     assert_eq!(cleared.id, created.id);
     assert_eq!(cleared.custom_name, None);
 
+    let requested_ids = [device_id.clone(), format!("missing-{suffix}")];
     let found = repository
-        .find_by_device_ids(&[device_id.clone(), format!("missing-{suffix}")])
+        .find_by_device_ids(requested_ids.iter().map(String::as_str))
         .await
         .expect("device options batch lookup must succeed");
     assert_eq!(found, vec![cleared.clone()]);

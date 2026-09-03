@@ -220,7 +220,7 @@ impl<S: SessionStore> SessionManager<S> {
     /// store, or wraps the store's authentication error unchanged.
     pub async fn authenticate_new_session_internal(
         &self,
-        request: &AuthenticationRequest,
+        request: AuthenticationRequest,
         enforce_password: bool,
     ) -> Result<S::AuthenticationResult, SessionManagerError<S::Error>> {
         let validated = validate_authentication_request(request)?;
@@ -245,7 +245,7 @@ impl<S: SessionStore> SessionManager<S> {
         app_version: String,
         device_name: String,
     ) -> Result<String, SessionManagerError<S::Error>> {
-        let device_id = validate_required(device_id.as_ref(), AuthenticationField::DeviceId)?;
+        let device_id = validate_required(device_id, AuthenticationField::DeviceId)?;
         self.store
             .issue_authorization_token(AuthorizationTokenRequest {
                 user_id,
@@ -260,32 +260,26 @@ impl<S: SessionStore> SessionManager<S> {
 }
 
 fn validate_authentication_request(
-    request: &AuthenticationRequest,
+    request: AuthenticationRequest,
 ) -> Result<ValidatedAuthenticationRequest, SessionValidationError> {
     Ok(ValidatedAuthenticationRequest {
-        app: validate_required(request.app.as_ref(), AuthenticationField::App)?,
-        device_id: validate_required(request.device_id.as_ref(), AuthenticationField::DeviceId)?,
-        device_name: validate_required(
-            request.device_name.as_ref(),
-            AuthenticationField::DeviceName,
-        )?,
-        app_version: validate_required(
-            request.app_version.as_ref(),
-            AuthenticationField::AppVersion,
-        )?,
-        username: request.username.clone(),
-        password: request.password.clone(),
+        app: validate_required(request.app, AuthenticationField::App)?,
+        device_id: validate_required(request.device_id, AuthenticationField::DeviceId)?,
+        device_name: validate_required(request.device_name, AuthenticationField::DeviceName)?,
+        app_version: validate_required(request.app_version, AuthenticationField::AppVersion)?,
+        username: request.username,
+        password: request.password,
         is_local_network: request.is_local_network,
     })
 }
 
 fn validate_required(
-    value: Option<&String>,
+    value: Option<String>,
     field: AuthenticationField,
 ) -> Result<String, SessionValidationError> {
     match value {
         None => Err(SessionValidationError::MissingField(field)),
         Some(value) if value.is_empty() => Err(SessionValidationError::EmptyField(field)),
-        Some(value) => Ok(value.clone()),
+        Some(value) => Ok(value),
     }
 }

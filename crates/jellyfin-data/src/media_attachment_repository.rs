@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
-    FromQueryResult, QueryFilter, QueryOrder, Statement, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryFilter,
+    QueryOrder, Statement, TransactionTrait,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -53,13 +53,15 @@ pub enum MediaAttachmentStoreError {
 /// PostgreSQL-backed media-attachment storage.
 #[derive(Clone)]
 pub struct MediaAttachmentRepository {
-    database: DatabaseConnection,
+    database: crate::SharedDatabase,
 }
 
 impl MediaAttachmentRepository {
     #[must_use]
-    pub const fn new(database: DatabaseConnection) -> Self {
-        Self { database }
+    pub fn new(database: impl Into<crate::SharedDatabase>) -> Self {
+        Self {
+            database: database.into(),
+        }
     }
 
     /// Atomically replaces every attachment for one item.
@@ -109,7 +111,7 @@ impl MediaAttachmentRepository {
                       WHERE input.attachment_index = stored.attachment_index
                   )
                 ",
-                [item_id.into(), payload.clone().into()],
+                [item_id.into(), Value::from(payload.as_str()).into()],
             ))
             .await?;
 
@@ -144,7 +146,7 @@ impl MediaAttachmentRepository {
         }
         let rows = select
             .order_by_asc(media_attachment::Column::AttachmentIndex)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
         Ok(rows
             .into_iter()
@@ -172,7 +174,7 @@ impl MediaAttachmentRepository {
             .filter(media_attachment::Column::ItemId.is_in(item_ids.iter().copied()))
             .order_by_asc(media_attachment::Column::ItemId)
             .order_by_asc(media_attachment::Column::AttachmentIndex)
-            .all(&self.database)
+            .all(self.database.as_ref())
             .await?;
 
         let mut grouped = HashMap::with_capacity(item_ids.len());

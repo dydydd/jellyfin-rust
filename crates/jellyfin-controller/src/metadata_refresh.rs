@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use chrono::Weekday;
 use jellyfin_data::{
@@ -13,7 +13,6 @@ use jellyfin_xbmc_metadata::{
     NfoMetadata, NfoPerson, NfoSaveKind, PersonKind as NfoPersonKind, SeriesStatus, nfo_save_path,
     save_nfo,
 };
-use sea_orm::DatabaseConnection;
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -78,29 +77,33 @@ pub struct MetadataRefreshOptions {
 /// TMDB/OMDb/AudioDB providers, followed by local NFO writeback.
 #[derive(Clone)]
 pub struct MetadataRefreshService {
-    items: BaseItemRepository,
-    values: ItemValueRepository,
-    people: PersonRepository,
-    updates: ItemUpdateRepository,
-    images: Option<ItemImageService>,
+    items: Arc<BaseItemRepository>,
+    values: Arc<ItemValueRepository>,
+    people: Arc<PersonRepository>,
+    updates: Arc<ItemUpdateRepository>,
+    images: Option<Arc<ItemImageService>>,
     virtual_folders: VirtualFolderService,
 }
 
 impl MetadataRefreshService {
     #[must_use]
-    pub fn new(database: DatabaseConnection, images: Option<ItemImageService>) -> Self {
+    pub fn new(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        images: Option<Arc<ItemImageService>>,
+    ) -> Self {
+        let database = database.into();
         Self {
-            items: BaseItemRepository::new(database.clone()),
-            values: ItemValueRepository::new(database.clone()),
-            people: PersonRepository::new(database.clone()),
-            updates: ItemUpdateRepository::new(database.clone()),
+            items: Arc::new(BaseItemRepository::new(Arc::clone(&database))),
+            values: Arc::new(ItemValueRepository::new(Arc::clone(&database))),
+            people: Arc::new(PersonRepository::new(Arc::clone(&database))),
+            updates: Arc::new(ItemUpdateRepository::new(Arc::clone(&database))),
             images,
             virtual_folders: VirtualFolderService::new(database),
         }
     }
 
     /// Replaces the image service used by image refreshes.
-    pub fn set_images(&mut self, images: Option<ItemImageService>) {
+    pub fn set_images(&mut self, images: Option<Arc<ItemImageService>>) {
         self.images = images;
     }
 
@@ -133,12 +136,6 @@ impl MetadataRefreshService {
         if full_metadata_refresh {
             provider_order.metadata_fetchers = None;
         }
-        let provider_item = ProviderItem {
-            type_name: item.item_type.clone(),
-            is_locked: is_locked(&item),
-            supports_local_metadata: true,
-            is_owned: false,
-        };
         let mut manager = ProviderManager::new(provider_order, ProviderOrderOptions::default());
         let services = metadata_services_for(&item.item_type);
         if services.is_empty() {
@@ -153,6 +150,17 @@ impl MetadataRefreshService {
             }
             return Ok(false);
         }
+        let image_fetcher_enabled = image_fetcher_enabled(
+            &library_options,
+            &item.item_type,
+            options.image_refresh_mode == MetadataRefreshMode::FullRefresh,
+        );
+        let provider_item = ProviderItem {
+            is_locked: is_locked(&item),
+            type_name: item.item_type,
+            supports_local_metadata: true,
+            is_owned: false,
+        };
         let mut providers = provider_registry();
         if full_metadata_refresh {
             for provider in &mut providers {
@@ -245,7 +253,7 @@ impl MetadataRefreshService {
 
         if options.image_refresh_mode != MetadataRefreshMode::None {
             let full_image_refresh = options.image_refresh_mode == MetadataRefreshMode::FullRefresh;
-            if image_fetcher_enabled(&library_options, &item.item_type, full_image_refresh) {
+            if image_fetcher_enabled {
                 refreshed |= self
                     .refresh_images(item_id, tmdb_api_key, full_image_refresh)
                     .await?;
@@ -256,7 +264,7 @@ impl MetadataRefreshService {
             && let Some(updated) = self.items.get(item_id).await?
             && self.save_local_metadata_enabled(&updated).await?
         {
-            self.save_nfo(&updated).await?;
+            self.save_nfo(updated).await?;
         }
         Ok(refreshed)
     }
@@ -309,40 +317,40 @@ impl MetadataRefreshService {
     fn tmdb_provider(&self, api_key: &str) -> TmdbMetadataProvider {
         TmdbMetadataProvider::new(
             api_key.to_owned(),
-            self.items.clone(),
-            self.values.clone(),
-            self.people.clone(),
-            self.updates.clone(),
-            self.images.clone(),
+            Arc::clone(&self.items),
+            Arc::clone(&self.values),
+            Arc::clone(&self.people),
+            Arc::clone(&self.updates),
+            self.images.as_ref().map(Arc::clone),
         )
     }
 
     fn omdb_provider(&self, api_key: &str) -> OmdbMetadataProvider {
         OmdbMetadataProvider::new(
             api_key.to_owned(),
-            self.items.clone(),
-            self.values.clone(),
-            self.updates.clone(),
+            Arc::clone(&self.items),
+            Arc::clone(&self.values),
+            Arc::clone(&self.updates),
         )
     }
 
     fn audio_db_provider(&self) -> AudioDbMetadataProvider {
-        AudioDbMetadataProvider::new(self.items.clone(), self.updates.clone())
+        AudioDbMetadataProvider::new(Arc::clone(&self.items), Arc::clone(&self.updates))
     }
 
     fn music_brainz_provider(&self) -> MusicBrainzMetadataProvider {
-        MusicBrainzMetadataProvider::new(self.items.clone(), self.updates.clone())
+        MusicBrainzMetadataProvider::new(Arc::clone(&self.items), Arc::clone(&self.updates))
     }
 
     fn google_books_provider(&self) -> GoogleBooksMetadataProvider {
-        GoogleBooksMetadataProvider::new(self.items.clone(), self.updates.clone())
+        GoogleBooksMetadataProvider::new(Arc::clone(&self.items), Arc::clone(&self.updates))
     }
 
     fn tv_maze_provider(&self) -> TvMazeMetadataProvider {
         TvMazeMetadataProvider::new(
-            self.items.clone(),
-            self.values.clone(),
-            self.updates.clone(),
+            Arc::clone(&self.items),
+            Arc::clone(&self.values),
+            Arc::clone(&self.updates),
         )
     }
 
@@ -369,26 +377,22 @@ impl MetadataRefreshService {
         Ok(false)
     }
 
-    async fn save_nfo(&self, item: &base_item::Model) -> Result<(), MetadataRefreshError> {
-        let Some(path) = item.path.as_deref() else {
+    async fn save_nfo(&self, item: base_item::Model) -> Result<(), MetadataRefreshError> {
+        if item.path.is_none() {
             return Ok(());
-        };
-        let path = Path::new(path);
+        }
         match item.item_type.as_str() {
             "Movie" | "Video" | "Trailer" | "MusicVideo" => {
-                ItemUpdateService::write_local_nfo(item).map_err(MetadataRefreshError::Nfo)?;
+                ItemUpdateService::write_local_nfo(&item).map_err(MetadataRefreshError::Nfo)?;
             }
             "Episode" => {
-                self.save_metadata_nfo(NfoSaveKind::Episode, path, item)
-                    .await?;
+                self.save_metadata_nfo(NfoSaveKind::Episode, item).await?;
             }
             "Season" => {
-                self.save_metadata_nfo(NfoSaveKind::Season, path, item)
-                    .await?;
+                self.save_metadata_nfo(NfoSaveKind::Season, item).await?;
             }
             "Series" => {
-                self.save_metadata_nfo(NfoSaveKind::Series, path, item)
-                    .await?;
+                self.save_metadata_nfo(NfoSaveKind::Series, item).await?;
             }
             _ => {}
         }
@@ -398,24 +402,33 @@ impl MetadataRefreshService {
     async fn save_metadata_nfo(
         &self,
         kind: NfoSaveKind,
-        item_path: &Path,
-        item: &base_item::Model,
+        item: base_item::Model,
     ) -> Result<(), MetadataRefreshError> {
+        let item_path = item
+            .path
+            .as_deref()
+            .map(Path::new)
+            .expect("items without paths return before NFO dispatch");
+        let save_path = nfo_save_path(kind, item_path);
         let metadata = self.nfo_metadata(item).await?;
-        save_nfo(&nfo_save_path(kind, item_path), kind, &metadata)
-            .map_err(MetadataRefreshError::Nfo)
+        save_nfo(&save_path, kind, &metadata).map_err(MetadataRefreshError::Nfo)
     }
 
     #[allow(clippy::cast_possible_truncation)]
     async fn nfo_metadata(
         &self,
-        item: &base_item::Model,
+        item: base_item::Model,
     ) -> Result<NfoMetadata, MetadataRefreshError> {
-        let data = item.data.as_ref().and_then(Value::as_object);
+        let mut data = item.data.and_then(|data| match data {
+            Value::Object(data) => Some(data),
+            _ => None,
+        });
+        let provider_ids = provider_ids(data.as_mut().and_then(|data| data.remove("ProviderIds")));
+        let data = data.as_ref();
         let mut metadata = NfoMetadata {
-            name: item.name.clone(),
-            overview: item.overview.clone(),
-            sort_name: item.sort_name.clone(),
+            name: item.name,
+            overview: item.overview,
+            sort_name: item.sort_name,
             original_title: data
                 .and_then(|data| data.get("OriginalTitle"))
                 .and_then(Value::as_str)
@@ -436,11 +449,11 @@ impl MetadataRefreshService {
             genres: string_array(data, "Genres"),
             tags: string_array(data, "Tags"),
             studios: string_array(data, "Studios"),
-            provider_ids: provider_ids(item.data.as_ref()),
+            provider_ids,
             production_year: item.production_year,
             premiere_date: item.premiere_date.map(|date| date.date_naive()),
             runtime_ticks: item.runtime_ticks.unwrap_or_default(),
-            official_rating: item.official_rating.clone(),
+            official_rating: item.official_rating,
             index_number: item.index_number,
             parent_index_number: item.parent_index_number,
             index_number_end: data
@@ -739,22 +752,21 @@ fn remote_trailers(data: Option<&serde_json::Map<String, Value>>) -> Vec<String>
         .unwrap_or_default()
 }
 
-fn provider_ids(data: Option<&Value>) -> std::collections::HashMap<String, String> {
-    data.and_then(Value::as_object)
-        .and_then(|object| object.get("ProviderIds"))
-        .and_then(Value::as_object)
-        .map(|object| {
-            object
-                .iter()
-                .filter_map(|(key, value)| {
-                    value
-                        .as_str()
-                        .filter(|value| !value.is_empty())
-                        .map(|value| (key.clone(), value.to_owned()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn provider_ids(data: Option<Value>) -> std::collections::HashMap<String, String> {
+    data.and_then(|data| match data {
+        Value::Object(data) => Some(data),
+        _ => None,
+    })
+    .map(|object| {
+        object
+            .into_iter()
+            .filter_map(|(key, value)| match value {
+                Value::String(value) if !value.is_empty() => Some((key, value)),
+                _ => None,
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 fn nfo_person_kind(person_type: &str) -> NfoPersonKind {
