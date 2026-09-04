@@ -188,7 +188,11 @@ impl OmdbMetadataProvider {
     /// # Errors
     ///
     /// Returns a provider or persistence error when the lookup fails.
-    pub async fn refresh_item(&self, item_id: Uuid) -> Result<bool, OmdbMetadataProviderError> {
+    pub async fn refresh_item(
+        &self,
+        item_id: Uuid,
+        replace_data: bool,
+    ) -> Result<bool, OmdbMetadataProviderError> {
         let Some(item) = self.items.get(item_id).await? else {
             return Ok(false);
         };
@@ -199,7 +203,7 @@ impl OmdbMetadataProvider {
             return Ok(false);
         };
         let omdb = self.client.fetch(&imdb_id).await?;
-        self.apply(item.id, omdb).await?;
+        self.apply(item.id, omdb, replace_data).await?;
         Ok(true)
     }
 
@@ -207,6 +211,7 @@ impl OmdbMetadataProvider {
         &self,
         item_id: Uuid,
         mut omdb: OmdbItem,
+        replace_data: bool,
     ) -> Result<(), OmdbMetadataProviderError> {
         let release_date = omdb.release_date();
         let language = omdb.language.take();
@@ -234,7 +239,9 @@ impl OmdbMetadataProvider {
                 item_id,
                 ItemMetadataPatch {
                     tags: None,
-                    genres: Some(genres),
+                    // A lower-priority provider must not replace genres that
+                    // the preferred provider already supplied.
+                    genres: replace_data.then_some(genres),
                     provider_ids: Some(provider_ids),
                 },
             )
@@ -250,22 +257,35 @@ impl OmdbMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(name) = result
-            .item
-            .core
-            .name
-            .as_deref()
-            .filter(|value| !value.is_empty())
+        if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
+            && let Some(name) = result
+                .item
+                .core
+                .name
+                .as_deref()
+                .filter(|value| !value.is_empty())
         {
             item.name = Some(name.to_owned());
             item.sort_name = Some(name.to_owned());
         }
-        item.overview =
-            std::mem::take(&mut result.item.core.overview).filter(|value| !value.trim().is_empty());
-        item.official_rating = std::mem::take(&mut result.item.official_rating);
-        item.production_year = result.item.production_year;
+        if replace_data
+            || item
+                .overview
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            item.overview = std::mem::take(&mut result.item.core.overview)
+                .filter(|value| !value.trim().is_empty());
+        }
+        if replace_data || item.official_rating.is_none() {
+            item.official_rating = std::mem::take(&mut result.item.official_rating);
+        }
+        if replace_data || item.production_year.is_none() {
+            item.production_year = result.item.production_year;
+        }
         if let Some(date) = release_date
             && let Some(premiere_date) = omdb_date_to_utc(date)
+            && (replace_data || item.premiere_date.is_none())
         {
             item.premiere_date = Some(premiere_date);
         }
@@ -274,6 +294,7 @@ impl OmdbMetadataProvider {
             language,
             website,
             &result,
+            replace_data,
         ));
         self.items.update(item).await?;
         Ok(())
@@ -285,24 +306,30 @@ fn omdb_extra_data(
     language: Option<String>,
     website: Option<String>,
     result: &MetadataResult,
+    replace_data: bool,
 ) -> Value {
     let mut object = existing
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if let Some(original_title) = result
-        .item
-        .core
-        .name
-        .as_deref()
-        .filter(|value| !value.is_empty())
+    if (replace_data || !object.contains_key("OriginalTitle"))
+        && let Some(original_title) = result
+            .item
+            .core
+            .name
+            .as_deref()
+            .filter(|value| !value.is_empty())
     {
         object.insert("OriginalTitle".to_owned(), json!(original_title));
     }
-    if let Some(language) = language.and_then(first_list_value) {
+    if (replace_data || !object.contains_key("OriginalLanguage"))
+        && let Some(language) = language.and_then(first_list_value)
+    {
         object.insert("OriginalLanguage".to_owned(), Value::String(language));
     }
-    if let Some(website) = website.filter(|value| !value.is_empty()) {
+    if (replace_data || !object.contains_key("HomePageUrl"))
+        && let Some(website) = website.filter(|value| !value.is_empty())
+    {
         object.insert("HomePageUrl".to_owned(), Value::String(website));
     }
     Value::Object(object)
@@ -383,5 +410,39 @@ mod tests {
         assert_eq!(merged.get("Tmdb").map(String::as_str), Some("152044"));
         assert_eq!(merged.get("Imdb").map(String::as_str), Some("tt2194724"));
         assert_eq!(merged.get("Tvdb").map(String::as_str), Some("1234"));
+    }
+
+    #[test]
+    fn lower_priority_result_preserves_localized_extra_fields() {
+        let existing = json!({
+            "OriginalTitle": "首选标题",
+            "OriginalLanguage": "zh",
+            "HomePageUrl": "https://preferred.invalid/"
+        });
+        let mut result = MetadataResult::default();
+        result.item.core.name = Some("English title".to_owned());
+
+        let merged = omdb_extra_data(
+            Some(&existing),
+            Some("English, French".to_owned()),
+            Some("https://omdb.invalid/".to_owned()),
+            &result,
+            false,
+        );
+
+        assert_eq!(merged["OriginalTitle"], "首选标题");
+        assert_eq!(merged["OriginalLanguage"], "zh");
+        assert_eq!(merged["HomePageUrl"], "https://preferred.invalid/");
+
+        let replaced = omdb_extra_data(
+            Some(&existing),
+            Some("English, French".to_owned()),
+            Some("https://omdb.invalid/".to_owned()),
+            &result,
+            true,
+        );
+        assert_eq!(replaced["OriginalTitle"], "English title");
+        assert_eq!(replaced["OriginalLanguage"], "English");
+        assert_eq!(replaced["HomePageUrl"], "https://omdb.invalid/");
     }
 }

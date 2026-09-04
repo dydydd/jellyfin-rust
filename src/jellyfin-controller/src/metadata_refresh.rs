@@ -393,17 +393,19 @@ impl MetadataRefreshService {
                 !tmdb_api_key.trim().is_empty(),
                 !omdb_api_key.trim().is_empty(),
             );
-            let summary =
-                execute_metadata_provider_sequence(item_id, &providers, |provider| async move {
+            let summary = execute_metadata_provider_sequence(
+                item_id,
+                &providers,
+                |provider, replace_data| async move {
                     match provider {
                         MetadataProviderDispatch::Tmdb => self
                             .tmdb_provider(tmdb_api_key)
-                            .refresh_item(item_id)
+                            .refresh_item(item_id, replace_data)
                             .await
                             .map_err(MetadataRefreshError::from),
                         MetadataProviderDispatch::Omdb => self
                             .omdb_provider(omdb_api_key)
-                            .refresh_item(item_id)
+                            .refresh_item(item_id, replace_data)
                             .await
                             .map_err(MetadataRefreshError::from),
                         MetadataProviderDispatch::AudioDb => self
@@ -427,8 +429,9 @@ impl MetadataRefreshService {
                             .await
                             .map_err(MetadataRefreshError::from),
                     }
-                })
-                .await;
+                },
+            )
+            .await;
             refreshed |= summary.refreshed;
             if summary.failures > 0 {
                 tracing::warn!(
@@ -768,12 +771,18 @@ async fn execute_metadata_provider_sequence<E, F, Fut>(
 ) -> MetadataProviderRefreshSummary
 where
     E: Display,
-    F: FnMut(MetadataProviderDispatch) -> Fut,
+    F: FnMut(MetadataProviderDispatch, bool) -> Fut,
     Fut: Future<Output = Result<bool, E>>,
 {
     let mut summary = MetadataProviderRefreshSummary::default();
     for provider in providers {
-        match execute(*provider).await {
+        // Official Jellyfin merges all remote results into one temporary item:
+        // the first provider returning metadata owns non-empty fields and later
+        // providers only fill gaps. Provider implementations receive the same
+        // replace-data decision while still running in configured order so they
+        // can contribute identifiers and fields the preferred provider omitted.
+        let replace_data = !summary.refreshed;
+        match execute(*provider, replace_data).await {
             Ok(provider_refreshed) => summary.refreshed |= provider_refreshed,
             Err(error) => {
                 summary.failures += 1;
@@ -1259,37 +1268,47 @@ mod tests {
             MetadataProviderDispatch::TvMaze,
         ];
 
-        let summary = execute_metadata_provider_sequence(Uuid::nil(), &providers, |provider| {
-            let calls = Arc::clone(&calls);
-            let provider_ids = Arc::clone(&provider_ids);
-            async move {
-                calls
-                    .lock()
-                    .expect("provider call log lock poisoned")
-                    .push(provider);
-                match provider {
-                    MetadataProviderDispatch::Omdb => Err("OMDb unavailable"),
-                    MetadataProviderDispatch::Tmdb => {
-                        provider_ids
-                            .lock()
-                            .expect("provider id lock poisoned")
-                            .insert("Imdb".to_owned(), "tt1234567".to_owned());
-                        Ok(true)
+        let replace_decisions = Arc::new(Mutex::new(Vec::new()));
+        let summary = execute_metadata_provider_sequence(
+            Uuid::nil(),
+            &providers,
+            |provider, replace_data| {
+                let calls = Arc::clone(&calls);
+                let provider_ids = Arc::clone(&provider_ids);
+                let replace_decisions = Arc::clone(&replace_decisions);
+                async move {
+                    calls
+                        .lock()
+                        .expect("provider call log lock poisoned")
+                        .push(provider);
+                    replace_decisions
+                        .lock()
+                        .expect("replace decision log lock poisoned")
+                        .push(replace_data);
+                    match provider {
+                        MetadataProviderDispatch::Omdb => Err("OMDb unavailable"),
+                        MetadataProviderDispatch::Tmdb => {
+                            provider_ids
+                                .lock()
+                                .expect("provider id lock poisoned")
+                                .insert("Imdb".to_owned(), "tt1234567".to_owned());
+                            Ok(true)
+                        }
+                        MetadataProviderDispatch::TvMaze => {
+                            let mut provider_ids =
+                                provider_ids.lock().expect("provider id lock poisoned");
+                            assert_eq!(
+                                provider_ids.get("Imdb").map(String::as_str),
+                                Some("tt1234567")
+                            );
+                            provider_ids.insert("TvMaze".to_owned(), "42".to_owned());
+                            Ok(true)
+                        }
+                        _ => Ok(false),
                     }
-                    MetadataProviderDispatch::TvMaze => {
-                        let mut provider_ids =
-                            provider_ids.lock().expect("provider id lock poisoned");
-                        assert_eq!(
-                            provider_ids.get("Imdb").map(String::as_str),
-                            Some("tt1234567")
-                        );
-                        provider_ids.insert("TvMaze".to_owned(), "42".to_owned());
-                        Ok(true)
-                    }
-                    _ => Ok(false),
                 }
-            }
-        })
+            },
+        )
         .await;
 
         assert_eq!(summary.failures, 1);
@@ -1297,6 +1316,12 @@ mod tests {
         assert_eq!(
             *calls.lock().expect("provider call log lock poisoned"),
             providers
+        );
+        assert_eq!(
+            *replace_decisions
+                .lock()
+                .expect("replace decision log lock poisoned"),
+            vec![true, true, false]
         );
         assert_eq!(
             provider_ids
@@ -1316,11 +1341,12 @@ mod tests {
             MetadataProviderDispatch::TvMaze,
         ];
 
-        let summary =
-            execute_metadata_provider_sequence(Uuid::nil(), &providers, |_provider| async {
-                Err::<bool, _>("provider failed")
-            })
-            .await;
+        let summary = execute_metadata_provider_sequence(
+            Uuid::nil(),
+            &providers,
+            |_provider, _replace_data| async { Err::<bool, _>("provider failed") },
+        )
+        .await;
 
         assert_eq!(summary.failures, 2);
         assert!(!summary.refreshed);

@@ -497,17 +497,21 @@ impl TmdbMetadataProvider {
     /// # Errors
     ///
     /// Returns a provider error when TMDB cannot resolve or persist metadata.
-    pub async fn refresh_item(&self, item_id: Uuid) -> Result<bool, MetadataProviderError> {
+    pub async fn refresh_item(
+        &self,
+        item_id: Uuid,
+        replace_data: bool,
+    ) -> Result<bool, MetadataProviderError> {
         let Some(item) = self.items.get(item_id).await? else {
             return Ok(false);
         };
 
         if item.item_type == "Episode" {
-            return self.refresh_episode(item).await;
+            return self.refresh_episode(item, replace_data).await;
         }
         match item.item_type.as_str() {
-            "Movie" => self.refresh_movie(&item).await,
-            "Series" => self.refresh_series(&item).await,
+            "Movie" => self.refresh_movie(&item, replace_data).await,
+            "Series" => self.refresh_series(&item, replace_data).await,
             "Season" => self.refresh_season_item(&item).await,
             "BoxSet" => self.refresh_box_set(&item).await,
             "Person" => self.refresh_person(&item).await,
@@ -566,12 +570,18 @@ impl TmdbMetadataProvider {
         Ok(true)
     }
 
-    async fn refresh_movie(&self, item: &base_item::Model) -> Result<bool, MetadataProviderError> {
+    async fn refresh_movie(
+        &self,
+        item: &base_item::Model,
+        replace_data: bool,
+    ) -> Result<bool, MetadataProviderError> {
         let Some(tmdb_id) = self.resolve_movie_id(item).await? else {
             return Ok(false);
         };
         let details = self.client.movie_details(tmdb_id).await?;
-        let (poster_path, backdrop_path) = self.apply_movie_metadata(item.id, details).await?;
+        let (poster_path, backdrop_path) = self
+            .apply_movie_metadata(item.id, details, replace_data)
+            .await?;
         self.save_remote_images(
             item.id,
             poster_path.as_deref(),
@@ -582,13 +592,19 @@ impl TmdbMetadataProvider {
         Ok(true)
     }
 
-    async fn refresh_series(&self, item: &base_item::Model) -> Result<bool, MetadataProviderError> {
+    async fn refresh_series(
+        &self,
+        item: &base_item::Model,
+        replace_data: bool,
+    ) -> Result<bool, MetadataProviderError> {
         let Some(tmdb_id) = self.resolve_series_id(item).await? else {
             return Ok(false);
         };
         let details = self.client.tv_details(tmdb_id).await?;
         let season_count = details.number_of_seasons;
-        let (poster_path, backdrop_path) = self.apply_tv_metadata(item.id, details).await?;
+        let (poster_path, backdrop_path) = self
+            .apply_tv_metadata(item.id, details, replace_data)
+            .await?;
         self.refresh_season_metadata(item.id, tmdb_id, season_count)
             .await?;
         self.save_remote_images(
@@ -745,6 +761,7 @@ impl TmdbMetadataProvider {
         &self,
         item_id: Uuid,
         details: TmdbMovieDetails,
+        replace_data: bool,
     ) -> Result<(Option<String>, Option<String>), MetadataProviderError> {
         let provider_ids = movie_provider_ids(&details);
         self.updates
@@ -768,20 +785,35 @@ impl TmdbMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(title) = details.title.as_deref().filter(|value| !value.is_empty()) {
+        if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
+            && let Some(title) = details.title.as_deref().filter(|value| !value.is_empty())
+        {
             item.name = Some(title.to_owned());
             item.sort_name = Some(title.to_owned());
         }
-        item.overview = details
-            .overview
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned);
-        item.official_rating = us_rating(&details.release_dates);
-        item.runtime_ticks = details
-            .runtime
-            .map(|minutes| i64::from(minutes) * 60 * 10_000_000);
-        if let Some(premiere_date) = parse_tmdb_date(details.release_date.as_deref()) {
+        if replace_data
+            || item
+                .overview
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            item.overview = details
+                .overview
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned);
+        }
+        if replace_data || item.official_rating.is_none() {
+            item.official_rating = us_rating(&details.release_dates);
+        }
+        if replace_data || item.runtime_ticks.is_none() {
+            item.runtime_ticks = details
+                .runtime
+                .map(|minutes| i64::from(minutes) * 60 * 10_000_000);
+        }
+        if let Some(premiere_date) = parse_tmdb_date(details.release_date.as_deref())
+            && (replace_data || item.premiere_date.is_none())
+        {
             item.premiere_date = Some(premiere_date);
             item.production_year = Some(premiere_date.year());
         }
@@ -806,6 +838,7 @@ impl TmdbMetadataProvider {
         &self,
         item_id: Uuid,
         details: TmdbTvDetails,
+        replace_data: bool,
     ) -> Result<(Option<String>, Option<String>), MetadataProviderError> {
         let provider_ids = tv_provider_ids(&details);
         let mut studios = into_names(details.networks);
@@ -838,17 +871,30 @@ impl TmdbMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(name) = details.name.as_deref().filter(|value| !value.is_empty()) {
+        if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
+            && let Some(name) = details.name.as_deref().filter(|value| !value.is_empty())
+        {
             item.name = Some(name.to_owned());
             item.sort_name = Some(name.to_owned());
         }
-        item.overview = details
-            .overview
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned);
-        item.official_rating = tv_rating(&details.content_ratings);
-        if let Some(premiere_date) = parse_tmdb_date(details.first_air_date.as_deref()) {
+        if replace_data
+            || item
+                .overview
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            item.overview = details
+                .overview
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned);
+        }
+        if replace_data || item.official_rating.is_none() {
+            item.official_rating = tv_rating(&details.content_ratings);
+        }
+        if let Some(premiere_date) = parse_tmdb_date(details.first_air_date.as_deref())
+            && (replace_data || item.premiere_date.is_none())
+        {
             item.premiere_date = Some(premiere_date);
             item.production_year = Some(premiere_date.year());
         }
@@ -980,7 +1026,11 @@ impl TmdbMetadataProvider {
         }
     }
 
-    async fn refresh_episode(&self, item: base_item::Model) -> Result<bool, MetadataProviderError> {
+    async fn refresh_episode(
+        &self,
+        item: base_item::Model,
+        replace_data: bool,
+    ) -> Result<bool, MetadataProviderError> {
         let parents = self.episode_parents(&item).await?;
         let item_id = item.id;
         let mut episode = episode_metadata_from_item(item);
@@ -991,7 +1041,7 @@ impl TmdbMetadataProvider {
                 season: parents.season.as_ref(),
             },
             EpisodeRefreshOptions {
-                replace_data: false,
+                replace_data,
                 metadata_language: Some(self.client.language.as_str()),
                 metadata_country_code: None,
             },
