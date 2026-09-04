@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use jellyfin_data::{
@@ -40,39 +40,56 @@ pub enum OmdbMetadataProviderError {
 /// `OMDb` v3 client used by the built-in movie and series metadata provider.
 #[derive(Clone)]
 struct OmdbClient {
-    http: reqwest::Client,
+    http: Arc<reqwest::Client>,
     api_key: String,
-    base_url: String,
+    base_url: Arc<str>,
 }
 
-impl OmdbClient {
+/// Builds lightweight OMDb clients over one service-level HTTP connection pool.
+#[derive(Clone)]
+pub(crate) struct OmdbClientFactory {
+    http: Arc<reqwest::Client>,
+    base_url: Arc<str>,
+}
+
+impl OmdbClientFactory {
     #[must_use]
-    fn new(api_key: impl Into<String>) -> Self {
+    pub(crate) fn new() -> Self {
+        Self::with_base_url(OMDB_API_BASE_URL)
+    }
+
+    #[must_use]
+    fn with_base_url(base_url: impl Into<String>) -> Self {
+        let mut builder = reqwest::Client::builder().timeout(REQUEST_TIMEOUT);
+        if let Some(proxy) = proxy_from_environment() {
+            builder = builder.proxy(proxy);
+        }
+        Self {
+            http: Arc::new(builder.build().unwrap_or_else(|error| {
+                tracing::error!(%error, "could not configure the OMDb HTTP client");
+                reqwest::Client::new()
+            })),
+            base_url: Arc::from(base_url.into().trim_end_matches('/')),
+        }
+    }
+
+    #[must_use]
+    fn client(&self, api_key: impl Into<String>) -> OmdbClient {
         let api_key = api_key.into();
         let api_key = if api_key.trim().is_empty() {
             DEFAULT_OMDB_API_KEY.to_owned()
         } else {
             api_key
         };
-        Self::with_base_url(api_key, OMDB_API_BASE_URL)
-    }
-
-    #[must_use]
-    fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        let mut builder = reqwest::Client::builder().timeout(REQUEST_TIMEOUT);
-        if let Some(proxy) = proxy_from_environment() {
-            builder = builder.proxy(proxy);
-        }
-        Self {
-            http: builder.build().unwrap_or_else(|error| {
-                tracing::error!(%error, "could not configure the OMDb HTTP client");
-                reqwest::Client::new()
-            }),
-            api_key: api_key.into(),
-            base_url: base_url.into().trim_end_matches('/').to_owned(),
+        OmdbClient {
+            http: Arc::clone(&self.http),
+            api_key,
+            base_url: Arc::clone(&self.base_url),
         }
     }
+}
 
+impl OmdbClient {
     async fn fetch(&self, imdb_id: &str) -> Result<OmdbItem, OmdbMetadataProviderError> {
         let api_key = self.api_key.trim();
         if api_key.is_empty() {
@@ -87,7 +104,7 @@ impl OmdbClient {
         };
         let response = self
             .http
-            .get(&self.base_url)
+            .get(self.base_url.as_ref())
             .query(&[
                 ("apikey", api_key),
                 ("i", &imdb_id),
@@ -146,8 +163,20 @@ impl OmdbMetadataProvider {
         values: std::sync::Arc<ItemValueRepository>,
         updates: std::sync::Arc<ItemUpdateRepository>,
     ) -> Self {
+        let clients = OmdbClientFactory::new();
+        Self::with_client_factory(&clients, api_key, items, values, updates)
+    }
+
+    #[must_use]
+    pub(crate) fn with_client_factory(
+        clients: &OmdbClientFactory,
+        api_key: impl Into<String>,
+        items: std::sync::Arc<BaseItemRepository>,
+        values: std::sync::Arc<ItemValueRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
+    ) -> Self {
         Self {
-            client: OmdbClient::new(api_key),
+            client: clients.client(api_key),
             items,
             values,
             updates,
@@ -323,6 +352,18 @@ fn provider_ids(data: Option<&Value>) -> Option<BTreeMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_factory_reuses_transport_and_keeps_keys_per_client() {
+        let factory = OmdbClientFactory::with_base_url("https://omdb.invalid/");
+        let default_key = factory.client("");
+        let configured_key = factory.client("configured-key");
+
+        assert!(Arc::ptr_eq(&default_key.http, &configured_key.http));
+        assert!(Arc::ptr_eq(&default_key.base_url, &configured_key.base_url));
+        assert_eq!(default_key.api_key, DEFAULT_OMDB_API_KEY);
+        assert_eq!(configured_key.api_key, "configured-key");
+    }
 
     #[test]
     fn provider_ids_preserve_identifiers_from_earlier_providers() {

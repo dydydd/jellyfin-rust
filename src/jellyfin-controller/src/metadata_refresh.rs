@@ -34,6 +34,8 @@ use crate::{
         MusicBrainzProviderError, OmdbMetadataProvider, OmdbMetadataProviderError,
         TmdbMetadataProvider, TvMazeMetadataProvider, TvMazeProviderError,
     },
+    omdb::OmdbClientFactory,
+    tmdb::TmdbClientFactory,
 };
 
 #[derive(Debug, Error)]
@@ -127,6 +129,11 @@ pub struct MetadataRefreshService {
     values: Arc<ItemValueRepository>,
     people: Arc<PersonRepository>,
     updates: Arc<ItemUpdateRepository>,
+    tmdb_clients: Arc<TmdbClientFactory>,
+    omdb_clients: Arc<OmdbClientFactory>,
+    audio_db: Arc<AudioDbMetadataProvider>,
+    music_brainz: Arc<MusicBrainzMetadataProvider>,
+    google_books: Arc<GoogleBooksMetadataProvider>,
     tv_maze: Arc<TvMazeMetadataProvider>,
     images: Arc<RwLock<Option<Arc<ItemImageService>>>>,
     preferred_locale: Arc<RwLock<(String, String)>>,
@@ -143,6 +150,19 @@ impl MetadataRefreshService {
         let items = Arc::new(BaseItemRepository::new(Arc::clone(&database)));
         let values = Arc::new(ItemValueRepository::new(Arc::clone(&database)));
         let updates = Arc::new(ItemUpdateRepository::new(Arc::clone(&database)));
+        let people = Arc::new(PersonRepository::new(Arc::clone(&database)));
+        let audio_db = Arc::new(AudioDbMetadataProvider::new(
+            Arc::clone(&items),
+            Arc::clone(&updates),
+        ));
+        let music_brainz = Arc::new(MusicBrainzMetadataProvider::new(
+            Arc::clone(&items),
+            Arc::clone(&updates),
+        ));
+        let google_books = Arc::new(GoogleBooksMetadataProvider::new(
+            Arc::clone(&items),
+            Arc::clone(&updates),
+        ));
         let tv_maze = Arc::new(TvMazeMetadataProvider::new(
             Arc::clone(&items),
             Arc::clone(&values),
@@ -151,8 +171,13 @@ impl MetadataRefreshService {
         Self {
             items,
             values,
-            people: Arc::new(PersonRepository::new(Arc::clone(&database))),
+            people,
             updates,
+            tmdb_clients: Arc::new(TmdbClientFactory::new()),
+            omdb_clients: Arc::new(OmdbClientFactory::new()),
+            audio_db,
+            music_brainz,
+            google_books,
             tv_maze,
             images: Arc::new(RwLock::new(images)),
             preferred_locale: Arc::new(RwLock::new(("en".to_owned(), "US".to_owned()))),
@@ -382,17 +407,17 @@ impl MetadataRefreshService {
                             .await
                             .map_err(MetadataRefreshError::from),
                         MetadataProviderDispatch::AudioDb => self
-                            .audio_db_provider()
+                            .audio_db
                             .refresh_item(item_id)
                             .await
                             .map_err(MetadataRefreshError::from),
                         MetadataProviderDispatch::MusicBrainz => self
-                            .music_brainz_provider()
+                            .music_brainz
                             .refresh_item(item_id)
                             .await
                             .map_err(MetadataRefreshError::from),
                         MetadataProviderDispatch::GoogleBooks => self
-                            .google_books_provider()
+                            .google_books
                             .refresh_item(item_id)
                             .await
                             .map_err(MetadataRefreshError::from),
@@ -489,7 +514,8 @@ impl MetadataRefreshService {
             .preferred_locale
             .read()
             .expect("metadata refresh locale lock poisoned");
-        TmdbMetadataProvider::with_locale(
+        TmdbMetadataProvider::with_client_factory(
+            &self.tmdb_clients,
             api_key.to_owned(),
             &locale.0,
             &locale.1,
@@ -502,24 +528,13 @@ impl MetadataRefreshService {
     }
 
     fn omdb_provider(&self, api_key: &str) -> OmdbMetadataProvider {
-        OmdbMetadataProvider::new(
+        OmdbMetadataProvider::with_client_factory(
+            &self.omdb_clients,
             api_key.to_owned(),
             Arc::clone(&self.items),
             Arc::clone(&self.values),
             Arc::clone(&self.updates),
         )
-    }
-
-    fn audio_db_provider(&self) -> AudioDbMetadataProvider {
-        AudioDbMetadataProvider::new(Arc::clone(&self.items), Arc::clone(&self.updates))
-    }
-
-    fn music_brainz_provider(&self) -> MusicBrainzMetadataProvider {
-        MusicBrainzMetadataProvider::new(Arc::clone(&self.items), Arc::clone(&self.updates))
-    }
-
-    fn google_books_provider(&self) -> GoogleBooksMetadataProvider {
-        GoogleBooksMetadataProvider::new(Arc::clone(&self.items), Arc::clone(&self.updates))
     }
 
     async fn save_local_metadata_enabled(
@@ -1093,10 +1108,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cloned_services_share_the_tv_maze_client_pool() {
+    fn cloned_services_share_provider_client_pools() {
         let service = MetadataRefreshService::new(sea_orm::DatabaseConnection::Disconnected, None);
         let cloned = service.clone();
 
+        assert!(Arc::ptr_eq(&service.tmdb_clients, &cloned.tmdb_clients));
+        assert!(Arc::ptr_eq(&service.omdb_clients, &cloned.omdb_clients));
+        assert!(Arc::ptr_eq(&service.audio_db, &cloned.audio_db));
+        assert!(Arc::ptr_eq(&service.music_brainz, &cloned.music_brainz));
+        assert!(Arc::ptr_eq(&service.google_books, &cloned.google_books));
         assert!(Arc::ptr_eq(&service.tv_maze, &cloned.tv_maze));
     }
 

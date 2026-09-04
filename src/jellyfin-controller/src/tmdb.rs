@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    sync::Arc,
     time::Duration,
 };
 
@@ -52,11 +53,56 @@ pub enum MetadataProviderError {
 /// remote image discovery.
 #[derive(Clone)]
 pub(crate) struct TmdbClient {
-    http: reqwest::Client,
+    http: Arc<reqwest::Client>,
     api_key: String,
-    base_url: String,
+    base_url: Arc<str>,
     language: String,
     image_languages: String,
+}
+
+/// Builds lightweight TMDB clients over one service-level HTTP connection pool.
+#[derive(Clone)]
+pub(crate) struct TmdbClientFactory {
+    http: Arc<reqwest::Client>,
+    base_url: Arc<str>,
+}
+
+impl TmdbClientFactory {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self::with_base_url(TMDB_API_BASE_URL)
+    }
+
+    #[must_use]
+    fn with_base_url(base_url: impl Into<String>) -> Self {
+        Self {
+            http: Arc::new(http_client()),
+            base_url: Arc::from(base_url.into().trim_end_matches('/')),
+        }
+    }
+
+    #[must_use]
+    fn client(
+        &self,
+        api_key: impl Into<String>,
+        language: impl AsRef<str>,
+        country: impl AsRef<str>,
+    ) -> TmdbClient {
+        let language = tmdb_language(language.as_ref(), country.as_ref());
+        let image_language = language.split('-').next().unwrap_or("en");
+        let image_languages = if image_language.eq_ignore_ascii_case("en") {
+            "en,null".to_owned()
+        } else {
+            format!("{image_language},en,null")
+        };
+        TmdbClient {
+            http: Arc::clone(&self.http),
+            api_key: api_key.into(),
+            base_url: Arc::clone(&self.base_url),
+            language,
+            image_languages,
+        }
+    }
 }
 
 impl TmdbClient {
@@ -80,20 +126,7 @@ impl TmdbClient {
         language: impl AsRef<str>,
         country: impl AsRef<str>,
     ) -> Self {
-        let language = tmdb_language(language.as_ref(), country.as_ref());
-        let image_language = language.split('-').next().unwrap_or("en");
-        let image_languages = if image_language.eq_ignore_ascii_case("en") {
-            "en,null".to_owned()
-        } else {
-            format!("{image_language},en,null")
-        };
-        Self {
-            http: http_client(),
-            api_key: api_key.into(),
-            base_url: base_url.into().trim_end_matches('/').to_owned(),
-            language,
-            image_languages,
-        }
+        TmdbClientFactory::with_base_url(base_url).client(api_key, language, country)
     }
 
     pub(crate) async fn search_movie(
@@ -430,8 +463,27 @@ impl TmdbMetadataProvider {
         updates: std::sync::Arc<ItemUpdateRepository>,
         images: Option<std::sync::Arc<ItemImageService>>,
     ) -> Self {
+        let clients = TmdbClientFactory::new();
+        Self::with_client_factory(
+            &clients, api_key, language, country, items, values, people, updates, images,
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_client_factory(
+        clients: &TmdbClientFactory,
+        api_key: impl Into<String>,
+        language: impl AsRef<str>,
+        country: impl AsRef<str>,
+        items: std::sync::Arc<BaseItemRepository>,
+        values: std::sync::Arc<ItemValueRepository>,
+        people: std::sync::Arc<PersonRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
+        images: Option<std::sync::Arc<ItemImageService>>,
+    ) -> Self {
         Self {
-            client: TmdbClient::with_locale(api_key, language, country),
+            client: clients.client(api_key, language, country),
             items,
             values,
             people,
@@ -2375,6 +2427,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_factory_reuses_transport_without_sharing_request_configuration() {
+        let factory = TmdbClientFactory::with_base_url("https://tmdb.invalid/");
+        let first = factory.client("first-key", "zh", "CN");
+        let second = factory.client("second-key", "en", "US");
+
+        assert!(Arc::ptr_eq(&first.http, &second.http));
+        assert!(Arc::ptr_eq(&first.base_url, &second.base_url));
+        assert_eq!(first.api_key, "first-key");
+        assert_eq!(first.language, "zh-CN");
+        assert_eq!(first.image_languages, "zh,en,null");
+        assert_eq!(second.api_key, "second-key");
+        assert_eq!(second.language, "en-US");
+        assert_eq!(second.image_languages, "en,null");
+    }
 
     #[test]
     fn tmdb_language_combines_language_and_country() {
