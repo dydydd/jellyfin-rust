@@ -400,8 +400,15 @@ async fn start_hls_job(
         .await
         .map_err(|_| ApiError::Internal)?;
     let output_prefix = state.transcode_directory.join(job_id);
-    let main = build_main_playlist(item_id, job_id, item.runtime_ticks, &settings, media_type)
-        .map_err(|_| ApiError::Internal)?;
+    let main = build_main_playlist(
+        item_id,
+        job_id,
+        item.runtime_ticks,
+        &settings,
+        media_type,
+        Some(identity.access_token()),
+    )
+    .map_err(|_| ApiError::Internal)?;
     tokio::fs::write(
         state.transcode_directory.join(format!("{job_id}.m3u8")),
         main,
