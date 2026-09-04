@@ -327,6 +327,10 @@ async fn media_sources(
         .library_controller
         .item(authenticated_user, target_user_id, item_id)
         .await?;
+    state
+        .library_scan
+        .hydrate_strm_media_streams(item_id)
+        .await?;
     let dto = user_library::project_item_to_dto(
         state,
         item,

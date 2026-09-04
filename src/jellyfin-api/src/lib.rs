@@ -1351,6 +1351,21 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             "/Sessions/Playing/Stopped",
             post(playstate::report_playback_stopped),
         )
+        // Official Jellyfin is hosted by ASP.NET and treats route casing as
+        // insensitive. Several third-party players lowercase these callbacks.
+        .route("/sessions/playing", post(playstate::report_playback_start))
+        .route(
+            "/sessions/playing/progress",
+            post(playstate::report_playback_progress),
+        )
+        .route(
+            "/sessions/playing/ping",
+            post(playstate::ping_playback_session),
+        )
+        .route(
+            "/sessions/playing/stopped",
+            post(playstate::report_playback_stopped),
+        )
         .route(
             "/PlayingItems/{item_id}",
             post(playstate::report_playback_start_legacy)

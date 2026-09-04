@@ -33,6 +33,8 @@ services:
       JELLYFIN_INITIAL_USER: jellyfin
       JELLYFIN_LOG_DIR: /app/logs
       JELLYFIN_WEB_DIR: /app/web
+      # Pass through from the shell or Compose .env file when configured.
+      JELLYFIN_TMDB_API_KEY:
     ports:
       - "18096:8096"
     volumes:
