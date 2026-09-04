@@ -339,9 +339,9 @@ async fn assert_playback_state_update(
                     "Id": Uuid::new_v4().simple().to_string(),
                     "Type": "Movie"
                 })),
-                json!([{
+                Some(json!([{
                     "Id": "queue-1"
-                }]),
+                }])),
                 Some("playlist-1".to_owned()),
                 true,
             )
@@ -367,7 +367,7 @@ async fn assert_playback_state_update(
     );
 
     let error = repository
-        .update_playback_state(device_id, Value::Null, None, json!([]), None, false)
+        .update_playback_state(device_id, Value::Null, None, Some(json!([])), None, false)
         .await
         .expect_err("non-object play state must be rejected");
     assert!(matches!(
@@ -377,7 +377,7 @@ async fn assert_playback_state_update(
 
     assert_eq!(
         repository
-            .clear_playback_state(device_id)
+            .clear_playback_state(device_id, None, Some("playlist-after-stop".to_owned()),)
             .await
             .expect("playback state clear must succeed"),
         1
@@ -389,8 +389,11 @@ async fn assert_playback_state_update(
         .expect("device with cleared playback state must exist");
     assert_eq!(cleared.play_state, json!({}));
     assert!(cleared.now_playing_item.is_none());
-    assert_eq!(cleared.now_playing_queue, json!([]));
-    assert!(cleared.playlist_item_id.is_none());
+    assert_eq!(cleared.now_playing_queue[0]["Id"], "queue-1");
+    assert_eq!(
+        cleared.playlist_item_id.as_deref(),
+        Some("playlist-after-stop")
+    );
     assert!(cleared.date_last_paused.is_none());
 }
 

@@ -485,7 +485,7 @@ impl DeviceRepository {
         id: i64,
         play_state: Value,
         now_playing_item: Option<Value>,
-        now_playing_queue: Value,
+        now_playing_queue: Option<Value>,
         playlist_item_id: Option<String>,
         is_paused: bool,
     ) -> Result<u64, AuthenticationStoreError> {
@@ -498,7 +498,10 @@ impl DeviceRepository {
         {
             return Err(AuthenticationStoreError::InvalidNowPlayingItem);
         }
-        if !now_playing_queue.is_array() {
+        if now_playing_queue
+            .as_ref()
+            .is_some_and(|value| !value.is_array())
+        {
             return Err(AuthenticationStoreError::InvalidNowPlayingQueue);
         }
         if let Some(playlist_item_id) = playlist_item_id.as_deref() {
@@ -510,15 +513,11 @@ impl DeviceRepository {
         } else {
             Expr::value(Option::<DateTime<Utc>>::None)
         };
-        Ok(device::Entity::update_many()
+        let mut update = device::Entity::update_many()
             .col_expr(device::Column::PlayState, Expr::value(play_state))
             .col_expr(
                 device::Column::NowPlayingItem,
                 Expr::value(now_playing_item),
-            )
-            .col_expr(
-                device::Column::NowPlayingQueue,
-                Expr::value(now_playing_queue),
             )
             .col_expr(
                 device::Column::PlaylistItemId,
@@ -527,10 +526,14 @@ impl DeviceRepository {
             .col_expr(device::Column::DateModified, Expr::value(now))
             .col_expr(device::Column::DateLastActivity, Expr::value(now))
             .col_expr(device::Column::DateLastPaused, date_last_paused)
-            .filter(device::Column::Id.eq(id))
-            .exec(self.database.as_ref())
-            .await?
-            .rows_affected)
+            .filter(device::Column::Id.eq(id));
+        if let Some(now_playing_queue) = now_playing_queue {
+            update = update.col_expr(
+                device::Column::NowPlayingQueue,
+                Expr::value(now_playing_queue),
+            );
+        }
+        Ok(update.exec(self.database.as_ref()).await?.rows_affected)
     }
 
     /// Clears playback state after a session reports stopped playback.
@@ -538,18 +541,31 @@ impl DeviceRepository {
     /// # Errors
     ///
     /// Returns a database error when updating fails.
-    pub async fn clear_playback_state(&self, id: i64) -> Result<u64, AuthenticationStoreError> {
+    pub async fn clear_playback_state(
+        &self,
+        id: i64,
+        now_playing_queue: Option<Value>,
+        playlist_item_id: Option<String>,
+    ) -> Result<u64, AuthenticationStoreError> {
+        if now_playing_queue
+            .as_ref()
+            .is_some_and(|value| !value.is_array())
+        {
+            return Err(AuthenticationStoreError::InvalidNowPlayingQueue);
+        }
+        if let Some(playlist_item_id) = playlist_item_id.as_deref() {
+            validate_length("playlist item id", playlist_item_id, 256)?;
+        }
         let now = Utc::now();
-        Ok(device::Entity::update_many()
+        let mut update = device::Entity::update_many()
             .col_expr(device::Column::PlayState, Expr::value(json!({})))
             .col_expr(
                 device::Column::NowPlayingItem,
                 Expr::value(Option::<Value>::None),
             )
-            .col_expr(device::Column::NowPlayingQueue, Expr::value(json!([])))
             .col_expr(
                 device::Column::PlaylistItemId,
-                Expr::value(Option::<String>::None),
+                Expr::value(playlist_item_id),
             )
             .col_expr(device::Column::DateModified, Expr::value(now))
             .col_expr(device::Column::DateLastActivity, Expr::value(now))
@@ -557,10 +573,14 @@ impl DeviceRepository {
                 device::Column::DateLastPaused,
                 Expr::value(Option::<DateTime<Utc>>::None),
             )
-            .filter(device::Column::Id.eq(id))
-            .exec(self.database.as_ref())
-            .await?
-            .rows_affected)
+            .filter(device::Column::Id.eq(id));
+        if let Some(now_playing_queue) = now_playing_queue {
+            update = update.col_expr(
+                device::Column::NowPlayingQueue,
+                Expr::value(now_playing_queue),
+            );
+        }
+        Ok(update.exec(self.database.as_ref()).await?.rows_affected)
     }
 
     /// Persists the item currently viewed by an active device session.

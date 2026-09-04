@@ -617,7 +617,7 @@ async fn record_device_playback_start(
 async fn record_device_playback_stop(
     state: &AppState,
     session: &AuthenticatedSession,
-    info: PlaybackStopInfo,
+    mut info: PlaybackStopInfo,
 ) -> Result<(), ApiError> {
     let item_id = info.item_id;
     if let Some(play_session_id) = info.play_session_id.as_deref() {
@@ -626,6 +626,8 @@ async fn record_device_playback_stop(
             .stop_for_session(&session.device.device_id, play_session_id)
             .await;
     }
+    let now_playing_queue = info.now_playing_queue.take().map(|queue| json!(queue));
+    let playlist_item_id = info.playlist_item_id.take();
     let update = PlaybackStopUpdate::from(info);
     state
         .playstate
@@ -641,7 +643,7 @@ async fn record_device_playback_stop(
     }
     state
         .devices
-        .clear_playback_state(session.device.id)
+        .clear_playback_state(session.device.id, now_playing_queue, playlist_item_id)
         .await?;
     log_playback_activity(state, session, item_id, "stop").await;
     Ok(())
@@ -730,7 +732,9 @@ where
         live_stream_id: info.take_live_stream_id(),
     };
     let play_state = serde_json::to_value(play_state).map_err(|_| ApiError::Internal)?;
-    let now_playing_queue = json!(info.take_now_playing_queue().unwrap_or_default());
+    // Official Jellyfin only applies NowPlayingQueue from a stop report. Start
+    // and progress requests must not erase a queue maintained by session
+    // control when the field is absent (or replace it when it is present).
     let playlist_item_id = info.take_playlist_item_id();
     if state
         .devices
@@ -738,7 +742,7 @@ where
             session.device.id,
             play_state,
             now_playing_item,
-            now_playing_queue,
+            None,
             playlist_item_id,
             info.is_paused(),
         )
@@ -785,7 +789,6 @@ trait PlaybackSessionState {
     fn take_live_stream_id(&mut self) -> Option<String>;
     fn repeat_mode(&self) -> RepeatMode;
     fn playback_order(&self) -> PlaybackOrder;
-    fn take_now_playing_queue(&mut self) -> Option<Vec<Value>>;
     fn take_playlist_item_id(&mut self) -> Option<String>;
 }
 
@@ -831,9 +834,6 @@ impl PlaybackSessionState for PlaybackProgressInfo {
     }
     fn playback_order(&self) -> PlaybackOrder {
         self.playback_order
-    }
-    fn take_now_playing_queue(&mut self) -> Option<Vec<Value>> {
-        self.now_playing_queue.take()
     }
     fn take_playlist_item_id(&mut self) -> Option<String> {
         self.playlist_item_id.take()
@@ -882,9 +882,6 @@ impl PlaybackSessionState for PlaybackStartInfo {
     }
     fn playback_order(&self) -> PlaybackOrder {
         self.playback_order
-    }
-    fn take_now_playing_queue(&mut self) -> Option<Vec<Value>> {
-        self.now_playing_queue.take()
     }
     fn take_playlist_item_id(&mut self) -> Option<String> {
         self.playlist_item_id.take()

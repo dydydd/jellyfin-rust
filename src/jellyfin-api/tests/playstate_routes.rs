@@ -8,7 +8,7 @@ use jellyfin_controller::UserService;
 use jellyfin_data::{
     ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
     NewUserData, UserDataRepository,
-    entities::{api_key, server_configuration, user},
+    entities::{api_key, device, server_configuration, user},
 };
 use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, UserPolicy};
 use sea_orm::{
@@ -324,8 +324,21 @@ async fn playback_reports_update_session_state_projection() {
         fixture.runtime_item_id.simple().to_string()
     );
     assert_eq!(session["NowPlayingItem"]["Type"], "Movie");
-    assert_eq!(session["NowPlayingQueue"][0]["Name"], "Queued Item");
+    assert!(session["NowPlayingQueue"].as_array().unwrap().is_empty());
     assert_eq!(session["PlaylistItemId"], "playlist-entry");
+
+    device::Entity::update_many()
+        .col_expr(
+            device::Column::NowPlayingQueue,
+            sea_orm::sea_query::Expr::value(json!([{
+                "Id": "queue-item",
+                "Name": "Queued Item"
+            }])),
+        )
+        .filter(device::Column::DeviceId.eq(&fixture.user_device_id))
+        .exec(&fixture.database)
+        .await
+        .expect("seed session queue");
 
     let response = request_json(
         &fixture.app,
@@ -354,6 +367,8 @@ async fn playback_reports_update_session_state_projection() {
     assert_eq!(session["PlayState"]["PositionTicks"], ticks(43));
     assert_eq!(session["PlayState"]["IsPaused"], false);
     assert!(session["LastPausedDate"].is_null());
+    assert_eq!(session["NowPlayingQueue"][0]["Name"], "Queued Item");
+    assert!(session["PlaylistItemId"].is_null());
 
     let response = request_json(
         &fixture.app,
@@ -362,7 +377,8 @@ async fn playback_reports_update_session_state_projection() {
         &fixture.user_token,
         json!({
             "ItemId": fixture.runtime_item_id,
-            "PositionTicks": ticks(44)
+            "PositionTicks": ticks(44),
+            "PlaylistItemId": "playlist-after-stop"
         }),
     )
     .await;
@@ -382,8 +398,8 @@ async fn playback_reports_update_session_state_projection() {
     assert_eq!(session["PlayState"]["IsPaused"], false);
     assert_eq!(session["PlayState"]["RepeatMode"], "RepeatNone");
     assert!(session["NowPlayingItem"].is_null());
-    assert!(session["NowPlayingQueue"].as_array().unwrap().is_empty());
-    assert!(session["PlaylistItemId"].is_null());
+    assert_eq!(session["NowPlayingQueue"][0]["Name"], "Queued Item");
+    assert_eq!(session["PlaylistItemId"], "playlist-after-stop");
     assert!(session["LastPausedDate"].is_null());
 
     fixture.cleanup().await;
