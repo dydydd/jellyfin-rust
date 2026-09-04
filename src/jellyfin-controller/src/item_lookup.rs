@@ -110,6 +110,19 @@ impl ItemLookupService {
             .search_info
             .year
             .or(request.search_info.production_year);
+        let tmdb_client = TmdbClient::with_locale(
+            api_key.to_owned(),
+            request
+                .search_info
+                .metadata_language
+                .as_deref()
+                .unwrap_or("en"),
+            request
+                .search_info
+                .metadata_country_code
+                .as_deref()
+                .unwrap_or("US"),
+        );
         let selected_provider = request.search_provider_name.as_deref().map(str::to_owned);
         let results: Result<Vec<RemoteSearchResult>, ItemLookupError> =
             match kind.to_ascii_lowercase().as_str() {
@@ -124,9 +137,7 @@ impl ItemLookupService {
                     {
                         return Ok(Vec::new());
                     }
-                    Ok(TmdbClient::new(api_key.to_owned())
-                        .search_movie(name, year)
-                        .await?)
+                    Ok(tmdb_client.search_movie(name, year).await?)
                 }
                 "series" => {
                     if api_key.trim().is_empty()
@@ -148,28 +159,20 @@ impl ItemLookupService {
                     ) {
                         results.extend(TvMazeClient::new().search(name).await?);
                     }
-                    results.extend(
-                        TmdbClient::new(api_key.to_owned())
-                            .search_tv(name, year)
-                            .await?,
-                    );
+                    results.extend(tmdb_client.search_tv(name, year).await?);
                     Ok(results)
                 }
                 "person" => {
                     if api_key.trim().is_empty() {
                         return Ok(Vec::new());
                     }
-                    Ok(TmdbClient::new(api_key.to_owned())
-                        .search_person(name)
-                        .await?)
+                    Ok(tmdb_client.search_person(name).await?)
                 }
                 "boxset" => {
                     if api_key.trim().is_empty() {
                         return Ok(Vec::new());
                     }
-                    Ok(TmdbClient::new(api_key.to_owned())
-                        .search_collection(name)
-                        .await?)
+                    Ok(tmdb_client.search_collection(name).await?)
                 }
                 "book" => {
                     if api_key.trim().is_empty() {
@@ -220,6 +223,8 @@ impl ItemLookupService {
         start_index: usize,
         limit: Option<usize>,
         api_key: &str,
+        metadata_language: &str,
+        metadata_country_code: &str,
     ) -> Result<RemoteImageResult, ItemLookupError> {
         if api_key.trim().is_empty() {
             return Ok(empty_remote_images());
@@ -238,7 +243,8 @@ impl ItemLookupService {
             return Ok(empty_remote_images());
         };
 
-        let client = TmdbClient::new(api_key.to_owned());
+        let client =
+            TmdbClient::with_locale(api_key.to_owned(), metadata_language, metadata_country_code);
         let images = match item.item_type.as_str() {
             "Movie" | "MusicVideo" | "Trailer" => client.movie_images(tmdb_id).await?,
             "Series" => client.tv_images(tmdb_id).await?,
@@ -250,7 +256,8 @@ impl ItemLookupService {
             images.retain(|image| image.image_type == image_type);
         }
         let total_record_count = i32::try_from(images.len()).unwrap_or(i32::MAX);
-        let mut images = order_by_language_descending(images, Some("en"));
+        let image_language = client.language().split('-').next();
+        let mut images = order_by_language_descending(images, image_language);
         if start_index > 0 {
             images = images.into_iter().skip(start_index).collect();
         }
@@ -473,7 +480,9 @@ mod tests {
             "SearchInfo": {
                 "Name": "Fallen",
                 "ProviderIds": { "Imdb": "tt0119094" },
-                "Year": 1998
+                "Year": 1998,
+                "MetadataLanguage": "zh-cn",
+                "MetadataCountryCode": "CN"
             },
             "ItemId": "00000000-0000-0000-0000-000000000000",
             "SearchProviderName": "TheMovieDb",
@@ -484,6 +493,14 @@ mod tests {
         assert_eq!(request.search_info.name.as_deref(), Some("Fallen"));
         assert_eq!(request.search_info.year, Some(1998));
         assert_eq!(request.search_info.provider_ids["Imdb"], "tt0119094");
+        assert_eq!(
+            request.search_info.metadata_language.as_deref(),
+            Some("zh-cn")
+        );
+        assert_eq!(
+            request.search_info.metadata_country_code.as_deref(),
+            Some("CN")
+        );
         assert_eq!(request.search_provider_name.as_deref(), Some("TheMovieDb"));
     }
 

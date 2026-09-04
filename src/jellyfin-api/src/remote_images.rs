@@ -48,6 +48,7 @@ pub(crate) async fn images(
         .await?;
 
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
+    let configuration = state.server_configuration.load().await?;
     let result = state
         .item_lookup
         .remote_images(
@@ -58,6 +59,8 @@ pub(crate) async fn images(
             query.start_index.unwrap_or(0),
             query.limit,
             &api_key,
+            &configuration.preferred_metadata_language,
+            &configuration.metadata_country_code,
         )
         .await?;
     Ok(Json(result))
