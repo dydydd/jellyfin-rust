@@ -98,10 +98,8 @@ pub(crate) async fn authenticate(
     remote_ip: RemoteIp,
     Path(user_id): Path<Uuid>,
     Query(query): Query<AuthenticateUserQuery>,
-    request: Result<Json<AuthenticateUserByName>, JsonRejection>,
 ) -> Result<Json<AuthenticationResult>, ApiError> {
-    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    let password = request.pw.or(query.pw).ok_or(ApiError::InvalidRequest)?;
+    let password = query.pw.ok_or(ApiError::InvalidRequest)?;
     let user = state.users.get(user_id).await?;
     authenticate_username_password(&state, &headers, remote_ip.0, user.username, password).await
 }

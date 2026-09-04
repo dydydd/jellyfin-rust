@@ -85,16 +85,19 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
     ));
 
     assert_eq!(
-        post(&app, &format!("/Users/{}/Authenticate", user.id))
-            .await
-            .status(),
+        post_json(
+            &app,
+            &format!("/Users/{}/Authenticate", user.id),
+            &json!({ "Pw": "correct-password" }),
+        )
+        .await
+        .status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        post_json(
+        post(
             &app,
-            &format!("/Users/{}/Authenticate", Uuid::new_v4()),
-            &json!({ "Pw": "correct-password" }),
+            &format!("/Users/{}/Authenticate?pw=correct-password", Uuid::new_v4()),
         )
         .await
         .status(),
@@ -103,8 +106,8 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
     assert_eq!(
         post_json(
             &app,
-            &format!("/Users/{}/Authenticate", user.id),
-            &json!({ "Pw": "wrong" }),
+            &format!("/Users/{}/Authenticate?pw=wrong-password", user.id),
+            &json!({ "Pw": "correct-password" }),
         )
         .await
         .status(),
@@ -124,10 +127,9 @@ async fn exercise_legacy_user_authentication_route(database_name: &str) {
         0
     );
 
-    let response = post_json(
+    let response = post(
         &app,
-        &format!("/Users/{}/Authenticate?pw=wrong-password", user.id),
-        &json!({ "Pw": "correct-password" }),
+        &format!("/Users/{}/Authenticate?pw=correct-password", user.id),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
