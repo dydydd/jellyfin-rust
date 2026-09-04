@@ -72,6 +72,31 @@ struct ScannedPathFingerprint(Uuid);
 #[derive(Debug, Default)]
 struct SeenPaths(HashSet<ScannedPathFingerprint>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MediaItemScanOutcome {
+    item_id: Uuid,
+    added: bool,
+    changed: bool,
+}
+
+impl MediaItemScanOutcome {
+    const fn added(item_id: Uuid) -> Self {
+        Self {
+            item_id,
+            added: true,
+            changed: false,
+        }
+    }
+
+    const fn existing(item_id: Uuid, changed: bool) -> Self {
+        Self {
+            item_id,
+            added: false,
+            changed,
+        }
+    }
+}
+
 impl SeenPaths {
     fn insert(&mut self, path: &str) {
         self.0
@@ -1406,7 +1431,7 @@ impl LibraryScanService {
             let mut added = 0;
             for (path, media_kind) in files {
                 let existing = path.to_str().and_then(|p| existing_by_path.remove(p));
-                let (item_added, item_id) = self
+                let outcome = self
                     .ensure_media_item_with_permit(
                         path,
                         parent_id,
@@ -1416,12 +1441,12 @@ impl LibraryScanService {
                         existing,
                     )
                     .await?;
-                if item_added {
+                if outcome.added {
                     added += 1;
-                    summary.added_ids.push(item_id);
+                    summary.added_ids.push(outcome.item_id);
                 }
-                if path.to_str().is_some() {
-                    summary.changed_ids.push(item_id);
+                if outcome.changed {
+                    summary.changed_ids.push(outcome.item_id);
                 }
             }
             return Ok(added);
@@ -1458,12 +1483,20 @@ impl LibraryScanService {
                 ));
             }
             match result {
-                Ok((true, item_id)) => {
+                Ok(MediaItemScanOutcome {
+                    item_id,
+                    added: true,
+                    ..
+                }) => {
                     added += 1;
                     summary.added_ids.push(item_id);
-                    summary.changed_ids.push(item_id);
                 }
-                Ok((false, item_id)) => summary.changed_ids.push(item_id),
+                Ok(MediaItemScanOutcome {
+                    item_id,
+                    changed: true,
+                    ..
+                }) => summary.changed_ids.push(item_id),
+                Ok(MediaItemScanOutcome { .. }) => {}
                 Err(error) => {
                     tracing::debug!(%error, "concurrent media item processing failed");
                 }
@@ -1481,7 +1514,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         library_root: &Path,
         existing: Option<base_item::Model>,
-    ) -> Result<(bool, Uuid), LibraryScanError> {
+    ) -> Result<MediaItemScanOutcome, LibraryScanError> {
         let _permit = self.media_item_limiter.acquire().await;
         self.ensure_media_item(path, parent_id, media_kind, kind, library_root, existing)
             .await
@@ -1529,9 +1562,9 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         library_root: &Path,
         existing: Option<base_item::Model>,
-    ) -> Result<(bool, Uuid), LibraryScanError> {
+    ) -> Result<MediaItemScanOutcome, LibraryScanError> {
         let Some(path_str) = path.to_str() else {
-            return Ok((false, Uuid::nil()));
+            return Ok(MediaItemScanOutcome::existing(Uuid::nil(), false));
         };
         let is_strm = is_strm_path(path);
         let strm_target = if is_strm {
@@ -1585,7 +1618,7 @@ impl LibraryScanService {
                 if changed {
                     self.items.update(existing).await?;
                 }
-                return Ok((false, existing_id));
+                return Ok(MediaItemScanOutcome::existing(existing_id, changed));
             }
             return self
                 .ensure_episode_item(
@@ -1648,7 +1681,7 @@ impl LibraryScanService {
         self.persist_scan_relations(item.id, path_str, &item.item_type, None)
             .await?;
         self.discover_local_images(item.id, path_str).await?;
-        Ok((true, item.id))
+        Ok(MediaItemScanOutcome::added(item.id))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1661,7 +1694,7 @@ impl LibraryScanService {
         media_kind: MediaKind,
         path_str: &str,
         strm_target: Option<&str>,
-    ) -> Result<(bool, Uuid), LibraryScanError> {
+    ) -> Result<MediaItemScanOutcome, LibraryScanError> {
         let is_strm = is_strm_path(path);
         let media_source_path = strm_target.unwrap_or(path_str);
         let ep_result = crate::episode_parser::parse_episode(path);
@@ -1722,6 +1755,7 @@ impl LibraryScanService {
 
         if let Some(mut existing) = existing {
             let existing_id = existing.id;
+            let original = existing.clone();
             existing.parent_id = season_id.or(series_id).or(Some(parent_id));
             item_type.clone_into(&mut existing.item_type);
             existing.index_number = episode_number;
@@ -1733,9 +1767,10 @@ impl LibraryScanService {
                 existing.season_id = Some(sid);
             }
             existing.series_presentation_unique_key = series_puk;
-            let strm_changed =
-                is_strm && apply_strm_metadata(&mut existing, media_source_path, strm_target);
-            let nfo_changed = apply_episode_nfo_metadata(&mut existing, path);
+            if is_strm {
+                apply_strm_metadata(&mut existing, media_source_path, strm_target);
+            }
+            apply_episode_nfo_metadata(&mut existing, path);
             self.persist_scan_relations(existing.id, path_str, &existing.item_type, season_number)
                 .await?;
             if let Some(mut media_info) = self
@@ -1747,13 +1782,14 @@ impl LibraryScanService {
                     !is_strm,
                 )
                 .await?
-                && apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info)
             {
-                self.items.update(existing).await?;
-            } else if nfo_changed || strm_changed {
+                apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info);
+            }
+            let changed = existing != original;
+            if changed {
                 self.items.update(existing).await?;
             }
-            return Ok((false, existing_id));
+            return Ok(MediaItemScanOutcome::existing(existing_id, changed));
         }
 
         let mut item = NewBaseItem::new(stable_id, item_type);
@@ -1784,11 +1820,11 @@ impl LibraryScanService {
         {
             let item_id = item.id;
             self.items.update(item).await?;
-            return Ok((true, item_id));
+            return Ok(MediaItemScanOutcome::added(item_id));
         }
 
         let item_id = item.id;
-        Ok((true, item_id))
+        Ok(MediaItemScanOutcome::added(item_id))
     }
 
     async fn ensure_series_item(

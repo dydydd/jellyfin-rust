@@ -127,6 +127,13 @@ async fn exercise_scan(database_name: &str) {
             .expect("hydrated STRM is cached")
     );
 
+    let stable_summary = scan.scan_all().await.expect("stable STRM rescan");
+    assert!(stable_summary.added_ids.is_empty());
+    assert!(
+        stable_summary.changed_ids.is_empty(),
+        "an unchanged rescan must not broadcast the whole library: {stable_summary:?}"
+    );
+
     std::fs::remove_dir_all(library_root).expect("movie fixture cleanup");
     database.close().await.expect("database pool cleanup");
 }
