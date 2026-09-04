@@ -855,7 +855,10 @@ async fn resolve_user_view_parent_id(
         .and_then(serde_json::Value::as_str)
         .filter(|id| !id.is_empty())
         .and_then(|id| Uuid::parse_str(id).ok());
-    Ok(display_parent_id.or(parent.parent_id).or(Some(parent_id)))
+    // Grouped views have no single display parent. Keep those scoped to the
+    // synthetic id until their configured multi-folder scope is applied;
+    // falling back to the user root would expose unrelated libraries.
+    Ok(Some(display_parent_id.unwrap_or(parent_id)))
 }
 
 impl TryFrom<ItemsQuery> for BaseItemQuery {
