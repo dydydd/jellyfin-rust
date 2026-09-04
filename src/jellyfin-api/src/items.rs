@@ -18,15 +18,22 @@ use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ItemsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
+    #[serde(default, alias = "Limit")]
     limit: Option<u64>,
+    #[serde(default, alias = "Recursive")]
     recursive: Option<bool>,
-    #[serde(rename = "searchTerm", alias = "SearchTerm")]
+    #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
     #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
     is_played: Option<bool>,
@@ -217,12 +224,17 @@ pub(crate) struct ItemsQuery {
     is_kids: Option<bool>,
     #[serde(default, rename = "isSports", alias = "IsSports")]
     is_sports: Option<bool>,
-    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    #[serde(
+        default,
+        alias = "Ids",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
     ids: Vec<Uuid>,
     #[serde(
         default,
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
+        alias = "includeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
@@ -387,9 +399,9 @@ impl FromStr for ItemFilter {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct LatestItemsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
     #[serde(
         default,
@@ -402,12 +414,13 @@ pub(crate) struct LatestItemsQuery {
         default,
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
+        alias = "includeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
     #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
     is_played: Option<bool>,
-    #[serde(default = "default_latest_limit")]
+    #[serde(default = "default_latest_limit", alias = "Limit")]
     limit: u64,
     #[serde(default, rename = "groupItems", alias = "GroupItems")]
     group_items: bool,
@@ -415,7 +428,7 @@ pub(crate) struct LatestItemsQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct SuggestionsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(
         default,
@@ -431,8 +444,14 @@ pub(crate) struct SuggestionsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     item_types: Vec<String>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
+    #[serde(default, alias = "Limit")]
     limit: Option<u64>,
     #[serde(
         default,

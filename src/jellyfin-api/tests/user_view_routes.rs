@@ -69,9 +69,52 @@ async fn exercise_user_view_routes(database_name: &str) {
     let fixture = Fixture::new(database.clone()).await;
     assert_auth_and_target_user_rules(&fixture).await;
     assert_user_views(&fixture).await;
+    assert_home_query_key_casing(&fixture).await;
     assert_grouped_views(&fixture).await;
     assert_grouping_options(&fixture).await;
     database.close().await.expect("database pool cleanup");
+}
+
+async fn assert_home_query_key_casing(fixture: &Fixture) {
+    let views = get_json(
+        &fixture.app,
+        &format!("/UserViews?userid={}&presetviews=movies", fixture.user_id),
+        &fixture.user_token,
+    )
+    .await;
+    let synthetic_id = views["Items"]
+        .as_array()
+        .expect("view items")
+        .iter()
+        .find(|item| item["CollectionType"] == "movies")
+        .and_then(|item| item["Id"].as_str())
+        .expect("synthetic movie view");
+    let items = get_json(
+        &fixture.app,
+        &format!(
+            "/Items?parentid={synthetic_id}&Recursive=true&includeitemtypes=Movie&Limit=1&Ids={}",
+            fixture.movie_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(items["TotalRecordCount"], 1);
+    assert_eq!(
+        items["Items"][0]["Id"],
+        fixture.movie_id.simple().to_string()
+    );
+
+    let latest = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?userid={}&parentid={synthetic_id}&includeitemtypes=Movie&Limit=1",
+            fixture.user_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(latest.as_array().expect("latest items").len(), 1);
+    assert_eq!(latest[0]["Id"], fixture.movie_id.simple().to_string());
 }
 
 struct Fixture {

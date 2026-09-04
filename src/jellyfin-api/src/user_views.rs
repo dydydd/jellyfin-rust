@@ -22,22 +22,29 @@ const USER_VIEW_DISPLAY_PREFERENCES_ID: &str = "cb46bc72e78d95cc6cd072de3a65b93a
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UserViewsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(
         default,
         rename = "includeExternalContent",
-        alias = "IncludeExternalContent"
+        alias = "IncludeExternalContent",
+        alias = "includeexternalcontent"
     )]
     include_external_content: Option<bool>,
     #[serde(
         default,
         rename = "presetViews",
         alias = "PresetViews",
+        alias = "presetviews",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     preset_views: Vec<String>,
-    #[serde(default, rename = "includeHidden", alias = "IncludeHidden")]
+    #[serde(
+        default,
+        rename = "includeHidden",
+        alias = "IncludeHidden",
+        alias = "includehidden"
+    )]
     include_hidden: bool,
 }
 
