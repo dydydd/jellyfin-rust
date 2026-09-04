@@ -197,6 +197,23 @@ fn single_episode_without_end_tag_keeps_index_number_end_unset() {
 }
 
 #[test]
+fn series_and_episode_parse_tag_and_style_nodes() {
+    let series = jellyfin_xbmc_metadata::parse_nfo(
+        "<tvshow><tag>Favorite</tag><style>Anthology</style></tvshow>",
+        NfoDocumentKind::Series,
+    )
+    .unwrap();
+    assert_eq!(series.tags, ["Favorite", "Anthology"]);
+
+    let episode = jellyfin_xbmc_metadata::parse_nfo(
+        "<episodedetails><tag>Rewatch</tag><style>Special</style></episodedetails>",
+        NfoDocumentKind::Episode,
+    )
+    .unwrap();
+    assert_eq!(episode.tags, ["Rewatch", "Special"]);
+}
+
+#[test]
 fn multi_episode_uses_maximum_episode_number_when_last_block_is_missing_one() {
     let episode = jellyfin_xbmc_metadata::parse_nfo(
         "<episodedetails><title>One</title><episode>1</episode></episodedetails>\

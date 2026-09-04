@@ -61,6 +61,24 @@ pub struct LibraryScanSummary {
     pub removed_ids: Vec<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ScannedPathFingerprint(Uuid);
+
+#[derive(Debug, Default)]
+struct SeenPaths(HashSet<ScannedPathFingerprint>);
+
+impl SeenPaths {
+    fn insert(&mut self, path: &str) {
+        self.0
+            .insert(ScannedPathFingerprint(stable_item_id(path, "ScanPath")));
+    }
+
+    fn contains(&self, path: &str) -> bool {
+        self.0
+            .contains(&ScannedPathFingerprint(stable_item_id(path, "ScanPath")))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum LibraryScanError {
     #[error(transparent)]
@@ -515,7 +533,7 @@ impl LibraryScanService {
             folder.folder.collection_type.as_deref(),
             &folder.folder.library_options,
         );
-        let mut seen_paths = HashSet::new();
+        let mut seen_paths = SeenPaths::default();
         let mut readable_roots = Vec::new();
         if !enabled {
             return Ok(());
@@ -684,16 +702,15 @@ impl LibraryScanService {
         &self,
         parent_id: Uuid,
         kind: ScanLibraryKind,
-        seen_paths: &HashSet<String>,
+        seen_paths: &SeenPaths,
         readable_roots: &[PathBuf],
     ) -> Result<Vec<Uuid>, LibraryScanError> {
         if readable_roots.is_empty() {
             return Ok(Vec::new());
         }
-        let descendants = self.items.descendants(parent_id).await?;
+        let descendants = self.items.descendant_scan_candidates(parent_id).await?;
         let stale_ids = descendants
             .iter()
-            .map(|entry| &entry.item)
             .filter(|item| match kind {
                 ScanLibraryKind::TvShows => {
                     matches!(item.item_type.as_str(), "Episode" | "Trailer" | "Video")
@@ -725,16 +742,14 @@ impl LibraryScanService {
         }
 
         if kind.is_tv() {
-            let descendants = self.items.descendants(parent_id).await?;
+            let descendants = self.items.descendant_scan_candidates(parent_id).await?;
             let stale_seasons = descendants
                 .iter()
-                .map(|entry| &entry.item)
                 .filter(|item| item.item_type == "Season" && item.path.is_some())
                 .filter(|season| {
-                    !descendants.iter().any(|entry| {
-                        (entry.item.item_type == "Episode"
-                            && entry.item.season_id == Some(season.id))
-                            || entry.item.parent_id == Some(season.id)
+                    !descendants.iter().any(|item| {
+                        (item.item_type == "Episode" && item.season_id == Some(season.id))
+                            || item.parent_id == Some(season.id)
                     })
                 })
                 .filter(|season| {
@@ -765,7 +780,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         allow_photos: bool,
         summary: &mut LibraryScanSummary,
-        seen_paths: &mut HashSet<String>,
+        seen_paths: &mut SeenPaths,
     ) -> Result<bool, LibraryScanError> {
         let mut entries = match fs::read_dir(root).await {
             Ok(entries) => entries,
@@ -813,7 +828,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         allow_photos: bool,
         summary: &mut LibraryScanSummary,
-        seen_paths: &mut HashSet<String>,
+        seen_paths: &mut SeenPaths,
     ) -> Result<(), LibraryScanError> {
         let resolver = LibraryResolverChain::default_music_chain();
         let reader = FilesystemDirectoryReader;
@@ -867,7 +882,7 @@ impl LibraryScanService {
                 }
                 summary.items_seen += 1;
                 if let Some(path) = path.to_str() {
-                    seen_paths.insert(path.to_owned());
+                    seen_paths.insert(path);
                 }
                 children.push(candidate);
                 files.push((path, media_kind));
@@ -875,7 +890,7 @@ impl LibraryScanService {
 
             let directory_path = directory.path.to_string_lossy().into_owned();
             if let Some(path) = directory.path.to_str() {
-                seen_paths.insert(path.to_owned());
+                seen_paths.insert(path);
             }
 
             let resolved_item = if directory.is_root {
@@ -1034,7 +1049,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         allow_photos: bool,
         summary: &mut LibraryScanSummary,
-        seen_paths: &mut HashSet<String>,
+        seen_paths: &mut SeenPaths,
         library_root: &Path,
     ) -> Result<(), LibraryScanError> {
         let mut files = Vec::new();
@@ -1069,7 +1084,7 @@ impl LibraryScanService {
             }
             summary.items_seen += 1;
             if let Some(path) = path.to_str() {
-                seen_paths.insert(path.to_owned());
+                seen_paths.insert(path);
             }
             files.push((path, media_kind));
         }
@@ -1248,7 +1263,7 @@ impl LibraryScanService {
         entries: &[ExtraFileSystemEntry],
         kind: ScanLibraryKind,
         summary: &mut LibraryScanSummary,
-        seen_paths: &mut HashSet<String>,
+        seen_paths: &mut SeenPaths,
         library_root: &Path,
     ) -> Result<(), LibraryScanError> {
         if kind.is_tv() {
@@ -1288,7 +1303,7 @@ impl LibraryScanService {
                 } else {
                     extra.path
                 };
-                seen_paths.insert(path);
+                seen_paths.insert(&path);
             }
         }
         Ok(())
@@ -2577,10 +2592,11 @@ fn read_season_nfo(episode_path: &str, season_number: Option<i32>) -> Option<Nfo
 
 fn relations_from_movie_nfo(movie: MovieNfo) -> ScanNfoRelations {
     let genres = movie.genres;
+    let tags = movie.tags;
     let studios = movie.studios;
     ScanNfoRelations {
         genres,
-        tags: Vec::new(),
+        tags,
         studios,
         people: movie.people.into_iter().map(scan_nfo_person).collect(),
     }
@@ -2705,6 +2721,7 @@ fn apply_movie_nfo_metadata(
     changed |= upsert_i32(&mut data, "Height", nfo.height);
     changed |= upsert_bool(&mut data, "HasSubtitles", nfo.has_subtitles);
     changed |= upsert_strings(&mut data, "Genres", &nfo.genres);
+    changed |= upsert_strings(&mut data, "Tags", &nfo.tags);
     changed |= upsert_strings(&mut data, "Studios", &nfo.studios);
     changed |= upsert_strings(&mut data, "RemoteTrailers", &nfo.remote_trailers);
     if let Some(date_created) = nfo.date_created {
@@ -3442,21 +3459,47 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 #[cfg(test)]
 mod tests {
     use super::{
-        LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, apply_non_movie_nfo,
-        apply_probed_item_metadata, apply_strm_metadata, attachment_image_type,
-        attachments_from_media_info, codec_from_extension, default_stream, display_name,
-        extra_type_name, is_extras_directory, local_image_type, media_item_data, media_kind,
-        merge_scan_summary, next_stream_index, read_strm_target, relations_from_movie_nfo,
-        relations_from_nfo_metadata, resolve_external_subtitle_streams_from_entries,
-        scan_nfo_person, set_additional_parts, stable_item_id, streams_from_media_info,
+        LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
+        SeenPaths, apply_non_movie_nfo, apply_probed_item_metadata, apply_strm_metadata,
+        attachment_image_type, attachments_from_media_info, codec_from_extension, default_stream,
+        display_name, extra_type_name, is_extras_directory, local_image_type, media_item_data,
+        media_kind, merge_scan_summary, next_stream_index, read_strm_target,
+        relations_from_movie_nfo, relations_from_nfo_metadata,
+        resolve_external_subtitle_streams_from_entries, scan_nfo_person, set_additional_parts,
+        stable_item_id, streams_from_media_info,
     };
+
+    #[test]
+    fn seen_paths_use_stable_exact_fingerprints() {
+        let path = "/media/Library/Movie.mkv";
+        let fingerprint = ScannedPathFingerprint(stable_item_id(path, "ScanPath"));
+        assert_eq!(
+            fingerprint,
+            ScannedPathFingerprint(stable_item_id(path, "ScanPath"))
+        );
+        assert_ne!(
+            fingerprint,
+            ScannedPathFingerprint(stable_item_id("/media/Library/movie.mkv", "ScanPath"))
+        );
+        assert_ne!(
+            fingerprint,
+            ScannedPathFingerprint(stable_item_id("/media/Library/Movie.mkv.bak", "ScanPath"))
+        );
+        assert_eq!(std::mem::size_of::<ScannedPathFingerprint>(), 16);
+
+        let mut paths = SeenPaths::default();
+        paths.insert(path);
+        assert!(paths.contains(path));
+        assert!(!paths.contains("/media/Library/movie.mkv"));
+        assert!(!paths.contains("/media/Library/Movie.mkv.bak"));
+    }
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
     use jellyfin_naming::ExtraType;
     use jellyfin_providers::media_info::MediaFileSystemEntry;
     use jellyfin_xbmc_metadata::{MovieNfo, NfoMetadata, NfoPerson, PersonKind};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::{
         collections::HashSet,
         path::Path,
@@ -4189,9 +4232,10 @@ mod tests {
     }
 
     #[test]
-    fn movie_nfo_relations_include_genres_studios_and_people() {
+    fn movie_nfo_relations_include_genres_tags_studios_and_people() {
         let movie = MovieNfo {
             genres: vec!["Drama".to_owned(), "Crime".to_owned()],
+            tags: vec!["Favorite".to_owned(), "Neo-Noir".to_owned()],
             studios: vec!["Example Studio".to_owned()],
             people: vec![
                 NfoPerson {
@@ -4214,13 +4258,34 @@ mod tests {
 
         let relations = relations_from_movie_nfo(movie);
         assert_eq!(relations.genres, ["Drama", "Crime"]);
-        assert!(relations.tags.is_empty());
+        assert_eq!(relations.tags, ["Favorite", "Neo-Noir"]);
         assert_eq!(relations.studios, ["Example Studio"]);
         assert_eq!(relations.people.len(), 2);
         assert_eq!(relations.people[0].name, "Jane Actor");
         assert_eq!(relations.people[0].person_type, "Actor");
         assert_eq!(relations.people[0].role, "Lead");
         assert_eq!(relations.people[1].person_type, "Director");
+    }
+
+    #[test]
+    fn empty_non_movie_nfo_tags_preserve_existing_tags() {
+        let mut item = base_item_default();
+        item.item_type = "Episode".to_owned();
+        item.data = Some(json!({
+            "IsLocked": false,
+            "Tags": ["Keep Me"]
+        }));
+
+        assert!(!apply_non_movie_nfo(&mut item, &NfoMetadata::default()));
+        assert_eq!(
+            item.data
+                .as_ref()
+                .and_then(|data| data.get("Tags"))
+                .and_then(Value::as_array)
+                .and_then(|tags| tags.first())
+                .and_then(Value::as_str),
+            Some("Keep Me")
+        );
     }
 
     #[test]

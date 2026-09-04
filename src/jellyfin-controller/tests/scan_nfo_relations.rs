@@ -9,7 +9,7 @@ use uuid::Uuid;
 const DATABASE_PREFIX: &str = "jellyfin_scan_nfo_relations_";
 
 #[tokio::test]
-async fn movie_scan_links_nfo_genres_studios_and_people() {
+async fn movie_scan_links_nfo_genres_tags_studios_and_people() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -62,6 +62,8 @@ async fn exercise_scan(database_name: &str) {
 <movie>
   <title>Scan Movie</title>
   <genre>Drama</genre>
+  <tag>Favorite</tag>
+  <style>Neo-Noir</style>
   <studio>Example Studio</studio>
   <actor>
     <name>Jane Actor</name>
@@ -106,6 +108,30 @@ async fn exercise_scan(database_name: &str) {
         genres.iter().any(|value| value.value == "Drama"),
         "NFO genre must be linked"
     );
+    let tags = values
+        .values_for_item(movie.id, ItemValueType::Tags)
+        .await
+        .expect("tag query");
+    assert_eq!(
+        tags.iter()
+            .map(|value| value.value.as_str())
+            .collect::<Vec<_>>(),
+        ["Favorite", "Neo-Noir"],
+        "NFO tags must be linked"
+    );
+    assert_eq!(
+        movie
+            .data
+            .as_ref()
+            .and_then(|data| data.get("Tags"))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["Favorite", "Neo-Noir"],
+        "NFO tags must be persisted in item metadata"
+    );
     let studios = values
         .values_for_item(movie.id, ItemValueType::Studios)
         .await
@@ -130,6 +156,41 @@ async fn exercise_scan(database_name: &str) {
             .iter()
             .any(|credit| credit.person_type == "Director" && credit.person.name == "John Director"),
         "NFO director must be linked"
+    );
+
+    std::fs::write(
+        library_root.join("Scan Movie.nfo"),
+        "<movie><title>Scan Movie</title><genre>Drama</genre></movie>",
+    )
+    .expect("tag-free movie NFO write");
+    scan.scan_all().await.expect("movie library rescan");
+    let movie = items
+        .get(movie.id)
+        .await
+        .expect("rescanned movie lookup")
+        .expect("rescanned movie item");
+    let tags = values
+        .values_for_item(movie.id, ItemValueType::Tags)
+        .await
+        .expect("rescanned tag query");
+    assert_eq!(
+        tags.iter()
+            .map(|value| value.value.as_str())
+            .collect::<Vec<_>>(),
+        ["Favorite", "Neo-Noir"],
+        "an empty NFO tag response must not clear existing tags"
+    );
+    assert_eq!(
+        movie
+            .data
+            .as_ref()
+            .and_then(|data| data.get("Tags"))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["Favorite", "Neo-Noir"]
     );
 
     std::fs::remove_dir_all(library_root).expect("movie fixture cleanup");

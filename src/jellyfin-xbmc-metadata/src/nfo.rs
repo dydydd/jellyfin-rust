@@ -266,7 +266,7 @@ fn parse_node(node: Node<'_, '_>, kind: NfoDocumentKind, metadata: &mut NfoMetad
         "album" if kind == NfoDocumentKind::MusicVideo => metadata.album = text(node),
         "artist" if kind == NfoDocumentKind::MusicVideo => push_text(node, &mut metadata.artists),
         "genre" => extend_slash_values(node, &mut metadata.genres),
-        "style" => push_text(node, &mut metadata.tags),
+        "style" | "tag" => push_text(node, &mut metadata.tags),
         "studio" => push_text(node, &mut metadata.studios),
         "year" => metadata.production_year = parse_i32(node).filter(|year| *year > 1850),
         "premiered" | "aired" | "releasedate" => set_premiere_date(node, metadata),
