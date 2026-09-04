@@ -112,6 +112,16 @@ pub struct LibraryScanService {
     is_scanning: Arc<AtomicBool>,
 }
 
+struct LibraryScanGuard {
+    is_scanning: Arc<AtomicBool>,
+}
+
+impl Drop for LibraryScanGuard {
+    fn drop(&mut self) {
+        self.is_scanning.store(false, Ordering::Release);
+    }
+}
+
 impl LibraryScanService {
     #[must_use]
     pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
@@ -194,15 +204,13 @@ impl LibraryScanService {
     ///
     /// Returns persistence or file-system errors that prevent the scan from
     /// reading configured paths or writing discovered media.
-    fn try_start_scan(&self) -> Result<(), LibraryScanError> {
+    fn try_start_scan(&self) -> Result<LibraryScanGuard, LibraryScanError> {
         self.is_scanning
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| ())
+            .map(|_| LibraryScanGuard {
+                is_scanning: Arc::clone(&self.is_scanning),
+            })
             .map_err(|_| LibraryScanError::AlreadyScanning)
-    }
-
-    fn end_scan(&self) {
-        self.is_scanning.store(false, Ordering::Release);
     }
 
     /// Scans every configured library collection.
@@ -230,10 +238,11 @@ impl LibraryScanService {
         &self,
         on_progress: Option<&(dyn Fn(f64) + Send + Sync)>,
     ) -> Result<LibraryScanSummary, LibraryScanError> {
-        self.try_start_scan()?;
-        let result = self.scan_all_inner(on_progress).await;
-        self.end_scan();
-        result
+        // Keep the guard alive across every await. If the request or task is
+        // cancelled, dropping its future also drops the guard and releases the
+        // scan flag, allowing a later scan to start.
+        let _scan_guard = self.try_start_scan()?;
+        self.scan_all_inner(on_progress).await
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -272,10 +281,8 @@ impl LibraryScanService {
         &self,
         collection_id: Uuid,
     ) -> Result<LibraryScanSummary, LibraryScanError> {
-        self.try_start_scan()?;
-        let result = self.scan_collection_inner(collection_id).await;
-        self.end_scan();
-        result
+        let _scan_guard = self.try_start_scan()?;
+        self.scan_collection_inner(collection_id).await
     }
 
     async fn scan_collection_inner(
@@ -3139,12 +3146,12 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 #[cfg(test)]
 mod tests {
     use super::{
-        MediaKind, ScanLibraryKind, apply_non_movie_nfo, apply_probed_item_metadata,
-        attachment_image_type, attachments_from_media_info, codec_from_extension, default_stream,
-        display_name, extra_type_name, is_extras_directory, local_image_type, media_item_data,
-        media_kind, next_stream_index, relations_from_movie_nfo, relations_from_nfo_metadata,
-        resolve_external_subtitle_streams_from_entries, scan_nfo_person, set_additional_parts,
-        stable_item_id, streams_from_media_info,
+        LibraryScanGuard, MediaKind, ScanLibraryKind, apply_non_movie_nfo,
+        apply_probed_item_metadata, attachment_image_type, attachments_from_media_info,
+        codec_from_extension, default_stream, display_name, extra_type_name, is_extras_directory,
+        local_image_type, media_item_data, media_kind, next_stream_index, relations_from_movie_nfo,
+        relations_from_nfo_metadata, resolve_external_subtitle_streams_from_entries,
+        scan_nfo_person, set_additional_parts, stable_item_id, streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
@@ -3153,7 +3160,25 @@ mod tests {
     use jellyfin_providers::media_info::MediaFileSystemEntry;
     use jellyfin_xbmc_metadata::{MovieNfo, NfoMetadata, NfoPerson, PersonKind};
     use serde_json::json;
-    use std::path::Path;
+    use std::{
+        path::Path,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    #[test]
+    fn dropping_scan_guard_releases_scan_after_cancellation() {
+        let is_scanning = Arc::new(AtomicBool::new(true));
+        {
+            let _guard = LibraryScanGuard {
+                is_scanning: Arc::clone(&is_scanning),
+            };
+            assert!(is_scanning.load(Ordering::Acquire));
+        }
+        assert!(!is_scanning.load(Ordering::Acquire));
+    }
 
     fn base_item_default() -> base_item::Model {
         base_item::Model {
