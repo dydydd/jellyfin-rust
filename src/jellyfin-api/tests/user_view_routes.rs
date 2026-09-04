@@ -5,8 +5,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{UserService, VirtualFolderService};
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
-    USER_ROOT_FOLDER_ID,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
+    USER_ROOT_FOLDER_ID, UserDataRepository,
     entities::{user, user::Column as UserColumn},
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -83,6 +83,9 @@ struct Fixture {
     show_view_id: Uuid,
     mixed_view_id: Uuid,
     movie_id: Uuid,
+    mixed_movie_id: Uuid,
+    ungrouped_movie_id: Uuid,
+    show_id: Uuid,
 }
 
 impl Fixture {
@@ -148,6 +151,16 @@ impl Fixture {
             .expect("mixed view");
         virtual_folders
             .create(
+                &format!("Other Movies {suffix}"),
+                Some("movies".to_owned()),
+                json!({ "Enabled": true }),
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("ungrouped movie view");
+        virtual_folders
+            .create(
                 &format!("Hidden {suffix}"),
                 Some("movies".to_owned()),
                 json!({ "IsHidden": true }),
@@ -165,24 +178,46 @@ impl Fixture {
                 .id
         };
         let movie_view_id = id_by_name("Movies");
+        let show_view_id = id_by_name("Shows");
+        let mixed_view_id = id_by_name("Mixed");
+        let ungrouped_movie_view_id = id_by_name("Other Movies");
         let items = BaseItemRepository::new(database.clone());
         items.ensure_user_root().await.expect("user root");
-        let mut movie_collection = NewBaseItem::new(movie_view_id, "CollectionFolder");
-        movie_collection.parent_id = Some(USER_ROOT_FOLDER_ID);
-        movie_collection.name = Some(format!("Movies {suffix}"));
-        movie_collection.sort_name = movie_collection.name.clone();
-        movie_collection.is_folder = true;
-        movie_collection.data = Some(json!({ "CollectionType": "movies" }));
-        items
-            .create(movie_collection)
-            .await
-            .expect("movie collection item");
+        for (id, name, collection_type) in [
+            (movie_view_id, format!("Movies {suffix}"), Some("movies")),
+            (show_view_id, format!("Shows {suffix}"), Some("tvshows")),
+            (mixed_view_id, format!("Mixed {suffix}"), None),
+            (
+                ungrouped_movie_view_id,
+                format!("Other Movies {suffix}"),
+                Some("movies"),
+            ),
+        ] {
+            let mut collection = NewBaseItem::new(id, "CollectionFolder");
+            collection.parent_id = Some(USER_ROOT_FOLDER_ID);
+            collection.name = Some(name);
+            collection.sort_name = collection.name.clone();
+            collection.is_folder = true;
+            collection.data = Some(json!({ "CollectionType": collection_type }));
+            items.create(collection).await.expect("collection item");
+        }
         let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
         movie.parent_id = Some(movie_view_id);
         movie.name = Some(format!("Movie {suffix}"));
         movie.sort_name = movie.name.clone();
         movie.media_type = Some("Video".to_owned());
         let movie = items.create(movie).await.expect("movie item");
+        let mixed_movie = create_media_item(&items, mixed_view_id, "Movie", &suffix).await;
+        let ungrouped_movie =
+            create_media_item(&items, ungrouped_movie_view_id, "Movie", &suffix).await;
+        let show = create_media_item(&items, show_view_id, "Series", &suffix).await;
+        let user_data = UserDataRepository::new(database.clone());
+        for item_id in [movie.id, mixed_movie.id, ungrouped_movie.id] {
+            let mut data = NewUserData::new(item_id, user.id, item_id.to_string());
+            data.playback_position_ticks = 10_000_000;
+            data.last_played_date = Some(chrono::Utc::now());
+            user_data.upsert(data).await.expect("resume data");
+        }
 
         Self {
             app: jellyfin_api::router(AppState::new(
@@ -196,11 +231,28 @@ impl Fixture {
             admin_token,
             user_token,
             movie_view_id,
-            show_view_id: id_by_name("Shows"),
-            mixed_view_id: id_by_name("Mixed"),
+            show_view_id,
+            mixed_view_id,
             movie_id: movie.id,
+            mixed_movie_id: mixed_movie.id,
+            ungrouped_movie_id: ungrouped_movie.id,
+            show_id: show.id,
         }
     }
+}
+
+async fn create_media_item(
+    items: &BaseItemRepository,
+    parent_id: Uuid,
+    item_type: &str,
+    suffix: &str,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), item_type);
+    item.parent_id = Some(parent_id);
+    item.name = Some(format!("{item_type} {suffix} {parent_id}"));
+    item.sort_name = item.name.clone();
+    item.media_type = Some("Video".to_owned());
+    items.create(item).await.expect("media item")
 }
 
 async fn assert_auth_and_target_user_rules(fixture: &Fixture) {
@@ -233,7 +285,7 @@ async fn assert_auth_and_target_user_rules(fixture: &Fixture) {
 async fn assert_user_views(fixture: &Fixture) {
     let views = get_json(&fixture.app, "/UserViews", &fixture.user_token).await;
     assert_eq!(views["StartIndex"], 0);
-    assert_eq!(views["TotalRecordCount"], 4);
+    assert_eq!(views["TotalRecordCount"], 5);
     assert!(views.get("total_record_count").is_none());
     let items = views["Items"].as_array().expect("view items");
     assert!(items.iter().all(|item| item["Type"] == "CollectionFolder"));
@@ -249,7 +301,7 @@ async fn assert_user_views(fixture: &Fixture) {
         &fixture.admin_token,
     )
     .await;
-    assert_eq!(movie_views["TotalRecordCount"], 4);
+    assert_eq!(movie_views["TotalRecordCount"], 5);
     let movie_view = movie_views["Items"]
         .as_array()
         .expect("movie preset view items")
@@ -296,7 +348,7 @@ async fn assert_user_views(fixture: &Fixture) {
         &fixture.user_token,
     )
     .await;
-    assert_eq!(with_hidden["TotalRecordCount"], 5);
+    assert_eq!(with_hidden["TotalRecordCount"], 6);
 }
 
 async fn assert_grouped_views(fixture: &Fixture) {
@@ -312,7 +364,7 @@ async fn assert_grouped_views(fixture: &Fixture) {
     .await;
 
     let views = get_json(&fixture.app, "/UserViews", &fixture.user_token).await;
-    assert_eq!(views["TotalRecordCount"], 3);
+    assert_eq!(views["TotalRecordCount"], 4);
     let items = views["Items"].as_array().expect("grouped view items");
     let movies = items
         .iter()
@@ -321,11 +373,73 @@ async fn assert_grouped_views(fixture: &Fixture) {
     assert_eq!(movies["Type"], "UserView");
     assert_eq!(movies["Name"], "Movies");
     assert_eq!(movies["IsFolder"], true);
-    assert!(items.iter().any(|item| {
-        item["Id"] == fixture.show_view_id.simple().to_string()
-            && item["Type"] == "CollectionFolder"
-    }));
+    let tvshows = items
+        .iter()
+        .find(|item| item["CollectionType"] == "tvshows")
+        .expect("grouped television view");
+    assert_eq!(tvshows["Type"], "UserView");
+    assert_eq!(tvshows["Name"], "TvShows");
     assert!(items.iter().any(|item| item["CollectionType"] == "music"));
+
+    let movie_view_id = movies["Id"].as_str().expect("grouped movie id");
+    let movie_contents = get_json(
+        &fixture.app,
+        &format!("/Items?parentId={movie_view_id}&recursive=true&includeItemTypes=Movie&limit=20"),
+        &fixture.user_token,
+    )
+    .await;
+    let movie_ids = movie_contents["Items"]
+        .as_array()
+        .expect("grouped movie items")
+        .iter()
+        .filter_map(|item| item["Id"].as_str())
+        .collect::<Vec<_>>();
+    let movie_id = fixture.movie_id.simple().to_string();
+    let mixed_movie_id = fixture.mixed_movie_id.simple().to_string();
+    let ungrouped_movie_id = fixture.ungrouped_movie_id.simple().to_string();
+    let show_id = fixture.show_id.simple().to_string();
+    assert_eq!(movie_contents["TotalRecordCount"], 2);
+    assert!(movie_ids.contains(&movie_id.as_str()));
+    assert!(movie_ids.contains(&mixed_movie_id.as_str()));
+    assert!(!movie_ids.contains(&ungrouped_movie_id.as_str()));
+    assert!(!movie_ids.contains(&show_id.as_str()));
+
+    let latest = get_json(
+        &fixture.app,
+        &format!("/Items/Latest?parentId={movie_view_id}&includeItemTypes=Movie&limit=20"),
+        &fixture.user_token,
+    )
+    .await;
+    let latest_ids = latest
+        .as_array()
+        .expect("grouped latest items")
+        .iter()
+        .filter_map(|item| item["Id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(latest_ids.len(), 2);
+    assert!(latest_ids.contains(&movie_id.as_str()));
+    assert!(latest_ids.contains(&mixed_movie_id.as_str()));
+    assert!(!latest_ids.contains(&ungrouped_movie_id.as_str()));
+
+    let resume = get_json(
+        &fixture.app,
+        &format!(
+            "/Users/{}/Items/Resume?parentId={movie_view_id}&includeItemTypes=Movie&limit=20",
+            fixture.user_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    let resume_ids = resume["Items"]
+        .as_array()
+        .expect("grouped resume items")
+        .iter()
+        .filter_map(|item| item["Id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(resume["TotalRecordCount"], 2);
+    assert!(resume_ids.contains(&movie_id.as_str()));
+    assert!(resume_ids.contains(&mixed_movie_id.as_str()));
+    assert!(!resume_ids.contains(&ungrouped_movie_id.as_str()));
 }
 
 async fn assert_grouping_options(fixture: &Fixture) {
@@ -336,7 +450,7 @@ async fn assert_grouping_options(fixture: &Fixture) {
     )
     .await;
     let items = grouping.as_array().expect("grouping array");
-    assert_eq!(items.len(), 4);
+    assert_eq!(items.len(), 5);
     assert!(
         items
             .iter()

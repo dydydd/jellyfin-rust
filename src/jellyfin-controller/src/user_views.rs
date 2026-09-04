@@ -86,8 +86,7 @@ impl UserViewManagerService {
         let config = parse_config(user.preferences)?;
         let policy = parse_policy(user.policy)?;
         let folders = self.visible_folders(&policy, include_hidden).await?;
-        let mut movies = Vec::new();
-        let mut tvshows = Vec::new();
+        let mut grouped_folders = Vec::new();
         let mut list = Vec::new();
 
         for folder in folders {
@@ -99,11 +98,7 @@ impl UserViewManagerService {
             if is_eligible_for_grouping(collection_type)
                 && config.grouped_folders.contains(&folder.id)
             {
-                if collection_type.is_some_and(|kind| kind.eq_ignore_ascii_case("tvshows")) {
-                    tvshows.push(folder);
-                } else {
-                    movies.push(folder);
-                }
+                grouped_folders.push(folder);
                 continue;
             }
             if preset_matches(collection_type, preset_views) {
@@ -113,8 +108,19 @@ impl UserViewManagerService {
             }
         }
 
-        add_grouped_view(&mut list, user_id, movies, "Movies", preset_views);
-        add_grouped_view(&mut list, user_id, tvshows, "TvShows", preset_views);
+        for (name, collection_type) in [("Movies", "movies"), ("TvShows", "tvshows")] {
+            let parents = grouped_folders
+                .iter()
+                .filter(|folder| {
+                    folder
+                        .collection_type
+                        .as_deref()
+                        .is_none_or(|kind| kind.eq_ignore_ascii_case(collection_type))
+                })
+                .cloned()
+                .collect();
+            add_grouped_view(&mut list, user_id, parents, name, preset_views);
+        }
 
         list.retain(|view| {
             !config.my_media_excludes.contains(&view.id)
@@ -129,6 +135,51 @@ impl UserViewManagerService {
         }
         sort_views(&mut list, &config);
         Ok(list)
+    }
+
+    /// Resolves a generated grouped view to its configured physical folders.
+    ///
+    /// `None` means the identifier is not one of this user's grouped movie or
+    /// television views. The returned folders have already been restricted by
+    /// the user's policy and current virtual-folder visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns user, folder, or stored-data errors.
+    pub async fn grouped_content_parent_ids(
+        &self,
+        user_id: Uuid,
+        view_id: Uuid,
+    ) -> Result<Option<Vec<Uuid>>, UserViewManagerError> {
+        let user = self.users.get(user_id).await?;
+        let config = parse_config(user.preferences)?;
+        let policy = parse_policy(user.policy)?;
+
+        for (name, collection_type) in [("Movies", "movies"), ("TvShows", "tvshows")] {
+            if grouped_user_view(user_id, name, collection_type).id != view_id {
+                continue;
+            }
+            if config.my_media_excludes.contains(&view_id) {
+                return Ok(Some(Vec::new()));
+            }
+            let mut parent_ids = self
+                .visible_folders(&policy, false)
+                .await?
+                .into_iter()
+                .filter(|folder| config.grouped_folders.contains(&folder.id))
+                .filter(|folder| {
+                    folder
+                        .collection_type
+                        .as_deref()
+                        .is_none_or(|kind| kind.eq_ignore_ascii_case(collection_type))
+                })
+                .map(|folder| folder.id)
+                .collect::<Vec<_>>();
+            parent_ids.sort_unstable();
+            parent_ids.dedup();
+            return Ok(Some(parent_ids));
+        }
+        Ok(None)
     }
 
     async fn ensure_persisted_view(

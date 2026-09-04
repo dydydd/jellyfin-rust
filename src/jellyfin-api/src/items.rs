@@ -528,9 +528,14 @@ async fn get_for(
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
-    query.parent_id =
-        resolve_user_view_parent_id(&state, &authenticated.user, target_user_id, query.parent_id)
-            .await?;
+    let parent_scope = resolve_user_view_parent_scope(
+        &state,
+        &authenticated.user,
+        target_user_id,
+        query.parent_id,
+    )
+    .await?;
+    query.parent_id = parent_scope.parent_id;
     apply_items_controller_defaults(&state, &authenticated.user, target_user_id, &mut query)
         .await?;
     resolve_official_rating_filters(&state, &mut query).await?;
@@ -574,9 +579,11 @@ async fn get_for(
             query.start_index = 0;
             query.limit = None;
 
+            let mut database_query: BaseItemQuery = query.try_into()?;
+            database_query.parent_ids = parent_scope.parent_ids;
             let mut page = state
                 .user_library
-                .query_items(&authenticated.user, target_user_id, query.try_into()?)
+                .query_items(&authenticated.user, target_user_id, database_query)
                 .await?;
             let total_record_count = page.items.len();
             page.items.sort_by(|left, right| {
@@ -611,9 +618,11 @@ async fn get_for(
         }
     }
 
+    let mut database_query: BaseItemQuery = query.try_into()?;
+    database_query.parent_ids = parent_scope.parent_ids;
     let page = state
         .user_library
-        .query_items(&authenticated.user, target_user_id, query.try_into()?)
+        .query_items(&authenticated.user, target_user_id, database_query)
         .await?;
     Ok(Json(
         page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
@@ -761,12 +770,19 @@ async fn resume_for(
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
-    query.parent_id =
-        resolve_user_view_parent_id(&state, &authenticated.user, target_user_id, query.parent_id)
-            .await?;
+    let parent_scope = resolve_user_view_parent_scope(
+        &state,
+        &authenticated.user,
+        target_user_id,
+        query.parent_id,
+    )
+    .await?;
+    query.parent_id = parent_scope.parent_id;
+    let mut database_query: BaseItemQuery = query.try_into()?;
+    database_query.parent_ids = parent_scope.parent_ids;
     let page = state
         .user_library
-        .resume_items(&authenticated.user, target_user_id, query.try_into()?)
+        .resume_items(&authenticated.user, target_user_id, database_query)
         .await?;
     Ok(Json(
         page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
@@ -794,16 +810,21 @@ async fn latest_for(
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
     let _ = query.group_items;
-    let parent_id =
-        resolve_user_view_parent_id(&state, &authenticated.user, target_user_id, query.parent_id)
-            .await?;
+    let parent_scope = resolve_user_view_parent_scope(
+        &state,
+        &authenticated.user,
+        target_user_id,
+        query.parent_id,
+    )
+    .await?;
     let page = state
         .user_library
         .query_items(
             &authenticated.user,
             target_user_id,
             BaseItemQuery {
-                parent_id,
+                parent_id: parent_scope.parent_id,
+                parent_ids: parent_scope.parent_ids,
                 recursive: true,
                 include_item_types: query.include_item_types,
                 is_virtual_item: Some(false),
@@ -824,21 +845,30 @@ async fn latest_for(
     ))
 }
 
-async fn resolve_user_view_parent_id(
+#[derive(Debug, Default)]
+struct ResolvedParentScope {
+    parent_id: Option<Uuid>,
+    parent_ids: Vec<Uuid>,
+}
+
+async fn resolve_user_view_parent_scope(
     state: &AppState,
     authenticated_user: &jellyfin_data::entities::user::Model,
     target_user_id: Uuid,
     parent_id: Option<Uuid>,
-) -> Result<Option<Uuid>, ApiError> {
+) -> Result<ResolvedParentScope, ApiError> {
     let Some(parent_id) = parent_id.filter(|id| !id.is_nil()) else {
-        return Ok(None);
+        return Ok(ResolvedParentScope::default());
     };
     let parent = state
         .user_library
         .item(authenticated_user, target_user_id, parent_id)
         .await?;
     if parent.item_type != "UserView" {
-        return Ok(Some(parent_id));
+        return Ok(ResolvedParentScope {
+            parent_id: Some(parent_id),
+            parent_ids: Vec::new(),
+        });
     }
 
     // Official UserView.GetIdsForAncestorQuery redirects synthetic views to
@@ -855,10 +885,36 @@ async fn resolve_user_view_parent_id(
         .and_then(serde_json::Value::as_str)
         .filter(|id| !id.is_empty())
         .and_then(|id| Uuid::parse_str(id).ok());
-    // Grouped views have no single display parent. Keep those scoped to the
-    // synthetic id until their configured multi-folder scope is applied;
+    if let Some(display_parent_id) = display_parent_id {
+        return Ok(ResolvedParentScope {
+            parent_id: Some(display_parent_id),
+            parent_ids: Vec::new(),
+        });
+    }
+
+    if let Some(parent_ids) = state
+        .user_views
+        .grouped_content_parent_ids(target_user_id, parent_id)
+        .await?
+    {
+        if parent_ids.is_empty() {
+            return Ok(ResolvedParentScope {
+                parent_id: Some(parent_id),
+                parent_ids,
+            });
+        }
+        return Ok(ResolvedParentScope {
+            parent_id: None,
+            parent_ids,
+        });
+    }
+
+    // An unknown synthetic view must stay scoped to its own empty subtree;
     // falling back to the user root would expose unrelated libraries.
-    Ok(Some(display_parent_id.unwrap_or(parent_id)))
+    Ok(ResolvedParentScope {
+        parent_id: Some(parent_id),
+        parent_ids: Vec::new(),
+    })
 }
 
 impl TryFrom<ItemsQuery> for BaseItemQuery {
@@ -907,6 +963,7 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             is_liked,
             is_favorite_or_liked,
             parent_id: query.parent_id,
+            parent_ids: Vec::new(),
             recursive: query.recursive.unwrap_or(false),
             search_term: query.search_term,
             include_item_types: query.include_item_types,

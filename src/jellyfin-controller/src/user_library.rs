@@ -155,7 +155,7 @@ impl UserLibraryService {
             .await?;
         self.apply_user_policy(&mut query, target_user_id).await?;
         query.user_id = Some(target_user_id);
-        if query.parent_id.is_none() && query.ids.is_empty() {
+        if query.parent_id.is_none() && query.parent_ids.is_empty() && query.ids.is_empty() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
         Ok(self.hydrate_page(self.items.query(&query).await?))
@@ -212,7 +212,7 @@ impl UserLibraryService {
         self.apply_user_policy(&mut query, target_user_id).await?;
         query.recursive = true;
         query.is_virtual_item = Some(false);
-        if query.parent_id.is_none() {
+        if query.parent_id.is_none() && query.parent_ids.is_empty() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
         Ok(self.hydrate_page(self.items.query_resumable(target_user_id, &query).await?))

@@ -232,6 +232,12 @@ pub struct BaseItemQuery {
     pub is_liked: Option<bool>,
     pub is_favorite_or_liked: Option<bool>,
     pub parent_id: Option<Uuid>,
+    /// Limits results to the union of these physical library parents.
+    ///
+    /// Jellyfin's grouped `UserView` exposes multiple collection folders as a
+    /// single logical parent. Keeping that union in the database query avoids
+    /// both cross-library leakage and application-side filtering.
+    pub parent_ids: Vec<Uuid>,
     pub recursive: bool,
     pub search_term: Option<String>,
     pub include_item_types: Vec<String>,
@@ -1039,6 +1045,21 @@ impl BaseItemRepository {
                 select = select.filter(base_item::Column::ParentId.eq(parent_id));
             }
         }
+        if !query.parent_ids.is_empty() {
+            if query.recursive {
+                let descendants = Query::select()
+                    .column(ancestor_id::Column::ItemId)
+                    .from((Alias::new("jellyfin"), ancestor_id::Entity))
+                    .and_where(
+                        ancestor_id::Column::ParentItemId.is_in(query.parent_ids.iter().copied()),
+                    )
+                    .to_owned();
+                select = select.filter(base_item::Column::Id.in_subquery(descendants));
+            } else {
+                select = select
+                    .filter(base_item::Column::ParentId.is_in(query.parent_ids.iter().copied()));
+            }
+        }
         if let Some(search_term) = query
             .search_term
             .as_deref()
@@ -1572,6 +1593,19 @@ impl BaseItemRepository {
             )",
                 values.len()
             );
+        }
+        if !query.parent_ids.is_empty() {
+            sql.push_str(
+                " AND episode.id IN (SELECT closure.item_id \
+                 FROM jellyfin.ancestor_ids AS closure WHERE 1 = 1",
+            );
+            append_uuid_list_filter(
+                &mut sql,
+                &mut values,
+                "closure.parent_item_id",
+                &query.parent_ids,
+            );
+            sql.push(')');
         }
         if let Some(condition) = policy_filter_sql("episode", query) {
             sql.push_str(" AND (");
@@ -3131,6 +3165,18 @@ fn append_raw_item_filters(
             sql.push(')');
         } else {
             push_bind(sql, values, parent_id, " AND item.parent_id = ");
+        }
+    }
+    if !query.parent_ids.is_empty() {
+        if query.recursive {
+            sql.push_str(
+                " AND item.id IN (SELECT closure.item_id \
+                 FROM jellyfin.ancestor_ids AS closure WHERE 1 = 1",
+            );
+            append_uuid_list_filter(sql, values, "closure.parent_item_id", &query.parent_ids);
+            sql.push(')');
+        } else {
+            append_uuid_list_filter(sql, values, "item.parent_id", &query.parent_ids);
         }
     }
     if include_search_term
