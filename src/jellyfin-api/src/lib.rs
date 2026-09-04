@@ -2489,7 +2489,6 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
         LibraryScanError::Io(_)
         | LibraryScanError::BaseItem(_)
         | LibraryScanError::Chapter(_)
-        | LibraryScanError::Keyframe(_)
         | LibraryScanError::ItemImage(_)
         | LibraryScanError::ItemValue(_)
         | LibraryScanError::ItemUpdate(_)
