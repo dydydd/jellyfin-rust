@@ -1,4 +1,5 @@
 /target
+/.env
 /jellyfin/
 /src/main.rs
 /.workbuddy/

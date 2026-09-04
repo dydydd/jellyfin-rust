@@ -201,7 +201,7 @@ impl MediaStreamRepository {
                       WHERE input.stream_index = stored.stream_index
                   )
                 ",
-                [item_id.into(), Value::from(payload.as_str()).into()],
+                [item_id.into(), payload.clone().into()],
             ))
             .await?;
 

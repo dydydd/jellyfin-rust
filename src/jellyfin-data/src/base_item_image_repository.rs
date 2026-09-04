@@ -720,7 +720,7 @@ impl BaseItemImageRepository {
                         AND input.image_index = stored.image_index
                   )
                 ",
-                [item_id.into(), Value::from(payload.as_str()).into()],
+                [item_id.into(), payload.clone().into()],
             ))
             .await?;
 

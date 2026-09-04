@@ -234,6 +234,79 @@ impl LibraryScanService {
         self.run_scan_all(Some(on_progress)).await
     }
 
+    /// Replaces the lightweight stream placeholder created for a `.strm`
+    /// item with stream details probed from its resolved media target.
+    ///
+    /// Library scans deliberately avoid opening every remote `.strm` target.
+    /// Playback negotiation, however, needs the real video and audio codecs to
+    /// decide whether a client can direct-play the file. This method performs
+    /// that work once, immediately before the first playback-info response,
+    /// and persists the result for subsequent requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence or sidecar-discovery errors. Probe failures are
+    /// best-effort and leave the existing placeholder intact.
+    pub async fn hydrate_strm_media_streams(
+        &self,
+        item_id: Uuid,
+    ) -> Result<bool, LibraryScanError> {
+        let Some(item) = self.items.get(item_id).await? else {
+            return Ok(false);
+        };
+        let Some(sidecar_path) = item
+            .path
+            .as_deref()
+            .filter(|path| is_strm_path(Path::new(path)))
+        else {
+            return Ok(false);
+        };
+        let Some(target) = item
+            .data
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|data| data.get("StrmTarget").or_else(|| data.get("strm_target")))
+            .and_then(Value::as_str)
+            .filter(|target| !target.is_empty())
+        else {
+            return Ok(false);
+        };
+        let Some(kind) = media_kind(Path::new(target)).filter(|kind| kind.needs_probe()) else {
+            return Ok(false);
+        };
+
+        let existing = self
+            .streams
+            .query(MediaStreamQuery {
+                item_id,
+                stream_index: None,
+                stream_type: None,
+            })
+            .await?;
+        let placeholder = default_stream(target, kind);
+        let embedded_streams = existing
+            .iter()
+            .filter(|stream| !stream.is_external)
+            .collect::<Vec<_>>();
+        if embedded_streams.len() != 1 || embedded_streams[0] != &placeholder {
+            return Ok(false);
+        }
+
+        let Some(mut media_info) = self.probe_media_info(target, kind).await else {
+            return Ok(false);
+        };
+        let mut streams = streams_from_media_info(&mut media_info);
+        if streams.is_empty() {
+            return Ok(false);
+        }
+        streams.extend(
+            self.resolve_external_subtitle_streams(sidecar_path, next_stream_index(&streams))
+                .await?,
+        );
+        self.streams.replace(item_id, &streams).await?;
+        Ok(true)
+    }
+
     async fn run_scan_all(
         &self,
         on_progress: Option<&(dyn Fn(f64) + Send + Sync)>,

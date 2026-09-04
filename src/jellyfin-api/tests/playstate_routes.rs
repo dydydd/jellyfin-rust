@@ -187,6 +187,44 @@ async fn playback_progress_json_route_updates_resume_and_stream_choices() {
 }
 
 #[tokio::test]
+async fn lowercase_player_callbacks_persist_playback_history() {
+    let fixture = PlaystateFixture::new().await;
+    let repository = UserDataRepository::new(fixture.database.clone());
+
+    for (route, position_ticks) in [
+        ("/sessions/playing", ticks(1)),
+        ("/sessions/playing/progress", ticks(120)),
+        ("/sessions/playing/stopped", ticks(121)),
+    ] {
+        let response = request_json(
+            &fixture.app,
+            "POST",
+            route,
+            &fixture.user_token,
+            json!({
+                "ItemId": fixture.runtime_item_id,
+                "PositionTicks": position_ticks
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{route}");
+    }
+
+    let persisted = repository
+        .get(
+            fixture.runtime_item_id,
+            fixture.user_id,
+            &fixture.runtime_item_id.simple().to_string(),
+        )
+        .await
+        .expect("lowercase playback history query")
+        .expect("lowercase playback history row");
+    assert_eq!(persisted.play_count, 1);
+    assert_eq!(persisted.playback_position_ticks, ticks(121));
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn playback_reports_update_session_state_projection() {
     let fixture = PlaystateFixture::new().await;

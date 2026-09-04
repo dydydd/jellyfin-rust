@@ -111,7 +111,7 @@ impl MediaAttachmentRepository {
                       WHERE input.attachment_index = stored.attachment_index
                   )
                 ",
-                [item_id.into(), Value::from(payload.as_str()).into()],
+                [item_id.into(), payload.clone().into()],
             ))
             .await?;
 
