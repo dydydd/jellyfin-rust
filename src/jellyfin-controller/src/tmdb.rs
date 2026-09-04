@@ -1447,10 +1447,6 @@ impl TmdbMetadataProvider {
         let Some(item) = self.items.get(item_id).await.ok().flatten() else {
             return;
         };
-        if replace_all {
-            let _ = images.delete(item_id, ImageType::Primary, 0).await;
-            let _ = images.delete(item_id, ImageType::Backdrop, 0).await;
-        }
         let existing = images.list(&item).await.ok();
         let has_primary = existing.as_ref().is_some_and(|images| {
             images
@@ -1462,21 +1458,47 @@ impl TmdbMetadataProvider {
                 .iter()
                 .any(|image| image.image_type == ImageType::Backdrop)
         });
-        if !has_primary
+        if (!has_primary || replace_all)
             && let Some(url) = TmdbUtils::image_url(Some("original"), poster_path)
-            && let Err(error) = images
-                .download_remote_image(item_id, ImageType::Primary, &url)
-                .await
         {
-            tracing::warn!(%error, "TMDB primary image download failed");
+            let result = if replace_all {
+                images
+                    .replace_remote_image(item_id, ImageType::Primary, &url)
+                    .await
+            } else {
+                images
+                    .download_remote_image(item_id, ImageType::Primary, &url)
+                    .await
+            };
+            if let Err(error) = result {
+                tracing::warn!(
+                    %item_id,
+                    %error,
+                    replace_all,
+                    "TMDB primary image download failed; existing image was preserved"
+                );
+            }
         }
-        if !has_backdrop
+        if (!has_backdrop || replace_all)
             && let Some(url) = TmdbUtils::image_url(Some("original"), backdrop_path)
-            && let Err(error) = images
-                .download_remote_image(item_id, ImageType::Backdrop, &url)
-                .await
         {
-            tracing::warn!(%error, "TMDB backdrop download failed");
+            let result = if replace_all {
+                images
+                    .replace_remote_image(item_id, ImageType::Backdrop, &url)
+                    .await
+            } else {
+                images
+                    .download_remote_image(item_id, ImageType::Backdrop, &url)
+                    .await
+            };
+            if let Err(error) = result {
+                tracing::warn!(
+                    %item_id,
+                    %error,
+                    replace_all,
+                    "TMDB backdrop download failed; existing images were preserved"
+                );
+            }
         }
     }
 }
