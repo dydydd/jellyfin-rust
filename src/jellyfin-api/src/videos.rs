@@ -53,7 +53,8 @@ async fn stream_file(
     query: StreamQuery,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let authenticated =
+        authentication::authenticated_session_for_uri(&state, &headers, request.uri()).await?;
     let item = state
         .library_controller
         .item(&authenticated.user, authenticated.user.id, item_id)

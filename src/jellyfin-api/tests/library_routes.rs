@@ -112,6 +112,18 @@ async fn assert_video_stream(fixture: &Fixture) {
         to_bytes(range.into_body(), usize::MAX).await.unwrap(),
         &media_bytes[30..=39]
     );
+    let query_token = fixture
+        .request(
+            "GET",
+            &format!("{route}?api_key={}", fixture.user_token),
+            None,
+        )
+        .await;
+    assert_eq!(query_token.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(query_token.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
     assert_eq!(
         fixture
             .request(
@@ -350,6 +362,21 @@ async fn assert_streamed_downloads(fixture: &Fixture) {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), media_bytes);
     }
+    let query_token = fixture
+        .request(
+            "GET",
+            &format!(
+                "/Items/{}/Download?api_key={}",
+                fixture.child_id, fixture.user_token
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(query_token.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(query_token.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
     let response = fixture
         .request(
             "GET",

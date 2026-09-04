@@ -115,17 +115,19 @@ pub(crate) struct AllThemeMediaResult {
 pub(crate) async fn file(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    file_response(state, headers, item_id, false).await
+    file_response(state, headers, &uri, item_id, false).await
 }
 
 pub(crate) async fn download(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    file_response(state, headers, item_id, true).await
+    file_response(state, headers, &uri, item_id, true).await
 }
 
 pub(crate) async fn theme_songs(
@@ -629,10 +631,12 @@ async fn theme_result(
 async fn file_response(
     state: Arc<AppState>,
     mut headers: HeaderMap,
+    uri: &axum::http::Uri,
     item_id: Uuid,
     attachment: bool,
 ) -> Result<Response, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let authenticated =
+        authentication::authenticated_session_for_uri(&state, &headers, uri).await?;
     let path = state
         .library_controller
         .download_path(&authenticated.user, authenticated.user.id, item_id)
