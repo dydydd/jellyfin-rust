@@ -339,12 +339,12 @@ impl TmdbClient {
             .query(&query)
             .send()
             .await
-            .map_err(MetadataProviderError::Http)?
+            .map_err(metadata_http_error)?
             .error_for_status()
-            .map_err(MetadataProviderError::Http)?
+            .map_err(metadata_http_error)?
             .json()
             .await
-            .map_err(MetadataProviderError::Http)
+            .map_err(metadata_http_error)
     }
 
     fn api_key(&self) -> Result<&str, MetadataProviderError> {
@@ -353,6 +353,13 @@ impl TmdbClient {
         }
         Ok(&self.api_key)
     }
+}
+
+fn metadata_http_error(error: reqwest::Error) -> MetadataProviderError {
+    // reqwest attaches the full request URL to transport and status errors.
+    // TMDB authenticates with an api_key query parameter, so retaining that
+    // URL would leak the credential through provider warning logs.
+    MetadataProviderError::Http(error.without_url())
 }
 
 fn http_client() -> reqwest::Client {
@@ -2477,6 +2484,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn provider_http_errors_remove_credential_urls() {
+        let source = reqwest::Client::new()
+            .get("ftp://tmdb.invalid/movie?api_key=never-log-this")
+            .send()
+            .await
+            .expect_err("unsupported URL scheme must fail");
+        assert!(source.url().is_some(), "fixture error must contain its URL");
+
+        let error = metadata_http_error(source);
+        assert!(!error.to_string().contains("never-log-this"));
+        let MetadataProviderError::Http(source) = error else {
+            panic!("expected HTTP provider error");
+        };
+        assert!(source.url().is_none());
+    }
 
     #[test]
     fn client_factory_reuses_transport_without_sharing_request_configuration() {
