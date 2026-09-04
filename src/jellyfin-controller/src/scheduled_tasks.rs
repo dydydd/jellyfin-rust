@@ -152,6 +152,7 @@ impl ScheduledTaskRunContext {
 pub struct ScheduledTaskService {
     tasks: Arc<RwLock<Vec<ScheduledTask>>>,
     executors: Arc<std::sync::RwLock<HashMap<String, ScheduledTaskHandler>>>,
+    running_tasks: Arc<RwLock<HashMap<String, tokio::task::AbortHandle>>>,
     paths: Arc<std::sync::RwLock<Arc<ScheduledTaskPaths>>>,
     change_listeners: Arc<std::sync::RwLock<Vec<ScheduledTaskChangeListener>>>,
     scheduler_running: Arc<AtomicBool>,
@@ -170,6 +171,7 @@ impl ScheduledTaskService {
         Self {
             tasks: Arc::clone(&self.tasks),
             executors: Arc::clone(&self.executors),
+            running_tasks: Arc::clone(&self.running_tasks),
             paths: Arc::clone(&self.paths),
             change_listeners: Arc::clone(&self.change_listeners),
             scheduler_running: Arc::clone(&self.scheduler_running),
@@ -181,6 +183,7 @@ impl ScheduledTaskService {
         Self {
             tasks: Arc::new(RwLock::new(tasks)),
             executors: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            running_tasks: Arc::new(RwLock::new(HashMap::new())),
             paths: Arc::new(std::sync::RwLock::new(Arc::new(
                 ScheduledTaskPaths::default(),
             ))),
@@ -454,6 +457,10 @@ impl ScheduledTaskService {
     ///
     /// Panics if the internal executor lock is poisoned.
     pub async fn start(&self, task_id: &str) -> Result<(), ScheduledTaskError> {
+        // Serialize start/stop around the runtime-handle registry. This closes
+        // the race where the UI cancels a task after it is marked Running but
+        // before its spawned future can be registered for cancellation.
+        let mut running_tasks = self.running_tasks.write().await;
         let (task_id, executor) = {
             let mut tasks = self.tasks.write().await;
             let task = tasks
@@ -478,10 +485,11 @@ impl ScheduledTaskService {
 
         if let Some(executor) = executor {
             let context = ScheduledTaskRunContext {
-                task_id,
+                task_id: task_id.clone(),
                 tasks: self.shared_handle(),
             };
-            tokio::spawn(async move { executor(context).await });
+            let handle = tokio::spawn(async move { executor(context).await });
+            running_tasks.insert(task_id.clone(), handle.abort_handle());
         } else {
             // Never leave a task marked Running when no runtime executor was
             // registered (for example optional Live TV/plugin services).
@@ -503,6 +511,7 @@ impl ScheduledTaskService {
             self.notify_changed();
             return Err(ScheduledTaskError::ExecutorUnavailable);
         }
+        drop(running_tasks);
         self.persist_state().await;
         self.notify_changed();
         Ok(())
@@ -514,13 +523,21 @@ impl ScheduledTaskService {
     ///
     /// Returns [`ScheduledTaskError::NotFound`] when the task id doesn't exist.
     pub async fn stop(&self, task_id: &str) -> Result<(), ScheduledTaskError> {
+        let mut running_tasks = self.running_tasks.write().await;
         let mut tasks = self.tasks.write().await;
         let task = tasks
             .iter_mut()
             .find(|task| task.id.eq_ignore_ascii_case(task_id))
             .ok_or(ScheduledTaskError::NotFound)?;
+        let canonical_task_id = task.id.clone();
         task.state = TaskState::Idle;
         task.current_progress_percentage = None;
+        let abort_handle = running_tasks.remove(&canonical_task_id);
+        drop(tasks);
+        drop(running_tasks);
+        if let Some(abort_handle) = abort_handle {
+            abort_handle.abort();
+        }
         self.notify_changed();
         Ok(())
     }
@@ -717,6 +734,7 @@ impl ScheduledTaskService {
     /// already completed retains its own result.
     #[allow(dead_code)]
     async fn mark_timed_out(&self, task_id: &str) -> Result<(), ScheduledTaskError> {
+        let mut running_tasks = self.running_tasks.write().await;
         let mut tasks = self.tasks.write().await;
         let Some(task) = tasks
             .iter_mut()
@@ -727,6 +745,7 @@ impl ScheduledTaskService {
         if task.state != TaskState::Running {
             return Ok(());
         }
+        let canonical_task_id = task.id.clone();
         let end_time = Utc::now();
         task.state = TaskState::Idle;
         task.current_progress_percentage = None;
@@ -740,7 +759,12 @@ impl ScheduledTaskService {
             error_message: Some("scheduled task exceeded MaxRuntimeTicks".to_owned()),
             long_error_message: None,
         });
+        let abort_handle = running_tasks.remove(&canonical_task_id);
         drop(tasks);
+        drop(running_tasks);
+        if let Some(abort_handle) = abort_handle {
+            abort_handle.abort();
+        }
         self.notify_changed();
         self.persist_state().await;
         Ok(())
@@ -1519,6 +1543,50 @@ mod tests {
         let task = service.get("TestTask").await.unwrap();
         assert_eq!(task.state, TaskState::Idle);
         assert_eq!(task.current_progress_percentage, None);
+    }
+
+    #[tokio::test]
+    async fn stopping_task_aborts_its_running_executor() {
+        struct DropSignal(Arc<AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let service = ScheduledTaskService::new(vec![test_task("CancelableTask")]);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        service.register_executor("CancelableTask", {
+            let started = Arc::clone(&started);
+            let dropped = Arc::clone(&dropped);
+            move |_context| {
+                let started = Arc::clone(&started);
+                let dropped = Arc::clone(&dropped);
+                Box::pin(async move {
+                    let _drop_signal = DropSignal(dropped);
+                    started.notify_one();
+                    std::future::pending::<()>().await;
+                })
+            }
+        });
+
+        service.start("CancelableTask").await.unwrap();
+        started.notified().await;
+        service.stop("CancelableTask").await.unwrap();
+        for _ in 0..100 {
+            if dropped.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(
+            service.get("CancelableTask").await.unwrap().state,
+            TaskState::Idle
+        );
     }
 
     #[tokio::test]
