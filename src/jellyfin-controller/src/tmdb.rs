@@ -1491,10 +1491,21 @@ fn tmdb_language(language: &str, country: &str) -> String {
     if language.is_empty() {
         return "en-US".to_owned();
     }
-    if language.contains('-') || country.trim().is_empty() {
-        return language;
+    if let Some((language, region)) = language.split_once('-') {
+        return format!(
+            "{}-{}",
+            language.to_ascii_lowercase(),
+            region.to_ascii_uppercase()
+        );
     }
-    format!("{}-{}", language, country.trim().to_ascii_uppercase())
+    if country.trim().is_empty() {
+        return language.to_ascii_lowercase();
+    }
+    format!(
+        "{}-{}",
+        language.to_ascii_lowercase(),
+        country.trim().to_ascii_uppercase()
+    )
 }
 
 struct EpisodeParents {
@@ -2424,6 +2435,11 @@ mod tests {
     #[test]
     fn tmdb_language_normalizes_locale_separator() {
         assert_eq!(tmdb_language("zh_CN", "US"), "zh-CN");
+    }
+
+    #[test]
+    fn tmdb_language_normalizes_region_case() {
+        assert_eq!(tmdb_language("zh-cn", "AM"), "zh-CN");
     }
 
     #[test]
