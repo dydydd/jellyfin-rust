@@ -544,7 +544,7 @@ pub(crate) async fn update_password(
     request: Result<Json<UpdateUserPassword>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    update_password_with_id(&state, authenticated, target_id, request).await
+    update_password_with_id(&state, authenticated, target_id, true, request).await
 }
 
 pub(crate) async fn update_password_query(
@@ -554,14 +554,23 @@ pub(crate) async fn update_password_query(
     request: Result<Json<UpdateUserPassword>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let has_explicit_user_id = query.user_id.is_some();
     let target_id = query.user_id.unwrap_or(authenticated.user.id);
-    update_password_with_id(&state, authenticated, target_id, request).await
+    update_password_with_id(
+        &state,
+        authenticated,
+        target_id,
+        has_explicit_user_id,
+        request,
+    )
+    .await
 }
 
 async fn update_password_with_id(
     state: &AppState,
     authenticated: authentication::AuthenticatedSession,
     target_id: Uuid,
+    has_explicit_user_id: bool,
     request: Result<Json<UpdateUserPassword>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
@@ -574,7 +583,11 @@ async fn update_password_with_id(
         return Ok(StatusCode::NO_CONTENT);
     }
 
-    if authenticated.user.id == target_id {
+    // The official controller lets an administrator change their own
+    // password without CurrentPw only when the modern route omits userId.
+    if authenticated.user.id == target_id
+        && (!authenticated.user.is_administrator || has_explicit_user_id)
+    {
         target =
             verify_current_password(state, target, request.current_pw.unwrap_or_default()).await?;
     }

@@ -449,6 +449,47 @@ async fn exercise_user_management_flow(database_name: &str) {
         "Test Server".to_owned(),
         "http://127.0.0.1:8096".to_owned(),
     ));
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users/Password?userId={}", admin.id),
+            &json!({ "CurrentPw": "wrong", "NewPw": "explicit replacement" }),
+            &admin_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            "/Users/Password",
+            &json!({ "CurrentPw": "wrong", "NewPw": "implicit admin replacement" }),
+            &admin_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        devices
+            .find_by_token(&admin_session.access_token)
+            .await
+            .expect("current administrator token lookup must succeed")
+            .is_some()
+    );
+    let response = app
+        .clone()
+        .oneshot(auth_request(
+            "/Users/AuthenticateByName",
+            &json!({
+                "Username": admin.username,
+                "Pw": "implicit admin replacement"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     let username = format!("api-user-{}", Uuid::new_v4().simple());
 
     let response = get_response(&app, "/Users").await;
