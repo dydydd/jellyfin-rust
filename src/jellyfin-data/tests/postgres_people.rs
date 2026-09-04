@@ -1,5 +1,6 @@
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, NewBaseItem, NewPerson, PersonError, PersonRepository,
+    BaseItemRepository, DatabaseConfig, NewBaseItem, NewPerson, NewPersonCredit, PersonError,
+    PersonRepository,
     entities::{person, person_base_item_map},
 };
 use jellyfin_migration::CreatePeopleMigration;
@@ -17,11 +18,103 @@ async fn postgres_people_vertical_slice() {
     let items = BaseItemRepository::new(database.clone());
     let people = PersonRepository::new(database.clone());
     assert_validation(&people).await;
+    assert_atomic_credit_replacement(&items, &people).await;
     let fixture = seed_people(&database, &items, &people).await;
     assert_postgres_catalog(&database).await;
     assert_postgres_query_plans(&database, &fixture).await;
     assert_item_cascade(&database, &items, &people, &fixture).await;
     cleanup(&items, &people, fixture).await;
+}
+
+async fn assert_atomic_credit_replacement(items: &BaseItemRepository, people: &PersonRepository) {
+    let item = create_item(items, "Movie", "Atomic Credit Replacement").await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let original = people
+        .link(
+            item.id,
+            NewPerson::new(format!("Original Person {suffix}")),
+            "Actor",
+            Some("Original"),
+            None,
+            0,
+        )
+        .await
+        .expect("original credit");
+
+    let invalid = vec![
+        NewPersonCredit {
+            person: NewPerson::new(format!("Replacement Person {suffix}")),
+            person_type: "Director".to_owned(),
+            role: String::new(),
+            sort_order: Some(0),
+            list_order: 0,
+        },
+        NewPersonCredit {
+            person: NewPerson::new("---"),
+            person_type: "Writer".to_owned(),
+            role: String::new(),
+            sort_order: Some(1),
+            list_order: 1,
+        },
+    ];
+    assert!(matches!(
+        people.replace_credits(item.id, invalid).await,
+        Err(PersonError::InvalidName)
+    ));
+    let preserved = people
+        .people_for_item(item.id)
+        .await
+        .expect("preserved credits after invalid replacement");
+    assert_eq!(preserved.len(), 1);
+    assert_eq!(preserved[0].person.id, original.id);
+
+    let replacement_name = format!("Replacement Person {suffix}");
+    let replacement = vec![
+        NewPersonCredit {
+            person: NewPerson {
+                name: replacement_name.clone(),
+                provider_ids: json!({ "Tmdb": format!("person-{suffix}") }),
+            },
+            person_type: "Director".to_owned(),
+            role: String::new(),
+            sort_order: Some(0),
+            list_order: 0,
+        },
+        NewPersonCredit {
+            person: NewPerson::new(replacement_name),
+            person_type: "Writer".to_owned(),
+            role: "Screenplay".to_owned(),
+            sort_order: Some(1),
+            list_order: 1,
+        },
+    ];
+    let canonical = people
+        .replace_credits(item.id, replacement)
+        .await
+        .expect("atomic replacement");
+    assert_eq!(canonical.len(), 2);
+    assert_eq!(canonical[0].id, canonical[1].id);
+    let replaced = people
+        .people_for_item(item.id)
+        .await
+        .expect("replacement credits");
+    assert_eq!(replaced.len(), 2);
+    assert_eq!(replaced[0].person_type, "Director");
+    assert_eq!(replaced[1].person_type, "Writer");
+    assert_eq!(replaced[1].role, "Screenplay");
+
+    items
+        .delete(item.id)
+        .await
+        .expect("replacement item cleanup");
+    people
+        .delete(original.id)
+        .await
+        .expect("original person cleanup");
+    people
+        .delete(canonical[0].id)
+        .await
+        .expect("replacement person cleanup");
 }
 
 struct Fixture {

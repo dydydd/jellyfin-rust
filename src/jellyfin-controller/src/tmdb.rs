@@ -8,8 +8,8 @@ use std::{
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
-    ItemUpdateStoreError, ItemValueError, ItemValueRepository, NewBaseItem, NewPerson, PersonError,
-    PersonRepository,
+    ItemUpdateStoreError, ItemValueError, ItemValueRepository, NewBaseItem, NewPerson,
+    NewPersonCredit, PersonError, PersonRepository,
     entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_model::{ImageType, ProviderIdMap, RatingType, RemoteImageInfo, RemoteSearchResult};
@@ -1267,30 +1267,21 @@ impl TmdbMetadataProvider {
         cast: &[TmdbCast],
         crew: &[TmdbCrew],
     ) -> Result<(), MetadataProviderError> {
-        self.people.clear_credits(item_id).await?;
+        let mut credits = Vec::with_capacity(cast.len() + crew.len());
+        let mut images = Vec::with_capacity(cast.len() + crew.len());
         let mut order = 0;
         for actor in cast {
-            let person = self
-                .people
-                .link(
-                    item_id,
-                    NewPerson {
-                        name: actor.name.clone(),
-                        provider_ids: json!({ "Tmdb": actor.id.to_string() }),
-                    },
-                    "Actor",
-                    actor.character.as_deref(),
-                    Some(actor.order),
-                    order,
-                )
-                .await?;
-            self.ensure_person_image(
-                person.id,
-                &person.name,
-                actor.id,
-                actor.profile_path.as_deref(),
-            )
-            .await?;
+            credits.push(NewPersonCredit {
+                person: NewPerson {
+                    name: actor.name.clone(),
+                    provider_ids: json!({ "Tmdb": actor.id.to_string() }),
+                },
+                person_type: "Actor".to_owned(),
+                role: actor.character.clone().unwrap_or_default(),
+                sort_order: Some(actor.order),
+                list_order: order,
+            });
+            images.push((actor.id, actor.profile_path.as_deref()));
             order += 1;
         }
         for member in crew {
@@ -1299,28 +1290,24 @@ impl TmdbMetadataProvider {
             else {
                 continue;
             };
-            let person = self
-                .people
-                .link(
-                    item_id,
-                    NewPerson {
-                        name: member.name.clone(),
-                        provider_ids: json!({ "Tmdb": member.id.to_string() }),
-                    },
-                    person_type,
-                    member.job.as_deref(),
-                    Some(order),
-                    order,
-                )
-                .await?;
-            self.ensure_person_image(
-                person.id,
-                &person.name,
-                member.id,
-                member.profile_path.as_deref(),
-            )
-            .await?;
+            credits.push(NewPersonCredit {
+                person: NewPerson {
+                    name: member.name.clone(),
+                    provider_ids: json!({ "Tmdb": member.id.to_string() }),
+                },
+                person_type: person_type.to_owned(),
+                role: member.job.clone().unwrap_or_default(),
+                sort_order: Some(order),
+                list_order: order,
+            });
+            images.push((member.id, member.profile_path.as_deref()));
             order += 1;
+        }
+
+        let people = self.people.replace_credits(item_id, credits).await?;
+        for (person, (tmdb_person_id, profile_path)) in people.into_iter().zip(images) {
+            self.ensure_person_image(person.id, &person.name, tmdb_person_id, profile_path)
+                .await?;
         }
         Ok(())
     }
@@ -1331,62 +1318,7 @@ impl TmdbMetadataProvider {
         cast: Vec<TmdbCast>,
         crew: Vec<TmdbCrew>,
     ) -> Result<(), MetadataProviderError> {
-        self.people.clear_credits(item_id).await?;
-        let mut order = 0;
-        for actor in cast {
-            let person = self
-                .people
-                .link(
-                    item_id,
-                    NewPerson {
-                        name: actor.name,
-                        provider_ids: json!({ "Tmdb": actor.id.to_string() }),
-                    },
-                    "Actor",
-                    actor.character.as_deref(),
-                    Some(actor.order),
-                    order,
-                )
-                .await?;
-            self.ensure_person_image(
-                person.id,
-                &person.name,
-                actor.id,
-                actor.profile_path.as_deref(),
-            )
-            .await?;
-            order += 1;
-        }
-        for member in crew {
-            let Some(person_type) =
-                crew_person_type(member.department.as_deref(), member.job.as_deref())
-            else {
-                continue;
-            };
-            let person = self
-                .people
-                .link(
-                    item_id,
-                    NewPerson {
-                        name: member.name,
-                        provider_ids: json!({ "Tmdb": member.id.to_string() }),
-                    },
-                    person_type,
-                    member.job.as_deref(),
-                    Some(order),
-                    order,
-                )
-                .await?;
-            self.ensure_person_image(
-                person.id,
-                &person.name,
-                member.id,
-                member.profile_path.as_deref(),
-            )
-            .await?;
-            order += 1;
-        }
-        Ok(())
+        self.replace_people(item_id, &cast, &crew).await
     }
 
     async fn ensure_person_image(

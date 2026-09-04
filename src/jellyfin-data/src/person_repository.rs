@@ -28,6 +28,15 @@ impl NewPerson {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct NewPersonCredit {
+    pub person: NewPerson,
+    pub person_type: String,
+    pub role: String,
+    pub sort_order: Option<i32>,
+    pub list_order: i32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PersonCredit {
     pub person: person::Model,
     pub person_type: String,
@@ -213,6 +222,76 @@ impl PersonRepository {
         .map_err(map_database_error)?;
         transaction.commit().await?;
         Ok(person)
+    }
+
+    /// Atomically replaces every credit for one item and returns the canonical
+    /// people in input order.
+    ///
+    /// Validation happens before the transaction starts. The item existence
+    /// check, old-map deletion, person upserts, and replacement maps then share
+    /// one transaction instead of opening one transaction per credit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ItemNotFound`, validation, or database errors. No existing
+    /// credit is removed when validation or a database operation fails.
+    pub async fn replace_credits(
+        &self,
+        item_id: Uuid,
+        credits: Vec<NewPersonCredit>,
+    ) -> Result<Vec<person::Model>, PersonError> {
+        for credit in &credits {
+            clean_name(&credit.person.name)?;
+            if !credit.person.provider_ids.is_object() {
+                return Err(PersonError::InvalidProviderIds);
+            }
+            validate_credit(&credit.person_type, credit.sort_order, credit.list_order)?;
+        }
+
+        let transaction = self.database.begin().await?;
+        if base_item::Entity::find_by_id(item_id)
+            .one(&transaction)
+            .await?
+            .is_none()
+        {
+            return Err(PersonError::ItemNotFound);
+        }
+        person_base_item_map::Entity::delete_many()
+            .filter(person_base_item_map::Column::ItemId.eq(item_id))
+            .exec(&transaction)
+            .await?;
+
+        let mut people = Vec::with_capacity(credits.len());
+        for credit in credits {
+            let person = upsert_on(&transaction, credit.person).await?;
+            person_base_item_map::Entity::insert(person_base_item_map::ActiveModel {
+                item_id: sea_orm::Set(item_id),
+                person_id: sea_orm::Set(person.id),
+                person_type: sea_orm::Set(credit.person_type.trim().to_owned()),
+                role: sea_orm::Set(credit.role.trim().to_owned()),
+                sort_order: sea_orm::Set(credit.sort_order),
+                list_order: sea_orm::Set(credit.list_order),
+            })
+            .on_conflict(
+                OnConflict::columns([
+                    person_base_item_map::Column::ItemId,
+                    person_base_item_map::Column::PersonId,
+                    person_base_item_map::Column::PersonType,
+                    person_base_item_map::Column::Role,
+                ])
+                .update_columns([
+                    person_base_item_map::Column::SortOrder,
+                    person_base_item_map::Column::ListOrder,
+                ])
+                .to_owned(),
+            )
+            .exec_without_returning(&transaction)
+            .await
+            .map_err(map_database_error)?;
+            people.push(person);
+        }
+        transaction.commit().await?;
+        Ok(people)
     }
 
     /// Removes every persisted credit for one item.
