@@ -124,16 +124,19 @@ async fn assert_video_stream(fixture: &Fixture) {
         to_bytes(query_token.into_body(), usize::MAX).await.unwrap(),
         media_bytes
     );
+    let generic_mp4_route = fixture
+        .request(
+            "GET",
+            &format!("/Videos/{}/stream.mp4", fixture.child_id),
+            Some(&fixture.user_token),
+        )
+        .await;
+    assert_eq!(generic_mp4_route.status(), StatusCode::OK);
     assert_eq!(
-        fixture
-            .request(
-                "GET",
-                &format!("/Videos/{}/stream.mp4", fixture.child_id),
-                Some(&fixture.user_token),
-            )
+        to_bytes(generic_mp4_route.into_body(), usize::MAX)
             .await
-            .status(),
-        StatusCode::UNSUPPORTED_MEDIA_TYPE
+            .unwrap(),
+        media_bytes
     );
     assert_eq!(
         fixture
@@ -158,7 +161,7 @@ async fn assert_video_stream(fixture: &Fixture) {
     );
 
     let lowercase_client_route = format!(
-        "/videos/{}/stream.mkv?Static=true&MediaSourceId&api_key={}",
+        "/videos/{}/stream.mp4?Static=true&MediaSourceId&api_key={}",
         fixture.strm_id, fixture.user_token
     );
     let response = fixture.request("GET", &lowercase_client_route, None).await;
