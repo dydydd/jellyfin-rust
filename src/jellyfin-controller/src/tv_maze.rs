@@ -157,7 +157,11 @@ impl TvMazeMetadataProvider {
     /// # Errors
     ///
     /// Returns a provider or persistence error when the lookup fails.
-    pub async fn refresh_item(&self, item_id: Uuid) -> Result<bool, TvMazeProviderError> {
+    pub async fn refresh_item(
+        &self,
+        item_id: Uuid,
+        replace_data: bool,
+    ) -> Result<bool, TvMazeProviderError> {
         let Some(item) = self.items.get(item_id).await? else {
             return Ok(false);
         };
@@ -167,7 +171,7 @@ impl TvMazeMetadataProvider {
         let Some(show) = self.fetch_show(&item).await? else {
             return Ok(false);
         };
-        self.apply(item.id, show).await?;
+        self.apply(item.id, show, replace_data).await?;
         Ok(true)
     }
 
@@ -202,18 +206,14 @@ impl TvMazeMetadataProvider {
         Ok(None)
     }
 
-    async fn apply(&self, item_id: Uuid, mut show: TvMazeShow) -> Result<(), TvMazeProviderError> {
-        let provider_ids = show_provider_ids(&show);
-        let genres = std::mem::take(&mut show.genres);
+    async fn apply(
+        &self,
+        item_id: Uuid,
+        mut show: TvMazeShow,
+        replace_data: bool,
+    ) -> Result<(), TvMazeProviderError> {
         self.updates
-            .update(
-                item_id,
-                ItemMetadataPatch {
-                    tags: Some(genres.clone()),
-                    genres: Some(genres),
-                    provider_ids: Some(provider_ids),
-                },
-            )
+            .update(item_id, show_metadata_patch(&mut show, replace_data))
             .await?;
         if let Some(network) = show
             .network
@@ -236,20 +236,71 @@ impl TvMazeMetadataProvider {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
-        if let Some(name) = show.name.as_deref().filter(|value| !value.is_empty()) {
-            item.name = Some(name.to_owned());
-            item.sort_name = Some(name.to_owned());
-        }
-        item.overview = show
+        merge_name(
+            &mut item.name,
+            &mut item.sort_name,
+            show.name.as_deref(),
+            replace_data,
+        );
+        let overview = show
             .summary
             .as_deref()
             .map(strip_html)
             .filter(|value| !value.is_empty());
-        item.production_year = parse_year(show.premiered.as_deref());
-        item.premiere_date = parse_date(show.premiered.as_deref());
-        item.data = Some(show_extra_data(item.data.as_ref(), &show));
+        merge_overview(&mut item.overview, overview, replace_data);
+        merge_optional(
+            &mut item.production_year,
+            parse_year(show.premiered.as_deref()),
+            replace_data,
+        );
+        merge_optional(
+            &mut item.premiere_date,
+            parse_date(show.premiered.as_deref()),
+            replace_data,
+        );
+        item.data = Some(show_extra_data(item.data.as_ref(), &show, replace_data));
         self.items.update(item).await?;
         Ok(())
+    }
+}
+
+fn show_metadata_patch(show: &mut TvMazeShow, replace_data: bool) -> ItemMetadataPatch {
+    let provider_ids = show_provider_ids(show);
+    let genres = std::mem::take(&mut show.genres);
+    ItemMetadataPatch {
+        tags: replace_data.then(|| genres.clone()),
+        genres: replace_data.then_some(genres),
+        provider_ids: Some(provider_ids),
+    }
+}
+
+fn merge_name(
+    name: &mut Option<String>,
+    sort_name: &mut Option<String>,
+    incoming: Option<&str>,
+    replace_data: bool,
+) {
+    if (replace_data || name.as_deref().is_none_or(str::is_empty))
+        && let Some(incoming) = incoming.filter(|value| !value.is_empty())
+    {
+        *name = Some(incoming.to_owned());
+        *sort_name = Some(incoming.to_owned());
+    }
+}
+
+fn merge_overview(target: &mut Option<String>, incoming: Option<String>, replace_data: bool) {
+    if replace_data
+        || target
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        *target = incoming;
+    }
+}
+
+fn merge_optional<T>(target: &mut Option<T>, incoming: Option<T>, replace_data: bool) {
+    if replace_data || target.is_none() {
+        *target = incoming;
     }
 }
 
@@ -323,22 +374,32 @@ fn strip_html(value: &str) -> String {
     stripped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn show_extra_data(existing: Option<&Value>, show: &TvMazeShow) -> Value {
+fn show_extra_data(existing: Option<&Value>, show: &TvMazeShow, replace_data: bool) -> Value {
     let mut object = existing
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
     if let Some(name) = show.name.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("OriginalTitle".to_owned(), json!(name));
+        set_extra_value(&mut object, "OriginalTitle", json!(name), replace_data);
     }
     if let Some(language) = show.language.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("OriginalLanguage".to_owned(), json!(language));
+        set_extra_value(
+            &mut object,
+            "OriginalLanguage",
+            json!(language),
+            replace_data,
+        );
     }
     if let Some(ended) = show.ended.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("EndDate".to_owned(), json!(ended));
+        set_extra_value(&mut object, "EndDate", json!(ended), replace_data);
     }
     if let Some(status) = show.status.as_deref().filter(|value| !value.is_empty()) {
-        object.insert("Status".to_owned(), json!(normalize_status(status)));
+        set_extra_value(
+            &mut object,
+            "Status",
+            json!(normalize_status(status)),
+            replace_data,
+        );
     }
     if let Some(network) = show
         .network
@@ -351,19 +412,30 @@ fn show_extra_data(existing: Option<&Value>, show: &TvMazeShow) -> Value {
         })
         .filter(|value| !value.is_empty())
     {
-        object.insert("Network".to_owned(), json!(network));
+        set_extra_value(&mut object, "Network", json!(network), replace_data);
     }
     if let Some(site) = show
         .official_site
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        object.insert("OfficialSite".to_owned(), json!(site));
+        set_extra_value(&mut object, "OfficialSite", json!(site), replace_data);
     }
     if let Some(rating) = show.rating.average {
-        object.insert("CommunityRating".to_owned(), json!(rating));
+        set_extra_value(&mut object, "CommunityRating", json!(rating), replace_data);
     }
     Value::Object(object)
+}
+
+fn set_extra_value(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Value,
+    replace_data: bool,
+) {
+    if replace_data || !object.contains_key(key) {
+        object.insert(key.to_owned(), value);
+    }
 }
 
 fn normalize_status(value: &str) -> &str {
@@ -480,5 +552,100 @@ mod tests {
     fn status_is_normalized_for_jellyfin_writers() {
         assert_eq!(normalize_status("Running"), "Continuing");
         assert_eq!(normalize_status("Ended"), "Ended");
+    }
+
+    #[test]
+    fn lower_priority_result_only_fills_missing_series_scalars() {
+        let preferred_date = parse_date(Some("2024-01-02"));
+        let mut name = Some("首选中文名".to_owned());
+        let mut sort_name = name.clone();
+        let mut overview = Some("首选中文简介".to_owned());
+        let mut production_year = Some(2024);
+        let mut premiere_date = preferred_date;
+
+        merge_name(&mut name, &mut sort_name, Some("English name"), false);
+        merge_overview(&mut overview, Some("English overview".to_owned()), false);
+        merge_optional(&mut production_year, Some(2020), false);
+        merge_optional(&mut premiere_date, parse_date(Some("2020-03-04")), false);
+
+        assert_eq!(name.as_deref(), Some("首选中文名"));
+        assert_eq!(sort_name.as_deref(), Some("首选中文名"));
+        assert_eq!(overview.as_deref(), Some("首选中文简介"));
+        assert_eq!(production_year, Some(2024));
+        assert_eq!(premiere_date, preferred_date);
+
+        let mut missing_name = None;
+        let mut missing_sort_name = None;
+        let mut missing_overview = None;
+        let mut missing_year = None;
+        let mut missing_date = None;
+        merge_name(
+            &mut missing_name,
+            &mut missing_sort_name,
+            Some("English name"),
+            false,
+        );
+        merge_overview(
+            &mut missing_overview,
+            Some("English overview".to_owned()),
+            false,
+        );
+        merge_optional(&mut missing_year, Some(2020), false);
+        merge_optional(&mut missing_date, parse_date(Some("2020-03-04")), false);
+
+        assert_eq!(missing_name.as_deref(), Some("English name"));
+        assert_eq!(missing_sort_name.as_deref(), Some("English name"));
+        assert_eq!(missing_overview.as_deref(), Some("English overview"));
+        assert_eq!(missing_year, Some(2020));
+        assert_eq!(missing_date, parse_date(Some("2020-03-04")));
+    }
+
+    #[test]
+    fn lower_priority_result_preserves_extra_scalars_and_provider_ids() {
+        let existing = json!({
+            "ProviderIds": {
+                "Tmdb": "100",
+                "TvMaze": "82"
+            },
+            "OriginalTitle": "首选中文名",
+            "OriginalLanguage": "zh",
+            "Status": "Continuing",
+            "CommunityRating": 9.1
+        });
+        let show = TvMazeShow {
+            id: 82,
+            name: Some("English name".to_owned()),
+            language: Some("English".to_owned()),
+            status: Some("Ended".to_owned()),
+            rating: TvMazeRating { average: Some(7.5) },
+            ..TvMazeShow::default()
+        };
+
+        let merged = show_extra_data(Some(&existing), &show, false);
+
+        assert_eq!(merged["OriginalTitle"], "首选中文名");
+        assert_eq!(merged["OriginalLanguage"], "zh");
+        assert_eq!(merged["Status"], "Continuing");
+        assert_eq!(merged["CommunityRating"], 9.1);
+        assert_eq!(merged["ProviderIds"]["Tmdb"], "100");
+        assert_eq!(merged["ProviderIds"]["TvMaze"], "82");
+    }
+
+    #[test]
+    fn lower_priority_result_does_not_replace_genres_or_tags() {
+        let mut show = TvMazeShow {
+            id: 82,
+            genres: vec!["Drama".to_owned(), "Comedy".to_owned()],
+            ..TvMazeShow::default()
+        };
+
+        let patch = show_metadata_patch(&mut show, false);
+
+        assert_eq!(patch.tags, None);
+        assert_eq!(patch.genres, None);
+        assert_eq!(
+            patch.provider_ids.unwrap().get("TvMaze"),
+            Some(&"82".to_owned())
+        );
     }
 }

@@ -425,7 +425,7 @@ impl MetadataRefreshService {
                             .map_err(MetadataRefreshError::from),
                         MetadataProviderDispatch::TvMaze => self
                             .tv_maze
-                            .refresh_item(item_id)
+                            .refresh_item(item_id, replace_data)
                             .await
                             .map_err(MetadataRefreshError::from),
                     }
