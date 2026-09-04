@@ -329,6 +329,21 @@ impl UserService {
             .ok_or(UserError::NotFound)
     }
 
+    /// Loads users by identifier in one `PostgreSQL` query.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn get_many(&self, ids: &[Uuid]) -> Result<Vec<user::Model>, UserError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(user::Entity::find()
+            .filter(user::Column::Id.is_in(ids.iter().copied()))
+            .all(self.database.as_ref())
+            .await?)
+    }
+
     /// Loads the persisted profile image for a user.
     ///
     /// # Errors
@@ -340,6 +355,20 @@ impl UserService {
     ) -> Result<Option<user_profile_image::Model>, UserProfileImageStoreError> {
         UserProfileImageRepository::new(std::sync::Arc::clone(&self.database))
             .get(user_id)
+            .await
+    }
+
+    /// Loads profile images for multiple users in one `PostgreSQL` query.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn profile_images(
+        &self,
+        user_ids: &[Uuid],
+    ) -> Result<Vec<user_profile_image::Model>, UserProfileImageStoreError> {
+        UserProfileImageRepository::new(std::sync::Arc::clone(&self.database))
+            .find_by_user_ids(user_ids)
             .await
     }
 

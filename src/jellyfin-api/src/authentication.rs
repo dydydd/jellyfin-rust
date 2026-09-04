@@ -24,7 +24,7 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, user_to_dto};
+use crate::{ApiError, AppState, user_primary_image_tags, user_to_dto, user_to_dto_with_server_id};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
@@ -126,11 +126,9 @@ async fn authenticate_username_password(
         .authenticate_new_session_internal(request, true)
         .await
         .map_err(|error| session_error_to_api(&error))?;
-    Ok(Json(authentication_result_from_device(
-        state,
-        session.user,
-        session.device,
-    )))
+    Ok(Json(
+        authentication_result_from_device(state, session.user, session.device).await?,
+    ))
 }
 
 fn session_error_to_api(
@@ -193,17 +191,20 @@ pub(crate) async fn authenticate_with_quick_connect(
             user.id,
         ),
     );
-    Ok(Json(authentication_result_from_device(
-        &state, user, session,
-    )))
+    Ok(Json(
+        authentication_result_from_device(&state, user, session).await?,
+    ))
 }
 
-fn authentication_result_from_device(
+async fn authentication_result_from_device(
     state: &AppState,
     user: user::Model,
     session: device::Model,
-) -> AuthenticationResult {
+) -> Result<AuthenticationResult, ApiError> {
     let user_id = user.id;
+    let primary_image_tag = user_primary_image_tags(state, &[user_id])
+        .await?
+        .remove(&user_id);
     let capabilities: ClientCapabilitiesDto =
         serde_json::from_value(session.capabilities.clone()).unwrap_or_default();
     let play_state: PlayerStateInfo =
@@ -238,19 +239,20 @@ fn authentication_result_from_device(
         has_custom_device_name: false,
         playlist_item_id: session.playlist_item_id.clone(),
         server_id: Some(state.server_id().to_owned()),
-        user_primary_image_tag: None,
+        user_primary_image_tag: primary_image_tag.clone(),
         now_viewing_item: session.now_viewing_item.clone(),
         supported_commands: capabilities.supported_commands.clone(),
         capabilities,
     };
     let mut user_dto = user_to_dto(user);
     user_dto.server_id = Some(state.server_id().to_owned());
-    AuthenticationResult {
+    user_dto.primary_image_tag = primary_image_tag;
+    Ok(AuthenticationResult {
         user: user_dto,
         session_info,
         access_token: session.access_token,
         server_id: state.server_id().to_owned(),
-    }
+    })
 }
 
 pub(crate) async fn current_user(
@@ -258,9 +260,9 @@ pub(crate) async fn current_user(
     headers: HeaderMap,
 ) -> Result<Json<jellyfin_model::UserDto>, ApiError> {
     let authenticated = authenticated_session(&state, &headers).await?;
-    let mut dto = user_to_dto(authenticated.user);
-    dto.server_id = Some(state.server_id().to_owned());
-    Ok(Json(dto))
+    Ok(Json(
+        user_to_dto_with_server_id(&state, authenticated.user).await?,
+    ))
 }
 
 #[derive(Debug)]

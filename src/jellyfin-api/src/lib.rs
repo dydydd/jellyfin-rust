@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -33,7 +33,8 @@ use jellyfin_data::{
     ItemUpdateStoreError, ItemValueRepository, KeyframeDataRepository,
     NamedConfigurationRepository, NamedConfigurationStoreError, PersonRepository,
     QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
-    SessionCommandRepository, SessionCommandStoreError, UserDataRepository, entities::user,
+    SessionCommandRepository, SessionCommandStoreError, UserDataRepository,
+    entities::{user, user_profile_image},
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
 use jellyfin_live_tv::{
@@ -1858,10 +1859,61 @@ async fn ping(state: State<Arc<AppState>>) -> Response {
     system::ping(state).await.into_response()
 }
 
-pub(crate) fn user_to_dto_with_server_id(state: &AppState, user: user::Model) -> UserDto {
+pub(crate) async fn user_to_dto_with_server_id(
+    state: &AppState,
+    user: user::Model,
+) -> Result<UserDto, ApiError> {
+    let user_id = user.id;
+    let mut tags = user_primary_image_tags(state, &[user_id]).await?;
+    Ok(user_to_dto_with_server_id_and_tag(
+        state,
+        user,
+        tags.remove(&user_id),
+    ))
+}
+
+pub(crate) async fn users_to_dtos_with_server_id(
+    state: &AppState,
+    users: Vec<user::Model>,
+) -> Result<Vec<UserDto>, ApiError> {
+    let user_ids = users.iter().map(|user| user.id).collect::<Vec<_>>();
+    let mut tags = user_primary_image_tags(state, &user_ids).await?;
+    Ok(users
+        .into_iter()
+        .map(|user| {
+            let tag = tags.remove(&user.id);
+            user_to_dto_with_server_id_and_tag(state, user, tag)
+        })
+        .collect())
+}
+
+pub(crate) async fn user_primary_image_tags(
+    state: &AppState,
+    user_ids: &[Uuid],
+) -> Result<HashMap<Uuid, String>, ApiError> {
+    Ok(state
+        .users
+        .profile_images(user_ids)
+        .await
+        .map_err(|_| ApiError::Internal)?
+        .into_iter()
+        .map(|image| (image.user_id, user_profile_image_tag(&image)))
+        .collect())
+}
+
+fn user_to_dto_with_server_id_and_tag(
+    state: &AppState,
+    user: user::Model,
+    primary_image_tag: Option<String>,
+) -> UserDto {
     let mut dto = user_to_dto(user);
     dto.server_id = Some(state.server_id().to_owned());
+    dto.primary_image_tag = primary_image_tag;
     dto
+}
+
+fn user_profile_image_tag(image: &user_profile_image::Model) -> String {
+    jellyfin_controller::image_cache_tag(&image.path, image.last_modified)
 }
 
 pub(crate) fn user_to_dto(user: user::Model) -> UserDto {

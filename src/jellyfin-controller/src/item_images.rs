@@ -767,7 +767,9 @@ fn take_index(index: &mut i32) -> i32 {
     current
 }
 
-fn image_cache_tag(item_path: &str, date_modified: DateTime<Utc>) -> String {
+/// Computes Jellyfin's image cache tag from an image path and modification time.
+#[must_use]
+pub fn image_cache_tag(item_path: &str, date_modified: DateTime<Utc>) -> String {
     let subsecond_ticks = i128::from(date_modified.timestamp_subsec_nanos() / 100);
     let ticks = DOTNET_UNIX_EPOCH_TICKS
         + i128::from(date_modified.timestamp()) * TICKS_PER_SECOND

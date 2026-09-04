@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use sea_orm::{DbBackend, DbErr, EntityTrait, FromQueryResult, Statement};
+use sea_orm::{
+    ColumnTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryFilter, Statement,
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -95,6 +97,27 @@ impl UserProfileImageRepository {
     ) -> Result<Option<user_profile_image::Model>, UserProfileImageStoreError> {
         Ok(user_profile_image::Entity::find_by_id(user_id)
             .one(self.database.as_ref())
+            .await?)
+    }
+
+    /// Loads profile images for a set of users in one query.
+    ///
+    /// Duplicate user identifiers do not duplicate rows, and an empty input
+    /// returns immediately without issuing invalid `IN ()` SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn find_by_user_ids(
+        &self,
+        user_ids: &[Uuid],
+    ) -> Result<Vec<user_profile_image::Model>, UserProfileImageStoreError> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(user_profile_image::Entity::find()
+            .filter(user_profile_image::Column::UserId.is_in(user_ids.iter().copied()))
+            .all(self.database.as_ref())
             .await?)
     }
 

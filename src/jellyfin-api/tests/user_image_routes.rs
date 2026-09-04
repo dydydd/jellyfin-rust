@@ -18,6 +18,7 @@ use jellyfin_data::{
     entities::{user, user_profile_image},
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -107,7 +108,7 @@ async fn exercise_user_image_routes(database_name: &str) {
     let png = png_fixture();
     let encoded_png = BASE64_STANDARD.encode(&png);
 
-    let mut restricted_policy = jellyfin_model::UserPolicy::default();
+    let mut restricted_policy = valid_policy();
     restricted_policy.enable_user_preference_access = false;
     users
         .update_policy(user.id, &restricted_policy)
@@ -126,7 +127,7 @@ async fn exercise_user_image_routes(database_name: &str) {
         StatusCode::FORBIDDEN
     );
     users
-        .update_policy(user.id, &jellyfin_model::UserPolicy::default())
+        .update_policy(user.id, &valid_policy())
         .await
         .expect("restore preference access");
 
@@ -182,6 +183,40 @@ async fn exercise_user_image_routes(database_name: &str) {
             .await
             .expect("stored PNG bytes"),
         png
+    );
+    let first_tag = jellyfin_controller::image_cache_tag(&first.path, first.last_modified);
+    let by_id = get_json(&app, &format!("/Users/{}", user.id), &admin_token).await;
+    let current = get_json(&app, "/Users/Me", &user_token).await;
+    assert_eq!(by_id["PrimaryImageTag"], first_tag);
+    assert_eq!(current["PrimaryImageTag"], first_tag);
+
+    let listed = get_json(&app, "/Users", &admin_token).await;
+    let listed_user = listed
+        .as_array()
+        .expect("user list")
+        .iter()
+        .find(|dto| dto["Id"] == user.id.simple().to_string())
+        .expect("profile image user in list");
+    assert_eq!(listed_user["PrimaryImageTag"], first_tag);
+
+    let authenticated = authenticate(&app, &user.username).await;
+    assert_eq!(authenticated["User"]["PrimaryImageTag"], first_tag);
+    assert_eq!(
+        authenticated["SessionInfo"]["UserPrimaryImageTag"],
+        first_tag
+    );
+    let sessions = get_json(&app, "/Sessions", &admin_token).await;
+    let user_sessions = sessions
+        .as_array()
+        .expect("session list")
+        .iter()
+        .filter(|session| session["UserId"] == user.id.simple().to_string())
+        .collect::<Vec<_>>();
+    assert!(!user_sessions.is_empty());
+    assert!(
+        user_sessions
+            .iter()
+            .all(|session| session["UserPrimaryImageTag"] == first_tag)
     );
 
     assert_eq!(
@@ -332,6 +367,12 @@ async fn exercise_user_image_routes(database_name: &str) {
             .expect("stored JPEG bytes"),
         b"second"
     );
+    let second_tag = jellyfin_controller::image_cache_tag(&second.path, second.last_modified);
+    assert_ne!(second_tag, first_tag);
+    assert_eq!(
+        get_json(&app, &format!("/Users/{}", user.id), &admin_token).await["PrimaryImageTag"],
+        second_tag
+    );
 
     assert_eq!(
         delete(&app, "/UserImage", None).await.status(),
@@ -375,6 +416,12 @@ async fn exercise_user_image_routes(database_name: &str) {
             .one(&database)
             .await
             .expect("profile image lookup")
+            .is_none()
+    );
+    assert!(
+        get_json(&app, &format!("/Users/{}", user.id), &admin_token)
+            .await
+            .get("PrimaryImageTag")
             .is_none()
     );
 
@@ -467,6 +514,52 @@ async fn delete(app: &Router, uri: &str, token: Option<&str>) -> axum::response:
         .unwrap()
 }
 
+async fn get_json(app: &Router, uri: &str, token: &str) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(uri)
+                .header(
+                    header::AUTHORIZATION,
+                    format!("{AUTHORIZATION}, Token=\"{token}\""),
+                )
+                .body(Body::empty())
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response");
+    assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    serde_json::from_slice(
+        &to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .expect("JSON response body"),
+    )
+    .expect("JSON response value")
+}
+
+async fn authenticate(app: &Router, username: &str) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/Users/AuthenticateByName")
+                .header(header::AUTHORIZATION, AUTHORIZATION)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "Username": username, "Pw": "" }).to_string(),
+                ))
+                .expect("authentication request"),
+        )
+        .await
+        .expect("authentication response");
+    assert_eq!(response.status(), StatusCode::OK);
+    serde_json::from_slice(
+        &to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .expect("authentication response body"),
+    )
+    .expect("authentication response value")
+}
+
 async fn assert_empty(response: axum::response::Response) {
     let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
         .await
@@ -512,4 +605,16 @@ fn png_fixture() -> Vec<u8> {
         .write_to(&mut bytes, ImageFormat::Png)
         .expect("PNG fixture encoding");
     bytes.into_inner()
+}
+
+fn valid_policy() -> jellyfin_model::UserPolicy {
+    jellyfin_model::UserPolicy {
+        authentication_provider_id: Some(
+            jellyfin_model::UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+        ),
+        password_reset_provider_id: Some(
+            jellyfin_model::UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+        ),
+        ..jellyfin_model::UserPolicy::default()
+    }
 }

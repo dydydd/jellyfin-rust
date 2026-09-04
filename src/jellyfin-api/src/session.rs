@@ -19,7 +19,7 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, user_library};
+use crate::{ApiError, AppState, authentication, user_library, user_primary_image_tags};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -143,6 +143,7 @@ pub(crate) async fn list(
     } else {
         None
     };
+    let user_details = session_user_details(&state, &page.items).await?;
     for device in page.items {
         if let Some(target_user_id) = controllable_user_id {
             let supports_remote =
@@ -168,14 +169,17 @@ pub(crate) async fn list(
                 continue;
             }
         }
-        let user = state.users.get(device.user_id).await?;
+        let (user_name, primary_image_tag) = user_details
+            .get(&device.user_id)
+            .ok_or(jellyfin_controller::UserError::NotFound)?;
         let connected = state
             .web_sockets
             .is_connected(&jellyfin_session_id(&device.app_name, &device.device_id))
             .await;
         sessions.push(session_info(
             device,
-            user.username,
+            user_name.clone(),
+            primary_image_tag.clone(),
             state.server_id(),
             connected,
         ));
@@ -192,15 +196,19 @@ pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInf
         })
         .await?;
     let mut sessions = Vec::with_capacity(page.items.len());
+    let user_details = session_user_details(state, &page.items).await?;
     for device in page.items {
-        let user = state.users.get(device.user_id).await?;
+        let (user_name, primary_image_tag) = user_details
+            .get(&device.user_id)
+            .ok_or(jellyfin_controller::UserError::NotFound)?;
         let connected = state
             .web_sockets
             .is_connected(&jellyfin_session_id(&device.app_name, &device.device_id))
             .await;
         sessions.push(session_info(
             device,
-            user.username,
+            user_name.clone(),
+            primary_image_tag.clone(),
             state.server_id(),
             connected,
         ));
@@ -658,6 +666,7 @@ async fn find_active_session(
 fn session_info(
     device: device::Model,
     user_name: String,
+    user_primary_image_tag: Option<String>,
     server_id: &str,
     has_open_websocket: bool,
 ) -> SessionInfoDto {
@@ -690,12 +699,33 @@ fn session_info(
         has_custom_device_name: false,
         playlist_item_id: device.playlist_item_id,
         server_id: Some(server_id.to_owned()),
-        user_primary_image_tag: None,
+        user_primary_image_tag,
         now_viewing_item: device.now_viewing_item,
         playable_media_types: capabilities.playable_media_types.clone(),
         supported_commands: capabilities.supported_commands.clone(),
         capabilities,
     }
+}
+
+async fn session_user_details(
+    state: &AppState,
+    devices: &[device::Model],
+) -> Result<HashMap<Uuid, (String, Option<String>)>, ApiError> {
+    let user_ids = devices
+        .iter()
+        .map(|device| device.user_id)
+        .collect::<Vec<_>>();
+    let mut image_tags = user_primary_image_tags(state, &user_ids).await?;
+    Ok(state
+        .users
+        .get_many(&user_ids)
+        .await?
+        .into_iter()
+        .map(|user| {
+            let image_tag = image_tags.remove(&user.id);
+            (user.id, (user.username, image_tag))
+        })
+        .collect())
 }
 
 async fn persist_capabilities(

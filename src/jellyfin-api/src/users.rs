@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::{
     ApiError, AppState, authentication, authorization, startup, user_to_dto_with_server_id,
+    users_to_dtos_with_server_id,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -49,12 +50,7 @@ pub(crate) async fn list(
     for user in &users {
         authentication::stored_user_policy(user)?;
     }
-    Ok(Json(
-        users
-            .into_iter()
-            .map(|user| user_to_dto_with_server_id(&state, user))
-            .collect(),
-    ))
+    Ok(Json(users_to_dtos_with_server_id(&state, users).await?))
 }
 
 pub(crate) async fn list_public(
@@ -96,12 +92,7 @@ pub(crate) async fn list_public(
         }
         users = filtered;
     }
-    Ok(Json(
-        users
-            .into_iter()
-            .map(|user| user_to_dto_with_server_id(&state, user))
-            .collect(),
-    ))
+    Ok(Json(users_to_dtos_with_server_id(&state, users).await?))
 }
 
 fn supports_persistent_identifier(capabilities: &serde_json::Value) -> bool {
@@ -146,7 +137,7 @@ pub(crate) async fn create(
     if let Some(password) = request.password.filter(|password| !password.is_empty()) {
         user = hash_and_save_password(&state, user, password).await?;
     }
-    let dto = user_to_dto_with_server_id(&state, user);
+    let dto = user_to_dto_with_server_id(&state, user).await?;
     crate::websocket::broadcast_user_updated(
         &state,
         &serde_json::to_value(&dto).unwrap_or_default(),
@@ -209,7 +200,7 @@ pub(crate) async fn get(
     authorization::require_ignore_parental_control(&state, &headers, &uri).await?;
     let user = state.users.get(id).await?;
     authentication::stored_user_policy(&user)?;
-    Ok(Json(user_to_dto_with_server_id(&state, user)))
+    Ok(Json(user_to_dto_with_server_id(&state, user).await?))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -497,7 +488,7 @@ async fn update_with_id(
         .users
         .update_configuration(target_id, &request.configuration)
         .await?;
-    let dto = user_to_dto_with_server_id(state, state.users.get(target_id).await?);
+    let dto = user_to_dto_with_server_id(state, state.users.get(target_id).await?).await?;
     crate::websocket::broadcast_user_updated(
         state,
         &serde_json::to_value(&dto).unwrap_or_default(),
@@ -628,7 +619,7 @@ pub(crate) async fn update_policy(
             .revoke_user_tokens(target_id, Some(&current_token))
             .await?;
     }
-    let dto = user_to_dto_with_server_id(&state, state.users.get(target_id).await?);
+    let dto = user_to_dto_with_server_id(&state, state.users.get(target_id).await?).await?;
     crate::websocket::broadcast_user_updated(
         &state,
         &serde_json::to_value(&dto).unwrap_or_default(),
