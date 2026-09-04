@@ -3,8 +3,8 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        Arc, RwLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, RwLock,
+        atomic::{AtomicUsize, Ordering},
     },
     thread::available_parallelism,
 };
@@ -109,16 +109,23 @@ pub struct LibraryScanService {
     ffmpeg_path: RwLock<Arc<PathBuf>>,
     image_cache_directory: RwLock<Arc<PathBuf>>,
     fanout_concurrency: AtomicUsize,
-    is_scanning: Arc<AtomicBool>,
+    active_scans: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 struct LibraryScanGuard {
-    is_scanning: Arc<AtomicBool>,
+    active_scans: Arc<Mutex<HashSet<Uuid>>>,
+    collection_ids: Vec<Uuid>,
 }
 
 impl Drop for LibraryScanGuard {
     fn drop(&mut self) {
-        self.is_scanning.store(false, Ordering::Release);
+        let mut active_scans = self
+            .active_scans
+            .lock()
+            .expect("library active scan lock poisoned");
+        for collection_id in &self.collection_ids {
+            active_scans.remove(collection_id);
+        }
     }
 }
 
@@ -149,7 +156,7 @@ impl LibraryScanService {
             ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
             image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
             fanout_concurrency: AtomicUsize::new(default_fanout_concurrency()),
-            is_scanning: Arc::new(AtomicBool::new(false)),
+            active_scans: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -204,13 +211,27 @@ impl LibraryScanService {
     ///
     /// Returns persistence or file-system errors that prevent the scan from
     /// reading configured paths or writing discovered media.
-    fn try_start_scan(&self) -> Result<LibraryScanGuard, LibraryScanError> {
-        self.is_scanning
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| LibraryScanGuard {
-                is_scanning: Arc::clone(&self.is_scanning),
-            })
-            .map_err(|_| LibraryScanError::AlreadyScanning)
+    fn try_start_scans(
+        &self,
+        collection_ids: impl IntoIterator<Item = Uuid>,
+    ) -> Result<LibraryScanGuard, LibraryScanError> {
+        let collection_ids = collection_ids.into_iter().collect::<HashSet<_>>();
+        let mut active_scans = self
+            .active_scans
+            .lock()
+            .expect("library active scan lock poisoned");
+        if collection_ids
+            .iter()
+            .any(|collection_id| active_scans.contains(collection_id))
+        {
+            return Err(LibraryScanError::AlreadyScanning);
+        }
+        active_scans.extend(collection_ids.iter().copied());
+        drop(active_scans);
+        Ok(LibraryScanGuard {
+            active_scans: Arc::clone(&self.active_scans),
+            collection_ids: collection_ids.into_iter().collect(),
+        })
     }
 
     /// Scans every configured library collection.
@@ -311,40 +332,59 @@ impl LibraryScanService {
         &self,
         on_progress: Option<&(dyn Fn(f64) + Send + Sync)>,
     ) -> Result<LibraryScanSummary, LibraryScanError> {
-        // Keep the guard alive across every await. If the request or task is
-        // cancelled, dropping its future also drops the guard and releases the
-        // scan flag, allowing a later scan to start.
-        let _scan_guard = self.try_start_scan()?;
-        self.scan_all_inner(on_progress).await
+        self.items.ensure_user_root().await?;
+        let folders = self.folders.list().await?;
+        // Reserve all collections atomically so an overlapping single-library
+        // scan cannot begin midway through a full scan. Cancellation drops the
+        // guard and releases every reservation.
+        let _scan_guard = self.try_start_scans(folders.iter().map(|folder| folder.folder.id))?;
+        self.scan_all_inner(folders, on_progress).await
     }
 
     #[allow(clippy::cast_precision_loss)]
     async fn scan_all_inner(
         &self,
+        folders: Vec<VirtualFolderWithPaths>,
         on_progress: Option<&(dyn Fn(f64) + Send + Sync)>,
     ) -> Result<LibraryScanSummary, LibraryScanError> {
-        self.items.ensure_user_root().await?;
-        let folders = self.folders.list().await?;
         let total = folders.len();
-        tracing::info!(library_count = total, "library scan started");
+        let concurrency = total.min(default_library_concurrency()).max(1);
+        tracing::info!(library_count = total, concurrency, "library scan started");
         let mut summary = LibraryScanSummary::default();
-        for (i, folder) in folders.into_iter().enumerate() {
+        if let Some(on_progress) = on_progress {
+            on_progress(if total == 0 { 90.0 } else { 1.0 });
+        }
+        let scans = futures_util::stream::iter(folders)
+            .map(|folder| async move {
+                let library_id = folder.folder.id;
+                let library_name = folder.folder.name.clone();
+                tracing::info!(
+                    %library_id,
+                    %library_name,
+                    path_count = folder.paths.len(),
+                    "scanning library",
+                );
+                let mut summary = LibraryScanSummary::default();
+                self.scan_one_folder(folder, &mut summary).await?;
+                tracing::info!(
+                    %library_id,
+                    %library_name,
+                    folders_seen = summary.folders_seen,
+                    items_seen = summary.items_seen,
+                    items_added = summary.items_added,
+                    items_removed = summary.items_removed,
+                    "library scan completed",
+                );
+                Ok::<_, LibraryScanError>(summary)
+            })
+            .buffer_unordered(concurrency);
+        futures_util::pin_mut!(scans);
+        let mut completed = 0;
+        while let Some(library_summary) = scans.next().await {
+            merge_scan_summary(&mut summary, library_summary?);
+            completed += 1;
             if let Some(on_progress) = on_progress {
-                on_progress(if total == 0 {
-                    90.0
-                } else {
-                    1.0 + i as f64 / total as f64 * 89.0
-                });
-            }
-            tracing::info!(
-                library_id = %folder.folder.id,
-                library_name = %folder.folder.name,
-                path_count = folder.paths.len(),
-                "scanning library",
-            );
-            self.scan_one_folder(folder, &mut summary).await?;
-            if let Some(on_progress) = on_progress {
-                on_progress((i + 1) as f64 / total as f64 * 90.0);
+                on_progress(completed as f64 / total as f64 * 90.0);
             }
         }
         if let Some(on_progress) = on_progress {
@@ -375,7 +415,7 @@ impl LibraryScanService {
         &self,
         collection_id: Uuid,
     ) -> Result<LibraryScanSummary, LibraryScanError> {
-        let _scan_guard = self.try_start_scan()?;
+        let _scan_guard = self.try_start_scans([collection_id])?;
         self.scan_collection_inner(collection_id).await
     }
 
@@ -2092,6 +2132,20 @@ fn default_fanout_concurrency() -> usize {
     available_parallelism().map_or(1, |n| n.get().saturating_sub(3).max(1))
 }
 
+fn default_library_concurrency() -> usize {
+    available_parallelism().map_or(2, |n| n.get().clamp(2, 4))
+}
+
+fn merge_scan_summary(summary: &mut LibraryScanSummary, mut other: LibraryScanSummary) {
+    summary.folders_seen += other.folders_seen;
+    summary.items_added += other.items_added;
+    summary.items_removed += other.items_removed;
+    summary.items_seen += other.items_seen;
+    summary.added_ids.append(&mut other.added_ids);
+    summary.changed_ids.append(&mut other.changed_ids);
+    summary.removed_ids.append(&mut other.removed_ids);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MediaKind {
     Audio,
@@ -3333,13 +3387,13 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 #[cfg(test)]
 mod tests {
     use super::{
-        LibraryScanGuard, MediaKind, ScanLibraryKind, apply_non_movie_nfo,
+        LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, apply_non_movie_nfo,
         apply_probed_item_metadata, apply_strm_metadata, attachment_image_type,
         attachments_from_media_info, codec_from_extension, default_stream, display_name,
         extra_type_name, is_extras_directory, local_image_type, media_item_data, media_kind,
-        next_stream_index, read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
-        resolve_external_subtitle_streams_from_entries, scan_nfo_person, set_additional_parts,
-        stable_item_id, streams_from_media_info,
+        merge_scan_summary, next_stream_index, read_strm_target, relations_from_movie_nfo,
+        relations_from_nfo_metadata, resolve_external_subtitle_streams_from_entries,
+        scan_nfo_person, set_additional_parts, stable_item_id, streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
@@ -3349,23 +3403,73 @@ mod tests {
     use jellyfin_xbmc_metadata::{MovieNfo, NfoMetadata, NfoPerson, PersonKind};
     use serde_json::json;
     use std::{
+        collections::HashSet,
         path::Path,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
+        sync::{Arc, Mutex},
     };
 
     #[test]
-    fn dropping_scan_guard_releases_scan_after_cancellation() {
-        let is_scanning = Arc::new(AtomicBool::new(true));
+    fn dropping_scan_guard_releases_only_its_collections() {
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        let active_scans = Arc::new(Mutex::new(HashSet::from([first, second])));
         {
             let _guard = LibraryScanGuard {
-                is_scanning: Arc::clone(&is_scanning),
+                active_scans: Arc::clone(&active_scans),
+                collection_ids: vec![first],
             };
-            assert!(is_scanning.load(Ordering::Acquire));
+            assert_eq!(active_scans.lock().unwrap().len(), 2);
         }
-        assert!(!is_scanning.load(Ordering::Acquire));
+        assert_eq!(*active_scans.lock().unwrap(), HashSet::from([second]));
+    }
+
+    #[test]
+    fn scan_reservations_allow_disjoint_libraries_and_reject_overlap() {
+        let service = LibraryScanService::new(sea_orm::DatabaseConnection::Disconnected);
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+
+        let first_guard = service.try_start_scans([first]).unwrap();
+        let second_guard = service.try_start_scans([second]).unwrap();
+        assert!(service.try_start_scans([first]).is_err());
+
+        drop(first_guard);
+        assert!(service.try_start_scans([first]).is_ok());
+        drop(second_guard);
+    }
+
+    #[test]
+    fn scan_summaries_merge_counts_and_changed_ids() {
+        let added = uuid::Uuid::new_v4();
+        let changed = uuid::Uuid::new_v4();
+        let removed = uuid::Uuid::new_v4();
+        let mut summary = super::LibraryScanSummary {
+            folders_seen: 1,
+            items_added: 1,
+            items_seen: 2,
+            added_ids: vec![added],
+            ..Default::default()
+        };
+
+        merge_scan_summary(
+            &mut summary,
+            super::LibraryScanSummary {
+                folders_seen: 1,
+                items_removed: 1,
+                items_seen: 3,
+                changed_ids: vec![changed],
+                removed_ids: vec![removed],
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(summary.folders_seen, 2);
+        assert_eq!(summary.items_added, 1);
+        assert_eq!(summary.items_removed, 1);
+        assert_eq!(summary.items_seen, 5);
+        assert_eq!(summary.added_ids, [added]);
+        assert_eq!(summary.changed_ids, [changed]);
+        assert_eq!(summary.removed_ids, [removed]);
     }
 
     fn base_item_default() -> base_item::Model {
