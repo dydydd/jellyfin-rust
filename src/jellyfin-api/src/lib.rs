@@ -54,6 +54,13 @@ use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
+/// Official Jellyfin API version implemented by the checked-in reference tree.
+///
+/// This must not use the Rust crate version: clients compare this field with
+/// their minimum supported Jellyfin server version before issuing home-page
+/// requests.
+const JELLYFIN_API_VERSION: &str = "12.0.0";
+
 mod activity_log;
 mod api_keys;
 mod artists;
@@ -337,7 +344,7 @@ impl AppState {
             system_info: PublicSystemInfo {
                 local_address: Some(local_address),
                 server_name: None,
-                version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                version: Some(JELLYFIN_API_VERSION.to_owned()),
                 product_name: Some("Jellyfin Server".to_owned()),
                 id: Some(Uuid::new_v4().simple().to_string()),
                 startup_wizard_completed: Some(false),

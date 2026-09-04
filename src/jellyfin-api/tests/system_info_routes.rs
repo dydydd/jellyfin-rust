@@ -108,6 +108,7 @@ fn assert_public_system_info(info: &Value, startup_completed: bool) {
     assert_eq!(info["ServerName"], "System Info Test Server");
     assert_eq!(info["LocalAddress"], "http://127.0.0.1:8096");
     assert_eq!(info["ProductName"], "Jellyfin Server");
+    assert_eq!(info["Version"], "12.0.0");
     assert_eq!(info["StartupWizardCompleted"], startup_completed);
     assert_eq!(info["Id"].as_str().expect("server id").len(), 32);
     assert_eq!(info["OperatingSystem"], "");
@@ -120,6 +121,7 @@ fn assert_system_info(info: &Value, startup_completed: bool) {
     assert_eq!(info["ServerName"], "System Info Test Server");
     assert_eq!(info["LocalAddress"], "http://127.0.0.1:8096");
     assert_eq!(info["ProductName"], "Jellyfin Server");
+    assert_eq!(info["Version"], "12.0.0");
     assert_eq!(info["StartupWizardCompleted"], startup_completed);
     assert_eq!(info["Id"].as_str().expect("server id").len(), 32);
     assert_eq!(info["OperatingSystem"], "");
