@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -7,9 +8,11 @@ use std::{
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing;
 
-use crate::{LibraryScanService, VirtualFolderService};
+use crate::{LibraryScanService, VirtualFolder, VirtualFolderService};
 
 const DEBOUNCE_SECS: u64 = 5;
+const MAX_QUEUED_EVENTS: usize = 1024;
+const MAX_PENDING_PATHS: usize = 1024;
 
 pub struct LibraryWatcher {
     scan: Arc<LibraryScanService>,
@@ -43,13 +46,24 @@ impl LibraryWatcher {
             return Ok(());
         }
 
-        let (tx, rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
-        let mut watcher =
-            RecommendedWatcher::new(tx, Config::default()).map_err(LibraryWatcherError::Notify)?;
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<Result<Event, notify::Error>>(MAX_QUEUED_EVENTS);
+        let mut watcher = RecommendedWatcher::new(
+            move |event| {
+                if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx.try_send(event) {
+                    tracing::debug!(
+                        capacity = MAX_QUEUED_EVENTS,
+                        "file watcher event queue is full; coalescing burst"
+                    );
+                }
+            },
+            Config::default(),
+        )
+        .map_err(LibraryWatcherError::Notify)?;
 
-        for path in self.paths {
-            if let Err(error) = watcher.watch(&path, RecursiveMode::Recursive) {
-                return Err(LibraryWatcherError::Watch(path, error));
+        for path in &self.paths {
+            if let Err(error) = watcher.watch(path, RecursiveMode::Recursive) {
+                return Err(LibraryWatcherError::Watch(path.clone(), error));
             }
             tracing::info!(path = %path.display(), "watching library directory");
         }
@@ -65,14 +79,14 @@ impl LibraryWatcher {
                 // Keep the OS watcher alive for as long as the event loop.
                 // Dropping it here would disconnect `rx` immediately.
                 let _watcher = watcher;
-                let mut pending: Vec<PathBuf> = Vec::new();
+                let mut pending = HashSet::<PathBuf>::new();
                 let mut last_event = std::time::Instant::now();
 
                 loop {
                     match rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(Ok(event)) => {
-                            if let Some(path) = relevant_event_path(event) {
-                                pending.push(path);
+                            for path in relevant_event_paths(event) {
+                                pending.insert(path);
                                 last_event = std::time::Instant::now();
                             }
                         }
@@ -87,9 +101,10 @@ impl LibraryWatcher {
                     }
 
                     if !pending.is_empty()
-                        && last_event.elapsed() >= Duration::from_secs(DEBOUNCE_SECS)
+                        && (last_event.elapsed() >= Duration::from_secs(DEBOUNCE_SECS)
+                            || pending.len() >= MAX_PENDING_PATHS)
                     {
-                        let dirs = deduplicate_parents(&pending);
+                        let dirs = deduplicate_parents(pending.iter());
                         pending.clear();
 
                         tracing::debug!(
@@ -107,33 +122,28 @@ impl LibraryWatcher {
                                 }
                             };
 
+                            let mut canonical_dirs = Vec::with_capacity(dirs.len());
                             for path in &dirs {
                                 let Ok(canonical) = tokio::fs::canonicalize(path).await else {
                                     continue;
                                 };
-                                let canonical_str = canonical.to_string_lossy();
-
-                                for vf in &all_virtual {
-                                    // Check if the changed path is under this virtual
-                                    // folder's configured media paths
-                                    let matches = vf
-                                        .locations
-                                        .iter()
-                                        .any(|loc| canonical_str.starts_with(loc));
-                                    if matches {
-                                        if let Err(error) = scan.scan_collection(vf.id).await {
-                                            tracing::error!(
-                                                %error, folder = %vf.name,
-                                                "incremental scan failed",
-                                            );
-                                        } else {
-                                            tracing::debug!(
-                                                folder = %vf.name,
-                                                "incremental scan completed",
-                                            );
-                                        }
-                                        break;
-                                    }
+                                canonical_dirs.push(canonical);
+                            }
+                            let affected = affected_folder_ids(&canonical_dirs, &all_virtual);
+                            for vf in all_virtual
+                                .iter()
+                                .filter(|folder| affected.contains(&folder.id))
+                            {
+                                if let Err(error) = scan.scan_collection(vf.id).await {
+                                    tracing::error!(
+                                        %error, folder = %vf.name,
+                                        "incremental scan failed",
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        folder = %vf.name,
+                                        "incremental scan completed",
+                                    );
                                 }
                             }
                         });
@@ -156,16 +166,15 @@ pub enum LibraryWatcherError {
     Thread(std::io::Error),
 }
 
-fn relevant_event_path(event: Event) -> Option<PathBuf> {
-    match event.kind {
-        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_) => {}
-        _ => return None,
-    }
+fn relevant_event_paths(event: Event) -> impl Iterator<Item = PathBuf> {
+    let relevant = matches!(
+        event.kind,
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_)
+    );
     event
         .paths
         .into_iter()
-        .next()
-        .filter(|path| is_library_media_path(path))
+        .filter(move |path| relevant && is_library_media_path(path))
 }
 
 fn is_library_media_path(path: &Path) -> bool {
@@ -213,7 +222,7 @@ fn is_library_media_path(path: &Path) -> bool {
     )
 }
 
-fn deduplicate_parents(paths: &[PathBuf]) -> Vec<PathBuf> {
+fn deduplicate_parents<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<PathBuf> {
     let mut result: Vec<PathBuf> = Vec::new();
     for path in paths {
         if let Some(parent) = path.parent()
@@ -224,4 +233,68 @@ fn deduplicate_parents(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     result
+}
+
+fn affected_folder_ids(paths: &[PathBuf], folders: &[VirtualFolder]) -> HashSet<uuid::Uuid> {
+    folders
+        .iter()
+        .filter(|folder| {
+            paths.iter().any(|path| {
+                folder
+                    .locations
+                    .iter()
+                    .any(|location| path.starts_with(Path::new(location)))
+            })
+        })
+        .map(|folder| folder.id)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_paths_are_bounded_to_media_and_all_paths_are_retained() {
+        let event = Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Any),
+            paths: vec![
+                PathBuf::from("/media/movies/one.mkv"),
+                PathBuf::from("/media/movies/two.srt"),
+                PathBuf::from("/media/movies/readme.txt"),
+            ],
+            attrs: notify::event::EventAttributes::new(),
+        };
+        assert_eq!(relevant_event_paths(event).count(), 2);
+    }
+
+    #[test]
+    fn changed_directories_coalesce_to_one_scan_per_virtual_folder() {
+        let movie_id = uuid::Uuid::new_v4();
+        let other_id = uuid::Uuid::new_v4();
+        let folders = vec![
+            virtual_folder(movie_id, &["/media/movies"]),
+            virtual_folder(other_id, &["/media/other"]),
+        ];
+        let affected = affected_folder_ids(
+            &[
+                PathBuf::from("/media/movies/a"),
+                PathBuf::from("/media/movies/b"),
+                PathBuf::from("/media/movies/a/extras"),
+            ],
+            &folders,
+        );
+        assert_eq!(affected, HashSet::from([movie_id]));
+    }
+
+    fn virtual_folder(id: uuid::Uuid, locations: &[&str]) -> VirtualFolder {
+        VirtualFolder {
+            id,
+            name: id.to_string(),
+            collection_type: Some("movies".to_owned()),
+            library_options: serde_json::Value::Null,
+            locations: locations.iter().map(|path| (*path).to_owned()).collect(),
+            refresh_requested: false,
+        }
+    }
 }

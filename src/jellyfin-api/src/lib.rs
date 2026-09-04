@@ -709,6 +709,18 @@ impl AppState {
         let paths = match self.virtual_folders.list().await {
             Ok(folders) => folders
                 .into_iter()
+                .filter(|folder| {
+                    folder
+                        .library_options
+                        .as_object()
+                        .and_then(|options| {
+                            options
+                                .get("EnableRealtimeMonitor")
+                                .or_else(|| options.get("enableRealtimeMonitor"))
+                        })
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true)
+                })
                 .flat_map(|folder| folder.locations.into_iter().map(PathBuf::from))
                 .collect(),
             Err(error) => {
