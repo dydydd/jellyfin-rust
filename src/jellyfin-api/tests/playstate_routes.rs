@@ -225,6 +225,49 @@ async fn lowercase_player_callbacks_persist_playback_history() {
 }
 
 #[tokio::test]
+async fn legacy_playback_query_preserves_official_session_fields() {
+    let fixture = PlaystateFixture::new().await;
+    let start_route = format!(
+        "/playingitems/{}?MediaSourceId=legacy-source&AudioStreamIndex=2&SubtitleStreamIndex=3&PlayMethod=DirectPlay&LiveStreamId=legacy-live&PlaySessionId=legacy-session&CanSeek=true",
+        fixture.runtime_item_id
+    );
+    let response = request(&fixture.app, "POST", &start_route, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let progress_route = format!(
+        "/users/{}/playingitems/{}/progress?PositionTicks={}&AudioStreamIndex=4&SubtitleStreamIndex=5&VolumeLevel=37&PlayMethod=DirectPlay&LiveStreamId=legacy-live&PlaySessionId=legacy-session&RepeatMode=RepeatAll&IsPaused=true&IsMuted=true",
+        fixture.administrator_id,
+        fixture.runtime_item_id,
+        ticks(120)
+    );
+    let response = request(&fixture.app, "POST", &progress_route, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    let play_state = &sessions.as_array().expect("sessions array")[0]["PlayState"];
+    assert_eq!(play_state["CanSeek"], false);
+    assert_eq!(play_state["PositionTicks"], ticks(120));
+    assert_eq!(play_state["AudioStreamIndex"], 4);
+    assert_eq!(play_state["SubtitleStreamIndex"], 5);
+    assert_eq!(play_state["VolumeLevel"], 37);
+    assert_eq!(play_state["PlayMethod"], "DirectPlay");
+    assert_eq!(play_state["LiveStreamId"], "legacy-live");
+    assert_eq!(play_state["RepeatMode"], "RepeatAll");
+    assert_eq!(play_state["IsPaused"], true);
+    assert_eq!(play_state["IsMuted"], true);
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn playback_reports_update_session_state_projection() {
     let fixture = PlaystateFixture::new().await;

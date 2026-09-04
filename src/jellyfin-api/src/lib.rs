@@ -1473,6 +1473,24 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             post(playstate::report_playback_progress_legacy_for_user),
         )
         .route(
+            "/playingitems/{item_id}",
+            post(playstate::report_playback_start_legacy)
+                .delete(playstate::report_playback_stopped_legacy),
+        )
+        .route(
+            "/playingitems/{item_id}/progress",
+            post(playstate::report_playback_progress_legacy),
+        )
+        .route(
+            "/users/{user_id}/playingitems/{item_id}",
+            post(playstate::report_playback_start_legacy_for_user)
+                .delete(playstate::report_playback_stopped_legacy_for_user),
+        )
+        .route(
+            "/users/{user_id}/playingitems/{item_id}/progress",
+            post(playstate::report_playback_progress_legacy_for_user),
+        )
+        .route(
             "/UserPlayedItems/{item_id}",
             post(playstate::mark_played_modern).delete(playstate::mark_unplayed_modern),
         )

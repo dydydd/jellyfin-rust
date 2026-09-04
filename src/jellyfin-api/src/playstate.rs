@@ -63,6 +63,8 @@ pub struct PlaybackProgressInfo {
     pub play_method: Option<PlayMethod>,
     #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
+    #[serde(alias = "playSessionId", alias = "playsessionid")]
+    pub play_session_id: Option<String>,
     #[serde(alias = "repeatMode", alias = "repeatmode")]
     pub repeat_mode: RepeatMode,
     #[serde(alias = "playbackOrder", alias = "playbackorder")]
@@ -102,6 +104,8 @@ pub struct PlaybackStartInfo {
     pub play_method: Option<PlayMethod>,
     #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
+    #[serde(alias = "playSessionId", alias = "playsessionid")]
+    pub play_session_id: Option<String>,
     #[serde(alias = "repeatMode", alias = "repeatmode")]
     pub repeat_mode: RepeatMode,
     #[serde(alias = "playbackOrder", alias = "playbackorder")]
@@ -143,6 +147,18 @@ pub struct PlaybackStopInfo {
 pub struct PlaybackStartQuery {
     #[serde(default, rename = "mediaSourceId", alias = "MediaSourceId")]
     pub media_source_id: Option<String>,
+    #[serde(default, rename = "audioStreamIndex", alias = "AudioStreamIndex")]
+    pub audio_stream_index: Option<i32>,
+    #[serde(default, rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
+    pub subtitle_stream_index: Option<i32>,
+    #[serde(default, rename = "playMethod", alias = "PlayMethod")]
+    pub play_method: Option<PlayMethod>,
+    #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
+    pub live_stream_id: Option<String>,
+    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    pub play_session_id: Option<String>,
+    #[serde(default, rename = "canSeek", alias = "CanSeek")]
+    pub can_seek: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -155,6 +171,20 @@ pub struct PlaybackProgressQuery {
     pub audio_stream_index: Option<i32>,
     #[serde(default, rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
     pub subtitle_stream_index: Option<i32>,
+    #[serde(default, rename = "volumeLevel", alias = "VolumeLevel")]
+    pub volume_level: Option<i32>,
+    #[serde(default, rename = "playMethod", alias = "PlayMethod")]
+    pub play_method: Option<PlayMethod>,
+    #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
+    pub live_stream_id: Option<String>,
+    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    pub play_session_id: Option<String>,
+    #[serde(default, rename = "repeatMode", alias = "RepeatMode")]
+    pub repeat_mode: Option<RepeatMode>,
+    #[serde(default, rename = "isPaused", alias = "IsPaused")]
+    pub is_paused: bool,
+    #[serde(default, rename = "isMuted", alias = "IsMuted")]
+    pub is_muted: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -163,6 +193,12 @@ pub struct PlaybackStopQuery {
     pub media_source_id: Option<String>,
     #[serde(default, rename = "positionTicks", alias = "PositionTicks")]
     pub position_ticks: Option<i64>,
+    #[serde(default, rename = "nextMediaType", alias = "NextMediaType")]
+    pub next_media_type: Option<String>,
+    #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
+    pub live_stream_id: Option<String>,
+    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    pub play_session_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -318,8 +354,14 @@ pub(crate) async fn report_playback_start_legacy(
         &uri,
         headers,
         PlaybackStartInfo {
+            can_seek: query.can_seek,
             item_id,
             media_source_id: query.media_source_id,
+            audio_stream_index: query.audio_stream_index,
+            subtitle_stream_index: query.subtitle_stream_index,
+            play_method: query.play_method,
+            live_stream_id: query.live_stream_id,
+            play_session_id: query.play_session_id,
             ..Default::default()
         },
     )
@@ -341,6 +383,9 @@ pub(crate) async fn report_playback_stopped_legacy(
             item_id,
             media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
+            next_media_type: query.next_media_type,
+            live_stream_id: query.live_stream_id,
+            play_session_id: query.play_session_id,
             failed: false,
             ..Default::default()
         },
@@ -360,8 +405,14 @@ pub(crate) async fn report_playback_start_legacy_for_user(
         &uri,
         headers,
         PlaybackStartInfo {
+            can_seek: query.can_seek,
             item_id,
             media_source_id: query.media_source_id,
+            audio_stream_index: query.audio_stream_index,
+            subtitle_stream_index: query.subtitle_stream_index,
+            play_method: query.play_method,
+            live_stream_id: query.live_stream_id,
+            play_session_id: query.play_session_id,
             ..Default::default()
         },
     )
@@ -383,6 +434,9 @@ pub(crate) async fn report_playback_stopped_legacy_for_user(
             item_id,
             media_source_id: query.media_source_id,
             position_ticks: query.position_ticks,
+            next_media_type: query.next_media_type,
+            live_stream_id: query.live_stream_id,
+            play_session_id: query.play_session_id,
             failed: false,
             ..Default::default()
         },
@@ -407,6 +461,13 @@ pub(crate) async fn report_playback_progress_legacy(
             position_ticks: query.position_ticks,
             audio_stream_index: query.audio_stream_index,
             subtitle_stream_index: query.subtitle_stream_index,
+            is_paused: query.is_paused,
+            is_muted: query.is_muted,
+            volume_level: query.volume_level,
+            play_method: query.play_method,
+            live_stream_id: query.live_stream_id,
+            play_session_id: query.play_session_id,
+            repeat_mode: query.repeat_mode.unwrap_or_default(),
             ..Default::default()
         },
     )
@@ -430,6 +491,13 @@ pub(crate) async fn report_playback_progress_legacy_for_user(
             position_ticks: query.position_ticks,
             audio_stream_index: query.audio_stream_index,
             subtitle_stream_index: query.subtitle_stream_index,
+            is_paused: query.is_paused,
+            is_muted: query.is_muted,
+            volume_level: query.volume_level,
+            play_method: query.play_method,
+            live_stream_id: query.live_stream_id,
+            play_session_id: query.play_session_id,
+            repeat_mode: query.repeat_mode.unwrap_or_default(),
             ..Default::default()
         },
     )
