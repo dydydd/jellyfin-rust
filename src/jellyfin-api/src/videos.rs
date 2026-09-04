@@ -74,7 +74,16 @@ async fn stream_file(
             .and_then(std::ffi::OsStr::to_str)
             .unwrap_or_default();
         if !container.eq_ignore_ascii_case(actual) {
-            return Err(ApiError::UnsupportedMediaType);
+            // Some Jellyfin clients (including VidHub) use `stream.mp4` as a
+            // generic static-stream endpoint even after selecting a direct
+            // play MKV source. The route suffix is not the source of truth;
+            // ServeFile derives the response MIME type from the real path.
+            tracing::warn!(
+                %item_id,
+                requested_container = container,
+                actual_container = actual,
+                "static video route container differs from the media source",
+            );
         }
     }
     if !query.static_stream.unwrap_or(true) {
