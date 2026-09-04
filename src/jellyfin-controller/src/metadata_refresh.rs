@@ -246,16 +246,15 @@ impl MetadataRefreshService {
                     (item_type, item_id, result)
                 }
             })
-            .buffer_unordered(concurrency.clamp(1, 16))
-            .collect::<Vec<_>>()
-            .await;
+            .buffer_unordered(concurrency.clamp(1, 16));
+        futures_util::pin_mut!(outcomes);
 
         let mut summary = MissingMetadataRefreshSummary {
             candidates: candidate_count,
             missing_episodes: missing_episodes.len(),
             ..MissingMetadataRefreshSummary::default()
         };
-        for (item_type, item_id, result) in outcomes {
+        while let Some((item_type, item_id, result)) = outcomes.next().await {
             match result {
                 Ok(true) => summary.refreshed += 1,
                 Ok(false) => summary.unchanged += 1,
