@@ -14,9 +14,8 @@ use jellyfin_data::{
     BaseItemError, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
     BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
     ItemUpdateRepository, ItemUpdateStoreError, ItemValueError, ItemValueRepository,
-    KeyframeDataRepository, KeyframeDataStoreError, MediaAttachmentRepository,
-    MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError,
-    NewBaseItem, NewBaseItemImage, NewChapter, NewKeyframeData, NewPerson,
+    MediaAttachmentRepository, MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository,
+    MediaStreamStoreError, NewBaseItem, NewBaseItemImage, NewChapter, NewPerson,
     PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
     PersonError as PersonStoreError, PersonRepository, USER_ROOT_FOLDER_ID, VirtualFolderError,
     VirtualFolderRepository, VirtualFolderWithPaths,
@@ -27,7 +26,6 @@ use jellyfin_media_encoding::probing::{
     MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol,
     MediaStream as ProbedMediaStream, MediaStreamType,
 };
-use jellyfin_media_encoding_keyframes::{KeyframeData, extract_keyframes};
 use jellyfin_model::{
     CollectionType, MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream,
 };
@@ -77,8 +75,6 @@ pub enum LibraryScanError {
     #[error(transparent)]
     Chapter(#[from] ChapterStoreError),
     #[error(transparent)]
-    Keyframe(#[from] KeyframeDataStoreError),
-    #[error(transparent)]
     ItemImage(#[from] BaseItemImageStoreError),
     #[error(transparent)]
     ItemValue(#[from] ItemValueError),
@@ -103,7 +99,6 @@ pub struct LibraryScanService {
     people: PersonRepository,
     updates: ItemUpdateRepository,
     chapters: ChapterRepository,
-    keyframes: KeyframeDataRepository,
     values: ItemValueRepository,
     probe_path: Arc<PathBuf>,
     ffmpeg_path: RwLock<Arc<PathBuf>>,
@@ -150,7 +145,6 @@ impl LibraryScanService {
             people: PersonRepository::new(Arc::clone(&database)),
             updates: ItemUpdateRepository::new(Arc::clone(&database)),
             chapters: ChapterRepository::new(Arc::clone(&database)),
-            keyframes: KeyframeDataRepository::new(Arc::clone(&database)),
             values: ItemValueRepository::new(database),
             probe_path: Arc::new(probe_path.into()),
             ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
@@ -1850,20 +1844,6 @@ impl LibraryScanService {
             .await?;
             streams = streams_from_media_info(media_info);
         }
-        if should_probe
-            && media_kind == MediaKind::Video
-            && let Some(keyframes) = self.probe_keyframes(media_source_path).await
-        {
-            self.keyframes
-                .save(
-                    item_id,
-                    NewKeyframeData {
-                        total_duration: keyframes.total_duration,
-                        keyframe_ticks: keyframes.keyframe_ticks,
-                    },
-                )
-                .await?;
-        }
         if streams.is_empty() {
             streams.push(default_stream);
         }
@@ -1873,26 +1853,6 @@ impl LibraryScanService {
         streams.extend(external_subtitles);
         self.streams.replace(item_id, &streams).await?;
         Ok(media_info)
-    }
-
-    async fn probe_keyframes(&self, path: &str) -> Option<KeyframeData> {
-        let probe_path = Arc::clone(&self.probe_path);
-        let probe_input = path.to_owned();
-        match tokio::task::spawn_blocking(move || {
-            extract_keyframes(probe_path.as_path(), &probe_input)
-        })
-        .await
-        {
-            Ok(Ok(keyframes)) => Some(keyframes),
-            Ok(Err(error)) => {
-                tracing::debug!(path, error = %error, "keyframe extraction failed during library scan");
-                None
-            }
-            Err(error) => {
-                tracing::debug!(path, error = %error, "keyframe extraction task failed during library scan");
-                None
-            }
-        }
     }
 
     async fn discover_local_images(

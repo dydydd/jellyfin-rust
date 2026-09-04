@@ -1625,7 +1625,6 @@ dependencies = [
  "jellyfin-live-tv",
  "jellyfin-media-encoding",
  "jellyfin-media-encoding-hls",
- "jellyfin-media-encoding-keyframes",
  "jellyfin-model",
  "jellyfin-naming",
  "jellyfin-providers",

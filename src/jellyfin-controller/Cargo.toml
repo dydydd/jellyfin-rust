@@ -13,7 +13,6 @@ jellyfin-extensions = { path = "../jellyfin-extensions" }
 jellyfin-live-tv = { path = "../jellyfin-live-tv" }
 jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-media-encoding-hls = { path = "../jellyfin-media-encoding-hls" }
-jellyfin-media-encoding-keyframes = { path = "../jellyfin-media-encoding-keyframes" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-naming = { path = "../jellyfin-naming" }
 jellyfin-providers = { path = "../jellyfin-providers" }
