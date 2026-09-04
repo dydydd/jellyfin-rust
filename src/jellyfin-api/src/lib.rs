@@ -1865,10 +1865,6 @@ pub(crate) fn user_to_dto_with_server_id(state: &AppState, user: user::Model) ->
 }
 
 pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
-    let has_password = user
-        .password_hash
-        .as_deref()
-        .is_some_and(|hash| !hash.is_empty());
     let mut policy: UserPolicy = serde_json::from_value(user.policy).unwrap_or_default();
     policy.is_administrator = user.is_administrator;
     policy.is_hidden = user.is_hidden;
@@ -1884,8 +1880,10 @@ pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
     UserDto {
         id: user.id,
         name: Some(user.username),
-        has_password: Some(has_password),
-        has_configured_password: Some(has_password),
+        // Jellyfin retains these deprecated fields for wire compatibility and
+        // always reports true. Password state is no longer exposed here.
+        has_password: Some(true),
+        has_configured_password: Some(true),
         enable_auto_login: Some(user.enable_auto_login),
         last_login_date: user.last_login_date,
         last_activity_date: user.last_activity_date,

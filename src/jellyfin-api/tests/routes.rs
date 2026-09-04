@@ -486,8 +486,8 @@ async fn exercise_user_management_flow(database_name: &str) {
     assert_eq!(response.status(), StatusCode::OK);
     let created = body_json(response).await;
     assert_eq!(created["Name"], username);
-    assert_eq!(created["HasPassword"], false);
-    assert_eq!(created["HasConfiguredPassword"], false);
+    assert_eq!(created["HasPassword"], true);
+    assert_eq!(created["HasConfiguredPassword"], true);
     assert_eq!(created["Policy"]["IsHidden"], true);
     assert_eq!(created["Policy"]["IsAdministrator"], false);
     assert_eq!(
