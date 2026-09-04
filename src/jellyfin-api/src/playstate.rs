@@ -399,6 +399,14 @@ async fn report_playback_progress_for_current_session(
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
+        tracing::info!(
+            device_id = %session.device.device_id,
+            item_id = %info.item_id,
+            position_ticks = ?info.position_ticks,
+            play_method = ?info.play_method,
+            paused = info.is_paused,
+            "playback progress received",
+        );
         record_device_playback_progress(&state, &session, info).await?;
         crate::websocket::broadcast_sessions(&state).await;
     }
@@ -413,6 +421,13 @@ async fn report_playback_start_for_current_session(
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
+        tracing::info!(
+            device_id = %session.device.device_id,
+            item_id = %info.item_id,
+            position_ticks = ?info.position_ticks,
+            play_method = ?info.play_method,
+            "playback start received",
+        );
         record_device_playback_start(&state, &session, info).await?;
         crate::websocket::broadcast_sessions(&state).await;
     }
@@ -427,6 +442,13 @@ async fn report_playback_stop_for_current_session(
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
+        tracing::info!(
+            device_id = %session.device.device_id,
+            item_id = %info.item_id,
+            position_ticks = ?info.position_ticks,
+            failed = info.failed,
+            "playback stop received",
+        );
         record_device_playback_stop(&state, &session, info).await?;
         crate::websocket::broadcast_sessions(&state).await;
     }

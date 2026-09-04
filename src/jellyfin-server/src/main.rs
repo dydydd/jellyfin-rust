@@ -17,8 +17,9 @@ use jellyfin_media_encoding::encoder::MediaEncoder;
 use jellyfin_model::TrickplayOptions;
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use sea_orm::ConnectionTrait;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt::writer::MakeWriterExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,7 +37,9 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
-        .with_writer(log_file)
+        // Keep the persistent log file while also exposing the same events to
+        // the container runtime (`docker logs`).
+        .with_writer(std::io::stdout.and(log_file))
         .init();
 
     let database = jellyfin_data::connect(&DatabaseConfig::default())
@@ -141,13 +144,25 @@ async fn main() -> anyhow::Result<()> {
     .with_log_directory(log_directory);
     let state = state.start_library_watcher().await;
     let shutdown_state = state.clone();
-    let app =
-        jellyfin_api::router(state)
-            .layer(cors_layer)
-            .layer(axum::middleware::from_fn_with_state(
-                Arc::new(network_manager),
-                jellyfin_server::apply_forwarded_headers,
-            ));
+    let app = jellyfin_api::router(state)
+        .layer(cors_layer)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(network_manager),
+            jellyfin_server::apply_forwarded_headers,
+        ))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+                    // Never put the query string in access logs: playback
+                    // URLs can carry an API key in their query parameters.
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                    )
+                })
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
+        );
 
     info!(address = %bind_address, "Jellyfin Rust server listening");
     let server_result = axum::serve(

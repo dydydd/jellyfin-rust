@@ -267,6 +267,7 @@ async fn playback_info(
 ) -> Result<PlaybackInfoResponse, ApiError> {
     let play_session_id = Uuid::new_v4().simple().to_string();
     let mut max_streaming_bitrate = max_streaming_bitrate;
+    let has_device_profile = device_profile.is_some();
     let mut media_sources = media_sources(
         state,
         authenticated_user,
@@ -288,6 +289,27 @@ async fn playback_info(
         remote_ip,
     );
     sort_media_sources(&mut media_sources, max_streaming_bitrate, item_id);
+    if let Some(source) = media_sources.first() {
+        tracing::info!(
+            %item_id,
+            %device_id,
+            %play_session_id,
+            has_device_profile,
+            source_count = media_sources.len(),
+            media_source_id = source.id.as_deref().unwrap_or_default(),
+            protocol = ?source.protocol,
+            container = source.container.as_deref().unwrap_or_default(),
+            bitrate = ?source.bitrate,
+            streams = source.media_streams.len(),
+            supports_direct_play = source.supports_direct_play,
+            supports_direct_stream = source.supports_direct_stream,
+            supports_transcoding = source.supports_transcoding,
+            selected_transcoding = source.transcoding_url.is_some(),
+            "playback information prepared",
+        );
+    } else {
+        tracing::warn!(%item_id, %device_id, has_device_profile, "no playable media source found");
+    }
     Ok(PlaybackInfoResponse {
         media_sources,
         play_session_id,
@@ -434,9 +456,29 @@ fn apply_stream_builder(
         builder.take_optimal_audio_stream(&mut options)
     };
     let Ok(Some((source_index, mut stream))) = selection else {
+        tracing::warn!(
+            %item_id,
+            %device_id,
+            is_video,
+            source_count = options.media_sources.len(),
+            "device profile did not produce a playable stream",
+        );
         *media_sources = options.media_sources;
         return;
     };
+    tracing::info!(
+        %item_id,
+        %device_id,
+        play_method = ?stream.play_method,
+        container = stream.container.as_deref().unwrap_or_default(),
+        video_codecs = ?stream.video_codecs,
+        audio_codecs = ?stream.audio_codecs,
+        video_bitrate = ?stream.video_bitrate,
+        audio_bitrate = ?stream.audio_bitrate,
+        segment_length = ?stream.segment_length,
+        transcode_reason_bits = stream.transcode_reasons.bits(),
+        "playback stream selected from device profile",
+    );
     stream.play_session_id = Some(play_session_id.to_owned());
     if let Some(source) = stream.media_source.as_mut() {
         source.supports_transcoding = policy_can_transcode(&policy, is_audio);
