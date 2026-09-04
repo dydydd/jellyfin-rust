@@ -342,10 +342,9 @@ fn named_user_view(user_id: Uuid, folder: VirtualFolder) -> UserViewItem {
     let collection_type = folder.collection_type;
     let name = folder.name;
     let id = user_view_id(&format!(
-        "38_namedview_{}{}{}{}",
-        name,
-        user_id,
-        folder.id,
+        "38_namedview_{}{}{}",
+        user_id.simple(),
+        folder.id.simple(),
         collection_type.as_deref().unwrap_or_default()
     ));
     UserViewItem {
@@ -366,7 +365,10 @@ fn grouped_user_view(
     collection_type: &str,
     content_parent_ids: Vec<Uuid>,
 ) -> UserViewItem {
-    let id = user_view_id(&format!("38_namedview_{name}{user_id}{collection_type}"));
+    let id = user_view_id(&format!(
+        "38_namedview_{}{collection_type}",
+        user_id.simple()
+    ));
     UserViewItem {
         id,
         name: name.to_owned(),
@@ -414,15 +416,21 @@ fn add_grouped_view(
 }
 
 fn user_view_id(key: &str) -> Uuid {
-    let digest = Md5::digest(format!(
+    let input = format!(
         "MediaBrowser.Controller.Entities.UserView{}",
-        key.to_ascii_lowercase()
-    ));
+        key.to_lowercase()
+    );
+    // .NET's Encoding.Unicode is UTF-16LE, and Guid(byte[]) interprets the
+    // first three fields in little-endian order. Jellyfin uses those raw MD5
+    // bytes without applying RFC UUID version or variant bits.
+    let utf16le = input
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let digest = Md5::digest(utf16le);
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest);
-    bytes[6] = (bytes[6] & 0x0f) | 0x30;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Uuid::from_bytes(bytes)
+    Uuid::from_bytes_le(bytes)
 }
 
 fn sort_views(views: &mut [UserViewItem], config: &UserConfiguration) {
@@ -491,15 +499,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn user_view_ids_are_stable_and_official_prefixed() {
-        let first = user_view_id("38_namedview_Movies-0000-0000-0000-000000000000movies");
+    fn user_view_ids_match_dotnet_utf16_guid_hashing() {
+        let first = user_view_id("38_namedview_00000000000000000000000000000000movies");
         assert_eq!(
             first,
-            user_view_id("38_namedview_Movies-0000-0000-0000-000000000000movies")
+            Uuid::parse_str("966d62d8-2a1a-c63a-4ff4-0988f9d3cc24").expect("known Jellyfin id")
         );
-        assert_ne!(
-            first,
-            user_view_id("38_namedview_Shows-0000-0000-0000-000000000000tvshows")
+        assert_eq!(
+            user_view_id("38_namedview_Movies00000000-0000-0000-0000-000000000000movies"),
+            Uuid::parse_str("7a9a4730-1999-53e5-b36e-7c270c3d782a")
+                .expect("known Jellyfin shadow-view id")
         );
     }
 }
