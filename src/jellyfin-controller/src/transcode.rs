@@ -777,6 +777,7 @@ pub fn build_main_playlist(
     runtime_ticks: Option<i64>,
     settings: &HlsSegmentSettings,
     media_type: &str,
+    access_token: Option<&str>,
 ) -> Result<String, HlsPlaylistError> {
     let endpoint_prefix = format!("/{media_type}/{item_id}/hls1/{job_id}");
     let segment_ticks = compute_equal_length_segment_ticks(
@@ -798,16 +799,36 @@ pub fn build_main_playlist(
         "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-TARGETDURATION:{target_duration}\n#EXT-X-MEDIA-SEQUENCE:0\n"
     );
     let mut current_runtime_ticks = 0_i64;
+    let encoded_access_token = access_token
+        .filter(|token| !token.is_empty())
+        .map(percent_encode_query_value);
     for (index, length_ticks) in segment_ticks.iter().enumerate() {
+        let authentication = encoded_access_token
+            .as_deref()
+            .map_or_else(String::new, |token| format!("&api_key={token}"));
         let _ = write!(
             playlist,
-            "#EXTINF:{:.6},\n{endpoint_prefix}/{index}.{extension}?runtimeTicks={current_runtime_ticks}&actualSegmentLengthTicks={length_ticks}\n",
+            "#EXTINF:{:.6},\n{endpoint_prefix}/{index}.{extension}?runtimeTicks={current_runtime_ticks}&actualSegmentLengthTicks={length_ticks}{authentication}\n",
             *length_ticks as f64 / 10_000_000.0
         );
         current_runtime_ticks = current_runtime_ticks.saturating_add(*length_ticks);
     }
     playlist.push_str("#EXT-X-ENDLIST\n");
     Ok(playlist)
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 /// Creates a single-variant master playlist for compatibility callers.
@@ -1054,11 +1075,13 @@ mod tests {
                 min_segments: 2,
             },
             "Videos",
+            Some("test token&scope=all"),
         )
         .expect("playlist");
         assert!(playlist.contains("#EXTM3U"));
         assert!(playlist.contains("/Videos/00000000-0000-0000-0000-000000000001/hls1/job1/0.ts?"));
         assert!(playlist.contains("runtimeTicks=0&actualSegmentLengthTicks=60000000"));
+        assert!(playlist.contains("&api_key=test%20token%26scope%3Dall"));
     }
 
     #[test]
