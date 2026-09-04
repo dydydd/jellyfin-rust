@@ -202,8 +202,8 @@ async fn lowercase_player_callbacks_persist_playback_history() {
             route,
             &fixture.user_token,
             json!({
-                "ItemId": fixture.runtime_item_id,
-                "PositionTicks": position_ticks
+                "itemId": fixture.runtime_item_id,
+                "positionTicks": position_ticks
             }),
         )
         .await;

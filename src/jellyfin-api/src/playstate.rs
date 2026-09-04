@@ -37,60 +37,105 @@ pub struct MarkUnplayedQuery {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackProgressInfo {
+    #[serde(alias = "canSeek", alias = "canseek")]
     pub can_seek: bool,
+    #[serde(alias = "item")]
     pub item: Option<Value>,
+    #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Uuid,
+    #[serde(alias = "sessionId", alias = "sessionid")]
     pub session_id: Option<String>,
+    #[serde(alias = "mediaSourceId", alias = "mediasourceid")]
     pub media_source_id: Option<String>,
+    #[serde(alias = "positionTicks", alias = "positionticks")]
     pub position_ticks: Option<i64>,
+    #[serde(alias = "audioStreamIndex", alias = "audiostreamindex")]
     pub audio_stream_index: Option<i32>,
+    #[serde(alias = "subtitleStreamIndex", alias = "subtitlestreamindex")]
     pub subtitle_stream_index: Option<i32>,
+    #[serde(alias = "isPaused", alias = "ispaused")]
     pub is_paused: bool,
+    #[serde(alias = "isMuted", alias = "ismuted")]
     pub is_muted: bool,
+    #[serde(alias = "volumeLevel", alias = "volumelevel")]
     pub volume_level: Option<i32>,
+    #[serde(alias = "playMethod", alias = "playmethod")]
     pub play_method: Option<PlayMethod>,
+    #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
+    #[serde(alias = "repeatMode", alias = "repeatmode")]
     pub repeat_mode: RepeatMode,
+    #[serde(alias = "playbackOrder", alias = "playbackorder")]
     pub playback_order: PlaybackOrder,
+    #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
     pub now_playing_queue: Option<Vec<Value>>,
+    #[serde(alias = "playlistItemId", alias = "playlistitemid")]
     pub playlist_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackStartInfo {
+    #[serde(alias = "canSeek", alias = "canseek")]
     pub can_seek: bool,
+    #[serde(alias = "item")]
     pub item: Option<Value>,
+    #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Uuid,
+    #[serde(alias = "sessionId", alias = "sessionid")]
     pub session_id: Option<String>,
+    #[serde(alias = "mediaSourceId", alias = "mediasourceid")]
     pub media_source_id: Option<String>,
+    #[serde(alias = "positionTicks", alias = "positionticks")]
     pub position_ticks: Option<i64>,
+    #[serde(alias = "audioStreamIndex", alias = "audiostreamindex")]
     pub audio_stream_index: Option<i32>,
+    #[serde(alias = "subtitleStreamIndex", alias = "subtitlestreamindex")]
     pub subtitle_stream_index: Option<i32>,
+    #[serde(alias = "isPaused", alias = "ispaused")]
     pub is_paused: bool,
+    #[serde(alias = "isMuted", alias = "ismuted")]
     pub is_muted: bool,
+    #[serde(alias = "volumeLevel", alias = "volumelevel")]
     pub volume_level: Option<i32>,
+    #[serde(alias = "playMethod", alias = "playmethod")]
     pub play_method: Option<PlayMethod>,
+    #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
+    #[serde(alias = "repeatMode", alias = "repeatmode")]
     pub repeat_mode: RepeatMode,
+    #[serde(alias = "playbackOrder", alias = "playbackorder")]
     pub playback_order: PlaybackOrder,
+    #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
     pub now_playing_queue: Option<Vec<Value>>,
+    #[serde(alias = "playlistItemId", alias = "playlistitemid")]
     pub playlist_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackStopInfo {
+    #[serde(alias = "item")]
     pub item: Option<Value>,
+    #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Uuid,
+    #[serde(alias = "sessionId", alias = "sessionid")]
     pub session_id: Option<String>,
+    #[serde(alias = "mediaSourceId", alias = "mediasourceid")]
     pub media_source_id: Option<String>,
+    #[serde(alias = "positionTicks", alias = "positionticks")]
     pub position_ticks: Option<i64>,
+    #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
+    #[serde(alias = "playSessionId", alias = "playsessionid")]
     pub play_session_id: Option<String>,
+    #[serde(alias = "failed")]
     pub failed: bool,
+    #[serde(alias = "nextMediaType", alias = "nextmediatype")]
     pub next_media_type: Option<String>,
+    #[serde(alias = "playlistItemId", alias = "playlistitemid")]
     pub playlist_item_id: Option<String>,
+    #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
     pub now_playing_queue: Option<Vec<Value>>,
 }
 
