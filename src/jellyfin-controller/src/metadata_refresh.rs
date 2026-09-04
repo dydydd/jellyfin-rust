@@ -127,6 +127,7 @@ pub struct MetadataRefreshService {
     values: Arc<ItemValueRepository>,
     people: Arc<PersonRepository>,
     updates: Arc<ItemUpdateRepository>,
+    tv_maze: Arc<TvMazeMetadataProvider>,
     images: Arc<RwLock<Option<Arc<ItemImageService>>>>,
     preferred_locale: Arc<RwLock<(String, String)>>,
     virtual_folders: VirtualFolderService,
@@ -139,11 +140,20 @@ impl MetadataRefreshService {
         images: Option<Arc<ItemImageService>>,
     ) -> Self {
         let database = database.into();
+        let items = Arc::new(BaseItemRepository::new(Arc::clone(&database)));
+        let values = Arc::new(ItemValueRepository::new(Arc::clone(&database)));
+        let updates = Arc::new(ItemUpdateRepository::new(Arc::clone(&database)));
+        let tv_maze = Arc::new(TvMazeMetadataProvider::new(
+            Arc::clone(&items),
+            Arc::clone(&values),
+            Arc::clone(&updates),
+        ));
         Self {
-            items: Arc::new(BaseItemRepository::new(Arc::clone(&database))),
-            values: Arc::new(ItemValueRepository::new(Arc::clone(&database))),
+            items,
+            values,
             people: Arc::new(PersonRepository::new(Arc::clone(&database))),
-            updates: Arc::new(ItemUpdateRepository::new(Arc::clone(&database))),
+            updates,
+            tv_maze,
             images: Arc::new(RwLock::new(images)),
             preferred_locale: Arc::new(RwLock::new(("en".to_owned(), "US".to_owned()))),
             virtual_folders: VirtualFolderService::new(database),
@@ -387,7 +397,7 @@ impl MetadataRefreshService {
                             .await
                             .map_err(MetadataRefreshError::from),
                         MetadataProviderDispatch::TvMaze => self
-                            .tv_maze_provider()
+                            .tv_maze
                             .refresh_item(item_id)
                             .await
                             .map_err(MetadataRefreshError::from),
@@ -510,14 +520,6 @@ impl MetadataRefreshService {
 
     fn google_books_provider(&self) -> GoogleBooksMetadataProvider {
         GoogleBooksMetadataProvider::new(Arc::clone(&self.items), Arc::clone(&self.updates))
-    }
-
-    fn tv_maze_provider(&self) -> TvMazeMetadataProvider {
-        TvMazeMetadataProvider::new(
-            Arc::clone(&self.items),
-            Arc::clone(&self.values),
-            Arc::clone(&self.updates),
-        )
     }
 
     async fn save_local_metadata_enabled(
@@ -1089,6 +1091,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn cloned_services_share_the_tv_maze_client_pool() {
+        let service = MetadataRefreshService::new(sea_orm::DatabaseConnection::Disconnected, None);
+        let cloned = service.clone();
+
+        assert!(Arc::ptr_eq(&service.tv_maze, &cloned.tv_maze));
+    }
 
     #[test]
     fn metadata_services_cover_all_wired_item_kinds() {
