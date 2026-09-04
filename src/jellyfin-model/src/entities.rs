@@ -2,6 +2,7 @@ use std::{collections::HashMap, error::Error, fmt};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 mod media_attachment;
 mod media_stream;
@@ -201,6 +202,76 @@ impl fmt::Display for MetadataProvider {
     }
 }
 
+/// Checks whether a value has a plausible format for its provider.
+///
+/// Unknown provider names accept any non-blank value so plugin-owned IDs stay
+/// extensible. Known providers follow Jellyfin's provider-specific rules.
+#[must_use]
+pub fn is_valid_provider_id(name: Option<&str>, value: Option<&str>) -> bool {
+    let (Some(name), Some(value)) = (name, value) else {
+        return false;
+    };
+    if name.trim().is_empty() || value.trim().is_empty() {
+        return false;
+    }
+
+    let provider = MetadataProvider::ALL
+        .iter()
+        .copied()
+        .find(|provider| provider.as_str().eq_ignore_ascii_case(name));
+    match provider {
+        Some(MetadataProvider::Imdb) => is_imdb_id(value),
+        Some(
+            MetadataProvider::Tmdb
+            | MetadataProvider::TmdbCollection
+            | MetadataProvider::AudioDbArtist
+            | MetadataProvider::AudioDbAlbum,
+        ) => {
+            !value.is_empty()
+                && value.bytes().all(|byte| byte.is_ascii_digit())
+                && value.parse::<i32>().is_ok_and(|id| id > 0)
+        }
+        Some(
+            MetadataProvider::MusicBrainzAlbum
+            | MetadataProvider::MusicBrainzAlbumArtist
+            | MetadataProvider::MusicBrainzArtist
+            | MetadataProvider::MusicBrainzReleaseGroup
+            | MetadataProvider::MusicBrainzTrack
+            | MetadataProvider::MusicBrainzRecording,
+        ) => Uuid::parse_str(value).is_ok(),
+        _ => true,
+    }
+}
+
+/// Trims and canonicalizes a valid provider-id pair.
+#[must_use]
+pub fn normalize_provider_id(name: Option<&str>, value: Option<&str>) -> Option<(String, String)> {
+    let name = name?.trim();
+    let value = value?.trim();
+    if name.contains('=') || !is_valid_provider_id(Some(name), Some(value)) {
+        return None;
+    }
+    let name = MetadataProvider::ALL
+        .iter()
+        .find(|provider| provider.as_str().eq_ignore_ascii_case(name))
+        .map_or(name, |provider| provider.as_str());
+    Some((name.to_owned(), value.to_owned()))
+}
+
+fn is_imdb_id(value: &str) -> bool {
+    let digits = value.get(..2).map_or(value, |prefix| {
+        if ["tt", "nm", "co", "ev", "ch", "ni"]
+            .iter()
+            .any(|expected| prefix.eq_ignore_ascii_case(expected))
+        {
+            &value[2..]
+        } else {
+            value
+        }
+    });
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Implemented by model entities that own a nullable provider-id dictionary.
 pub trait HasProviderIds {
     fn provider_ids(&self) -> Option<&ProviderIdMap>;
@@ -242,13 +313,10 @@ pub trait ProviderIdsExtensions: HasProviderIds {
 
     /// Attempts to set a named provider id without returning validation errors.
     fn try_set_provider_id_named(&mut self, name: Option<&str>, value: Option<&str>) -> bool {
-        let (Some(name), Some(value)) = (name, value) else {
+        let Some((name, value)) = normalize_provider_id(name, value) else {
             return false;
         };
-        if name.trim().is_empty() || value.trim().is_empty() || name.contains('=') {
-            return false;
-        }
-        insert_provider_id(self.provider_ids_mut(), name, value);
+        insert_provider_id(self.provider_ids_mut(), &name, &value);
         true
     }
 
@@ -283,7 +351,10 @@ pub trait ProviderIdsExtensions: HasProviderIds {
         if name.contains('=') {
             return Err(ProviderIdError::InvalidName);
         }
-        insert_provider_id(self.provider_ids_mut(), name, value);
+        let Some((name, value)) = normalize_provider_id(Some(name), Some(value)) else {
+            return Err(ProviderIdError::InvalidValue);
+        };
+        insert_provider_id(self.provider_ids_mut(), &name, &value);
         Ok(())
     }
 
@@ -404,6 +475,7 @@ pub enum ProviderIdError {
     NullValue,
     EmptyValue,
     InvalidName,
+    InvalidValue,
 }
 
 impl fmt::Display for ProviderIdError {
@@ -415,6 +487,7 @@ impl fmt::Display for ProviderIdError {
             Self::NullValue => "provider id cannot be null",
             Self::EmptyValue => "provider id cannot be blank",
             Self::InvalidName => "provider name cannot contain '='",
+            Self::InvalidValue => "provider id has an invalid format for its provider",
         })
     }
 }

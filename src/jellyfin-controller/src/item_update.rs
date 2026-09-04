@@ -8,6 +8,7 @@ use jellyfin_data::{
     ItemUpdateStoreError, ServerConfigurationRepository, ServerConfigurationStoreError,
     VirtualFolderError, VirtualFolderRepository, entities::base_item,
 };
+use jellyfin_model::normalize_provider_id;
 use jellyfin_xbmc_metadata::{
     MovieNfo, MovieNfoLocation, MovieVideoType, movie_nfo_save_paths, parse_movie_nfo_file,
     save_movie_nfo,
@@ -258,11 +259,7 @@ fn normalize_input(input: ItemUpdateInput) -> ItemMetadataPatch {
         provider_ids: input.provider_ids.map(|values| {
             values
                 .into_iter()
-                .filter_map(|(key, value)| {
-                    value
-                        .filter(|value| !value.is_empty())
-                        .map(|value| (key, value))
-                })
+                .filter_map(|(key, value)| normalize_provider_id(Some(&key), value.as_deref()))
                 .collect()
         }),
     }
@@ -326,10 +323,16 @@ mod tests {
     }
 
     #[test]
-    fn provider_ids_drop_only_null_and_empty_values() {
+    fn provider_ids_drop_invalid_known_formats_and_normalize_valid_values() {
         let normalized = normalize_input(ItemUpdateInput {
             provider_ids: Some(BTreeMap::from([
-                ("Imdb".to_owned(), Some("tt1234567".to_owned())),
+                (" imdb ".to_owned(), Some(" tt1234567 ".to_owned())),
+                ("Tmdb".to_owned(), Some("nm0000123".to_owned())),
+                (
+                    "MusicBrainzArtist".to_owned(),
+                    Some("a3cb23fc-acd3-4ce0-8f36-1e5aa6a18432".to_owned()),
+                ),
+                ("Tvdb".to_owned(), Some("anything-goes".to_owned())),
                 ("Null".to_owned(), None),
                 ("Empty".to_owned(), Some(String::new())),
                 ("Whitespace".to_owned(), Some("  ".to_owned())),
@@ -340,7 +343,11 @@ mod tests {
             normalized.provider_ids,
             Some(BTreeMap::from([
                 ("Imdb".to_owned(), "tt1234567".to_owned()),
-                ("Whitespace".to_owned(), "  ".to_owned()),
+                (
+                    "MusicBrainzArtist".to_owned(),
+                    "a3cb23fc-acd3-4ce0-8f36-1e5aa6a18432".to_owned(),
+                ),
+                ("Tvdb".to_owned(), "anything-goes".to_owned()),
             ]))
         );
     }

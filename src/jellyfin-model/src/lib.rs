@@ -63,7 +63,7 @@ pub use entities::{
     AudioSpatialFormat, ChapterInfo, ExtraType, HasProviderIds, LocationType, MediaAttachment,
     MediaStream, MediaStreamType, MediaUrl, MetadataField, MetadataProvider, PersonKind,
     ProviderIdError, ProviderIdMap, ProviderIdsExtensions, SubtitleDeliveryMethod, VideoRange,
-    VideoRangeType,
+    VideoRangeType, is_valid_provider_id, normalize_provider_id,
 };
 pub use enums::{
     BaseItemKind, DynamicDayOfWeek, PlayAccess, SubtitlePlaybackMode, SyncPlayUserAccessType,

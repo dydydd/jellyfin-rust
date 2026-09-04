@@ -1,5 +1,6 @@
 use jellyfin_model::{
     HasProviderIds, MetadataProvider, ProviderIdError, ProviderIdMap, ProviderIdsExtensions,
+    is_valid_provider_id,
 };
 
 const EXAMPLE_IMDB_ID: &str = "tt0113375";
@@ -188,4 +189,71 @@ fn provider_names_are_canonicalized_without_path_parsing() {
         Some(&EXAMPLE_IMDB_ID.to_owned())
     );
     assert!(!provider.try_set_provider_id_named(Some("bad=name"), Some("1")));
+}
+
+#[test]
+fn known_provider_ids_follow_official_format_validation() {
+    for (name, value, expected) in [
+        (Some("Imdb"), Some("tt0113375"), true),
+        (Some("Imdb"), Some("nm0000123"), true),
+        (Some("Imdb"), Some("0113375"), true),
+        (
+            Some("Imdb"),
+            Some("https://www.imdb.com/title/tt0113375"),
+            false,
+        ),
+        (Some("Tmdb"), Some("11"), true),
+        (Some("Tmdb"), Some("nm0000123"), false),
+        (Some("Tmdb"), Some("0"), false),
+        (Some("Tmdb"), Some("-11"), false),
+        (Some("Tmdb"), Some("+11"), false),
+        (Some("TmdbCollection"), Some("nm0000123"), false),
+        (Some("AudioDbArtist"), Some("111239"), true),
+        (
+            Some("AudioDbArtist"),
+            Some("a3cb23fc-acd3-4ce0-8f36-1e5aa6a18432"),
+            false,
+        ),
+        (
+            Some("MusicBrainzArtist"),
+            Some("a3cb23fc-acd3-4ce0-8f36-1e5aa6a18432"),
+            true,
+        ),
+        (Some("MusicBrainzArtist"), Some("111239"), false),
+        (Some("MusicBrainzAlbum"), Some("not-an-mbid"), false),
+        (Some("Tvdb"), Some("anything-goes"), true),
+        (Some("SomePlugin"), Some("anything-goes"), true),
+        (Some("Tmdb"), None, false),
+        (None, Some("11"), false),
+    ] {
+        assert_eq!(
+            is_valid_provider_id(name, value),
+            expected,
+            "unexpected validation for {name:?}={value:?}"
+        );
+    }
+}
+
+#[test]
+fn invalid_known_id_is_rejected_without_replacing_existing_value() {
+    let mut provider = TestEntity::empty();
+    assert!(provider.try_set_provider_id_named(Some("Tmdb"), Some("11")));
+    assert!(!provider.try_set_provider_id_named(Some("Tmdb"), Some("nm0000123")));
+    assert_eq!(provider.get_provider_id(MetadataProvider::Tmdb), Some("11"));
+
+    assert_eq!(
+        provider.set_provider_id(MetadataProvider::Tmdb, "nm0000123"),
+        Err(ProviderIdError::InvalidValue)
+    );
+    assert_eq!(provider.get_provider_id(MetadataProvider::Tmdb), Some("11"));
+}
+
+#[test]
+fn provider_id_input_is_trimmed_before_validation_and_storage() {
+    let mut provider = TestEntity::empty();
+    assert!(provider.try_set_provider_id_named(Some(" Imdb "), Some(" tt0113375 ")));
+    assert_eq!(
+        provider.get_provider_id(MetadataProvider::Imdb),
+        Some("tt0113375")
+    );
 }
