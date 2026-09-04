@@ -61,7 +61,7 @@ pub(crate) async fn update(
     );
     state
         .library_scan
-        .set_fanout_concurrency(updated.library_scan_fanout_concurrency.max(1) as usize);
+        .set_fanout_concurrency(updated.library_scan_fanout_concurrency.max(0) as usize);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -73,6 +73,9 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to initialize the user library root")?;
 
     let initial_user = ensure_initial_user(&database).await?;
+    let library_scan_fanout_concurrency = persisted_configuration
+        .library_scan_fanout_concurrency
+        .max(0) as usize;
     let mut network_configuration = load_network_configuration(&database).await?;
     network_configuration.enable_remote_access = persisted_configuration.enable_remote_access;
     apply_network_environment(&mut network_configuration)?;
@@ -122,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(30),
     )
     .with_log_file_retention_days(persisted_configuration.log_file_retention_days)
+    .with_library_scan_fanout_concurrency(library_scan_fanout_concurrency)
     .with_ffmpeg_path(ffmpeg_path)
     .with_trickplay_options(trickplay_options)
     .with_encoder_capabilities(encoder_capabilities)

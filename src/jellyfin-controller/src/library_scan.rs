@@ -252,7 +252,11 @@ impl LibraryScanService {
     }
 
     pub fn set_fanout_concurrency(&self, concurrency: usize) {
-        self.media_item_limiter.set_limit(concurrency);
+        self.media_item_limiter.set_limit(if concurrency == 0 {
+            default_fanout_concurrency()
+        } else {
+            concurrency
+        });
     }
 
     pub fn set_ffmpeg_path(&self, ffmpeg_path: impl Into<PathBuf>) {
@@ -3560,10 +3564,11 @@ mod tests {
     use super::{
         LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
         SeenPaths, apply_non_movie_nfo, apply_probed_item_metadata, apply_strm_metadata,
-        attachment_image_type, attachments_from_media_info, codec_from_extension, default_stream,
-        display_name, extra_type_name, image_extraction_command_succeeded, is_extras_directory,
-        local_image_type, media_item_data, media_kind, merge_scan_summary, next_stream_index,
-        read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
+        attachment_image_type, attachments_from_media_info, codec_from_extension,
+        default_fanout_concurrency, default_stream, display_name, extra_type_name,
+        image_extraction_command_succeeded, is_extras_directory, local_image_type, media_item_data,
+        media_kind, merge_scan_summary, next_stream_index, read_strm_target,
+        relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
         streams_from_media_info,
@@ -3767,8 +3772,10 @@ mod tests {
         assert_eq!(measure_limiter_peak(Arc::clone(&service), 3).await, 3);
 
         service.set_fanout_concurrency(0);
-        assert_eq!(service.fanout_concurrency(), 1);
-        assert_eq!(measure_limiter_peak(service, 1).await, 1);
+        let automatic = default_fanout_concurrency();
+        assert_eq!(service.fanout_concurrency(), automatic);
+        let observable = automatic.min(8);
+        assert_eq!(measure_limiter_peak(service, observable).await, observable);
     }
 
     #[test]

@@ -430,6 +430,14 @@ impl AppState {
         self
     }
 
+    /// Applies the persisted library scan fan-out limit during construction.
+    /// A zero value retains Jellyfin's automatic CPU-based setting.
+    #[must_use]
+    pub fn with_library_scan_fanout_concurrency(self, concurrency: usize) -> Self {
+        self.library_scan.set_fanout_concurrency(concurrency);
+        self
+    }
+
     /// Uses `PostgreSQL` as the source of truth for server startup configuration.
     ///
     /// The repository singleton must be loaded successfully before attaching it.
