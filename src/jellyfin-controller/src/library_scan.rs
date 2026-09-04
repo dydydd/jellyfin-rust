@@ -79,6 +79,30 @@ struct MediaItemScanOutcome {
     changed: bool,
 }
 
+#[derive(Debug, Default)]
+struct ScanDirectorySnapshot {
+    entries: Vec<MediaFileSystemEntry>,
+    modified: HashMap<String, chrono::DateTime<chrono::Utc>>,
+}
+
+impl ScanDirectorySnapshot {
+    fn insert(&mut self, path: &Path, metadata: &std::fs::Metadata) {
+        let Some(path) = path.to_str() else {
+            return;
+        };
+        if metadata.is_dir() {
+            self.entries.push(MediaFileSystemEntry::directory(path));
+        } else if metadata.is_file() {
+            self.entries.push(MediaFileSystemEntry::file(path));
+            let modified = metadata
+                .modified()
+                .map(chrono::DateTime::<chrono::Utc>::from)
+                .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
+            self.modified.insert(path.to_owned(), modified);
+        }
+    }
+}
+
 impl MediaItemScanOutcome {
     const fn added(item_id: Uuid) -> Self {
         Self {
@@ -893,11 +917,13 @@ impl LibraryScanService {
             let mut children = Vec::new();
             let mut subdirectories = Vec::new();
             let mut files = Vec::new();
+            let mut directory_snapshot = ScanDirectorySnapshot::default();
             let parent_context = ResolutionParentContext::item(ResolutionParentKind::Folder);
 
             while let Some(entry) = entries.next_entry().await? {
                 let metadata = entry.metadata().await?;
                 let path = entry.path();
+                directory_snapshot.insert(&path, &metadata);
                 if metadata.is_dir() {
                     let candidate =
                         ResolutionFileSystemEntry::new(path.to_string_lossy().into_owned(), true);
@@ -996,7 +1022,14 @@ impl LibraryScanService {
                 .filter(|(path, _)| !extra_paths.contains(path.to_string_lossy().as_ref()))
                 .collect::<Vec<_>>();
             summary.items_added += self
-                .process_files(&regular_files, directory_id, kind, root, summary)
+                .process_files(
+                    &regular_files,
+                    directory_id,
+                    kind,
+                    root,
+                    &directory_snapshot,
+                    summary,
+                )
                 .await?;
             self.ensure_extras(&extra_entries, kind, summary, seen_paths, root)
                 .await?;
@@ -1080,11 +1113,13 @@ impl LibraryScanService {
         library_root: &Path,
     ) -> Result<(), LibraryScanError> {
         let mut files = Vec::new();
+        let mut directory_snapshot = ScanDirectorySnapshot::default();
         let ignore_rule = CoreResolutionIgnoreRule::new(NamingOptions::default(), "");
         let parent_context = ResolutionParentContext::item(ResolutionParentKind::Folder);
         while let Some(entry) = entries.next_entry().await? {
             let metadata = entry.metadata().await?;
             let path = entry.path();
+            directory_snapshot.insert(&path, &metadata);
             if metadata.is_dir() {
                 let candidate =
                     ResolutionFileSystemEntry::new(path.to_string_lossy().into_owned(), true);
@@ -1126,7 +1161,14 @@ impl LibraryScanService {
             .filter(|(path, _)| !extra_paths.contains(path.to_string_lossy().as_ref()))
             .collect::<Vec<_>>();
         summary.items_added += self
-            .process_files(&regular_files, parent_id, kind, library_root, summary)
+            .process_files(
+                &regular_files,
+                parent_id,
+                kind,
+                library_root,
+                &directory_snapshot,
+                summary,
+            )
             .await?;
         self.group_scanned_video_entries(&regular_files, kind, library_root)
             .await?;
@@ -1386,6 +1428,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         kind: ScanLibraryKind,
         library_root: &Path,
+        directory_snapshot: &ScanDirectorySnapshot,
         summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
@@ -1408,6 +1451,7 @@ impl LibraryScanService {
                     parent_id,
                     kind,
                     library_root,
+                    directory_snapshot,
                     existing_by_path,
                     summary,
                 )
@@ -1423,6 +1467,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         kind: ScanLibraryKind,
         library_root: &Path,
+        directory_snapshot: &ScanDirectorySnapshot,
         mut existing_by_path: HashMap<String, base_item::Model>,
         summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
@@ -1438,6 +1483,7 @@ impl LibraryScanService {
                         *media_kind,
                         kind,
                         library_root,
+                        directory_snapshot,
                         existing,
                     )
                     .await?;
@@ -1463,6 +1509,7 @@ impl LibraryScanService {
                 *media_kind,
                 kind,
                 library_root,
+                directory_snapshot,
                 existing,
             ));
         }
@@ -1479,6 +1526,7 @@ impl LibraryScanService {
                     *media_kind,
                     kind,
                     library_root,
+                    directory_snapshot,
                     existing,
                 ));
             }
@@ -1513,11 +1561,20 @@ impl LibraryScanService {
         media_kind: MediaKind,
         kind: ScanLibraryKind,
         library_root: &Path,
+        directory_snapshot: &ScanDirectorySnapshot,
         existing: Option<base_item::Model>,
     ) -> Result<MediaItemScanOutcome, LibraryScanError> {
         let _permit = self.media_item_limiter.acquire().await;
-        self.ensure_media_item(path, parent_id, media_kind, kind, library_root, existing)
-            .await
+        self.ensure_media_item(
+            path,
+            parent_id,
+            media_kind,
+            kind,
+            library_root,
+            directory_snapshot,
+            existing,
+        )
+        .await
     }
 
     async fn ensure_collection_folder(
@@ -1561,6 +1618,7 @@ impl LibraryScanService {
         media_kind: MediaKind,
         kind: ScanLibraryKind,
         library_root: &Path,
+        directory_snapshot: &ScanDirectorySnapshot,
         existing: Option<base_item::Model>,
     ) -> Result<MediaItemScanOutcome, LibraryScanError> {
         let Some(path_str) = path.to_str() else {
@@ -1603,6 +1661,7 @@ impl LibraryScanService {
                             path_str,
                             media_kind,
                             !is_strm,
+                            directory_snapshot,
                         )
                         .await?
                     && apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info)
@@ -1614,7 +1673,8 @@ impl LibraryScanService {
                 }
                 self.persist_scan_relations(existing.id, path_str, &existing.item_type, None)
                     .await?;
-                self.discover_local_images(existing.id, path_str).await?;
+                self.discover_local_images(existing.id, directory_snapshot)
+                    .await?;
                 if changed {
                     self.items.update(existing).await?;
                 }
@@ -1626,6 +1686,7 @@ impl LibraryScanService {
                     path,
                     parent_id,
                     library_root,
+                    directory_snapshot,
                     media_kind,
                     path_str,
                     strm_target.as_deref(),
@@ -1640,6 +1701,7 @@ impl LibraryScanService {
                     path,
                     parent_id,
                     library_root,
+                    directory_snapshot,
                     media_kind,
                     path_str,
                     strm_target.as_deref(),
@@ -1669,7 +1731,14 @@ impl LibraryScanService {
         let mut item = self.items.create(item).await?;
         if media_kind.needs_probe()
             && let Some(mut media_info) = self
-                .ensure_media_streams(item.id, media_source_path, path_str, media_kind, !is_strm)
+                .ensure_media_streams(
+                    item.id,
+                    media_source_path,
+                    path_str,
+                    media_kind,
+                    !is_strm,
+                    directory_snapshot,
+                )
                 .await?
             && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
         {
@@ -1680,7 +1749,8 @@ impl LibraryScanService {
         }
         self.persist_scan_relations(item.id, path_str, &item.item_type, None)
             .await?;
-        self.discover_local_images(item.id, path_str).await?;
+        self.discover_local_images(item.id, directory_snapshot)
+            .await?;
         Ok(MediaItemScanOutcome::added(item.id))
     }
 
@@ -1691,6 +1761,7 @@ impl LibraryScanService {
         path: &Path,
         parent_id: Uuid,
         library_root: &Path,
+        directory_snapshot: &ScanDirectorySnapshot,
         media_kind: MediaKind,
         path_str: &str,
         strm_target: Option<&str>,
@@ -1780,6 +1851,7 @@ impl LibraryScanService {
                     path_str,
                     media_kind,
                     !is_strm,
+                    directory_snapshot,
                 )
                 .await?
             {
@@ -1814,7 +1886,14 @@ impl LibraryScanService {
         self.persist_scan_relations(item.id, path_str, &item.item_type, season_number)
             .await?;
         if let Some(mut media_info) = self
-            .ensure_media_streams(item.id, media_source_path, path_str, media_kind, !is_strm)
+            .ensure_media_streams(
+                item.id,
+                media_source_path,
+                path_str,
+                media_kind,
+                !is_strm,
+                directory_snapshot,
+            )
             .await?
             && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
         {
@@ -1971,6 +2050,7 @@ impl LibraryScanService {
         sidecar_path: &str,
         media_kind: MediaKind,
         should_probe: bool,
+        directory_snapshot: &ScanDirectorySnapshot,
     ) -> Result<Option<MediaInfo>, LibraryScanError> {
         let existing = self
             .streams
@@ -2024,9 +2104,11 @@ impl LibraryScanService {
         if streams.is_empty() {
             streams.push(default_stream);
         }
-        let external_subtitles = self
-            .resolve_external_subtitle_streams(sidecar_path, next_stream_index(&streams))
-            .await?;
+        let external_subtitles = resolve_external_subtitle_streams_from_entries(
+            sidecar_path,
+            &directory_snapshot.entries,
+            next_stream_index(&streams),
+        );
         streams.extend(external_subtitles);
         self.streams.replace(item_id, &streams).await?;
         Ok(media_info)
@@ -2035,43 +2117,31 @@ impl LibraryScanService {
     async fn discover_local_images(
         &self,
         item_id: Uuid,
-        path: &str,
+        directory_snapshot: &ScanDirectorySnapshot,
     ) -> Result<(), LibraryScanError> {
-        let Some(parent) = Path::new(path).parent() else {
-            return Ok(());
-        };
-        let Ok(mut entries) = fs::read_dir(parent).await else {
-            return Ok(());
-        };
         let existing = self.images.list(item_id).await?;
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let Ok(file_type) = entry.file_type().await else {
-                continue;
-            };
-            if !file_type.is_file() {
+        for entry in &directory_snapshot.entries {
+            if entry.is_directory {
                 continue;
             }
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            let path = Path::new(&entry.path);
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let Some(image_type) = local_image_type(&name) else {
+            let Some(image_type) = local_image_type(name) else {
                 continue;
             };
-            let path = entry.path();
-            let path_string = path.to_string_lossy().into_owned();
+            let path_string = entry.path.clone();
             if existing.iter().any(|image| {
                 image.image_type == image_type && image.path.eq_ignore_ascii_case(&path_string)
             }) {
                 continue;
             }
-            let modified = match tokio::fs::metadata(&path)
-                .await
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-            {
-                Some(modified) => chrono::DateTime::<chrono::Utc>::from(modified),
-                None => chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-            };
+            let modified = directory_snapshot
+                .modified
+                .get(&entry.path)
+                .copied()
+                .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
             self.images
                 .set_or_append(
                     item_id,
