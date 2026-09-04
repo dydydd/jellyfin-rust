@@ -9,8 +9,8 @@ use std::{
 use chrono::Weekday;
 use futures_util::{StreamExt, stream};
 use jellyfin_data::{
-    BaseItemError, BaseItemQuery, BaseItemRepository, ItemUpdateRepository, ItemValueRepository,
-    PersonError, PersonRepository, entities::base_item,
+    BaseItemError, BaseItemRepository, ItemUpdateRepository, ItemValueRepository,
+    MetadataRefreshCandidate, PersonError, PersonRepository, entities::base_item,
 };
 use jellyfin_providers::manager::provider_manager::{
     ManagedMetadataProvider, MetadataProviderKind, MetadataService as ManagedMetadataService,
@@ -195,22 +195,22 @@ impl MetadataRefreshService {
         concurrency: usize,
         on_progress: &(dyn Fn(f64) + Send + Sync),
     ) -> Result<MissingMetadataRefreshSummary, MetadataRefreshError> {
-        let missing_series = self.missing_item_ids("Series", parent_id, true).await?;
-        let missing_movies = self.missing_item_ids("Movie", parent_id, true).await?;
-        let missing_episodes = self.missing_items("Episode", parent_id, true).await?;
-
-        let candidates = missing_metadata_candidates(
-            missing_series,
-            missing_movies,
-            missing_episodes.as_slice(),
-        );
+        let missing_items = self
+            .items
+            .missing_metadata_refresh_candidates(parent_id)
+            .await?;
+        let missing_episodes = missing_items
+            .iter()
+            .filter(|item| item.item_type == "Episode")
+            .count();
+        let candidates = missing_metadata_candidates(&missing_items);
         let candidate_count = candidates.len();
         tracing::info!(
             parent_id = ?parent_id,
             candidates = candidate_count,
             series_candidates = candidates.iter().filter(|(kind, _)| kind == "Series").count(),
             movie_candidates = candidates.iter().filter(|(kind, _)| kind == "Movie").count(),
-            missing_episodes = missing_episodes.len(),
+            missing_episodes,
             concurrency = concurrency.clamp(1, 16),
             "missing library metadata refresh started"
         );
@@ -251,7 +251,7 @@ impl MetadataRefreshService {
 
         let mut summary = MissingMetadataRefreshSummary {
             candidates: candidate_count,
-            missing_episodes: missing_episodes.len(),
+            missing_episodes,
             ..MissingMetadataRefreshSummary::default()
         };
         while let Some((item_type, item_id, result)) = outcomes.next().await {
@@ -274,64 +274,6 @@ impl MetadataRefreshService {
             "missing library metadata refresh completed"
         );
         Ok(summary)
-    }
-
-    async fn missing_item_ids(
-        &self,
-        item_type: &str,
-        parent_id: Option<Uuid>,
-        include_missing_tmdb_id: bool,
-    ) -> Result<HashSet<Uuid>, MetadataRefreshError> {
-        Ok(self
-            .missing_items(item_type, parent_id, include_missing_tmdb_id)
-            .await?
-            .into_iter()
-            .map(|item| item.id)
-            .collect())
-    }
-
-    async fn missing_items(
-        &self,
-        item_type: &str,
-        parent_id: Option<Uuid>,
-        include_missing_tmdb_id: bool,
-    ) -> Result<Vec<base_item::Model>, MetadataRefreshError> {
-        let base_query = BaseItemQuery {
-            parent_id,
-            recursive: parent_id.is_some(),
-            include_item_types: vec![item_type.to_owned()],
-            // This is a server maintenance query rather than a user-scoped
-            // library query. The default false value intentionally hides all
-            // items below collection folders when no user policy is present.
-            enable_all_folders: true,
-            enable_total_record_count: Some(false),
-            ..BaseItemQuery::default()
-        };
-        let mut by_id = self
-            .items
-            .query(&BaseItemQuery {
-                has_overview: Some(false),
-                ..base_query.clone()
-            })
-            .await?
-            .items
-            .into_iter()
-            .map(|item| (item.id, item))
-            .collect::<std::collections::HashMap<_, _>>();
-        if include_missing_tmdb_id {
-            for item in self
-                .items
-                .query(&BaseItemQuery {
-                    has_tmdb_id: Some(false),
-                    ..base_query
-                })
-                .await?
-                .items
-            {
-                by_id.insert(item.id, item);
-            }
-        }
-        Ok(by_id.into_values().collect())
     }
 
     /// Refreshes metadata for one item through the registered metadata service.
@@ -1088,15 +1030,23 @@ fn provider_ids(data: Option<Value>) -> std::collections::HashMap<String, String
     .unwrap_or_default()
 }
 
-fn missing_metadata_candidates(
-    mut missing_series: HashSet<Uuid>,
-    missing_movies: HashSet<Uuid>,
-    missing_episodes: &[base_item::Model],
-) -> Vec<(String, Uuid)> {
-    missing_series.extend(missing_episodes.iter().filter_map(|item| item.series_id));
-    let mut series_ids = missing_series.into_iter().collect::<Vec<_>>();
+fn missing_metadata_candidates(items: &[MetadataRefreshCandidate]) -> Vec<(String, Uuid)> {
+    let mut series_ids = items
+        .iter()
+        .filter_map(|item| match item.item_type.as_str() {
+            "Series" => Some(item.id),
+            "Episode" => item.series_id,
+            _ => None,
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     series_ids.sort_unstable();
-    let mut movie_ids = missing_movies.into_iter().collect::<Vec<_>>();
+    let mut movie_ids = items
+        .iter()
+        .filter(|item| item.item_type == "Movie")
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
     movie_ids.sort_unstable();
 
     let mut candidates = series_ids
@@ -1354,18 +1304,28 @@ mod tests {
     fn missing_episode_refreshes_its_series_once_before_movies() {
         let series_id = Uuid::from_u128(1);
         let movie_id = Uuid::from_u128(2);
-        let mut episode_one = test_item();
-        episode_one.item_type = "Episode".to_owned();
-        episode_one.id = Uuid::from_u128(3);
-        episode_one.series_id = Some(series_id);
-        let mut episode_two = episode_one.clone();
-        episode_two.id = Uuid::from_u128(4);
-
-        let candidates = missing_metadata_candidates(
-            HashSet::from([series_id]),
-            HashSet::from([movie_id]),
-            &[episode_one, episode_two],
-        );
+        let candidates = missing_metadata_candidates(&[
+            MetadataRefreshCandidate {
+                id: series_id,
+                item_type: "Series".to_owned(),
+                series_id: None,
+            },
+            MetadataRefreshCandidate {
+                id: movie_id,
+                item_type: "Movie".to_owned(),
+                series_id: None,
+            },
+            MetadataRefreshCandidate {
+                id: Uuid::from_u128(3),
+                item_type: "Episode".to_owned(),
+                series_id: Some(series_id),
+            },
+            MetadataRefreshCandidate {
+                id: Uuid::from_u128(4),
+                item_type: "Episode".to_owned(),
+                series_id: Some(series_id),
+            },
+        ]);
 
         assert_eq!(
             candidates,

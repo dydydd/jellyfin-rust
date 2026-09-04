@@ -95,6 +95,14 @@ pub struct DescendantScanCandidate {
     pub season_id: Option<Uuid>,
 }
 
+/// Minimal fields needed to schedule missing-metadata refreshes.
+#[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
+pub struct MetadataRefreshCandidate {
+    pub id: Uuid,
+    pub item_type: String,
+    pub series_id: Option<Uuid>,
+}
+
 /// Stable database ordering for base-item queries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BaseItemOrder {
@@ -2033,6 +2041,71 @@ impl BaseItemRepository {
                 ORDER BY closure.depth, closure.item_id
                 ",
                 [id.into()],
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
+    }
+
+    /// Loads movie, series, and episode rows that have no overview or TMDb id.
+    ///
+    /// The maintenance query deliberately bypasses user policy filtering and
+    /// returns only the identifiers needed by metadata-refresh scheduling.
+    /// When `parent_id` is present, all descendants are considered, matching a
+    /// recursive [`BaseItemQuery`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn missing_metadata_refresh_candidates(
+        &self,
+        parent_id: Option<Uuid>,
+    ) -> Result<Vec<MetadataRefreshCandidate>, BaseItemError> {
+        let mut values = Vec::new();
+        let mut sql = String::from(
+            r"
+            SELECT item.id, item.item_type, item.series_id
+            FROM jellyfin.base_items AS item
+            WHERE item.item_type IN ('Series', 'Movie', 'Episode')
+              AND item.primary_version_id IS NULL
+              AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL)
+              AND (
+                    item.overview IS NULL
+                    OR btrim(item.overview) = ''
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM jsonb_each_text(
+                            CASE
+                                WHEN jsonb_typeof(item.data -> 'ProviderIds') = 'object'
+                                THEN item.data -> 'ProviderIds'
+                                ELSE '{}'::jsonb
+                            END
+                        ) AS provider(provider_id, provider_value)
+                        WHERE lower(provider_id) = 'tmdb'
+                    )
+              )
+            ",
+        );
+        if let Some(parent_id) = parent_id {
+            push_bind(
+                &mut sql,
+                &mut values,
+                parent_id,
+                " AND EXISTS (\
+                    SELECT 1 FROM jellyfin.ancestor_ids AS closure \
+                    WHERE closure.item_id = item.id AND closure.parent_item_id = ",
+            );
+            sql.push(')');
+        }
+        sql.push_str(
+            " ORDER BY CASE item.item_type \
+                WHEN 'Series' THEN 0 WHEN 'Episode' THEN 1 ELSE 2 END, item.id",
+        );
+        Ok(
+            MetadataRefreshCandidate::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
             ))
             .all(self.database.as_ref())
             .await?,
