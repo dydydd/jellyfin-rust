@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    process::Stdio,
     str::FromStr,
     sync::{Arc, Mutex, RwLock},
     thread::available_parallelism,
@@ -2077,7 +2078,8 @@ impl LibraryScanService {
         output: &Path,
     ) -> bool {
         let ffmpeg_path = self.ffmpeg_path();
-        let status = tokio::process::Command::new(ffmpeg_path.as_path())
+        let mut command = tokio::process::Command::new(ffmpeg_path.as_path());
+        command
             .args([
                 "-y",
                 "-i",
@@ -2087,22 +2089,19 @@ impl LibraryScanService {
                 "-frames:v",
                 "1",
             ])
-            .arg(output)
-            .output()
-            .await;
-        matches!(status, Ok(output) if output.status.success())
+            .arg(output);
+        image_extraction_command_succeeded(command).await
     }
 
     #[allow(clippy::cast_precision_loss)]
     async fn extract_video_frame(&self, input: &str, offset_ticks: i64, output: &Path) -> bool {
         let seconds = format!("{:.6}", offset_ticks as f64 / 10_000_000.0);
         let ffmpeg_path = self.ffmpeg_path();
-        let status = tokio::process::Command::new(ffmpeg_path.as_path())
+        let mut command = tokio::process::Command::new(ffmpeg_path.as_path());
+        command
             .args(["-y", "-ss", &seconds, "-i", input, "-frames:v", "1"])
-            .arg(output)
-            .output()
-            .await;
-        matches!(status, Ok(output) if output.status.success())
+            .arg(output);
+        image_extraction_command_succeeded(command).await
     }
 
     async fn persist_generated_image(
@@ -2214,6 +2213,17 @@ fn merge_scan_summary(summary: &mut LibraryScanSummary, mut other: LibraryScanSu
     summary.added_ids.append(&mut other.added_ids);
     summary.changed_ids.append(&mut other.changed_ids);
     summary.removed_ids.append(&mut other.removed_ids);
+}
+
+async fn image_extraction_command_succeeded(mut command: tokio::process::Command) -> bool {
+    // Image extraction only consumes the output file and exit status. FFmpeg can emit large
+    // diagnostics, so do not retain one buffer per concurrent scan item.
+    let status = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    matches!(status, Ok(status) if status.success())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3462,9 +3472,9 @@ mod tests {
         LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
         SeenPaths, apply_non_movie_nfo, apply_probed_item_metadata, apply_strm_metadata,
         attachment_image_type, attachments_from_media_info, codec_from_extension, default_stream,
-        display_name, extra_type_name, is_extras_directory, local_image_type, media_item_data,
-        media_kind, merge_scan_summary, next_stream_index, read_strm_target,
-        relations_from_movie_nfo, relations_from_nfo_metadata,
+        display_name, extra_type_name, image_extraction_command_succeeded, is_extras_directory,
+        local_image_type, media_item_data, media_kind, merge_scan_summary, next_stream_index,
+        read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, scan_nfo_person, set_additional_parts,
         stable_item_id, streams_from_media_info,
     };
@@ -3509,6 +3519,26 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn image_extraction_process_discards_output_and_preserves_exit_status() {
+        let mut success = tokio::process::Command::new("/bin/sh");
+        success.args([
+            "-c",
+            "test \"$(readlink /proc/$$/fd/1)\" = /dev/null && \
+             test \"$(readlink /proc/$$/fd/2)\" = /dev/null && \
+             head -c 1048576 /dev/zero && head -c 1048576 /dev/zero >&2",
+        ]);
+        assert!(image_extraction_command_succeeded(success).await);
+
+        let mut failure = tokio::process::Command::new("/bin/sh");
+        failure.args(["-c", "exit 7"]);
+        assert!(!image_extraction_command_succeeded(failure).await);
+
+        let missing = tokio::process::Command::new("/definitely-missing-ffmpeg");
+        assert!(!image_extraction_command_succeeded(missing).await);
+    }
 
     async fn measure_limiter_peak(
         service: Arc<LibraryScanService>,
