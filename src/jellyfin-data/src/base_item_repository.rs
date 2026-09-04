@@ -354,6 +354,12 @@ pub struct BaseItemCounts {
     pub item_count: i64,
 }
 
+#[derive(Debug, Clone, Copy, FromQueryResult)]
+struct ParentChildCount {
+    parent_id: Uuid,
+    child_count: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionYearPage {
     pub years: Vec<i32>,
@@ -1243,6 +1249,47 @@ impl BaseItemRepository {
             items,
             start_index: query.start_index,
         })
+    }
+
+    /// Counts direct children for multiple parents in one filtered query.
+    ///
+    /// The supplied item and user-policy filters are applied before grouping,
+    /// so callers can expose visible child counts without issuing one query per
+    /// folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the aggregate query fails.
+    pub async fn child_counts_by_parent(
+        &self,
+        query: &BaseItemQuery,
+    ) -> Result<HashMap<Uuid, u64>, BaseItemError> {
+        if query.parent_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut direct_query = query.clone();
+        direct_query.parent_id = None;
+        direct_query.recursive = false;
+        let (cte, values) = filtered_query_cte(&direct_query);
+        let rows = ParentChildCount::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!(
+                "{cte} SELECT parent_id, COUNT(*)::bigint AS child_count \
+                 FROM filtered WHERE parent_id IS NOT NULL GROUP BY parent_id"
+            ),
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.parent_id,
+                    u64::try_from(row.child_count).unwrap_or_default(),
+                )
+            })
+            .collect())
     }
 
     /// Counts non-virtual library items by Jellyfin's public item-count buckets.

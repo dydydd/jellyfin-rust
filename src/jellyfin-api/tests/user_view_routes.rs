@@ -5,8 +5,9 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{UserService, VirtualFolderService};
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
-    USER_ROOT_FOLDER_ID, UserDataRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData, USER_ROOT_FOLDER_ID,
+    UserDataRepository,
     entities::{user, user::Column as UserColumn},
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -17,6 +18,7 @@ use uuid::Uuid;
 const AUTHORIZATION: &str = "MediaBrowser Client=\"User View Tests\", DeviceId=\"user-view-tests\", Device=\"Test\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_user_view_routes_";
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
+const USER_VIEW_DISPLAY_PREFERENCES_ID: &str = "cb46bc72e78d95cc6cd072de3a65b93a";
 
 #[tokio::test]
 async fn user_views_and_grouping_options_follow_official_contract() {
@@ -198,9 +200,31 @@ impl Fixture {
             collection.name = Some(name);
             collection.sort_name = collection.name.clone();
             collection.is_folder = true;
-            collection.data = Some(json!({ "CollectionType": collection_type }));
+            collection.data = Some(if id == movie_view_id {
+                json!({
+                    "CollectionType": collection_type,
+                    "DefaultPrimaryImageAspectRatio": 1.5
+                })
+            } else {
+                json!({ "CollectionType": collection_type })
+            });
             items.create(collection).await.expect("collection item");
         }
+        BaseItemImageRepository::new(database.clone())
+            .set_or_append(
+                movie_view_id,
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: format!("/metadata/{movie_view_id}/folder.jpg"),
+                    date_modified: chrono::Utc::now(),
+                    width: Some(600),
+                    height: Some(400),
+                    blurhash: None,
+                },
+            )
+            .await
+            .expect("movie collection image");
         let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
         movie.parent_id = Some(movie_view_id);
         movie.name = Some(format!("Movie {suffix}"));
@@ -294,6 +318,17 @@ async fn assert_user_views(fixture: &Fixture) {
         |item| item["Id"] == fixture.movie_view_id.simple().to_string()
             && item["CollectionType"] == "movies"
     ));
+    let movie_collection = items
+        .iter()
+        .find(|item| item["Id"] == fixture.movie_view_id.simple().to_string())
+        .expect("movie collection DTO");
+    assert_eq!(movie_collection["ChildCount"], 1);
+    assert_eq!(
+        movie_collection["DisplayPreferencesId"],
+        fixture.movie_view_id.simple().to_string()
+    );
+    assert_eq!(movie_collection["PrimaryImageAspectRatio"], 1.5);
+    assert!(movie_collection["ImageTags"]["Primary"].is_string());
 
     let movie_views = get_json(
         &fixture.app,
@@ -310,6 +345,11 @@ async fn assert_user_views(fixture: &Fixture) {
         .expect("movie preset view");
     assert_eq!(movie_view["Type"], "UserView");
     assert_ne!(movie_view["Id"], fixture.movie_view_id.simple().to_string());
+    assert_eq!(movie_view["ChildCount"], 1);
+    assert_eq!(
+        movie_view["DisplayPreferencesId"],
+        USER_VIEW_DISPLAY_PREFERENCES_ID
+    );
     let persisted = get_json(
         &fixture.app,
         &format!("/Items/{}", movie_view["Id"].as_str().unwrap()),
@@ -373,6 +413,11 @@ async fn assert_grouped_views(fixture: &Fixture) {
     assert_eq!(movies["Type"], "UserView");
     assert_eq!(movies["Name"], "Movies");
     assert_eq!(movies["IsFolder"], true);
+    assert_eq!(movies["ChildCount"], 2);
+    assert_eq!(
+        movies["DisplayPreferencesId"],
+        USER_VIEW_DISPLAY_PREFERENCES_ID
+    );
     let tvshows = items
         .iter()
         .find(|item| item["CollectionType"] == "tvshows")

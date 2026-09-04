@@ -127,6 +127,10 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_preferences_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub index_number: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_index_number: Option<i32>,
@@ -745,6 +749,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         is_folder: item.is_folder,
         is_virtual_item: item.is_virtual_item,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),
+        child_count: None,
+        display_preferences_id: None,
         index_number: item.index_number,
         parent_index_number: item.parent_index_number,
         production_year: item.production_year,

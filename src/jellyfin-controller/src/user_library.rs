@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ScoredBaseItem,
@@ -159,6 +161,25 @@ impl UserLibraryService {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
         Ok(self.hydrate_page(self.items.query(&query).await?))
+    }
+
+    /// Counts visible direct children for several library parents in one
+    /// PostgreSQL query.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, stored-policy, or persistence errors.
+    pub async fn child_counts_by_parent(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        mut query: BaseItemQuery,
+    ) -> Result<HashMap<Uuid, u64>, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        self.apply_user_policy(&mut query, target_user_id).await?;
+        query.user_id = Some(target_user_id);
+        Ok(self.items.child_counts_by_parent(&query).await?)
     }
 
     /// Searches a target user's library with official score ordering.

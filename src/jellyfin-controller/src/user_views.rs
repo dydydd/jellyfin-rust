@@ -28,6 +28,8 @@ pub struct UserViewItem {
     pub name: String,
     pub collection_type: Option<String>,
     pub display_parent_id: Option<Uuid>,
+    /// Physical collection folders whose direct children back this view.
+    pub content_parent_ids: Vec<Uuid>,
     pub parent_id: Option<Uuid>,
     pub item_type: String,
     pub is_virtual_item: bool,
@@ -156,7 +158,7 @@ impl UserViewManagerService {
         let policy = parse_policy(user.policy)?;
 
         for (name, collection_type) in [("Movies", "movies"), ("TvShows", "tvshows")] {
-            if grouped_user_view(user_id, name, collection_type).id != view_id {
+            if grouped_user_view(user_id, name, collection_type, Vec::new()).id != view_id {
                 continue;
             }
             if config.my_media_excludes.contains(&view_id) {
@@ -308,6 +310,7 @@ fn collection_folder_view_owned(folder: VirtualFolder) -> UserViewItem {
         name: folder.name,
         collection_type: folder.collection_type,
         display_parent_id: None,
+        content_parent_ids: vec![folder.id],
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "CollectionFolder".to_owned(),
         is_virtual_item: false,
@@ -328,6 +331,7 @@ fn shadow_user_view(folder: VirtualFolder) -> UserViewItem {
         name,
         collection_type,
         display_parent_id: Some(folder.id),
+        content_parent_ids: vec![folder.id],
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
@@ -349,19 +353,26 @@ fn named_user_view(user_id: Uuid, folder: VirtualFolder) -> UserViewItem {
         name,
         collection_type,
         display_parent_id: Some(folder.id),
+        content_parent_ids: vec![folder.id],
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
     }
 }
 
-fn grouped_user_view(user_id: Uuid, name: &str, collection_type: &str) -> UserViewItem {
+fn grouped_user_view(
+    user_id: Uuid,
+    name: &str,
+    collection_type: &str,
+    content_parent_ids: Vec<Uuid>,
+) -> UserViewItem {
     let id = user_view_id(&format!("38_namedview_{name}{user_id}{collection_type}"));
     UserViewItem {
         id,
         name: name.to_owned(),
         collection_type: Some(collection_type.to_owned()),
         display_parent_id: None,
+        content_parent_ids,
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
@@ -393,7 +404,13 @@ fn add_grouped_view(
         return;
     }
     let collection_type = view_type.to_ascii_lowercase();
-    list.push(grouped_user_view(user_id, view_type, &collection_type));
+    let content_parent_ids = folders.iter().map(|folder| folder.id).collect();
+    list.push(grouped_user_view(
+        user_id,
+        view_type,
+        &collection_type,
+        content_parent_ids,
+    ));
 }
 
 fn user_view_id(key: &str) -> Uuid {

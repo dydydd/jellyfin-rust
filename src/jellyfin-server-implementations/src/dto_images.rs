@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
@@ -153,6 +156,83 @@ impl<C> PersistedDtoImageProjectionService<C> {
 }
 
 impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
+    /// Projects image DTO fields for several items with set-based item and
+    /// image loads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database, corrupt-image-row, or persisted-metadata error.
+    pub async fn project_many(
+        &self,
+        item_ids: &[Uuid],
+        options: DtoImageOptions,
+    ) -> Result<HashMap<Uuid, DtoImageProjection>, PersistedDtoImageProjectionError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let requested_ids = item_ids.iter().copied().collect::<HashSet<_>>();
+        let mut models = self
+            .items
+            .get_many(item_ids)
+            .await?
+            .into_iter()
+            .map(|item| (item.id, item))
+            .collect::<HashMap<_, _>>();
+        let mut metadata_by_id = HashMap::with_capacity(models.len());
+        let mut related_ids = Vec::new();
+        for model in models.values_mut() {
+            let metadata = persisted_metadata(model)?;
+            related_ids.extend(related_item_ids(persisted_item_kind(model, &metadata)));
+            metadata_by_id.insert(model.id, metadata);
+        }
+        related_ids.retain(|id| !models.contains_key(id));
+        related_ids.sort_unstable();
+        related_ids.dedup();
+        for mut model in self.items.get_many(&related_ids).await? {
+            let metadata = persisted_metadata(&mut model)?;
+            metadata_by_id.insert(model.id, metadata);
+            models.insert(model.id, model);
+        }
+
+        let model_ids = models.keys().copied().collect::<Vec<_>>();
+        let mut images_by_item = HashMap::<Uuid, Vec<DtoImage>>::new();
+        for image in self.images.list_many(&model_ids).await? {
+            images_by_item
+                .entry(image.item_id)
+                .or_default()
+                .push(persisted_image(image));
+        }
+        let mut projected_items = HashMap::with_capacity(models.len());
+        for (id, model) in models {
+            let metadata = metadata_by_id.remove(&id).unwrap_or_default();
+            projected_items.insert(
+                id,
+                DtoImageItem {
+                    id,
+                    kind: persisted_item_kind(&model, &metadata),
+                    images: images_by_item.remove(&id).unwrap_or_default(),
+                    path: model.path,
+                    default_primary_image_aspect_ratio: metadata.default_primary_image_aspect_ratio,
+                },
+            );
+        }
+        let requested_items = projected_items
+            .values()
+            .filter(|item| requested_ids.contains(&item.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let service = DtoImageProjectionService::new(
+            PreloadedDtoImageLibrary {
+                items: projected_items,
+            },
+            BorrowedCacheTags(&self.cache_tags),
+        );
+        Ok(requested_items
+            .iter()
+            .map(|item| (item.id, service.project(item, options)))
+            .collect())
+    }
+
     /// Loads stable primary-image cache tags for several concrete item IDs.
     ///
     /// # Errors
@@ -210,63 +290,10 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
         item_id: Uuid,
         options: DtoImageOptions,
     ) -> Result<Option<DtoImageProjection>, PersistedDtoImageProjectionError> {
-        let Some(mut requested) = self.items.get(item_id).await? else {
-            return Ok(None);
-        };
-        let requested_metadata = persisted_metadata(&mut requested)?;
-        let requested_kind = persisted_item_kind(&requested, &requested_metadata);
-
-        let mut models = HashMap::from([(requested.id, requested)]);
-        for related_id in related_item_ids(requested_kind) {
-            if !models.contains_key(&related_id)
-                && let Some(related) = self.items.get(related_id).await?
-            {
-                models.insert(related.id, related);
-            }
-        }
-
-        let model_ids = models.keys().copied().collect::<Vec<_>>();
-        let mut images_by_item = HashMap::<Uuid, Vec<DtoImage>>::new();
-        for image in self.images.list_many(&model_ids).await? {
-            images_by_item
-                .entry(image.item_id)
-                .or_default()
-                .push(persisted_image(image));
-        }
-
-        let Some(requested) = models.remove(&item_id) else {
-            return Ok(None);
-        };
-        let requested = DtoImageItem {
-            id: item_id,
-            kind: persisted_item_kind(&requested, &requested_metadata),
-            images: images_by_item.remove(&item_id).unwrap_or_default(),
-            path: requested.path,
-            default_primary_image_aspect_ratio: requested_metadata
-                .default_primary_image_aspect_ratio,
-        };
-
-        let mut projected_items = HashMap::with_capacity(models.len());
-        for (id, mut model) in models {
-            let metadata = persisted_metadata(&mut model)?;
-            projected_items.insert(
-                id,
-                DtoImageItem {
-                    id,
-                    kind: persisted_item_kind(&model, &metadata),
-                    images: images_by_item.remove(&id).unwrap_or_default(),
-                    path: model.path,
-                    default_primary_image_aspect_ratio: metadata.default_primary_image_aspect_ratio,
-                },
-            );
-        }
-        let service = DtoImageProjectionService::new(
-            PreloadedDtoImageLibrary {
-                items: projected_items,
-            },
-            BorrowedCacheTags(&self.cache_tags),
-        );
-        Ok(Some(service.project(&requested, options)))
+        Ok(self
+            .project_many(&[item_id], options)
+            .await?
+            .remove(&item_id))
     }
 }
 

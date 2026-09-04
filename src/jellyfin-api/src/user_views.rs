@@ -7,14 +7,18 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_controller::{UserViewGroupingOption, UserViewItem, VirtualFolder};
+use jellyfin_data::BaseItemQuery;
+use jellyfin_server_implementations::DtoImageOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
     ApiError, AppState, authentication,
-    user_library::{BaseItemDto, BaseItemQueryResult},
+    user_library::{BaseItemDto, BaseItemQueryResult, attach_dto_image_projection},
 };
+
+const USER_VIEW_DISPLAY_PREFERENCES_ID: &str = "cb46bc72e78d95cc6cd072de3a65b93a";
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UserViewsQuery {
@@ -90,13 +94,61 @@ async fn user_views_for(
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
     let target_user_id = target_user_id(&state, &headers, uri, requested_user_id).await?;
     let _ = query.include_external_content;
-    let items = state
+    let views = state
         .user_views
         .list(target_user_id, &query.preset_views, query.include_hidden)
-        .await?
-        .into_iter()
-        .map(|item| user_view_to_dto(item, state.server_id()))
+        .await?;
+    let target_user = state.users.get(target_user_id).await?;
+    let mut parent_ids = views
+        .iter()
+        .flat_map(|view| view.content_parent_ids.iter().copied())
         .collect::<Vec<_>>();
+    parent_ids.sort_unstable();
+    parent_ids.dedup();
+    let child_counts = state
+        .user_library
+        .child_counts_by_parent(
+            &target_user,
+            target_user_id,
+            BaseItemQuery {
+                parent_ids,
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?;
+    let view_ids = views.iter().map(|view| view.id).collect::<Vec<_>>();
+    let mut image_projections = state
+        .dto_images
+        .project_many(
+            &view_ids,
+            DtoImageOptions {
+                include_primary_image_aspect_ratio: true,
+                ..DtoImageOptions::default()
+            },
+        )
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    let mut items = Vec::with_capacity(views.len());
+    for view in views {
+        let view_id = view.id;
+        let item_type = view.item_type.clone();
+        let child_count = view
+            .content_parent_ids
+            .iter()
+            .map(|parent_id| child_counts.get(parent_id).copied().unwrap_or_default())
+            .sum();
+        let mut dto = user_view_to_dto(view, state.server_id());
+        dto.child_count = Some(child_count);
+        dto.display_preferences_id = Some(if item_type.eq_ignore_ascii_case("UserView") {
+            USER_VIEW_DISPLAY_PREFERENCES_ID.to_owned()
+        } else {
+            view_id.simple().to_string()
+        });
+        if let Some(projection) = image_projections.remove(&view_id) {
+            attach_dto_image_projection(&mut dto, projection);
+        }
+        items.push(dto);
+    }
     Ok(Json(BaseItemQueryResult {
         total_record_count: items.len(),
         start_index: 0,
@@ -187,6 +239,7 @@ pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemD
         name,
         collection_type,
         display_parent_id: _,
+        content_parent_ids: _,
         parent_id,
         item_type,
         is_virtual_item,
