@@ -156,6 +156,17 @@ async fn assert_video_stream(fixture: &Fixture) {
         to_bytes(response.into_body(), usize::MAX).await.unwrap(),
         media_bytes
     );
+
+    let lowercase_client_route = format!(
+        "/videos/{}/stream.mkv?Static=true&MediaSourceId&api_key={}",
+        fixture.strm_id, fixture.user_token
+    );
+    let response = fixture.request("GET", &lowercase_client_route, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
 }
 
 async fn assert_audio_stream(fixture: &Fixture) {
