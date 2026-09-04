@@ -89,6 +89,7 @@ pub use media_streams::{
 pub use metadata_editor::{MetadataEditorError, MetadataEditorService};
 pub use metadata_refresh::{
     MetadataRefreshError, MetadataRefreshMode, MetadataRefreshOptions, MetadataRefreshService,
+    MissingMetadataRefreshSummary,
 };
 pub use music_brainz::{MusicBrainzMetadataProvider, MusicBrainzProviderError};
 pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};

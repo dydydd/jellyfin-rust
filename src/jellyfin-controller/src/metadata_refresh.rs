@@ -1,9 +1,14 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::HashSet,
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
 use chrono::Weekday;
+use futures_util::{StreamExt, stream};
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, ItemUpdateRepository, ItemValueRepository, PersonError,
-    PersonRepository, entities::base_item,
+    BaseItemError, BaseItemQuery, BaseItemRepository, ItemUpdateRepository, ItemValueRepository,
+    PersonError, PersonRepository, entities::base_item,
 };
 use jellyfin_providers::manager::provider_manager::{
     ManagedMetadataProvider, MetadataProviderKind, MetadataService as ManagedMetadataService,
@@ -73,6 +78,16 @@ pub struct MetadataRefreshOptions {
     pub replace_all_images: bool,
 }
 
+/// Aggregate result from refreshing only library items with missing metadata.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MissingMetadataRefreshSummary {
+    pub candidates: usize,
+    pub refreshed: usize,
+    pub unchanged: usize,
+    pub failed: usize,
+    pub missing_episodes: usize,
+}
+
 /// Real metadata-refresh pipeline backed by `ProviderManager` ordering and the
 /// TMDB/OMDb/AudioDB providers, followed by local NFO writeback.
 #[derive(Clone)]
@@ -81,7 +96,7 @@ pub struct MetadataRefreshService {
     values: Arc<ItemValueRepository>,
     people: Arc<PersonRepository>,
     updates: Arc<ItemUpdateRepository>,
-    images: Option<Arc<ItemImageService>>,
+    images: Arc<RwLock<Option<Arc<ItemImageService>>>>,
     virtual_folders: VirtualFolderService,
 }
 
@@ -97,14 +112,178 @@ impl MetadataRefreshService {
             values: Arc::new(ItemValueRepository::new(Arc::clone(&database))),
             people: Arc::new(PersonRepository::new(Arc::clone(&database))),
             updates: Arc::new(ItemUpdateRepository::new(Arc::clone(&database))),
-            images,
+            images: Arc::new(RwLock::new(images)),
             virtual_folders: VirtualFolderService::new(database),
         }
     }
 
     /// Replaces the image service used by image refreshes.
-    pub fn set_images(&mut self, images: Option<Arc<ItemImageService>>) {
-        self.images = images;
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared image-service lock is poisoned.
+    pub fn set_images(&self, images: Option<Arc<ItemImageService>>) {
+        *self
+            .images
+            .write()
+            .expect("metadata refresh image service lock poisoned") = images;
+    }
+
+    /// Refreshes series that contain incomplete episodes and movie/series
+    /// records that are missing an overview or TMDB identifier.
+    ///
+    /// Series are used as the unit of work because one TMDB season response
+    /// supplies metadata for every persisted episode in that season. This
+    /// avoids issuing thousands of individual episode requests.
+    ///
+    /// Provider failures are isolated to the affected item and represented in
+    /// the returned summary. Candidate discovery failures are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when candidate items cannot be queried.
+    pub async fn refresh_missing_library_metadata(
+        &self,
+        parent_id: Option<Uuid>,
+        tmdb_api_key: &str,
+        omdb_api_key: &str,
+        concurrency: usize,
+        on_progress: &(dyn Fn(f64) + Send + Sync),
+    ) -> Result<MissingMetadataRefreshSummary, MetadataRefreshError> {
+        let missing_series = self.missing_item_ids("Series", parent_id, true).await?;
+        let missing_movies = self.missing_item_ids("Movie", parent_id, true).await?;
+        let missing_episodes = self.missing_items("Episode", parent_id, true).await?;
+
+        let candidates = missing_metadata_candidates(
+            missing_series,
+            missing_movies,
+            missing_episodes.as_slice(),
+        );
+        let candidate_count = candidates.len();
+        tracing::info!(
+            parent_id = ?parent_id,
+            candidates = candidate_count,
+            series_candidates = candidates.iter().filter(|(kind, _)| kind == "Series").count(),
+            movie_candidates = candidates.iter().filter(|(kind, _)| kind == "Movie").count(),
+            missing_episodes = missing_episodes.len(),
+            concurrency = concurrency.clamp(1, 16),
+            "missing library metadata refresh started"
+        );
+
+        if candidate_count == 0 {
+            on_progress(100.0);
+            return Ok(MissingMetadataRefreshSummary::default());
+        }
+
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let outcomes = stream::iter(candidates)
+            .map(|(item_type, item_id)| {
+                let service = self.clone();
+                let completed = Arc::clone(&completed);
+                async move {
+                    let result = service
+                        .refresh(
+                            item_id,
+                            tmdb_api_key,
+                            omdb_api_key,
+                            MetadataRefreshOptions {
+                                metadata_refresh_mode: MetadataRefreshMode::Default,
+                                image_refresh_mode: MetadataRefreshMode::Default,
+                                replace_all_metadata: false,
+                                replace_all_images: false,
+                            },
+                        )
+                        .await;
+                    let finished = completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+                    let finished = f64::from(u32::try_from(finished).unwrap_or(u32::MAX));
+                    let total = f64::from(u32::try_from(candidate_count).unwrap_or(u32::MAX));
+                    on_progress(100.0 * finished / total);
+                    (item_type, item_id, result)
+                }
+            })
+            .buffer_unordered(concurrency.clamp(1, 16))
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut summary = MissingMetadataRefreshSummary {
+            candidates: candidate_count,
+            missing_episodes: missing_episodes.len(),
+            ..MissingMetadataRefreshSummary::default()
+        };
+        for (item_type, item_id, result) in outcomes {
+            match result {
+                Ok(true) => summary.refreshed += 1,
+                Ok(false) => summary.unchanged += 1,
+                Err(error) => {
+                    summary.failed += 1;
+                    tracing::warn!(%error, %item_id, %item_type, "library metadata item refresh failed");
+                }
+            }
+        }
+        tracing::info!(
+            parent_id = ?parent_id,
+            candidates = summary.candidates,
+            refreshed = summary.refreshed,
+            unchanged = summary.unchanged,
+            failed = summary.failed,
+            missing_episodes = summary.missing_episodes,
+            "missing library metadata refresh completed"
+        );
+        Ok(summary)
+    }
+
+    async fn missing_item_ids(
+        &self,
+        item_type: &str,
+        parent_id: Option<Uuid>,
+        include_missing_tmdb_id: bool,
+    ) -> Result<HashSet<Uuid>, MetadataRefreshError> {
+        Ok(self
+            .missing_items(item_type, parent_id, include_missing_tmdb_id)
+            .await?
+            .into_iter()
+            .map(|item| item.id)
+            .collect())
+    }
+
+    async fn missing_items(
+        &self,
+        item_type: &str,
+        parent_id: Option<Uuid>,
+        include_missing_tmdb_id: bool,
+    ) -> Result<Vec<base_item::Model>, MetadataRefreshError> {
+        let base_query = BaseItemQuery {
+            parent_id,
+            recursive: parent_id.is_some(),
+            include_item_types: vec![item_type.to_owned()],
+            enable_total_record_count: Some(false),
+            ..BaseItemQuery::default()
+        };
+        let mut by_id = self
+            .items
+            .query(&BaseItemQuery {
+                has_overview: Some(false),
+                ..base_query.clone()
+            })
+            .await?
+            .items
+            .into_iter()
+            .map(|item| (item.id, item))
+            .collect::<std::collections::HashMap<_, _>>();
+        if include_missing_tmdb_id {
+            for item in self
+                .items
+                .query(&BaseItemQuery {
+                    has_tmdb_id: Some(false),
+                    ..base_query
+                })
+                .await?
+                .items
+            {
+                by_id.insert(item.id, item);
+            }
+        }
+        Ok(by_id.into_values().collect())
     }
 
     /// Refreshes metadata for one item through the registered metadata service.
@@ -315,13 +494,19 @@ impl MetadataRefreshService {
     }
 
     fn tmdb_provider(&self, api_key: &str) -> TmdbMetadataProvider {
+        let images = self
+            .images
+            .read()
+            .expect("metadata refresh image service lock poisoned")
+            .as_ref()
+            .map(Arc::clone);
         TmdbMetadataProvider::new(
             api_key.to_owned(),
             Arc::clone(&self.items),
             Arc::clone(&self.values),
             Arc::clone(&self.people),
             Arc::clone(&self.updates),
-            self.images.as_ref().map(Arc::clone),
+            images,
         )
     }
 
@@ -769,6 +954,25 @@ fn provider_ids(data: Option<Value>) -> std::collections::HashMap<String, String
     .unwrap_or_default()
 }
 
+fn missing_metadata_candidates(
+    mut missing_series: HashSet<Uuid>,
+    missing_movies: HashSet<Uuid>,
+    missing_episodes: &[base_item::Model],
+) -> Vec<(String, Uuid)> {
+    missing_series.extend(missing_episodes.iter().filter_map(|item| item.series_id));
+    let mut series_ids = missing_series.into_iter().collect::<Vec<_>>();
+    series_ids.sort_unstable();
+    let mut movie_ids = missing_movies.into_iter().collect::<Vec<_>>();
+    movie_ids.sort_unstable();
+
+    let mut candidates = series_ids
+        .into_iter()
+        .map(|id| ("Series".to_owned(), id))
+        .collect::<Vec<_>>();
+    candidates.extend(movie_ids.into_iter().map(|id| ("Movie".to_owned(), id)));
+    candidates
+}
+
 fn nfo_person_kind(person_type: &str) -> NfoPersonKind {
     match person_type {
         "Actor" => NfoPersonKind::Actor,
@@ -885,6 +1089,32 @@ mod tests {
             false
         ));
         assert!(image_fetcher_enabled(&json!({}), "Movie", true));
+    }
+
+    #[test]
+    fn missing_episode_refreshes_its_series_once_before_movies() {
+        let series_id = Uuid::from_u128(1);
+        let movie_id = Uuid::from_u128(2);
+        let mut episode_one = test_item();
+        episode_one.item_type = "Episode".to_owned();
+        episode_one.id = Uuid::from_u128(3);
+        episode_one.series_id = Some(series_id);
+        let mut episode_two = episode_one.clone();
+        episode_two.id = Uuid::from_u128(4);
+
+        let candidates = missing_metadata_candidates(
+            HashSet::from([series_id]),
+            HashSet::from([movie_id]),
+            &[episode_one, episode_two],
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                ("Series".to_owned(), series_id),
+                ("Movie".to_owned(), movie_id)
+            ]
+        );
     }
 
     fn test_item() -> base_item::Model {
