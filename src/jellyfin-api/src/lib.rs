@@ -844,6 +844,37 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Audio/{item_id}/universal",
             get(audio::universal).head(audio::universal),
         )
+        // ASP.NET routing is case-insensitive and Jellyfin-generated playback
+        // URLs use lowercase collection segments. Keep lowercase aliases for
+        // clients following those URLs when running on Axum.
+        .route(
+            "/audio/{item_id}/hls/{*legacy_path}",
+            get(hls_segment::audio),
+        )
+        .route(
+            "/audio/{item_id}/master.m3u8",
+            get(hls_segment::audio_master_playlist).head(hls_segment::audio_master_playlist),
+        )
+        .route(
+            "/audio/{item_id}/main.m3u8",
+            get(hls_segment::audio_main_playlist),
+        )
+        .route(
+            "/audio/{item_id}/hls1/{playlist_id}/{segment_file}",
+            get(hls_segment::audio_hls1_segment),
+        )
+        .route(
+            "/audio/{item_id}/stream",
+            get(audio::stream).head(audio::stream),
+        )
+        .route(
+            "/audio/{item_id}/stream.{container}",
+            get(audio::stream_with_container).head(audio::stream_with_container),
+        )
+        .route(
+            "/audio/{item_id}/universal",
+            get(audio::universal).head(audio::universal),
+        )
         .route(
             "/Videos/{item_id}/hls/{*legacy_path}",
             get(hls_segment::video),
@@ -869,6 +900,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
+            "/videos/ActiveEncodings",
+            axum::routing::delete(hls_segment::stop_active_encoding),
+        )
+        .route(
             "/Videos/{item_id}/stream",
             get(videos::stream).head(videos::stream),
         )
@@ -876,9 +911,26 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Videos/{item_id}/stream.{container}",
             get(videos::stream_with_container).head(videos::stream_with_container),
         )
-        // Some Emby-compatible clients (including VidHub) emit the media
-        // stream endpoint with a lowercase collection segment. ASP.NET's
-        // routing is case-insensitive, so Jellyfin accepts this spelling too.
+        .route(
+            "/videos/{item_id}/hls/{*legacy_path}",
+            get(hls_segment::video),
+        )
+        .route(
+            "/videos/{item_id}/live.m3u8",
+            get(hls_segment::video_live_playlist),
+        )
+        .route(
+            "/videos/{item_id}/master.m3u8",
+            get(hls_segment::video_master_playlist).head(hls_segment::video_master_playlist),
+        )
+        .route(
+            "/videos/{item_id}/main.m3u8",
+            get(hls_segment::video_main_playlist),
+        )
+        .route(
+            "/videos/{item_id}/hls1/{playlist_id}/{segment_file}",
+            get(hls_segment::video_hls1_segment),
+        )
         .route(
             "/videos/{item_id}/stream",
             get(videos::stream).head(videos::stream),
