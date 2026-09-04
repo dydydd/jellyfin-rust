@@ -249,8 +249,7 @@ impl PostgresSessionStore {
             .latest_by_device_id(device_id)
             .await?
             .is_none_or(|existing| {
-                serde_json::from_value::<ClientCapabilitiesDto>(existing.capabilities)
-                    .unwrap_or_default()
+                ClientCapabilitiesDto::from_stored_value(existing.capabilities)
                     .supports_persistent_identifier
             });
         Ok(!supports_persistent_identifier)

@@ -462,6 +462,7 @@ fn device_info_uses_official_wire_names_and_guid_format() {
         date_last_activity: Some(Utc.with_ymd_and_hms(2026, 7, 23, 11, 0, 0).unwrap()),
         capabilities: ClientCapabilitiesDto {
             icon_url: Some("https://example.test/icon.png".to_owned()),
+            supports_persistent_identifier: true,
             ..ClientCapabilitiesDto::default()
         },
         icon_url: Some("https://example.test/icon.png".to_owned()),
@@ -598,6 +599,7 @@ fn session_info_uses_official_wire_names_and_guid_format() {
             playable_media_types: vec![MediaType::Video],
             supported_commands: vec![GeneralCommandType::Play],
             supports_media_control: true,
+            supports_persistent_identifier: true,
             device_profile: Some(json!({
                 "Name": "Browser profile"
             })),
@@ -666,6 +668,20 @@ fn session_info_uses_official_wire_names_and_guid_format() {
     assert_eq!(value["LastActivityDate"], "2026-07-23T09:15:00.0000000Z");
     assert!(value.get("LastPausedDate").is_none());
     assert!(value.get("DeviceType").is_none());
+}
+
+#[test]
+fn client_capabilities_distinguish_wire_and_stored_defaults() {
+    let wire: ClientCapabilitiesDto = serde_json::from_value(json!({})).unwrap();
+    assert!(!wire.supports_persistent_identifier);
+
+    let stored = ClientCapabilitiesDto::from_stored_value(json!({}));
+    assert!(stored.supports_persistent_identifier);
+
+    let explicit = ClientCapabilitiesDto::from_stored_value(json!({
+        "SupportsPersistentIdentifier": false
+    }));
+    assert!(!explicit.supports_persistent_identifier);
 }
 
 #[test]

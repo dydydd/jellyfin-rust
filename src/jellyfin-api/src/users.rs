@@ -14,8 +14,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::Utc;
 use jellyfin_data::{NewUserProfileImage, entities::user};
 use jellyfin_model::{
-    ForgotPasswordDto, ForgotPasswordPinDto, MimeTypes, PinRedeemResult, UserConfiguration,
-    UserDto, UserPolicy,
+    ClientCapabilitiesDto, ForgotPasswordDto, ForgotPasswordPinDto, MimeTypes, PinRedeemResult,
+    UserConfiguration, UserDto, UserPolicy,
 };
 use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
@@ -96,12 +96,7 @@ pub(crate) async fn list_public(
 }
 
 fn supports_persistent_identifier(capabilities: &serde_json::Value) -> bool {
-    // Jellyfin's runtime ClientCapabilities defaults this to true. Stored
-    // records created before a client reports capabilities contain `{}`.
-    capabilities
-        .get("SupportsPersistentIdentifier")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true)
+    ClientCapabilitiesDto::from_stored_value(capabilities.clone()).supports_persistent_identifier
 }
 
 fn can_access_device(

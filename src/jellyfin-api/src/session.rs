@@ -147,8 +147,7 @@ pub(crate) async fn list(
     for device in page.items {
         if let Some(target_user_id) = controllable_user_id {
             let supports_remote =
-                serde_json::from_value::<ClientCapabilitiesDto>(device.capabilities.clone())
-                    .unwrap_or_default()
+                ClientCapabilitiesDto::from_stored_value(device.capabilities.clone())
                     .supports_media_control
                     && device.is_active;
             if !supports_remote {
@@ -670,8 +669,7 @@ fn session_info(
     server_id: &str,
     has_open_websocket: bool,
 ) -> SessionInfoDto {
-    let capabilities: ClientCapabilitiesDto =
-        serde_json::from_value(device.capabilities).unwrap_or_default();
+    let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities);
     let play_state: PlayerStateInfo = serde_json::from_value(device.play_state).unwrap_or_default();
     let additional_users: Vec<SessionUserInfo> =
         serde_json::from_value(device.additional_users).unwrap_or_default();

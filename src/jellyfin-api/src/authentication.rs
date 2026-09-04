@@ -205,8 +205,7 @@ async fn authentication_result_from_device(
     let primary_image_tag = user_primary_image_tags(state, &[user_id])
         .await?
         .remove(&user_id);
-    let capabilities: ClientCapabilitiesDto =
-        serde_json::from_value(session.capabilities.clone()).unwrap_or_default();
+    let capabilities = ClientCapabilitiesDto::from_stored_value(session.capabilities.clone());
     let play_state: PlayerStateInfo =
         serde_json::from_value(session.play_state.clone()).unwrap_or_default();
     let additional_users: Vec<SessionUserInfo> =

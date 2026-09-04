@@ -201,8 +201,7 @@ async fn device_info(
     custom_name: Option<String>,
 ) -> Result<DeviceInfoDto, ApiError> {
     let user = state.users.get(device.user_id).await?;
-    let capabilities: ClientCapabilitiesDto =
-        serde_json::from_value(device.capabilities).unwrap_or_default();
+    let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities);
     let mut capabilities = capabilities;
     let icon_url = capabilities.icon_url.take();
     Ok(DeviceInfoDto {
@@ -256,6 +255,6 @@ fn can_access_device(policy: &UserPolicy, device: &device::Model) -> bool {
     {
         return true;
     }
-    let capabilities = ClientCapabilitiesDto::deserialize(&device.capabilities).unwrap_or_default();
+    let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities.clone());
     !capabilities.supports_persistent_identifier
 }

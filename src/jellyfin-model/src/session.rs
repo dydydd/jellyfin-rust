@@ -83,7 +83,7 @@ impl std::str::FromStr for GeneralCommandType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
 pub struct ClientCapabilitiesDto {
@@ -99,17 +99,23 @@ pub struct ClientCapabilitiesDto {
     pub icon_url: Option<String>,
 }
 
-impl Default for ClientCapabilitiesDto {
-    fn default() -> Self {
-        Self {
-            playable_media_types: Vec::new(),
-            supported_commands: Vec::new(),
-            supports_media_control: false,
-            supports_persistent_identifier: false,
-            device_profile: None,
-            app_store_url: None,
-            icon_url: None,
-        }
+impl ClientCapabilitiesDto {
+    /// Deserializes capabilities stored on a device session.
+    ///
+    /// Jellyfin's wire DTO defaults an omitted persistent-identifier flag to
+    /// `false`, while its runtime `ClientCapabilities` model defaults the flag
+    /// to `true`. New sessions are persisted before a client reports
+    /// capabilities, so their stored JSON is empty and must use the runtime
+    /// default when projected back into device and session DTOs.
+    #[must_use]
+    pub fn from_stored_value(value: Value) -> Self {
+        let supports_persistent_identifier = value
+            .get("SupportsPersistentIdentifier")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let mut capabilities: Self = serde_json::from_value(value).unwrap_or_default();
+        capabilities.supports_persistent_identifier = supports_persistent_identifier;
+        capabilities
     }
 }
 
