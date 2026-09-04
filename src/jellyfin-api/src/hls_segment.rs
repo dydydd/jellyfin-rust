@@ -261,14 +261,24 @@ async fn ensure_master_playlist(
     }
 
     let (item_id, media_type) = media_type_item_id(uri)?;
-    let job_id = existing_or_computed_job_id(&query, item_id);
+    let segment_length_ms = segment_length_ms(query.segment_length)?;
+    let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
     let main_url = format!(
         "main.m3u8?{}&jobId={}",
         uri.query().unwrap_or_default(),
         job_id
     );
     let content = build_variant_master_playlist(&master_variants(&query, &main_url));
-    start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
+    start_hls_job(
+        state,
+        query,
+        item_id,
+        &job_id,
+        identity,
+        media_type,
+        segment_length_ms,
+    )
+    .await?;
     let path =
         resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.master.m3u8"))?;
     tokio::fs::write(&path, content)
@@ -314,8 +324,18 @@ async fn ensure_main_playlist(
     }
 
     let (item_id, media_type) = media_type_item_id(uri)?;
-    let job_id = existing_or_computed_job_id(&query, item_id);
-    start_hls_job(state, query, item_id, &job_id, identity, media_type).await?;
+    let segment_length_ms = segment_length_ms(query.segment_length)?;
+    let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
+    start_hls_job(
+        state,
+        query,
+        item_id,
+        &job_id,
+        identity,
+        media_type,
+        segment_length_ms,
+    )
+    .await?;
     let path = resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.m3u8"))?;
     serve_file_if_exists(path, headers).await
 }
@@ -327,6 +347,7 @@ async fn start_hls_job(
     job_id: &str,
     identity: &crate::authentication::AuthenticatedIdentity,
     media_type: &str,
+    segment_length_ms: i32,
 ) -> Result<(), ApiError> {
     if state.transcode_jobs.is_running(job_id) {
         if let (Some(device_id), Some(play_session_id)) =
@@ -365,7 +386,7 @@ async fn start_hls_job(
     };
     let settings = HlsSegmentSettings {
         container: query.segment_container.unwrap_or_else(|| "ts".to_owned()),
-        segment_length_ms: query.segment_length.unwrap_or(6_000),
+        segment_length_ms,
         min_segments: query.min_segments.unwrap_or(2),
     };
     let item = state
@@ -452,9 +473,11 @@ fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
     let segments = uri.path().split('/').collect::<Vec<_>>();
     let (media_type, item_index) = segments
         .iter()
-        .position(|segment| *segment == "Videos" || *segment == "Audio")
+        .position(|segment| {
+            segment.eq_ignore_ascii_case("Videos") || segment.eq_ignore_ascii_case("Audio")
+        })
         .map(|index| {
-            let media_type = if segments[index] == "Videos" {
+            let media_type = if segments[index].eq_ignore_ascii_case("Videos") {
                 "Videos"
             } else {
                 "Audio"
@@ -470,15 +493,22 @@ fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
     Ok((item_id, media_type))
 }
 
-fn existing_or_computed_job_id(query: &TranscodeQuery, item_id: Uuid) -> String {
+fn existing_or_computed_job_id(
+    query: &TranscodeQuery,
+    item_id: Uuid,
+    segment_length_ms: i32,
+) -> String {
     query
         .job_id
         .as_deref()
         .filter(|id| !id.is_empty())
-        .map_or_else(|| compute_job_id(item_id, query), str::to_owned)
+        .map_or_else(
+            || compute_job_id(item_id, query, segment_length_ms),
+            str::to_owned,
+        )
 }
 
-fn compute_job_id(item_id: Uuid, query: &TranscodeQuery) -> String {
+fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, segment_length_ms: i32) -> String {
     hls_job_id_from_input(
         item_id,
         HlsJobIdInput {
@@ -495,10 +525,18 @@ fn compute_job_id(item_id: Uuid, query: &TranscodeQuery) -> String {
             burn_subtitles: query.burn_subtitles.unwrap_or(false),
             audio_normalize: query.audio_normalize.unwrap_or(false),
             tonemap_hdr: query.enable_hdr_tone_mapping.unwrap_or(false),
-            segment_length_ms: query.segment_length.unwrap_or(6_000),
+            segment_length_ms,
             container: query.segment_container.as_deref().unwrap_or("ts"),
         },
     )
+}
+
+fn segment_length_ms(segment_length_seconds: Option<i32>) -> Result<i32, ApiError> {
+    match segment_length_seconds {
+        None => Ok(6_000),
+        Some(seconds) if seconds > 0 => seconds.checked_mul(1_000).ok_or(ApiError::InvalidRequest),
+        Some(_) => Err(ApiError::InvalidRequest),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -778,9 +816,28 @@ fn strip_suffix_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> 
 mod tests {
     use std::path::PathBuf;
 
+    use axum::http::Uri;
     use uuid::Uuid;
 
-    use super::cleanup_transcode_job;
+    use super::{cleanup_transcode_job, media_type_item_id, segment_length_ms};
+
+    #[test]
+    fn generated_lowercase_transcode_paths_resolve_their_media_type() {
+        let item_id = Uuid::new_v4();
+        let video: Uri = format!("/videos/{item_id}/master.m3u8").parse().unwrap();
+        let audio: Uri = format!("/audio/{item_id}/master.m3u8").parse().unwrap();
+
+        assert_eq!(media_type_item_id(&video).unwrap(), (item_id, "Videos"));
+        assert_eq!(media_type_item_id(&audio).unwrap(), (item_id, "Audio"));
+    }
+
+    #[test]
+    fn protocol_segment_seconds_are_converted_to_internal_milliseconds() {
+        assert_eq!(segment_length_ms(None).unwrap(), 6_000);
+        assert_eq!(segment_length_ms(Some(6)).unwrap(), 6_000);
+        assert!(segment_length_ms(Some(0)).is_err());
+        assert!(segment_length_ms(Some(i32::MAX)).is_err());
+    }
 
     #[tokio::test]
     async fn cleanup_transcode_job_removes_only_job_prefixed_files() {
