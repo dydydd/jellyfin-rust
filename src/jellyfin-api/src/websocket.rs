@@ -620,12 +620,12 @@ pub(crate) async fn broadcast_user_deleted(state: &AppState, user_id: Uuid) {
         .await;
     state
         .web_sockets
-        .send_to_users(
-            &[user_id],
-            "UserDeleted",
-            &json!({ "Id": user_id.simple().to_string() }),
-        )
+        .send_to_users(&[user_id], "UserDeleted", &user_deleted_data(user_id))
         .await;
+}
+
+fn user_deleted_data(user_id: Uuid) -> String {
+    user_id.simple().to_string()
 }
 
 pub(crate) async fn broadcast_refresh_progress(state: &AppState, item_id: Uuid, progress: f64) {
@@ -705,7 +705,9 @@ async fn handle_inbound(payload: &[u8], subscriptions: &mut HashSet<String>, sta
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionRecipient, WebSocketHub, is_keep_alive, session_visible_to};
+    use super::{
+        SessionRecipient, WebSocketHub, is_keep_alive, session_visible_to, user_deleted_data,
+    };
     use crate::SystemCommand;
     use chrono::Utc;
     use jellyfin_model::{ClientCapabilitiesDto, PlayerStateInfo, SessionInfoDto, SessionUserInfo};
@@ -732,6 +734,16 @@ mod tests {
 
         let library_message = r#"{"MessageType":"LibraryChanged","Data":{"ItemsAdded":[]}}"#;
         assert!(should_deliver_message(library_message, &subscriptions));
+    }
+
+    #[test]
+    fn user_deleted_data_is_a_compact_guid_string() {
+        let user_id = Uuid::parse_str("01234567-89ab-cdef-0123-456789abcdef").unwrap();
+
+        assert_eq!(
+            serde_json::to_value(user_deleted_data(user_id)).unwrap(),
+            serde_json::json!("0123456789abcdef0123456789abcdef")
+        );
     }
 
     #[tokio::test]
