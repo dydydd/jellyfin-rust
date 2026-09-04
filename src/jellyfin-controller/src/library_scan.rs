@@ -27,7 +27,9 @@ use jellyfin_media_encoding::probing::{
 use jellyfin_model::{
     CollectionType, MediaProtocol as ModelMediaProtocol, MediaStream as ModelMediaStream,
 };
-use jellyfin_naming::{ExtraResolver, NamingOptions, VideoListResolver, VideoResolver};
+use jellyfin_naming::{
+    ExtraResolver, NamingOptions, VideoListResolver, VideoResolver, video_list::VideoInfo,
+};
 use jellyfin_providers::media_info::{
     MediaFileSystemEntry, SubtitleResolveRequest, SubtitleResolver,
 };
@@ -50,6 +52,8 @@ use uuid::Uuid;
 use crate::{
     LocalizationService, episode_parser::parse_season_directory, media_streams::MediaStreamMapper,
 };
+
+const SCAN_PATH_QUERY_BATCH_SIZE: usize = 256;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -956,15 +960,6 @@ impl LibraryScanService {
                 });
             }
 
-            let paths = files
-                .iter()
-                .filter_map(|(path, _)| path.to_str().map(String::from))
-                .collect::<Vec<_>>();
-            let existing = self.items.by_paths(&paths).await?;
-            let existing_by_path = existing
-                .into_iter()
-                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
-                .collect::<HashMap<_, _>>();
             let extra_entries = extra_entries_for_files(&files);
             let extra_paths = Self::extra_paths_for_resolver_entries(&extra_entries, root)?;
             let regular_files = files
@@ -972,14 +967,7 @@ impl LibraryScanService {
                 .filter(|(path, _)| !extra_paths.contains(path.to_string_lossy().as_ref()))
                 .collect::<Vec<_>>();
             summary.items_added += self
-                .process_files(
-                    &regular_files,
-                    directory_id,
-                    kind,
-                    root,
-                    existing_by_path,
-                    summary,
-                )
+                .process_files(&regular_files, directory_id, kind, root, summary)
                 .await?;
             self.ensure_extras(&extra_entries, kind, summary, seen_paths, root)
                 .await?;
@@ -1102,16 +1090,6 @@ impl LibraryScanService {
             return Ok(());
         }
 
-        let paths: Vec<String> = files
-            .iter()
-            .filter_map(|(p, _)| p.to_str().map(String::from))
-            .collect();
-        let existing = self.items.by_paths(&paths).await?;
-        let existing_by_path = existing
-            .into_iter()
-            .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
-            .collect::<HashMap<_, _>>();
-
         let extra_entries = extra_entries_for_files(&files);
         let extra_paths = Self::extra_paths_for_resolver_entries(&extra_entries, library_root)?;
         let regular_files = files
@@ -1119,14 +1097,7 @@ impl LibraryScanService {
             .filter(|(path, _)| !extra_paths.contains(path.to_string_lossy().as_ref()))
             .collect::<Vec<_>>();
         summary.items_added += self
-            .process_files(
-                &regular_files,
-                parent_id,
-                kind,
-                library_root,
-                existing_by_path,
-                summary,
-            )
+            .process_files(&regular_files, parent_id, kind, library_root, summary)
             .await?;
         self.group_scanned_video_entries(&regular_files, kind, library_root)
             .await?;
@@ -1141,96 +1112,108 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         library_root: &Path,
     ) -> Result<(), LibraryScanError> {
-        let paths = files
+        let groups = resolve_scanned_video_groups(files, kind, library_root);
+        if groups.is_empty() {
+            return Ok(());
+        }
+
+        // Retain only identifiers between passes. The complete database models
+        // used to update names and version links stay bounded to one path batch.
+        let mut primary_ids = Vec::with_capacity(groups.len());
+        for group_batch in groups.chunks(SCAN_PATH_QUERY_BATCH_SIZE) {
+            let paths = group_batch
+                .iter()
+                .filter_map(|group| group.files.first().map(|file| file.path.clone()))
+                .collect::<Vec<_>>();
+            let mut by_path = self
+                .items
+                .by_paths(&paths)
+                .await?
+                .into_iter()
+                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+                .collect::<HashMap<_, _>>();
+            for group in group_batch {
+                let Some(primary_path) = group.files.first().map(|file| file.path.as_str()) else {
+                    primary_ids.push(None);
+                    continue;
+                };
+                let Some(primary) = by_path.remove(primary_path) else {
+                    primary_ids.push(None);
+                    continue;
+                };
+                let primary_id = primary.id;
+                let original_primary_version_id = primary.primary_version_id;
+                let mut updated_primary = primary;
+                updated_primary.primary_version_id = None;
+                let mut primary_changed =
+                    updated_primary.primary_version_id != original_primary_version_id;
+                if group.files.len() > 1 {
+                    let parts = group
+                        .files
+                        .iter()
+                        .skip(1)
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>();
+                    primary_changed |= set_additional_parts(&mut updated_primary, &parts);
+                }
+                if !group.name.is_empty()
+                    && (updated_primary.name.as_deref() != Some(group.name.as_str())
+                        || updated_primary.sort_name.as_deref() != Some(group.name.as_str()))
+                {
+                    updated_primary.name = Some(group.name.clone());
+                    updated_primary.sort_name = Some(group.name.clone());
+                    primary_changed = true;
+                }
+                if primary_changed {
+                    self.items.update(updated_primary).await?;
+                }
+                primary_ids.push(Some(primary_id));
+            }
+        }
+
+        let mut assignments = Vec::with_capacity(SCAN_PATH_QUERY_BATCH_SIZE);
+        for (group, primary_id) in groups.iter().zip(primary_ids) {
+            let Some(primary_id) = primary_id else {
+                continue;
+            };
+            for path in video_group_version_paths(group) {
+                assignments.push((path, primary_id));
+                if assignments.len() == SCAN_PATH_QUERY_BATCH_SIZE {
+                    self.apply_version_assignment_batch(&assignments).await?;
+                    assignments.clear();
+                }
+            }
+        }
+        if !assignments.is_empty() {
+            self.apply_version_assignment_batch(&assignments).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_version_assignment_batch(
+        &self,
+        assignments: &[(&str, Uuid)],
+    ) -> Result<(), LibraryScanError> {
+        let paths = assignments
             .iter()
-            .filter(|(_, media_kind)| *media_kind == MediaKind::Video)
-            .filter_map(|(path, _)| path.to_str().map(String::from))
+            .map(|(path, _)| (*path).to_owned())
             .collect::<Vec<_>>();
-        if paths.len() < 2 {
-            return Ok(());
-        }
-        let items = self.items.by_paths(&paths).await?;
-        if items.len() < 2 {
-            return Ok(());
-        }
-        let mut by_path = items
+        let mut by_path = self
+            .items
+            .by_paths(&paths)
+            .await?
             .into_iter()
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect::<HashMap<_, _>>();
-        let options = NamingOptions::default();
-        let videos = paths
-            .iter()
-            .filter_map(|path| {
-                VideoResolver::resolve_file_with_library_root(
-                    Some(path),
-                    &options,
-                    library_root.to_str(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let collection_type = if kind.is_tv() {
-            Some(jellyfin_naming::video_list::CollectionType::TvShows)
-        } else {
-            Some(jellyfin_naming::video_list::CollectionType::Movies)
-        };
-        let groups = VideoListResolver::new(options).resolve_owned_with_options(
-            videos,
-            true,
-            collection_type,
-        );
-        for group in groups {
-            let Some(primary_path) = group.files.first().map(|file| file.path.as_str()) else {
+        for (path, primary_id) in assignments {
+            let Some(mut item) = by_path.remove(*path) else {
                 continue;
             };
-            let Some(primary) = by_path.remove(primary_path) else {
+            if item.primary_version_id == Some(*primary_id) {
                 continue;
-            };
-            let primary_id = primary.id;
-            let original_primary_version_id = primary.primary_version_id;
-            let mut updated_primary = primary;
-            updated_primary.primary_version_id = None;
-            let mut primary_changed =
-                updated_primary.primary_version_id != original_primary_version_id;
-            if group.files.len() > 1 {
-                let parts = group
-                    .files
-                    .iter()
-                    .skip(1)
-                    .map(|file| file.path.as_str())
-                    .collect::<Vec<_>>();
-                primary_changed |= set_additional_parts(&mut updated_primary, &parts);
             }
-            if !group.name.is_empty()
-                && (updated_primary.name.as_deref() != Some(group.name.as_str())
-                    || updated_primary.sort_name.as_deref() != Some(group.name.as_str()))
-            {
-                updated_primary.name = Some(group.name.clone());
-                updated_primary.sort_name = Some(group.name);
-                primary_changed = true;
-            }
-            if primary_changed {
-                self.items.update(updated_primary).await?;
-            }
-
-            let mut version_paths = group
-                .files
-                .iter()
-                .skip(1)
-                .map(|file| file.path.as_str())
-                .collect::<Vec<_>>();
-            for alternate in &group.alternate_versions {
-                version_paths.extend(alternate.files.iter().map(|file| file.path.as_str()));
-            }
-            for path in version_paths {
-                let Some(mut item) = by_path.remove(path) else {
-                    continue;
-                };
-                if item.primary_version_id == Some(primary_id) {
-                    continue;
-                }
-                item.primary_version_id = Some(primary_id);
-                self.items.update(item).await?;
-            }
+            item.primary_version_id = Some(*primary_id);
+            self.items.update(item).await?;
         }
         Ok(())
     }
@@ -1374,12 +1357,46 @@ impl LibraryScanService {
         parent_id: Uuid,
         kind: ScanLibraryKind,
         library_root: &Path,
-        mut existing_by_path: HashMap<String, base_item::Model>,
         summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
         if files.is_empty() {
             return Ok(0);
         }
+        let mut added = 0;
+        for batch in scan_file_batches(files) {
+            let paths = batch
+                .iter()
+                .filter_map(|(path, _)| path.to_str().map(String::from))
+                .collect::<Vec<_>>();
+            let existing = self.items.by_paths(&paths).await?;
+            let existing_by_path = existing
+                .into_iter()
+                .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
+                .collect::<HashMap<_, _>>();
+            added += self
+                .process_file_batch(
+                    batch,
+                    parent_id,
+                    kind,
+                    library_root,
+                    existing_by_path,
+                    summary,
+                )
+                .await?;
+        }
+        Ok(added)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn process_file_batch(
+        &self,
+        files: &[(PathBuf, MediaKind)],
+        parent_id: Uuid,
+        kind: ScanLibraryKind,
+        library_root: &Path,
+        mut existing_by_path: HashMap<String, base_item::Model>,
+        summary: &mut LibraryScanSummary,
+    ) -> Result<usize, LibraryScanError> {
         let concurrency = self.fanout_concurrency();
         if concurrency <= 1 {
             let mut added = 0;
@@ -2219,6 +2236,54 @@ fn tv_hierarchy_candidate(item: base_item::Model) -> TvHierarchyCandidate {
         season_id: item.season_id,
         series_presentation_unique_key: item.series_presentation_unique_key,
     }
+}
+
+fn scan_file_batches(
+    files: &[(PathBuf, MediaKind)],
+) -> std::slice::Chunks<'_, (PathBuf, MediaKind)> {
+    files.chunks(SCAN_PATH_QUERY_BATCH_SIZE)
+}
+
+fn resolve_scanned_video_groups(
+    files: &[(PathBuf, MediaKind)],
+    kind: ScanLibraryKind,
+    library_root: &Path,
+) -> Vec<VideoInfo> {
+    let options = NamingOptions::default();
+    let videos = files
+        .iter()
+        .filter(|(_, media_kind)| *media_kind == MediaKind::Video)
+        .filter_map(|(path, _)| {
+            VideoResolver::resolve_file_with_library_root(
+                path.to_str(),
+                &options,
+                library_root.to_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if videos.len() < 2 {
+        return Vec::new();
+    }
+    let collection_type = if kind.is_tv() {
+        Some(jellyfin_naming::video_list::CollectionType::TvShows)
+    } else {
+        Some(jellyfin_naming::video_list::CollectionType::Movies)
+    };
+    VideoListResolver::new(options).resolve_owned_with_options(videos, true, collection_type)
+}
+
+fn video_group_version_paths(group: &VideoInfo) -> impl Iterator<Item = &str> {
+    group
+        .files
+        .iter()
+        .skip(1)
+        .chain(
+            group
+                .alternate_versions
+                .iter()
+                .flat_map(|alternate| alternate.files.iter()),
+        )
+        .map(|file| file.path.as_str())
 }
 
 fn default_fanout_concurrency() -> usize {
@@ -3499,8 +3564,9 @@ mod tests {
         display_name, extra_type_name, image_extraction_command_succeeded, is_extras_directory,
         local_image_type, media_item_data, media_kind, merge_scan_summary, next_stream_index,
         read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
-        resolve_external_subtitle_streams_from_entries, scan_nfo_person, set_additional_parts,
-        stable_item_id, streams_from_media_info,
+        resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
+        scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
+        streams_from_media_info,
     };
 
     #[test]
@@ -3527,6 +3593,85 @@ mod tests {
         assert!(!paths.contains("/media/Library/movie.mkv"));
         assert!(!paths.contains("/media/Library/Movie.mkv.bak"));
     }
+
+    #[test]
+    fn scan_path_queries_are_bounded_and_preserve_every_file() {
+        let files = (0..513)
+            .map(|index| {
+                (
+                    PathBuf::from(format!("/media/track-{index:03}.flac")),
+                    MediaKind::Audio,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let batches = scan_file_batches(&files).collect::<Vec<_>>();
+        assert_eq!(
+            batches.iter().map(|batch| batch.len()).collect::<Vec<_>>(),
+            [256, 256, 1]
+        );
+        assert_eq!(
+            batches
+                .into_iter()
+                .flatten()
+                .map(|(path, _)| path)
+                .collect::<Vec<_>>(),
+            files.iter().map(|(path, _)| path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn video_versions_across_path_query_batches_stay_grouped() {
+        let mut files = (0..255)
+            .map(|index| {
+                (
+                    PathBuf::from(format!("/movies/audio-{index:03}.flac")),
+                    MediaKind::Audio,
+                )
+            })
+            .collect::<Vec<_>>();
+        files.push((
+            PathBuf::from("/movies/Film/Film - 1080p.mkv"),
+            MediaKind::Video,
+        ));
+        files.push((
+            PathBuf::from("/movies/Film/Film - 2160p.mkv"),
+            MediaKind::Video,
+        ));
+
+        let batches = scan_file_batches(&files).collect::<Vec<_>>();
+        assert_eq!(
+            batches.iter().map(|batch| batch.len()).collect::<Vec<_>>(),
+            [256, 1]
+        );
+        assert_eq!(batches[0].last().unwrap().0, files[255].0);
+        assert_eq!(batches[1][0].0, files[256].0);
+
+        let groups =
+            resolve_scanned_video_groups(&files, ScanLibraryKind::Movies, Path::new("/movies"));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].alternate_versions.len(), 1);
+        let mut grouped_paths = groups[0]
+            .files
+            .iter()
+            .chain(
+                groups[0]
+                    .alternate_versions
+                    .iter()
+                    .flat_map(|version| version.files.iter()),
+            )
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        grouped_paths.sort_unstable();
+        assert_eq!(
+            grouped_paths,
+            [
+                "/movies/Film/Film - 1080p.mkv",
+                "/movies/Film/Film - 2160p.mkv"
+            ]
+        );
+    }
+
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
@@ -3536,7 +3681,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::{
         collections::HashSet,
-        path::Path,
+        path::{Path, PathBuf},
         sync::{
             Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
