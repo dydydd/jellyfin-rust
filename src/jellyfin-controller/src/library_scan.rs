@@ -9,8 +9,8 @@ use std::{
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use jellyfin_data::{
-    BaseItemError, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
-    BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
+    BaseItemError, BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError,
+    BaseItemImageType, BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
     ItemUpdateRepository, ItemUpdateStoreError, ItemValueError, ItemValueRepository,
     MediaAttachmentRepository, MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository,
     MediaStreamStoreError, NewBaseItem, NewBaseItemImage, NewChapter, NewPerson,
@@ -83,6 +83,12 @@ struct MediaItemScanOutcome {
 struct ScanDirectorySnapshot {
     entries: Vec<MediaFileSystemEntry>,
     modified: HashMap<String, chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Default)]
+struct PreloadedMediaState {
+    streams: Vec<PersistedMediaStream>,
+    images: Vec<BaseItemImage>,
 }
 
 impl ScanDirectorySnapshot {
@@ -1471,11 +1477,34 @@ impl LibraryScanService {
         mut existing_by_path: HashMap<String, base_item::Model>,
         summary: &mut LibraryScanSummary,
     ) -> Result<usize, LibraryScanError> {
+        let existing_ids = existing_by_path
+            .values()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        let mut preloaded_by_id = existing_ids
+            .iter()
+            .copied()
+            .map(|id| (id, PreloadedMediaState::default()))
+            .collect::<HashMap<_, _>>();
+        for (item_id, streams) in self.streams.query_for_items(&existing_ids).await? {
+            preloaded_by_id.entry(item_id).or_default().streams = streams;
+        }
+        for image in self.images.list_many(&existing_ids).await? {
+            preloaded_by_id
+                .entry(image.item_id)
+                .or_default()
+                .images
+                .push(image);
+        }
         let concurrency = self.fanout_concurrency();
         if concurrency <= 1 {
             let mut added = 0;
             for (path, media_kind) in files {
                 let existing = path.to_str().and_then(|p| existing_by_path.remove(p));
+                let preloaded = existing
+                    .as_ref()
+                    .and_then(|item| preloaded_by_id.remove(&item.id))
+                    .unwrap_or_default();
                 let outcome = self
                     .ensure_media_item_with_permit(
                         path,
@@ -1484,6 +1513,7 @@ impl LibraryScanService {
                         kind,
                         library_root,
                         directory_snapshot,
+                        preloaded,
                         existing,
                     )
                     .await?;
@@ -1503,6 +1533,10 @@ impl LibraryScanService {
             let existing = path
                 .to_str()
                 .and_then(|value| existing_by_path.remove(value));
+            let preloaded = existing
+                .as_ref()
+                .and_then(|item| preloaded_by_id.remove(&item.id))
+                .unwrap_or_default();
             work.push(self.ensure_media_item_with_permit(
                 path,
                 parent_id,
@@ -1510,6 +1544,7 @@ impl LibraryScanService {
                 kind,
                 library_root,
                 directory_snapshot,
+                preloaded,
                 existing,
             ));
         }
@@ -1520,6 +1555,10 @@ impl LibraryScanService {
                 let existing = path
                     .to_str()
                     .and_then(|value| existing_by_path.remove(value));
+                let preloaded = existing
+                    .as_ref()
+                    .and_then(|item| preloaded_by_id.remove(&item.id))
+                    .unwrap_or_default();
                 work.push(self.ensure_media_item_with_permit(
                     path,
                     parent_id,
@@ -1527,6 +1566,7 @@ impl LibraryScanService {
                     kind,
                     library_root,
                     directory_snapshot,
+                    preloaded,
                     existing,
                 ));
             }
@@ -1562,6 +1602,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         library_root: &Path,
         directory_snapshot: &ScanDirectorySnapshot,
+        preloaded: PreloadedMediaState,
         existing: Option<base_item::Model>,
     ) -> Result<MediaItemScanOutcome, LibraryScanError> {
         let _permit = self.media_item_limiter.acquire().await;
@@ -1572,6 +1613,7 @@ impl LibraryScanService {
             kind,
             library_root,
             directory_snapshot,
+            preloaded,
             existing,
         )
         .await
@@ -1619,6 +1661,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         library_root: &Path,
         directory_snapshot: &ScanDirectorySnapshot,
+        preloaded: PreloadedMediaState,
         existing: Option<base_item::Model>,
     ) -> Result<MediaItemScanOutcome, LibraryScanError> {
         let Some(path_str) = path.to_str() else {
@@ -1662,6 +1705,7 @@ impl LibraryScanService {
                             media_kind,
                             !is_strm,
                             directory_snapshot,
+                            &preloaded,
                         )
                         .await?
                     && apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info)
@@ -1673,7 +1717,7 @@ impl LibraryScanService {
                 }
                 self.persist_scan_relations(existing.id, path_str, &existing.item_type, None)
                     .await?;
-                self.discover_local_images(existing.id, directory_snapshot)
+                self.discover_local_images(existing.id, directory_snapshot, &preloaded.images)
                     .await?;
                 if changed {
                     self.items.update(existing).await?;
@@ -1687,6 +1731,7 @@ impl LibraryScanService {
                     parent_id,
                     library_root,
                     directory_snapshot,
+                    &preloaded,
                     media_kind,
                     path_str,
                     strm_target.as_deref(),
@@ -1702,6 +1747,7 @@ impl LibraryScanService {
                     parent_id,
                     library_root,
                     directory_snapshot,
+                    &preloaded,
                     media_kind,
                     path_str,
                     strm_target.as_deref(),
@@ -1738,6 +1784,7 @@ impl LibraryScanService {
                     media_kind,
                     !is_strm,
                     directory_snapshot,
+                    &preloaded,
                 )
                 .await?
             && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
@@ -1749,7 +1796,7 @@ impl LibraryScanService {
         }
         self.persist_scan_relations(item.id, path_str, &item.item_type, None)
             .await?;
-        self.discover_local_images(item.id, directory_snapshot)
+        self.discover_local_images(item.id, directory_snapshot, &preloaded.images)
             .await?;
         Ok(MediaItemScanOutcome::added(item.id))
     }
@@ -1762,6 +1809,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         library_root: &Path,
         directory_snapshot: &ScanDirectorySnapshot,
+        preloaded: &PreloadedMediaState,
         media_kind: MediaKind,
         path_str: &str,
         strm_target: Option<&str>,
@@ -1852,6 +1900,7 @@ impl LibraryScanService {
                     media_kind,
                     !is_strm,
                     directory_snapshot,
+                    preloaded,
                 )
                 .await?
             {
@@ -1893,6 +1942,7 @@ impl LibraryScanService {
                 media_kind,
                 !is_strm,
                 directory_snapshot,
+                preloaded,
             )
             .await?
             && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
@@ -2051,15 +2101,9 @@ impl LibraryScanService {
         media_kind: MediaKind,
         should_probe: bool,
         directory_snapshot: &ScanDirectorySnapshot,
+        preloaded: &PreloadedMediaState,
     ) -> Result<Option<MediaInfo>, LibraryScanError> {
-        let existing = self
-            .streams
-            .query(MediaStreamQuery {
-                item_id,
-                stream_index: None,
-                stream_type: None,
-            })
-            .await?;
+        let existing = &preloaded.streams;
         let default_stream = default_stream(media_source_path, media_kind);
         if !existing.is_empty() && (existing.len() != 1 || existing[0] != default_stream) {
             return Ok(None);
@@ -2097,6 +2141,7 @@ impl LibraryScanService {
                 &attachment_images,
                 video_stream_index,
                 media_info.runtime_ticks,
+                &preloaded.images,
             )
             .await?;
             streams = streams_from_media_info(media_info);
@@ -2118,8 +2163,8 @@ impl LibraryScanService {
         &self,
         item_id: Uuid,
         directory_snapshot: &ScanDirectorySnapshot,
+        existing: &[BaseItemImage],
     ) -> Result<(), LibraryScanError> {
-        let existing = self.images.list(item_id).await?;
         for entry in &directory_snapshot.entries {
             if entry.is_directory {
                 continue;
@@ -2167,11 +2212,12 @@ impl LibraryScanService {
         attachment_images: &[(i32, BaseItemImageType)],
         video_stream_index: Option<i32>,
         runtime_ticks: Option<i64>,
+        existing_images: &[BaseItemImage],
     ) -> Result<(), LibraryScanError> {
         let image_cache_directory = self.image_cache_directory();
         tokio::fs::create_dir_all(image_cache_directory.as_path()).await?;
         let mut has_primary = false;
-        for image in self.images.list(item_id).await? {
+        for image in existing_images {
             if image.image_type == BaseItemImageType::Primary {
                 has_primary = true;
                 break;
