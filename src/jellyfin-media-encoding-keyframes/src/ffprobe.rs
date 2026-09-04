@@ -1,13 +1,15 @@
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::{self, BufRead, Cursor};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
 
 use crate::KeyframeData;
 
 const TICKS_PER_SECOND: u128 = 10_000_000;
+const MAX_STDERR_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
 struct Decimal {
@@ -70,7 +72,7 @@ pub fn extract_keyframes(
     ffprobe_path: impl AsRef<OsStr>,
     file_path: impl AsRef<Path>,
 ) -> Result<KeyframeData, FfprobeError> {
-    let output = Command::new(ffprobe_path)
+    let mut child = Command::new(ffprobe_path)
         .args([
             "-fflags",
             "+genpts",
@@ -90,16 +92,55 @@ pub fn extract_keyframes(
             "csv",
         ])
         .arg(file_path.as_ref())
-        .output()?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
 
-    if !output.status.success() {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("ffprobe stdout pipe was not available"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("ffprobe stderr pipe was not available"))?;
+    let stderr_reader = thread::Builder::new()
+        .name("ffprobe-stderr".to_owned())
+        .spawn(move || read_bounded(stderr, MAX_STDERR_BYTES))?;
+
+    // ffprobe can emit one packet row per keyframe. Parse directly from its
+    // pipe so the complete CSV output is never retained in memory.
+    let parsed = parse_ffprobe_output(BufReader::new(stdout));
+    if parsed.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| io::Error::other("ffprobe stderr reader panicked"))??;
+
+    if !status.success() {
         return Err(FfprobeError::Failed {
-            status: output.status,
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status,
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
         });
     }
 
-    parse_ffprobe_output(Cursor::new(output.stdout)).map_err(FfprobeError::Io)
+    parsed.map_err(FfprobeError::Io)
+}
+
+fn read_bounded(mut reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
+    let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let retained_count = read.min(limit.saturating_sub(retained.len()));
+        retained.extend_from_slice(&buffer[..retained_count]);
+    }
+    Ok(retained)
 }
 
 /// Parses ffprobe CSV output produced by [`extract_keyframes`].
@@ -178,4 +219,22 @@ fn parse_decimal(value: &str) -> Option<Decimal> {
     let scale = 10_u128.checked_pow(fractional_digits)?;
     let numerator = whole.checked_mul(scale)?.checked_add(fractional_value)?;
     Some(Decimal { numerator, scale })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::read_bounded;
+
+    #[test]
+    fn bounded_reader_drains_input_without_retaining_the_tail() {
+        let input = (0_u32..100_000)
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let retained = read_bounded(Cursor::new(&input), 1024).expect("bounded read");
+
+        assert_eq!(retained.len(), 1024);
+        assert_eq!(retained, input[..1024]);
+    }
 }
