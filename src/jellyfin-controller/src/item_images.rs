@@ -317,6 +317,72 @@ impl ItemImageService {
         self.upload(item_id, image_type, &extension, &bytes).await
     }
 
+    /// Downloads a replacement before pruning the previously managed images.
+    ///
+    /// This mirrors Jellyfin's lazy replacement behavior: a provider or file
+    /// system failure leaves the current image untouched. Singular images are
+    /// replaced by [`Self::upload`]. Multi-image types are appended first, then
+    /// only the images that existed before the download are removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-URL, download, size, unsupported-type, file-system, or
+    /// persistence errors.
+    pub async fn replace_remote_image(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        url: &str,
+    ) -> Result<(), ItemImageError> {
+        let stored_type = persisted_image_type(image_type);
+        if stored_type == BaseItemImageType::Chapter {
+            return Err(ItemImageError::UnsupportedImageType);
+        }
+        let existing = self
+            .images
+            .list(item_id)
+            .await?
+            .into_iter()
+            .filter(|image| image.image_type == stored_type)
+            .collect::<Vec<_>>();
+        let directory = self.item_metadata_directory(item_id);
+        for image in &existing {
+            if !is_remote_path(&image.path)
+                && Path::new(&image.path).parent() != Some(directory.as_path())
+                && fs::metadata(&image.path).await.is_ok()
+            {
+                tracing::debug!(
+                    %item_id,
+                    image_type = ?stored_type,
+                    path = %image.path,
+                    "preserving an image stored alongside media during remote refresh"
+                );
+                return Ok(());
+            }
+        }
+        let (bytes, extension) = self.download_image_bytes(url).await?;
+        self.upload(item_id, image_type, &extension, &bytes).await?;
+
+        if allows_multiple_images(stored_type) {
+            for previous in existing {
+                let Some(removed) = self.images.delete_at(item_id, stored_type, 0).await? else {
+                    break;
+                };
+                if removed.image_index != previous.image_index {
+                    tracing::warn!(
+                        %item_id,
+                        image_type = ?stored_type,
+                        expected_index = previous.image_index,
+                        removed_index = removed.image_index,
+                        "image set changed while a remote replacement was being pruned"
+                    );
+                }
+                remove_managed_image_file(&removed.path, &directory).await;
+            }
+        }
+        Ok(())
+    }
+
     /// Swaps the file contents addressed by two public image ordinals.
     ///
     /// Missing images and remote paths are official-compatible no-ops. Local
@@ -558,6 +624,22 @@ async fn copy_and_sync(source: &Path, target: &Path) -> std::io::Result<()> {
 async fn cleanup_files<const N: usize>(paths: [&PathBuf; N]) {
     for path in paths {
         let _ = fs::remove_file(path).await;
+    }
+}
+
+async fn remove_managed_image_file(path: &str, directory: &Path) {
+    let path = Path::new(path);
+    if path.parent() != Some(directory) {
+        return;
+    }
+    match fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(
+            path = %path.display(),
+            %error,
+            "replaced image metadata was pruned but its managed file could not be removed"
+        ),
     }
 }
 
