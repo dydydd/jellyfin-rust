@@ -433,14 +433,8 @@ pub(crate) async fn refresh(
     authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
-    let summary = state.library_scan.scan_all().await?;
-    crate::websocket::broadcast_library_changed(
-        &state,
-        &summary.added_ids,
-        &summary.removed_ids,
-        &summary.changed_ids,
-    )
-    .await;
+    state.scheduled_tasks.start_by_key("RefreshLibrary").await?;
+    crate::websocket::broadcast_scheduled_tasks_info(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

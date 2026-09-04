@@ -542,6 +542,26 @@ impl ScheduledTaskService {
         Ok(())
     }
 
+    /// Starts a task by its stable key and executes its registered handler in
+    /// the background.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScheduledTaskError::NotFound`] when the task key doesn't
+    /// exist, or [`ScheduledTaskError::ExecutorUnavailable`] when no handler
+    /// is registered for it.
+    pub async fn start_by_key(&self, task_key: &str) -> Result<(), ScheduledTaskError> {
+        let task_id = self
+            .tasks
+            .read()
+            .await
+            .iter()
+            .find(|task| task.key.eq_ignore_ascii_case(task_key))
+            .map(|task| task.id.clone())
+            .ok_or(ScheduledTaskError::NotFound)?;
+        self.start(&task_id).await
+    }
+
     /// Stops a running task and clears its progress.
     ///
     /// # Errors
@@ -1654,6 +1674,38 @@ mod tests {
         let task = service.get("TestTask").await.unwrap();
         assert_eq!(task.state, TaskState::Idle);
         assert_eq!(task.current_progress_percentage, None);
+    }
+
+    #[tokio::test]
+    async fn start_by_key_resolves_the_task_id() {
+        let mut task = test_task("RefreshLibrary");
+        task.id = "opaque-task-id".to_owned();
+        let service = ScheduledTaskService::new(vec![task]);
+        let started = Arc::new(tokio::sync::Notify::new());
+        service.register_executor("RefreshLibrary", {
+            let started = Arc::clone(&started);
+            move |context| {
+                let started = Arc::clone(&started);
+                Box::pin(async move {
+                    started.notify_one();
+                    context.complete().await;
+                })
+            }
+        });
+
+        service.start_by_key("refreshlibrary").await.unwrap();
+        started.notified().await;
+        for _ in 0..100 {
+            if service.get("opaque-task-id").await.unwrap().state == TaskState::Idle {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            service.get("opaque-task-id").await.unwrap().state,
+            TaskState::Idle
+        );
     }
 
     #[tokio::test]
