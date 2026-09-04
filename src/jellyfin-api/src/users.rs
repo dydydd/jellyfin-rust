@@ -21,7 +21,9 @@ use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, authorization, user_to_dto_with_server_id};
+use crate::{
+    ApiError, AppState, authentication, authorization, startup, user_to_dto_with_server_id,
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -57,16 +59,72 @@ pub(crate) async fn list(
 
 pub(crate) async fn list_public(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    authentication::RemoteIp(remote_ip): authentication::RemoteIp,
 ) -> Result<Json<Vec<UserDto>>, ApiError> {
+    let mut users = state.users.list_public().await?;
+    if startup::is_completed(&state).await? {
+        let device_id = authentication::authorization_info_from_headers(&headers)
+            .ok()
+            .map(|metadata| metadata.device_id)
+            .filter(|device_id| !device_id.trim().is_empty());
+        let supports_persistent_identifier = if let Some(device_id) = device_id.as_deref() {
+            Some(
+                state
+                    .devices
+                    .latest_by_device_id(device_id)
+                    .await?
+                    .is_none_or(|device| supports_persistent_identifier(&device.capabilities)),
+            )
+        } else {
+            None
+        };
+        let is_remote = !state.network_manager.is_in_local_network(remote_ip);
+        let mut filtered = Vec::with_capacity(users.len());
+        for user in users {
+            let policy = authentication::stored_user_policy(&user)?;
+            if is_remote && !policy.enable_remote_access {
+                continue;
+            }
+            if let (Some(device_id), Some(supports_persistent_identifier)) =
+                (device_id.as_deref(), supports_persistent_identifier)
+                && !can_access_device(&policy, device_id, supports_persistent_identifier)
+            {
+                continue;
+            }
+            filtered.push(user);
+        }
+        users = filtered;
+    }
     Ok(Json(
-        state
-            .users
-            .list_public()
-            .await?
+        users
             .into_iter()
             .map(|user| user_to_dto_with_server_id(&state, user))
             .collect(),
     ))
+}
+
+fn supports_persistent_identifier(capabilities: &serde_json::Value) -> bool {
+    // Jellyfin's runtime ClientCapabilities defaults this to true. Stored
+    // records created before a client reports capabilities contain `{}`.
+    capabilities
+        .get("SupportsPersistentIdentifier")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
+fn can_access_device(
+    policy: &UserPolicy,
+    device_id: &str,
+    supports_persistent_identifier: bool,
+) -> bool {
+    policy.is_administrator
+        || policy.enable_all_devices
+        || policy
+            .enabled_devices
+            .iter()
+            .any(|enabled| enabled.eq_ignore_ascii_case(device_id))
+        || !supports_persistent_identifier
 }
 
 #[derive(Debug, Default, Deserialize)]
