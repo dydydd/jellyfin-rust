@@ -95,7 +95,7 @@ pub struct DescendantScanCandidate {
     pub season_id: Option<Uuid>,
 }
 
-/// Minimal fields needed to schedule missing-metadata refreshes.
+/// Minimal fields needed to schedule metadata and image maintenance refreshes.
 #[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
 pub struct MetadataRefreshCandidate {
     pub id: Uuid,
@@ -2209,6 +2209,71 @@ impl BaseItemRepository {
             " ORDER BY CASE item.item_type \
                 WHEN 'Series' THEN 0 WHEN 'Episode' THEN 1 ELSE 2 END, item.id",
         );
+        Ok(
+            MetadataRefreshCandidate::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
+    }
+
+    /// Loads movie and series identifiers that have a TMDb identifier but no
+    /// persisted primary image.
+    ///
+    /// The correlated anti-join mirrors Jellyfin's default image refresh,
+    /// which downloads missing image types without replacing existing ones.
+    /// Only identifiers are returned so scheduling a large image repair does
+    /// not retain complete base-item or image rows in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn missing_primary_image_refresh_candidates(
+        &self,
+        parent_id: Option<Uuid>,
+    ) -> Result<Vec<MetadataRefreshCandidate>, BaseItemError> {
+        let mut values = Vec::new();
+        let mut sql = String::from(
+            r"
+            SELECT item.id, item.item_type, NULL::uuid AS series_id
+            FROM jellyfin.base_items AS item
+            WHERE item.item_type IN ('Movie', 'Series')
+              AND item.primary_version_id IS NULL
+              AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_each_text(
+                        CASE
+                            WHEN jsonb_typeof(item.data -> 'ProviderIds') = 'object'
+                            THEN item.data -> 'ProviderIds'
+                            ELSE '{}'::jsonb
+                        END
+                    ) AS provider(provider_id, provider_value)
+                    WHERE lower(provider_id) = 'tmdb'
+                      AND btrim(provider_value) ~ '^[1-9][0-9]*$'
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM jellyfin.base_item_images AS image
+                    WHERE image.item_id = item.id
+                      AND image.image_type = 0
+              )
+            ",
+        );
+        if let Some(parent_id) = parent_id {
+            push_bind(
+                &mut sql,
+                &mut values,
+                parent_id,
+                " AND EXISTS (\
+                    SELECT 1 FROM jellyfin.ancestor_ids AS closure \
+                    WHERE closure.item_id = item.id AND closure.parent_item_id = ",
+            );
+            sql.push(')');
+        }
+        sql.push_str(" ORDER BY item.id");
         Ok(
             MetadataRefreshCandidate::find_by_statement(Statement::from_sql_and_values(
                 DbBackend::Postgres,

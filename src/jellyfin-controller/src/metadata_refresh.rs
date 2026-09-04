@@ -92,6 +92,13 @@ pub struct MissingMetadataRefreshSummary {
     pub missing_episodes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MissingLibraryRefreshCandidate {
+    item_type: String,
+    item_id: Uuid,
+    options: MetadataRefreshOptions,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MetadataProviderDispatch {
     Tmdb,
@@ -234,17 +241,25 @@ impl MetadataRefreshService {
             .items
             .missing_metadata_refresh_candidates(parent_id)
             .await?;
+        let missing_primary_images = self
+            .items
+            .missing_primary_image_refresh_candidates(parent_id)
+            .await?;
         let missing_episodes = missing_items
             .iter()
             .filter(|item| item.item_type == "Episode")
             .count();
-        let candidates = missing_metadata_candidates(&missing_items);
+        let candidates = missing_library_refresh_plan(&missing_items, &missing_primary_images);
         let candidate_count = candidates.len();
         tracing::info!(
             parent_id = ?parent_id,
             candidates = candidate_count,
-            series_candidates = candidates.iter().filter(|(kind, _)| kind == "Series").count(),
-            movie_candidates = candidates.iter().filter(|(kind, _)| kind == "Movie").count(),
+            series_candidates = candidates.iter().filter(|candidate| candidate.item_type == "Series").count(),
+            movie_candidates = candidates.iter().filter(|candidate| candidate.item_type == "Movie").count(),
+            image_only_candidates = candidates
+                .iter()
+                .filter(|candidate| candidate.options.metadata_refresh_mode == MetadataRefreshMode::None)
+                .count(),
             missing_episodes,
             concurrency = concurrency.clamp(1, 16),
             "missing library metadata refresh started"
@@ -257,22 +272,14 @@ impl MetadataRefreshService {
 
         let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let outcomes = stream::iter(candidates)
-            .map(|(item_type, item_id)| {
+            .map(|candidate| {
                 let service = self.clone();
                 let completed = Arc::clone(&completed);
                 async move {
+                    let item_type = candidate.item_type;
+                    let item_id = candidate.item_id;
                     let result = service
-                        .refresh(
-                            item_id,
-                            tmdb_api_key,
-                            omdb_api_key,
-                            MetadataRefreshOptions {
-                                metadata_refresh_mode: MetadataRefreshMode::Default,
-                                image_refresh_mode: MetadataRefreshMode::Default,
-                                replace_all_metadata: false,
-                                replace_all_images: false,
-                            },
-                        )
+                        .refresh(item_id, tmdb_api_key, omdb_api_key, candidate.options)
                         .await;
                     let finished = completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
                     let finished = f64::from(u32::try_from(finished).unwrap_or(u32::MAX));
@@ -1083,6 +1090,57 @@ fn missing_metadata_candidates(items: &[MetadataRefreshCandidate]) -> Vec<(Strin
     candidates
 }
 
+fn missing_library_refresh_plan(
+    missing_metadata: &[MetadataRefreshCandidate],
+    missing_primary_images: &[MetadataRefreshCandidate],
+) -> Vec<MissingLibraryRefreshCandidate> {
+    let mut scheduled = HashSet::new();
+    let mut plan = missing_metadata_candidates(missing_metadata)
+        .into_iter()
+        .map(|(item_type, item_id)| {
+            scheduled.insert(item_id);
+            MissingLibraryRefreshCandidate {
+                item_type,
+                item_id,
+                options: MetadataRefreshOptions {
+                    metadata_refresh_mode: MetadataRefreshMode::Default,
+                    image_refresh_mode: MetadataRefreshMode::Default,
+                    replace_all_metadata: false,
+                    replace_all_images: false,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut image_candidates = missing_primary_images.to_vec();
+    image_candidates.sort_unstable_by_key(|candidate| {
+        (
+            if candidate.item_type == "Series" {
+                0
+            } else {
+                1
+            },
+            candidate.id,
+        )
+    });
+    for candidate in image_candidates {
+        if !scheduled.insert(candidate.id) {
+            continue;
+        }
+        plan.push(MissingLibraryRefreshCandidate {
+            item_type: candidate.item_type,
+            item_id: candidate.id,
+            options: MetadataRefreshOptions {
+                metadata_refresh_mode: MetadataRefreshMode::None,
+                image_refresh_mode: MetadataRefreshMode::Default,
+                replace_all_metadata: false,
+                replace_all_images: false,
+            },
+        });
+    }
+    plan
+}
+
 fn nfo_person_kind(person_type: &str) -> NfoPersonKind {
     match person_type {
         "Actor" => NfoPersonKind::Actor,
@@ -1389,6 +1447,76 @@ mod tests {
                 ("Series".to_owned(), series_id),
                 ("Movie".to_owned(), movie_id)
             ]
+        );
+    }
+
+    #[test]
+    fn missing_image_candidates_are_deduplicated_with_metadata_refresh_priority() {
+        let series_id = Uuid::from_u128(1);
+        let metadata_movie_id = Uuid::from_u128(2);
+        let image_movie_id = Uuid::from_u128(3);
+        let missing_metadata = [
+            MetadataRefreshCandidate {
+                id: series_id,
+                item_type: "Series".to_owned(),
+                series_id: None,
+            },
+            MetadataRefreshCandidate {
+                id: metadata_movie_id,
+                item_type: "Movie".to_owned(),
+                series_id: None,
+            },
+            MetadataRefreshCandidate {
+                id: Uuid::from_u128(4),
+                item_type: "Episode".to_owned(),
+                series_id: Some(series_id),
+            },
+        ];
+        let missing_images = [
+            MetadataRefreshCandidate {
+                id: image_movie_id,
+                item_type: "Movie".to_owned(),
+                series_id: None,
+            },
+            MetadataRefreshCandidate {
+                id: series_id,
+                item_type: "Series".to_owned(),
+                series_id: None,
+            },
+            MetadataRefreshCandidate {
+                id: image_movie_id,
+                item_type: "Movie".to_owned(),
+                series_id: None,
+            },
+        ];
+
+        let plan = missing_library_refresh_plan(&missing_metadata, &missing_images);
+
+        assert_eq!(plan.len(), 3);
+        assert_eq!(
+            plan.iter()
+                .map(|candidate| candidate.item_id)
+                .collect::<Vec<_>>(),
+            [series_id, metadata_movie_id, image_movie_id]
+        );
+        assert_eq!(
+            plan[0].options,
+            MetadataRefreshOptions {
+                metadata_refresh_mode: MetadataRefreshMode::Default,
+                image_refresh_mode: MetadataRefreshMode::Default,
+                replace_all_metadata: false,
+                replace_all_images: false,
+            }
+        );
+        assert_eq!(plan[1].options, plan[0].options);
+        assert_eq!(
+            plan[2].options,
+            MetadataRefreshOptions {
+                metadata_refresh_mode: MetadataRefreshMode::None,
+                image_refresh_mode: MetadataRefreshMode::Default,
+                replace_all_metadata: false,
+                replace_all_images: false,
+            }
         );
     }
 

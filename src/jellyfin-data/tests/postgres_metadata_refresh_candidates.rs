@@ -1,6 +1,10 @@
 use std::collections::HashSet;
 
-use jellyfin_data::{BaseItemRepository, DatabaseConfig, NewBaseItem};
+use chrono::Utc;
+use jellyfin_data::{
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig, NewBaseItem,
+    NewBaseItemImage,
+};
 use sea_orm::ConnectionTrait;
 use serde_json::json;
 use uuid::Uuid;
@@ -144,6 +148,46 @@ async fn exercise_candidates(database_name: &str) {
         None,
     )
     .await;
+    let image_only_movie = create_item(
+        &repository,
+        "Movie",
+        Some(scoped.id),
+        false,
+        Some("complete metadata without a poster"),
+        Some(json!({ "ProviderIds": { "tMdB": "105" } })),
+        None,
+    )
+    .await;
+    let mut alternate_movie = create_item(
+        &repository,
+        "Movie",
+        Some(scoped.id),
+        false,
+        Some("alternate version"),
+        Some(json!({ "ProviderIds": { "Tmdb": "106" } })),
+        None,
+    )
+    .await;
+    alternate_movie.primary_version_id = Some(image_only_movie.id);
+    repository
+        .update(alternate_movie)
+        .await
+        .expect("alternate movie update");
+    BaseItemImageRepository::new(database.clone())
+        .replace(
+            complete_movie.id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: "/metadata/complete-movie.jpg".to_owned(),
+                date_modified: Utc::now(),
+                width: None,
+                height: None,
+                blurhash: None,
+            }],
+        )
+        .await
+        .expect("existing primary image");
     let outside_movie = create_item(
         &repository,
         "Movie",
@@ -191,6 +235,30 @@ async fn exercise_candidates(database_name: &str) {
         .map(|candidate| candidate.id)
         .collect::<HashSet<_>>();
     assert!(all_ids.contains(&outside_movie.id));
+
+    let missing_primary_images = repository
+        .missing_primary_image_refresh_candidates(Some(scoped.id))
+        .await
+        .expect("missing primary image candidate query");
+    let missing_primary_ids = missing_primary_images
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        missing_primary_ids,
+        HashSet::from([
+            complete_series.id,
+            missing_overview_series.id,
+            image_only_movie.id,
+        ])
+    );
+    assert!(
+        missing_primary_images
+            .iter()
+            .all(|candidate| matches!(candidate.item_type.as_str(), "Movie" | "Series"))
+    );
+    assert!(!missing_primary_ids.contains(&complete_movie.id));
+    assert!(!missing_primary_ids.contains(&missing_tmdb_movie.id));
 
     database.close().await.expect("database pool cleanup");
 }
