@@ -1,0 +1,50 @@
+services:
+  db:
+    image: docker.m.daocloud.io/library/postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jellyfin
+      POSTGRES_USER: jellyfin
+      # Local-development credential. Do not reuse it outside this compose project.
+      POSTGRES_PASSWORD: jellyfin_local_dev
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jellyfin -d jellyfin"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  jellyfin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILDER_IMAGE: docker.m.daocloud.io/library/rust:1.88-bookworm
+        RUNTIME_IMAGE: docker.m.daocloud.io/library/debian:bookworm-slim
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://jellyfin:jellyfin_local_dev@db:5432/jellyfin
+      JELLYFIN_BIND_ADDRESS: 0.0.0.0:8096
+      JELLYFIN_INITIAL_USER: jellyfin
+      JELLYFIN_LOG_DIR: /app/logs
+      JELLYFIN_WEB_DIR: /app/web
+    ports:
+      - "18096:8096"
+    volumes:
+      - jellyfin-programdata:/app/programdata
+      - jellyfin-cache:/app/cache
+      - jellyfin-logs:/app/logs
+      # Place a Jellyfin Web build in ./jellyfin-web/dist to serve the UI.
+      - ./jellyfin-web/dist:/app/web:ro
+      # Optional local media directory. Create ./media before starting.
+      - ./media:/media:ro
+
+volumes:
+  postgres-data:
+  jellyfin-programdata:
+  jellyfin-cache:
+  jellyfin-logs:

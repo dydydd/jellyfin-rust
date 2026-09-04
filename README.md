@@ -89,6 +89,39 @@ cargo run -p jellyfin-server
 
 TMDB API Key 也可以通过 `/System/Configuration` 接口或管理界面写入数据库。
 
+## Docker 本地部署
+
+仓库提供 `compose.yaml`，会启动 Rust 服务和独立的 PostgreSQL 17 容器。首次启动时
+服务会执行迁移并创建 `JELLYFIN_INITIAL_USER` 指定的管理员。默认管理员用户名为
+`jellyfin`。
+
+先确保可选的宿主机目录存在：
+
+```bash
+mkdir -p jellyfin-web/dist media
+```
+
+`jellyfin-web/dist` 应放入 Jellyfin Web 的构建产物；没有它时 API 仍可启动，但根页面
+没有 Web UI。`media` 以只读方式挂载到容器的 `/media`，随后可在媒体库配置中使用该路径。
+
+每次都使用全新的数据库和全新的 Jellyfin 运行时数据时，先删除本 Compose 项目的命名卷：
+
+```bash
+docker compose down --volumes --remove-orphans
+docker compose up --build --force-recreate
+```
+
+第二条命令会在前台输出日志。Compose 默认使用宿主机 `18096`，避免与已有
+Jellyfin/其他服务的 `8096` 冲突；启动成功后访问 `http://localhost:18096`，或检查 API：
+
+```bash
+curl http://localhost:18096/health
+docker compose logs -f jellyfin
+```
+
+停止但保留数据使用 `docker compose down`。只有 `docker compose down --volumes` 会删除
+PostgreSQL 数据库、程序数据、缓存和日志卷。
+
 ## 测试
 
 ```bash

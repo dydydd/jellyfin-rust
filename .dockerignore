@@ -1,0 +1,13 @@
+.git
+.agents
+.codex
+target
+logs
+programdata
+cache
+metadata
+media
+jellyfin-web
+jellyfin
+*.log
+split_alignment_commits.sh

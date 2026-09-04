@@ -3,3 +3,8 @@
 /src/main.rs
 /jellyfin-web/
 /.workbuddy/
+/cache/
+/logs/
+/media/
+/metadata/
+/programdata/

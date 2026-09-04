@@ -18,9 +18,11 @@ use uuid::Uuid;
 
 const DATABASE_PREFIX: &str = "jellyfin_localization_routes_";
 const MAX_RESPONSE_SIZE: usize = 2 * 1024 * 1024;
-const ROUTES: [&str; 4] = [
+const ROUTES: [&str; 6] = [
     "/Localization/Cultures",
+    "/Localization/cultures",
     "/Localization/Countries",
+    "/Localization/countries",
     "/Localization/ParentalRatings",
     "/Localization/Options",
 ];
@@ -155,11 +157,19 @@ async fn exercise_localization_routes(database_name: &str) {
 async fn assert_anonymous_de_contract(app: &Router) {
     let cultures = get(app, "/Localization/Cultures", None).await;
     assert_eq!(cultures.status(), StatusCode::OK);
-    assert_cultures(&body_json(cultures).await);
+    let cultures = body_json(cultures).await;
+    assert_cultures(&cultures);
+    let lowercase_cultures = get(app, "/Localization/cultures", None).await;
+    assert_eq!(lowercase_cultures.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase_cultures).await, cultures);
 
     let countries = get(app, "/Localization/Countries", None).await;
     assert_eq!(countries.status(), StatusCode::OK);
-    assert_countries(&body_json(countries).await);
+    let countries = body_json(countries).await;
+    assert_countries(&countries);
+    let lowercase_countries = get(app, "/Localization/countries", None).await;
+    assert_eq!(lowercase_countries.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase_countries).await, countries);
 
     let ratings = get(app, "/Localization/ParentalRatings", None).await;
     assert_eq!(ratings.status(), StatusCode::OK);
