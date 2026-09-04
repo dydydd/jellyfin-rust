@@ -13,6 +13,7 @@
 - Keep changes small and independently reviewable. Complete one coherent fix, run its focused tests, and commit it before starting another fix.
 - Preserve unrelated user changes and existing commits. Never rewrite history or use destructive Git commands.
 - Prefer bounded concurrency, streaming or pagination, batched PostgreSQL operations, and short-lived buffers for library scans. Do not collect an entire library into memory when work can be processed incrementally.
+- Keep filesystem watcher queues bounded and deduplicated. Coalesce changed paths by virtual library before scanning, reuse one short-lived directory snapshot for sibling media discovery, and batch PostgreSQL reads and writes instead of issuing per-item queries.
 - Keep database invariants in PostgreSQL where practical (constraints, indexes, atomic upserts, transactions), while keeping domain rules explicit in Rust.
 - Avoid N+1 queries. Use set-based queries or bounded batches, and add migrations for indexes or constraints required by new query patterns.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
@@ -20,6 +21,8 @@
 ## Compatibility expectations
 
 - Match official Jellyfin DTO field names, nullability, defaults, HTTP status codes, authorization requirements, sorting, pagination, and case-insensitive matching.
+- ASP.NET route, query-name, and JSON-property binding is case-insensitive. Compatibility tests must cover PascalCase, camelCase, and representative lowercase legacy requests; do not assume an Axum route or Serde field is equivalent merely because one casing works.
+- Follow the official `JsonDefaults` value semantics. Where it permits them, accept numeric strings and case-insensitive or integer enum representations, and mirror the full official parameter set when implementing a legacy endpoint.
 - Preserve unknown or optional metadata where the official server does; a partial provider response must not erase valid existing metadata.
 - Metadata providers must have deterministic priority and merge behavior. Network calls need timeouts, bounded concurrency, and useful error context.
 - Cancellation of scans and refreshes must promptly stop new work, release locks/permits, and leave the database in a consistent state.
@@ -37,11 +40,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Some `jellyfin-data` integration tests require PostgreSQL and create temporary databases whose names begin with `jellyfin_`. Do not point those tests at a database containing user data.
 
-For scan-memory work, include a repeatable large-directory or synthetic-library measurement when possible. Report both peak resident memory and whether memory returns after the scan; do not infer a leak from allocator-retained RSS alone.
+For scan-memory work, include a repeatable large-directory or synthetic-library measurement when possible. Report baseline, peak, 60-second, and 300-second post-scan values. Separate process RSS and anonymous memory (`RssAnon` or `smaps_rollup` Anonymous) from cgroup `file` and `inactive_file`; metadata image page cache is reclaimable and must not be reported as a Rust heap leak. Also report whether memory returns after the scan, and do not infer a leak from allocator-retained RSS alone.
 
 ## Deployment verification
 
-- The deployment checkout is `/home/li/jellyfin-rust` on the configured test host. Inspect its current state before changing it.
+- The deployment checkout is `/home/lqs/jellyfin-rust` on the configured test host. Inspect its current state before changing it; do not assume the local workspace path is valid remotely.
 - Deploy only committed revisions. Record the revision tested and verify health, relevant API behavior, scan completion/cancellation, and service logs.
 - Do not delete databases, media, configuration, containers, or volumes during deployment validation unless the user explicitly requests it.
 
