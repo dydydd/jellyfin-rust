@@ -2,10 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, RwLock},
     thread::available_parallelism,
 };
 
@@ -46,7 +43,7 @@ use jellyfin_xbmc_metadata::{
 use md5::{Digest, Md5};
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::fs;
+use tokio::{fs, sync::Notify};
 use uuid::Uuid;
 
 use crate::{
@@ -103,8 +100,85 @@ pub struct LibraryScanService {
     probe_path: Arc<PathBuf>,
     ffmpeg_path: RwLock<Arc<PathBuf>>,
     image_cache_directory: RwLock<Arc<PathBuf>>,
-    fanout_concurrency: AtomicUsize,
+    media_item_limiter: MediaItemConcurrencyLimiter,
     active_scans: Arc<Mutex<HashSet<Uuid>>>,
+}
+
+#[derive(Debug)]
+struct MediaItemConcurrencyLimiter {
+    state: Mutex<MediaItemConcurrencyState>,
+    changed: Notify,
+}
+
+#[derive(Debug)]
+struct MediaItemConcurrencyState {
+    limit: usize,
+    in_flight: usize,
+}
+
+impl MediaItemConcurrencyLimiter {
+    fn new(limit: usize) -> Self {
+        Self {
+            state: Mutex::new(MediaItemConcurrencyState {
+                limit: limit.max(1),
+                in_flight: 0,
+            }),
+            changed: Notify::new(),
+        }
+    }
+
+    fn limit(&self) -> usize {
+        self.state
+            .lock()
+            .expect("library scan media-item concurrency lock poisoned")
+            .limit
+    }
+
+    fn set_limit(&self, limit: usize) {
+        self.state
+            .lock()
+            .expect("library scan media-item concurrency lock poisoned")
+            .limit = limit.max(1);
+        self.changed.notify_waiters();
+    }
+
+    async fn acquire(&self) -> MediaItemConcurrencyPermit<'_> {
+        loop {
+            // Register before checking the state so an increase or release
+            // cannot be lost between observing a full pool and awaiting it.
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .expect("library scan media-item concurrency lock poisoned");
+                if state.in_flight < state.limit {
+                    state.in_flight += 1;
+                    return MediaItemConcurrencyPermit { limiter: self };
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
+struct MediaItemConcurrencyPermit<'a> {
+    limiter: &'a MediaItemConcurrencyLimiter,
+}
+
+impl Drop for MediaItemConcurrencyPermit<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .limiter
+            .state
+            .lock()
+            .expect("library scan media-item concurrency lock poisoned");
+        state.in_flight = state.in_flight.saturating_sub(1);
+        drop(state);
+        self.limiter.changed.notify_one();
+    }
 }
 
 struct LibraryScanGuard {
@@ -149,14 +223,13 @@ impl LibraryScanService {
             probe_path: Arc::new(probe_path.into()),
             ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
             image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
-            fanout_concurrency: AtomicUsize::new(default_fanout_concurrency()),
+            media_item_limiter: MediaItemConcurrencyLimiter::new(default_fanout_concurrency()),
             active_scans: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     pub fn set_fanout_concurrency(&self, concurrency: usize) {
-        self.fanout_concurrency
-            .store(concurrency, Ordering::Release);
+        self.media_item_limiter.set_limit(concurrency);
     }
 
     pub fn set_ffmpeg_path(&self, ffmpeg_path: impl Into<PathBuf>) {
@@ -178,7 +251,7 @@ impl LibraryScanService {
     }
 
     fn fanout_concurrency(&self) -> usize {
-        self.fanout_concurrency.load(Ordering::Acquire).max(1)
+        self.media_item_limiter.limit()
     }
 
     fn ffmpeg_path(&self) -> Arc<PathBuf> {
@@ -1288,7 +1361,14 @@ impl LibraryScanService {
             for (path, media_kind) in files {
                 let existing = path.to_str().and_then(|p| existing_by_path.remove(p));
                 let (item_added, item_id) = self
-                    .ensure_media_item(path, parent_id, *media_kind, kind, library_root, existing)
+                    .ensure_media_item_with_permit(
+                        path,
+                        parent_id,
+                        *media_kind,
+                        kind,
+                        library_root,
+                        existing,
+                    )
                     .await?;
                 if item_added {
                     added += 1;
@@ -1306,7 +1386,7 @@ impl LibraryScanService {
             let existing = path
                 .to_str()
                 .and_then(|value| existing_by_path.remove(value));
-            work.push(self.ensure_media_item(
+            work.push(self.ensure_media_item_with_permit(
                 path,
                 parent_id,
                 *media_kind,
@@ -1322,7 +1402,7 @@ impl LibraryScanService {
                 let existing = path
                     .to_str()
                     .and_then(|value| existing_by_path.remove(value));
-                work.push(self.ensure_media_item(
+                work.push(self.ensure_media_item_with_permit(
                     path,
                     parent_id,
                     *media_kind,
@@ -1344,6 +1424,21 @@ impl LibraryScanService {
             }
         }
         Ok(added)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn ensure_media_item_with_permit(
+        &self,
+        path: &Path,
+        parent_id: Uuid,
+        media_kind: MediaKind,
+        kind: ScanLibraryKind,
+        library_root: &Path,
+        existing: Option<base_item::Model>,
+    ) -> Result<(bool, Uuid), LibraryScanError> {
+        let _permit = self.media_item_limiter.acquire().await;
+        self.ensure_media_item(path, parent_id, media_kind, kind, library_root, existing)
+            .await
     }
 
     async fn ensure_collection_folder(
@@ -3365,8 +3460,74 @@ mod tests {
     use std::{
         collections::HashSet,
         path::Path,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
+
+    async fn measure_limiter_peak(
+        service: Arc<LibraryScanService>,
+        expected_limit: usize,
+    ) -> usize {
+        let current = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut workers = Vec::new();
+
+        // Model two library batches entering the shared limiter concurrently.
+        for _batch in 0..2 {
+            for _item in 0..4 {
+                let service = Arc::clone(&service);
+                let current = Arc::clone(&current);
+                let peak = Arc::clone(&peak);
+                let gate = Arc::clone(&gate);
+                workers.push(tokio::spawn(async move {
+                    let _permit = service.media_item_limiter.acquire().await;
+                    let in_flight = current.fetch_add(1, Ordering::AcqRel) + 1;
+                    peak.fetch_max(in_flight, Ordering::AcqRel);
+                    let gate_permit = gate.acquire().await.expect("test gate remains open");
+                    current.fetch_sub(1, Ordering::AcqRel);
+                    drop(gate_permit);
+                }));
+            }
+        }
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while current.load(Ordering::Acquire) < expected_limit {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("configured number of workers should enter the limiter");
+        assert_eq!(current.load(Ordering::Acquire), expected_limit);
+
+        gate.add_permits(workers.len());
+        for worker in workers {
+            worker.await.expect("limiter worker should finish");
+        }
+        assert_eq!(current.load(Ordering::Acquire), 0);
+        peak.load(Ordering::Acquire)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn media_item_limiter_is_shared_across_batches_and_tracks_updates() {
+        let service = Arc::new(LibraryScanService::new(
+            sea_orm::DatabaseConnection::Disconnected,
+        ));
+        service.set_fanout_concurrency(2);
+        assert_eq!(service.fanout_concurrency(), 2);
+        assert_eq!(measure_limiter_peak(Arc::clone(&service), 2).await, 2);
+
+        service.set_fanout_concurrency(3);
+        assert_eq!(service.fanout_concurrency(), 3);
+        assert_eq!(measure_limiter_peak(Arc::clone(&service), 3).await, 3);
+
+        service.set_fanout_concurrency(0);
+        assert_eq!(service.fanout_concurrency(), 1);
+        assert_eq!(measure_limiter_peak(service, 1).await, 1);
+    }
 
     #[test]
     fn dropping_scan_guard_releases_only_its_collections() {
