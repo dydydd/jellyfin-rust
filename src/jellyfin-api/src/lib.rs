@@ -463,6 +463,18 @@ impl AppState {
         self
     }
 
+    /// Replaces the language and country used by online metadata providers.
+    #[must_use]
+    pub fn with_metadata_locale(
+        self,
+        language: impl Into<String>,
+        country: impl Into<String>,
+    ) -> Self {
+        self.metadata_refresh
+            .set_preferred_locale(language, country);
+        self
+    }
+
     /// Replaces the Quick Connect availability used by authentication.
     #[must_use]
     pub fn with_quick_connect_available(self, available: bool) -> Self {

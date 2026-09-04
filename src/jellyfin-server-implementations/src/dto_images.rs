@@ -153,6 +153,48 @@ impl<C> PersistedDtoImageProjectionService<C> {
 }
 
 impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
+    /// Loads stable primary-image cache tags for several concrete item IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database or corrupt-image-row error.
+    pub async fn primary_image_tags(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, String>, PersistedDtoImageProjectionError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let paths = self
+            .items
+            .get_many(item_ids)
+            .await?
+            .into_iter()
+            .map(|item| (item.id, item.path))
+            .collect::<HashMap<_, _>>();
+        let mut tags = HashMap::new();
+        for image in self.images.list_many(item_ids).await? {
+            if image.image_type != BaseItemImageType::Primary || image.image_index != 0 {
+                continue;
+            }
+            let Some(path) = paths.get(&image.item_id) else {
+                continue;
+            };
+            let item = DtoImageItem {
+                id: image.item_id,
+                kind: DtoImageItemKind::Other,
+                images: Vec::new(),
+                path: path.clone(),
+                default_primary_image_aspect_ratio: None,
+            };
+            let image = persisted_image(image);
+            if let Some(tag) = self.cache_tags.get_image_cache_tag(&item, &image) {
+                tags.insert(item.id, tag);
+            }
+        }
+        Ok(tags)
+    }
+
     /// Loads an item and the parent candidates required by Jellyfin's primary
     /// image inheritance behavior, then projects its DTO image fields.
     ///

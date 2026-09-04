@@ -40,6 +40,10 @@ pub(crate) async fn update(
         .await?;
     *state.tmdb_api_key.write().await = Arc::from(updated.tmdb_api_key);
     *state.omdb_api_key.write().await = Arc::from(updated.omdb_api_key);
+    state.metadata_refresh.set_preferred_locale(
+        updated.preferred_metadata_language,
+        updated.metadata_country_code,
+    );
     state
         .quick_connect_capability
         .set_enabled(updated.quick_connect_available);

@@ -238,6 +238,8 @@ pub struct BaseItemPerson {
     pub role: String,
     #[serde(rename = "Type")]
     pub person_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_image_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -946,6 +948,18 @@ pub(crate) async fn load_relation_metadata(
         .people_for_items(&item_ids)
         .await
         .map_err(|_| ApiError::Internal)?;
+    let person_ids = people
+        .values()
+        .flatten()
+        .map(|credit| credit.person.id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let person_image_tags = state
+        .dto_images
+        .primary_image_tags(&person_ids)
+        .await
+        .map_err(|_| ApiError::Internal)?;
 
     let mut result = HashMap::with_capacity(items.len());
     for item in items {
@@ -960,6 +974,7 @@ pub(crate) async fn load_relation_metadata(
                     id: credit.person.id.simple().to_string(),
                     role: credit.role,
                     person_type: credit.person_type,
+                    primary_image_tag: person_image_tags.get(&credit.person.id).cloned(),
                 })
                 .collect(),
             tags: tags.remove(&item.id).unwrap_or_default(),
@@ -1678,6 +1693,28 @@ fn metadata_strings(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn person_serialization_includes_primary_image_tag() {
+        let person = BaseItemPerson {
+            name: "Actor".to_owned(),
+            id: "person-id".to_owned(),
+            role: "Lead".to_owned(),
+            person_type: "Actor".to_owned(),
+            primary_image_tag: Some("image-tag".to_owned()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(person).unwrap(),
+            json!({
+                "Name": "Actor",
+                "Id": "person-id",
+                "Role": "Lead",
+                "Type": "Actor",
+                "PrimaryImageTag": "image-tag"
+            })
+        );
+    }
 
     #[test]
     fn item_to_dto_projects_persisted_metadata_json() {
