@@ -103,6 +103,26 @@ pub struct MetadataRefreshCandidate {
     pub series_id: Option<Uuid>,
 }
 
+/// Minimal fields needed to reconcile series, season, and episode hierarchy.
+#[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
+pub struct TvHierarchyCandidate {
+    pub id: Uuid,
+    pub row_version: i64,
+    pub item_type: String,
+    pub path: Option<String>,
+    pub parent_id: Option<Uuid>,
+    pub index_number: Option<i32>,
+    pub parent_index_number: Option<i32>,
+    pub series_id: Option<Uuid>,
+    pub season_id: Option<Uuid>,
+    pub series_presentation_unique_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, FromQueryResult)]
+struct BaseItemRowVersion {
+    row_version: i64,
+}
+
 /// Stable database ordering for base-item queries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BaseItemOrder {
@@ -2045,6 +2065,94 @@ impl BaseItemRepository {
             .all(self.database.as_ref())
             .await?,
         )
+    }
+
+    /// Loads the minimal TV descendants needed to repair season hierarchy.
+    ///
+    /// Episode media paths and all large metadata fields are deliberately
+    /// excluded because hierarchy reconciliation never reads them.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn tv_hierarchy_candidates(
+        &self,
+        id: Uuid,
+    ) -> Result<Vec<TvHierarchyCandidate>, BaseItemError> {
+        Ok(
+            TvHierarchyCandidate::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                SELECT item.id,
+                       item.row_version,
+                       item.item_type,
+                       CASE WHEN item.item_type = 'Season' THEN item.path END AS path,
+                       item.parent_id,
+                       item.index_number,
+                       item.parent_index_number,
+                       item.series_id,
+                       item.season_id,
+                       item.series_presentation_unique_key
+                FROM jellyfin.ancestor_ids AS closure
+                JOIN jellyfin.base_items AS item ON item.id = closure.item_id
+                WHERE closure.parent_item_id = $1
+                  AND item.item_type IN ('Series', 'Season', 'Episode')
+                ORDER BY closure.depth, closure.item_id
+                ",
+                [id.into()],
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
+    }
+
+    /// Updates only an episode's season hierarchy fields.
+    ///
+    /// This preserves optimistic locking and hierarchy validation without
+    /// loading the episode's full metadata row into application memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns hierarchy, stale-version, not-found, or database errors.
+    pub async fn reconcile_tv_episode_hierarchy(
+        &self,
+        id: Uuid,
+        parent_id: Uuid,
+        season_id: Uuid,
+        series_presentation_unique_key: String,
+        expected_row_version: i64,
+    ) -> Result<(), BaseItemError> {
+        let transaction = self.database.begin().await?;
+        acquire_hierarchy_lock(&transaction).await?;
+        let current = BaseItemRowVersion::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT row_version FROM jellyfin.base_items WHERE id = $1",
+            [id.into()],
+        ))
+        .one(&transaction)
+        .await?
+        .ok_or(BaseItemError::NotFound)?;
+        if current.row_version != expected_row_version {
+            return Err(BaseItemError::StaleVersion);
+        }
+        validate_parent(&transaction, id, Some(parent_id)).await?;
+        let result = base_item::Entity::update_many()
+            .set(base_item::ActiveModel {
+                parent_id: Set(Some(parent_id)),
+                season_id: Set(Some(season_id)),
+                series_presentation_unique_key: Set(Some(series_presentation_unique_key)),
+                ..Default::default()
+            })
+            .filter(base_item::Column::Id.eq(id))
+            .filter(base_item::Column::RowVersion.eq(expected_row_version))
+            .exec(&transaction)
+            .await
+            .map_err(map_database_error)?;
+        if result.rows_affected == 0 {
+            return Err(BaseItemError::StaleVersion);
+        }
+        transaction.commit().await?;
+        Ok(())
     }
 
     /// Loads movie, series, and episode rows that have no overview or TMDb id.

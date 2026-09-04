@@ -15,8 +15,8 @@ use jellyfin_data::{
     MediaAttachmentRepository, MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository,
     MediaStreamStoreError, NewBaseItem, NewBaseItemImage, NewChapter, NewPerson,
     PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
-    PersonError as PersonStoreError, PersonRepository, USER_ROOT_FOLDER_ID, VirtualFolderError,
-    VirtualFolderRepository, VirtualFolderWithPaths,
+    PersonError as PersonStoreError, PersonRepository, TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
+    VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
     entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_media_encoding::probing::{
@@ -586,13 +586,12 @@ impl LibraryScanService {
         &self,
         collection_id: Uuid,
     ) -> Result<(), LibraryScanError> {
-        let mut items_by_series = HashMap::<Uuid, Vec<base_item::Model>>::new();
+        let mut items_by_series = HashMap::<Uuid, Vec<TvHierarchyCandidate>>::new();
         let mut series_order = Vec::new();
-        for entry in self.items.descendants(collection_id).await? {
-            let item = entry.item;
+        for item in self.items.tv_hierarchy_candidates(collection_id).await? {
             if item.item_type == "Series" {
                 series_order.push(item.id);
-                items_by_series.entry(item.id).or_default().push(item);
+                items_by_series.entry(item.id).or_default();
             } else if let Some(series_id) = item.series_id {
                 items_by_series.entry(series_id).or_default().push(item);
             }
@@ -633,7 +632,7 @@ impl LibraryScanService {
                     season.id
                 } else if let Some(season) = self.items.get(season_id).await? {
                     let season_id = season.id;
-                    seasons.push(season);
+                    seasons.push(tv_hierarchy_candidate(season));
                     season_id
                 } else {
                     let created = NewBaseItem {
@@ -662,7 +661,7 @@ impl LibraryScanService {
                     };
                     let created = self.items.create(created).await?;
                     let season_id = created.id;
-                    seasons.push(created);
+                    seasons.push(tv_hierarchy_candidate(created));
                     season_id
                 };
                 let mut episode_changed = false;
@@ -681,7 +680,17 @@ impl LibraryScanService {
                     episode_season_ids.insert(season_id);
                 }
                 if episode_changed {
-                    self.items.update(episode).await?;
+                    self.items
+                        .reconcile_tv_episode_hierarchy(
+                            episode.id,
+                            season_id,
+                            season_id,
+                            episode
+                                .series_presentation_unique_key
+                                .expect("changed TV episode always has a series key"),
+                            episode.row_version,
+                        )
+                        .await?;
                     episode_season_ids.insert(season_id);
                 }
             }
@@ -2194,6 +2203,21 @@ impl LibraryScanService {
             &directory_entries,
             start_index,
         ))
+    }
+}
+
+fn tv_hierarchy_candidate(item: base_item::Model) -> TvHierarchyCandidate {
+    TvHierarchyCandidate {
+        id: item.id,
+        row_version: item.row_version,
+        item_type: item.item_type,
+        path: item.path,
+        parent_id: item.parent_id,
+        index_number: item.index_number,
+        parent_index_number: item.parent_index_number,
+        series_id: item.series_id,
+        season_id: item.season_id,
+        series_presentation_unique_key: item.series_presentation_unique_key,
     }
 }
 

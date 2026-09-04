@@ -79,6 +79,7 @@ async fn assert_crud_hierarchy_and_move(
 
     assert_lookup_and_ordering(repository, &left, &zulu, &alpha).await;
     assert_closure(repository, left.id, zulu.id, grandchild.id).await;
+    assert_tv_hierarchy_projection(repository, left.id).await;
     assert_optimistic_update(repository, alpha).await;
     assert_move_and_cycles(repository, &left, &right, &zulu, &grandchild).await;
 
@@ -99,6 +100,103 @@ async fn assert_crud_hierarchy_and_move(
             .is_none()
     );
     assert!(repository.delete(left.id).await.expect("left cleanup"));
+}
+
+async fn assert_tv_hierarchy_projection(repository: &BaseItemRepository, root_id: Uuid) {
+    let series = create_item(repository, "Series", "TV Series", Some(root_id), true).await;
+    let mut season = NewBaseItem::new(Uuid::new_v4(), "Season");
+    season.parent_id = Some(series.id);
+    season.index_number = Some(2);
+    season.series_id = Some(series.id);
+    let season = repository.create(season).await.expect("TV season creation");
+
+    let episode_id = Uuid::new_v4();
+    let mut episode = NewBaseItem::new(episode_id, "Episode");
+    episode.parent_id = Some(series.id);
+    episode.index_number = Some(3);
+    episode.parent_index_number = Some(2);
+    episode.series_id = Some(series.id);
+    episode.path = Some(format!("/tv/{episode_id}.mkv"));
+    episode.data = Some(json!({ "large": "x".repeat(64 * 1024) }));
+    episode.overview = Some("overview excluded from projection".repeat(2_048));
+    let episode = repository
+        .create(episode)
+        .await
+        .expect("TV episode creation");
+
+    let candidates = repository
+        .tv_hierarchy_candidates(root_id)
+        .await
+        .expect("TV hierarchy candidate lookup");
+    let series_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.id == series.id)
+        .expect("series candidate");
+    assert_eq!(series_candidate.item_type, "Series");
+    let season_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.id == season.id)
+        .expect("season candidate");
+    assert_eq!(season_candidate.index_number, Some(2));
+    assert_eq!(season_candidate.series_id, Some(series.id));
+    let episode_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.id == episode.id)
+        .expect("episode candidate");
+    assert_eq!(episode_candidate.parent_id, Some(series.id));
+    assert_eq!(episode_candidate.parent_index_number, Some(2));
+    assert_eq!(episode_candidate.index_number, Some(3));
+    assert_eq!(episode_candidate.series_id, Some(series.id));
+    assert_eq!(episode_candidate.season_id, None);
+    assert_eq!(episode_candidate.path, None);
+    assert!(
+        std::mem::size_of_val(episode_candidate) < std::mem::size_of::<base_item::Model>(),
+        "TV projection must retain fewer inline fields than a full base item"
+    );
+
+    repository
+        .reconcile_tv_episode_hierarchy(
+            episode.id,
+            season.id,
+            season.id,
+            series.id.simple().to_string(),
+            episode_candidate.row_version,
+        )
+        .await
+        .expect("partial episode hierarchy update");
+    let updated_episode = repository
+        .get(episode.id)
+        .await
+        .expect("updated episode lookup")
+        .expect("updated episode");
+    assert_eq!(updated_episode.parent_id, Some(season.id));
+    assert_eq!(updated_episode.season_id, Some(season.id));
+    assert_eq!(updated_episode.path, episode.path);
+    assert_eq!(updated_episode.data, episode.data);
+    assert_eq!(updated_episode.overview, episode.overview);
+    assert_eq!(
+        updated_episode.series_presentation_unique_key.as_deref(),
+        Some(series.id.simple().to_string().as_str())
+    );
+    let ancestors = repository
+        .ancestors(episode.id)
+        .await
+        .expect("updated episode ancestors");
+    assert_eq!(
+        ancestors.first().map(|entry| entry.item.id),
+        Some(season.id)
+    );
+
+    let stale = repository
+        .reconcile_tv_episode_hierarchy(
+            episode.id,
+            season.id,
+            season.id,
+            series.id.simple().to_string(),
+            episode_candidate.row_version,
+        )
+        .await;
+    assert!(matches!(stale, Err(BaseItemError::StaleVersion)));
 }
 
 async fn assert_lookup_and_ordering(
