@@ -109,6 +109,10 @@ async fn main() -> anyhow::Result<()> {
     .with_server_id(server_id)
     .with_tmdb_api_key(tmdb_api_key)
     .with_omdb_api_key(omdb_api_key)
+    .with_metadata_locale(
+        persisted_configuration.preferred_metadata_language,
+        persisted_configuration.metadata_country_code,
+    )
     .with_quick_connect_available(persisted_configuration.quick_connect_available)
     .with_metrics_enabled(persisted_configuration.enable_metrics)
     .with_startup_user(initial_user.id)

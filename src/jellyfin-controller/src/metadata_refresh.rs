@@ -97,6 +97,7 @@ pub struct MetadataRefreshService {
     people: Arc<PersonRepository>,
     updates: Arc<ItemUpdateRepository>,
     images: Arc<RwLock<Option<Arc<ItemImageService>>>>,
+    preferred_locale: Arc<RwLock<(String, String)>>,
     virtual_folders: VirtualFolderService,
 }
 
@@ -113,6 +114,7 @@ impl MetadataRefreshService {
             people: Arc::new(PersonRepository::new(Arc::clone(&database))),
             updates: Arc::new(ItemUpdateRepository::new(Arc::clone(&database))),
             images: Arc::new(RwLock::new(images)),
+            preferred_locale: Arc::new(RwLock::new(("en".to_owned(), "US".to_owned()))),
             virtual_folders: VirtualFolderService::new(database),
         }
     }
@@ -127,6 +129,18 @@ impl MetadataRefreshService {
             .images
             .write()
             .expect("metadata refresh image service lock poisoned") = images;
+    }
+
+    /// Replaces the language and country used for online metadata requests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared locale lock is poisoned.
+    pub fn set_preferred_locale(&self, language: impl Into<String>, country: impl Into<String>) {
+        *self
+            .preferred_locale
+            .write()
+            .expect("metadata refresh locale lock poisoned") = (language.into(), country.into());
     }
 
     /// Refreshes series that contain incomplete episodes and movie/series
@@ -504,8 +518,14 @@ impl MetadataRefreshService {
             .expect("metadata refresh image service lock poisoned")
             .as_ref()
             .map(Arc::clone);
-        TmdbMetadataProvider::new(
+        let locale = self
+            .preferred_locale
+            .read()
+            .expect("metadata refresh locale lock poisoned");
+        TmdbMetadataProvider::with_locale(
             api_key.to_owned(),
+            &locale.0,
+            &locale.1,
             Arc::clone(&self.items),
             Arc::clone(&self.values),
             Arc::clone(&self.people),

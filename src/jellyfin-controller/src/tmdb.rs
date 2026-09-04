@@ -55,6 +55,8 @@ pub(crate) struct TmdbClient {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    language: String,
+    image_languages: String,
 }
 
 impl TmdbClient {
@@ -65,10 +67,37 @@ impl TmdbClient {
 
     #[must_use]
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self::with_base_url_and_locale(api_key, base_url, "en", "US")
+    }
+
+    #[must_use]
+    pub fn with_locale(
+        api_key: impl Into<String>,
+        language: impl AsRef<str>,
+        country: impl AsRef<str>,
+    ) -> Self {
+        Self::with_base_url_and_locale(api_key, TMDB_API_BASE_URL.to_owned(), language, country)
+    }
+
+    fn with_base_url_and_locale(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        language: impl AsRef<str>,
+        country: impl AsRef<str>,
+    ) -> Self {
+        let language = tmdb_language(language.as_ref(), country.as_ref());
+        let image_language = language.split('-').next().unwrap_or("en");
+        let image_languages = if image_language.eq_ignore_ascii_case("en") {
+            "en,null".to_owned()
+        } else {
+            format!("{image_language},en,null")
+        };
         Self {
             http: http_client(),
             api_key: api_key.into(),
             base_url: base_url.into().trim_end_matches('/').to_owned(),
+            language,
+            image_languages,
         }
     }
 
@@ -79,7 +108,7 @@ impl TmdbClient {
     ) -> Result<Vec<RemoteSearchResult>, MetadataProviderError> {
         let mut query = vec![
             ("query", name),
-            ("language", "en-US"),
+            ("language", self.language.as_str()),
             ("include_adult", "false"),
         ];
         let year_param = year.map(|year| year.to_string());
@@ -103,7 +132,7 @@ impl TmdbClient {
     ) -> Result<Vec<RemoteSearchResult>, MetadataProviderError> {
         let mut query = vec![
             ("query", name),
-            ("language", "en-US"),
+            ("language", self.language.as_str()),
             ("include_adult", "false"),
         ];
         let year_param = year.map(|year| year.to_string());
@@ -127,7 +156,11 @@ impl TmdbClient {
         let response = self
             .get_json::<TmdbSearchResponse<TmdbSearchPerson>>(
                 "/search/person",
-                &[("query", name), ("include_adult", "false")],
+                &[
+                    ("query", name),
+                    ("language", self.language.as_str()),
+                    ("include_adult", "false"),
+                ],
             )
             .await?;
         Ok(response
@@ -144,7 +177,7 @@ impl TmdbClient {
         let response = self
             .get_json::<TmdbSearchResponse<TmdbSearchCollection>>(
                 "/search/collection",
-                &[("query", name), ("language", "en-US")],
+                &[("query", name), ("language", self.language.as_str())],
             )
             .await?;
         Ok(response
@@ -161,7 +194,7 @@ impl TmdbClient {
         self.get_json(
             &format!("/movie/{id}"),
             &[
-                ("language", "en-US"),
+                ("language", self.language.as_str()),
                 (
                     "append_to_response",
                     "credits,release_dates,external_ids,videos,images,keywords",
@@ -175,7 +208,7 @@ impl TmdbClient {
         self.get_json(
             &format!("/tv/{id}"),
             &[
-                ("language", "en-US"),
+                ("language", self.language.as_str()),
                 (
                     "append_to_response",
                     "credits,content_ratings,external_ids,videos,images,keywords",
@@ -193,7 +226,7 @@ impl TmdbClient {
         self.get_json(
             &format!("/tv/{id}/season/{season_number}"),
             &[
-                ("language", "en-US"),
+                ("language", self.language.as_str()),
                 ("append_to_response", "credits,external_ids,videos"),
             ],
         )
@@ -209,7 +242,7 @@ impl TmdbClient {
         self.get_json(
             &format!("/tv/{series_id}/season/{season_number}/episode/{episode_number}"),
             &[
-                ("language", "en-US"),
+                ("language", self.language.as_str()),
                 ("append_to_response", "credits,external_ids,videos"),
             ],
         )
@@ -220,8 +253,11 @@ impl TmdbClient {
         &self,
         id: i64,
     ) -> Result<TmdbCollectionDetails, MetadataProviderError> {
-        self.get_json(&format!("/collection/{id}"), &[("language", "en-US")])
-            .await
+        self.get_json(
+            &format!("/collection/{id}"),
+            &[("language", self.language.as_str())],
+        )
+        .await
     }
 
     pub(crate) async fn person_details(
@@ -231,7 +267,7 @@ impl TmdbClient {
         self.get_json(
             &format!("/person/{id}"),
             &[
-                ("language", "en-US"),
+                ("language", self.language.as_str()),
                 ("append_to_response", "external_ids,images"),
             ],
         )
@@ -241,7 +277,7 @@ impl TmdbClient {
     pub(crate) async fn movie_images(&self, id: i64) -> Result<TmdbImages, MetadataProviderError> {
         self.get_json(
             &format!("/movie/{id}/images"),
-            &[("include_image_language", "en,null")],
+            &[("include_image_language", self.image_languages.as_str())],
         )
         .await
     }
@@ -249,7 +285,7 @@ impl TmdbClient {
     pub(crate) async fn tv_images(&self, id: i64) -> Result<TmdbImages, MetadataProviderError> {
         self.get_json(
             &format!("/tv/{id}/images"),
-            &[("include_image_language", "en,null")],
+            &[("include_image_language", self.image_languages.as_str())],
         )
         .await
     }
@@ -384,8 +420,23 @@ impl TmdbMetadataProvider {
         updates: std::sync::Arc<ItemUpdateRepository>,
         images: Option<std::sync::Arc<ItemImageService>>,
     ) -> Self {
+        Self::with_locale(api_key, "en", "US", items, values, people, updates, images)
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_locale(
+        api_key: impl Into<String>,
+        language: impl AsRef<str>,
+        country: impl AsRef<str>,
+        items: std::sync::Arc<BaseItemRepository>,
+        values: std::sync::Arc<ItemValueRepository>,
+        people: std::sync::Arc<PersonRepository>,
+        updates: std::sync::Arc<ItemUpdateRepository>,
+        images: Option<std::sync::Arc<ItemImageService>>,
+    ) -> Self {
         Self {
-            client: TmdbClient::new(api_key),
+            client: TmdbClient::with_locale(api_key, language, country),
             items,
             values,
             people,
@@ -871,11 +922,11 @@ impl TmdbMetadataProvider {
         let has_profile = existing.as_ref().is_some_and(|images| {
             images
                 .iter()
-                .any(|image| image.image_type == ImageType::Profile)
+                .any(|image| image.image_type == ImageType::Primary)
         });
         if !has_profile
             && let Err(error) = images
-                .download_remote_image(item_id, ImageType::Profile, &image_url)
+                .download_remote_image(item_id, ImageType::Primary, &image_url)
                 .await
         {
             tracing::warn!(%error, "TMDB person profile image download failed");
@@ -894,7 +945,7 @@ impl TmdbMetadataProvider {
             },
             EpisodeRefreshOptions {
                 replace_data: false,
-                metadata_language: Some("en-US"),
+                metadata_language: Some(self.client.language.as_str()),
                 metadata_country_code: None,
             },
             &TmdbEpisodeCapability {
@@ -1238,8 +1289,13 @@ impl TmdbMetadataProvider {
                     order,
                 )
                 .await?;
-            self.ensure_person_image(&person.name, actor.profile_path.as_deref())
-                .await?;
+            self.ensure_person_image(
+                person.id,
+                &person.name,
+                actor.id,
+                actor.profile_path.as_deref(),
+            )
+            .await?;
             order += 1;
         }
         for member in crew {
@@ -1262,8 +1318,13 @@ impl TmdbMetadataProvider {
                     order,
                 )
                 .await?;
-            self.ensure_person_image(&person.name, member.profile_path.as_deref())
-                .await?;
+            self.ensure_person_image(
+                person.id,
+                &person.name,
+                member.id,
+                member.profile_path.as_deref(),
+            )
+            .await?;
             order += 1;
         }
         Ok(())
@@ -1292,8 +1353,13 @@ impl TmdbMetadataProvider {
                     order,
                 )
                 .await?;
-            self.ensure_person_image(&person.name, actor.profile_path.as_deref())
-                .await?;
+            self.ensure_person_image(
+                person.id,
+                &person.name,
+                actor.id,
+                actor.profile_path.as_deref(),
+            )
+            .await?;
             order += 1;
         }
         for member in crew {
@@ -1316,8 +1382,13 @@ impl TmdbMetadataProvider {
                     order,
                 )
                 .await?;
-            self.ensure_person_image(&person.name, member.profile_path.as_deref())
-                .await?;
+            self.ensure_person_image(
+                person.id,
+                &person.name,
+                member.id,
+                member.profile_path.as_deref(),
+            )
+            .await?;
             order += 1;
         }
         Ok(())
@@ -1325,7 +1396,9 @@ impl TmdbMetadataProvider {
 
     async fn ensure_person_image(
         &self,
+        person_id: Uuid,
         name: &str,
+        tmdb_person_id: i64,
         profile_path: Option<&str>,
     ) -> Result<(), MetadataProviderError> {
         let Some(images) = self.images.as_ref() else {
@@ -1337,19 +1410,28 @@ impl TmdbMetadataProvider {
         let Some(image_url) = TmdbUtils::image_url(Some("original"), Some(profile_path)) else {
             return Ok(());
         };
-        let person_item =
-            if let Some(item) = self.items.get_by_type_and_name("Person", name).await? {
-                item
-            } else {
-                let mut item = NewBaseItem::new(Uuid::new_v4(), "Person");
-                item.name = Some(name.to_owned());
-                item.sort_name = Some(name.to_owned());
-                item.is_virtual_item = true;
-                item.data = Some(json!({ "SourceType": "Library" }));
-                self.items.create(item).await?
-            };
+        let person_item = if let Some(item) = self.items.get(person_id).await? {
+            item
+        } else {
+            let mut item = NewBaseItem::new(person_id, "Person");
+            item.name = Some(name.to_owned());
+            item.sort_name = Some(name.to_owned());
+            item.is_virtual_item = true;
+            item.data = Some(json!({
+                "SourceType": "Library",
+                "ProviderIds": { "Tmdb": tmdb_person_id.to_string() }
+            }));
+            self.items.create(item).await?
+        };
+        if images.list(&person_item).await.is_ok_and(|images| {
+            images
+                .iter()
+                .any(|image| image.image_type == ImageType::Primary)
+        }) {
+            return Ok(());
+        }
         if let Err(error) = images
-            .download_remote_image(person_item.id, ImageType::Profile, &image_url)
+            .download_remote_image(person_item.id, ImageType::Primary, &image_url)
             .await
         {
             tracing::warn!(name, %error, "person profile image download failed");
@@ -1402,6 +1484,17 @@ impl TmdbMetadataProvider {
             tracing::warn!(%error, "TMDB backdrop download failed");
         }
     }
+}
+
+fn tmdb_language(language: &str, country: &str) -> String {
+    let language = language.trim().replace('_', "-");
+    if language.is_empty() {
+        return "en-US".to_owned();
+    }
+    if language.contains('-') || country.trim().is_empty() {
+        return language;
+    }
+    format!("{}-{}", language, country.trim().to_ascii_uppercase())
 }
 
 struct EpisodeParents {
@@ -2322,6 +2415,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tmdb_language_combines_language_and_country() {
+        assert_eq!(tmdb_language("zh", "CN"), "zh-CN");
+    }
+
+    #[test]
+    fn tmdb_language_normalizes_locale_separator() {
+        assert_eq!(tmdb_language("zh_CN", "US"), "zh-CN");
+    }
+
+    #[test]
+    fn tmdb_language_defaults_when_language_is_empty() {
+        assert_eq!(tmdb_language("  ", "CN"), "en-US");
+    }
 
     #[test]
     fn movie_search_result_maps_tmdb_id_year_and_poster() {
