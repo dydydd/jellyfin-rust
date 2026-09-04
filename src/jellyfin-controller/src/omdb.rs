@@ -191,9 +191,13 @@ impl OmdbMetadataProvider {
             &DefaultMetadataServiceCapability,
         );
 
-        let provider_ids = std::mem::take(&mut result.item.core.provider_ids)
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
+        let mut provider_ids = self
+            .items
+            .get(item_id)
+            .await?
+            .and_then(|item| provider_ids(item.data.as_ref()))
+            .unwrap_or_default();
+        provider_ids.extend(std::mem::take(&mut result.item.core.provider_ids));
         let genres = std::mem::take(&mut result.item.genres);
         let studios = std::mem::take(&mut result.item.studios);
         self.updates
@@ -299,4 +303,44 @@ fn provider_id(data: Option<&Value>, key: &str) -> Option<String> {
         .get(key)?
         .as_str()
         .map(str::to_owned)
+}
+
+fn provider_ids(data: Option<&Value>) -> Option<BTreeMap<String, String>> {
+    Some(
+        data?
+            .get("ProviderIds")?
+            .as_object()?
+            .iter()
+            .filter_map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(|value| (key.to_owned(), value.to_owned()))
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_ids_preserve_identifiers_from_earlier_providers() {
+        let data = json!({
+            "ProviderIds": {
+                "Tmdb": "152044",
+                "Imdb": "tt2194724"
+            }
+        });
+
+        let mut merged = provider_ids(Some(&data)).expect("provider ids");
+        merged.extend(BTreeMap::from([
+            ("Imdb".to_owned(), "tt2194724".to_owned()),
+            ("Tvdb".to_owned(), "1234".to_owned()),
+        ]));
+
+        assert_eq!(merged.get("Tmdb").map(String::as_str), Some("152044"));
+        assert_eq!(merged.get("Imdb").map(String::as_str), Some("tt2194724"));
+        assert_eq!(merged.get("Tvdb").map(String::as_str), Some("1234"));
+    }
 }

@@ -62,6 +62,9 @@ impl LibraryWatcher {
         std::thread::Builder::new()
             .name("jellyfin-library-watcher".into())
             .spawn(move || {
+                // Keep the OS watcher alive for as long as the event loop.
+                // Dropping it here would disconnect `rx` immediately.
+                let _watcher = watcher;
                 let mut pending: Vec<PathBuf> = Vec::new();
                 let mut last_event = std::time::Instant::now();
 
