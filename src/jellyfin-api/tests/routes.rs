@@ -478,7 +478,7 @@ async fn exercise_user_management_flow(database_name: &str) {
         .oneshot(authenticated_json_request(
             "POST",
             "/Users/New",
-            &json!({ "Name": username }),
+            &json!({ "Name": username, "Password": "initial password" }),
             &admin_session.access_token,
         ))
         .await
@@ -554,6 +554,47 @@ async fn exercise_user_management_flow(database_name: &str) {
         ))
         .await
         .expect("regular user session must be created");
+    let reset_preserved_user_session = devices
+        .create_session(NewDevice::new(
+            id,
+            "integration tests",
+            "1.0.0",
+            "second test runner",
+            Uuid::new_v4().simple().to_string(),
+        ))
+        .await
+        .expect("second regular user session must be created");
+    let response = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "POST",
+            &format!("/Users/{id}/Password"),
+            &json!({ "ResetPassword": true }),
+            &admin_session.access_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        users
+            .get(id)
+            .await
+            .expect("reset user lookup must succeed")
+            .password_hash
+            .is_none()
+    );
+    for token in [
+        &initial_user_session.access_token,
+        &reset_preserved_user_session.access_token,
+    ] {
+        assert!(
+            devices
+                .find_by_token(token)
+                .await
+                .expect("reset-preserved token lookup must succeed")
+                .is_some()
+        );
+    }
     let response = app
         .clone()
         .oneshot(authenticated_json_request(
@@ -644,6 +685,13 @@ async fn exercise_user_management_flow(database_name: &str) {
             .find_by_token(&initial_user_session.access_token)
             .await
             .expect("revoked token lookup must succeed")
+            .is_none()
+    );
+    assert!(
+        devices
+            .find_by_token(&reset_preserved_user_session.access_token)
+            .await
+            .expect("revoked second token lookup must succeed")
             .is_none()
     );
 

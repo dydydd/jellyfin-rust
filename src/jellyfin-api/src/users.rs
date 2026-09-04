@@ -567,17 +567,18 @@ async fn update_password_with_id(
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let mut target = state.users.get(target_id).await?;
     assert_can_update_user(&authenticated.user, &target)?;
-    if authenticated.user.id == target_id && !request.reset_password {
+    if request.reset_password {
+        // Jellyfin only revokes tokens after a password change. Its reset
+        // branch clears the password while leaving existing sessions active.
+        hash_and_save_password(state, target, String::new()).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    if authenticated.user.id == target_id {
         target =
             verify_current_password(state, target, request.current_pw.unwrap_or_default()).await?;
     }
-
-    let new_password = if request.reset_password {
-        String::new()
-    } else {
-        request.new_pw.unwrap_or_default()
-    };
-    hash_and_save_password(state, target, new_password).await?;
+    hash_and_save_password(state, target, request.new_pw.unwrap_or_default()).await?;
     state
         .devices
         .revoke_user_tokens(target_id, Some(&authenticated.access_token))
