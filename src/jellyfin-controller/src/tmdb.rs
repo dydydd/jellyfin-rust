@@ -61,22 +61,17 @@ pub(crate) struct TmdbClient {
 
 impl TmdbClient {
     #[must_use]
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self::with_base_url(api_key, TMDB_API_BASE_URL.to_owned())
-    }
-
-    #[must_use]
-    pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::with_base_url_and_locale(api_key, base_url, "en", "US")
-    }
-
-    #[must_use]
     pub fn with_locale(
         api_key: impl Into<String>,
         language: impl AsRef<str>,
         country: impl AsRef<str>,
     ) -> Self {
         Self::with_base_url_and_locale(api_key, TMDB_API_BASE_URL.to_owned(), language, country)
+    }
+
+    #[must_use]
+    pub(crate) fn language(&self) -> &str {
+        &self.language
     }
 
     fn with_base_url_and_locale(

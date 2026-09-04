@@ -31,7 +31,8 @@ pub(crate) async fn remote_search(
     request: Result<Json<RemoteSearchRequest>, JsonRejection>,
 ) -> Result<Json<Vec<RemoteSearchResult>>, ApiError> {
     authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let Json(mut request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    apply_configured_locale(&state, &mut request).await?;
     let kind = remote_search_kind(&uri);
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let metadata_options = metadata_options_for(&state, kind);
@@ -52,7 +53,8 @@ pub(crate) async fn remote_search_elevated(
     authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
-    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let Json(mut request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    apply_configured_locale(&state, &mut request).await?;
     let kind = remote_search_kind(&uri);
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let metadata_options = metadata_options_for(&state, kind);
@@ -73,6 +75,27 @@ fn metadata_options_for(_state: &AppState, kind: &str) -> jellyfin_model::Metada
         .into_iter()
         .find(|options| options.item_type.eq_ignore_ascii_case(kind))
         .unwrap_or_default()
+}
+
+async fn apply_configured_locale(
+    state: &AppState,
+    request: &mut RemoteSearchRequest,
+) -> Result<(), ApiError> {
+    if request.search_info.metadata_language.is_some()
+        && request.search_info.metadata_country_code.is_some()
+    {
+        return Ok(());
+    }
+    let configuration = state.server_configuration.load().await?;
+    request
+        .search_info
+        .metadata_language
+        .get_or_insert(configuration.preferred_metadata_language);
+    request
+        .search_info
+        .metadata_country_code
+        .get_or_insert(configuration.metadata_country_code);
+    Ok(())
 }
 
 pub(crate) async fn apply_remote_search(
