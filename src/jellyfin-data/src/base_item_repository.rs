@@ -2236,7 +2236,7 @@ impl BaseItemRepository {
         Ok(())
     }
 
-    /// Loads movie, series, and episode rows that have no overview or TMDb id.
+    /// Loads movie, series, and episode rows that have no overview or `TMDb` id.
     ///
     /// The maintenance query deliberately bypasses user policy filtering and
     /// returns only the identifiers needed by metadata-refresh scheduling.
@@ -2301,7 +2301,7 @@ impl BaseItemRepository {
         )
     }
 
-    /// Loads movie and series identifiers that have a TMDb identifier but no
+    /// Loads movie and series identifiers that have a `TMDb` identifier but no
     /// persisted primary image.
     ///
     /// The correlated anti-join mirrors Jellyfin's default image refresh,

@@ -761,7 +761,7 @@ fn guess_encoding(bytes: &[u8]) -> &'static Encoding {
 }
 
 fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
-    let words = bytes.chunks_exact(2).map(|pair| {
+    let words = bytes.as_chunks::<2>().0.iter().map(|pair| {
         if little_endian {
             u16::from_le_bytes([pair[0], pair[1]])
         } else {
