@@ -78,11 +78,10 @@ pub struct CreateUserByName {
 
 pub(crate) async fn create(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     request: Result<Json<CreateUserByName>, JsonRejection>,
 ) -> Result<Json<UserDto>, ApiError> {
-    require_administrator(&state, &headers, &uri).await?;
+    require_administrator(&state, &headers).await?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let name = request.name.as_deref().ok_or(ApiError::InvalidRequest)?;
     let mut user = state.users.create(name).await?;
@@ -256,49 +255,44 @@ async fn get_user_image_for(
 
 pub(crate) async fn post_user_image(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<UpdateUserQuery>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(query.user_id)?;
-    post_user_image_for(&state, &headers, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
 pub(crate) async fn post_user_image_legacy(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((target_id, _image_type)): Path<(Uuid, String)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(Some(target_id))?;
-    post_user_image_for(&state, &headers, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
 pub(crate) async fn post_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((target_id, _image_type, _index)): Path<(Uuid, String, u32)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(Some(target_id))?;
-    post_user_image_for(&state, &headers, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
 async fn post_user_image_for(
     state: &AppState,
     headers: &HeaderMap,
-    identity: &authentication::AuthenticatedIdentity,
+    authenticated_user: user::Model,
     target_id: Uuid,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_can_update_user(identity, &target)?;
+    assert_can_update_user(&authenticated_user, &target)?;
     let extension = MimeTypes::try_get_image_extension(
         headers
             .get(header::CONTENT_TYPE)
@@ -352,44 +346,39 @@ async fn post_user_image_for(
 
 pub(crate) async fn delete_user_image(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<UpdateUserQuery>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(query.user_id)?;
-    delete_user_image_for(&state, &identity, target_id).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    delete_user_image_for(&state, authenticated.user, target_id).await
 }
 
 pub(crate) async fn delete_user_image_legacy(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((target_id, _image_type)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(Some(target_id))?;
-    delete_user_image_for(&state, &identity, target_id).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    delete_user_image_for(&state, authenticated.user, target_id).await
 }
 
 pub(crate) async fn delete_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((target_id, _image_type, _index)): Path<(Uuid, String, u32)>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(Some(target_id))?;
-    delete_user_image_for(&state, &identity, target_id).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    delete_user_image_for(&state, authenticated.user, target_id).await
 }
 
 async fn delete_user_image_for(
     state: &AppState,
-    identity: &authentication::AuthenticatedIdentity,
+    authenticated_user: user::Model,
     target_id: Uuid,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_can_update_user(identity, &target)?;
+    assert_can_update_user(&authenticated_user, &target)?;
     let removed = state
         .users
         .clear_profile_image(target.id)
@@ -414,36 +403,33 @@ fn path_string(path: &std::path::Path) -> String {
 
 pub(crate) async fn update(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<UpdateUserQuery>,
     request: Result<Json<UserDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(query.user_id)?;
-    update_with_id(&state, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    update_with_id(&state, authenticated.user, target_id, request).await
 }
 
 pub(crate) async fn update_legacy(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(target_id): Path<Uuid>,
     request: Result<Json<UserDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(Some(target_id))?;
-    update_with_id(&state, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    update_with_id(&state, authenticated.user, target_id, request).await
 }
 
 async fn update_with_id(
     state: &AppState,
-    identity: &authentication::AuthenticatedIdentity,
+    authenticated_user: user::Model,
     target_id: Uuid,
     request: Result<Json<UserDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_can_update_user(identity, &target)?;
+    assert_can_update_user(&authenticated_user, &target)?;
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let name = request.name.as_deref().ok_or(ApiError::InvalidRequest)?;
     if target.username != name {
@@ -464,36 +450,33 @@ async fn update_with_id(
 
 pub(crate) async fn update_configuration(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<UpdateUserQuery>,
     request: Result<Json<UserConfiguration>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(query.user_id)?;
-    update_configuration_with_id(&state, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    update_configuration_with_id(&state, authenticated.user, target_id, request).await
 }
 
 pub(crate) async fn update_configuration_legacy(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(target_id): Path<Uuid>,
     request: Result<Json<UserConfiguration>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(Some(target_id))?;
-    update_configuration_with_id(&state, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    update_configuration_with_id(&state, authenticated.user, target_id, request).await
 }
 
 async fn update_configuration_with_id(
     state: &AppState,
-    identity: &authentication::AuthenticatedIdentity,
+    authenticated_user: user::Model,
     target_id: Uuid,
     request: Result<Json<UserConfiguration>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_can_update_user(identity, &target)?;
+    assert_can_update_user(&authenticated_user, &target)?;
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
     state
         .users
@@ -512,42 +495,35 @@ pub struct UpdateUserPassword {
 
 pub(crate) async fn update_password(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(target_id): Path<Uuid>,
     request: Result<Json<UpdateUserPassword>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(Some(target_id))?;
-    update_password_with_id(&state, identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    update_password_with_id(&state, authenticated, target_id, request).await
 }
 
 pub(crate) async fn update_password_query(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<UpdateUserQuery>,
     request: Result<Json<UpdateUserPassword>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_id = identity.target_user_id(query.user_id)?;
-    update_password_with_id(&state, identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    update_password_with_id(&state, authenticated, target_id, request).await
 }
 
 async fn update_password_with_id(
     state: &AppState,
-    identity: authentication::AuthenticatedIdentity,
+    authenticated: authentication::AuthenticatedSession,
     target_id: Uuid,
     request: Result<Json<UpdateUserPassword>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let mut target = state.users.get(target_id).await?;
-    assert_can_update_user(&identity, &target)?;
-    if matches!(
-        &identity,
-        authentication::AuthenticatedIdentity::Device(session) if session.user.id == target_id
-    ) && !request.reset_password
-    {
+    assert_can_update_user(&authenticated.user, &target)?;
+    if authenticated.user.id == target_id && !request.reset_password {
         target =
             verify_current_password(state, target, request.current_pw.unwrap_or_default()).await?;
     }
@@ -560,18 +536,17 @@ async fn update_password_with_id(
     hash_and_save_password(state, target, new_password).await?;
     state
         .devices
-        .revoke_user_tokens(target_id, Some(identity.access_token()))
+        .revoke_user_tokens(target_id, Some(&authenticated.access_token))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn delete(
     State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(target_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    require_administrator(&state, &headers, &uri).await?;
+    require_administrator(&state, &headers).await?;
     state.users.delete(target_id).await?;
     crate::websocket::broadcast_user_deleted(&state, target_id).await;
     Ok(StatusCode::NO_CONTENT)
@@ -607,11 +582,13 @@ pub(crate) async fn update_policy(
 async fn require_administrator(
     state: &AppState,
     headers: &HeaderMap,
-    uri: &axum::http::Uri,
-) -> Result<(), ApiError> {
-    authentication::authenticated_identity(state, headers, Some(uri))
-        .await?
-        .require_administrator()
+) -> Result<user::Model, ApiError> {
+    let authenticated = authentication::authenticated_session(state, headers).await?;
+    if authenticated.user.is_administrator {
+        Ok(authenticated.user)
+    } else {
+        Err(ApiError::Forbidden)
+    }
 }
 
 /// Matches Jellyfin's `RequestHelpers.AssertCanUpdateUser` semantics for
@@ -619,17 +596,14 @@ async fn require_administrator(
 /// update any user; non-administrators may only update themselves when their
 /// persisted policy enables user preference access.
 fn assert_can_update_user(
-    identity: &authentication::AuthenticatedIdentity,
+    authenticated_user: &user::Model,
     target_user: &user::Model,
 ) -> Result<(), ApiError> {
-    if identity.is_administrator_equivalent() {
+    if authenticated_user.is_administrator {
         return Ok(());
     }
-    match identity {
-        authentication::AuthenticatedIdentity::Device(session)
-            if session.user.id == target_user.id => {}
-        authentication::AuthenticatedIdentity::Device(_) => return Err(ApiError::Forbidden),
-        authentication::AuthenticatedIdentity::ApiKey(_) => unreachable!(),
+    if authenticated_user.id != target_user.id {
+        return Err(ApiError::Forbidden);
     }
     let policy = authentication::stored_user_policy(target_user)?;
     if policy.enable_user_preference_access {
