@@ -256,6 +256,10 @@ impl MetadataRefreshService {
             parent_id,
             recursive: parent_id.is_some(),
             include_item_types: vec![item_type.to_owned()],
+            // This is a server maintenance query rather than a user-scoped
+            // library query. The default false value intentionally hides all
+            // items below collection folders when no user policy is present.
+            enable_all_folders: true,
             enable_total_record_count: Some(false),
             ..BaseItemQuery::default()
         };
