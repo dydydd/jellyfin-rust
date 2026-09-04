@@ -5,7 +5,7 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{HeaderMap, Request, StatusCode},
-    response::Response,
+    response::{IntoResponse, Redirect, Response},
 };
 use axum_extra::extract::Query;
 use serde::Deserialize;
@@ -64,9 +64,8 @@ async fn stream_file(
     ) {
         return Err(ApiError::NotFound);
     }
-    let path = item
-        .path
-        .filter(|path| !path.is_empty())
+    let path = jellyfin_controller::media_source_path(&item)
+        .map(str::to_owned)
         .ok_or(ApiError::NotFound)?;
     if let Some(container) = requested_container {
         let actual = std::path::Path::new(&path)
@@ -79,6 +78,15 @@ async fn stream_file(
     }
     if !query.static_stream.unwrap_or(true) {
         return Err(ApiError::UnsupportedMediaType);
+    }
+    if path
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || path
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        return Ok(Redirect::temporary(&path).into_response());
     }
     crate::audio::serve_path(headers, &path, request).await
 }

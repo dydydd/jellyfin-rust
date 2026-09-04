@@ -134,6 +134,16 @@ async fn assert_video_stream(fixture: &Fixture) {
             .status(),
         StatusCode::UNSUPPORTED_MEDIA_TYPE
     );
+
+    let strm_route = format!("/Videos/{}/stream.mkv", fixture.strm_id);
+    let response = fixture
+        .request("GET", &strm_route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
 }
 
 async fn assert_audio_stream(fixture: &Fixture) {
@@ -340,6 +350,18 @@ async fn assert_streamed_downloads(fixture: &Fixture) {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), media_bytes);
     }
+    let response = fixture
+        .request(
+            "GET",
+            &format!("/Items/{}/Download", fixture.strm_id),
+            Some(&fixture.user_token),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
     let range_start = 65_530;
     let range_end = 65_550;
     let response = fixture
@@ -593,6 +615,7 @@ struct Fixture {
     other_genre_song_id: Uuid,
     instant_genre_id: Uuid,
     stream_audio_id: Uuid,
+    strm_id: Uuid,
     first_collection_id: Uuid,
     second_collection_id: Uuid,
     single_delete_id: Uuid,
@@ -600,6 +623,7 @@ struct Fixture {
     io_error_id: Uuid,
     media_path: String,
     audio_path: String,
+    strm_path: String,
 }
 
 impl Fixture {
@@ -671,6 +695,16 @@ impl Fixture {
             Some(&media_path),
         )
         .await;
+        let strm_path = format!("/tmp/jellyfin-rust-video-{suffix}.strm");
+        tokio::fs::write(&strm_path, format!("{media_path}\n"))
+            .await
+            .expect("STRM media fixture");
+        let mut strm = create_item(&items, "Movie", "STRM Movie", root.id, Some(&strm_path)).await;
+        strm.data = Some(json!({
+            "Container": "mkv",
+            "StrmTarget": media_path
+        }));
+        let strm = items.update(strm).await.expect("STRM item metadata");
         let grandchild = create_item(&items, "Episode", "Library Episode", child.id, None).await;
         let mut count_items = Vec::new();
         for (item_type, name) in [
@@ -773,6 +807,7 @@ impl Fixture {
             other_genre_song_id: other_genre_song.id,
             instant_genre_id,
             stream_audio_id: stream_audio.id,
+            strm_id: strm.id,
             first_collection_id: first_collection.id,
             second_collection_id: second_collection.id,
             single_delete_id: single_delete.id,
@@ -780,6 +815,7 @@ impl Fixture {
             io_error_id: io_error.id,
             media_path,
             audio_path,
+            strm_path,
         }
     }
 
@@ -838,6 +874,7 @@ impl Fixture {
             self.album_id,
             self.other_genre_song_id,
             self.stream_audio_id,
+            self.strm_id,
             self.single_delete_id,
             self.missing_file_id,
             self.io_error_id,
@@ -855,6 +892,7 @@ impl Fixture {
             .expect("library users cleanup");
         let _ = tokio::fs::remove_file(self.media_path).await;
         let _ = tokio::fs::remove_file(self.audio_path).await;
+        let _ = tokio::fs::remove_file(self.strm_path).await;
         drop(items);
         self.database.close().await.expect("database pool cleanup");
         self.administrator

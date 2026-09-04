@@ -57,6 +57,22 @@ fn item_can_download(item: &base_item::Model) -> bool {
         && !matches!(video_type, Some(Value::Number(value)) if value.as_i64().is_some_and(|value| value == 2 || value == 3))
 }
 
+/// Returns the playable media path, resolving a persisted `.strm` pointer when present.
+#[must_use]
+pub fn media_source_path(item: &base_item::Model) -> Option<&str> {
+    item.data
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|object| {
+            object
+                .get("StrmTarget")
+                .or_else(|| object.get("strm_target"))
+        })
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .or_else(|| item.path.as_deref().filter(|path| !path.is_empty()))
+}
+
 /// Mirrors the conservative part of `BaseItem.CanDelete()`: virtual and
 /// aggregate metadata entries are projections, not user-owned files.  Only
 /// concrete file/folder items (with a real local path) may reach the delete
@@ -278,8 +294,8 @@ impl LibraryControllerService {
         if !policy.enable_content_downloading || !item_can_download(&item) {
             return Err(LibraryControllerError::Forbidden);
         }
-        item.path
-            .filter(|path| !path.is_empty())
+        media_source_path(&item)
+            .map(str::to_owned)
             .ok_or(LibraryControllerError::FileNotFound)
     }
 

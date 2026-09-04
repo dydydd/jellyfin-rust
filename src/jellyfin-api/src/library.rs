@@ -8,7 +8,7 @@ use axum::{
         rejection::{JsonRejection, QueryRejection},
     },
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
-    response::Response,
+    response::{IntoResponse, Redirect, Response},
 };
 use jellyfin_controller::RelatedItemKind;
 use jellyfin_data::{BaseItemCounts, BaseItemPage};
@@ -637,6 +637,15 @@ async fn file_response(
         .library_controller
         .download_path(&authenticated.user, authenticated.user.id, item_id)
         .await?;
+    if path
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || path
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        return Ok(Redirect::temporary(&path).into_response());
+    }
     let mut file_request = Request::builder()
         .method("GET")
         .body(Body::empty())

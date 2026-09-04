@@ -1264,6 +1264,13 @@ impl LibraryScanService {
         let Some(path_str) = path.to_str() else {
             return Ok((false, Uuid::nil()));
         };
+        let is_strm = is_strm_path(path);
+        let strm_target = if is_strm {
+            read_strm_target(path).await?
+        } else {
+            None
+        };
+        let media_source_path = strm_target.as_deref().unwrap_or(path_str);
         if let Some(mut existing) = existing {
             if !kind.is_tv() {
                 let existing_id = existing.id;
@@ -1281,11 +1288,22 @@ impl LibraryScanService {
                     existing.item_type = desired_type.to_owned();
                     changed = true;
                 }
+                if is_strm
+                    && apply_strm_metadata(&mut existing, media_source_path, strm_target.as_deref())
+                {
+                    changed = true;
+                }
                 if media_kind.needs_probe()
                     && let Some(mut media_info) = self
-                        .ensure_media_streams(existing.id, path_str, media_kind)
+                        .ensure_media_streams(
+                            existing.id,
+                            media_source_path,
+                            path_str,
+                            media_kind,
+                            !is_strm,
+                        )
                         .await?
-                    && apply_probed_item_metadata(&mut existing, path_str, &mut media_info)
+                    && apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info)
                 {
                     changed = true;
                 }
@@ -1308,13 +1326,22 @@ impl LibraryScanService {
                     library_root,
                     media_kind,
                     path_str,
+                    strm_target.as_deref(),
                 )
                 .await;
         }
 
         if kind.is_tv() && media_kind == MediaKind::Video {
             return self
-                .ensure_episode_item(None, path, parent_id, library_root, media_kind, path_str)
+                .ensure_episode_item(
+                    None,
+                    path,
+                    parent_id,
+                    library_root,
+                    media_kind,
+                    path_str,
+                    strm_target.as_deref(),
+                )
                 .await;
         }
 
@@ -1333,13 +1360,16 @@ impl LibraryScanService {
         item.is_folder = false;
         item.is_virtual_item = false;
         item.presentation_unique_key = Some(path_str.to_owned());
-        item.data = Some(media_item_data(path_str, None));
+        item.data = Some(media_item_data_with_strm(
+            media_source_path,
+            strm_target.as_deref(),
+        ));
         let mut item = self.items.create(item).await?;
         if media_kind.needs_probe()
             && let Some(mut media_info) = self
-                .ensure_media_streams(item.id, path_str, media_kind)
+                .ensure_media_streams(item.id, media_source_path, path_str, media_kind, !is_strm)
                 .await?
-            && apply_probed_item_metadata(&mut item, path_str, &mut media_info)
+            && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
         {
             item = self.items.update(item).await?;
         }
@@ -1361,7 +1391,10 @@ impl LibraryScanService {
         library_root: &Path,
         media_kind: MediaKind,
         path_str: &str,
+        strm_target: Option<&str>,
     ) -> Result<(bool, Uuid), LibraryScanError> {
+        let is_strm = is_strm_path(path);
+        let media_source_path = strm_target.unwrap_or(path_str);
         let ep_result = crate::episode_parser::parse_episode(path);
         let season_number = ep_result.season_number;
         let episode_number = ep_result.episode_number;
@@ -1431,16 +1464,24 @@ impl LibraryScanService {
                 existing.season_id = Some(sid);
             }
             existing.series_presentation_unique_key = series_puk;
+            let strm_changed =
+                is_strm && apply_strm_metadata(&mut existing, media_source_path, strm_target);
             let nfo_changed = apply_episode_nfo_metadata(&mut existing, path);
             self.persist_scan_relations(existing.id, path_str, &existing.item_type, season_number)
                 .await?;
             if let Some(mut media_info) = self
-                .ensure_media_streams(existing.id, path_str, media_kind)
+                .ensure_media_streams(
+                    existing.id,
+                    media_source_path,
+                    path_str,
+                    media_kind,
+                    !is_strm,
+                )
                 .await?
-                && apply_probed_item_metadata(&mut existing, path_str, &mut media_info)
+                && apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info)
             {
                 self.items.update(existing).await?;
-            } else if nfo_changed {
+            } else if nfo_changed || strm_changed {
                 self.items.update(existing).await?;
             }
             return Ok((false, existing_id));
@@ -1460,7 +1501,7 @@ impl LibraryScanService {
         item.series_id = series_id;
         item.season_id = season_id;
         item.series_presentation_unique_key = series_puk;
-        item.data = Some(media_item_data(path_str, None));
+        item.data = Some(media_item_data_with_strm(media_source_path, strm_target));
         let mut item = self.items.create(item).await?;
         if apply_episode_nfo_metadata(&mut item, path) {
             item = self.items.update(item).await?;
@@ -1468,9 +1509,9 @@ impl LibraryScanService {
         self.persist_scan_relations(item.id, path_str, &item.item_type, season_number)
             .await?;
         if let Some(mut media_info) = self
-            .ensure_media_streams(item.id, path_str, media_kind)
+            .ensure_media_streams(item.id, media_source_path, path_str, media_kind, !is_strm)
             .await?
-            && apply_probed_item_metadata(&mut item, path_str, &mut media_info)
+            && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
         {
             let item_id = item.id;
             self.items.update(item).await?;
@@ -1621,8 +1662,10 @@ impl LibraryScanService {
     async fn ensure_media_streams(
         &self,
         item_id: Uuid,
-        path: &str,
+        media_source_path: &str,
+        sidecar_path: &str,
         media_kind: MediaKind,
+        should_probe: bool,
     ) -> Result<Option<MediaInfo>, LibraryScanError> {
         let existing = self
             .streams
@@ -1632,11 +1675,15 @@ impl LibraryScanService {
                 stream_type: None,
             })
             .await?;
-        let default_stream = default_stream(path, media_kind);
+        let default_stream = default_stream(media_source_path, media_kind);
         if !existing.is_empty() && (existing.len() != 1 || existing[0] != default_stream) {
             return Ok(None);
         }
-        let mut media_info = self.probe_media_info(path, media_kind).await;
+        let mut media_info = if should_probe {
+            self.probe_media_info(media_source_path, media_kind).await
+        } else {
+            None
+        };
         let mut streams = Vec::new();
         if let Some(media_info) = media_info.as_mut() {
             let attachment_images = media_info
@@ -1661,7 +1708,7 @@ impl LibraryScanService {
                 .await?;
             self.discover_embedded_images(
                 item_id,
-                path,
+                media_source_path,
                 &attachment_images,
                 video_stream_index,
                 media_info.runtime_ticks,
@@ -1669,8 +1716,9 @@ impl LibraryScanService {
             .await?;
             streams = streams_from_media_info(media_info);
         }
-        if media_kind == MediaKind::Video
-            && let Some(keyframes) = self.probe_keyframes(path).await
+        if should_probe
+            && media_kind == MediaKind::Video
+            && let Some(keyframes) = self.probe_keyframes(media_source_path).await
         {
             self.keyframes
                 .save(
@@ -1686,7 +1734,7 @@ impl LibraryScanService {
             streams.push(default_stream);
         }
         let external_subtitles = self
-            .resolve_external_subtitle_streams(path, next_stream_index(&streams))
+            .resolve_external_subtitle_streams(sidecar_path, next_stream_index(&streams))
             .await?;
         streams.extend(external_subtitles);
         self.streams.replace(item_id, &streams).await?;
@@ -2092,6 +2140,20 @@ fn media_kind(path: &Path) -> Option<MediaKind> {
         return Some(MediaKind::Book);
     }
     None
+}
+
+fn is_strm_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("strm"))
+}
+
+async fn read_strm_target(path: &Path) -> Result<Option<String>, std::io::Error> {
+    let contents = fs::read_to_string(path).await?;
+    Ok(contents.lines().find_map(|line| {
+        let target = line.trim().trim_start_matches('\u{feff}').trim();
+        (!target.is_empty()).then(|| target.to_owned())
+    }))
 }
 
 fn local_image_type(file_name: &str) -> Option<BaseItemImageType> {
@@ -2740,6 +2802,37 @@ fn media_item_data(path: &str, media_info: Option<&MediaInfo>) -> Value {
     merged_media_item_data(None, path, media_info)
 }
 
+fn media_item_data_with_strm(media_source_path: &str, strm_target: Option<&str>) -> Value {
+    let mut data = media_item_data(media_source_path, None);
+    if let Some(target) = strm_target {
+        data.as_object_mut()
+            .expect("media item data is always an object")
+            .insert("StrmTarget".to_owned(), Value::String(target.to_owned()));
+    }
+    data
+}
+
+fn apply_strm_metadata(
+    item: &mut base_item::Model,
+    media_source_path: &str,
+    strm_target: Option<&str>,
+) -> bool {
+    let mut data = merged_media_item_data(item.data.as_ref(), media_source_path, None);
+    let object = data
+        .as_object_mut()
+        .expect("media item data is always an object");
+    if let Some(target) = strm_target {
+        object.insert("StrmTarget".to_owned(), Value::String(target.to_owned()));
+    } else {
+        object.remove("StrmTarget");
+    }
+    if item.data.as_ref() == Some(&data) {
+        return false;
+    }
+    item.data = Some(data);
+    true
+}
+
 fn merged_media_item_data(
     existing: Option<&Value>,
     path: &str,
@@ -3134,7 +3227,7 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 
 const VIDEO_EXTENSIONS: &[&str] = &[
     "avi", "divx", "flv", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "mts", "ts", "webm",
-    "wmv",
+    "wmv", "strm",
 ];
 
 const PHOTO_EXTENSIONS: &[&str] = &[
@@ -3147,11 +3240,12 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 mod tests {
     use super::{
         LibraryScanGuard, MediaKind, ScanLibraryKind, apply_non_movie_nfo,
-        apply_probed_item_metadata, attachment_image_type, attachments_from_media_info,
-        codec_from_extension, default_stream, display_name, extra_type_name, is_extras_directory,
-        local_image_type, media_item_data, media_kind, next_stream_index, relations_from_movie_nfo,
-        relations_from_nfo_metadata, resolve_external_subtitle_streams_from_entries,
-        scan_nfo_person, set_additional_parts, stable_item_id, streams_from_media_info,
+        apply_probed_item_metadata, apply_strm_metadata, attachment_image_type,
+        attachments_from_media_info, codec_from_extension, default_stream, display_name,
+        extra_type_name, is_extras_directory, local_image_type, media_item_data, media_kind,
+        next_stream_index, read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
+        resolve_external_subtitle_streams_from_entries, scan_nfo_person, set_additional_parts,
+        stable_item_id, streams_from_media_info,
     };
     use chrono::Utc;
     use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
@@ -3215,10 +3309,46 @@ mod tests {
     #[test]
     fn media_kind_accepts_common_direct_play_extensions() {
         assert_eq!(media_kind(Path::new("movie.MKV")), Some(MediaKind::Video));
+        assert_eq!(media_kind(Path::new("movie.StRm")), Some(MediaKind::Video));
         assert_eq!(media_kind(Path::new("song.FlAc")), Some(MediaKind::Audio));
         assert_eq!(media_kind(Path::new("photo.jpg")), Some(MediaKind::Photo));
         assert_eq!(media_kind(Path::new("book.pdf")), Some(MediaKind::Book));
         assert_eq!(media_kind(Path::new("data.nfo")), None);
+    }
+
+    #[tokio::test]
+    async fn strm_target_uses_first_non_empty_trimmed_line() {
+        let path =
+            std::env::temp_dir().join(format!("jellyfin-strm-{}.strm", uuid::Uuid::new_v4()));
+        tokio::fs::write(
+            &path,
+            "\n \u{feff} /CloudNAS/Movie/movie.mkv \r\nignored.mp4",
+        )
+        .await
+        .unwrap();
+
+        let target = read_strm_target(&path).await.unwrap();
+
+        assert_eq!(target.as_deref(), Some("/CloudNAS/Movie/movie.mkv"));
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[test]
+    fn strm_metadata_preserves_pointer_path_and_uses_target_container() {
+        let mut item = base_item_default();
+        item.path = Some("/library/Movie.strm".to_owned());
+
+        assert!(apply_strm_metadata(
+            &mut item,
+            "/CloudNAS/Movie/movie.mkv",
+            Some("/CloudNAS/Movie/movie.mkv")
+        ));
+        assert_eq!(item.path.as_deref(), Some("/library/Movie.strm"));
+        assert_eq!(item.data.as_ref().unwrap()["Container"], "mkv");
+        assert_eq!(
+            item.data.as_ref().unwrap()["StrmTarget"],
+            "/CloudNAS/Movie/movie.mkv"
+        );
     }
 
     #[test]

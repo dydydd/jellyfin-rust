@@ -114,6 +114,8 @@ pub struct BaseItemDto {
     pub sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip)]
+    pub(crate) media_source_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -711,6 +713,7 @@ async fn get_lyrics_for(
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
     let is_user_view = item.item_type == "UserView";
     let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"]);
+    let media_source_path = metadata_string(item.data.as_ref(), &["StrmTarget", "strm_target"]);
     let has_lyrics = item
         .data
         .as_ref()
@@ -726,6 +729,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         date_created: Some(item.date_created.to_rfc3339()),
         sort_name: item.sort_name,
         path: item.path,
+        media_source_path,
         overview: item.overview,
         media_type: item.media_type,
         collection_type: if is_user_view {
@@ -1081,7 +1085,11 @@ fn media_source_from_dto(
         return None;
     }
 
-    let path = dto.path.clone();
+    let path = dto.media_source_path.clone().or_else(|| dto.path.clone());
+    let protocol = path
+        .as_deref()
+        .map(media_protocol_from_path)
+        .unwrap_or(MediaProtocol::File);
     let name = path
         .as_deref()
         .map(|path| get_media_source_name(path, false, None))
@@ -1089,11 +1097,12 @@ fn media_source_from_dto(
     let container = path.as_deref().and_then(media_container_from_path);
     Some(MediaSourceInfo {
         id: Some(dto.id.clone()),
-        protocol: MediaProtocol::File,
+        protocol,
         path,
         name,
         container,
         source_type: MediaSourceType::Default,
+        is_remote: protocol != MediaProtocol::File,
         run_time_ticks: dto.run_time_ticks,
         media_streams,
         media_attachments,
@@ -1101,6 +1110,25 @@ fn media_source_from_dto(
         default_subtitle_stream_index,
         ..MediaSourceInfo::default()
     })
+}
+
+fn media_protocol_from_path(path: &str) -> MediaProtocol {
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        MediaProtocol::Http
+    } else if lower.starts_with("rtmp://") {
+        MediaProtocol::Rtmp
+    } else if lower.starts_with("rtsp://") {
+        MediaProtocol::Rtsp
+    } else if lower.starts_with("udp://") {
+        MediaProtocol::Udp
+    } else if lower.starts_with("rtp://") {
+        MediaProtocol::Rtp
+    } else if lower.starts_with("ftp://") {
+        MediaProtocol::Ftp
+    } else {
+        MediaProtocol::File
+    }
 }
 
 fn apply_media_stream_defaults(
@@ -1666,9 +1694,10 @@ mod tests {
                 "Width": 1920,
                 "Height": 1080,
                 "AirDays": ["Monday", "Friday"],
-                "ProductionLocations": ["Los Angeles"]
+                "ProductionLocations": ["Los Angeles"],
+                "StrmTarget": "/CloudNAS/Movie/movie.mkv"
             })),
-            path: None,
+            path: Some("/library/Movie.strm".to_owned()),
             parent_id: None,
             top_parent_id: None,
             name: Some("Movie".to_owned()),
@@ -1707,6 +1736,34 @@ mod tests {
         assert_eq!(dto.air_days, ["Monday", "Friday"]);
         assert_eq!(dto.production_locations, ["Los Angeles"]);
         assert_eq!(dto.official_rating.as_deref(), Some("PG-13"));
+        assert_eq!(dto.path.as_deref(), Some("/library/Movie.strm"));
+        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+        assert_eq!(source.path.as_deref(), Some("/CloudNAS/Movie/movie.mkv"));
+        assert_eq!(source.container.as_deref(), Some("mkv"));
+        assert_eq!(source.protocol, MediaProtocol::File);
+        assert!(!source.is_remote);
+        assert!(
+            serde_json::to_value(&dto)
+                .unwrap()
+                .get("MediaSourcePath")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn strm_http_target_is_a_remote_http_media_source() {
+        let dto = BaseItemDto {
+            id: "item".to_owned(),
+            item_type: "Movie".to_owned(),
+            media_source_path: Some("https://media.example/Movie.mp4".to_owned()),
+            ..BaseItemDto::default()
+        };
+
+        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+
+        assert_eq!(source.protocol, MediaProtocol::Http);
+        assert!(source.is_remote);
+        assert_eq!(source.container.as_deref(), Some("mp4"));
     }
 
     fn original_language_defaults() -> MediaStreamDefaults {

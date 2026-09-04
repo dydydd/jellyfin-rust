@@ -372,7 +372,9 @@ async fn start_hls_job(
         .library_controller
         .item(user, user.id, item_id)
         .await?;
-    let input = item.path.ok_or(ApiError::NotFound)?;
+    let input = jellyfin_controller::media_source_path(&item)
+        .map(str::to_owned)
+        .ok_or(ApiError::NotFound)?;
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;
