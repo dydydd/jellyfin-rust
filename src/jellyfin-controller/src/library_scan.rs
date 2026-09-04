@@ -326,8 +326,22 @@ impl LibraryScanService {
         self.items.ensure_user_root().await?;
         let folders = self.folders.list().await?;
         let total = folders.len();
+        tracing::info!(library_count = total, "library scan started");
         let mut summary = LibraryScanSummary::default();
         for (i, folder) in folders.into_iter().enumerate() {
+            if let Some(on_progress) = on_progress {
+                on_progress(if total == 0 {
+                    90.0
+                } else {
+                    1.0 + i as f64 / total as f64 * 89.0
+                });
+            }
+            tracing::info!(
+                library_id = %folder.folder.id,
+                library_name = %folder.folder.name,
+                path_count = folder.paths.len(),
+                "scanning library",
+            );
             self.scan_one_folder(folder, &mut summary).await?;
             if let Some(on_progress) = on_progress {
                 on_progress((i + 1) as f64 / total as f64 * 90.0);
@@ -342,6 +356,13 @@ impl LibraryScanService {
         if let Some(on_progress) = on_progress {
             on_progress(100.0);
         }
+        tracing::info!(
+            folders_seen = summary.folders_seen,
+            items_seen = summary.items_seen,
+            items_added = summary.items_added,
+            items_removed = summary.items_removed,
+            "library scan completed",
+        );
         Ok(summary)
     }
 
