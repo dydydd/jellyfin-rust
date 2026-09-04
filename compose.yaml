@@ -41,6 +41,7 @@ services:
       - jellyfin-programdata:/app/programdata
       - jellyfin-cache:/app/cache
       - jellyfin-logs:/app/logs
+      - jellyfin-metadata:/app/metadata
       # Optional local media directory. Create ./media before starting.
       - ./media:/media:ro
 
@@ -49,3 +50,4 @@ volumes:
   jellyfin-programdata:
   jellyfin-cache:
   jellyfin-logs:
+  jellyfin-metadata:

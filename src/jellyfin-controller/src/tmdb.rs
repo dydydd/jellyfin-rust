@@ -19,7 +19,7 @@ use jellyfin_providers::tv::{
     EpisodeMetadataService, EpisodeParentContext, EpisodeRefreshOptions, SeasonContext,
     SeriesContext,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
@@ -1981,13 +1981,13 @@ fn parse_tmdb_date(value: Option<&str>) -> Option<DateTime<Utc>> {
 // ---- TMDB response types ----
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 struct TmdbSearchResponse<T> {
     results: Vec<T>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbSearchMovie {
     id: i64,
     title: Option<String>,
@@ -1998,7 +1998,7 @@ struct TmdbSearchMovie {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbSearchTv {
     id: i64,
     name: Option<String>,
@@ -2009,7 +2009,7 @@ struct TmdbSearchTv {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbSearchPerson {
     id: i64,
     name: String,
@@ -2017,7 +2017,7 @@ struct TmdbSearchPerson {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbSearchCollection {
     id: i64,
     name: String,
@@ -2025,7 +2025,7 @@ struct TmdbSearchCollection {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbMovieDetails {
     id: i64,
     imdb_id: Option<String>,
@@ -2054,7 +2054,7 @@ pub(crate) struct TmdbMovieDetails {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbTvDetails {
     id: i64,
     name: Option<String>,
@@ -2112,7 +2112,7 @@ pub(crate) struct TmdbEpisode {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbEpisodeDetails {
     id: i64,
     name: Option<String>,
@@ -2130,7 +2130,7 @@ pub(crate) struct TmdbEpisodeDetails {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbCollectionDetails {
     id: i64,
     name: Option<String>,
@@ -2140,7 +2140,7 @@ pub(crate) struct TmdbCollectionDetails {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbPersonDetails {
     id: i64,
     name: Option<String>,
@@ -2155,7 +2155,7 @@ pub(crate) struct TmdbPersonDetails {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbImages {
     pub(crate) backdrops: Vec<TmdbImage>,
     pub(crate) posters: Vec<TmdbImage>,
@@ -2164,7 +2164,7 @@ pub(crate) struct TmdbImages {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 pub(crate) struct TmdbImage {
     pub(crate) file_path: Option<String>,
     pub(crate) width: Option<i32>,
@@ -2175,35 +2175,35 @@ pub(crate) struct TmdbImage {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbGenre {
     id: i32,
     name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbCompany {
     id: i32,
     name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbCountry {
     iso_3166_1: Option<String>,
     name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbCollection {
     id: i64,
     name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbCredits {
     cast: Vec<TmdbCast>,
     crew: Vec<TmdbCrew>,
@@ -2211,7 +2211,7 @@ struct TmdbCredits {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbCast {
     id: i64,
     name: String,
@@ -2221,7 +2221,7 @@ struct TmdbCast {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbCrew {
     id: i64,
     name: String,
@@ -2231,73 +2231,92 @@ struct TmdbCrew {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbReleaseDates {
     results: Vec<TmdbReleaseDateGroup>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbReleaseDateGroup {
     iso_3166_1: String,
     release_dates: Vec<TmdbReleaseDate>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbReleaseDate {
     certification: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbContentRatings {
     results: Vec<TmdbContentRating>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbContentRating {
     iso_3166_1: String,
     rating: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 #[allow(clippy::struct_field_names)]
 struct TmdbExternalIds {
     imdb_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_or_number")]
     tvdb_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_or_number")]
     tvrage_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbVideos {
     results: Vec<TmdbVideo>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbVideo {
     key: Option<String>,
     name: Option<String>,
     site: Option<String>,
+    #[serde(rename = "type")]
     video_type: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbKeywordResults {
     keywords: Vec<TmdbKeyword>,
     results: Vec<TmdbKeyword>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "snake_case", default)]
 struct TmdbKeyword {
     id: i32,
     name: Option<String>,
+}
+
+fn deserialize_optional_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(value) => Ok(Some(value)),
+        Value::Number(value) => Ok(Some(value.to_string())),
+        value => Err(D::Error::custom(format!(
+            "expected a string, number, or null, got {value}"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -2357,6 +2376,75 @@ mod tests {
         let english_only = images_to_remote_images(images, false);
         assert_eq!(english_only.len(), 1);
         assert_eq!(english_only[0].image_type, ImageType::Primary);
+    }
+
+    #[test]
+    fn movie_details_deserialize_tmdb_snake_case_fields() {
+        let details: TmdbMovieDetails = serde_json::from_str(
+            r#"{
+                "id": 152044,
+                "imdb_id": "tt2735226",
+                "original_title": "劇場版 魔法少女まどか☆マギカ 永遠の物語",
+                "release_date": "2012-10-13",
+                "vote_average": 7.6,
+                "vote_count": 217,
+                "original_language": "ja",
+                "poster_path": "/poster.jpg",
+                "backdrop_path": "/backdrop.jpg",
+                "production_companies": [{"id": 1, "name": "Shaft"}],
+                "production_countries": [{"iso_3166_1": "JP", "name": "Japan"}],
+                "credits": {
+                    "cast": [{"id": 2, "name": "Actor", "profile_path": "/actor.jpg"}],
+                    "guest_stars": []
+                },
+                "release_dates": {
+                    "results": [{"iso_3166_1": "US", "release_dates": [{"certification": "PG-13"}]}]
+                },
+                "external_ids": {"imdb_id": "tt2735226", "tvdb_id": 1234},
+                "videos": {
+                    "results": [{"key": "trailer", "site": "YouTube", "type": "Trailer"}]
+                },
+                "images": {
+                    "posters": [{
+                        "file_path": "/poster.jpg",
+                        "iso_639_1": "en",
+                        "vote_average": 7.2,
+                        "vote_count": 4,
+                        "width": 1000,
+                        "height": 1500
+                    }]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(details.imdb_id.as_deref(), Some("tt2735226"));
+        assert_eq!(
+            details.original_title.as_deref(),
+            Some("劇場版 魔法少女まどか☆マギカ 永遠の物語")
+        );
+        assert_eq!(details.poster_path.as_deref(), Some("/poster.jpg"));
+        assert_eq!(details.backdrop_path.as_deref(), Some("/backdrop.jpg"));
+        assert_eq!(details.production_companies.len(), 1);
+        assert_eq!(
+            details.production_countries[0].iso_3166_1.as_deref(),
+            Some("JP")
+        );
+        assert_eq!(
+            details.credits.cast[0].profile_path.as_deref(),
+            Some("/actor.jpg")
+        );
+        assert_eq!(details.release_dates.results[0].iso_3166_1, "US");
+        assert_eq!(details.external_ids.tvdb_id.as_deref(), Some("1234"));
+        assert_eq!(
+            details.videos.results[0].video_type.as_deref(),
+            Some("Trailer")
+        );
+        assert_eq!(
+            details.images.posters[0].file_path.as_deref(),
+            Some("/poster.jpg")
+        );
+        assert_eq!(details.images.posters[0].iso_639_1.as_deref(), Some("en"));
     }
 
     #[test]

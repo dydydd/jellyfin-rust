@@ -324,6 +324,11 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
         format!("/Videos/{item_id}/live.m3u8"),
         format!("/Audio/{item_id}/master.m3u8"),
         format!("/Audio/{item_id}/main.m3u8"),
+        format!("/videos/{item_id}/master.m3u8"),
+        format!("/videos/{item_id}/main.m3u8"),
+        format!("/videos/{item_id}/live.m3u8"),
+        format!("/audio/{item_id}/master.m3u8"),
+        format!("/audio/{item_id}/main.m3u8"),
         format!(
             "/Videos/{item_id}/hls1/main/0.ts?runtimeTicks=0&actualSegmentLengthTicks=40000000"
         ),
@@ -345,6 +350,20 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
         )
         .await;
     let playlist_mime = MimeTypes::get_mime_type("playlist.m3u8").unwrap();
+    assert_file_response(
+        response,
+        StatusCode::OK,
+        &playlist_mime,
+        b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000\nmain.m3u8\n",
+    )
+    .await;
+
+    let response = fixture
+        .get(
+            &format!("/videos/{item_id}/master.m3u8"),
+            fixture.device_headers(),
+        )
+        .await;
     assert_file_response(
         response,
         StatusCode::OK,
@@ -376,6 +395,26 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
         .get(
             &format!(
                 "/Audio/{item_id}/hls1/audio/0.aac?runtimeTicks=0&actualSegmentLengthTicks=40000000"
+            ),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_file_response(response, StatusCode::OK, "audio/aac", b"dynamic-audio").await;
+
+    let response = fixture
+        .get(
+            &format!(
+                "/videos/{item_id}/hls1/main/0.ts?runtimeTicks=0&actualSegmentLengthTicks=40000000"
+            ),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_file_response(response, StatusCode::OK, "video/mp2t", b"dynamic-video").await;
+
+    let response = fixture
+        .get(
+            &format!(
+                "/audio/{item_id}/hls1/audio/0.aac?runtimeTicks=0&actualSegmentLengthTicks=40000000"
             ),
             fixture.device_headers(),
         )

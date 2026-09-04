@@ -56,12 +56,12 @@ impl LibraryWatcher {
 
         let scan = self.scan;
         let folders = self.folders;
+        let runtime = tokio::runtime::Handle::current();
 
         // Spawn a thread for the blocking event loop
         std::thread::Builder::new()
             .name("jellyfin-library-watcher".into())
             .spawn(move || {
-                let runtime = tokio::runtime::Handle::current();
                 let mut pending: Vec<PathBuf> = Vec::new();
                 let mut last_event = std::time::Instant::now();
 

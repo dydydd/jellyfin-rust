@@ -284,7 +284,6 @@ async fn playback_info(
         &mut max_streaming_bitrate,
         device_id,
         access_token,
-        state.system_info.local_address.as_deref(),
         &play_session_id,
         remote_ip,
     );
@@ -381,7 +380,6 @@ fn apply_stream_builder(
     max_streaming_bitrate: &mut Option<i32>,
     device_id: &str,
     access_token: &str,
-    base_url: Option<&str>,
     play_session_id: &str,
     remote_ip: std::net::IpAddr,
 ) {
@@ -444,7 +442,10 @@ fn apply_stream_builder(
         source.supports_transcoding = policy_can_transcode(&policy, is_audio);
     }
     if stream.play_method != PlayMethod::DirectPlay && policy_can_transcode(&policy, is_audio) {
-        let url = stream.to_url(base_url, Some(access_token), None);
+        // Clients already know the externally reachable server URL. Returning
+        // a relative path avoids leaking an internal bind address such as
+        // `http://0.0.0.0:8096` when the server runs behind Docker or a proxy.
+        let url = stream.to_url(None, Some(access_token), None);
         if !url.is_empty()
             && let Some(source) = stream.media_source.as_mut()
         {
@@ -621,7 +622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn playback_info_uses_client_profile_and_exposes_transcoding_url() {
+    async fn playback_info_uses_client_profile_and_exposes_relative_transcoding_url() {
         let item_id = Uuid::new_v4();
         let source = MediaSourceInfo {
             id: Some(item_id.simple().to_string()),
@@ -675,7 +676,6 @@ mod tests {
             &mut None,
             "device-id",
             "access-token",
-            Some("http://127.0.0.1:8096"),
             "play-session-id",
             std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         );
@@ -684,7 +684,7 @@ mod tests {
             .transcoding_url
             .as_deref()
             .expect("transcoding url");
-        assert!(url.starts_with("http://127.0.0.1:8096/videos/"));
+        assert!(url.starts_with("/videos/"));
         assert!(url.contains("/master.m3u8"));
         assert!(url.contains("DeviceId=device-id"));
         assert!(url.contains("MediaSourceId="));
