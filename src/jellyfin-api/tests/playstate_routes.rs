@@ -225,17 +225,60 @@ async fn lowercase_player_callbacks_persist_playback_history() {
 }
 
 #[tokio::test]
+async fn playback_json_accepts_number_strings_and_compatible_enums() {
+    let fixture = PlaystateFixture::new().await;
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "itemId": fixture.runtime_item_id,
+            "positionTicks": ticks(120).to_string(),
+            "audioStreamIndex": "4",
+            "subtitleStreamIndex": "-1",
+            "volumeLevel": "37",
+            "playMethod": 2,
+            "repeatMode": "repeatall",
+            "playbackOrder": 1
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    let play_state = &sessions.as_array().expect("sessions array")[0]["PlayState"];
+    assert_eq!(play_state["PositionTicks"], ticks(120));
+    assert_eq!(play_state["AudioStreamIndex"], 4);
+    assert_eq!(play_state["SubtitleStreamIndex"], -1);
+    assert_eq!(play_state["VolumeLevel"], 37);
+    assert_eq!(play_state["PlayMethod"], "DirectPlay");
+    assert_eq!(play_state["RepeatMode"], "RepeatAll");
+    assert_eq!(play_state["PlaybackOrder"], "Shuffle");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn legacy_playback_query_preserves_official_session_fields() {
     let fixture = PlaystateFixture::new().await;
     let start_route = format!(
-        "/playingitems/{}?MediaSourceId=legacy-source&AudioStreamIndex=2&SubtitleStreamIndex=3&PlayMethod=DirectPlay&LiveStreamId=legacy-live&PlaySessionId=legacy-session&CanSeek=true",
+        "/playingitems/{}?MediaSourceId=legacy-source&AudioStreamIndex=2&SubtitleStreamIndex=3&PlayMethod=directplay&LiveStreamId=legacy-live&PlaySessionId=legacy-session&CanSeek=true",
         fixture.runtime_item_id
     );
     let response = request(&fixture.app, "POST", &start_route, &fixture.user_token).await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let progress_route = format!(
-        "/users/{}/playingitems/{}/progress?PositionTicks={}&AudioStreamIndex=4&SubtitleStreamIndex=5&VolumeLevel=37&PlayMethod=DirectPlay&LiveStreamId=legacy-live&PlaySessionId=legacy-session&RepeatMode=RepeatAll&IsPaused=true&IsMuted=true",
+        "/users/{}/playingitems/{}/progress?PositionTicks={}&AudioStreamIndex=4&SubtitleStreamIndex=5&VolumeLevel=37&PlayMethod=2&LiveStreamId=legacy-live&PlaySessionId=legacy-session&RepeatMode=1&IsPaused=true&IsMuted=true",
         fixture.administrator_id,
         fixture.runtime_item_id,
         ticks(120)

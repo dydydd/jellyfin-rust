@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, marker::PhantomData, sync::Arc};
 
 use axum::{
     Json,
@@ -10,7 +10,7 @@ use jellyfin_controller::{
 };
 use jellyfin_data::NewActivityLog;
 use jellyfin_model::{PlayMethod, PlaybackOrder, PlayerStateInfo, RepeatMode, UserItemDataDto};
-use serde::Deserialize;
+use serde::{Deserialize, de};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -47,27 +47,55 @@ pub struct PlaybackProgressInfo {
     pub session_id: Option<String>,
     #[serde(alias = "mediaSourceId", alias = "mediasourceid")]
     pub media_source_id: Option<String>,
-    #[serde(alias = "positionTicks", alias = "positionticks")]
+    #[serde(
+        alias = "positionTicks",
+        alias = "positionticks",
+        deserialize_with = "deserialize_optional_i64"
+    )]
     pub position_ticks: Option<i64>,
-    #[serde(alias = "audioStreamIndex", alias = "audiostreamindex")]
+    #[serde(
+        alias = "audioStreamIndex",
+        alias = "audiostreamindex",
+        deserialize_with = "deserialize_optional_i32"
+    )]
     pub audio_stream_index: Option<i32>,
-    #[serde(alias = "subtitleStreamIndex", alias = "subtitlestreamindex")]
+    #[serde(
+        alias = "subtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        deserialize_with = "deserialize_optional_i32"
+    )]
     pub subtitle_stream_index: Option<i32>,
     #[serde(alias = "isPaused", alias = "ispaused")]
     pub is_paused: bool,
     #[serde(alias = "isMuted", alias = "ismuted")]
     pub is_muted: bool,
-    #[serde(alias = "volumeLevel", alias = "volumelevel")]
+    #[serde(
+        alias = "volumeLevel",
+        alias = "volumelevel",
+        deserialize_with = "deserialize_optional_i32"
+    )]
     pub volume_level: Option<i32>,
-    #[serde(alias = "playMethod", alias = "playmethod")]
+    #[serde(
+        alias = "playMethod",
+        alias = "playmethod",
+        deserialize_with = "deserialize_optional_compat_enum"
+    )]
     pub play_method: Option<PlayMethod>,
     #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
     #[serde(alias = "playSessionId", alias = "playsessionid")]
     pub play_session_id: Option<String>,
-    #[serde(alias = "repeatMode", alias = "repeatmode")]
+    #[serde(
+        alias = "repeatMode",
+        alias = "repeatmode",
+        deserialize_with = "deserialize_compat_enum"
+    )]
     pub repeat_mode: RepeatMode,
-    #[serde(alias = "playbackOrder", alias = "playbackorder")]
+    #[serde(
+        alias = "playbackOrder",
+        alias = "playbackorder",
+        deserialize_with = "deserialize_compat_enum"
+    )]
     pub playback_order: PlaybackOrder,
     #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
     pub now_playing_queue: Option<Vec<Value>>,
@@ -88,27 +116,55 @@ pub struct PlaybackStartInfo {
     pub session_id: Option<String>,
     #[serde(alias = "mediaSourceId", alias = "mediasourceid")]
     pub media_source_id: Option<String>,
-    #[serde(alias = "positionTicks", alias = "positionticks")]
+    #[serde(
+        alias = "positionTicks",
+        alias = "positionticks",
+        deserialize_with = "deserialize_optional_i64"
+    )]
     pub position_ticks: Option<i64>,
-    #[serde(alias = "audioStreamIndex", alias = "audiostreamindex")]
+    #[serde(
+        alias = "audioStreamIndex",
+        alias = "audiostreamindex",
+        deserialize_with = "deserialize_optional_i32"
+    )]
     pub audio_stream_index: Option<i32>,
-    #[serde(alias = "subtitleStreamIndex", alias = "subtitlestreamindex")]
+    #[serde(
+        alias = "subtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        deserialize_with = "deserialize_optional_i32"
+    )]
     pub subtitle_stream_index: Option<i32>,
     #[serde(alias = "isPaused", alias = "ispaused")]
     pub is_paused: bool,
     #[serde(alias = "isMuted", alias = "ismuted")]
     pub is_muted: bool,
-    #[serde(alias = "volumeLevel", alias = "volumelevel")]
+    #[serde(
+        alias = "volumeLevel",
+        alias = "volumelevel",
+        deserialize_with = "deserialize_optional_i32"
+    )]
     pub volume_level: Option<i32>,
-    #[serde(alias = "playMethod", alias = "playmethod")]
+    #[serde(
+        alias = "playMethod",
+        alias = "playmethod",
+        deserialize_with = "deserialize_optional_compat_enum"
+    )]
     pub play_method: Option<PlayMethod>,
     #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
     #[serde(alias = "playSessionId", alias = "playsessionid")]
     pub play_session_id: Option<String>,
-    #[serde(alias = "repeatMode", alias = "repeatmode")]
+    #[serde(
+        alias = "repeatMode",
+        alias = "repeatmode",
+        deserialize_with = "deserialize_compat_enum"
+    )]
     pub repeat_mode: RepeatMode,
-    #[serde(alias = "playbackOrder", alias = "playbackorder")]
+    #[serde(
+        alias = "playbackOrder",
+        alias = "playbackorder",
+        deserialize_with = "deserialize_compat_enum"
+    )]
     pub playback_order: PlaybackOrder,
     #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
     pub now_playing_queue: Option<Vec<Value>>,
@@ -127,7 +183,11 @@ pub struct PlaybackStopInfo {
     pub session_id: Option<String>,
     #[serde(alias = "mediaSourceId", alias = "mediasourceid")]
     pub media_source_id: Option<String>,
-    #[serde(alias = "positionTicks", alias = "positionticks")]
+    #[serde(
+        alias = "positionTicks",
+        alias = "positionticks",
+        deserialize_with = "deserialize_optional_i64"
+    )]
     pub position_ticks: Option<i64>,
     #[serde(alias = "liveStreamId", alias = "livestreamid")]
     pub live_stream_id: Option<String>,
@@ -151,7 +211,12 @@ pub struct PlaybackStartQuery {
     pub audio_stream_index: Option<i32>,
     #[serde(default, rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
     pub subtitle_stream_index: Option<i32>,
-    #[serde(default, rename = "playMethod", alias = "PlayMethod")]
+    #[serde(
+        default,
+        rename = "playMethod",
+        alias = "PlayMethod",
+        deserialize_with = "deserialize_optional_compat_enum"
+    )]
     pub play_method: Option<PlayMethod>,
     #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
     pub live_stream_id: Option<String>,
@@ -173,13 +238,23 @@ pub struct PlaybackProgressQuery {
     pub subtitle_stream_index: Option<i32>,
     #[serde(default, rename = "volumeLevel", alias = "VolumeLevel")]
     pub volume_level: Option<i32>,
-    #[serde(default, rename = "playMethod", alias = "PlayMethod")]
+    #[serde(
+        default,
+        rename = "playMethod",
+        alias = "PlayMethod",
+        deserialize_with = "deserialize_optional_compat_enum"
+    )]
     pub play_method: Option<PlayMethod>,
     #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
     pub live_stream_id: Option<String>,
     #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
     pub play_session_id: Option<String>,
-    #[serde(default, rename = "repeatMode", alias = "RepeatMode")]
+    #[serde(
+        default,
+        rename = "repeatMode",
+        alias = "RepeatMode",
+        deserialize_with = "deserialize_optional_compat_enum"
+    )]
     pub repeat_mode: Option<RepeatMode>,
     #[serde(default, rename = "isPaused", alias = "IsPaused")]
     pub is_paused: bool,
@@ -205,6 +280,183 @@ pub struct PlaybackStopQuery {
 pub struct PlaybackPingQuery {
     #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
     pub play_session_id: Option<String>,
+}
+
+fn deserialize_optional_integer<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: TryFrom<i64> + std::str::FromStr,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_i64()
+            .and_then(|value| T::try_from(value).ok())
+            .map(Some)
+            .ok_or_else(|| de::Error::custom("integer is outside the supported range")),
+        Some(Value::String(value)) => value
+            .parse()
+            .map(Some)
+            .map_err(|_| de::Error::custom("invalid integer string")),
+        Some(_) => Err(de::Error::custom("expected an integer or integer string")),
+    }
+}
+
+fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_optional_integer(deserializer)
+}
+
+fn deserialize_optional_i32<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_optional_integer(deserializer)
+}
+
+trait CompatibleEnum: Default + Sized {
+    fn from_i64(value: i64) -> Option<Self>;
+    fn from_name(value: &str) -> Option<Self>;
+}
+
+impl CompatibleEnum for PlayMethod {
+    fn from_i64(value: i64) -> Option<Self> {
+        match value {
+            0 => Some(Self::Transcode),
+            1 => Some(Self::DirectStream),
+            2 => Some(Self::DirectPlay),
+            _ => None,
+        }
+    }
+
+    fn from_name(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("Transcode") {
+            Some(Self::Transcode)
+        } else if value.eq_ignore_ascii_case("DirectStream") {
+            Some(Self::DirectStream)
+        } else if value.eq_ignore_ascii_case("DirectPlay") {
+            Some(Self::DirectPlay)
+        } else {
+            value.parse().ok().and_then(Self::from_i64)
+        }
+    }
+}
+
+impl CompatibleEnum for RepeatMode {
+    fn from_i64(value: i64) -> Option<Self> {
+        match value {
+            0 => Some(Self::RepeatNone),
+            1 => Some(Self::RepeatAll),
+            2 => Some(Self::RepeatOne),
+            _ => None,
+        }
+    }
+
+    fn from_name(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("RepeatNone") {
+            Some(Self::RepeatNone)
+        } else if value.eq_ignore_ascii_case("RepeatAll") {
+            Some(Self::RepeatAll)
+        } else if value.eq_ignore_ascii_case("RepeatOne") {
+            Some(Self::RepeatOne)
+        } else {
+            value.parse().ok().and_then(Self::from_i64)
+        }
+    }
+}
+
+impl CompatibleEnum for PlaybackOrder {
+    fn from_i64(value: i64) -> Option<Self> {
+        match value {
+            0 => Some(Self::Default),
+            1 => Some(Self::Shuffle),
+            _ => None,
+        }
+    }
+
+    fn from_name(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("Default") {
+            Some(Self::Default)
+        } else if value.eq_ignore_ascii_case("Shuffle") {
+            Some(Self::Shuffle)
+        } else {
+            value.parse().ok().and_then(Self::from_i64)
+        }
+    }
+}
+
+struct CompatibleEnumVisitor<T>(PhantomData<T>);
+
+impl<T: CompatibleEnum> de::Visitor<'_> for CompatibleEnumVisitor<T> {
+    type Value = T;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an enum name or its integer value")
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+        T::from_i64(value).ok_or_else(|| E::custom("unknown enum integer"))
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+        i64::try_from(value)
+            .ok()
+            .and_then(T::from_i64)
+            .ok_or_else(|| E::custom("unknown enum integer"))
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        T::from_name(value).ok_or_else(|| E::custom("unknown enum name"))
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(T::default())
+    }
+}
+
+fn deserialize_compat_enum<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: CompatibleEnum,
+{
+    deserializer.deserialize_any(CompatibleEnumVisitor(PhantomData))
+}
+
+struct OptionalCompatibleEnumVisitor<T>(PhantomData<T>);
+
+impl<'de, T: CompatibleEnum> de::Visitor<'de> for OptionalCompatibleEnumVisitor<T> {
+    type Value = Option<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an optional enum name or its integer value")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer
+            .deserialize_any(CompatibleEnumVisitor(PhantomData))
+            .map(Some)
+    }
+}
+
+fn deserialize_optional_compat_enum<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: CompatibleEnum,
+{
+    deserializer.deserialize_option(OptionalCompatibleEnumVisitor(PhantomData))
 }
 
 pub(crate) async fn mark_played_modern(
