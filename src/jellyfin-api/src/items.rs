@@ -528,6 +528,9 @@ async fn get_for(
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
+    query.parent_id =
+        resolve_user_view_parent_id(&state, &authenticated.user, target_user_id, query.parent_id)
+            .await?;
     apply_items_controller_defaults(&state, &authenticated.user, target_user_id, &mut query)
         .await?;
     resolve_official_rating_filters(&state, &mut query).await?;
@@ -758,6 +761,9 @@ async fn resume_for(
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
+    query.parent_id =
+        resolve_user_view_parent_id(&state, &authenticated.user, target_user_id, query.parent_id)
+            .await?;
     let page = state
         .user_library
         .resume_items(&authenticated.user, target_user_id, query.try_into()?)
@@ -788,13 +794,16 @@ async fn latest_for(
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
     let _ = query.group_items;
+    let parent_id =
+        resolve_user_view_parent_id(&state, &authenticated.user, target_user_id, query.parent_id)
+            .await?;
     let page = state
         .user_library
         .query_items(
             &authenticated.user,
             target_user_id,
             BaseItemQuery {
-                parent_id: query.parent_id,
+                parent_id,
                 recursive: true,
                 include_item_types: query.include_item_types,
                 is_virtual_item: Some(false),
@@ -813,6 +822,40 @@ async fn latest_for(
             .await?
             .items,
     ))
+}
+
+async fn resolve_user_view_parent_id(
+    state: &AppState,
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    target_user_id: Uuid,
+    parent_id: Option<Uuid>,
+) -> Result<Option<Uuid>, ApiError> {
+    let Some(parent_id) = parent_id.filter(|id| !id.is_nil()) else {
+        return Ok(None);
+    };
+    let parent = state
+        .user_library
+        .item(authenticated_user, target_user_id, parent_id)
+        .await?;
+    if parent.item_type != "UserView" {
+        return Ok(Some(parent_id));
+    }
+
+    // Official UserView.GetIdsForAncestorQuery redirects synthetic views to
+    // their physical display parent. Without this mapping clients can render
+    // the home view but every subsequent ParentId query returns an empty page.
+    let display_parent_id = parent
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|data| {
+            data.get("DisplayParentId")
+                .or_else(|| data.get("display_parent_id"))
+        })
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .and_then(|id| Uuid::parse_str(id).ok());
+    Ok(display_parent_id.or(parent.parent_id).or(Some(parent_id)))
 }
 
 impl TryFrom<ItemsQuery> for BaseItemQuery {

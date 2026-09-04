@@ -5,7 +5,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{UserService, VirtualFolderService};
 use jellyfin_data::{
-    DatabaseConfig, DeviceRepository, NewDevice,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
+    USER_ROOT_FOLDER_ID,
     entities::{user, user::Column as UserColumn},
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -81,6 +82,7 @@ struct Fixture {
     movie_view_id: Uuid,
     show_view_id: Uuid,
     mixed_view_id: Uuid,
+    movie_id: Uuid,
 }
 
 impl Fixture {
@@ -162,6 +164,25 @@ impl Fixture {
                 .expect("view id")
                 .id
         };
+        let movie_view_id = id_by_name("Movies");
+        let items = BaseItemRepository::new(database.clone());
+        items.ensure_user_root().await.expect("user root");
+        let mut movie_collection = NewBaseItem::new(movie_view_id, "CollectionFolder");
+        movie_collection.parent_id = Some(USER_ROOT_FOLDER_ID);
+        movie_collection.name = Some(format!("Movies {suffix}"));
+        movie_collection.sort_name = movie_collection.name.clone();
+        movie_collection.is_folder = true;
+        movie_collection.data = Some(json!({ "CollectionType": "movies" }));
+        items
+            .create(movie_collection)
+            .await
+            .expect("movie collection item");
+        let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        movie.parent_id = Some(movie_view_id);
+        movie.name = Some(format!("Movie {suffix}"));
+        movie.sort_name = movie.name.clone();
+        movie.media_type = Some("Video".to_owned());
+        let movie = items.create(movie).await.expect("movie item");
 
         Self {
             app: jellyfin_api::router(AppState::new(
@@ -174,9 +195,10 @@ impl Fixture {
             other_user_id: other_user.id,
             admin_token,
             user_token,
-            movie_view_id: id_by_name("Movies"),
+            movie_view_id,
             show_view_id: id_by_name("Shows"),
             mixed_view_id: id_by_name("Mixed"),
+            movie_id: movie.id,
         }
     }
 }
@@ -245,6 +267,28 @@ async fn assert_user_views(fixture: &Fixture) {
     assert_eq!(persisted["Type"], "UserView");
     assert_eq!(persisted["CollectionType"], "movies");
     assert_eq!(persisted["IsVirtualItem"], true);
+
+    let synthetic_id = movie_view["Id"].as_str().expect("synthetic view id");
+    let contents = get_json(
+        &fixture.app,
+        &format!("/Items?parentId={synthetic_id}&recursive=true&includeItemTypes=Movie"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(contents["TotalRecordCount"], 1);
+    assert_eq!(
+        contents["Items"][0]["Id"],
+        fixture.movie_id.simple().to_string()
+    );
+
+    let latest = get_json(
+        &fixture.app,
+        &format!("/Items/Latest?parentId={synthetic_id}&includeItemTypes=Movie&limit=1"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(latest.as_array().expect("latest items").len(), 1);
+    assert_eq!(latest[0]["Id"], fixture.movie_id.simple().to_string());
 
     let with_hidden = get_json(
         &fixture.app,
