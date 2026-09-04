@@ -129,18 +129,18 @@ fn queue_collection_refresh(state: Arc<AppState>, item_id: Uuid) {
         let tmdb_api_key = Arc::clone(&*state.tmdb_api_key.read().await);
         let omdb_api_key = Arc::clone(&*state.omdb_api_key.read().await);
         let progress_state = Arc::clone(&state);
+        let (progress_sender, mut progress_receiver) = tokio::sync::watch::channel(60.0);
+        let progress_reporter = tokio::spawn(async move {
+            while progress_receiver.changed().await.is_ok() {
+                let progress = *progress_receiver.borrow_and_update();
+                crate::websocket::broadcast_refresh_progress(&progress_state, item_id, progress)
+                    .await;
+            }
+        });
         let report_progress = move |progress: f64| {
-            let state = Arc::clone(&progress_state);
-            tokio::spawn(async move {
-                crate::websocket::broadcast_refresh_progress(
-                    &state,
-                    item_id,
-                    (60.0 + progress * 0.4).clamp(60.0, 100.0),
-                )
-                .await;
-            });
+            progress_sender.send_replace((60.0 + progress * 0.4).clamp(60.0, 100.0));
         };
-        match state
+        let refresh_result = state
             .metadata_refresh
             .refresh_missing_library_metadata(
                 Some(item_id),
@@ -149,8 +149,12 @@ fn queue_collection_refresh(state: Arc<AppState>, item_id: Uuid) {
                 concurrency,
                 &report_progress,
             )
-            .await
-        {
+            .await;
+        drop(report_progress);
+        if let Err(error) = progress_reporter.await {
+            tracing::debug!(%error, %item_id, "collection refresh progress reporter failed");
+        }
+        match refresh_result {
             Ok(summary) => tracing::info!(
                 %item_id,
                 candidates = summary.candidates,

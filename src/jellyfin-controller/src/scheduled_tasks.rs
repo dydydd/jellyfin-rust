@@ -20,7 +20,7 @@ use jellyfin_model::{
 };
 use sea_orm::ConnectionTrait;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use crate::{
@@ -1037,16 +1037,19 @@ fn complete_refresh_library_handler(
             let omdb_api_key = Arc::clone(&*omdb_api_key.read().await);
             let metadata_tasks = tasks.shared_handle();
             let metadata_task_id = Arc::clone(&task_id);
-            let report_metadata_progress = move |progress: f64| {
-                let tasks = metadata_tasks.shared_handle();
-                let task_id = Arc::clone(&metadata_task_id);
-                tokio::spawn(async move {
-                    let _ = tasks
-                        .set_progress(&task_id, (60.0 + progress * 0.4).clamp(60.0, 100.0))
+            let (metadata_progress_sender, mut metadata_progress_receiver) = watch::channel(60.0);
+            let metadata_progress_reporter = tokio::spawn(async move {
+                while metadata_progress_receiver.changed().await.is_ok() {
+                    let progress = *metadata_progress_receiver.borrow_and_update();
+                    let _ = metadata_tasks
+                        .set_progress(&metadata_task_id, progress)
                         .await;
-                });
+                }
+            });
+            let report_metadata_progress = move |progress: f64| {
+                metadata_progress_sender.send_replace((60.0 + progress * 0.4).clamp(60.0, 100.0));
             };
-            match metadata_refresh
+            let refresh_result = metadata_refresh
                 .refresh_missing_library_metadata(
                     None,
                     &tmdb_api_key,
@@ -1054,8 +1057,12 @@ fn complete_refresh_library_handler(
                     concurrency,
                     &report_metadata_progress,
                 )
-                .await
-            {
+                .await;
+            drop(report_metadata_progress);
+            if let Err(error) = metadata_progress_reporter.await {
+                tracing::debug!(%error, "metadata refresh progress reporter failed");
+            }
+            match refresh_result {
                 Ok(summary) => {
                     tracing::info!(
                         candidates = summary.candidates,
