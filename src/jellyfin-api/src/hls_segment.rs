@@ -350,6 +350,7 @@ async fn start_hls_job(
     segment_length_ms: i32,
 ) -> Result<(), ApiError> {
     if state.transcode_jobs.is_running(job_id) {
+        tracing::info!(%item_id, %job_id, "reusing running HLS transcode job");
         if let (Some(device_id), Some(play_session_id)) =
             (query.device_id.as_deref(), query.play_session_id.as_deref())
         {
@@ -389,6 +390,18 @@ async fn start_hls_job(
         segment_length_ms,
         min_segments: query.min_segments.unwrap_or(2),
     };
+    tracing::info!(
+        %item_id,
+        %job_id,
+        media_type,
+        segment_length_ms = settings.segment_length_ms,
+        container = %settings.container,
+        video_codec = target.video_codec.as_deref().unwrap_or_default(),
+        audio_codec = target.audio_codec.as_deref().unwrap_or_default(),
+        video_bitrate = ?target.video_bitrate,
+        audio_bitrate = ?target.audio_bitrate,
+        "starting HLS transcode job",
+    );
     let item = state
         .library_controller
         .item(user, user.id, item_id)
@@ -432,7 +445,9 @@ async fn start_hls_job(
     let finished_job_id = job_id.to_owned();
     tokio::spawn(async move {
         if let Err(error) = run_ffmpeg(&command, &job).await {
-            eprintln!("HLS transcode failed: {error}");
+            tracing::error!(job_id = %finished_job_id, %error, "HLS transcode failed");
+        } else {
+            tracing::info!(job_id = %finished_job_id, "HLS transcode finished");
         }
         jobs.remove(&finished_job_id);
     });
@@ -671,6 +686,12 @@ async fn serve_authenticated_hls1_segment(
         &state.transcode_directory,
         &format!("{playlist_id}{segment_id}.{container}"),
     )?;
+    let segment_exists = tokio::fs::try_exists(&path).await.unwrap_or(false);
+    if segment_exists {
+        tracing::info!(%playlist_id, segment_id, container, "serving HLS segment");
+    } else {
+        tracing::warn!(%playlist_id, segment_id, container, "HLS segment is not ready or missing");
+    }
     serve_file(path, headers).await
 }
 

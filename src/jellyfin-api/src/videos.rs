@@ -87,8 +87,18 @@ async fn stream_file(
             .get(..8)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
     {
+        tracing::info!(%item_id, "redirecting remote video stream");
         return Ok(Redirect::temporary(&path).into_response());
     }
+    let metadata = tokio::fs::metadata(&path).await.ok();
+    tracing::info!(
+        %item_id,
+        requested_container = requested_container.unwrap_or_default(),
+        range_requested = headers.contains_key(axum::http::header::RANGE),
+        source_exists = metadata.is_some(),
+        source_size = metadata.as_ref().map(std::fs::Metadata::len),
+        "serving local video stream",
+    );
     crate::audio::serve_path(headers, &path, request).await
 }
 
