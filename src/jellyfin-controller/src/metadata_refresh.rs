@@ -1,5 +1,7 @@
 use std::{
     collections::HashSet,
+    fmt::Display,
+    future::Future,
     path::Path,
     sync::{Arc, RwLock},
 };
@@ -86,6 +88,35 @@ pub struct MissingMetadataRefreshSummary {
     pub unchanged: usize,
     pub failed: usize,
     pub missing_episodes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetadataProviderDispatch {
+    Tmdb,
+    Omdb,
+    AudioDb,
+    MusicBrainz,
+    GoogleBooks,
+    TvMaze,
+}
+
+impl MetadataProviderDispatch {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Tmdb => "TheMovieDb",
+            Self::Omdb => "OMDb",
+            Self::AudioDb => "TheAudioDB",
+            Self::MusicBrainz => "MusicBrainz",
+            Self::GoogleBooks => "GoogleBooks",
+            Self::TvMaze => "TVMaze",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MetadataProviderRefreshSummary {
+    refreshed: bool,
+    failures: usize,
 }
 
 /// Real metadata-refresh pipeline backed by `ProviderManager` ordering and the
@@ -374,77 +405,62 @@ impl MetadataRefreshService {
             full_refresh: full_metadata_refresh,
         };
         let enabled_providers = manager.get_metadata_providers(&provider_item, &mut filter);
-        let provider_enabled = |name: &str| {
-            enabled_providers
-                .iter()
-                .any(|provider| provider.name.eq_ignore_ascii_case(name))
-        };
 
         let mut refreshed = false;
         if matches!(
             options.metadata_refresh_mode,
             MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
         ) {
-            match service.name.as_str() {
-                "MovieMetadataService" => {
-                    if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
-                        refreshed |= self
+            let providers = metadata_provider_dispatch_plan(
+                &service.name,
+                &enabled_providers,
+                !tmdb_api_key.trim().is_empty(),
+                !omdb_api_key.trim().is_empty(),
+            );
+            let summary =
+                execute_metadata_provider_sequence(item_id, &providers, |provider| async move {
+                    match provider {
+                        MetadataProviderDispatch::Tmdb => self
                             .tmdb_provider(tmdb_api_key)
                             .refresh_item(item_id)
-                            .await?;
-                    }
-                    if provider_enabled("OMDb") && !omdb_api_key.trim().is_empty() {
-                        refreshed |= self
+                            .await
+                            .map_err(MetadataRefreshError::from),
+                        MetadataProviderDispatch::Omdb => self
                             .omdb_provider(omdb_api_key)
                             .refresh_item(item_id)
-                            .await?;
-                    }
-                }
-                "SeriesMetadataService" => {
-                    if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
-                        refreshed |= self
-                            .tmdb_provider(tmdb_api_key)
+                            .await
+                            .map_err(MetadataRefreshError::from),
+                        MetadataProviderDispatch::AudioDb => self
+                            .audio_db_provider()
                             .refresh_item(item_id)
-                            .await?;
-                    }
-                    if !refreshed && provider_enabled("TVMaze") {
-                        refreshed |= self.tv_maze_provider().refresh_item(item_id).await?;
-                    }
-                    if provider_enabled("OMDb") && !omdb_api_key.trim().is_empty() {
-                        refreshed |= self
-                            .omdb_provider(omdb_api_key)
+                            .await
+                            .map_err(MetadataRefreshError::from),
+                        MetadataProviderDispatch::MusicBrainz => self
+                            .music_brainz_provider()
                             .refresh_item(item_id)
-                            .await?;
-                    }
-                }
-                "SeasonMetadataService"
-                | "EpisodeMetadataService"
-                | "BoxSetMetadataService"
-                | "PersonMetadataService" => {
-                    if provider_enabled("TheMovieDb") && !tmdb_api_key.trim().is_empty() {
-                        refreshed |= self
-                            .tmdb_provider(tmdb_api_key)
+                            .await
+                            .map_err(MetadataRefreshError::from),
+                        MetadataProviderDispatch::GoogleBooks => self
+                            .google_books_provider()
                             .refresh_item(item_id)
-                            .await?;
+                            .await
+                            .map_err(MetadataRefreshError::from),
+                        MetadataProviderDispatch::TvMaze => self
+                            .tv_maze_provider()
+                            .refresh_item(item_id)
+                            .await
+                            .map_err(MetadataRefreshError::from),
                     }
-                }
-                "MusicArtistMetadataService" | "MusicAlbumMetadataService" => {
-                    if provider_enabled("TheAudioDB") {
-                        refreshed |= self.audio_db_provider().refresh_item(item_id).await?;
-                    }
-                    if provider_enabled("MusicBrainz") {
-                        refreshed |= self.music_brainz_provider().refresh_item(item_id).await?;
-                    }
-                }
-                "BookMetadataService" => {
-                    if provider_enabled("GoogleBooks") {
-                        refreshed |= self.google_books_provider().refresh_item(item_id).await?;
-                    }
-                }
-                "AudioMetadataService" if provider_enabled("MusicBrainz") => {
-                    refreshed |= self.music_brainz_provider().refresh_item(item_id).await?;
-                }
-                _ => {}
+                })
+                .await;
+            refreshed |= summary.refreshed;
+            if summary.failures > 0 {
+                tracing::warn!(
+                    %item_id,
+                    failures = summary.failures,
+                    providers = providers.len(),
+                    "metadata provider sequence completed with failures"
+                );
             }
         }
 
@@ -718,6 +734,101 @@ impl MetadataRefreshService {
             .collect();
         Ok(metadata)
     }
+}
+
+fn metadata_provider_dispatch_plan(
+    service_name: &str,
+    enabled_providers: &[&ManagedMetadataProvider],
+    tmdb_available: bool,
+    omdb_available: bool,
+) -> Vec<MetadataProviderDispatch> {
+    enabled_providers
+        .iter()
+        .filter_map(|provider| {
+            let dispatch = if provider.name.eq_ignore_ascii_case("TheMovieDb") {
+                MetadataProviderDispatch::Tmdb
+            } else if provider.name.eq_ignore_ascii_case("OMDb") {
+                MetadataProviderDispatch::Omdb
+            } else if provider.name.eq_ignore_ascii_case("TheAudioDB") {
+                MetadataProviderDispatch::AudioDb
+            } else if provider.name.eq_ignore_ascii_case("MusicBrainz") {
+                MetadataProviderDispatch::MusicBrainz
+            } else if provider.name.eq_ignore_ascii_case("GoogleBooks") {
+                MetadataProviderDispatch::GoogleBooks
+            } else if provider.name.eq_ignore_ascii_case("TVMaze") {
+                MetadataProviderDispatch::TvMaze
+            } else {
+                return None;
+            };
+            metadata_provider_supports_service(dispatch, service_name)
+                .then_some(dispatch)
+                .filter(|dispatch| match dispatch {
+                    MetadataProviderDispatch::Tmdb => tmdb_available,
+                    MetadataProviderDispatch::Omdb => omdb_available,
+                    _ => true,
+                })
+        })
+        .collect()
+}
+
+fn metadata_provider_supports_service(
+    provider: MetadataProviderDispatch,
+    service_name: &str,
+) -> bool {
+    match provider {
+        MetadataProviderDispatch::Tmdb => matches!(
+            service_name,
+            "MovieMetadataService"
+                | "SeriesMetadataService"
+                | "SeasonMetadataService"
+                | "EpisodeMetadataService"
+                | "BoxSetMetadataService"
+                | "PersonMetadataService"
+        ),
+        MetadataProviderDispatch::Omdb => {
+            matches!(
+                service_name,
+                "MovieMetadataService" | "SeriesMetadataService"
+            )
+        }
+        MetadataProviderDispatch::AudioDb | MetadataProviderDispatch::MusicBrainz => {
+            matches!(
+                service_name,
+                "MusicArtistMetadataService" | "MusicAlbumMetadataService"
+            ) || (provider == MetadataProviderDispatch::MusicBrainz
+                && service_name == "AudioMetadataService")
+        }
+        MetadataProviderDispatch::GoogleBooks => service_name == "BookMetadataService",
+        MetadataProviderDispatch::TvMaze => service_name == "SeriesMetadataService",
+    }
+}
+
+async fn execute_metadata_provider_sequence<E, F, Fut>(
+    item_id: Uuid,
+    providers: &[MetadataProviderDispatch],
+    mut execute: F,
+) -> MetadataProviderRefreshSummary
+where
+    E: Display,
+    F: FnMut(MetadataProviderDispatch) -> Fut,
+    Fut: Future<Output = Result<bool, E>>,
+{
+    let mut summary = MetadataProviderRefreshSummary::default();
+    for provider in providers {
+        match execute(*provider).await {
+            Ok(provider_refreshed) => summary.refreshed |= provider_refreshed,
+            Err(error) => {
+                summary.failures += 1;
+                tracing::warn!(
+                    %item_id,
+                    provider = provider.name(),
+                    %error,
+                    "metadata provider refresh failed; continuing with the next provider"
+                );
+            }
+        }
+    }
+    summary
 }
 
 fn metadata_services_for(item_type: &str) -> Vec<ManagedMetadataService> {
@@ -1021,6 +1132,11 @@ fn weekday_from_name(value: &str) -> Option<Weekday> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+
     use serde_json::json;
 
     use super::*;
@@ -1113,6 +1229,126 @@ mod tests {
             false
         ));
         assert!(image_fetcher_enabled(&json!({}), "Movie", true));
+    }
+
+    #[test]
+    fn series_dispatch_plan_preserves_configured_provider_order() {
+        let order = ProviderOrderOptions {
+            metadata_fetcher_order: Some(vec![
+                "OMDb".to_owned(),
+                "TheMovieDb".to_owned(),
+                "TVMaze".to_owned(),
+            ]),
+            ..ProviderOrderOptions::default()
+        };
+        let mut manager = ProviderManager::new(order, ProviderOrderOptions::default());
+        manager.add_parts(
+            Vec::new(),
+            metadata_services_for("Series"),
+            provider_registry(),
+        );
+        let item = ProviderItem {
+            type_name: "Series".to_owned(),
+            ..ProviderItem::default()
+        };
+        let mut filter = ProviderFilter {
+            metadata_fetchers: Vec::new(),
+            image_fetchers: Vec::new(),
+            full_refresh: false,
+        };
+        let enabled = manager.get_metadata_providers(&item, &mut filter);
+
+        let plan = metadata_provider_dispatch_plan("SeriesMetadataService", &enabled, true, true);
+
+        assert_eq!(
+            plan,
+            vec![
+                MetadataProviderDispatch::Omdb,
+                MetadataProviderDispatch::Tmdb,
+                MetadataProviderDispatch::TvMaze,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_sequence_continues_after_error_and_shares_added_ids() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider_ids = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
+        let providers = vec![
+            MetadataProviderDispatch::Omdb,
+            MetadataProviderDispatch::Tmdb,
+            MetadataProviderDispatch::TvMaze,
+        ];
+
+        let summary = execute_metadata_provider_sequence(Uuid::nil(), &providers, |provider| {
+            let calls = Arc::clone(&calls);
+            let provider_ids = Arc::clone(&provider_ids);
+            async move {
+                calls
+                    .lock()
+                    .expect("provider call log lock poisoned")
+                    .push(provider);
+                match provider {
+                    MetadataProviderDispatch::Omdb => Err("OMDb unavailable"),
+                    MetadataProviderDispatch::Tmdb => {
+                        provider_ids
+                            .lock()
+                            .expect("provider id lock poisoned")
+                            .insert("Imdb".to_owned(), "tt1234567".to_owned());
+                        Ok(true)
+                    }
+                    MetadataProviderDispatch::TvMaze => {
+                        let mut provider_ids =
+                            provider_ids.lock().expect("provider id lock poisoned");
+                        assert_eq!(
+                            provider_ids.get("Imdb").map(String::as_str),
+                            Some("tt1234567")
+                        );
+                        provider_ids.insert("TvMaze".to_owned(), "42".to_owned());
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(summary.failures, 1);
+        assert!(summary.refreshed);
+        assert_eq!(
+            *calls.lock().expect("provider call log lock poisoned"),
+            providers
+        );
+        assert_eq!(
+            provider_ids
+                .lock()
+                .expect("provider id lock poisoned")
+                .get("TvMaze")
+                .map(String::as_str),
+            Some("42")
+        );
+    }
+
+    #[tokio::test]
+    async fn all_provider_failures_do_not_clear_existing_metadata() {
+        let overview = Arc::new(Mutex::new(Some("Existing overview".to_owned())));
+        let providers = vec![
+            MetadataProviderDispatch::Tmdb,
+            MetadataProviderDispatch::TvMaze,
+        ];
+
+        let summary =
+            execute_metadata_provider_sequence(Uuid::nil(), &providers, |_provider| async {
+                Err::<bool, _>("provider failed")
+            })
+            .await;
+
+        assert_eq!(summary.failures, 2);
+        assert!(!summary.refreshed);
+        assert_eq!(
+            overview.lock().expect("metadata lock poisoned").as_deref(),
+            Some("Existing overview")
+        );
     }
 
     #[test]
