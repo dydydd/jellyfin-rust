@@ -876,6 +876,17 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Videos/{item_id}/stream.{container}",
             get(videos::stream_with_container).head(videos::stream_with_container),
         )
+        // Some Emby-compatible clients (including VidHub) emit the media
+        // stream endpoint with a lowercase collection segment. ASP.NET's
+        // routing is case-insensitive, so Jellyfin accepts this spelling too.
+        .route(
+            "/videos/{item_id}/stream",
+            get(videos::stream).head(videos::stream),
+        )
+        .route(
+            "/videos/{item_id}/stream.{container}",
+            get(videos::stream_with_container).head(videos::stream_with_container),
+        )
         .route("/Plugins", get(plugins::list))
         .route(
             "/Plugins/{plugin_id}/{version}/Enable",
