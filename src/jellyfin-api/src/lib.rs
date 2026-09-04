@@ -350,6 +350,13 @@ impl AppState {
             system_command: Arc::new(|_| {}),
             metrics_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+        state.scheduled_tasks.register_library_refresh_executor(
+            Arc::clone(&state.library_scan),
+            state.metadata_refresh.clone(),
+            Arc::clone(&state.tmdb_api_key),
+            Arc::clone(&state.omdb_api_key),
+            state.server_configuration.clone(),
+        );
         state.scheduled_tasks.add_change_listener(Arc::new(move || {
             let tasks = scheduled_tasks.shared_handle();
             let sockets = Arc::clone(&web_sockets);
@@ -427,16 +434,32 @@ impl AppState {
     }
 
     /// Replaces the in-memory TMDB API key used by metadata providers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called while the API key is being read or written.
     #[must_use]
-    pub fn with_tmdb_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.tmdb_api_key = Arc::new(tokio::sync::RwLock::new(Arc::from(api_key.into())));
+    pub fn with_tmdb_api_key(self, api_key: impl Into<String>) -> Self {
+        *self
+            .tmdb_api_key
+            .try_write()
+            .expect("TMDB API key is not being read during state construction") =
+            Arc::from(api_key.into());
         self
     }
 
     /// Replaces the `OMDb` API key used by metadata providers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called while the API key is being read or written.
     #[must_use]
-    pub fn with_omdb_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.omdb_api_key = Arc::new(tokio::sync::RwLock::new(Arc::from(api_key.into())));
+    pub fn with_omdb_api_key(self, api_key: impl Into<String>) -> Self {
+        *self
+            .omdb_api_key
+            .try_write()
+            .expect("OMDb API key is not being read during state construction") =
+            Arc::from(api_key.into());
         self
     }
 

@@ -69,9 +69,8 @@ pub(crate) async fn refresh(
     if item.item_type == "CollectionFolder"
         && query.metadata_refresh_mode != MetadataRefreshMode::None
     {
-        crate::websocket::broadcast_refresh_progress(&state, item_id, 30.0).await;
-        state.library_scan.scan_collection(item_id).await?;
-        crate::websocket::broadcast_refresh_progress(&state, item_id, 80.0).await;
+        queue_collection_refresh(state, item_id);
+        return Ok(StatusCode::NO_CONTENT);
     }
 
     if query.metadata_refresh_mode != MetadataRefreshMode::None
@@ -102,6 +101,71 @@ pub(crate) async fn refresh(
 
     crate::websocket::broadcast_refresh_progress(&state, item_id, 100.0).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn queue_collection_refresh(state: Arc<AppState>, item_id: Uuid) {
+    tracing::info!(%item_id, "queued collection scan and missing metadata refresh");
+    tokio::spawn(async move {
+        crate::websocket::broadcast_refresh_progress(&state, item_id, 1.0).await;
+        if let Err(error) = state.library_scan.scan_collection(item_id).await {
+            tracing::error!(%error, %item_id, "collection scan failed");
+            crate::websocket::broadcast_refresh_progress(&state, item_id, 100.0).await;
+            return;
+        }
+        crate::websocket::broadcast_refresh_progress(&state, item_id, 60.0).await;
+
+        let configured_concurrency = state
+            .server_configuration
+            .load()
+            .await
+            .map_or(0, |configuration| {
+                configuration.library_metadata_refresh_concurrency
+            });
+        let concurrency = usize::try_from(configured_concurrency)
+            .ok()
+            .filter(|value| *value > 0)
+            .unwrap_or(2)
+            .min(16);
+        let tmdb_api_key = Arc::clone(&*state.tmdb_api_key.read().await);
+        let omdb_api_key = Arc::clone(&*state.omdb_api_key.read().await);
+        let progress_state = Arc::clone(&state);
+        let report_progress = move |progress: f64| {
+            let state = Arc::clone(&progress_state);
+            tokio::spawn(async move {
+                crate::websocket::broadcast_refresh_progress(
+                    &state,
+                    item_id,
+                    (60.0 + progress * 0.4).clamp(60.0, 100.0),
+                )
+                .await;
+            });
+        };
+        match state
+            .metadata_refresh
+            .refresh_missing_library_metadata(
+                Some(item_id),
+                &tmdb_api_key,
+                &omdb_api_key,
+                concurrency,
+                &report_progress,
+            )
+            .await
+        {
+            Ok(summary) => tracing::info!(
+                %item_id,
+                candidates = summary.candidates,
+                refreshed = summary.refreshed,
+                unchanged = summary.unchanged,
+                failed = summary.failed,
+                missing_episodes = summary.missing_episodes,
+                "collection scan and missing metadata refresh completed"
+            ),
+            Err(error) => {
+                tracing::error!(%error, %item_id, "collection metadata refresh failed");
+            }
+        }
+        crate::websocket::broadcast_refresh_progress(&state, item_id, 100.0).await;
+    });
 }
 
 fn is_video_item(item: &jellyfin_data::entities::base_item::Model) -> bool {

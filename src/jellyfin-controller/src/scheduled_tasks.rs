@@ -11,7 +11,7 @@ use std::{
 use chrono::{DateTime, Datelike, Duration, Utc};
 use jellyfin_data::{
     ActivityLogRepository, KeyframeDataRepository, PersonQuery, PersonRepository,
-    UserDataRepository,
+    ServerConfigurationRepository, UserDataRepository,
 };
 use jellyfin_live_tv::listings::GuideRefreshService;
 use jellyfin_model::{
@@ -23,7 +23,10 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::{ChapterImageService, LibraryScanService, SystemLogService, TrickplayService};
+use crate::{
+    ChapterImageService, LibraryScanService, MetadataRefreshService, SystemLogService,
+    TrickplayService,
+};
 
 const TICKS_PER_HOUR: i64 = 36_000_000_000;
 const CACHE_FILE_RETENTION_DAYS: i64 = 30;
@@ -201,6 +204,28 @@ impl ScheduledTaskService {
         service.register_executor("DeleteCacheFiles", delete_cache_files_handler());
         service.register_executor("PluginUpdates", plugin_updates_handler());
         service
+    }
+
+    /// Replaces the basic library scan executor with the complete file scan
+    /// and missing-online-metadata pipeline used by the running server.
+    pub fn register_library_refresh_executor(
+        &self,
+        library_scan: Arc<LibraryScanService>,
+        metadata_refresh: MetadataRefreshService,
+        tmdb_api_key: Arc<RwLock<Arc<str>>>,
+        omdb_api_key: Arc<RwLock<Arc<str>>>,
+        configuration: ServerConfigurationRepository,
+    ) {
+        self.register_executor(
+            "RefreshLibrary",
+            complete_refresh_library_handler(
+                library_scan,
+                metadata_refresh,
+                tmdb_api_key,
+                omdb_api_key,
+                configuration,
+            ),
+        );
     }
 
     /// Registers database-backed maintenance handlers that need runtime state.
@@ -941,6 +966,92 @@ fn refresh_library_handler(
                 return;
             }
             context.complete().await;
+        })
+    }
+}
+
+fn complete_refresh_library_handler(
+    scan: Arc<LibraryScanService>,
+    metadata_refresh: MetadataRefreshService,
+    tmdb_api_key: Arc<RwLock<Arc<str>>>,
+    omdb_api_key: Arc<RwLock<Arc<str>>>,
+    configuration: ServerConfigurationRepository,
+) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
+    move |context| {
+        let scan = Arc::clone(&scan);
+        let metadata_refresh = metadata_refresh.clone();
+        let tmdb_api_key = Arc::clone(&tmdb_api_key);
+        let omdb_api_key = Arc::clone(&omdb_api_key);
+        let configuration = configuration.clone();
+        Box::pin(async move {
+            context.report_progress(1.0).await;
+            let tasks = context.tasks.shared_handle();
+            let task_id = Arc::<str>::from(context.task_id.as_str());
+            let scan_tasks = tasks.shared_handle();
+            let scan_task_id = Arc::clone(&task_id);
+            let report_scan_progress = move |progress: f64| {
+                let tasks = scan_tasks.shared_handle();
+                let task_id = Arc::clone(&scan_task_id);
+                tokio::spawn(async move {
+                    let _ = tasks
+                        .set_progress(&task_id, (progress * 0.6).clamp(1.0, 60.0))
+                        .await;
+                });
+            };
+            if let Err(error) = scan.scan_all_with_progress(&report_scan_progress).await {
+                tracing::error!(%error, "library scan task failed");
+                context.fail().await;
+                return;
+            }
+
+            context.report_progress(60.0).await;
+            let configured_concurrency = configuration.load().await.map_or(0, |configuration| {
+                configuration.library_metadata_refresh_concurrency
+            });
+            let concurrency = usize::try_from(configured_concurrency)
+                .ok()
+                .filter(|value| *value > 0)
+                .unwrap_or(2)
+                .min(16);
+            let tmdb_api_key = Arc::clone(&*tmdb_api_key.read().await);
+            let omdb_api_key = Arc::clone(&*omdb_api_key.read().await);
+            let metadata_tasks = tasks.shared_handle();
+            let metadata_task_id = Arc::clone(&task_id);
+            let report_metadata_progress = move |progress: f64| {
+                let tasks = metadata_tasks.shared_handle();
+                let task_id = Arc::clone(&metadata_task_id);
+                tokio::spawn(async move {
+                    let _ = tasks
+                        .set_progress(&task_id, (60.0 + progress * 0.4).clamp(60.0, 100.0))
+                        .await;
+                });
+            };
+            match metadata_refresh
+                .refresh_missing_library_metadata(
+                    None,
+                    &tmdb_api_key,
+                    &omdb_api_key,
+                    concurrency,
+                    &report_metadata_progress,
+                )
+                .await
+            {
+                Ok(summary) => {
+                    tracing::info!(
+                        candidates = summary.candidates,
+                        refreshed = summary.refreshed,
+                        unchanged = summary.unchanged,
+                        failed = summary.failed,
+                        missing_episodes = summary.missing_episodes,
+                        "library scan metadata phase completed"
+                    );
+                    context.complete().await;
+                }
+                Err(error) => {
+                    tracing::error!(%error, "library scan metadata phase failed");
+                    context.fail().await;
+                }
+            }
         })
     }
 }
