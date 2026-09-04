@@ -21,6 +21,7 @@ services:
       dockerfile: Dockerfile
       args:
         BUILDER_IMAGE: docker.m.daocloud.io/library/rust:1.88-bookworm
+        WEB_BUILDER_IMAGE: docker.m.daocloud.io/library/node:24-bookworm-slim
         RUNTIME_IMAGE: docker.m.daocloud.io/library/debian:bookworm-slim
     restart: unless-stopped
     depends_on:
@@ -38,8 +39,6 @@ services:
       - jellyfin-programdata:/app/programdata
       - jellyfin-cache:/app/cache
       - jellyfin-logs:/app/logs
-      # Place a Jellyfin Web build in ./jellyfin-web/dist to serve the UI.
-      - ./jellyfin-web/dist:/app/web:ro
       # Optional local media directory. Create ./media before starting.
       - ./media:/media:ro
 

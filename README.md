@@ -49,7 +49,7 @@ Jellyfin 服务端的 Rust 重实现。项目以兼容官方 Jellyfin API 和 We
 - Rust 1.88+
 - PostgreSQL（本地默认连接 `postgres://postgres:123456@127.0.0.1:5432/postgres`）
 - `ffprobe` 已加入 `PATH`，用于媒体库探测
-- 可选：Jellyfin Web 构建产物，默认读取 `jellyfin-web/dist`
+- Node.js 24+，用于构建内置的 Jellyfin Web 前端
 
 ### 启动
 
@@ -95,14 +95,17 @@ TMDB API Key 也可以通过 `/System/Configuration` 接口或管理界面写入
 服务会执行迁移并创建 `JELLYFIN_INITIAL_USER` 指定的管理员。默认管理员用户名为
 `jellyfin`。
 
-先确保可选的宿主机目录存在：
+克隆仓库时同时初始化 Web 前端子模块：
 
 ```bash
-mkdir -p jellyfin-web/dist media
+git clone --recurse-submodules https://github.com/dydydd/jellyfin-rust.git
+cd jellyfin-rust
+mkdir -p media
 ```
 
-`jellyfin-web/dist` 应放入 Jellyfin Web 的构建产物；没有它时 API 仍可启动，但根页面
-没有 Web UI。`media` 以只读方式挂载到容器的 `/media`，随后可在媒体库配置中使用该路径。
+已有仓库可运行 `git submodule update --init --recursive`。Docker 构建会从
+`dydydd/jellyfin-web` 子模块编译前端并内置到镜像的 `/app/web`；`media` 以只读方式挂载
+到容器的 `/media`，随后可在媒体库配置中使用该路径。
 
 每次都使用全新的数据库和全新的 Jellyfin 运行时数据时，先删除本 Compose 项目的命名卷：
 

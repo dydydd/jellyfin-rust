@@ -1,5 +1,15 @@
 ARG BUILDER_IMAGE=rust:1.88-bookworm
+ARG WEB_BUILDER_IMAGE=node:24-bookworm-slim
 ARG RUNTIME_IMAGE=debian:bookworm-slim
+
+FROM ${WEB_BUILDER_IMAGE} AS web-builder
+WORKDIR /build
+
+COPY jellyfin-web/package.json jellyfin-web/package-lock.json ./
+RUN npm ci
+
+COPY jellyfin-web ./
+RUN npm run build:production
 
 FROM ${BUILDER_IMAGE} AS builder
 WORKDIR /build
@@ -18,8 +28,9 @@ RUN useradd --system --create-home --home-dir /app --uid 10001 jellyfin
 WORKDIR /app
 
 COPY --from=builder /build/target/release/jellyfin-server /usr/local/bin/jellyfin-server
+COPY --from=web-builder /build/dist /app/web
 
-RUN mkdir -p cache metadata programdata logs web \
+RUN mkdir -p cache metadata programdata logs \
     && chown -R jellyfin:jellyfin /app
 
 USER jellyfin
