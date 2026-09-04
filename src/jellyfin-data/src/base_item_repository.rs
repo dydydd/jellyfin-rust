@@ -85,6 +85,16 @@ pub struct BaseItemHierarchyEntry {
     pub depth: i32,
 }
 
+/// Minimal descendant fields needed while reconciling a library scan.
+#[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
+pub struct DescendantScanCandidate {
+    pub id: Uuid,
+    pub item_type: String,
+    pub path: Option<String>,
+    pub parent_id: Option<Uuid>,
+    pub season_id: Option<Uuid>,
+}
+
 /// Stable database ordering for base-item queries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BaseItemOrder {
@@ -2001,6 +2011,32 @@ impl BaseItemRepository {
             .all(self.database.as_ref())
             .await?;
         hierarchy_entries(closure, true, self.database.as_ref()).await
+    }
+
+    /// Loads the minimal descendant projection needed for scan reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn descendant_scan_candidates(
+        &self,
+        id: Uuid,
+    ) -> Result<Vec<DescendantScanCandidate>, BaseItemError> {
+        Ok(
+            DescendantScanCandidate::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                SELECT item.id, item.item_type, item.path, item.parent_id, item.season_id
+                FROM jellyfin.ancestor_ids AS closure
+                JOIN jellyfin.base_items AS item ON item.id = closure.item_id
+                WHERE closure.parent_item_id = $1
+                ORDER BY closure.depth, closure.item_id
+                ",
+                [id.into()],
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
     }
 
     /// Loads `BoxSet` items containing a specific child via manual linked children.

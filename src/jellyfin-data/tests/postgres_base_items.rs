@@ -160,6 +160,30 @@ async fn assert_closure(
             .iter()
             .any(|entry| entry.item.id == grandchild_id && entry.depth == 2)
     );
+    let scan_candidates = repository
+        .descendant_scan_candidates(root_id)
+        .await
+        .expect("scan candidate lookup");
+    assert_eq!(
+        scan_candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+        descendants
+            .iter()
+            .map(|entry| entry.item.id)
+            .collect::<Vec<_>>()
+    );
+    let grandchild_candidate = scan_candidates
+        .iter()
+        .find(|candidate| candidate.id == grandchild_id)
+        .expect("grandchild scan candidate");
+    assert_eq!(grandchild_candidate.item_type, "Episode");
+    assert_eq!(grandchild_candidate.parent_id, Some(child_id));
+    assert_eq!(
+        grandchild_candidate.path.as_deref(),
+        Some(grandchild_id.to_string().as_str())
+    );
     let grandchild = repository
         .get(grandchild_id)
         .await

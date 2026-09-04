@@ -1,5 +1,5 @@
 use jellyfin_controller::{LibraryScanService, VirtualFolderService};
-use jellyfin_data::{BaseItemRepository, DatabaseConfig};
+use jellyfin_data::{BaseItemRepository, DatabaseConfig, NewBaseItem};
 use sea_orm::ConnectionTrait;
 use uuid::Uuid;
 
@@ -143,6 +143,47 @@ async fn exercise_scan(database_name: &str) {
     assert_eq!(flat_episode.parent_index_number, Some(2));
     assert_eq!(flat_episode.season_id, Some(flat_season.id));
 
+    let retained_season_id = Uuid::new_v4();
+    let mut retained_season = NewBaseItem::new(retained_season_id, "Season");
+    retained_season.parent_id = Some(first_series.id);
+    retained_season.series_id = Some(first_series.id);
+    retained_season.path = Some(
+        library_root
+            .join("Retained Show")
+            .join("Season 99")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    retained_season.is_folder = true;
+    items
+        .create(retained_season)
+        .await
+        .expect("path-backed season with child");
+    let mut retained_child = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    retained_child.parent_id = Some(retained_season_id);
+    retained_child.is_folder = true;
+    items
+        .create(retained_child)
+        .await
+        .expect("remaining season child");
+
+    let empty_season_id = Uuid::new_v4();
+    let mut empty_season = NewBaseItem::new(empty_season_id, "Season");
+    empty_season.parent_id = Some(first_series.id);
+    empty_season.series_id = Some(first_series.id);
+    empty_season.path = Some(
+        library_root
+            .join("Removed Show")
+            .join("Season 98")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    empty_season.is_folder = true;
+    items
+        .create(empty_season)
+        .await
+        .expect("empty path-backed season");
+
     std::fs::remove_dir_all(&season_one).expect("season fixture removal");
     scan.scan_all().await.expect("incremental cleanup scan");
     let remaining = items
@@ -171,6 +212,22 @@ async fn exercise_scan(database_name: &str) {
             .expect("series after cleanup")
             .is_some(),
         "series with no remaining media is retained"
+    );
+    assert!(
+        items
+            .get(retained_season_id)
+            .await
+            .expect("season with child after cleanup")
+            .is_some(),
+        "path-backed season with a remaining child is retained"
+    );
+    assert!(
+        items
+            .get(empty_season_id)
+            .await
+            .expect("empty season after cleanup")
+            .is_none(),
+        "empty path-backed season is removed"
     );
 
     std::fs::remove_dir_all(library_root).expect("tv fixture cleanup");
