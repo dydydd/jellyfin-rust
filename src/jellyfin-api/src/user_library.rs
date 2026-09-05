@@ -15,7 +15,7 @@ use jellyfin_controller::{
 use jellyfin_data::entities::{base_item, item_value, user_data};
 use jellyfin_model::{
     MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
-    MediaUrl, NameIdPair, SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
+    MediaUrl, NameIdPair, PersonKind, SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use serde::{Deserialize, Serialize};
@@ -242,7 +242,7 @@ pub struct BaseItemPerson {
     pub id: String,
     pub role: String,
     #[serde(rename = "Type")]
-    pub person_type: String,
+    pub person_type: PersonKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_image_tag: Option<String>,
 }
@@ -977,7 +977,7 @@ pub(crate) async fn load_relation_metadata(
                     name: credit.person.name,
                     id: credit.person.id.simple().to_string(),
                     role: credit.role,
-                    person_type: credit.person_type,
+                    person_type: person_kind_from_name(&credit.person_type),
                     primary_image_tag: person_image_tags.get(&credit.person.id).cloned(),
                 })
                 .collect(),
@@ -1690,6 +1690,37 @@ fn metadata_api_datetime(data: Option<&Value>, keys: &[&str]) -> Option<String> 
     Some(value.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
+fn person_kind_from_name(value: &str) -> PersonKind {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "actor" => PersonKind::Actor,
+        "director" => PersonKind::Director,
+        "composer" => PersonKind::Composer,
+        "writer" => PersonKind::Writer,
+        "gueststar" => PersonKind::GuestStar,
+        "producer" => PersonKind::Producer,
+        "conductor" => PersonKind::Conductor,
+        "lyricist" => PersonKind::Lyricist,
+        "arranger" => PersonKind::Arranger,
+        "engineer" => PersonKind::Engineer,
+        "mixer" => PersonKind::Mixer,
+        "remixer" => PersonKind::Remixer,
+        "creator" => PersonKind::Creator,
+        "artist" => PersonKind::Artist,
+        "albumartist" => PersonKind::AlbumArtist,
+        "author" => PersonKind::Author,
+        "illustrator" => PersonKind::Illustrator,
+        "penciller" => PersonKind::Penciller,
+        "inker" => PersonKind::Inker,
+        "colorist" => PersonKind::Colorist,
+        "letterer" => PersonKind::Letterer,
+        "coverartist" => PersonKind::CoverArtist,
+        "editor" => PersonKind::Editor,
+        "translator" => PersonKind::Translator,
+        "narrator" => PersonKind::Narrator,
+        _ => PersonKind::Unknown,
+    }
+}
+
 fn metadata_f64(data: Option<&Value>, keys: &[&str]) -> Option<f64> {
     metadata_value(data, keys).and_then(|value| value.as_f64())
 }
@@ -1791,7 +1822,7 @@ mod tests {
             name: "Actor".to_owned(),
             id: "person-id".to_owned(),
             role: "Lead".to_owned(),
-            person_type: "Actor".to_owned(),
+            person_type: PersonKind::Actor,
             primary_image_tag: Some("image-tag".to_owned()),
         };
 
@@ -1804,6 +1835,15 @@ mod tests {
                 "Type": "Actor",
                 "PrimaryImageTag": "image-tag"
             })
+        );
+    }
+
+    #[test]
+    fn person_kind_projection_is_case_insensitive_and_defaults_to_unknown() {
+        assert_eq!(person_kind_from_name("gueststar"), PersonKind::GuestStar);
+        assert_eq!(
+            person_kind_from_name(" Cinematographer "),
+            PersonKind::Unknown
         );
     }
 

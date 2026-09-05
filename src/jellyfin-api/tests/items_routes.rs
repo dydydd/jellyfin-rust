@@ -9,8 +9,8 @@ use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DeviceRepository,
-    ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewTrickplayInfo, NewUserData,
-    TrickplayInfoRepository, UserDataRepository,
+    ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson, NewPersonCredit,
+    NewTrickplayInfo, NewUserData, PersonRepository, TrickplayInfoRepository, UserDataRepository,
     entities::{base_item, item_value, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
@@ -92,6 +92,29 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         )
         .await
         .expect("studio link");
+    let people = PersonRepository::new(fixture.database.clone());
+    let created_people = people
+        .replace_credits(
+            movie.id,
+            vec![
+                NewPersonCredit {
+                    person: NewPerson::new(format!("Unknown Person {}", fixture.suffix)),
+                    person_type: "Cinematographer".to_owned(),
+                    role: String::new(),
+                    sort_order: None,
+                    list_order: 0,
+                },
+                NewPersonCredit {
+                    person: NewPerson::new(format!("Director Person {}", fixture.suffix)),
+                    person_type: "director".to_owned(),
+                    role: String::new(),
+                    sort_order: None,
+                    list_order: 1,
+                },
+            ],
+        )
+        .await
+        .expect("person credits");
 
     let body = body_json(
         fixture
@@ -106,6 +129,8 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     assert_eq!(item["Taglines"], serde_json::json!(["One line"]));
     assert!(item.get("Tagline").is_none());
     assert_eq!(item["EndDate"], "2020-01-02T00:00:00.000Z");
+    assert_eq!(item["People"][0]["Type"], "Unknown");
+    assert_eq!(item["People"][1]["Type"], "Director");
     assert_eq!(
         item["Studios"],
         serde_json::json!([{
@@ -122,6 +147,9 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     );
 
     items.delete(movie.id).await.expect("movie cleanup");
+    for person in created_people {
+        people.delete(person.id).await.expect("person cleanup");
+    }
     fixture.cleanup().await;
 }
 
