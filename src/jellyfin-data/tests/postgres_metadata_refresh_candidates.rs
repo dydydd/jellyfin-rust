@@ -88,7 +88,7 @@ async fn exercise_candidates(database_name: &str) {
     )
     .await;
 
-    let complete_series = create_item(
+    let mut complete_series = create_item(
         &repository,
         "Series",
         Some(scoped.id),
@@ -98,6 +98,12 @@ async fn exercise_candidates(database_name: &str) {
         None,
     )
     .await;
+    complete_series.name = Some("Complete Series".to_owned());
+    complete_series.sort_name = complete_series.name.clone();
+    complete_series = repository
+        .update(complete_series)
+        .await
+        .expect("named series update");
     let missing_overview_series = create_item(
         &repository,
         "Series",
@@ -128,6 +134,60 @@ async fn exercise_candidates(database_name: &str) {
         Some(complete_series.id),
     )
     .await;
+    let mut fallback_title_episode = create_item(
+        &repository,
+        "Episode",
+        Some(nested.id),
+        false,
+        Some("complete episode overview"),
+        Some(json!({ "ProviderIds": { "Tmdb": "107" } })),
+        Some(complete_series.id),
+    )
+    .await;
+    fallback_title_episode.name = complete_series.name.clone();
+    fallback_title_episode.sort_name = fallback_title_episode.name.clone();
+    fallback_title_episode = repository
+        .update(fallback_title_episode)
+        .await
+        .expect("fallback-title episode update");
+    let empty_title_episode = create_item(
+        &repository,
+        "Episode",
+        Some(nested.id),
+        false,
+        Some("complete episode overview"),
+        Some(json!({ "ProviderIds": { "Tmdb": "108" } })),
+        Some(complete_series.id),
+    )
+    .await;
+    let mut established_title_episode = create_item(
+        &repository,
+        "Episode",
+        Some(nested.id),
+        false,
+        Some("complete episode overview"),
+        Some(json!({ "ProviderIds": { "Tmdb": "109" } })),
+        Some(complete_series.id),
+    )
+    .await;
+    established_title_episode.name = Some("Established Episode".to_owned());
+    established_title_episode.sort_name = established_title_episode.name.clone();
+    established_title_episode = repository
+        .update(established_title_episode)
+        .await
+        .expect("established-title episode update");
+    let mut alternate_fallback = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    alternate_fallback.parent_id = Some(nested.id);
+    alternate_fallback.name = complete_series.name.clone();
+    alternate_fallback.sort_name = alternate_fallback.name.clone();
+    alternate_fallback.overview = Some("complete alternate overview".to_owned());
+    alternate_fallback.data = Some(json!({ "ProviderIds": { "Tmdb": "110" } }));
+    alternate_fallback.series_id = Some(complete_series.id);
+    alternate_fallback.primary_version_id = Some(fallback_title_episode.id);
+    let alternate_fallback_episode = repository
+        .create(alternate_fallback)
+        .await
+        .expect("alternate fallback episode creation");
     let malformed_ids_movie = create_item(
         &repository,
         "Movie",
@@ -213,11 +273,15 @@ async fn exercise_candidates(database_name: &str) {
             missing_overview_series.id,
             missing_tmdb_movie.id,
             missing_episode.id,
+            fallback_title_episode.id,
+            empty_title_episode.id,
             malformed_ids_movie.id,
         ])
     );
     assert!(!scoped_ids.contains(&complete_series.id));
     assert!(!scoped_ids.contains(&complete_movie.id));
+    assert!(!scoped_ids.contains(&established_title_episode.id));
+    assert!(!scoped_ids.contains(&alternate_fallback_episode.id));
     assert!(!scoped_ids.contains(&outside_movie.id));
     assert_eq!(
         scoped_candidates

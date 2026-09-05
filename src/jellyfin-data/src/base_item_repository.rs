@@ -2393,7 +2393,8 @@ impl BaseItemRepository {
         Ok(())
     }
 
-    /// Loads movie, series, and episode rows that have no overview or `TMDb` id.
+    /// Loads movie, series, and episode rows that have no overview or `TMDb` id,
+    /// plus primary episodes whose title is empty or still matches their series.
     ///
     /// The maintenance query deliberately bypasses user policy filtering and
     /// returns only the identifiers needed by metadata-refresh scheduling.
@@ -2418,6 +2419,19 @@ impl BaseItemRepository {
               AND (
                     item.overview IS NULL
                     OR btrim(item.overview) = ''
+                    OR (
+                        item.item_type = 'Episode'
+                        AND (
+                            item.name IS NULL
+                            OR btrim(item.name) = ''
+                            OR EXISTS (
+                                SELECT 1
+                                FROM jellyfin.base_items AS series
+                                WHERE series.id = item.series_id
+                                  AND lower(btrim(series.name)) = lower(btrim(item.name))
+                            )
+                        )
+                    )
                     OR NOT EXISTS (
                         SELECT 1
                         FROM jsonb_each_text(

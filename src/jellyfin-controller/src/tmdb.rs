@@ -642,7 +642,7 @@ impl TmdbMetadataProvider {
             .client
             .tv_season_details(series_tmdb_id, season_number)
             .await?;
-        self.apply_season_metadata(series.id, season_number, season)
+        self.apply_season_metadata(series.id, series.name.as_deref(), season_number, season)
             .await?;
         Ok(true)
     }
@@ -1045,15 +1045,12 @@ impl TmdbMetadataProvider {
         item: base_item::Model,
         replace_data: bool,
     ) -> Result<bool, MetadataProviderError> {
-        let name_locked = metadata_field_locked(item.data.as_ref(), "Name");
-        let local_name = if name_locked {
-            None
-        } else {
-            local_episode_name(item.path.as_deref()).await
-        };
-        let name_merge_mode =
-            episode_name_merge_mode(replace_data, local_name.is_some(), name_locked);
         let parents = self.episode_parents(&item).await?;
+        let (local_name, name_merge_mode) = episode_name_merge_policy(
+            &item,
+            parents.series.as_ref().map(|series| series.name.as_str()),
+        )
+        .await;
         let item_id = item.id;
         let mut episode = episode_metadata_from_item(item);
         if let Some(local_name) = local_name {
@@ -1228,6 +1225,11 @@ impl TmdbMetadataProvider {
         let Some(season_count) = season_count else {
             return Ok(());
         };
+        let series_name = self
+            .items
+            .get(series_id)
+            .await?
+            .and_then(|series| series.name);
         for season_number in 1..=season_count {
             let Ok(season) = self
                 .client
@@ -1236,7 +1238,7 @@ impl TmdbMetadataProvider {
             else {
                 continue;
             };
-            self.apply_season_metadata(series_id, season_number, season)
+            self.apply_season_metadata(series_id, series_name.as_deref(), season_number, season)
                 .await?;
         }
         Ok(())
@@ -1246,6 +1248,7 @@ impl TmdbMetadataProvider {
     async fn apply_season_metadata(
         &self,
         series_id: Uuid,
+        series_name: Option<&str>,
         season_number: i32,
         mut season: TmdbTvSeasonDetails,
     ) -> Result<(), MetadataProviderError> {
@@ -1316,63 +1319,58 @@ impl TmdbMetadataProvider {
                     tracing::warn!(%error, "TMDB season primary image download failed");
                 }
             }
-            let mut episodes = self
-                .items
-                .children(season_item.id)
-                .await?
-                .into_iter()
-                .map(Some)
-                .collect::<Vec<_>>();
+            let mut episodes =
+                visible_episodes_by_number(self.items.children(season_item.id).await?);
             for remote in &season.episodes {
-                let Some(episode_slot) = episodes.iter_mut().find(|episode| {
-                    episode
-                        .as_ref()
-                        .is_some_and(|item| item.index_number == Some(remote.episode_number))
-                }) else {
+                let Some(matching_episodes) = episodes.remove(&remote.episode_number) else {
                     continue;
                 };
-                let mut episode = episode_slot
-                    .take()
-                    .expect("matching episode slot contains a model");
-                if let Some(name) = remote.name.as_deref().filter(|name| !name.is_empty()) {
-                    episode.name = Some(name.to_owned());
-                    episode.sort_name = Some(name.to_owned());
-                }
-                if let Some(overview) = remote.overview.as_deref().filter(|value| !value.is_empty())
-                {
-                    episode.overview = Some(overview.to_owned());
-                }
-                if let Some(premiere_date) = parse_tmdb_date(remote.air_date.as_deref()) {
-                    episode.premiere_date = Some(premiere_date);
-                }
-                if let Some(runtime) = remote.runtime {
-                    episode.runtime_ticks = Some(i64::from(runtime) * 60 * 10_000_000);
-                }
-                episode.data = Some(episode_data_with_rating(
-                    episode.data.take(),
-                    &remote.id.to_string(),
-                    remote.vote_average,
-                    remote.vote_count,
-                ));
-                if let Some(images) = &self.images
-                    && let Some(url) =
-                        TmdbUtils::image_url(Some("original"), remote.still_path.as_deref())
-                {
-                    let existing = images.list(&episode).await.ok();
-                    let has_primary = existing.as_ref().is_some_and(|images| {
-                        images
-                            .iter()
-                            .any(|image| image.image_type == ImageType::Primary)
-                    });
-                    if !has_primary
-                        && let Err(error) = images
-                            .download_remote_image(episode.id, ImageType::Primary, &url)
-                            .await
+                for mut episode in matching_episodes {
+                    let (local_name, name_merge_mode) =
+                        episode_name_merge_policy(&episode, series_name).await;
+                    apply_episode_name(
+                        &mut episode,
+                        local_name.as_deref(),
+                        remote.name.as_deref(),
+                        name_merge_mode,
+                    );
+                    if let Some(overview) =
+                        remote.overview.as_deref().filter(|value| !value.is_empty())
                     {
-                        tracing::warn!(%error, "TMDB episode primary image download failed");
+                        episode.overview = Some(overview.to_owned());
                     }
+                    if let Some(premiere_date) = parse_tmdb_date(remote.air_date.as_deref()) {
+                        episode.premiere_date = Some(premiere_date);
+                    }
+                    if let Some(runtime) = remote.runtime {
+                        episode.runtime_ticks = Some(i64::from(runtime) * 60 * 10_000_000);
+                    }
+                    episode.data = Some(episode_data_with_rating(
+                        episode.data.take(),
+                        &remote.id.to_string(),
+                        remote.vote_average,
+                        remote.vote_count,
+                    ));
+                    if let Some(images) = &self.images
+                        && let Some(url) =
+                            TmdbUtils::image_url(Some("original"), remote.still_path.as_deref())
+                    {
+                        let existing = images.list(&episode).await.ok();
+                        let has_primary = existing.as_ref().is_some_and(|images| {
+                            images
+                                .iter()
+                                .any(|image| image.image_type == ImageType::Primary)
+                        });
+                        if !has_primary
+                            && let Err(error) = images
+                                .download_remote_image(episode.id, ImageType::Primary, &url)
+                                .await
+                        {
+                            tracing::warn!(%error, "TMDB episode primary image download failed");
+                        }
+                    }
+                    self.items.update(episode).await?;
                 }
-                *episode_slot = Some(self.items.update(episode).await?);
             }
             if season_item_index + 1 == season_item_count {
                 self.replace_owned_people(
@@ -1665,18 +1663,82 @@ fn combine_episode_details(target: &mut TmdbEpisodeDetails, next: &TmdbEpisodeDe
     }
 }
 
-fn episode_name_merge_mode(
-    replace_data: bool,
-    has_local_name: bool,
-    name_locked: bool,
-) -> EpisodeNameMergeMode {
-    if name_locked {
-        EpisodeNameMergeMode::Preserve
-    } else if has_local_name || !replace_data {
-        EpisodeNameMergeMode::FillMissing
-    } else {
-        EpisodeNameMergeMode::Replace
+async fn episode_name_merge_policy(
+    item: &base_item::Model,
+    series_name: Option<&str>,
+) -> (Option<String>, EpisodeNameMergeMode) {
+    if metadata_field_locked(item.data.as_ref(), "Name") {
+        return (None, EpisodeNameMergeMode::Preserve);
     }
+    if let Some(local_name) = local_episode_name(item.path.as_deref()).await {
+        return (Some(local_name), EpisodeNameMergeMode::Preserve);
+    }
+    if episode_name_is_placeholder(item, series_name) {
+        (None, EpisodeNameMergeMode::Replace)
+    } else {
+        (None, EpisodeNameMergeMode::Preserve)
+    }
+}
+
+fn episode_name_is_placeholder(item: &base_item::Model, series_name: Option<&str>) -> bool {
+    let Some(name) = item.name.as_deref().filter(|name| !name.trim().is_empty()) else {
+        return true;
+    };
+    let matches = |candidate: Option<&str>| {
+        candidate.is_some_and(|candidate| name.trim().eq_ignore_ascii_case(candidate.trim()))
+    };
+    if matches(series_name) || matches(metadata_string_field(item.data.as_ref(), "SeriesName")) {
+        return true;
+    }
+    matches(
+        item.path
+            .as_deref()
+            .and_then(|path| Path::new(path).file_stem())
+            .and_then(|name| name.to_str()),
+    )
+}
+
+fn apply_episode_name(
+    item: &mut base_item::Model,
+    local_name: Option<&str>,
+    remote_name: Option<&str>,
+    mode: EpisodeNameMergeMode,
+) -> bool {
+    let replacement = local_name
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            (mode == EpisodeNameMergeMode::Replace)
+                .then_some(remote_name)
+                .flatten()
+                .filter(|name| !name.trim().is_empty())
+        });
+    let Some(replacement) = replacement else {
+        return false;
+    };
+    if item.name.as_deref() == Some(replacement) && item.sort_name.as_deref() == Some(replacement) {
+        return false;
+    }
+    item.name = Some(replacement.to_owned());
+    item.sort_name = Some(replacement.to_owned());
+    true
+}
+
+fn visible_episodes_by_number(
+    episodes: Vec<base_item::Model>,
+) -> HashMap<i32, Vec<base_item::Model>> {
+    let mut by_number = HashMap::new();
+    for episode in episodes {
+        if episode.item_type != "Episode" || episode.primary_version_id.is_some() {
+            continue;
+        }
+        if let Some(index_number) = episode.index_number {
+            by_number
+                .entry(index_number)
+                .or_insert_with(Vec::new)
+                .push(episode);
+        }
+    }
+    by_number
 }
 
 fn metadata_field_locked(data: Option<&Value>, field: &str) -> bool {
@@ -1699,6 +1761,16 @@ fn metadata_field_locked(data: Option<&Value>, field: &str) -> bool {
             .any(|locked| locked.trim().eq_ignore_ascii_case(field)),
         _ => false,
     }
+}
+
+fn metadata_string_field<'a>(data: Option<&'a Value>, field: &str) -> Option<&'a str> {
+    data.and_then(Value::as_object)
+        .and_then(|data| {
+            data.iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(field))
+                .map(|(_, value)| value)
+        })
+        .and_then(Value::as_str)
 }
 
 fn remote_genres_patch(
@@ -2632,24 +2704,94 @@ mod tests {
         assert_eq!(tmdb_language("  ", "CN"), "en-US");
     }
 
+    #[tokio::test]
+    async fn episode_name_policy_replaces_only_path_and_series_placeholders() {
+        let mut series_fallback = episode_item("Series Title", "/tv/Series/S01E01.mkv", 1);
+        let (local_name, mode) =
+            episode_name_merge_policy(&series_fallback, Some("Series Title")).await;
+        assert!(local_name.is_none());
+        assert_eq!(mode, EpisodeNameMergeMode::Replace);
+        assert!(apply_episode_name(
+            &mut series_fallback,
+            None,
+            Some("Pilot"),
+            mode
+        ));
+        assert_eq!(series_fallback.name.as_deref(), Some("Pilot"));
+
+        let mut path_fallback = episode_item("S01E02", "/tv/Series/S01E02.mkv", 2);
+        let (_, mode) = episode_name_merge_policy(&path_fallback, Some("Series Title")).await;
+        assert_eq!(mode, EpisodeNameMergeMode::Replace);
+        assert!(apply_episode_name(
+            &mut path_fallback,
+            None,
+            Some("Second"),
+            mode
+        ));
+
+        let mut established = episode_item("Established", "/tv/Series/S01E03.mkv", 3);
+        let (_, mode) = episode_name_merge_policy(&established, Some("Series Title")).await;
+        assert_eq!(mode, EpisodeNameMergeMode::Preserve);
+        assert!(!apply_episode_name(
+            &mut established,
+            None,
+            Some("Remote"),
+            mode
+        ));
+        assert_eq!(established.name.as_deref(), Some("Established"));
+    }
+
+    #[tokio::test]
+    async fn episode_name_policy_keeps_locked_name_and_prefers_local_nfo() {
+        let mut locked = episode_item("Locked", "/tv/Series/S01E01.mkv", 1);
+        locked.data = Some(json!({ "LockedFields": ["nAmE"] }));
+        let (local_name, mode) = episode_name_merge_policy(&locked, Some("Series Title")).await;
+        assert!(local_name.is_none());
+        assert_eq!(mode, EpisodeNameMergeMode::Preserve);
+        assert!(!apply_episode_name(
+            &mut locked,
+            None,
+            Some("Remote Episode"),
+            mode
+        ));
+        assert_eq!(locked.name.as_deref(), Some("Locked"));
+
+        let directory =
+            std::env::temp_dir().join(format!("jellyfin-episode-policy-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let media_path = directory.join("S01E02.mkv");
+        tokio::fs::write(
+            media_path.with_extension("nfo"),
+            "<episodedetails><title>Local Episode</title></episodedetails>",
+        )
+        .await
+        .unwrap();
+        let mut with_nfo = episode_item("Established", media_path.to_str().unwrap(), 2);
+        let (local_name, mode) = episode_name_merge_policy(&with_nfo, Some("Series Title")).await;
+        assert_eq!(local_name.as_deref(), Some("Local Episode"));
+        assert_eq!(mode, EpisodeNameMergeMode::Preserve);
+        assert!(apply_episode_name(
+            &mut with_nfo,
+            local_name.as_deref(),
+            Some("Remote Episode"),
+            mode
+        ));
+        assert_eq!(with_nfo.name.as_deref(), Some("Local Episode"));
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
     #[test]
-    fn episode_name_merge_mode_preserves_local_and_locked_names() {
-        assert_eq!(
-            episode_name_merge_mode(true, false, false),
-            EpisodeNameMergeMode::Replace
-        );
-        assert_eq!(
-            episode_name_merge_mode(true, true, false),
-            EpisodeNameMergeMode::FillMissing
-        );
-        assert_eq!(
-            episode_name_merge_mode(false, false, false),
-            EpisodeNameMergeMode::FillMissing
-        );
-        assert_eq!(
-            episode_name_merge_mode(true, false, true),
-            EpisodeNameMergeMode::Preserve
-        );
+    fn bulk_episode_selection_ignores_alternates_regardless_of_input_order() {
+        let primary = episode_item("Series Title", "/tv/Series/S01E01-1080p.mkv", 1);
+        let mut alternate = episode_item("Alternate", "/tv/Series/S01E01-2160p.mkv", 1);
+        alternate.primary_version_id = Some(primary.id);
+        let second = episode_item("Series Title", "/tv/Series/S01E02.mkv", 2);
+
+        let selected = visible_episodes_by_number(vec![alternate, second.clone(), primary.clone()]);
+        assert_eq!(selected.get(&1).unwrap().len(), 1);
+        assert_eq!(selected.get(&1).unwrap()[0].id, primary.id);
+        assert_eq!(selected.get(&2).unwrap()[0].id, second.id);
     }
 
     #[test]
@@ -2724,6 +2866,38 @@ mod tests {
         );
 
         tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    fn episode_item(name: &str, path: &str, index_number: i32) -> base_item::Model {
+        base_item::Model {
+            id: Uuid::new_v4(),
+            item_type: "Episode".to_owned(),
+            data: None,
+            path: Some(path.to_owned()),
+            parent_id: None,
+            top_parent_id: None,
+            name: Some(name.to_owned()),
+            clean_name: None,
+            sort_name: Some(name.to_owned()),
+            media_type: Some("Video".to_owned()),
+            overview: None,
+            official_rating: None,
+            index_number: Some(index_number),
+            parent_index_number: Some(1),
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: false,
+            is_virtual_item: false,
+            presentation_unique_key: None,
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: Utc::now(),
+            date_modified: Utc::now(),
+            row_version: 1,
+        }
     }
 
     #[test]
