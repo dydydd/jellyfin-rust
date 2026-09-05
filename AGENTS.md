@@ -24,6 +24,10 @@
 - Resolve Similar and InstantMix seeds through the target user's normal library policy, and apply the
   same folder, tag, rating, and parental filters to every candidate query. Similar defaults to 50
   returned items and reports the post-limit result count; legacy CLR item types must not bypass policy.
+- Keep every InstantMix route on the official DTO-options contract. Accept signed limits and
+  case-insensitive repeated fields/image options, report the pre-limit total, validate the Playlist
+  route's seed type, collect Folder descendant-audio genres in one policy-aware query, and treat an
+  empty-genre Audio seed as an unfiltered visible-Audio mix while an unknown genre name stays empty.
 - Keep the six Similar routes on one contract: bind `ExcludeArtistIds`, `UserId`, signed `Limit`, and
   `Fields` case-insensitively; return official empty results for Episodes and named items other than
   MusicArtist; and project the bounded page with default images, user data, and ProviderIds.

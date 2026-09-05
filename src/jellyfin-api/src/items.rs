@@ -1629,7 +1629,7 @@ fn parse_image_type_selector(value: &str) -> Option<i32> {
         .or_else(|| image_type_code(value).map(i32::from))
 }
 
-fn parse_image_type_selectors(values: &[String]) -> Vec<i32> {
+pub(crate) fn parse_image_type_selectors(values: &[String]) -> Vec<i32> {
     values
         .iter()
         .flat_map(|value| value.split(','))
@@ -1650,11 +1650,11 @@ const fn default_total_record_count() -> bool {
 }
 
 #[derive(Debug)]
-struct PageDtoOptions {
-    enable_images: bool,
-    image_type_limit: usize,
-    enable_image_types: Vec<i32>,
-    enable_user_data: bool,
+pub(crate) struct PageDtoOptions {
+    pub(crate) enable_images: bool,
+    pub(crate) image_type_limit: usize,
+    pub(crate) enable_image_types: Vec<i32>,
+    pub(crate) enable_user_data: bool,
 }
 
 impl Default for PageDtoOptions {
@@ -1685,7 +1685,7 @@ pub(crate) async fn page_to_dto(
 }
 
 #[allow(clippy::too_many_lines)]
-async fn page_to_dto_with_options(
+pub(crate) async fn page_to_dto_with_options(
     state: &AppState,
     page: BaseItemPage,
     fields: Vec<String>,

@@ -365,12 +365,43 @@ impl LibraryControllerService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
-        limit: Option<u64>,
+        limit: Option<i32>,
+    ) -> Result<BaseItemPage, LibraryControllerError> {
+        self.instant_mix_for_item(authenticated_user, target_user_id, item_id, limit, false)
+            .await
+    }
+
+    /// Creates an instant mix only when the seed is a playlist.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found when the seed is not a playlist, or normal instant-mix errors.
+    pub async fn instant_mix_for_playlist(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        limit: Option<i32>,
+    ) -> Result<BaseItemPage, LibraryControllerError> {
+        self.instant_mix_for_item(authenticated_user, target_user_id, item_id, limit, true)
+            .await
+    }
+
+    async fn instant_mix_for_item(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+        limit: Option<i32>,
+        require_playlist: bool,
     ) -> Result<BaseItemPage, LibraryControllerError> {
         let item = self
             .user_library
             .item(authenticated_user, target_user_id, item_id)
             .await?;
+        if require_playlist && item.item_type != "Playlist" {
+            return Err(LibraryControllerError::ItemNotFound);
+        }
         if item.item_type == "Playlist" {
             let playlist = self
                 .playlists
@@ -387,19 +418,30 @@ impl LibraryControllerService {
                 return Err(LibraryControllerError::ItemNotFound);
             }
         }
-        let genres = self
-            .item_values
-            .values_for_item(item_id, item_value::ItemValueType::Genre)
-            .await?;
-        let genre_ids = genres
-            .into_iter()
-            .map(|genre| genre.item_value_id)
-            .collect::<Vec<_>>();
-        let seed_is_audio = item.item_type == "Audio";
         let mut access_policy = BaseItemQuery::default();
         self.user_library
             .apply_base_item_policy(authenticated_user, target_user_id, &mut access_policy)
             .await?;
+        let seed_is_audio = item.item_type == "Audio";
+        let genre_ids = if item.item_type == "MusicGenre" {
+            vec![item.id]
+        } else if matches!(
+            item.item_type.as_str(),
+            "Playlist" | "MusicAlbum" | "MusicArtist" | "Audio"
+        ) {
+            self.item_values
+                .values_for_item(item_id, item_value::ItemValueType::Genre)
+                .await?
+                .into_iter()
+                .map(|genre| genre.item_value_id)
+                .collect()
+        } else if item.is_folder {
+            self.item_values
+                .genre_ids_for_folder_audio(item.id, &access_policy)
+                .await?
+        } else {
+            return Ok(empty_item_page());
+        };
         let mut items = self
             .item_values
             .random_audio_for_genres(&genre_ids, 201, &access_policy)
@@ -409,21 +451,7 @@ impl LibraryControllerService {
         if seed_is_audio {
             items.insert(0, item);
         }
-        let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
-        items.truncate(
-            usize::try_from(limit.unwrap_or(total_record_count))
-                .unwrap_or(usize::MAX)
-                .min(items.len()),
-        );
-        Ok(BaseItemPage {
-            items: items
-                .into_iter()
-                .filter_map(|item| self.item_types.hydrate(item))
-                .map(HydratedBaseItem::into_model)
-                .collect(),
-            total_record_count,
-            start_index: 0,
-        })
+        Ok(self.finish_instant_mix(items, limit))
     }
 
     /// Creates a random audio mix from one normalized genre identifier.
@@ -436,7 +464,7 @@ impl LibraryControllerService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         genre_id: Uuid,
-        limit: Option<u64>,
+        limit: Option<i32>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
@@ -448,25 +476,11 @@ impl LibraryControllerService {
         self.user_library
             .apply_base_item_policy(authenticated_user, target_user_id, &mut access_policy)
             .await?;
-        let mut items = self
+        let items = self
             .item_values
             .random_audio_for_genres(&[genre_id], 200, &access_policy)
             .await?;
-        let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
-        items.truncate(
-            usize::try_from(limit.unwrap_or(total_record_count))
-                .unwrap_or(usize::MAX)
-                .min(items.len()),
-        );
-        Ok(BaseItemPage {
-            items: items
-                .into_iter()
-                .filter_map(|item| self.item_types.hydrate(item))
-                .map(HydratedBaseItem::into_model)
-                .collect(),
-            total_record_count,
-            start_index: 0,
-        })
+        Ok(self.finish_instant_mix(items, limit))
     }
 
     /// Creates a random audio mix from a normalized genre name.
@@ -479,22 +493,47 @@ impl LibraryControllerService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         genre_name: &str,
-        limit: Option<u64>,
+        limit: Option<i32>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let genre = self
+        let Some(genre_id) = self
             .item_values
             .get_normalized(item_value::ItemValueType::Genre, genre_name)
             .await?
-            .ok_or(LibraryControllerError::ItemNotFound)?;
-        self.instant_mix_for_genre(
-            authenticated_user,
-            target_user_id,
-            genre.item_value_id,
-            limit,
-        )
-        .await
+            .map(|genre| genre.item_value_id)
+        else {
+            return Ok(empty_item_page());
+        };
+        let mut access_policy = BaseItemQuery::default();
+        self.user_library
+            .apply_base_item_policy(authenticated_user, target_user_id, &mut access_policy)
+            .await?;
+        let items = self
+            .item_values
+            .random_audio_for_genres(&[genre_id], 200, &access_policy)
+            .await?;
+        Ok(self.finish_instant_mix(items, limit))
+    }
+
+    fn finish_instant_mix(
+        &self,
+        mut items: Vec<base_item::Model>,
+        limit: Option<i32>,
+    ) -> BaseItemPage {
+        let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+        if let Some(limit) = limit {
+            items.truncate(usize::try_from(limit).unwrap_or_default().min(items.len()));
+        }
+        BaseItemPage {
+            items: items
+                .into_iter()
+                .filter_map(|item| self.item_types.hydrate(item))
+                .map(HydratedBaseItem::into_model)
+                .collect(),
+            total_record_count,
+            start_index: 0,
+        }
     }
 
     /// Atomically deletes complete item subtrees and their source files.
@@ -609,4 +648,12 @@ fn item_has_empty_similar_result(item: &base_item::Model) -> bool {
         item.item_type.as_str(),
         "Episode" | "Genre" | "MusicGenre" | "Person" | "Studio" | "Year"
     )
+}
+
+fn empty_item_page() -> BaseItemPage {
+    BaseItemPage {
+        items: Vec::new(),
+        total_record_count: 0,
+        start_index: 0,
+    }
 }

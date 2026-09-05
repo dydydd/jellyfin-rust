@@ -387,7 +387,7 @@ impl ItemValueRepository {
         limit: u64,
         access_policy: &BaseItemQuery,
     ) -> Result<Vec<base_item::Model>, ItemValueError> {
-        if genre_ids.is_empty() || limit == 0 {
+        if limit == 0 {
             return Ok(Vec::new());
         }
         let audio_item_types = expand_item_type_aliases(&["Audio".to_owned()]);
@@ -396,7 +396,7 @@ impl ItemValueRepository {
             .copied()
             .map(SeaValue::from)
             .collect::<Vec<_>>();
-        let placeholders = (1..=genre_ids.len())
+        let genre_placeholders = (1..=genre_ids.len())
             .map(|index| format!("${index}::uuid"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -411,16 +411,21 @@ impl ItemValueRepository {
             "SELECT item.* \
                  FROM jellyfin.base_items AS item \
                  WHERE item.item_type IN ({item_type_placeholders}) \
-                   AND item.is_virtual_item = false \
-                   AND EXISTS ( \
+                   AND item.is_virtual_item = false"
+        );
+        if !genre_ids.is_empty() {
+            let _ = write!(
+                sql,
+                " AND EXISTS ( \
                        SELECT 1 FROM jellyfin.item_value_map AS map \
                        INNER JOIN jellyfin.item_values AS value \
                          ON value.item_value_id = map.item_value_id \
                        WHERE map.item_id = item.id \
                          AND value.type = 2 \
-                         AND value.item_value_id IN ({placeholders}) \
-                   )"
-        );
+                         AND value.item_value_id IN ({genre_placeholders}) \
+                    )"
+            );
+        }
         if let Some(condition) = policy_filter_sql("item", access_policy) {
             sql.push_str(" AND (");
             sql.push_str(&condition);
@@ -436,6 +441,59 @@ impl ItemValueRepository {
             .all(self.database.as_ref())
             .await?,
         )
+    }
+
+    /// Loads the distinct genres attached to a folder or any visible audio descendant.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn genre_ids_for_folder_audio(
+        &self,
+        folder_id: Uuid,
+        access_policy: &BaseItemQuery,
+    ) -> Result<Vec<Uuid>, ItemValueError> {
+        let audio_item_types = expand_item_type_aliases(&["Audio".to_owned()]);
+        let mut values = vec![folder_id.into()];
+        let item_type_placeholders = (2..=(audio_item_types.len() + 1))
+            .map(|index| format!("${index}::text"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        values.extend(audio_item_types.into_iter().map(SeaValue::from));
+        let mut sql = format!(
+            "SELECT DISTINCT value.item_value_id \
+             FROM jellyfin.item_values AS value \
+             JOIN jellyfin.item_value_map AS map ON map.item_value_id = value.item_value_id \
+             WHERE value.type = 2 \
+               AND (map.item_id = $1::uuid OR EXISTS ( \
+                   SELECT 1 \
+                   FROM jellyfin.base_items AS audio \
+                   JOIN jellyfin.ancestor_ids AS closure ON closure.item_id = audio.id \
+                   WHERE audio.id = map.item_id \
+                     AND closure.parent_item_id = $1::uuid \
+                     AND audio.item_type IN ({item_type_placeholders}) \
+                     AND audio.is_virtual_item = false"
+        );
+        if let Some(condition) = policy_filter_sql("audio", access_policy) {
+            sql.push_str(" AND (");
+            sql.push_str(&condition);
+            sql.push(')');
+        }
+        sql.push_str(")) ORDER BY value.item_value_id");
+        #[derive(FromQueryResult)]
+        struct GenreId {
+            item_value_id: Uuid,
+        }
+        Ok(GenreId::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?
+        .into_iter()
+        .map(|row| row.item_value_id)
+        .collect())
     }
 
     /// Deletes all inherited tag associations (post-scan cleanup).

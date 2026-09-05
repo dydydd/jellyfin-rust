@@ -91,14 +91,50 @@ pub(crate) struct ThemeMediaQuery {
     sort_order: Vec<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct InstantMixByIdQuery {
+#[derive(Debug, Default, Clone, Deserialize)]
+pub(crate) struct InstantMixQuery {
     #[serde(alias = "Id")]
     id: Option<Uuid>,
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(
+        default,
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
+    #[serde(
+        default,
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
+    #[serde(
+        default,
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -356,60 +392,109 @@ pub(crate) async fn instant_mix(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<LibraryQuery>,
+    RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    let page = state
-        .library_controller
-        .instant_mix(&authenticated.user, target_user_id, item_id, query.limit)
-        .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    instant_mix_for(state, headers, query, InstantMixSeed::Item(item_id)).await
+}
+
+pub(crate) async fn instant_mix_playlist(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    instant_mix_for(state, headers, query, InstantMixSeed::Playlist(item_id)).await
 }
 
 pub(crate) async fn instant_mix_genre_by_id(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<InstantMixByIdQuery>,
+    RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let genre_id = query.id.ok_or(ApiError::InvalidRequest)?;
-    let page = state
-        .library_controller
-        .instant_mix_for_genre(&authenticated.user, target_user_id, genre_id, query.limit)
-        .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    instant_mix_for(state, headers, query, InstantMixSeed::GenreId(genre_id)).await
 }
 
 pub(crate) async fn instant_mix_by_id(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<InstantMixByIdQuery>,
+    RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let item_id = query.id.ok_or(ApiError::InvalidRequest)?;
-    let page = state
-        .library_controller
-        .instant_mix(&authenticated.user, target_user_id, item_id, query.limit)
-        .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    instant_mix_for(state, headers, query, InstantMixSeed::Item(item_id)).await
 }
 
 pub(crate) async fn instant_mix_genre_by_name(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(name): Path<String>,
-    Query(query): Query<LibraryQuery>,
+    RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    instant_mix_for(state, headers, query, InstantMixSeed::GenreName(name)).await
+}
+
+enum InstantMixSeed {
+    Item(Uuid),
+    Playlist(Uuid),
+    GenreId(Uuid),
+    GenreName(String),
+}
+
+async fn instant_mix_for(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    query: InstantMixQuery,
+    seed: InstantMixSeed,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    let page = state
-        .library_controller
-        .instant_mix_for_genre_name(&authenticated.user, target_user_id, &name, query.limit)
-        .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
+    let page = match seed {
+        InstantMixSeed::Item(item_id) => {
+            state
+                .library_controller
+                .instant_mix(&authenticated.user, target_user_id, item_id, query.limit)
+                .await?
+        }
+        InstantMixSeed::Playlist(item_id) => {
+            state
+                .library_controller
+                .instant_mix_for_playlist(&authenticated.user, target_user_id, item_id, query.limit)
+                .await?
+        }
+        InstantMixSeed::GenreId(genre_id) => {
+            state
+                .library_controller
+                .instant_mix_for_genre(&authenticated.user, target_user_id, genre_id, query.limit)
+                .await?
+        }
+        InstantMixSeed::GenreName(name) => {
+            state
+                .library_controller
+                .instant_mix_for_genre_name(&authenticated.user, target_user_id, &name, query.limit)
+                .await?
+        }
+    };
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
+    Ok(Json(
+        crate::items::page_to_dto_with_options(
+            state.as_ref(),
+            page,
+            query.fields,
+            target_user_id,
+            &dto_options,
+        )
+        .await?,
+    ))
 }
 
 pub(crate) async fn item_counts(

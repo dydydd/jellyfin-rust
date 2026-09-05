@@ -1620,7 +1620,10 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Songs/{item_id}/InstantMix", get(library::instant_mix))
         .route("/Albums/{item_id}/InstantMix", get(library::instant_mix))
-        .route("/Playlists/{item_id}/InstantMix", get(library::instant_mix))
+        .route(
+            "/Playlists/{item_id}/InstantMix",
+            get(library::instant_mix_playlist),
+        )
         .route("/Artists/{item_id}/InstantMix", get(library::instant_mix))
         .route("/Items/{item_id}/InstantMix", get(library::instant_mix))
         .route(

@@ -9,7 +9,7 @@ use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
     DeviceRepository, ItemValueRepository, LinkedChildRepository, NewBaseItem, NewBaseItemImage,
-    NewDevice, NewUserData, UserDataRepository,
+    NewDevice, NewUserData, PlaylistRepository, UserDataRepository,
     entities::item_value,
     entities::{user, user_data},
 };
@@ -478,6 +478,55 @@ async fn assert_audio_stream(fixture: &Fixture) {
 }
 
 async fn assert_instant_mix(fixture: &Fixture) {
+    let items = fixture.items();
+    let root = items.ensure_user_root().await.expect("user root");
+    let projected_song_id = fixture.genre_song_ids[1];
+    favorite(
+        &UserDataRepository::new(fixture.database.clone()),
+        fixture.user_id,
+        projected_song_id,
+    )
+    .await;
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            projected_song_id,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: "/media/mix-primary.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(600),
+                    height: Some(900),
+                    blurhash: None,
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 0,
+                    path: "/media/mix-backdrop.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(1920),
+                    height: Some(1080),
+                    blurhash: None,
+                },
+            ],
+        )
+        .await
+        .expect("instant mix images");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            projected_song_id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Audio,
+                codec: Some("flac".to_owned()),
+                language: Some("eng".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("instant mix stream");
+
     let song_route = format!("/Songs/{}/InstantMix?limit=2", fixture.song_id);
     let mix = fixture.json("GET", &song_route, &fixture.user_token).await;
     assert_eq!(mix["TotalRecordCount"], 3);
@@ -510,6 +559,68 @@ async fn assert_instant_mix(fixture: &Fixture) {
             .iter()
             .all(|item| item["Type"] == "Audio")
     );
+    let default_projected = album_mix["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == projected_song_id.simple().to_string())
+        .expect("default instant mix projection");
+    assert_eq!(default_projected["UserData"]["IsFavorite"], true);
+    assert!(default_projected["ImageTags"]["Primary"].is_string());
+    assert_eq!(
+        default_projected["BackdropImageTags"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let optioned_mix = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Albums/{}/InstantMix?UserId={}&Limit=3&Fields=MediaStreams&Fields=Overview&EnableImages=true&EnableUserData=false&ImageTypeLimit=1&EnableImageTypes=Primary%2C2",
+                fixture.album_id,
+                Uuid::nil()
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    let optioned_projected = optioned_mix["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == projected_song_id.simple().to_string())
+        .expect("optioned instant mix projection");
+    assert!(optioned_projected.get("UserData").is_none());
+    assert!(optioned_projected["MediaStreams"].is_array());
+    assert!(optioned_projected["ImageTags"]["Primary"].is_string());
+    assert_eq!(
+        optioned_projected["BackdropImageTags"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let images_disabled = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Albums/{}/InstantMix?enableimages=true&enableuserdata=false&imagetypelimit=-1&enableimagetypes=0",
+                fixture.album_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    let images_disabled_projected = images_disabled["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == projected_song_id.simple().to_string())
+        .expect("image-limited instant mix projection");
+    assert!(images_disabled_projected.get("ImageTags").is_none());
+    assert!(images_disabled_projected.get("UserData").is_none());
 
     let genre_route = format!(
         "/MusicGenres/InstantMix?id={}&limit=1",
@@ -546,6 +657,156 @@ async fn assert_instant_mix(fixture: &Fixture) {
         .await;
     assert_eq!(pascal_genre_mix["TotalRecordCount"], 3);
     assert_eq!(pascal_genre_mix["Items"].as_array().unwrap().len(), 1);
+
+    let playlist = PlaylistRepository::new(fixture.database.clone())
+        .create(
+            Uuid::new_v4(),
+            "Instant playlist".to_owned(),
+            root.id,
+            fixture.user_id,
+            false,
+            Some("Audio".to_owned()),
+            &[],
+            &[],
+        )
+        .await
+        .expect("instant mix playlist");
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            playlist.item.id,
+            item_value::ItemValueType::Genre,
+            "Post Rock",
+        )
+        .await
+        .expect("playlist genre");
+    for route in [
+        format!(
+            "/Songs/{}/InstantMix?userId={}",
+            fixture.song_id,
+            Uuid::nil()
+        ),
+        format!(
+            "/Albums/{}/InstantMix?UserId={}",
+            fixture.album_id,
+            Uuid::nil()
+        ),
+        format!(
+            "/Playlists/{}/InstantMix?userid={}",
+            playlist.item.id,
+            Uuid::nil()
+        ),
+        format!("/Artists/{}/InstantMix", fixture.album_id),
+        format!("/Items/{}/InstantMix", fixture.album_id),
+        "/MusicGenres/Post%20Rock/InstantMix".to_owned(),
+        format!("/Artists/InstantMix?id={}", fixture.album_id),
+        format!("/MusicGenres/InstantMix?id={}", fixture.instant_genre_id),
+    ] {
+        assert_eq!(
+            fixture
+                .request("GET", &route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::OK,
+            "{route}"
+        );
+    }
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Playlists/{}/InstantMix", fixture.album_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    for route in ["/Artists/InstantMix", "/MusicGenres/InstantMix"] {
+        assert_eq!(
+            fixture
+                .request("GET", route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{route}"
+        );
+    }
+
+    let unsupported = fixture
+        .json(
+            "GET",
+            &format!("/Items/{}/InstantMix", fixture.child_id),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(unsupported["TotalRecordCount"], 0);
+    assert!(unsupported["Items"].as_array().unwrap().is_empty());
+
+    let unfiltered = fixture
+        .json(
+            "GET",
+            &format!("/Songs/{}/InstantMix", fixture.stream_audio_id),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(
+        unfiltered["Items"][0]["Id"],
+        fixture.stream_audio_id.simple().to_string()
+    );
+    assert!(
+        unfiltered["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| { item["Id"] == fixture.other_genre_song_id.simple().to_string() })
+    );
+
+    let unknown_genre = fixture
+        .json(
+            "GET",
+            "/MusicGenres/Definitely%20Unknown/InstantMix",
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(unknown_genre["TotalRecordCount"], 0);
+    assert!(unknown_genre["Items"].as_array().unwrap().is_empty());
+
+    let folder = create_item(&items, "Folder", "Instant folder", root.id, None).await;
+    let folder_audio = create_item(&items, "Audio", "Folder audio", folder.id, None).await;
+    let matching_audio = create_item(&items, "Audio", "Matching folder genre", root.id, None).await;
+    let values = ItemValueRepository::new(fixture.database.clone());
+    for item_id in [folder_audio.id, matching_audio.id] {
+        values
+            .link(item_id, item_value::ItemValueType::Genre, "Folder Mix")
+            .await
+            .expect("folder mix genre");
+    }
+    let folder_mix = fixture
+        .json(
+            "GET",
+            &format!("/Items/{}/InstantMix", folder.id),
+            &fixture.user_token,
+        )
+        .await;
+    for expected in [folder_audio.id, matching_audio.id] {
+        assert!(
+            folder_mix["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| { item["Id"] == expected.simple().to_string() })
+        );
+    }
+
+    let negative_limit = fixture
+        .json(
+            "GET",
+            &format!("/Songs/{}/InstantMix?limit=-1", fixture.song_id),
+            &fixture.user_token,
+        )
+        .await;
+    assert!(negative_limit["Items"].as_array().unwrap().is_empty());
+    assert_eq!(negative_limit["TotalRecordCount"], 3);
 }
 
 async fn assert_ancestors(fixture: &Fixture) {
