@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::{
     MediaAttachment, MediaInfo, MediaStream, ProbeContext, ProbeError, normalize_probe_json,
@@ -99,22 +102,94 @@ pub trait ProbeProcessRunner {
 
 /// Production `FFprobe` adapter. Tests should inject a fixture runner.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CommandProbeProcessRunner;
+pub struct CommandProbeProcessRunner {
+    timeout: Option<Duration>,
+}
+
+impl CommandProbeProcessRunner {
+    /// Creates a process runner that terminates probes exceeding `timeout`.
+    #[must_use]
+    pub const fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            timeout: Some(timeout),
+        }
+    }
+}
 
 impl ProbeProcessRunner for CommandProbeProcessRunner {
     fn run(&self, request: &ProbeProcessRequest) -> Result<ProbeProcessOutput, String> {
-        let output = Command::new(&request.program)
+        let mut child = Command::new(&request.program)
             .args(&request.arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .spawn()
             .map_err(|error| error.to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "media probe stdout pipe is unavailable".to_owned())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "media probe stderr pipe is unavailable".to_owned())?;
+        let stdout_reader = thread::spawn(move || read_process_pipe(stdout));
+        let stderr_reader = thread::spawn(move || read_process_pipe(stderr));
+        let status = match wait_for_probe(&mut child, self.timeout) {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = join_process_pipe(stdout_reader, "stdout");
+                let _ = join_process_pipe(stderr_reader, "stderr");
+                return Err(error);
+            }
+        };
+        let standard_output = join_process_pipe(stdout_reader, "stdout")?;
+        let standard_error = join_process_pipe(stderr_reader, "stderr")?;
         Ok(ProbeProcessOutput {
-            exit_code: output.status.code().unwrap_or(-1),
-            standard_output: String::from_utf8_lossy(&output.stdout).into_owned(),
-            standard_error: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: status.code().unwrap_or(-1),
+            standard_output: String::from_utf8_lossy(&standard_output).into_owned(),
+            standard_error: String::from_utf8_lossy(&standard_error).into_owned(),
         })
+    }
+}
+
+fn read_process_pipe(mut pipe: impl Read) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    pipe.read_to_end(&mut output)
+        .map_err(|error| error.to_string())?;
+    Ok(output)
+}
+
+fn join_process_pipe(
+    reader: thread::JoinHandle<Result<Vec<u8>, String>>,
+    name: &str,
+) -> Result<Vec<u8>, String> {
+    reader
+        .join()
+        .map_err(|_| format!("media probe {name} reader panicked"))?
+}
+
+fn wait_for_probe(child: &mut Child, timeout: Option<Duration>) -> Result<ExitStatus, String> {
+    let Some(timeout) = timeout else {
+        return child.wait().map_err(|error| error.to_string());
+    };
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "media probe timeout is too large".to_owned())?;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            return Ok(status);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "media probe timed out after {} ms",
+                timeout.as_millis()
+            ));
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(10)));
     }
 }
 

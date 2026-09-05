@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use jellyfin_media_encoding::probing::{
-    ExternalMediaSource, ExternalProbeError, ExternalProbeOptions, ExternalSourceProber,
-    MediaAttachment, MediaProtocol, ProbeProcessOutput, ProbeProcessRequest, ProbeProcessRunner,
-    external_probe_extra_arguments,
+    CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeError, ExternalProbeOptions,
+    ExternalSourceProber, MediaAttachment, MediaProtocol, ProbeProcessOutput, ProbeProcessRequest,
+    ProbeProcessRunner, external_probe_extra_arguments,
 };
 
 const PROBE_JSON: &str = include_str!("fixtures/probing/video_webm.json");
@@ -286,4 +287,44 @@ fn successful_process_with_invalid_json_returns_normalization_error() {
         .unwrap_err();
 
     assert!(matches!(error, ExternalProbeError::Normalize(_)));
+}
+
+#[cfg(target_family = "unix")]
+#[test]
+fn command_probe_timeout_terminates_the_child_process() {
+    let pid_path = std::env::temp_dir().join(format!(
+        "jellyfin-probe-timeout-{}-{}.pid",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos()
+    ));
+    let request = ProbeProcessRequest {
+        program: "/bin/sh".into(),
+        arguments: vec![
+            "-c".to_owned(),
+            "echo $$ > \"$1\"; exec sleep 60".to_owned(),
+            "probe-timeout".to_owned(),
+            pid_path.to_string_lossy().into_owned(),
+        ],
+        source_path: "hanging-probe".to_owned(),
+        protocol: MediaProtocol::File,
+    };
+    let runner = CommandProbeProcessRunner::with_timeout(Duration::from_millis(100));
+    let started = Instant::now();
+
+    let error = runner.run(&request).unwrap_err();
+
+    assert!(error.contains("timed out after 100 ms"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    let pid = std::fs::read_to_string(&pid_path)
+        .expect("probe writes its pid")
+        .trim()
+        .to_owned();
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "timed-out probe process {pid} is still alive"
+    );
+    std::fs::remove_file(pid_path).expect("remove timeout test pid file");
 }

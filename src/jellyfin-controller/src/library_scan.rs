@@ -54,6 +54,7 @@ use crate::{
 };
 
 const SCAN_PATH_QUERY_BATCH_SIZE: usize = 256;
+const STRM_PLAYBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -462,7 +463,10 @@ impl LibraryScanService {
             return Ok(false);
         }
 
-        let Some(mut media_info) = self.probe_media_info(target, kind).await else {
+        let Some(mut media_info) = self
+            .probe_media_info_with_timeout(target, kind, Some(STRM_PLAYBACK_PROBE_TIMEOUT))
+            .await
+        else {
             return Ok(false);
         };
         let mut streams = streams_from_media_info(&mut media_info);
@@ -2329,10 +2333,20 @@ impl LibraryScanService {
     }
 
     async fn probe_media_info(&self, path: &str, media_kind: MediaKind) -> Option<MediaInfo> {
+        self.probe_media_info_with_timeout(path, media_kind, None)
+            .await
+    }
+
+    async fn probe_media_info_with_timeout(
+        &self,
+        path: &str,
+        media_kind: MediaKind,
+        timeout: Option<std::time::Duration>,
+    ) -> Option<MediaInfo> {
         let probe_path = Arc::clone(&self.probe_path);
         let probe_input = path.to_owned();
         match tokio::task::spawn_blocking(move || {
-            probe_media_info(&probe_path, &probe_input, media_kind)
+            probe_media_info(&probe_path, &probe_input, media_kind, timeout)
         })
         .await
         {
@@ -3405,8 +3419,12 @@ fn probe_media_info(
     probe_path: &Path,
     path: &str,
     media_kind: MediaKind,
+    timeout: Option<std::time::Duration>,
 ) -> Result<MediaInfo, jellyfin_media_encoding::probing::ExternalProbeError> {
-    let prober = ExternalSourceProber::new(probe_path, CommandProbeProcessRunner);
+    let runner = timeout.map_or_else(CommandProbeProcessRunner::default, |timeout| {
+        CommandProbeProcessRunner::with_timeout(timeout)
+    });
+    let prober = ExternalSourceProber::new(probe_path, runner);
     prober.probe(
         &ExternalMediaSource {
             path: path.to_owned(),

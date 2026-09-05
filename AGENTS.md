@@ -36,6 +36,7 @@
 - Preserve unknown or optional metadata where the official server does; a partial provider response must not erase valid existing metadata.
 - Merge episode metadata in official priority order: local metadata first, remote providers filling or replacing only eligible placeholders, and `LockedFields.Name` always protecting an established title. A repeated scan or alternate-version regroup must not turn a scraped episode title back into the series or filename-derived group name.
 - Metadata providers must have deterministic priority and merge behavior. Network calls need timeouts, bounded concurrency, and useful error context.
+- Lazy `.strm` probing must have a process-level deadline that terminates FFprobe before returning; an async timeout around an uncancelled blocking child is not sufficient because client retries can accumulate processes and memory.
 - During episode refresh, merge a neighboring local NFO before remote metadata: preserve a non-empty local title, allow the first remote result to replace only a path-derived placeholder when no local title exists, and honor `LockedFields.Name` even for a full refresh.
 - Cancellation of scans and refreshes must promptly stop new work, release locks/permits, and leave the database in a consistent state.
 
