@@ -39,9 +39,18 @@ async fn media_source_versions_expand_the_group_with_the_requested_version_first
         group.ids().into_iter().collect()
     );
 
+    let missing = Uuid::new_v4();
+    let counts = repository
+        .media_source_counts(&[group.primary, requested_alternate, missing])
+        .await
+        .expect("batched media-source counts");
+    assert_eq!(counts.get(&group.primary), Some(&3));
+    assert_eq!(counts.get(&requested_alternate), Some(&3));
+    assert!(!counts.contains_key(&missing));
+
     assert!(
         repository
-            .media_source_versions(Uuid::new_v4())
+            .media_source_versions(missing)
             .await
             .expect("missing media-source versions")
             .is_empty()

@@ -47,6 +47,7 @@ pub(crate) struct UploadLyricsQuery {
 pub(crate) struct BaseItemDtoFields {
     media_sources: bool,
     media_streams: bool,
+    media_source_count: bool,
     trickplay: bool,
 }
 
@@ -56,6 +57,7 @@ impl BaseItemDtoFields {
         Self {
             media_sources: true,
             media_streams: true,
+            media_source_count: true,
             trickplay: true,
         }
     }
@@ -65,6 +67,7 @@ impl BaseItemDtoFields {
         Self {
             media_sources: true,
             media_streams: false,
+            media_source_count: false,
             trickplay: false,
         }
     }
@@ -77,6 +80,8 @@ impl BaseItemDtoFields {
                 result.media_sources = true;
             } else if field.eq_ignore_ascii_case("MediaStreams") {
                 result.media_streams = true;
+            } else if field.eq_ignore_ascii_case("MediaSourceCount") {
+                result.media_source_count = true;
             } else if field.eq_ignore_ascii_case("Trickplay") {
                 result.trickplay = true;
             }
@@ -92,6 +97,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_media_attachments(self) -> bool {
         self.media_sources
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_media_source_count(self) -> bool {
+        self.media_source_count
     }
 
     #[must_use]
@@ -152,6 +162,8 @@ pub struct BaseItemDto {
     pub premiere_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_time_ticks: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_source_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation_unique_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -779,6 +791,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         production_year: item.production_year,
         premiere_date: item.premiere_date.map(|date| date.to_rfc3339()),
         run_time_ticks: item.runtime_ticks,
+        media_source_count: None,
         presentation_unique_key: item.presentation_unique_key,
         series_id: item.series_id.map(|id| id.simple().to_string()),
         season_id: item.season_id.map(|id| id.simple().to_string()),
@@ -893,6 +906,15 @@ pub(crate) async fn project_item_to_dto(
                 .unwrap_or_default(),
         );
     }
+    if fields.wants_media_source_count() && !fields.media_sources {
+        let count = state
+            .base_items
+            .media_source_counts(&[item_id])
+            .await?
+            .remove(&item_id)
+            .unwrap_or_default();
+        attach_media_source_count(&mut dto, count);
+    }
     if !fields.wants_media_streams() {
         return Ok(dto);
     }
@@ -900,6 +922,12 @@ pub(crate) async fn project_item_to_dto(
     if fields.media_sources {
         let source_items = state.base_items.media_source_versions(item_id).await?;
         if !source_items.is_empty() {
+            if fields.wants_media_source_count() {
+                attach_media_source_count(
+                    &mut dto,
+                    u64::try_from(source_items.len()).unwrap_or(u64::MAX),
+                );
+            }
             attach_versioned_media_sources(
                 state,
                 &mut dto,
@@ -939,6 +967,12 @@ pub(crate) async fn project_item_to_dto(
         original_language.as_deref(),
     );
     Ok(dto)
+}
+
+pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) {
+    if count > 1 {
+        dto.media_source_count = i32::try_from(count).ok();
+    }
 }
 
 async fn attach_versioned_media_sources(

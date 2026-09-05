@@ -1207,6 +1207,11 @@ async fn page_to_dto(
     } else {
         std::collections::HashMap::new()
     };
+    let mut media_source_counts = if requested_fields.wants_media_source_count() {
+        state.base_items.media_source_counts(&item_ids).await?
+    } else {
+        std::collections::HashMap::new()
+    };
     let mut trickplay_manifests =
         user_library::trickplay_manifests_for_items(state, &page.items, requested_fields).await?;
     let mut user_dtos = state
@@ -1228,6 +1233,12 @@ async fn page_to_dto(
         let item_id = item.id;
         let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
+        if requested_fields.wants_media_source_count() {
+            user_library::attach_media_source_count(
+                &mut dto,
+                media_source_counts.remove(&item_id).unwrap_or_default(),
+            );
+        }
         if let Some(user_data) = user_dtos.remove(&item_id) {
             user_library::attach_user_data_dto(&mut dto, user_data);
         }

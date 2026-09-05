@@ -361,6 +361,12 @@ struct ParentChildCount {
 }
 
 #[derive(Debug, Clone, Copy, FromQueryResult)]
+struct MediaSourceCount {
+    item_id: Uuid,
+    source_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, FromQueryResult)]
 struct ResumePageId {
     total_record_count: Option<i64>,
     id: Option<Uuid>,
@@ -689,6 +695,52 @@ impl BaseItemRepository {
         Ok(base_item::Model::find_by_statement(statement)
             .all(self.database.as_ref())
             .await?)
+    }
+
+    /// Counts the local media sources in each requested video's alternate-version group.
+    ///
+    /// The aggregate is set-based so DTO pages requesting `MediaSourceCount` never issue one
+    /// version lookup per video. Missing and non-video identifiers are omitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the aggregate query fails.
+    pub async fn media_source_counts(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, u64>, BaseItemError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut sql = "SELECT requested.id AS item_id, COUNT(version.id)::bigint AS source_count \
+                       FROM jellyfin.base_items AS requested \
+                       INNER JOIN jellyfin.base_items AS version \
+                         ON COALESCE(version.primary_version_id, version.id) = \
+                            COALESCE(requested.primary_version_id, requested.id) \
+                        AND version.item_type IN \
+                            ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer') \
+                       WHERE requested.item_type IN \
+                             ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')"
+            .to_owned();
+        let mut values = Vec::with_capacity(item_ids.len());
+        append_uuid_list_filter(&mut sql, &mut values, "requested.id", item_ids);
+        sql.push_str(" GROUP BY requested.id");
+        let rows = MediaSourceCount::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.item_id,
+                    u64::try_from(row.source_count).unwrap_or_default(),
+                )
+            })
+            .collect())
     }
 
     /// Reports whether an item identifier is present.

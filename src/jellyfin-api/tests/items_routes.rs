@@ -395,6 +395,64 @@ async fn media_stream_fields_are_projected_for_item_pages() {
 }
 
 #[tokio::test]
+async fn episode_media_source_count_is_projected_without_loading_sources() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let marker = Uuid::new_v4().simple().to_string();
+
+    let mut primary = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    primary.name = Some(format!("{marker} Primary"));
+    primary.sort_name = primary.name.clone();
+    primary.parent_id = Some(root.id);
+    primary.media_type = Some("Video".to_owned());
+    primary.path = Some(format!("/media/{marker} - 1080p.mkv"));
+    let primary = items.create(primary).await.expect("primary episode");
+
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    alternate.name = primary.name.clone();
+    alternate.sort_name = primary.sort_name.clone();
+    alternate.parent_id = Some(root.id);
+    alternate.media_type = Some("Video".to_owned());
+    alternate.path = Some(format!("/media/{marker} - 720p.mkv"));
+    alternate.primary_version_id = Some(primary.id);
+    let alternate = items.create(alternate).await.expect("alternate episode");
+
+    let mut singleton = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    singleton.name = Some(format!("{marker} Singleton"));
+    singleton.sort_name = singleton.name.clone();
+    singleton.parent_id = Some(root.id);
+    singleton.media_type = Some("Video".to_owned());
+    singleton.path = Some(format!("/media/{marker} - singleton.mkv"));
+    let singleton = items.create(singleton).await.expect("singleton episode");
+
+    let route = format!(
+        "/Items?recursive=true&searchTerm={}&includeItemTypes=Episode&fields=mediasourcecount",
+        marker
+    );
+    let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+    assert_eq!(body["TotalRecordCount"], 2);
+    let returned = body["Items"].as_array().expect("items");
+    let grouped = returned
+        .iter()
+        .find(|item| item["Id"] == primary.id.simple().to_string())
+        .expect("grouped primary episode");
+    assert_eq!(grouped["MediaSourceCount"], 2);
+    assert!(grouped.get("MediaSources").is_none());
+    let single = returned
+        .iter()
+        .find(|item| item["Id"] == singleton.id.simple().to_string())
+        .expect("singleton episode");
+    assert!(single.get("MediaSourceCount").is_none());
+
+    items.delete(alternate.id).await.expect("alternate cleanup");
+    items.delete(primary.id).await.expect("primary cleanup");
+    items.delete(singleton.id).await.expect("singleton cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn trickplay_field_is_opt_in_batched_and_matches_official_shape() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
