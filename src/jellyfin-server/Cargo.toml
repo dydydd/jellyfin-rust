@@ -15,6 +15,7 @@ jellyfin-live-tv = { path = "../jellyfin-live-tv" }
 jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-model = { path = "../jellyfin-model" }
 jellyfin-networking = { path = "../jellyfin-networking" }
+mimalloc = { version = "0.1.48", default-features = false }
 serde_json.workspace = true
 sea-orm.workspace = true
 tokio.workspace = true

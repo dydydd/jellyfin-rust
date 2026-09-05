@@ -21,6 +21,13 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt::writer::MakeWriterExt};
 
+// Image decoding and encoding runs on long-lived blocking threads. The system
+// allocator can retain one large arena per thread after those pixel buffers are
+// dropped; mimalloc returns unused pages in the background while keeping the
+// image pipeline's bounded concurrency intact.
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let log_directory = std::env::var("JELLYFIN_LOG_DIR")
