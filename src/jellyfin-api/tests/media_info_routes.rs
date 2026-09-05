@@ -732,6 +732,10 @@ fn assert_playback_info(playback: &Value, fixture: &Fixture) {
     assert_eq!(source["MediaStreams"][1]["Type"], "Audio");
     assert_eq!(source["MediaStreams"][1]["Codec"], "aac");
     assert_eq!(source["MediaStreams"][1]["Language"], "eng");
+    assert_eq!(
+        source["MediaStreams"][1]["DisplayTitle"],
+        "English - AAC - 2 ch - Default"
+    );
 }
 
 fn flexible_video_profile(include_direct_play: bool) -> Value {

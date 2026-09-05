@@ -48,6 +48,51 @@ fn repository_backed_fields_use_official_wire_names() {
 }
 
 #[test]
+fn computed_getter_fields_are_serialized_with_official_wire_names() {
+    let mut video = MediaStream {
+        stream_type: MediaStreamType::Video,
+        codec: Some("hevc".into()),
+        width: Some(3840),
+        height: Some(2160),
+        color_transfer: Some("smpte2084".into()),
+        average_frame_rate: Some(23.976),
+        ..MediaStream::default()
+    };
+    video.refresh_computed_fields();
+    let value = serde_json::to_value(video).unwrap();
+    assert_eq!(value["VideoRange"], json!("HDR"));
+    assert_eq!(value["AudioSpatialFormat"], json!("None"));
+    assert_eq!(value["DisplayTitle"], json!("4K HEVC HDR"));
+    assert!((value["ReferenceFrameRate"].as_f64().unwrap() - 23.976).abs() < 0.0001);
+    assert_eq!(value["IsTextSubtitleStream"], json!(false));
+
+    let mut subtitle = MediaStream {
+        stream_type: MediaStreamType::Subtitle,
+        codec: Some("srt".into()),
+        language: Some("eng".into()),
+        localized_language: Some("English".into()),
+        is_default: true,
+        ..MediaStream::default()
+    };
+    subtitle.refresh_computed_fields();
+    let value = serde_json::to_value(subtitle).unwrap();
+    assert_eq!(value["DisplayTitle"], json!("English - Default - SRT"));
+    assert_eq!(value["IsTextSubtitleStream"], json!(true));
+
+    let mut atmos = MediaStream {
+        stream_type: MediaStreamType::Audio,
+        language: Some("eng".into()),
+        localized_language: Some("English".into()),
+        profile: Some("Dolby Atmos".into()),
+        ..MediaStream::default()
+    };
+    atmos.refresh_computed_fields();
+    let value = serde_json::to_value(atmos).unwrap();
+    assert_eq!(value["AudioSpatialFormat"], json!("DolbyAtmos"));
+    assert_eq!(value["DisplayTitle"], json!("English - Dolby Atmos"));
+}
+
+#[test]
 fn media_stream_type_matches_official_string_enum_json() {
     for (stream_type, expected) in [
         (MediaStreamType::Audio, "Audio"),

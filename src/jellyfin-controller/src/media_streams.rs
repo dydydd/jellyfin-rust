@@ -137,7 +137,7 @@ where
             ..MediaStream::default()
         };
         apply_localization(&mut stream, localization, &self.server_culture);
-        stream.video_range_type = stream.video_range_type();
+        stream.refresh_computed_fields();
         stream
     }
 

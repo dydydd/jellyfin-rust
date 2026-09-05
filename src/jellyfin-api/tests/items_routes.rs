@@ -381,6 +381,14 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(item["MediaSources"][0]["MediaStreams"][0]["Type"], "Video");
     assert_eq!(item["MediaStreams"][0]["Type"], "Video");
     assert_eq!(item["MediaStreams"][1]["Language"], "deu");
+    assert_eq!(
+        item["MediaStreams"][1]["DisplayTitle"],
+        "German - Dolby Digital - Default"
+    );
+    assert_eq!(
+        item["MediaSources"][0]["MediaStreams"][3]["DisplayTitle"],
+        "English - SRT"
+    );
 
     items.delete(media.id).await.expect("media cleanup");
     fixture.cleanup().await;

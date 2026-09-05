@@ -241,6 +241,30 @@ pub struct MediaStream {
     pub localized_language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub localized_original: Option<String>,
+    #[serde(
+        rename = "VideoRange",
+        skip_deserializing,
+        default = "default_video_range"
+    )]
+    pub computed_video_range: VideoRange,
+    #[serde(
+        rename = "VideoDoViTitle",
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub computed_video_dovi_title: Option<String>,
+    #[serde(
+        rename = "AudioSpatialFormat",
+        skip_deserializing,
+        default = "default_audio_spatial_format"
+    )]
+    pub computed_audio_spatial_format: AudioSpatialFormat,
+    #[serde(
+        rename = "DisplayTitle",
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub computed_display_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nal_length_size: Option<String>,
     pub is_interlaced: bool,
@@ -269,6 +293,12 @@ pub struct MediaStream {
     pub average_frame_rate: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub real_frame_rate: Option<f32>,
+    #[serde(
+        rename = "ReferenceFrameRate",
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub computed_reference_frame_rate: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -288,6 +318,8 @@ pub struct MediaStream {
     pub video_range_type: VideoRangeType,
     #[serde(rename = "Type")]
     pub stream_type: MediaStreamType,
+    #[serde(rename = "IsTextSubtitleStream", skip_deserializing)]
+    pub computed_is_text_subtitle_stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<i32>,
     pub is_external: bool,
@@ -303,6 +335,17 @@ pub struct MediaStream {
 }
 
 impl MediaStream {
+    /// Refreshes the getter-backed fields that official Jellyfin serializes on every stream.
+    pub fn refresh_computed_fields(&mut self) {
+        self.computed_video_range = self.video_range();
+        self.video_range_type = self.video_range_type();
+        self.computed_video_dovi_title = self.video_dovi_title();
+        self.computed_audio_spatial_format = self.audio_spatial_format();
+        self.computed_display_title = self.display_title();
+        self.computed_reference_frame_rate = self.reference_frame_rate();
+        self.computed_is_text_subtitle_stream = self.is_text_subtitle_stream();
+    }
+
     #[must_use]
     pub fn display_title(&self) -> Option<String> {
         match self.stream_type {
@@ -623,6 +666,14 @@ impl MediaStream {
         }
         with_title(self.title.as_deref(), &attributes, " - ")
     }
+}
+
+const fn default_video_range() -> VideoRange {
+    VideoRange::Unknown
+}
+
+const fn default_audio_spatial_format() -> AudioSpatialFormat {
+    AudioSpatialFormat::None
 }
 
 fn with_title(title: Option<&str>, attributes: &[String], separator: &str) -> String {

@@ -45,6 +45,10 @@ fn persisted_audio_streams_project_localized_official_dto_fields() {
         stream.display_title().as_deref(),
         Some("German - Dolby Atmos - Default - External - Original")
     );
+    assert_eq!(
+        stream.computed_display_title.as_deref(),
+        Some("German - Dolby Atmos - Default - External - Original")
+    );
 }
 
 #[test]
