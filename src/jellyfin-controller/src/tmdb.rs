@@ -1661,11 +1661,19 @@ async fn episode_name_merge_policy(
 }
 
 fn episode_name_is_placeholder(item: &base_item::Model, series_name: Option<&str>) -> bool {
-    let Some(name) = item.name.as_deref().filter(|name| !name.trim().is_empty()) else {
+    episode_title_value_is_placeholder(item.name.as_deref(), item, series_name)
+}
+
+fn episode_title_value_is_placeholder(
+    title: Option<&str>,
+    item: &base_item::Model,
+    series_name: Option<&str>,
+) -> bool {
+    let Some(title) = title.filter(|title| !title.trim().is_empty()) else {
         return true;
     };
     let matches = |candidate: Option<&str>| {
-        candidate.is_some_and(|candidate| name.trim().eq_ignore_ascii_case(candidate.trim()))
+        candidate.is_some_and(|candidate| title.trim().eq_ignore_ascii_case(candidate.trim()))
     };
     if matches(series_name) || matches(metadata_string_field(item.data.as_ref(), "SeriesName")) {
         return true;
@@ -1676,6 +1684,28 @@ fn episode_name_is_placeholder(item: &base_item::Model, series_name: Option<&str
             .and_then(|path| Path::new(path).file_stem())
             .and_then(|name| name.to_str()),
     )
+}
+
+pub(crate) fn apply_episode_original_title_fallback(
+    item: &mut base_item::Model,
+    series_name: Option<&str>,
+) -> bool {
+    if item.item_type != "Episode"
+        || item.primary_version_id.is_some()
+        || metadata_field_locked(item.data.as_ref(), "Name")
+        || !episode_name_is_placeholder(item, series_name)
+    {
+        return false;
+    }
+    let Some(original_title) = metadata_string_field(item.data.as_ref(), "OriginalTitle") else {
+        return false;
+    };
+    if episode_title_value_is_placeholder(Some(original_title), item, series_name) {
+        return false;
+    }
+    item.name = Some(original_title.to_owned());
+    item.sort_name = Some(original_title.to_owned());
+    true
 }
 
 fn apply_episode_name(
@@ -2772,6 +2802,58 @@ mod tests {
         assert_eq!(selected.get(&1).unwrap().len(), 1);
         assert_eq!(selected.get(&1).unwrap()[0].id, primary.id);
         assert_eq!(selected.get(&2).unwrap()[0].id, second.id);
+    }
+
+    #[test]
+    fn original_title_repairs_only_unlocked_primary_episode_placeholders() {
+        let mut valid = episode_item("Series Title", "/tv/Series/S01E01.mkv", 1);
+        valid.data = Some(json!({ "OriginalTitle": "Original Episode" }));
+        assert!(apply_episode_original_title_fallback(
+            &mut valid,
+            Some("Series Title")
+        ));
+        assert_eq!(valid.name.as_deref(), Some("Original Episode"));
+        assert_eq!(valid.sort_name.as_deref(), Some("Original Episode"));
+
+        let mut remote_won = episode_item("Localized Episode", "/tv/Series/S01E02.mkv", 2);
+        remote_won.data = Some(json!({ "OriginalTitle": "Original Episode" }));
+        assert!(!apply_episode_original_title_fallback(
+            &mut remote_won,
+            Some("Series Title")
+        ));
+        assert_eq!(remote_won.name.as_deref(), Some("Localized Episode"));
+
+        let mut locked = episode_item("Series Title", "/tv/Series/S01E03.mkv", 3);
+        locked.data = Some(json!({
+            "OriginalTitle": "Original Episode",
+            "LockedFields": ["name"]
+        }));
+        assert!(!apply_episode_original_title_fallback(
+            &mut locked,
+            Some("Series Title")
+        ));
+
+        let mut alternate = episode_item("Series Title", "/tv/Series/S01E04.mkv", 4);
+        alternate.primary_version_id = Some(Uuid::new_v4());
+        alternate.data = Some(json!({ "OriginalTitle": "Original Episode" }));
+        assert!(!apply_episode_original_title_fallback(
+            &mut alternate,
+            Some("Series Title")
+        ));
+
+        let mut series_original = episode_item("Series Title", "/tv/Series/S01E05.mkv", 5);
+        series_original.data = Some(json!({ "OriginalTitle": "Series Title" }));
+        assert!(!apply_episode_original_title_fallback(
+            &mut series_original,
+            Some("Series Title")
+        ));
+
+        let mut path_original = episode_item("Series Title", "/tv/Series/S01E06.mkv", 6);
+        path_original.data = Some(json!({ "OriginalTitle": "S01E06" }));
+        assert!(!apply_episode_original_title_fallback(
+            &mut path_original,
+            Some("Series Title")
+        ));
     }
 
     #[test]
