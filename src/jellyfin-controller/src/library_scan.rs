@@ -2074,9 +2074,11 @@ impl LibraryScanService {
         let mut series_id = None;
         let mut season_id = None;
         let mut series_puk = None;
+        let mut resolved_series_name = None;
         if let Some((series_name, series_path)) =
             episode_series_context(path, library_root, series_name)
         {
+            resolved_series_name = Some(series_name.clone());
             let (series_item_id, _) = self
                 .ensure_series_item(&series_name, parent_id, series_path.as_deref(), path)
                 .await?;
@@ -2139,7 +2141,7 @@ impl LibraryScanService {
             if is_strm {
                 apply_strm_metadata(&mut existing, media_source_path, strm_target);
             }
-            apply_episode_nfo_metadata(&mut existing, path);
+            apply_episode_nfo_metadata(&mut existing, path, resolved_series_name.as_deref());
             self.persist_scan_relations(existing.id, path_str, &existing.item_type, season_number)
                 .await?;
             if let Some(mut media_info) = self
@@ -2179,7 +2181,7 @@ impl LibraryScanService {
         item.series_presentation_unique_key = series_puk;
         item.data = Some(media_item_data_with_strm(media_source_path, strm_target));
         let mut item = self.items.create(item).await?;
-        if apply_episode_nfo_metadata(&mut item, path) {
+        if apply_episode_nfo_metadata(&mut item, path, resolved_series_name.as_deref()) {
             item = self.items.update(item).await?;
         }
         self.persist_scan_relations(item.id, path_str, &item.item_type, season_number)
@@ -3371,6 +3373,7 @@ fn apply_movie_nfo_metadata(
 fn apply_episode_nfo_metadata(
     item: &mut jellyfin_data::entities::base_item::Model,
     media_path: &Path,
+    series_name: Option<&str>,
 ) -> bool {
     let nfo_path = media_path.with_extension("nfo");
     let Ok(input) = std::fs::read_to_string(&nfo_path) else {
@@ -3379,7 +3382,44 @@ fn apply_episode_nfo_metadata(
     let Ok(nfo) = jellyfin_xbmc_metadata::parse_nfo(&input, NfoDocumentKind::Episode) else {
         return false;
     };
-    apply_non_movie_nfo(item, &nfo)
+    apply_episode_nfo(item, &nfo, media_path, series_name)
+}
+
+fn apply_episode_nfo(
+    item: &mut base_item::Model,
+    nfo: &NfoMetadata,
+    media_path: &Path,
+    series_name: Option<&str>,
+) -> bool {
+    let apply_names = !metadata_field_locked(item.data.as_ref(), "Name")
+        && nfo.name.as_deref().is_none_or(|name| {
+            !episode_nfo_title_is_placeholder(name, item, nfo, media_path, series_name)
+        });
+    apply_non_movie_nfo_fields(item, nfo, apply_names)
+}
+
+fn episode_nfo_title_is_placeholder(
+    title: &str,
+    item: &base_item::Model,
+    nfo: &NfoMetadata,
+    media_path: &Path,
+    series_name: Option<&str>,
+) -> bool {
+    let title = title.trim();
+    if title.is_empty() {
+        return true;
+    }
+    let matches = |candidate: Option<&str>| {
+        candidate.is_some_and(|candidate| title.eq_ignore_ascii_case(candidate.trim()))
+    };
+    matches(nfo.series_name.as_deref())
+        || matches(series_name)
+        || matches(metadata_string_field(item.data.as_ref(), "SeriesName"))
+        || matches(
+            media_path
+                .file_stem()
+                .and_then(|file_name| file_name.to_str()),
+        )
 }
 
 fn apply_series_nfo_metadata(
@@ -3418,15 +3458,26 @@ fn apply_season_nfo_metadata(
 
 #[allow(clippy::too_many_lines)]
 fn apply_non_movie_nfo(item: &mut base_item::Model, nfo: &NfoMetadata) -> bool {
+    apply_non_movie_nfo_fields(item, nfo, true)
+}
+
+#[allow(clippy::too_many_lines)]
+fn apply_non_movie_nfo_fields(
+    item: &mut base_item::Model,
+    nfo: &NfoMetadata,
+    apply_names: bool,
+) -> bool {
     let mut changed = false;
-    if let Some(name) = nfo.name.as_deref().filter(|name| !name.is_empty())
+    if apply_names
+        && let Some(name) = nfo.name.as_deref().filter(|name| !name.is_empty())
         && item.name.as_deref() != Some(name)
     {
         item.name = Some(name.to_owned());
         item.sort_name = Some(name.to_owned());
         changed = true;
     }
-    if let Some(sort_name) = nfo.sort_name.as_deref().filter(|name| !name.is_empty())
+    if apply_names
+        && let Some(sort_name) = nfo.sort_name.as_deref().filter(|name| !name.is_empty())
         && item.sort_name.as_deref() != Some(sort_name)
     {
         item.sort_name = Some(sort_name.to_owned());
@@ -3544,6 +3595,35 @@ fn metadata_data(item: &base_item::Model) -> serde_json::Map<String, Value> {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default()
+}
+
+fn metadata_field_locked(data: Option<&Value>, field: &str) -> bool {
+    let Some(fields) = metadata_value(data, "LockedFields") else {
+        return false;
+    };
+    match fields {
+        Value::Array(fields) => fields.iter().any(|locked| {
+            locked
+                .as_str()
+                .is_some_and(|locked| locked.eq_ignore_ascii_case(field))
+        }),
+        Value::String(fields) => fields
+            .split(['|', ','])
+            .any(|locked| locked.trim().eq_ignore_ascii_case(field)),
+        _ => false,
+    }
+}
+
+fn metadata_string_field<'a>(data: Option<&'a Value>, field: &str) -> Option<&'a str> {
+    metadata_value(data, field).and_then(Value::as_str)
+}
+
+fn metadata_value<'a>(data: Option<&'a Value>, field: &str) -> Option<&'a Value> {
+    data.and_then(Value::as_object).and_then(|data| {
+        data.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(field))
+            .map(|(_, value)| value)
+    })
 }
 
 fn upsert_string(
@@ -4130,13 +4210,13 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 mod tests {
     use super::{
         LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
-        SeenPaths, StrmProbeCoordinator, StrmProbeKey, StrmProbeLease, apply_non_movie_nfo,
-        apply_probed_item_metadata, apply_scanned_group_name, apply_strm_metadata,
-        attachment_image_type, attachments_from_media_info, codec_from_extension,
-        default_fanout_concurrency, default_stream, display_name, extra_type_name,
-        image_extraction_command_succeeded, is_extras_directory, local_image_type, media_item_data,
-        media_kind, merge_scan_summary, metadata_movie_version_groups, next_stream_index,
-        read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
+        SeenPaths, StrmProbeCoordinator, StrmProbeKey, StrmProbeLease, apply_episode_nfo,
+        apply_non_movie_nfo, apply_probed_item_metadata, apply_scanned_group_name,
+        apply_strm_metadata, attachment_image_type, attachments_from_media_info,
+        codec_from_extension, default_fanout_concurrency, default_stream, display_name,
+        extra_type_name, image_extraction_command_succeeded, is_extras_directory, local_image_type,
+        media_item_data, media_kind, merge_scan_summary, metadata_movie_version_groups,
+        next_stream_index, read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
         streams_from_media_info, track_group_change,
@@ -4730,6 +4810,108 @@ mod tests {
         assert_eq!(data["ProviderIds"]["Tmdb"], "12345");
         assert_eq!(data["Status"], "Ended");
         assert_eq!(data["IsLocked"], true);
+    }
+
+    #[test]
+    fn episode_nfo_series_placeholder_preserves_scraped_title_and_merges_other_fields() {
+        let mut item = base_item_default();
+        item.item_type = "Episode".to_owned();
+        item.path = Some("/tv/Series/Season 1/S01E01.mkv".to_owned());
+        item.name = Some("Remote Episode".to_owned());
+        item.sort_name = Some("Remote Episode Sort".to_owned());
+        item.overview = Some("Remote overview".to_owned());
+        item.data = Some(json!({ "seriesname": "Series Title" }));
+        let nfo = NfoMetadata {
+            name: Some("Series Title".to_owned()),
+            series_name: Some("Series Title".to_owned()),
+            overview: Some("Local overview".to_owned()),
+            provider_ids: std::collections::HashMap::from([(
+                "Tmdb".to_owned(),
+                "12345".to_owned(),
+            )]),
+            ..NfoMetadata::default()
+        };
+
+        assert!(apply_episode_nfo(
+            &mut item,
+            &nfo,
+            Path::new("/tv/Series/Season 1/S01E01.mkv"),
+            Some("Series Title"),
+        ));
+        assert_eq!(item.name.as_deref(), Some("Remote Episode"));
+        assert_eq!(item.sort_name.as_deref(), Some("Remote Episode Sort"));
+        assert_eq!(item.overview.as_deref(), Some("Local overview"));
+        assert_eq!(item.data.as_ref().unwrap()["ProviderIds"]["Tmdb"], "12345");
+    }
+
+    #[test]
+    fn episode_nfo_path_placeholder_cannot_replace_scraped_title() {
+        let mut item = base_item_default();
+        item.item_type = "Episode".to_owned();
+        item.name = Some("Remote Episode".to_owned());
+        item.sort_name = Some("Remote Episode".to_owned());
+        let nfo = NfoMetadata {
+            name: Some("S01E02".to_owned()),
+            sort_name: Some("S01E02".to_owned()),
+            ..NfoMetadata::default()
+        };
+
+        assert!(apply_episode_nfo(
+            &mut item,
+            &nfo,
+            Path::new("/tv/Series/Season 1/S01E02.mkv"),
+            Some("Series Title"),
+        ));
+        assert_eq!(item.name.as_deref(), Some("Remote Episode"));
+        assert_eq!(item.sort_name.as_deref(), Some("Remote Episode"));
+    }
+
+    #[test]
+    fn episode_nfo_valid_local_title_still_has_priority() {
+        let mut item = base_item_default();
+        item.item_type = "Episode".to_owned();
+        item.name = Some("Remote Episode".to_owned());
+        item.sort_name = Some("Remote Episode".to_owned());
+        let nfo = NfoMetadata {
+            name: Some("Local Episode".to_owned()),
+            sort_name: Some("Local Sort".to_owned()),
+            series_name: Some("Series Title".to_owned()),
+            ..NfoMetadata::default()
+        };
+
+        assert!(apply_episode_nfo(
+            &mut item,
+            &nfo,
+            Path::new("/tv/Series/Season 1/S01E03.mkv"),
+            Some("Series Title"),
+        ));
+        assert_eq!(item.name.as_deref(), Some("Local Episode"));
+        assert_eq!(item.sort_name.as_deref(), Some("Local Sort"));
+    }
+
+    #[test]
+    fn episode_nfo_name_lock_preserves_title_but_merges_other_fields() {
+        let mut item = base_item_default();
+        item.item_type = "Episode".to_owned();
+        item.name = Some("Locked Episode".to_owned());
+        item.sort_name = Some("Locked Sort".to_owned());
+        item.data = Some(json!({ "lockedfields": "Overview|nAmE" }));
+        let nfo = NfoMetadata {
+            name: Some("Local Episode".to_owned()),
+            sort_name: Some("Local Sort".to_owned()),
+            overview: Some("Local overview".to_owned()),
+            ..NfoMetadata::default()
+        };
+
+        assert!(apply_episode_nfo(
+            &mut item,
+            &nfo,
+            Path::new("/tv/Series/Season 1/S01E04.mkv"),
+            Some("Series Title"),
+        ));
+        assert_eq!(item.name.as_deref(), Some("Locked Episode"));
+        assert_eq!(item.sort_name.as_deref(), Some("Locked Sort"));
+        assert_eq!(item.overview.as_deref(), Some("Local overview"));
     }
 
     #[test]
