@@ -889,6 +889,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/MediaSegments/{item_id}",
             get(media_segments::get_item_segments),
         )
+        .route(
+            "/mediasegments/{item_id}",
+            get(media_segments::get_item_segments),
+        )
         .route("/FallbackFont/Fonts", get(subtitles::fallback_fonts))
         .route("/FallbackFont/Fonts/{name}", get(subtitles::fallback_font))
         .route(

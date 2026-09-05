@@ -21,17 +21,17 @@ impl std::str::FromStr for MediaSegmentType {
     type Err = ParseMediaSegmentTypeError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.eq_ignore_ascii_case("Unknown") {
+        if value.eq_ignore_ascii_case("Unknown") || value == "0" {
             Ok(Self::Unknown)
-        } else if value.eq_ignore_ascii_case("Commercial") {
+        } else if value.eq_ignore_ascii_case("Commercial") || value == "1" {
             Ok(Self::Commercial)
-        } else if value.eq_ignore_ascii_case("Preview") {
+        } else if value.eq_ignore_ascii_case("Preview") || value == "2" {
             Ok(Self::Preview)
-        } else if value.eq_ignore_ascii_case("Recap") {
+        } else if value.eq_ignore_ascii_case("Recap") || value == "3" {
             Ok(Self::Recap)
-        } else if value.eq_ignore_ascii_case("Outro") {
+        } else if value.eq_ignore_ascii_case("Outro") || value == "4" {
             Ok(Self::Outro)
-        } else if value.eq_ignore_ascii_case("Intro") {
+        } else if value.eq_ignore_ascii_case("Intro") || value == "5" {
             Ok(Self::Intro)
         } else {
             Err(ParseMediaSegmentTypeError)

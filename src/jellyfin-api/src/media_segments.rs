@@ -31,6 +31,9 @@ pub(crate) async fn get_item_segments(
     Query(query): Query<MediaSegmentsQuery>,
 ) -> Result<Json<QueryResult<MediaSegmentDto>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if item_id.is_nil() {
+        return Err(ApiError::InvalidRequest);
+    }
     state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
