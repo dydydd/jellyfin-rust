@@ -4,13 +4,14 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository,
     LinkedChildRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
     entities::item_value,
     entities::{user, user_data},
 };
+use jellyfin_model::{MediaStream, MediaStreamType};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
 };
@@ -522,13 +523,181 @@ async fn assert_similar_items(fixture: &Fixture) {
 
 async fn assert_relationships(fixture: &Fixture) {
     for route in [
-        format!("/Items/{}/ThemeSongs", fixture.child_id),
-        format!("/Items/{}/ThemeVideos", fixture.child_id),
+        format!("/Items/{}/ThemeSongs", fixture.grandchild_id),
+        format!("/Items/{}/ThemeVideos", fixture.grandchild_id),
     ] {
         let body = fixture.json("GET", &route, &fixture.user_token).await;
-        assert_eq!(body["OwnerId"], fixture.child_id.to_string());
+        assert_eq!(body["OwnerId"], fixture.grandchild_id.to_string());
         assert_eq!(body["TotalRecordCount"], 0);
+        assert_eq!(body["StartIndex"], 0);
         assert!(body["Items"].as_array().unwrap().is_empty());
+    }
+
+    let items = fixture.items();
+    let mut alpha_theme =
+        create_item(&items, "Audio", "Alpha Theme", fixture.parent_id, None).await;
+    alpha_theme.media_type = Some("Audio".to_owned());
+    alpha_theme.data = Some(json!({
+        "ExtraType": "ThemeSong",
+        "OwnerId": fixture.parent_id
+    }));
+    let alpha_theme = items
+        .update(alpha_theme)
+        .await
+        .expect("alpha theme metadata");
+    let mut zulu_theme = create_item(&items, "Audio", "Zulu Theme", fixture.parent_id, None).await;
+    zulu_theme.media_type = Some("Audio".to_owned());
+    zulu_theme.data = Some(json!({ "ExtraType": "ThemeSong" }));
+    let zulu_theme = items.update(zulu_theme).await.expect("zulu theme metadata");
+    let mut parent_theme_video = create_item(
+        &items,
+        "Video",
+        "Parent Theme Video",
+        fixture.parent_id,
+        None,
+    )
+    .await;
+    parent_theme_video.data = Some(json!({
+        "ExtraType": "ThemeVideo",
+        "OwnerId": fixture.parent_id
+    }));
+    let parent_theme_video = items
+        .update(parent_theme_video)
+        .await
+        .expect("parent theme video metadata");
+    let mut child_theme_video =
+        create_item(&items, "Video", "Child Theme Video", fixture.child_id, None).await;
+    child_theme_video.data = Some(json!({ "ExtraType": "ThemeVideo" }));
+    let child_theme_video = items
+        .update(child_theme_video)
+        .await
+        .expect("child theme video metadata");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            child_theme_video.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("h264".to_owned()),
+                language: Some("eng".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("child theme video stream");
+    favorite(
+        &UserDataRepository::new(fixture.database.clone()),
+        fixture.user_id,
+        child_theme_video.id,
+    )
+    .await;
+
+    let inherited_songs = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Items/{}/ThemeSongs?inheritFromParent=true",
+                fixture.grandchild_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(inherited_songs["OwnerId"], fixture.parent_id.to_string());
+    assert_eq!(inherited_songs["StartIndex"], 0);
+    assert_eq!(inherited_songs["TotalRecordCount"], 2);
+    assert_eq!(
+        inherited_songs["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Alpha Theme", "Zulu Theme"]
+    );
+    assert!(inherited_songs["Items"][0].get("UserData").is_some());
+
+    let descending_songs = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Items/{}/ThemeSongs?InheritFromParent=true&SortBy=SortName&SortOrder=Descending",
+                fixture.grandchild_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(
+        descending_songs["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Zulu Theme", "Alpha Theme"]
+    );
+
+    let lowercase_songs = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Items/{}/ThemeSongs?inheritfromparent=true&sortby=10&sortorder=0",
+                fixture.grandchild_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(lowercase_songs["Items"][0]["Name"], "Alpha Theme");
+
+    let inherited_videos = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Items/{}/ThemeVideos?inheritFromParent=true",
+                fixture.grandchild_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(inherited_videos["OwnerId"], fixture.child_id.to_string());
+    assert_eq!(inherited_videos["TotalRecordCount"], 1);
+    assert_eq!(inherited_videos["Items"][0]["Name"], "Child Theme Video");
+    assert!(inherited_videos["Items"][0]["UserData"]["IsFavorite"] == true);
+    assert!(inherited_videos["Items"][0]["MediaSources"].is_array());
+    assert!(inherited_videos["Items"][0]["MediaStreams"].is_array());
+
+    let all_theme_media = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Items/{}/ThemeMedia?inheritFromParent=true",
+                fixture.grandchild_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(
+        all_theme_media["ThemeSongsResult"]["OwnerId"],
+        fixture.parent_id.to_string()
+    );
+    assert_eq!(
+        all_theme_media["ThemeVideosResult"]["OwnerId"],
+        fixture.child_id.to_string()
+    );
+    assert_eq!(
+        all_theme_media["SoundtrackSongsResult"],
+        json!({
+            "Items": [],
+            "TotalRecordCount": 0,
+            "StartIndex": 0,
+            "OwnerId": Uuid::nil()
+        })
+    );
+    items
+        .delete_many(&[alpha_theme.id, zulu_theme.id])
+        .await
+        .expect("theme song cleanup");
+    for id in [parent_theme_video.id, child_theme_video.id] {
+        items.delete(id).await.expect("theme video cleanup");
     }
     let collections = fixture
         .json(

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
-    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ItemValueQuery,
-    ScoredBaseItem, ScoredBaseItemPage, ServerConfigurationRepository,
+    BaseItemCounts, BaseItemError, BaseItemOrder, BaseItemPage, BaseItemQuery, BaseItemRepository,
+    ItemValueQuery, ScoredBaseItem, ScoredBaseItemPage, ServerConfigurationRepository,
     entities::{base_item, user},
 };
 use jellyfin_model::UserPolicy;
@@ -374,6 +374,62 @@ impl UserLibraryService {
             .map(HydratedBaseItem::into_model)
             .filter(|candidate| related_item_matches(candidate, kind))
             .collect())
+    }
+
+    /// Loads theme extras for several possible owners in one policy-aware query.
+    ///
+    /// Results are grouped by the official persisted `OwnerId`, falling back
+    /// to the direct parent used by the Rust scanner. This allows API callers
+    /// to select the nearest ancestor independently for songs and videos
+    /// without issuing one query per hierarchy level.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, stored-policy, or persistence errors.
+    pub async fn theme_items_for_owners(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        owner_ids: &[Uuid],
+        kind: RelatedItemKind,
+        order: BaseItemOrder,
+    ) -> Result<HashMap<Uuid, Vec<base_item::Model>>, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        if owner_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut query = BaseItemQuery {
+            parent_ids: owner_ids.to_vec(),
+            recursive: true,
+            user_id: Some(target_user_id),
+            order,
+            enable_total_record_count: Some(false),
+            ..BaseItemQuery::default()
+        };
+        self.apply_user_policy(&mut query, target_user_id).await?;
+
+        let owners = owner_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let mut grouped = HashMap::<Uuid, Vec<base_item::Model>>::new();
+        for item in self.hydrate_page(self.items.query(&query).await?).items {
+            if !related_item_matches(&item, kind) {
+                continue;
+            }
+            let owner_id = metadata_value(item.data.as_ref(), &["OwnerId", "ownerId", "owner_id"])
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .filter(|owner_id| owners.contains(owner_id))
+                .or_else(|| item.parent_id.filter(|owner_id| owners.contains(owner_id)));
+            let Some(owner_id) = owner_id else {
+                continue;
+            };
+            grouped.entry(owner_id).or_default().push(item);
+        }
+        Ok(grouped)
     }
 
     /// Loads additional video parts referenced by a stacked-video item.

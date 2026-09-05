@@ -91,9 +91,9 @@ pub(crate) fn get_order_by<T>(
 }
 
 pub(crate) fn parse_sort_order(order: &str) -> Result<SortOrder, ApiError> {
-    if order.eq_ignore_ascii_case("Ascending") {
+    if order.eq_ignore_ascii_case("Ascending") || order == "0" {
         Ok(SortOrder::Ascending)
-    } else if order.eq_ignore_ascii_case("Descending") {
+    } else if order.eq_ignore_ascii_case("Descending") || order == "1" {
         Ok(SortOrder::Descending)
     } else {
         Err(ApiError::InvalidRequest)
@@ -390,12 +390,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_sort_order_accepts_official_names_case_insensitively() {
+    fn parse_sort_order_accepts_official_names_and_integer_values() {
         assert_eq!(
             parse_sort_order("descending").unwrap(),
             SortOrder::Descending
         );
         assert_eq!(parse_sort_order("Ascending").unwrap(), SortOrder::Ascending);
+        assert_eq!(parse_sort_order("0").unwrap(), SortOrder::Ascending);
+        assert_eq!(parse_sort_order("1").unwrap(), SortOrder::Descending);
         assert!(parse_sort_order("sideways").is_err());
     }
 

@@ -1621,7 +1621,7 @@ impl Default for PageDtoOptions {
     }
 }
 
-async fn page_to_dto(
+pub(crate) async fn page_to_dto(
     state: &AppState,
     page: BaseItemPage,
     fields: Vec<String>,

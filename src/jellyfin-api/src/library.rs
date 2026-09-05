@@ -38,6 +38,35 @@ pub(crate) struct LibraryQuery {
     limit: Option<u64>,
 }
 
+#[derive(Debug, Default, Clone, Deserialize)]
+pub(crate) struct ThemeMediaQuery {
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
+    #[serde(
+        default,
+        rename = "inheritFromParent",
+        alias = "InheritFromParent",
+        alias = "inheritfromparent"
+    )]
+    inherit_from_parent: bool,
+    #[serde(
+        default,
+        rename = "sortBy",
+        alias = "SortBy",
+        alias = "sortby",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_by: Vec<String>,
+    #[serde(
+        default,
+        rename = "sortOrder",
+        alias = "SortOrder",
+        alias = "sortorder",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_order: Vec<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct InstantMixByIdQuery {
     #[serde(alias = "Id")]
@@ -123,17 +152,18 @@ pub(crate) struct MediaUpdateInfoPathDto {
 pub(crate) struct ThemeMediaResult {
     items: Vec<user_library::BaseItemDto>,
     total_record_count: usize,
+    start_index: usize,
     owner_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AllThemeMediaResult {
     #[serde(rename = "ThemeSongsResult")]
-    theme_songs: Arc<ThemeMediaResult>,
+    theme_songs: ThemeMediaResult,
     #[serde(rename = "ThemeVideosResult")]
     theme_videos: ThemeMediaResult,
     #[serde(rename = "SoundtrackSongsResult")]
-    soundtrack_songs: Arc<ThemeMediaResult>,
+    soundtrack_songs: ThemeMediaResult,
 }
 
 pub(crate) async fn file(
@@ -158,14 +188,14 @@ pub(crate) async fn theme_songs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<LibraryQuery>,
+    Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
     Ok(Json(
         theme_result(
             &state,
             &headers,
             item_id,
-            query.user_id,
+            &query,
             RelatedItemKind::ThemeSong,
         )
         .await?,
@@ -176,14 +206,14 @@ pub(crate) async fn theme_videos(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<LibraryQuery>,
+    Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
     Ok(Json(
         theme_result(
             &state,
             &headers,
             item_id,
-            query.user_id,
+            &query,
             RelatedItemKind::ThemeVideo,
         )
         .await?,
@@ -194,31 +224,33 @@ pub(crate) async fn theme_media(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<LibraryQuery>,
+    Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<AllThemeMediaResult>, ApiError> {
-    let theme_songs = Arc::new(
-        theme_result(
-            &state,
-            &headers,
-            item_id,
-            query.user_id,
-            RelatedItemKind::ThemeSong,
-        )
-        .await?,
-    );
+    let theme_songs = theme_result(
+        &state,
+        &headers,
+        item_id,
+        &query,
+        RelatedItemKind::ThemeSong,
+    )
+    .await?;
     let theme_videos = theme_result(
         &state,
         &headers,
         item_id,
-        query.user_id,
+        &query,
         RelatedItemKind::ThemeVideo,
     )
     .await?;
     Ok(Json(AllThemeMediaResult {
-        // ALLOW: both response properties intentionally expose the same read-only result.
-        theme_songs: Arc::clone(&theme_songs),
+        theme_songs,
         theme_videos,
-        soundtrack_songs: theme_songs,
+        soundtrack_songs: ThemeMediaResult {
+            items: Vec::new(),
+            total_record_count: 0,
+            start_index: 0,
+            owner_id: Uuid::nil(),
+        },
     }))
 }
 
@@ -627,28 +659,121 @@ async fn theme_result(
     state: &AppState,
     headers: &HeaderMap,
     item_id: Uuid,
-    target_user_id_hint: Option<Uuid>,
+    query: &ThemeMediaQuery,
     kind: RelatedItemKind,
 ) -> Result<ThemeMediaResult, ApiError> {
     let authenticated = authentication::authenticated_session(state, headers).await?;
-    let target_user_id = target_user_id_hint.unwrap_or(authenticated.user.id);
-    let _owner = state
-        .library_controller
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let owner = state
+        .user_library
         .item(&authenticated.user, target_user_id, item_id)
         .await?;
-    let items = state
+    let mut owner_ids = vec![owner.id];
+    if query.inherit_from_parent && !item_id.is_nil() {
+        owner_ids.extend(
+            state
+                .library_controller
+                .ancestors(&authenticated.user, target_user_id, item_id)
+                .await?
+                .into_iter()
+                .map(|item| item.id),
+        );
+    }
+    for order in &query.sort_order {
+        crate::query::parse_sort_order(order)?;
+    }
+    let sort_by = normalize_theme_sort_by(&query.sort_by)?;
+    let order = crate::items::item_order(&sort_by, &query.sort_order);
+    let mut grouped = state
         .user_library
-        .related_items(&authenticated.user, target_user_id, item_id, kind)
-        .await?
+        .theme_items_for_owners(&authenticated.user, target_user_id, &owner_ids, kind, order)
+        .await?;
+    let owner_id = owner_ids
         .into_iter()
-        .map(|item| user_library::item_to_dto(item, state.server_id()))
-        .collect::<Vec<_>>();
-    let total_record_count = items.len();
-    Ok(ThemeMediaResult {
+        .find(|owner_id| grouped.get(owner_id).is_some_and(|items| !items.is_empty()))
+        .unwrap_or(owner.id);
+    let items = grouped.remove(&owner_id).unwrap_or_default();
+    let page = BaseItemPage {
+        total_record_count: u64::try_from(items.len()).unwrap_or(u64::MAX),
         items,
-        total_record_count,
-        owner_id: item_id,
+        start_index: 0,
+    };
+    let page = crate::items::page_to_dto(
+        state,
+        page,
+        vec![
+            "MediaSources".to_owned(),
+            "MediaStreams".to_owned(),
+            "MediaSourceCount".to_owned(),
+            "ItemCounts".to_owned(),
+            "ChildCount".to_owned(),
+            "RecursiveItemCount".to_owned(),
+            "PrimaryImageAspectRatio".to_owned(),
+            "Trickplay".to_owned(),
+        ],
+        target_user_id,
+    )
+    .await?;
+    Ok(ThemeMediaResult {
+        items: page.items,
+        total_record_count: page.total_record_count,
+        start_index: page.start_index,
+        owner_id,
     })
+}
+
+fn normalize_theme_sort_by(sort_by: &[String]) -> Result<Vec<String>, ApiError> {
+    const ITEM_SORT_BY: [&str; 30] = [
+        "Default",
+        "AiredEpisodeOrder",
+        "Album",
+        "AlbumArtist",
+        "Artist",
+        "DateCreated",
+        "OfficialRating",
+        "DatePlayed",
+        "PremiereDate",
+        "StartDate",
+        "SortName",
+        "Name",
+        "Random",
+        "Runtime",
+        "CommunityRating",
+        "ProductionYear",
+        "PlayCount",
+        "CriticRating",
+        "IsFolder",
+        "IsUnplayed",
+        "IsPlayed",
+        "SeriesSortName",
+        "VideoBitRate",
+        "AirTime",
+        "Studio",
+        "IsFavoriteOrLiked",
+        "DateLastContentAdded",
+        "SeriesDatePlayed",
+        "ParentIndexNumber",
+        "IndexNumber",
+    ];
+
+    sort_by
+        .iter()
+        .map(|value| {
+            let value = value.trim();
+            let named = ITEM_SORT_BY
+                .iter()
+                .find(|candidate| candidate.eq_ignore_ascii_case(value))
+                .copied();
+            let numeric = value
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| ITEM_SORT_BY.get(index).copied());
+            named
+                .or(numeric)
+                .map(str::to_owned)
+                .ok_or(ApiError::InvalidRequest)
+        })
+        .collect()
 }
 
 async fn file_response(
