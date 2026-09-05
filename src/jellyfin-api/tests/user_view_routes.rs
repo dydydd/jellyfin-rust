@@ -1,6 +1,6 @@
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::{UserService, VirtualFolderService};
@@ -8,9 +8,11 @@ use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
     DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData, USER_ROOT_FOLDER_ID,
     UserDataRepository,
-    entities::{user, user::Column as UserColumn},
+    entities::{user, user::Column as UserColumn, virtual_folder},
 };
-use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -78,21 +80,98 @@ async fn exercise_user_view_routes(database_name: &str) {
 
 async fn assert_collection_type_wire_shapes(fixture: &Fixture) {
     let suffix = Uuid::new_v4().simple().to_string();
-    let mixed_name = format!("Mixed Wire {suffix}");
-    let known_name = format!("Known Wire {suffix}");
+    let mixed_name = format!("MixedWire{suffix}");
+    let known_name = format!("KnownWire{suffix}");
+    let invalid_legacy_name = format!("InvalidLegacy{suffix}");
     let virtual_folders = VirtualFolderService::new(fixture.database.clone());
-    for (name, collection_type) in [(&mixed_name, "mixed"), (&known_name, "movies")] {
-        virtual_folders
-            .create(
-                name,
-                Some(collection_type.to_owned()),
-                json!({ "Enabled": true }),
-                Vec::new(),
-                false,
-            )
+    assert_eq!(
+        request_method(
+            &fixture.app,
+            Method::POST,
+            &format!("/Library/VirtualFolders?name={mixed_name}&collectionType=MiXeD"),
+            Some(&fixture.admin_token),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request_method(
+            &fixture.app,
+            Method::POST,
+            &format!("/Library/VirtualFolders?name={known_name}&collectiontype=MoViEs"),
+            Some(&fixture.admin_token),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request_method(
+            &fixture.app,
+            Method::POST,
+            &format!(
+                "/Library/VirtualFolders?name=Invalid{suffix}&collectionType=not-a-collection"
+            ),
+            Some(&fixture.admin_token),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    virtual_folders
+        .create(
+            &invalid_legacy_name,
+            Some("books".to_owned()),
+            json!({ "Enabled": true }),
+            Vec::new(),
+            false,
+        )
+        .await
+        .expect("legacy-invalid virtual folder seed");
+
+    let created_folders = virtual_folders
+        .list()
+        .await
+        .expect("canonical virtual folders");
+    let known_id = created_folders
+        .iter()
+        .find(|folder| folder.name == known_name)
+        .expect("known virtual folder id")
+        .id;
+    let invalid_legacy_id = created_folders
+        .iter()
+        .find(|folder| folder.name == invalid_legacy_name)
+        .expect("legacy-invalid virtual folder id")
+        .id;
+    assert_eq!(
+        virtual_folder::Entity::find_by_id(known_id)
+            .one(&fixture.database)
             .await
-            .expect("wire-shape virtual folder");
-    }
+            .expect("created virtual folder lookup")
+            .expect("created virtual folder")
+            .collection_type
+            .as_deref(),
+        Some("movies")
+    );
+    virtual_folder::Entity::update_many()
+        .col_expr(
+            virtual_folder::Column::CollectionType,
+            Expr::value("MoViEs"),
+        )
+        .filter(virtual_folder::Column::Id.eq(known_id))
+        .exec(&fixture.database)
+        .await
+        .expect("legacy mixed-case virtual folder metadata");
+    virtual_folder::Entity::update_many()
+        .col_expr(
+            virtual_folder::Column::CollectionType,
+            Expr::value("not-a-collection"),
+        )
+        .filter(virtual_folder::Column::Id.eq(invalid_legacy_id))
+        .exec(&fixture.database)
+        .await
+        .expect("legacy invalid virtual folder metadata");
 
     let virtual_folder_list = get_json(
         &fixture.app,
@@ -108,6 +187,16 @@ async fn assert_collection_type_wire_shapes(fixture: &Fixture) {
         .find(|folder| folder["Name"] == mixed_name)
         .expect("mixed virtual folder");
     assert_eq!(mixed_virtual_folder["CollectionType"], "mixed");
+    let known_virtual_folder = virtual_folders
+        .iter()
+        .find(|folder| folder["Name"] == known_name)
+        .expect("known virtual folder");
+    assert_eq!(known_virtual_folder["CollectionType"], "movies");
+    let invalid_legacy_virtual_folder = virtual_folders
+        .iter()
+        .find(|folder| folder["Name"] == invalid_legacy_name)
+        .expect("legacy-invalid virtual folder");
+    assert!(invalid_legacy_virtual_folder["CollectionType"].is_null());
 
     let views = get_json(&fixture.app, "/UserViews", &fixture.user_token).await;
     let items = views["Items"].as_array().expect("view items");
@@ -136,6 +225,56 @@ async fn assert_collection_type_wire_shapes(fixture: &Fixture) {
         .expect("known preset view");
     assert_eq!(known["Type"], "UserView");
     assert_eq!(known["CollectionType"], "movies");
+
+    let persisted_view_id = Uuid::parse_str(known["Id"].as_str().expect("known preset view id"))
+        .expect("preset view UUID");
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut persisted = items
+        .get(persisted_view_id)
+        .await
+        .expect("persisted view lookup")
+        .expect("persisted preset view");
+    persisted
+        .data
+        .as_mut()
+        .and_then(Value::as_object_mut)
+        .expect("persisted view metadata")
+        .insert("ViewType".to_owned(), Value::String("MoViEs".to_owned()));
+    items
+        .update(persisted)
+        .await
+        .expect("legacy mixed-case user-view metadata");
+
+    let repaired = get_json(
+        &fixture.app,
+        "/UserViews?presetViews=movies",
+        &fixture.user_token,
+    )
+    .await;
+    let repaired_model = items
+        .get(persisted_view_id)
+        .await
+        .expect("repaired view lookup")
+        .expect("repaired preset view");
+    assert_eq!(repaired_model.data.as_ref().unwrap()["ViewType"], "movies");
+    let repaired_row_version = repaired_model.row_version;
+
+    let repeated = get_json(
+        &fixture.app,
+        "/UserViews?presetViews=movies",
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(repeated, repaired);
+    assert_eq!(
+        items
+            .get(persisted_view_id)
+            .await
+            .expect("repeated view lookup")
+            .expect("repeated preset view")
+            .row_version,
+        repaired_row_version
+    );
 }
 
 async fn assert_home_query_key_casing(fixture: &Fixture) {
@@ -628,7 +767,16 @@ async fn assert_grouping_options(fixture: &Fixture) {
 }
 
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::response::Response {
-    let mut request = Request::get(uri);
+    request_method(app, Method::GET, uri, token).await
+}
+
+async fn request_method(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         request = request.header(
             header::AUTHORIZATION,

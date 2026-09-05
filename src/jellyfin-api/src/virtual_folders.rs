@@ -16,7 +16,11 @@ use crate::{ApiError, AppState, authorization};
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct CreateQuery {
     name: Option<String>,
-    #[serde(rename = "collectionType", alias = "CollectionType")]
+    #[serde(
+        rename = "collectionType",
+        alias = "CollectionType",
+        alias = "collectiontype"
+    )]
     collection_type: Option<String>,
     paths: Option<String>,
     #[serde(default, rename = "refreshLibrary", alias = "RefreshLibrary")]

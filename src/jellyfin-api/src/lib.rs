@@ -3019,6 +3019,7 @@ fn library_controller_error_response(error: &LibraryControllerError) -> (StatusC
 fn virtual_folder_error_response(error: &VirtualFolderServiceError) -> (StatusCode, &'static str) {
     match error {
         VirtualFolderServiceError::InvalidOptions
+        | VirtualFolderServiceError::InvalidCollectionType
         | VirtualFolderServiceError::InvalidPath
         | VirtualFolderServiceError::PathNotDirectory
         | VirtualFolderServiceError::NonUtf8Path

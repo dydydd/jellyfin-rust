@@ -9,7 +9,7 @@ use jellyfin_data::{
     BaseItemImageType, BaseItemRepository, entities::base_item,
 };
 use jellyfin_model::{CollectionType, ImageType};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -300,9 +300,24 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 struct PersistedDtoImageMetadata {
+    #[serde(deserialize_with = "deserialize_collection_type")]
     view_type: Option<CollectionType>,
     display_parent_id: Option<Uuid>,
     default_primary_image_aspect_ratio: Option<f64>,
+}
+
+fn deserialize_collection_type<'de, D>(deserializer: D) -> Result<Option<CollectionType>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .and_then(|value| value.parse().ok())
+        }),
+    )
 }
 
 fn persisted_metadata(
@@ -590,5 +605,35 @@ const fn image_type_name(image_type: ImageType) -> &'static str {
         ImageType::Chapter => "Chapter",
         ImageType::BoxRear => "BoxRear",
         ImageType::Profile => "Profile",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_view_type_is_case_insensitive_and_tolerates_unknown_values() {
+        for (value, expected) in [
+            (
+                serde_json::json!({ "ViewType": "MoViEs" }),
+                Some(CollectionType::Movies),
+            ),
+            (serde_json::json!({ "ViewType": " mixed " }), None),
+            (serde_json::json!({ "ViewType": "not-a-collection" }), None),
+            (serde_json::json!({ "ViewType": 1 }), None),
+            (
+                serde_json::json!({ "ViewType": { "Value": "movies" } }),
+                None,
+            ),
+            (serde_json::json!({ "ViewType": ["movies"] }), None),
+            (serde_json::json!({ "ViewType": true }), None),
+            (serde_json::json!({ "ViewType": null }), None),
+            (serde_json::json!({}), None),
+        ] {
+            let metadata: PersistedDtoImageMetadata =
+                serde_json::from_value(value).expect("persisted image metadata");
+            assert_eq!(metadata.view_type, expected);
+        }
     }
 }

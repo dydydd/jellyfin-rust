@@ -22,6 +22,8 @@ pub struct VirtualFolder {
 pub enum VirtualFolderServiceError {
     #[error("library options must be a JSON object")]
     InvalidOptions,
+    #[error("unknown virtual folder collection type")]
+    InvalidCollectionType,
     #[error("media path cannot be empty")]
     InvalidPath,
     #[error("media path does not exist")]
@@ -78,6 +80,13 @@ impl VirtualFolderService {
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
         validate_name(name)?;
+        let collection_type = collection_type
+            .map(|value| {
+                canonical_collection_type_option(&value)
+                    .map(str::to_owned)
+                    .ok_or(VirtualFolderServiceError::InvalidCollectionType)
+            })
+            .transpose()?;
         let object = object_options(&mut options)?;
         let path_infos = if query_paths.is_empty() {
             object
@@ -248,10 +257,29 @@ fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
     VirtualFolder {
         id: model.folder.id,
         name: model.folder.name,
-        collection_type: model.folder.collection_type,
+        collection_type: model
+            .folder
+            .collection_type
+            .as_deref()
+            .and_then(canonical_collection_type_option)
+            .map(str::to_owned),
         library_options: options,
         locations,
         refresh_requested: model.folder.refresh_requested,
+    }
+}
+
+pub(crate) fn canonical_collection_type_option(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "movies" => Some("movies"),
+        "tvshows" => Some("tvshows"),
+        "music" => Some("music"),
+        "musicvideos" => Some("musicvideos"),
+        "homevideos" => Some("homevideos"),
+        "boxsets" => Some("boxsets"),
+        "books" => Some("books"),
+        "mixed" => Some("mixed"),
+        _ => None,
     }
 }
 
@@ -323,4 +351,34 @@ async fn canonical_directory(path: &str) -> Result<String, VirtualFolderServiceE
         .into_os_string()
         .into_string()
         .map_err(|_| VirtualFolderServiceError::NonUtf8Path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_collection_type_option;
+
+    #[test]
+    fn collection_type_options_are_case_insensitive_and_canonical() {
+        for expected in [
+            "movies",
+            "tvshows",
+            "music",
+            "musicvideos",
+            "homevideos",
+            "boxsets",
+            "books",
+            "mixed",
+        ] {
+            assert_eq!(
+                canonical_collection_type_option(&expected.to_ascii_uppercase()),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            canonical_collection_type_option("  MoViEs  "),
+            Some("movies")
+        );
+        assert_eq!(canonical_collection_type_option("livetv"), None);
+        assert_eq!(canonical_collection_type_option("not-a-collection"), None);
+    }
 }

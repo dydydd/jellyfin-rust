@@ -787,6 +787,14 @@ impl LibraryScanService {
         mut folder: VirtualFolderWithPaths,
         summary: &mut LibraryScanSummary,
     ) -> Result<(), LibraryScanError> {
+        if let Some(collection_type) = folder
+            .folder
+            .collection_type
+            .as_deref()
+            .and_then(crate::virtual_folders::canonical_collection_type_option)
+        {
+            folder.folder.collection_type = Some(collection_type.to_owned());
+        }
         let kind = ScanLibraryKind::from_collection_type(folder.folder.collection_type.as_deref());
         let collection = self.ensure_collection_folder(&mut folder).await?;
         summary.folders_seen += 1;
