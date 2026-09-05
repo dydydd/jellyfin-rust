@@ -212,17 +212,20 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     );
     assert!(virtual_year.get("name").is_none());
 
-    assert_eq!(
+    let unused_year = body_json(
         fixture
             .request(
                 Method::GET,
                 "/Years/1901",
-                Credential::Device(&fixture.user_token)
+                Credential::Device(&fixture.user_token),
             )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
+            .await,
+    )
+    .await;
+    assert_eq!(unused_year["Name"], "1901");
+    assert_eq!(unused_year["Type"], "Year");
+    assert_eq!(unused_year["IsFolder"], true);
+    assert_eq!(unused_year["PresentationUniqueKey"], "Year-1901");
     assert_eq!(
         fixture
             .request(
@@ -232,7 +235,18 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             )
             .await
             .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Years/-1",
+                Credential::Device(&fixture.user_token)
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
     );
     assert_eq!(
         fixture

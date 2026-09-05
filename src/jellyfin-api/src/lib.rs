@@ -3002,6 +3002,7 @@ fn video_error_response(error: &VideoError) -> (StatusCode, &'static str) {
 
 fn year_error_response(error: &YearError) -> (StatusCode, &'static str) {
     match error {
+        YearError::InvalidYear => (StatusCode::BAD_REQUEST, "Invalid year"),
         YearError::NotFound
         | YearError::UserNotFound
         | YearError::User(UserError::NotFound)

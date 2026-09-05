@@ -30,6 +30,8 @@ pub struct YearPage {
 
 #[derive(Debug, Error)]
 pub enum YearError {
+    #[error("year must be greater than zero")]
+    InvalidYear,
     #[error("year was not found")]
     NotFound,
     #[error("target user was not found")]
@@ -58,11 +60,10 @@ impl YearService {
         }
     }
 
-    /// Resolves a Jellyfin year item for a positive production year.
+    /// Resolves a Jellyfin year item for a positive year.
     ///
-    /// Persisted `Year` items win. If none exists but `PostgreSQL` finds at
-    /// least one item tagged with the requested production year, the service
-    /// returns the virtual item-by-name shape used by Jellyfin.
+    /// Persisted `Year` items win. Otherwise the service returns Jellyfin's
+    /// virtual item-by-name shape even when no library item uses that year.
     ///
     /// # Errors
     ///
@@ -76,13 +77,10 @@ impl YearService {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
         if year <= 0 {
-            return Err(YearError::NotFound);
+            return Err(YearError::InvalidYear);
         }
         if let Some(item) = self.items.year_item(year).await? {
             return Ok(YearItem::Persisted(item));
-        }
-        if !self.items.has_production_year(year).await? {
-            return Err(YearError::NotFound);
         }
         let name = year.to_string();
         Ok(YearItem::Virtual(Year {
