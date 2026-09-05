@@ -355,6 +355,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             ..,
         ] if is_get_or_head(method) => RoutePolicy::Optional,
         ["studios", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
+        ["persons", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Plugins", _, _, "Image"] => RoutePolicy::Optional,
         ["Plugins", ..] => RoutePolicy::Elevated,
         _ => RoutePolicy::Default,

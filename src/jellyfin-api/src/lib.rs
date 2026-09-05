@@ -1151,6 +1151,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Persons/{name}/Images/{image_type}/{image_index}",
             get(persons::get_image_by_index),
         )
+        .route("/persons", get(persons::list))
+        .route("/persons/{name}", get(persons::get))
+        .route(
+            "/persons/{name}/images/{image_type}",
+            get(persons::get_image),
+        )
+        .route(
+            "/persons/{name}/images/{image_type}/{image_index}",
+            get(persons::get_image_by_index),
+        )
         .route(
             "/Library/VirtualFolders",
             get(virtual_folders::list)

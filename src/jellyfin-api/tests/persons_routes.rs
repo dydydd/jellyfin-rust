@@ -24,10 +24,10 @@ const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 #[tokio::test]
 async fn official_missing_person_is_not_found() {
     let fixture = Fixture::new().await;
-    let response = fixture
-        .request("/Persons/DoesntExist", Some(&fixture.user_token))
-        .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    for route in ["/Persons/DoesntExist", "/persons/DoesntExist"] {
+        let response = fixture.request(route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{route}");
+    }
     fixture.cleanup().await;
 }
 
@@ -67,9 +67,25 @@ async fn person_returns_pascal_case_base_item_dto_for_unicode_clean_name() {
 async fn authentication_and_target_user_permissions_are_enforced() {
     let fixture = Fixture::new().await;
     let route = person_route(&fixture.person_name);
+    let lowercase_route = format!("/persons/{}", encoded(&fixture.person_name));
     assert_eq!(
         fixture.request(&route, None).await.status(),
         StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture.request("/persons", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture.request(&lowercase_route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request(&lowercase_route, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::OK
     );
 
     let for_admin = format!("{route}?userId={}", fixture.admin_id);
@@ -147,6 +163,14 @@ async fn persons_list_matches_official_persons_contract() {
         3,
         0,
     );
+
+    let lowercase_listed = body_json(
+        fixture
+            .request("/persons?limit=1", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_people(&lowercase_listed, &[&fixture.director_name], 3, 0);
 
     let pascal_paged = body_json(
         fixture
@@ -493,6 +517,19 @@ async fn person_image_routes_resolve_public_base_item_ordinals() {
             .unwrap();
         assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
     }
+    let lowercase_base = format!("/persons/{}/images/Backdrop", encoded(&fixture.person_name));
+    for route in [
+        format!("{lowercase_base}?imageIndex=1"),
+        format!("{lowercase_base}/1"),
+    ] {
+        let response = fixture.request(&route, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
+    }
 
     let head = fixture
         .request_method(Method::HEAD, &format!("{base}/0"), None)
@@ -504,8 +541,28 @@ async fn person_image_routes_resolve_public_base_item_ordinals() {
             .unwrap()
             .is_empty()
     );
+    let lowercase_head = fixture
+        .request_method(Method::HEAD, &format!("{lowercase_base}/0"), None)
+        .await;
+    assert_eq!(lowercase_head.status(), StatusCode::OK);
+    assert!(
+        to_bytes(lowercase_head.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         fixture.request(&format!("{base}/99"), None).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request(
+                &format!("/persons/{}/images/Backdrop/0", encoded("missing person")),
+                None,
+            )
+            .await
+            .status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(
@@ -520,6 +577,13 @@ async fn person_image_routes_resolve_public_base_item_ordinals() {
     );
     assert_eq!(
         fixture.request(&base, Some("invalid-token")).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request(&lowercase_base, Some("invalid-token"))
+            .await
+            .status(),
         StatusCode::UNAUTHORIZED
     );
 
