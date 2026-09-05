@@ -161,6 +161,15 @@ async fn assert_tile_visibility_and_file_contract(fixture: &Fixture) {
         response.headers()[header::CONTENT_DISPOSITION],
         "attachment"
     );
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH],
+        JPEG.len().to_string().as_str()
+    );
+    assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
+    let last_modified = response.headers()[header::LAST_MODIFIED]
+        .to_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(body_bytes(response).await, Bytes::from_static(JPEG));
 
     let head = fixture
@@ -172,7 +181,96 @@ async fn assert_tile_visibility_and_file_contract(fixture: &Fixture) {
         .await;
     assert_eq!(head.status(), StatusCode::OK);
     assert_eq!(head.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(
+        head.headers()[header::CONTENT_LENGTH],
+        JPEG.len().to_string().as_str()
+    );
     assert!(body_bytes(head).await.is_empty());
+
+    let range = fixture
+        .request_with_headers(
+            Method::GET,
+            &route,
+            Credential::Device(&fixture.user_token),
+            &[(header::RANGE.as_str(), "bytes=2-6")],
+        )
+        .await;
+    assert_eq!(range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(range.headers()[header::CONTENT_DISPOSITION], "attachment");
+    assert_eq!(range.headers()[header::CONTENT_LENGTH], "5");
+    assert_eq!(
+        range.headers()[header::CONTENT_RANGE],
+        format!("bytes 2-6/{}", JPEG.len()).as_str()
+    );
+    assert_eq!(body_bytes(range).await, Bytes::from_static(&JPEG[2..=6]));
+
+    let matching_if_range = fixture
+        .request_with_headers(
+            Method::GET,
+            &route,
+            Credential::Device(&fixture.user_token),
+            &[
+                (header::RANGE.as_str(), "bytes=0-2"),
+                (header::IF_RANGE.as_str(), last_modified.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(matching_if_range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        matching_if_range.headers()[header::CONTENT_RANGE],
+        format!("bytes 0-2/{}", JPEG.len()).as_str()
+    );
+    assert_eq!(body_bytes(matching_if_range).await, &JPEG[..3]);
+
+    let stale_if_range = fixture
+        .request_with_headers(
+            Method::GET,
+            &route,
+            Credential::Device(&fixture.user_token),
+            &[
+                (header::RANGE.as_str(), "bytes=0-2"),
+                (header::IF_RANGE.as_str(), "Thu, 01 Jan 1970 00:00:00 GMT"),
+            ],
+        )
+        .await;
+    assert_eq!(stale_if_range.status(), StatusCode::OK);
+    assert_eq!(
+        stale_if_range.headers()[header::CONTENT_LENGTH],
+        JPEG.len().to_string().as_str()
+    );
+    assert!(!stale_if_range.headers().contains_key(header::CONTENT_RANGE));
+    assert_eq!(body_bytes(stale_if_range).await, Bytes::from_static(JPEG));
+
+    let range_head = fixture
+        .request_with_headers(
+            Method::HEAD,
+            &route,
+            Credential::Device(&fixture.user_token),
+            &[(header::RANGE.as_str(), "bytes=0-2")],
+        )
+        .await;
+    assert_eq!(range_head.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range_head.headers()[header::CONTENT_LENGTH], "3");
+    assert_eq!(
+        range_head.headers()[header::CONTENT_RANGE],
+        format!("bytes 0-2/{}", JPEG.len()).as_str()
+    );
+    assert!(body_bytes(range_head).await.is_empty());
+
+    let unsatisfiable = fixture
+        .request_with_headers(
+            Method::GET,
+            &route,
+            Credential::Device(&fixture.user_token),
+            &[(header::RANGE.as_str(), "bytes=999-")],
+        )
+        .await;
+    assert_eq!(unsatisfiable.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        unsatisfiable.headers()[header::CONTENT_RANGE],
+        format!("bytes */{}", JPEG.len()).as_str()
+    );
 
     let hidden_route = Fixture::tile_route(fixture.hidden_id, 320, 0);
     assert_eq!(
@@ -394,12 +492,26 @@ impl Fixture {
         uri: &str,
         credential: Credential<'_>,
     ) -> axum::response::Response {
+        self.request_with_headers(method, uri, credential, &[])
+            .await
+    }
+
+    async fn request_with_headers(
+        &self,
+        method: Method,
+        uri: &str,
+        credential: Credential<'_>,
+        headers: &[(&str, &str)],
+    ) -> axum::response::Response {
         let mut request = Request::builder().method(method).uri(uri);
         if let Credential::Device(token) = credential {
             request = request.header(
                 header::AUTHORIZATION,
                 format!("{AUTHORIZATION}, Token=\"{token}\""),
             );
+        }
+        for &(name, value) in headers {
+            request = request.header(name, value);
         }
         self.app
             .clone()

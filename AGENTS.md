@@ -36,6 +36,8 @@
   original image bytes and content type so media-library browsing cannot create decoder-sized
   memory spikes or a family of derived cache files. Image-info endpoints must return persisted
   dimensions and BlurHash values without lazily decoding the source or writing metadata.
+- Stream trickplay tile files with bounded chunks and preserve HEAD and byte-range semantics; never
+  read an entire tile into a response buffer.
 
 ## Compatibility expectations
 
