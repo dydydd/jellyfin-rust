@@ -74,14 +74,11 @@ pub fn media_source_path(item: &base_item::Model) -> Option<&str> {
 }
 
 /// Mirrors the conservative part of `BaseItem.CanDelete()`: virtual and
-/// aggregate metadata entries are projections, not user-owned files.  Only
-/// concrete file/folder items (with a real local path) may reach the delete
-/// repository operation.
+/// aggregate metadata entries are projections, not user-owned files. Items
+/// without a stored path still use Jellyfin's default file protocol and may
+/// be removed from the database; filesystem deletion is simply skipped.
 fn item_can_delete(item: &base_item::Model) -> bool {
-    if item.id == jellyfin_data::USER_ROOT_FOLDER_ID
-        || item.is_virtual_item
-        || item.path.as_deref().is_none_or(str::is_empty)
-    {
+    if item.id == jellyfin_data::USER_ROOT_FOLDER_ID || item.is_virtual_item {
         return false;
     }
     !matches!(
@@ -166,6 +163,8 @@ mod tests {
     #[test]
     fn can_delete_rejects_virtual_and_aggregate_items() {
         assert!(item_can_delete(&item("Movie", Some("/movie.mkv"), None)));
+        assert!(item_can_delete(&item("Movie", None, None)));
+        assert!(item_can_delete(&item("Folder", None, None)));
         assert!(!item_can_delete(&item("UserView", Some("/view"), None)));
         assert!(!item_can_delete(&item(
             "CollectionFolder",
