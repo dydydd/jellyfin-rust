@@ -147,6 +147,10 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
     let alternate_ids = [Uuid::new_v4(), Uuid::new_v4()];
     let items = BaseItemRepository::new(fixture.database.clone());
     let streams = MediaStreamService::new(fixture.database.clone());
+    streams
+        .save_media_streams(fixture.item_id, version_streams("h264"))
+        .await
+        .expect("primary version media streams");
     for alternate_id in alternate_ids {
         let mut alternate = NewBaseItem::new(alternate_id, "Movie");
         alternate.name = Some("playback-info-movie".to_owned());
@@ -175,6 +179,18 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .iter()
         .map(|source| source["Id"].as_str().expect("media source id").to_owned())
         .collect::<Vec<_>>();
+    for source in sources {
+        assert_version_stream_language_shape(source);
+    }
+
+    let detail_route = format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id);
+    let detail = body_json(fixture.get(&detail_route, Some(&fixture.user_token)).await).await;
+    assert_eq!(detail["MediaSources"].as_array().unwrap().len(), 3);
+    for source in detail["MediaSources"].as_array().unwrap() {
+        assert_version_stream_language_shape(source);
+    }
+    assert_version_stream_language_shape(&json!({ "MediaStreams": detail["MediaStreams"] }));
+
     let transcode_id = Uuid::parse_str(&source_order[1]).expect("first alternate id");
     let direct_alternate_id = Uuid::parse_str(&source_order[2]).expect("second alternate id");
     streams
@@ -915,12 +931,42 @@ fn version_streams(video_codec: &str) -> Vec<MediaStream> {
             index: 1,
             stream_type: MediaStreamType::Audio,
             codec: Some("aac".to_owned()),
+            language: Some("ger".to_owned()),
             channels: Some(2),
             bit_rate: Some(192_000),
             is_default: true,
             ..MediaStream::default()
         },
+        MediaStream {
+            index: 2,
+            stream_type: MediaStreamType::Subtitle,
+            codec: Some("srt".to_owned()),
+            language: Some("qaa".to_owned()),
+            ..MediaStream::default()
+        },
     ]
+}
+
+fn assert_version_stream_language_shape(source: &Value) {
+    let streams = source["MediaStreams"].as_array().expect("media streams");
+    let audio = streams
+        .iter()
+        .find(|stream| stream["Type"] == "Audio")
+        .expect("audio stream");
+    assert_eq!(audio["Index"], 1);
+    assert_eq!(audio["Language"], "deu");
+    assert_eq!(audio["LocalizedLanguage"], "German");
+    assert_eq!(audio["DisplayTitle"], "German - AAC - 2 ch - Default");
+    assert_eq!(audio["BitRate"], 192_000);
+
+    let subtitle = streams
+        .iter()
+        .find(|stream| stream["Type"] == "Subtitle")
+        .expect("subtitle stream");
+    assert_eq!(subtitle["Index"], 2);
+    assert_eq!(subtitle["Language"], "qaa");
+    assert!(subtitle.get("LocalizedLanguage").is_none());
+    assert_eq!(subtitle["DisplayTitle"], "Qaa - SRT");
 }
 
 fn assert_bitrate_headers(response: &axum::response::Response, expected_size: usize) {

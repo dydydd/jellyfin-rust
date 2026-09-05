@@ -65,6 +65,10 @@
 - Project each source's persisted, probed container before considering its path extension. When a
   persisted container lists alternatives, select the path-matching value or the first value, and
   strip URL query/fragment components before any extension fallback.
+- Project every audio and subtitle stream through the same language/localization path for item
+  details and `PlaybackInfo`, including every alternate media source. Canonicalize recognized ISO
+  639-2 bibliographic codes, preserve unrecognized codes, and let `DisplayTitle` fall back to that
+  raw code when `LocalizedLanguage` is unavailable.
 - Project `MediaSourceCount` for item pages with one batched alternate-version query. Preserve the
   official nullable-single-source behavior, and include episode groups so the web client can show
   merged episode versions without loading every `MediaSource`.
