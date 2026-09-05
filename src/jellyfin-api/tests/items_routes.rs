@@ -297,6 +297,16 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     media.media_type = Some("Video".to_owned());
     media.path = Some(path.clone());
     let media = items.create(media).await.expect("media item");
+    let alternate_path = format!("/media/page-{}-2160p.mkv", fixture.suffix);
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate.name = media.name.clone();
+    alternate.sort_name = media.sort_name.clone();
+    alternate.parent_id = Some(root.id);
+    alternate.media_type = Some("Video".to_owned());
+    alternate.path = Some(alternate_path.clone());
+    alternate.primary_version_id = Some(media.id);
+    alternate.data = Some(serde_json::json!({"Bitrate": 25_000_000}));
+    let alternate = items.create(alternate).await.expect("alternate media item");
     MediaStreamService::new(fixture.database.clone())
         .save_media_streams(
             media.id,
@@ -337,6 +347,20 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         )
         .await
         .expect("media streams");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            alternate.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("hevc".to_owned()),
+                bit_rate: Some(24_000_000),
+                path: Some(alternate_path),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("alternate media streams");
     let mut remembered = NewUserData::new(media.id, fixture.user_id, media.id.to_string());
     remembered.audio_stream_index = Some(2);
     remembered.subtitle_stream_index = Some(-1);
@@ -369,7 +393,12 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         .iter()
         .find(|item| item["Id"] == media.id.simple().to_string())
         .expect("projected item");
-    assert_eq!(item["MediaSources"].as_array().unwrap().len(), 1);
+    let sources = item["MediaSources"].as_array().unwrap();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["Id"], media.id.simple().to_string());
+    assert_eq!(sources[1]["Id"], alternate.id.simple().to_string());
+    assert_eq!(sources[1]["Bitrate"], 25_000_000);
+    assert_eq!(sources[1]["MediaStreams"][0]["Codec"], "hevc");
     assert_eq!(
         item["MediaSources"][0]["MediaAttachments"][0]["FileName"],
         "poster.jpg"
@@ -390,6 +419,10 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         "English - SRT"
     );
 
+    items
+        .delete(alternate.id)
+        .await
+        .expect("alternate media cleanup");
     items.delete(media.id).await.expect("media cleanup");
     fixture.cleanup().await;
 }

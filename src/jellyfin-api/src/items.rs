@@ -1180,6 +1180,31 @@ async fn page_to_dto(
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let requested_fields = user_library::BaseItemDtoFields::from_names(&fields);
     let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut media_source_groups = if requested_fields.wants_media_sources() {
+        let sources = state
+            .base_items
+            .media_source_versions_for_items(&item_ids)
+            .await?;
+        let mut groups = std::collections::HashMap::<Uuid, Vec<_>>::new();
+        for source in sources {
+            groups
+                .entry(source.primary_version_id.unwrap_or(source.id))
+                .or_default()
+                .push(source);
+        }
+        groups
+    } else {
+        std::collections::HashMap::new()
+    };
+    let stream_item_ids = if requested_fields.wants_media_sources() {
+        media_source_groups
+            .values()
+            .flatten()
+            .map(|item| item.id)
+            .collect::<Vec<_>>()
+    } else {
+        item_ids.clone()
+    };
     let defaults =
         user_library::media_stream_defaults_for_user(state, target_user_id, requested_fields)
             .await?;
@@ -1194,7 +1219,7 @@ async fn page_to_dto(
     let mut media_streams = if requested_fields.wants_media_streams() {
         state
             .media_streams
-            .get_media_streams_for_items(&item_ids)
+            .get_media_streams_for_items(&stream_item_ids)
             .await?
     } else {
         std::collections::HashMap::new()
@@ -1202,7 +1227,7 @@ async fn page_to_dto(
     let mut media_attachments = if requested_fields.wants_media_attachments() {
         state
             .media_attachments
-            .get_media_attachments_for_items(&item_ids)
+            .get_media_attachments_for_items(&stream_item_ids)
             .await?
     } else {
         std::collections::HashMap::new()
@@ -1231,6 +1256,7 @@ async fn page_to_dto(
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
         let item_id = item.id;
+        let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
         if requested_fields.wants_media_source_count() {
@@ -1248,7 +1274,21 @@ async fn page_to_dto(
         if let Some(projection) = image_projections.remove(&item_id) {
             user_library::attach_dto_image_projection(&mut dto, projection);
         }
-        if requested_fields.wants_media_streams() {
+        if requested_fields.wants_media_sources()
+            && let Some(source_items) = media_source_groups.remove(&media_source_group_id)
+        {
+            let remembered = remembered_user_data.remove(&item_id);
+            user_library::project_item_dto_with_versioned_sources(
+                &mut dto,
+                source_items,
+                state.server_id(),
+                requested_fields,
+                &mut media_streams,
+                &mut media_attachments,
+                defaults.as_ref(),
+                remembered.as_ref(),
+            )?;
+        } else if requested_fields.wants_media_streams() {
             let streams = media_streams.remove(&item_id).unwrap_or_default();
             let attachments = media_attachments.remove(&item_id).unwrap_or_default();
             let remembered = remembered_user_data.remove(&item_id);

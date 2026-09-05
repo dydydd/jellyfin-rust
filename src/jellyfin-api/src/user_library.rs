@@ -95,6 +95,11 @@ impl BaseItemDtoFields {
     }
 
     #[must_use]
+    pub(crate) const fn wants_media_sources(self) -> bool {
+        self.media_sources
+    }
+
+    #[must_use]
     pub(crate) const fn wants_media_attachments(self) -> bool {
         self.media_sources
     }
@@ -983,7 +988,6 @@ async fn attach_versioned_media_sources(
     defaults: Option<&MediaStreamDefaults>,
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<(), ApiError> {
-    let requested_id = Uuid::parse_str(&dto.id).map_err(|_| ApiError::Internal)?;
     let source_ids = source_items.iter().map(|item| item.id).collect::<Vec<_>>();
     let mut media_streams = state
         .media_streams
@@ -993,12 +997,38 @@ async fn attach_versioned_media_sources(
         .media_attachments
         .get_media_attachments_for_items(&source_ids)
         .await?;
+    project_item_dto_with_versioned_sources(
+        dto,
+        source_items,
+        state.server_id(),
+        fields,
+        &mut media_streams,
+        &mut media_attachments,
+        defaults,
+        remembered_user_data,
+    )
+}
+
+pub(crate) fn project_item_dto_with_versioned_sources(
+    dto: &mut BaseItemDto,
+    mut source_items: Vec<base_item::Model>,
+    server_id: &str,
+    fields: BaseItemDtoFields,
+    media_streams: &mut HashMap<Uuid, Vec<MediaStream>>,
+    media_attachments: &mut HashMap<Uuid, Vec<MediaAttachment>>,
+    defaults: Option<&MediaStreamDefaults>,
+    remembered_user_data: Option<&user_data::Model>,
+) -> Result<(), ApiError> {
+    let requested_id = Uuid::parse_str(&dto.id).map_err(|_| ApiError::Internal)?;
+    if let Some(index) = source_items.iter().position(|item| item.id == requested_id) {
+        source_items.swap(0, index);
+    }
     let mut sources = Vec::with_capacity(source_items.len());
 
     for source_item in source_items {
         let source_id = source_item.id;
         let original_language = original_language_from_item(&source_item);
-        let source_dto = item_to_dto(source_item, state.server_id());
+        let source_dto = item_to_dto(source_item, server_id);
         let mut streams = media_streams.remove(&source_id).unwrap_or_default();
         let (default_audio_stream_index, default_subtitle_stream_index) =
             apply_media_stream_defaults(

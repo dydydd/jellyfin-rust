@@ -697,6 +697,51 @@ impl BaseItemRepository {
             .await?)
     }
 
+    /// Loads every local video source belonging to any requested version group.
+    ///
+    /// Each source is returned once even when multiple requested identifiers name the same group.
+    /// The primary source sorts before its alternates inside each group so page projection can
+    /// preserve the official default-source ordering without issuing one query per item.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the groups cannot be loaded.
+    pub async fn media_source_versions_for_items(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<Vec<base_item::Model>, BaseItemError> {
+        if item_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut sql = String::from(
+            "WITH requested AS MATERIALIZED (\
+                 SELECT DISTINCT COALESCE(item.primary_version_id, item.id) AS group_id \
+                 FROM jellyfin.base_items AS item \
+                 WHERE item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')",
+        );
+        let mut values = Vec::with_capacity(item_ids.len());
+        append_uuid_list_filter(&mut sql, &mut values, "item.id", item_ids);
+        sql.push_str(&format!(
+            ") SELECT {BASE_ITEM_COLUMNS} \
+             FROM jellyfin.base_items AS item \
+             INNER JOIN requested \
+               ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
+             WHERE item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer') \
+             ORDER BY requested.group_id, \
+                      CASE WHEN item.primary_version_id IS NULL THEN 0 ELSE 1 END, \
+                      item.id"
+        ));
+        Ok(
+            base_item::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
+    }
+
     /// Counts the local media sources in each requested video's alternate-version group.
     ///
     /// The aggregate is set-based so DTO pages requesting `MediaSourceCount` never issue one

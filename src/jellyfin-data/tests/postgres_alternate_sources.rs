@@ -59,6 +59,29 @@ async fn media_source_versions_expand_the_group_with_the_requested_version_first
 }
 
 #[tokio::test]
+async fn media_source_versions_load_multiple_groups_in_one_batch() {
+    let repository = repository().await;
+    let group_a = create_group(&repository, "batch-a").await;
+    let group_b = create_group(&repository, "batch-b").await;
+
+    let sources = repository
+        .media_source_versions_for_items(&[group_a.alternates[0], group_b.primary, Uuid::new_v4()])
+        .await
+        .expect("batched media-source versions");
+    assert_eq!(sources.len(), 6);
+    let source_ids = sources
+        .iter()
+        .map(|item| item.id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        source_ids,
+        group_a.ids().into_iter().chain(group_b.ids()).collect()
+    );
+
+    cleanup(&repository, [&group_a, &group_b]).await;
+}
+
+#[tokio::test]
 async fn clear_from_primary_or_alternate_is_atomic_and_preserves_rows() {
     let repository = repository().await;
     assert!(matches!(
