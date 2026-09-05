@@ -1069,12 +1069,13 @@ async fn latest_for(
     });
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
+    let enable_image_types = parse_image_type_selectors(&query.enable_image_types);
     let dto_options = PageDtoOptions {
         enable_images: query.enable_images.unwrap_or(true),
         image_type_limit: query
             .image_type_limit
             .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
-        enable_image_types: std::mem::take(&mut query.enable_image_types),
+        enable_image_types,
         enable_user_data: query.enable_user_data.unwrap_or(true),
     };
     let parent_scope = resolve_user_view_parent_scope(
@@ -1590,6 +1591,22 @@ fn image_type_code(name: &str) -> Option<i16> {
     }
 }
 
+fn parse_image_type_selector(value: &str) -> Option<i32> {
+    let value = value.trim();
+    value
+        .parse::<i32>()
+        .ok()
+        .or_else(|| image_type_code(value).map(i32::from))
+}
+
+fn parse_image_type_selectors(values: &[String]) -> Vec<i32> {
+    values
+        .iter()
+        .flat_map(|value| value.split(','))
+        .filter_map(parse_image_type_selector)
+        .collect()
+}
+
 const fn default_latest_limit() -> u64 {
     20
 }
@@ -1606,7 +1623,7 @@ const fn default_total_record_count() -> bool {
 struct PageDtoOptions {
     enable_images: bool,
     image_type_limit: usize,
-    enable_image_types: Vec<String>,
+    enable_image_types: Vec<i32>,
     enable_user_data: bool,
 }
 
@@ -1834,14 +1851,13 @@ async fn page_to_dto_with_options(
 
 fn constrain_image_projection(
     projection: &mut jellyfin_server_implementations::DtoImageProjection,
-    enabled_image_types: &[String],
+    enabled_image_types: &[i32],
     image_type_limit: usize,
 ) {
     let includes = |image_type: &str| {
         enabled_image_types.is_empty()
-            || enabled_image_types
-                .iter()
-                .any(|enabled| enabled.eq_ignore_ascii_case(image_type))
+            || image_type_code(image_type)
+                .is_some_and(|code| enabled_image_types.contains(&i32::from(code)))
     };
     projection
         .image_tags

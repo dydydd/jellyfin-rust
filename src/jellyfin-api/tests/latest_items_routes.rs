@@ -181,18 +181,29 @@ impl Fixture {
         BaseItemImageRepository::new(database.clone())
             .replace(
                 new_movie.id,
-                &[NewBaseItemImage {
-                    image_type: BaseItemImageType::Primary,
-                    image_index: 0,
-                    path: "/media/new-movie-poster.jpg".to_owned(),
-                    date_modified: Utc::now(),
-                    width: Some(600),
-                    height: Some(900),
-                    blurhash: None,
-                }],
+                &[
+                    NewBaseItemImage {
+                        image_type: BaseItemImageType::Primary,
+                        image_index: 0,
+                        path: "/media/new-movie-poster.jpg".to_owned(),
+                        date_modified: Utc::now(),
+                        width: Some(600),
+                        height: Some(900),
+                        blurhash: None,
+                    },
+                    NewBaseItemImage {
+                        image_type: BaseItemImageType::Thumb,
+                        image_index: 0,
+                        path: "/media/new-movie-thumb.jpg".to_owned(),
+                        date_modified: Utc::now(),
+                        width: Some(1280),
+                        height: Some(720),
+                        blurhash: None,
+                    },
+                ],
             )
             .await
-            .expect("new movie primary image");
+            .expect("new movie images");
 
         let mut played = NewUserData::new(played_movie.id, user.id, "latest-played");
         played.played = true;
@@ -418,16 +429,77 @@ async fn assert_latest_dto_options_and_image_fields(fixture: &Fixture) {
     assert!(disabled[0].get("ImageTags").is_none());
     assert!(disabled[0].get("UserData").is_none());
 
-    let thumb_only = get_json(
+    let primary_by_number = get_json(
         &fixture.app,
         &format!(
-            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=Thumb&limit=1",
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=0&limit=1",
             fixture.parent_id
         ),
         &fixture.user_token,
     )
     .await;
-    assert!(thumb_only[0].get("ImageTags").is_none());
+    assert!(primary_by_number[0]["ImageTags"]["Primary"].is_string());
+    assert!(primary_by_number[0]["ImageTags"].get("Thumb").is_none());
+
+    let thumb_by_number = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=5&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(thumb_by_number[0]["ImageTags"]["Thumb"].is_string());
+    assert!(thumb_by_number[0]["ImageTags"].get("Primary").is_none());
+
+    let mixed_repeated = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=pRiMaRy%2Cinvalid&enableImageTypes=5&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(mixed_repeated[0]["ImageTags"]["Primary"].is_string());
+    assert!(mixed_repeated[0]["ImageTags"]["Thumb"].is_string());
+
+    let names_case_insensitive = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=pRiMaRy%2CtHuMb&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(names_case_insensitive[0]["ImageTags"]["Primary"].is_string());
+    assert!(names_case_insensitive[0]["ImageTags"]["Thumb"].is_string());
+
+    let invalid_text = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=invalid&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(invalid_text[0]["ImageTags"]["Primary"].is_string());
+    assert!(invalid_text[0]["ImageTags"]["Thumb"].is_string());
+
+    let unknown_number = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=99&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(unknown_number[0].get("ImageTags").is_none());
+    assert!(unknown_number[0].get("PrimaryImageTag").is_none());
 
     let no_images = get_json(
         &fixture.app,
