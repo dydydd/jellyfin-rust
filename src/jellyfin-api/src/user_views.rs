@@ -8,6 +8,7 @@ use axum::{
 use axum_extra::extract::Query;
 use jellyfin_controller::{UserViewGroupingOption, UserViewItem, VirtualFolder};
 use jellyfin_data::BaseItemQuery;
+use jellyfin_model::CollectionType;
 use jellyfin_server_implementations::DtoImageOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -210,7 +211,7 @@ pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto
         path: None,
         overview: None,
         media_type: None,
-        collection_type: folder.collection_type,
+        collection_type: base_item_collection_type(folder.collection_type),
         is_folder: true,
         is_virtual_item: false,
         parent_id: None,
@@ -251,6 +252,7 @@ pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemD
         item_type,
         is_virtual_item,
     } = item;
+    let collection_type = base_item_collection_type(collection_type);
     BaseItemDto {
         // ALLOW: Jellyfin exposes name and sort name as independent owned fields.
         name: Some(name.clone()),
@@ -292,6 +294,14 @@ pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemD
         trickplay: None,
         ..BaseItemDto::default()
     }
+}
+
+fn base_item_collection_type(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| value.parse::<CollectionType>().ok())
+        .map(|value| value.as_str().to_owned())
 }
 
 pub(crate) fn bool_option(value: &Value, keys: &[&str]) -> Option<bool> {

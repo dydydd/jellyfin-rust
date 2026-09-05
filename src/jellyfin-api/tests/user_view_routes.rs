@@ -72,7 +72,70 @@ async fn exercise_user_view_routes(database_name: &str) {
     assert_home_query_key_casing(&fixture).await;
     assert_grouped_views(&fixture).await;
     assert_grouping_options(&fixture).await;
+    assert_collection_type_wire_shapes(&fixture).await;
     database.close().await.expect("database pool cleanup");
+}
+
+async fn assert_collection_type_wire_shapes(fixture: &Fixture) {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let mixed_name = format!("Mixed Wire {suffix}");
+    let known_name = format!("Known Wire {suffix}");
+    let virtual_folders = VirtualFolderService::new(fixture.database.clone());
+    for (name, collection_type) in [(&mixed_name, "mixed"), (&known_name, "movies")] {
+        virtual_folders
+            .create(
+                name,
+                Some(collection_type.to_owned()),
+                json!({ "Enabled": true }),
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("wire-shape virtual folder");
+    }
+
+    let virtual_folder_list = get_json(
+        &fixture.app,
+        "/Library/VirtualFolders",
+        &fixture.admin_token,
+    )
+    .await;
+    let virtual_folders = virtual_folder_list
+        .as_array()
+        .expect("virtual folder array");
+    let mixed_virtual_folder = virtual_folders
+        .iter()
+        .find(|folder| folder["Name"] == mixed_name)
+        .expect("mixed virtual folder");
+    assert_eq!(mixed_virtual_folder["CollectionType"], "mixed");
+
+    let views = get_json(&fixture.app, "/UserViews", &fixture.user_token).await;
+    let items = views["Items"].as_array().expect("view items");
+    let mixed = items
+        .iter()
+        .find(|item| item["Name"] == mixed_name)
+        .expect("mixed collection view");
+    assert!(mixed.get("CollectionType").is_none());
+    let known = items
+        .iter()
+        .find(|item| item["Name"] == known_name)
+        .expect("known collection view");
+    assert_eq!(known["CollectionType"], "movies");
+
+    let preset_views = get_json(
+        &fixture.app,
+        "/UserViews?presetViews=movies",
+        &fixture.user_token,
+    )
+    .await;
+    let known = preset_views["Items"]
+        .as_array()
+        .expect("preset view items")
+        .iter()
+        .find(|item| item["Name"] == known_name)
+        .expect("known preset view");
+    assert_eq!(known["Type"], "UserView");
+    assert_eq!(known["CollectionType"], "movies");
 }
 
 async fn assert_home_query_key_casing(fixture: &Fixture) {
@@ -580,13 +643,17 @@ async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::re
 
 async fn get_json(app: &axum::Router, uri: &str, token: &str) -> Value {
     let response = request(app, uri, Some(token)).await;
-    assert_eq!(response.status(), StatusCode::OK, "{uri}");
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
+    let status = response.status();
+    let body = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+        .await
+        .expect("response body");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{uri}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    serde_json::from_slice(&body).expect("JSON response")
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {
