@@ -154,6 +154,8 @@ async fn media_stream_fields_are_projected_for_single_item_routes() {
     );
     assert_eq!(item["MediaSources"][0]["MediaAttachments"][0]["Index"], 4);
     assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
+    assert_eq!(item["MediaSources"][0]["MediaStreams"][0]["Type"], "Audio");
+    assert_eq!(item["MediaStreams"][0]["Type"], "Audio");
     assert_eq!(item["MediaStreams"][0]["Language"], "deu");
 
     fixture.cleanup().await;

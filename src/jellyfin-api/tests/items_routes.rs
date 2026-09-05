@@ -282,6 +282,8 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(item["MediaSources"][0]["DefaultAudioStreamIndex"], 2);
     assert_eq!(item["MediaSources"][0]["DefaultSubtitleStreamIndex"], -1);
     assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 4);
+    assert_eq!(item["MediaSources"][0]["MediaStreams"][0]["Type"], "Video");
+    assert_eq!(item["MediaStreams"][0]["Type"], "Video");
     assert_eq!(item["MediaStreams"][1]["Language"], "deu");
 
     items.delete(media.id).await.expect("media cleanup");

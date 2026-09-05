@@ -48,6 +48,29 @@ fn repository_backed_fields_use_official_wire_names() {
 }
 
 #[test]
+fn media_stream_type_matches_official_string_enum_json() {
+    for (stream_type, expected) in [
+        (MediaStreamType::Audio, "Audio"),
+        (MediaStreamType::Video, "Video"),
+        (MediaStreamType::Subtitle, "Subtitle"),
+        (MediaStreamType::EmbeddedImage, "EmbeddedImage"),
+        (MediaStreamType::Data, "Data"),
+        (MediaStreamType::Lyric, "Lyric"),
+    ] {
+        assert_eq!(serde_json::to_value(stream_type).unwrap(), json!(expected));
+    }
+
+    assert_eq!(
+        serde_json::from_value::<MediaStreamType>(json!("subtitle")).unwrap(),
+        MediaStreamType::Subtitle
+    );
+    assert_eq!(
+        serde_json::from_value::<MediaStreamType>(json!(1)).unwrap(),
+        MediaStreamType::Video
+    );
+}
+
+#[test]
 fn display_title_matches_official_matrix() {
     let cases = [
         (

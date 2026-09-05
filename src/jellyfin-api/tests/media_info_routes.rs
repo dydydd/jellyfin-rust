@@ -296,12 +296,12 @@ fn assert_playback_info(playback: &Value, fixture: &Fixture) {
     assert_eq!(source["SupportsDirectStream"], true);
     assert_eq!(source["SupportsTranscoding"], true);
     assert_eq!(source["MediaStreams"][0]["Index"], 0);
-    assert_eq!(source["MediaStreams"][0]["Type"], 1);
+    assert_eq!(source["MediaStreams"][0]["Type"], "Video");
     assert_eq!(source["MediaStreams"][0]["Codec"], "h264");
     assert_eq!(source["MediaStreams"][0]["Width"], 1920);
     assert_eq!(source["MediaStreams"][0]["Height"], 1080);
     assert_eq!(source["MediaStreams"][1]["Index"], 1);
-    assert_eq!(source["MediaStreams"][1]["Type"], 0);
+    assert_eq!(source["MediaStreams"][1]["Type"], "Audio");
     assert_eq!(source["MediaStreams"][1]["Codec"], "aac");
     assert_eq!(source["MediaStreams"][1]["Language"], "eng");
 }

@@ -21,7 +21,14 @@ impl Serialize for MediaStreamType {
     where
         S: Serializer,
     {
-        serializer.serialize_i32(*self as i32)
+        serializer.serialize_str(match self {
+            Self::Audio => "Audio",
+            Self::Video => "Video",
+            Self::Subtitle => "Subtitle",
+            Self::EmbeddedImage => "EmbeddedImage",
+            Self::Data => "Data",
+            Self::Lyric => "Lyric",
+        })
     }
 }
 
@@ -67,14 +74,20 @@ impl<'de> Deserialize<'de> for MediaStreamType {
             where
                 E: de::Error,
             {
-                match value {
-                    "Audio" => Ok(MediaStreamType::Audio),
-                    "Video" => Ok(MediaStreamType::Video),
-                    "Subtitle" => Ok(MediaStreamType::Subtitle),
-                    "EmbeddedImage" => Ok(MediaStreamType::EmbeddedImage),
-                    "Data" => Ok(MediaStreamType::Data),
-                    "Lyric" => Ok(MediaStreamType::Lyric),
-                    _ => Err(E::unknown_variant(
+                if value.eq_ignore_ascii_case("Audio") {
+                    Ok(MediaStreamType::Audio)
+                } else if value.eq_ignore_ascii_case("Video") {
+                    Ok(MediaStreamType::Video)
+                } else if value.eq_ignore_ascii_case("Subtitle") {
+                    Ok(MediaStreamType::Subtitle)
+                } else if value.eq_ignore_ascii_case("EmbeddedImage") {
+                    Ok(MediaStreamType::EmbeddedImage)
+                } else if value.eq_ignore_ascii_case("Data") {
+                    Ok(MediaStreamType::Data)
+                } else if value.eq_ignore_ascii_case("Lyric") {
+                    Ok(MediaStreamType::Lyric)
+                } else {
+                    Err(E::unknown_variant(
                         value,
                         &[
                             "Audio",
@@ -84,7 +97,7 @@ impl<'de> Deserialize<'de> for MediaStreamType {
                             "Data",
                             "Lyric",
                         ],
-                    )),
+                    ))
                 }
             }
         }
