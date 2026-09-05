@@ -181,6 +181,68 @@ async fn postgres_item_update_serializes_partial_writers_and_rolls_back() {
     cleanup(&database, item.id).await;
 }
 
+#[tokio::test]
+async fn postgres_genre_patch_keeps_json_and_relations_in_lockstep() {
+    let database = setup_database().await;
+    let item = BaseItemRepository::new(database.clone())
+        .create(NewBaseItem::new(Uuid::new_v4(), "Series"))
+        .await
+        .expect("series fixture creation");
+    let updates = ItemUpdateRepository::new(database.clone());
+    let values = ItemValueRepository::new(database.clone());
+
+    let seeded = updates
+        .update(
+            item.id,
+            ItemMetadataPatch {
+                genres: Some(vec!["Action".to_owned(), "Drama".to_owned()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("genre setup");
+    assert_eq!(metadata_strings(&seeded, "Genres"), ["Action", "Drama"]);
+    assert_eq!(
+        value_names(&values, item.id, item_value::ItemValueType::Genre).await,
+        ["Action", "Drama"]
+    );
+
+    let preserved = updates
+        .update(
+            item.id,
+            ItemMetadataPatch {
+                provider_ids: Some(BTreeMap::from([("Tmdb".to_owned(), "12345".to_owned())])),
+                genres: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("omitted genre patch");
+    assert_eq!(metadata_strings(&preserved, "Genres"), ["Action", "Drama"]);
+    assert_eq!(
+        value_names(&values, item.id, item_value::ItemValueType::Genre).await,
+        ["Action", "Drama"]
+    );
+
+    let replaced = updates
+        .update(
+            item.id,
+            ItemMetadataPatch {
+                genres: Some(vec!["Comedy".to_owned()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("replacement genre patch");
+    assert_eq!(metadata_strings(&replaced, "Genres"), ["Comedy"]);
+    assert_eq!(
+        value_names(&values, item.id, item_value::ItemValueType::Genre).await,
+        ["Comedy"]
+    );
+
+    cleanup(&database, item.id).await;
+}
+
 async fn setup_database() -> sea_orm::DatabaseConnection {
     let database = jellyfin_data::connect(&DatabaseConfig::default())
         .await

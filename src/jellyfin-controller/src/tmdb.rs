@@ -771,13 +771,21 @@ impl TmdbMetadataProvider {
         details: TmdbMovieDetails,
         replace_data: bool,
     ) -> Result<(Option<String>, Option<String>), MetadataProviderError> {
+        let item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
         let provider_ids = movie_provider_ids(&details);
-        self.updates
+        let genres =
+            remote_genres_patch(item.data.as_ref(), into_names(details.genres), replace_data);
+        let mut item = self
+            .updates
             .update(
                 item_id,
                 ItemMetadataPatch {
                     tags: Some(into_keyword_names(details.keywords)),
-                    genres: Some(into_names(details.genres)),
+                    genres,
                     provider_ids: Some(provider_ids),
                 },
             )
@@ -788,11 +796,6 @@ impl TmdbMetadataProvider {
                 .await?;
         }
 
-        let mut item = self
-            .items
-            .get(item_id)
-            .await?
-            .ok_or(BaseItemError::NotFound)?;
         if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
             && let Some(title) = details.title.as_deref().filter(|value| !value.is_empty())
         {
@@ -848,6 +851,11 @@ impl TmdbMetadataProvider {
         details: TmdbTvDetails,
         replace_data: bool,
     ) -> Result<(Option<String>, Option<String>), MetadataProviderError> {
+        let item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
         let provider_ids = tv_provider_ids(&details);
         let mut studios = into_names(details.networks);
         for studio in into_names(details.production_companies) {
@@ -858,12 +866,15 @@ impl TmdbMetadataProvider {
                 studios.push(studio);
             }
         }
-        self.updates
+        let genres =
+            remote_genres_patch(item.data.as_ref(), into_names(details.genres), replace_data);
+        let mut item = self
+            .updates
             .update(
                 item_id,
                 ItemMetadataPatch {
                     tags: Some(into_keyword_names(details.keywords)),
-                    genres: Some(into_names(details.genres)),
+                    genres,
                     provider_ids: Some(provider_ids),
                 },
             )
@@ -874,11 +885,6 @@ impl TmdbMetadataProvider {
                 .await?;
         }
 
-        let mut item = self
-            .items
-            .get(item_id)
-            .await?
-            .ok_or(BaseItemError::NotFound)?;
         if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
             && let Some(name) = details.name.as_deref().filter(|value| !value.is_empty())
         {
@@ -1693,6 +1699,36 @@ fn metadata_field_locked(data: Option<&Value>, field: &str) -> bool {
             .any(|locked| locked.trim().eq_ignore_ascii_case(field)),
         _ => false,
     }
+}
+
+fn remote_genres_patch(
+    data: Option<&Value>,
+    remote_genres: Vec<String>,
+    replace_data: bool,
+) -> Option<Vec<String>> {
+    if metadata_field_locked(data, "Genres") {
+        return None;
+    }
+    let has_existing = metadata_field_has_non_blank_strings(data, "Genres");
+    if has_existing && (remote_genres.is_empty() || !replace_data) {
+        return None;
+    }
+    Some(remote_genres)
+}
+
+fn metadata_field_has_non_blank_strings(data: Option<&Value>, field: &str) -> bool {
+    data.and_then(Value::as_object)
+        .and_then(|data| {
+            data.iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(field))
+                .map(|(_, value)| value)
+        })
+        .and_then(Value::as_array)
+        .is_some_and(|values| {
+            values
+                .iter()
+                .any(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))
+        })
 }
 
 async fn local_episode_name(path: Option<&str>) -> Option<String> {
@@ -2630,6 +2666,43 @@ mod tests {
             Some(&json!({ "LockedFields": ["Overview"] })),
             "Name"
         ));
+    }
+
+    #[test]
+    fn tmdb_genres_follow_lock_replace_and_empty_source_rules() {
+        let remote = || vec!["Drama".to_owned()];
+
+        assert_eq!(
+            remote_genres_patch(None, remote(), false),
+            Some(vec!["Drama".to_owned()])
+        );
+        assert_eq!(
+            remote_genres_patch(Some(&json!({ "Genres": [] })), remote(), false),
+            Some(vec!["Drama".to_owned()])
+        );
+        assert_eq!(
+            remote_genres_patch(Some(&json!({ "Genres": ["Action"] })), remote(), false),
+            None
+        );
+        assert_eq!(
+            remote_genres_patch(Some(&json!({ "Genres": ["Action"] })), remote(), true),
+            Some(vec!["Drama".to_owned()])
+        );
+        assert_eq!(
+            remote_genres_patch(Some(&json!({ "Genres": ["Action"] })), Vec::new(), true),
+            None
+        );
+        assert_eq!(
+            remote_genres_patch(
+                Some(&json!({
+                    "Genres": ["Action"],
+                    "lockedfields": ["genres"]
+                })),
+                remote(),
+                true
+            ),
+            None
+        );
     }
 
     #[tokio::test]
