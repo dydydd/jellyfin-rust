@@ -182,6 +182,159 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_artists(&album_favorite, &[&fixture.album_artist], 1, 0);
 
+    let by_genre_name = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Artists?Genres={}",
+                    encoded(&format!(
+                        "{}|missing genre",
+                        fixture.artist_genre.to_uppercase()
+                    ))
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_genre_name, &[&fixture.alpha_artist], 1, 0);
+
+    let by_genre_id = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists?genreids=not-a-guid,{}", fixture.artist_genre_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_genre_id, &[&fixture.alpha_artist], 1, 0);
+
+    let by_tag = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Artists?Tags={}",
+                    encoded(&format!("{}|missing tag", fixture.artist_tag))
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_tag, &[&fixture.alpha_artist], 1, 0);
+
+    let contributing_item_tag_is_not_an_outer_artist_filter = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists?tags={}", encoded(&fixture.child_only_tag)),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(
+        &contributing_item_tag_is_not_an_outer_artist_filter,
+        &[],
+        0,
+        0,
+    );
+
+    let by_year = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists?years=invalid,1999",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_year, &[&fixture.alpha_artist], 1, 0);
+
+    let by_direct_rating = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists?OfficialRatings=PG%7Cmissing-rating",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_direct_rating, &[&fixture.alpha_artist], 1, 0);
+
+    let by_descendant_rating = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists?officialratings=R",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_descendant_rating, &[&fixture.beta_artist], 1, 0);
+
+    let by_studio_name = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Artists?Studios={}",
+                    encoded(&format!("{}|missing studio", fixture.artist_studio))
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_studio_name, &[&fixture.alpha_artist], 1, 0);
+
+    let by_studio_id = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists?studioids={}", fixture.artist_studio_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&by_studio_id, &[&fixture.alpha_artist], 1, 0);
+
+    let studio_name_overrides_ids = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Artists?studios={}&studioIds={}",
+                    encoded(&fixture.artist_studio),
+                    fixture.second_artist_studio_id
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&studio_name_overrides_ids, &[&fixture.alpha_artist], 1, 0);
+
+    let album_artist_metadata = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists/AlbumArtists?Years=1984",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&album_artist_metadata, &[&fixture.album_artist], 1, 0);
+
     for ignored in ["IsFolder", "IsNotFolder", "IsResumable"] {
         let filtered = body_json(
             fixture
@@ -559,6 +712,13 @@ struct Fixture {
     movie_artist: String,
     album_artist: String,
     second_album_artist: String,
+    artist_genre: String,
+    artist_genre_id: Uuid,
+    artist_tag: String,
+    child_only_tag: String,
+    artist_studio: String,
+    artist_studio_id: Uuid,
+    second_artist_studio_id: Uuid,
 }
 
 impl Fixture {
@@ -666,17 +826,79 @@ impl Fixture {
             .await
             .expect("second album artist");
 
-        let alpha_artist_item =
+        let mut alpha_artist_item =
             create_item(&items, "MusicArtist", &alpha_artist, None, true, "").await;
+        alpha_artist_item.production_year = Some(1999);
+        alpha_artist_item.official_rating = Some("PG".to_owned());
+        let alpha_artist_item = items
+            .update(alpha_artist_item)
+            .await
+            .expect("alpha artist metadata");
         let beta_artist_item =
             create_item(&items, "MusicArtist", &beta_artist, None, true, "").await;
-        let album_artist_item =
+        let mut album_artist_item =
             create_item(&items, "MusicArtist", &album_artist, None, true, "").await;
+        album_artist_item.production_year = Some(1984);
+        let album_artist_item = items
+            .update(album_artist_item)
+            .await
+            .expect("album artist metadata");
+
+        let artist_genre = format!("Synth Pop {suffix}");
+        let genre_item = create_item(&items, "Genre", &artist_genre, None, true, "").await;
+        values
+            .link(
+                alpha_artist_item.id,
+                item_value::ItemValueType::Genre,
+                &artist_genre,
+            )
+            .await
+            .expect("artist genre");
+        let artist_tag = format!("Featured {suffix}");
+        values
+            .link(
+                alpha_artist_item.id,
+                item_value::ItemValueType::Tags,
+                &artist_tag,
+            )
+            .await
+            .expect("artist tag");
+        let child_only_tag = format!("Child Only {suffix}");
+        values
+            .link(
+                nested_audio.id,
+                item_value::ItemValueType::Tags,
+                &child_only_tag,
+            )
+            .await
+            .expect("contributing item tag");
+        let artist_studio = format!("Studio Alpha {suffix}");
+        let studio_item = create_item(&items, "Studio", &artist_studio, None, true, "").await;
+        values
+            .link(
+                alpha_artist_item.id,
+                item_value::ItemValueType::Studios,
+                &artist_studio,
+            )
+            .await
+            .expect("artist studio");
+        let second_artist_studio = format!("Studio Beta {suffix}");
+        let second_studio_item =
+            create_item(&items, "Studio", &second_artist_studio, None, true, "").await;
+        values
+            .link(
+                beta_artist_item.id,
+                item_value::ItemValueType::Studios,
+                &second_artist_studio,
+            )
+            .await
+            .expect("second artist studio");
         let mut audio = audio;
         audio.parent_id = Some(alpha_artist_item.id);
         let audio = items.update(audio).await.expect("audio artist parent");
         let mut video = video;
         video.parent_id = Some(beta_artist_item.id);
+        video.official_rating = Some("R".to_owned());
         items.update(video).await.expect("video artist parent");
         let user_data = UserDataRepository::new(database.clone());
         let mut audio_played = NewUserData::new(audio.id, user.id, "ArtistPlayed");
@@ -729,6 +951,13 @@ impl Fixture {
             movie_artist,
             album_artist,
             second_album_artist,
+            artist_genre,
+            artist_genre_id: genre_item.id,
+            artist_tag,
+            child_only_tag,
+            artist_studio,
+            artist_studio_id: studio_item.id,
+            second_artist_studio_id: second_studio_item.id,
         }
     }
 

@@ -76,6 +76,11 @@
   conflicting pairs. Apply favorite, liked, and played state to the target user's matching
   item-by-name `MusicArtist` rows; preserve the official no-op behavior for folder and resumable
   filters and its favorite-only `IsFavoriteOrLikes` behavior.
+- Apply artist and album-artist metadata filters to the matching outer `MusicArtist` entity, not
+  to media items that merely contribute the artist name. Resolve `GenreIds` and `StudioIds`
+  through referenced base-item clean names, preserve the official pipe/comma delimiters and
+  `Studios`-over-`StudioIds` precedence, and let official ratings match descendants and linked
+  children in one set-based query.
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
 - Apply the playback `DeviceProfile` independently to every returned `MediaSource`, preserving source order and producing version-specific flags and URLs. Only apply explicit audio or subtitle indexes to the source whose id matches an explicitly requested `MediaSourceId`.

@@ -44,6 +44,13 @@ pub struct ItemValueQuery {
     pub is_played: Option<bool>,
     pub user_id: Option<Uuid>,
     pub by_name_item_type: Option<String>,
+    pub genres: Vec<String>,
+    pub genre_ids: Vec<Uuid>,
+    pub official_ratings: Vec<String>,
+    pub tags: Vec<String>,
+    pub years: Vec<i32>,
+    pub studios: Vec<String>,
+    pub studio_ids: Vec<Uuid>,
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
     pub name_less_than: Option<String>,
@@ -968,6 +975,7 @@ fn append_value_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &It
         append_is_played_filter(sql, values, user_id, "by_name", is_played);
         sql.push(')');
     }
+    append_by_name_metadata_filters(sql, values, query);
     if let Some(search_term) = query
         .search_term
         .as_deref()
@@ -1014,6 +1022,153 @@ fn append_value_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &It
         .filter(|term| !term.is_empty())
     {
         push_bind(sql, values, name.clean_value(), " AND value.clean_value < ");
+    }
+}
+
+fn append_by_name_metadata_filters(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    query: &ItemValueQuery,
+) {
+    let Some(item_type) = query.by_name_item_type.as_deref() else {
+        return;
+    };
+    if query.genres.is_empty()
+        && query.genre_ids.is_empty()
+        && query.official_ratings.is_empty()
+        && query.tags.is_empty()
+        && query.years.is_empty()
+        && query.studios.is_empty()
+        && query.studio_ids.is_empty()
+    {
+        return;
+    }
+
+    push_bind(
+        sql,
+        values,
+        item_type.to_owned(),
+        " AND EXISTS (\
+            SELECT 1 FROM jellyfin.base_items AS by_name \
+            WHERE by_name.item_type = ",
+    );
+    sql.push_str(" AND by_name.clean_name = value.clean_value");
+    append_by_name_item_value_names(sql, values, item_value::ItemValueType::Genre, &query.genres);
+    append_by_name_item_value_reference_ids(
+        sql,
+        values,
+        item_value::ItemValueType::Genre,
+        &query.genre_ids,
+    );
+    append_by_name_item_value_names(sql, values, item_value::ItemValueType::Tags, &query.tags);
+    append_by_name_item_value_names(
+        sql,
+        values,
+        item_value::ItemValueType::Studios,
+        &query.studios,
+    );
+    append_by_name_item_value_reference_ids(
+        sql,
+        values,
+        item_value::ItemValueType::Studios,
+        &query.studio_ids,
+    );
+    if !query.years.is_empty() {
+        sql.push_str(" AND by_name.production_year IN (");
+        append_bind_values(sql, values, query.years.iter().copied());
+        sql.push(')');
+    }
+    if !query.official_ratings.is_empty() {
+        sql.push_str(" AND (by_name.official_rating IN (");
+        append_bind_values(sql, values, query.official_ratings.iter().cloned());
+        sql.push_str(
+            ") OR EXISTS (\
+                SELECT 1 FROM jellyfin.ancestor_ids AS rating_closure \
+                JOIN jellyfin.base_items AS rating_descendant \
+                  ON rating_descendant.id = rating_closure.item_id \
+                WHERE rating_closure.parent_item_id = by_name.id \
+                  AND rating_descendant.official_rating IN (",
+        );
+        append_bind_values(sql, values, query.official_ratings.iter().cloned());
+        sql.push_str(
+            ")) OR EXISTS (\
+                SELECT 1 FROM jellyfin.linked_children AS rating_link \
+                JOIN jellyfin.base_items AS rating_child \
+                  ON rating_child.id = rating_link.child_id \
+                WHERE rating_link.parent_id = by_name.id \
+                  AND rating_child.official_rating IN (",
+        );
+        append_bind_values(sql, values, query.official_ratings.iter().cloned());
+        sql.push_str(")))");
+    }
+    sql.push(')');
+}
+
+fn append_by_name_item_value_names(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    value_type: item_value::ItemValueType,
+    names: &[String],
+) {
+    if names.is_empty() {
+        return;
+    }
+    let clean_names = names.iter().map(|name| name.clean_value());
+    let _ = write!(
+        sql,
+        " AND EXISTS (\
+            SELECT 1 FROM jellyfin.item_value_map AS metadata_map \
+            JOIN jellyfin.item_values AS metadata_value \
+              ON metadata_value.item_value_id = metadata_map.item_value_id \
+            WHERE metadata_map.item_id = by_name.id \
+              AND metadata_value.type = {} \
+              AND metadata_value.clean_value IN (",
+        item_value_type_code(value_type)
+    );
+    append_bind_values(sql, values, clean_names);
+    sql.push_str("))");
+}
+
+fn append_by_name_item_value_reference_ids(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    value_type: item_value::ItemValueType,
+    reference_ids: &[Uuid],
+) {
+    if reference_ids.is_empty() {
+        return;
+    }
+    let _ = write!(
+        sql,
+        " AND EXISTS (\
+            SELECT 1 FROM jellyfin.item_value_map AS metadata_map \
+            JOIN jellyfin.item_values AS metadata_value \
+              ON metadata_value.item_value_id = metadata_map.item_value_id \
+            WHERE metadata_map.item_id = by_name.id \
+              AND metadata_value.type = {} \
+              AND metadata_value.clean_value IN (\
+                  SELECT referenced.clean_name FROM jellyfin.base_items AS referenced \
+                  WHERE referenced.id IN (",
+        item_value_type_code(value_type)
+    );
+    append_bind_values(sql, values, reference_ids.iter().copied());
+    sql.push_str(")))");
+}
+
+fn append_bind_values<T>(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    items: impl IntoIterator<Item = T>,
+) where
+    T: Into<SeaValue>,
+{
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        values.push(item.into());
+        sql.push('$');
+        sql.push_str(&values.len().to_string());
     }
 }
 

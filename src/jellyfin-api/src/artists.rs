@@ -72,6 +72,58 @@ pub(crate) struct ArtistsQuery {
     media_types: Vec<String>,
     #[serde(
         default,
+        rename = "genres",
+        alias = "Genres",
+        deserialize_with = "crate::query::pipe::deserialize"
+    )]
+    genres: Vec<String>,
+    #[serde(
+        default,
+        rename = "genreIds",
+        alias = "GenreIds",
+        alias = "genreids",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    genre_ids: Vec<Uuid>,
+    #[serde(
+        default,
+        rename = "officialRatings",
+        alias = "OfficialRatings",
+        alias = "officialratings",
+        deserialize_with = "crate::query::pipe::deserialize"
+    )]
+    official_ratings: Vec<String>,
+    #[serde(
+        default,
+        rename = "tags",
+        alias = "Tags",
+        deserialize_with = "crate::query::pipe::deserialize"
+    )]
+    tags: Vec<String>,
+    #[serde(
+        default,
+        rename = "years",
+        alias = "Years",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    years: Vec<i32>,
+    #[serde(
+        default,
+        rename = "studios",
+        alias = "Studios",
+        deserialize_with = "crate::query::pipe::deserialize"
+    )]
+    studios: Vec<String>,
+    #[serde(
+        default,
+        rename = "studioIds",
+        alias = "StudioIds",
+        alias = "studioids",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    studio_ids: Vec<Uuid>,
+    #[serde(
+        default,
         rename = "isFavorite",
         alias = "IsFavorite",
         alias = "isfavorite"
@@ -159,6 +211,17 @@ async fn list_kind(
         include_item_types: query.include_item_types,
         exclude_item_types: query.exclude_item_types,
         media_types: query.media_types,
+        genres: query.genres,
+        genre_ids: query.genre_ids,
+        official_ratings: query.official_ratings,
+        tags: query.tags,
+        years: query.years,
+        studio_ids: if query.studios.is_empty() {
+            query.studio_ids
+        } else {
+            Vec::new()
+        },
+        studios: query.studios,
         is_favorite: query.is_favorite,
         user_id: Some(target_user_id),
         name_starts_with_or_greater: query.name_starts_with_or_greater,
