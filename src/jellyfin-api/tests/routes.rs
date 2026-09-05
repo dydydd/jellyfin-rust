@@ -213,61 +213,83 @@ async fn activity_log_routes_match_the_official_controller_contract() {
     assert!(all_entries["TotalRecordCount"].as_u64().unwrap() >= 3);
     assert!(all_entries.get("items").is_none());
 
-    let filtered_uri = format!(
-        "{route}?startIndex=0&limit=10&minDate=2001-01-01T00%3A00%3A00Z\
-         &maxDate=2001-01-01T00%3A00%3A00Z&hasUserId=true&name={marker}\
-         &overview={marker}&shortOverview={marker}&type=PrimaryType-{marker}\
-         &itemId={item_id}&username={regular_name}&severity=Warning"
-    )
-    .replace(' ', "");
-    let response = app
-        .clone()
-        .oneshot(authenticated_request(
-            "GET",
-            &filtered_uri,
-            &administrator_session.access_token,
-            Body::empty(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let filtered = body_json(response).await;
-    assert_eq!(filtered["StartIndex"], 0);
-    assert_eq!(filtered["TotalRecordCount"], 1);
-    let entry = &filtered["Items"][0];
-    assert_eq!(entry["Id"], oldest.id);
-    assert_eq!(entry["Name"], format!("Zulu-{marker}"));
-    assert_eq!(entry["Overview"], format!("Overview-{marker}"));
-    assert_eq!(entry["ShortOverview"], format!("Short-{marker}"));
-    assert_eq!(entry["Type"], format!("PrimaryType-{marker}"));
-    assert_eq!(entry["ItemId"], item_id.simple().to_string());
-    assert_eq!(entry["Date"], "2001-01-01T00:00:00.0000000Z");
-    assert_eq!(entry["UserId"], regular_user.id.simple().to_string());
-    assert_eq!(entry["Severity"], "Warning");
-    assert!(entry.get("UserPrimaryImageTag").is_none());
-    assert!(entry.get("user_id").is_none());
+    let filtered_queries = [
+        format!(
+            "startIndex=0&limit=10&minDate=2001-01-01T00%3A00%3A00Z\
+             &maxDate=2001-01-01T00%3A00%3A00Z&hasUserId=true&name={marker}\
+             &overview={marker}&shortOverview={marker}&type=PrimaryType-{marker}\
+             &itemId={item_id}&username={regular_name}&severity=Warning"
+        ),
+        format!(
+            "StartIndex=0&Limit=10&MinDate=2001-01-01T00%3A00%3A00Z\
+             &MaxDate=2001-01-01T00%3A00%3A00Z&HasUserId=true&Name={marker}\
+             &Overview={marker}&ShortOverview={marker}&Type=PrimaryType-{marker}\
+             &ItemId={item_id}&Username={regular_name}&Severity=Warning"
+        ),
+        format!(
+            "startindex=0&limit=10&mindate=2001-01-01T00%3A00%3A00Z\
+             &maxdate=2001-01-01T00%3A00%3A00Z&hasuserid=true&name={marker}\
+             &overview={marker}&shortoverview={marker}&type=PrimaryType-{marker}\
+             &itemid={item_id}&username={regular_name}&severity=Warning"
+        ),
+    ];
+    for query in filtered_queries {
+        let response = app
+            .clone()
+            .oneshot(authenticated_request(
+                "GET",
+                &format!("{route}?{}", query.replace(' ', "")),
+                &administrator_session.access_token,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let filtered = body_json(response).await;
+        assert_eq!(filtered["StartIndex"], 0);
+        assert_eq!(filtered["TotalRecordCount"], 1);
+        let entry = &filtered["Items"][0];
+        assert_eq!(entry["Id"], oldest.id);
+        assert_eq!(entry["Name"], format!("Zulu-{marker}"));
+        assert_eq!(entry["Overview"], format!("Overview-{marker}"));
+        assert_eq!(entry["ShortOverview"], format!("Short-{marker}"));
+        assert_eq!(entry["Type"], format!("PrimaryType-{marker}"));
+        assert_eq!(entry["ItemId"], item_id.simple().to_string());
+        assert_eq!(entry["Date"], "2001-01-01T00:00:00.0000000Z");
+        assert_eq!(entry["UserId"], regular_user.id.simple().to_string());
+        assert_eq!(entry["Severity"], "Warning");
+        assert!(entry.get("UserPrimaryImageTag").is_none());
+        assert!(entry.get("user_id").is_none());
+    }
 
-    let pagination_uri = format!(
-        "{route}?name={marker}&startIndex=1&limit=1\
-         &sortBy=Name%2CDateCreated&sortOrder=Descending"
-    )
-    .replace(' ', "");
-    let response = app
-        .clone()
-        .oneshot(authenticated_request(
-            "GET",
-            &pagination_uri,
-            &administrator_session.access_token,
-            Body::empty(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let page = body_json(response).await;
-    assert_eq!(page["StartIndex"], 1);
-    assert_eq!(page["TotalRecordCount"], 3);
-    assert_eq!(page["Items"].as_array().unwrap().len(), 1);
-    assert_eq!(page["Items"][0]["Id"], middle.id);
+    for query in [
+        format!(
+            "name={marker}&startIndex=1&limit=1&sortBy=Name%2CDateCreated&sortOrder=Descending"
+        ),
+        format!(
+            "Name={marker}&StartIndex=1&Limit=1&SortBy=Name%2CDateCreated&SortOrder=Descending"
+        ),
+        format!(
+            "name={marker}&startindex=1&limit=1&sortby=Name%2CDateCreated&sortorder=Descending"
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(authenticated_request(
+                "GET",
+                &format!("{route}?{query}"),
+                &administrator_session.access_token,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = body_json(response).await;
+        assert_eq!(page["StartIndex"], 1);
+        assert_eq!(page["TotalRecordCount"], 3);
+        assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["Items"][0]["Id"], middle.id);
+    }
 
     let response = app
         .clone()

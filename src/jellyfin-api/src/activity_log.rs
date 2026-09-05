@@ -18,20 +18,33 @@ use crate::{ApiError, AppState, authentication};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct ActivityLogParameters {
+    #[serde(alias = "StartIndex", alias = "startindex")]
     start_index: Option<i32>,
+    #[serde(alias = "Limit")]
     limit: Option<i32>,
+    #[serde(alias = "MinDate", alias = "mindate")]
     min_date: Option<DateTimeUtc>,
+    #[serde(alias = "MaxDate", alias = "maxdate")]
     max_date: Option<DateTimeUtc>,
+    #[serde(alias = "HasUserId", alias = "hasuserid")]
     has_user_id: Option<bool>,
+    #[serde(alias = "Name")]
     name: Option<String>,
+    #[serde(alias = "Overview")]
     overview: Option<String>,
+    #[serde(alias = "ShortOverview", alias = "shortoverview")]
     short_overview: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "Type")]
     activity_type: Option<String>,
+    #[serde(alias = "ItemId", alias = "itemid")]
     item_id: Option<Uuid>,
+    #[serde(alias = "Username")]
     username: Option<String>,
+    #[serde(alias = "Severity")]
     severity: Option<String>,
+    #[serde(alias = "SortBy", alias = "sortby")]
     sort_by: Option<String>,
+    #[serde(alias = "SortOrder", alias = "sortorder")]
     sort_order: Option<String>,
 }
 
