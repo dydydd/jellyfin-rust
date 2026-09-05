@@ -76,6 +76,7 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         root.id,
         serde_json::json!({
             "Tagline": "One line",
+            "EndDate": "2020-01-02",
             "RemoteTrailers": [
                 "https://trailers.example/legacy",
                 {"Name": "Trailer", "Url": "https://trailers.example/named"}
@@ -104,6 +105,7 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     let item = &body["Items"][0];
     assert_eq!(item["Taglines"], serde_json::json!(["One line"]));
     assert!(item.get("Tagline").is_none());
+    assert_eq!(item["EndDate"], "2020-01-02T00:00:00.000Z");
     assert_eq!(
         item["Studios"],
         serde_json::json!([{

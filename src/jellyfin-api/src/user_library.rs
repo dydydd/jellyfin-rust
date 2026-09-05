@@ -7,6 +7,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::Query;
+use chrono::{NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, LyricManager, MusicGenre, Person,
     RelatedItemKind, Studio, TrickplayManifest, Year, library::get_media_source_name,
@@ -802,7 +803,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         ),
         remote_trailers: metadata_remote_trailers(item.data.as_ref()),
         air_days: metadata_strings(item.data.as_ref(), &["AirDays", "air_days"]),
-        end_date: metadata_string(item.data.as_ref(), &["EndDate", "end_date"]),
+        end_date: metadata_api_datetime(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
         has_subtitles: metadata_bool(item.data.as_ref(), &["HasSubtitles", "has_subtitles"]),
@@ -1676,6 +1677,19 @@ fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
     metadata_value(data, keys).and_then(|value| value.as_str().map(str::to_owned))
 }
 
+fn metadata_api_datetime(data: Option<&Value>, keys: &[&str]) -> Option<String> {
+    let value = metadata_string(data, keys)?;
+    let value = if let Ok(value) = chrono::DateTime::parse_from_rfc3339(&value) {
+        value.with_timezone(&Utc)
+    } else {
+        NaiveDate::parse_from_str(&value, "%Y-%m-%d")
+            .ok()?
+            .and_hms_opt(0, 0, 0)?
+            .and_utc()
+    };
+    Some(value.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
 fn metadata_f64(data: Option<&Value>, keys: &[&str]) -> Option<f64> {
     metadata_value(data, keys).and_then(|value| value.as_f64())
 }
@@ -1808,6 +1822,7 @@ mod tests {
                 "Width": 1920,
                 "Height": 1080,
                 "AirDays": ["Monday", "Friday"],
+                "EndDate": "2020-01-02",
                 "ProductionLocations": ["Los Angeles"],
                 "ProviderIds": {
                     "Tmdb": 42,
@@ -1878,6 +1893,7 @@ mod tests {
         assert_eq!(dto.width, Some(1920));
         assert_eq!(dto.height, Some(1080));
         assert_eq!(dto.air_days, ["Monday", "Friday"]);
+        assert_eq!(dto.end_date.as_deref(), Some("2020-01-02T00:00:00.000Z"));
         assert_eq!(dto.production_locations, ["Los Angeles"]);
         assert_eq!(dto.official_rating.as_deref(), Some("PG-13"));
         assert_eq!(dto.path.as_deref(), Some("/library/Movie.strm"));
@@ -1901,6 +1917,23 @@ mod tests {
                 {"Url": "https://trailers.example/legacy"},
                 {"Name": "Official Trailer", "Url": "https://trailers.example/official"}
             ])
+        );
+        assert_eq!(json["EndDate"], "2020-01-02T00:00:00.000Z");
+    }
+
+    #[test]
+    fn metadata_api_datetime_normalizes_offsets_and_rejects_invalid_values() {
+        assert_eq!(
+            metadata_api_datetime(
+                Some(&json!({"EndDate": "2020-01-02T03:04:05.123+08:00"})),
+                &["EndDate"]
+            )
+            .as_deref(),
+            Some("2020-01-01T19:04:05.123Z")
+        );
+        assert_eq!(
+            metadata_api_datetime(Some(&json!({"EndDate": "not-a-date"})), &["EndDate"]),
+            None
         );
     }
 
