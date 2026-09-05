@@ -141,6 +141,73 @@ async fn playback_info_routes_return_postgres_media_sources_with_official_auth_s
 }
 
 #[tokio::test]
+async fn playback_info_exposes_and_selects_grouped_video_versions() {
+    let fixture = Fixture::new().await;
+    let alternate_id = Uuid::new_v4();
+    let alternate_path = format!("/media/playback-info-alternate-{alternate_id}.mkv");
+    let mut alternate = NewBaseItem::new(alternate_id, "Movie");
+    alternate.name = Some("playback-info-movie".to_owned());
+    alternate.path = Some(alternate_path.clone());
+    alternate.primary_version_id = Some(fixture.item_id);
+    alternate.runtime_ticks = Some(12_345_000_000);
+    BaseItemRepository::new(fixture.database.clone())
+        .create(alternate)
+        .await
+        .expect("alternate playback item");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            alternate_id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("hevc".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("alternate media stream");
+
+    let route = format!("/Items/{}/PlaybackInfo", fixture.item_id);
+    let all_sources = body_json(fixture.get(&route, Some(&fixture.user_token)).await).await;
+    let sources = all_sources["MediaSources"]
+        .as_array()
+        .expect("media sources");
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["Id"], fixture.item_id.simple().to_string());
+    assert!(sources.iter().any(|source| {
+        source["Id"] == alternate_id.simple().to_string()
+            && source["Path"].as_str() == Some(alternate_path.as_str())
+            && source["MediaStreams"][0]["Codec"] == "hevc"
+    }));
+
+    let selected = body_json(
+        fixture
+            .post(
+                &format!(
+                    "{route}?MediaSourceId={}",
+                    alternate_id.simple().to_string().to_ascii_uppercase()
+                ),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(selected["MediaSources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        selected["MediaSources"][0]["Id"],
+        alternate_id.simple().to_string()
+    );
+    assert_eq!(selected["MediaSources"][0]["Path"], alternate_path);
+
+    base_item::Entity::delete_by_id(alternate_id)
+        .exec(&fixture.database)
+        .await
+        .expect("alternate cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn get_playback_info_preserves_media_source_and_bitrate_query_options() {
     let fixture = Fixture::new().await;
     let source_id = fixture.item_id.simple().to_string().to_ascii_uppercase();
