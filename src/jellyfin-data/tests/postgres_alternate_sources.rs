@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use jellyfin_data::{BaseItemError, BaseItemRepository, DatabaseConfig, NewBaseItem};
+use jellyfin_data::{
+    BaseItemError, BaseItemRepository, DatabaseConfig, LinkedChildRepository, LinkedChildType,
+    NewBaseItem,
+};
 use serde_json::json;
 use tokio::sync::Barrier;
 use uuid::Uuid;
@@ -82,7 +85,7 @@ async fn media_source_versions_load_multiple_groups_in_one_batch() {
 }
 
 #[tokio::test]
-async fn clear_from_primary_or_alternate_is_atomic_and_preserves_rows() {
+async fn clearing_local_alternates_is_a_noop_and_preserves_rows() {
     let repository = repository().await;
     assert!(matches!(
         repository.clear_alternate_sources(Uuid::new_v4()).await,
@@ -101,8 +104,8 @@ async fn clear_from_primary_or_alternate_is_atomic_and_preserves_rows() {
     let after_a = load_group(&repository, &group_a).await;
     let after_b = load_group(&repository, &group_b).await;
     for (before, after) in before_a.iter().zip(&after_a) {
-        assert_eq!(after.primary_version_id, None);
-        assert_eq!(after.row_version, before.row_version + 1);
+        assert_eq!(after.primary_version_id, before.primary_version_id);
+        assert_eq!(after.row_version, before.row_version);
         assert_eq!(after.path, before.path);
         assert_eq!(after.data, before.data);
         assert!(
@@ -121,21 +124,22 @@ async fn clear_from_primary_or_alternate_is_atomic_and_preserves_rows() {
     repository
         .clear_alternate_sources(group_b.primary)
         .await
-        .expect("primary entry point must clear its complete group");
-    assert!(
-        load_group(&repository, &group_b)
-            .await
-            .iter()
-            .all(|item| item.primary_version_id.is_none())
-    );
+        .expect("primary entry point must preserve its local group");
+    assert_eq!(load_group(&repository, &group_b).await, before_b);
 
     cleanup(&repository, [&group_a, &group_b]).await;
 }
 
 #[tokio::test]
-async fn concurrent_clears_are_idempotent_and_never_leave_a_partial_group() {
+async fn concurrent_linked_clears_restore_the_local_group_atomically() {
     let repository = repository().await;
     let group = create_group(&repository, "concurrent").await;
+    let (standalone, standalone_directory) =
+        create_standalone_video(&repository, "concurrent-standalone").await;
+    repository
+        .merge_linked_alternate_versions(&[group.primary, standalone])
+        .await
+        .expect("linked version merge");
     let barrier = Arc::new(Barrier::new(3));
     let primary = spawn_clear(repository.clone(), Arc::clone(&barrier), group.primary);
     let alternate = spawn_clear(
@@ -155,10 +159,23 @@ async fn concurrent_clears_are_idempotent_and_never_leave_a_partial_group() {
 
     let after_concurrent_clear = load_group(&repository, &group).await;
     assert_eq!(after_concurrent_clear.len(), 3);
-    assert!(
-        after_concurrent_clear
-            .iter()
-            .all(|item| item.primary_version_id.is_none())
+    assert_eq!(after_concurrent_clear[0].primary_version_id, None);
+    assert_eq!(
+        after_concurrent_clear[1].primary_version_id,
+        Some(group.primary)
+    );
+    assert_eq!(
+        after_concurrent_clear[2].primary_version_id,
+        Some(group.primary)
+    );
+    assert_eq!(
+        repository
+            .get(standalone)
+            .await
+            .expect("standalone lookup")
+            .expect("standalone row")
+            .primary_version_id,
+        None
     );
     for id in group.ids() {
         repository
@@ -166,14 +183,69 @@ async fn concurrent_clears_are_idempotent_and_never_leave_a_partial_group() {
             .await
             .expect("repeated clear must remain successful");
     }
-    assert!(
-        load_group(&repository, &group)
-            .await
-            .iter()
-            .all(|item| item.primary_version_id.is_none())
+    assert_eq!(
+        load_group(&repository, &group).await,
+        after_concurrent_clear
     );
 
+    repository
+        .delete(standalone)
+        .await
+        .expect("standalone cleanup");
+    std::fs::remove_dir_all(standalone_directory).expect("standalone media cleanup");
     cleanup(&repository, [&group]).await;
+}
+
+#[tokio::test]
+async fn linked_merge_and_clear_restore_each_local_version_group() {
+    let repository = repository().await;
+    let links = linked_repository().await;
+    let group_a = create_group(&repository, "linked-a").await;
+    let group_b = create_group(&repository, "linked-b").await;
+    let expected_primary = group_a.primary.min(group_b.primary);
+    let linked_primary = if expected_primary == group_a.primary {
+        group_b.primary
+    } else {
+        group_a.primary
+    };
+
+    assert_eq!(
+        repository
+            .merge_linked_alternate_versions(&[group_a.primary, group_b.primary])
+            .await
+            .expect("linked version merge"),
+        expected_primary
+    );
+    let linked = links.list(expected_primary).await.expect("merged links");
+    assert!(linked.iter().any(|link| {
+        link.child_id == linked_primary
+            && link.child_type == LinkedChildType::LinkedAlternateVersion
+    }));
+    assert!(linked.iter().any(|link| {
+        link.child_type == LinkedChildType::LocalAlternateVersion
+            && (link.child_id == group_a.alternates[0] || link.child_id == group_b.alternates[0])
+    }));
+
+    repository
+        .clear_alternate_sources(linked_primary)
+        .await
+        .expect("clear linked sources through alternate");
+    for group in [&group_a, &group_b] {
+        let restored = load_group(&repository, group).await;
+        assert_eq!(restored[0].primary_version_id, None);
+        assert_eq!(restored[1].primary_version_id, Some(group.primary));
+        assert_eq!(restored[2].primary_version_id, Some(group.primary));
+        assert!(
+            links
+                .list(group.primary)
+                .await
+                .expect("restored local links")
+                .iter()
+                .all(|link| link.child_type == LinkedChildType::LocalAlternateVersion)
+        );
+    }
+
+    cleanup(&repository, [&group_a, &group_b]).await;
 }
 
 #[tokio::test]
@@ -235,6 +307,17 @@ async fn merge_versions_expands_existing_groups_and_preserves_rows() {
         after_repeat, before_repeat,
         "an idempotent merge must not change row versions"
     );
+    let links = linked_repository()
+        .await
+        .list(expected_primary)
+        .await
+        .expect("local version links");
+    assert_eq!(links.len(), 3);
+    assert!(
+        links
+            .iter()
+            .all(|link| link.child_type == LinkedChildType::LocalAlternateVersion)
+    );
 
     repository
         .delete(standalone)
@@ -265,6 +348,14 @@ async fn repository() -> BaseItemRepository {
     BaseItemRepository::new(database)
 }
 
+async fn linked_repository() -> LinkedChildRepository {
+    LinkedChildRepository::new(
+        jellyfin_data::connect(&DatabaseConfig::default())
+            .await
+            .expect("local PostgreSQL must be available"),
+    )
+}
+
 struct VersionGroup {
     primary: Uuid,
     alternates: [Uuid; 2],
@@ -292,6 +383,10 @@ async fn create_group(repository: &BaseItemRepository, label: &str) -> VersionGr
         &media_directory,
     )
     .await;
+    repository
+        .assign_local_alternate_versions(&[(alternates[0], primary), (alternates[1], primary)])
+        .await
+        .expect("local alternate links");
     create_item(
         repository,
         alternates[1],

@@ -1425,6 +1425,7 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             is_sports: query.is_sports,
             is_virtual_item: None,
             group_versions_by_presentation_key: false,
+            include_alternate_versions: false,
             user_id: query.user_id,
             is_resumable,
             is_played,
@@ -1681,6 +1682,14 @@ async fn page_to_dto_with_options(
     } else {
         item_ids.clone()
     };
+    let linked_alternate_version_parents = if requested_fields.wants_media_sources() {
+        state
+            .base_items
+            .linked_alternate_version_parents(&stream_item_ids)
+            .await?
+    } else {
+        std::collections::HashMap::new()
+    };
     let defaults =
         user_library::media_stream_defaults_for_user(state, target_user_id, requested_fields)
             .await?;
@@ -1792,6 +1801,7 @@ async fn page_to_dto_with_options(
                 &mut media_attachments,
                 defaults.as_ref(),
                 remembered.as_ref(),
+                &linked_alternate_version_parents,
             )?;
         } else if requested_fields.wants_media_streams() {
             let streams = media_streams.remove(&item_id).unwrap_or_default();

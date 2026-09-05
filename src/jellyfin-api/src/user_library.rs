@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -1140,9 +1137,9 @@ async fn attach_versioned_media_sources(
         .media_attachments
         .get_media_attachments_for_items(&source_ids)
         .await?;
-    let linked_alternate_version_ids = state
+    let linked_alternate_version_parents = state
         .base_items
-        .linked_alternate_version_ids(&source_ids)
+        .linked_alternate_version_parents(&source_ids)
         .await?;
     project_item_dto_with_versioned_sources(
         dto,
@@ -1153,7 +1150,7 @@ async fn attach_versioned_media_sources(
         &mut media_attachments,
         defaults,
         remembered_user_data,
-        &linked_alternate_version_ids,
+        &linked_alternate_version_parents,
     )
 }
 
@@ -1166,7 +1163,7 @@ pub(crate) fn project_item_dto_with_versioned_sources(
     media_attachments: &mut HashMap<Uuid, Vec<MediaAttachment>>,
     defaults: Option<&MediaStreamDefaults>,
     remembered_user_data: Option<&user_data::Model>,
-    linked_alternate_version_ids: &HashSet<Uuid>,
+    linked_alternate_version_parents: &HashMap<Uuid, Uuid>,
 ) -> Result<(), ApiError> {
     let requested_id = Uuid::parse_str(&dto.id).map_err(|_| ApiError::Internal)?;
     if let Some(index) = source_items.iter().position(|item| item.id == requested_id) {
@@ -1208,7 +1205,10 @@ pub(crate) fn project_item_dto_with_versioned_sources(
             has_local_alternates,
             common_prefix.as_deref(),
         ) {
-            if linked_alternate_version_ids.contains(&source_id) {
+            if source_id != requested_id
+                && (linked_alternate_version_parents.contains_key(&source_id)
+                    || linked_alternate_version_parents.get(&requested_id) == Some(&source_id))
+            {
                 source.source_type = MediaSourceType::Grouping;
             }
             sources.push(source);

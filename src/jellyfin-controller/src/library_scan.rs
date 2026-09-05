@@ -1532,19 +1532,17 @@ impl LibraryScanService {
             .into_iter()
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect::<HashMap<_, _>>();
-        let mut changed_ids = Vec::new();
+        let mut local_assignments = Vec::with_capacity(assignments.len());
         for (path, primary_id) in assignments {
-            let Some(mut item) = by_path.remove(*path) else {
+            let Some(item) = by_path.remove(*path) else {
                 continue;
             };
-            if item.primary_version_id == Some(*primary_id) {
-                continue;
-            }
-            item.primary_version_id = Some(*primary_id);
-            changed_ids.push(item.id);
-            self.items.update(item).await?;
+            local_assignments.push((item.id, *primary_id));
         }
-        Ok(changed_ids)
+        Ok(self
+            .items
+            .assign_local_alternate_versions(&local_assignments)
+            .await?)
     }
 
     fn extra_paths_for_resolver_entries(

@@ -15,7 +15,12 @@ use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct MergeVersionsQuery {
-    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    #[serde(
+        default,
+        rename = "ids",
+        alias = "Ids",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
     ids: Vec<Uuid>,
 }
 

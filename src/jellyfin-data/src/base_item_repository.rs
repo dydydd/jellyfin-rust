@@ -20,6 +20,12 @@ use uuid::Uuid;
 use crate::entities::{ancestor_id, base_item, item_value, linked_child, user_data};
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
+const VIDEO_ITEM_TYPES_SQL: &str = "('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer', \
+    'MediaBrowser.Controller.Entities.Video', \
+    'MediaBrowser.Controller.Entities.Movies.Movie', \
+    'MediaBrowser.Controller.Entities.TV.Episode', \
+    'MediaBrowser.Controller.Entities.MusicVideo', \
+    'MediaBrowser.Controller.Entities.Trailer')";
 pub const USER_ROOT_FOLDER_ID: Uuid = Uuid::from_u128(2);
 
 /// Values accepted when creating a persisted Jellyfin base item.
@@ -251,6 +257,9 @@ pub struct BaseItemQuery {
     pub is_sports: Option<bool>,
     pub is_virtual_item: Option<bool>,
     pub group_versions_by_presentation_key: bool,
+    /// Includes alternate-version rows that ordinary item pages fold into their primary.
+    /// This is reserved for exact-id detail lookups after normal user-policy filters apply.
+    pub include_alternate_versions: bool,
     pub user_id: Option<Uuid>,
     pub is_resumable: Option<bool>,
     pub is_played: Option<bool>,
@@ -698,14 +707,14 @@ impl BaseItemRepository {
                      SELECT COALESCE(primary_version_id, id) AS group_id \
                      FROM jellyfin.base_items \
                      WHERE id = $1 \
-                       AND item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')\
+                       AND item_type IN {VIDEO_ITEM_TYPES_SQL}\
                  ), target_version AS (\
                      SELECT item.* \
                      FROM jellyfin.base_items AS item \
                      INNER JOIN requested \
                        ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
                      WHERE item.id = $2 \
-                       AND item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')\
+                       AND item.item_type IN {VIDEO_ITEM_TYPES_SQL}\
                  ) \
                  SELECT {BASE_ITEM_COLUMNS} FROM target_version"
             ),
@@ -737,13 +746,13 @@ impl BaseItemRepository {
                      SELECT COALESCE(primary_version_id, id) AS group_id \
                      FROM jellyfin.base_items \
                      WHERE id = $1 \
-                       AND item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')\
+                       AND item_type IN {VIDEO_ITEM_TYPES_SQL}\
                  ) \
                  SELECT {BASE_ITEM_COLUMNS} \
                  FROM jellyfin.base_items AS item \
                  INNER JOIN requested \
                    ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
-                 WHERE item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer') \
+                 WHERE item.item_type IN {VIDEO_ITEM_TYPES_SQL} \
                  ORDER BY CASE WHEN item.id = $1 THEN 0 ELSE 1 END, \
                           CASE WHEN item.primary_version_id IS NULL THEN 0 ELSE 1 END, \
                           item.id"
@@ -771,24 +780,25 @@ impl BaseItemRepository {
         if item_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut sql = String::from(
+        let mut sql = format!(
             "WITH requested AS MATERIALIZED (\
                  SELECT DISTINCT COALESCE(item.primary_version_id, item.id) AS group_id \
                  FROM jellyfin.base_items AS item \
-                 WHERE item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')",
+                 WHERE item.item_type IN {VIDEO_ITEM_TYPES_SQL}",
         );
         let mut values = Vec::with_capacity(item_ids.len());
         append_uuid_list_filter(&mut sql, &mut values, "item.id", item_ids);
-        sql.push_str(&format!(
+        let _ = write!(
+            sql,
             ") SELECT {BASE_ITEM_COLUMNS} \
              FROM jellyfin.base_items AS item \
              INNER JOIN requested \
                ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
-             WHERE item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer') \
+             WHERE item.item_type IN {VIDEO_ITEM_TYPES_SQL} \
              ORDER BY requested.group_id, \
                       CASE WHEN item.primary_version_id IS NULL THEN 0 ELSE 1 END, \
                       item.id"
-        ));
+        );
         Ok(
             base_item::Model::find_by_statement(Statement::from_sql_and_values(
                 DbBackend::Postgres,
@@ -815,16 +825,15 @@ impl BaseItemRepository {
         if item_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut sql = "SELECT requested.id AS item_id, COUNT(version.id)::bigint AS source_count \
+        let mut sql = format!(
+            "SELECT requested.id AS item_id, COUNT(version.id)::bigint AS source_count \
                        FROM jellyfin.base_items AS requested \
                        INNER JOIN jellyfin.base_items AS version \
                          ON COALESCE(version.primary_version_id, version.id) = \
                             COALESCE(requested.primary_version_id, requested.id) \
-                        AND version.item_type IN \
-                            ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer') \
-                       WHERE requested.item_type IN \
-                             ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')"
-            .to_owned();
+                        AND version.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                       WHERE requested.item_type IN {VIDEO_ITEM_TYPES_SQL}"
+        );
         let mut values = Vec::with_capacity(item_ids.len());
         append_uuid_list_filter(&mut sql, &mut values, "requested.id", item_ids);
         sql.push_str(" GROUP BY requested.id");
@@ -843,6 +852,38 @@ impl BaseItemRepository {
                     u64::try_from(row.source_count).unwrap_or_default(),
                 )
             })
+            .collect())
+    }
+
+    /// Returns each source id attached through a user-created alternate-version
+    /// relationship together with its grouping parent id.
+    ///
+    /// The lookup is set-based so DTO pages can project `MediaSource.Type`
+    /// without querying one relationship list per displayed video.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the relationship query fails.
+    pub async fn linked_alternate_version_parents(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Uuid>, BaseItemError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        Ok(linked_child::Entity::find()
+            .select_only()
+            .column(linked_child::Column::ChildId)
+            .column(linked_child::Column::ParentId)
+            .filter(
+                linked_child::Column::ChildType
+                    .eq(crate::LinkedChildType::LinkedAlternateVersion as i16),
+            )
+            .filter(linked_child::Column::ChildId.is_in(item_ids.iter().copied()))
+            .into_tuple::<(Uuid, Uuid)>()
+            .all(self.database.as_ref())
+            .await?
+            .into_iter()
             .collect())
     }
 
@@ -876,12 +917,13 @@ impl BaseItemRepository {
             .await?)
     }
 
-    /// Detaches every member of the version group containing `item_id`.
+    /// Detaches only the user-linked alternate sources in the version group
+    /// containing `item_id`.
     ///
-    /// `PostgreSQL` resolves the primary identifier and clears the complete group
-    /// in one data-modifying CTE. The statement's row locks serialize competing
-    /// clears, while the surrounding transaction makes the group transition
-    /// atomic. Rows and their media metadata are preserved.
+    /// Local alternate relationships created by scanning remain intact. Their
+    /// persisted parent ids are used to reconstruct each local version group
+    /// after the enclosing user-created group is split. One data-modifying CTE
+    /// keeps that transition atomic and preserves every media row.
     ///
     /// # Errors
     ///
@@ -896,17 +938,44 @@ impl BaseItemRepository {
                      SELECT COALESCE(primary_version_id, id) AS group_id \
                      FROM jellyfin.base_items \
                      WHERE id = $1\
-                 ), cleared AS (\
+                 ), group_members AS MATERIALIZED (\
+                     SELECT item.id \
+                     FROM jellyfin.base_items AS item \
+                     INNER JOIN requested \
+                       ON item.id = requested.group_id \
+                       OR item.primary_version_id = requested.group_id\
+                 ), manual_links AS MATERIALIZED (\
+                     SELECT link.child_id \
+                     FROM jellyfin.linked_children AS link \
+                     INNER JOIN requested ON requested.group_id = link.parent_id \
+                     WHERE link.child_type = 3\
+                 ), restored AS (\
                      UPDATE jellyfin.base_items AS item \
-                     SET primary_version_id = NULL \
-                     FROM requested \
-                     WHERE item.id = requested.group_id \
-                        OR item.primary_version_id = requested.group_id \
+                     SET primary_version_id = (\
+                         SELECT local.parent_id \
+                         FROM jellyfin.linked_children AS local \
+                         WHERE local.child_id = item.id AND local.child_type = 2 \
+                         ORDER BY local.parent_id LIMIT 1\
+                     ) \
+                     WHERE EXISTS (SELECT 1 FROM manual_links) \
+                       AND item.id IN (SELECT id FROM group_members) \
+                       AND (item.id IN (SELECT child_id FROM manual_links) \
+                            OR EXISTS (\
+                                SELECT 1 FROM jellyfin.linked_children AS local \
+                                WHERE local.child_id = item.id AND local.child_type = 2\
+                            )) \
                      RETURNING item.id\
+                 ), removed_links AS (\
+                     DELETE FROM jellyfin.linked_children AS link \
+                     USING requested \
+                     WHERE link.parent_id = requested.group_id \
+                       AND link.child_type = 3 \
+                       AND (SELECT COUNT(*) FROM restored) >= 0 \
+                     RETURNING link.child_id\
                  ) \
                  SELECT EXISTS (SELECT 1 FROM requested) AS found, \
                         COUNT(*) AS cleared_count \
-                 FROM cleared",
+                 FROM removed_links",
                 [item_id.into()],
             ))
             .await?
@@ -920,12 +989,51 @@ impl BaseItemRepository {
         Ok(())
     }
 
-    /// Merges the supplied video identifiers and their existing version groups.
+    /// Merges existing video groups through user-created alternate links.
+    ///
+    /// Existing untyped groups are conservatively recorded as local groups
+    /// before the merge. The selected groups are then flattened for the shared
+    /// playback queries while `LocalAlternateVersion` links retain enough
+    /// information for a later split to reconstruct every scan-created group.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidItemType` when fewer than two existing rows are supplied,
+    /// or a database error when the transaction cannot be completed.
+    pub async fn merge_linked_alternate_versions(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<Uuid, BaseItemError> {
+        if item_ids.len() < 2 {
+            return Err(BaseItemError::InvalidItemType);
+        }
+
+        let (sql, values) = linked_alternate_version_merge_sql(item_ids);
+
+        let transaction = self.database.begin().await?;
+        let result = transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("linked version merge returned no row".to_owned())
+            })?;
+        if result.try_get::<i64>("", "requested_count")? < 2 {
+            return Err(BaseItemError::InvalidItemType);
+        }
+        let primary_id = result.try_get::<Uuid>("", "primary_id")?;
+        transaction.commit().await?;
+        Ok(primary_id)
+    }
+
+    /// Merges scan-discovered video identifiers into one local version group.
     ///
     /// `PostgreSQL` expands every requested row to its current version group,
-    /// chooses a stable primary identifier, and rewrites all members in one
-    /// data-modifying CTE. This preserves rows and media metadata while making
-    /// concurrent merges serialize on the updated rows.
+    /// chooses a stable primary identifier, rewrites all members, and records
+    /// each relationship as `LocalAlternateVersion` in one data-modifying CTE.
     ///
     /// # Errors
     ///
@@ -963,6 +1071,21 @@ impl BaseItemRepository {
                    OR item.primary_version_id = merge_groups.group_id\
              ), primary_version AS MATERIALIZED (\
                  SELECT id FROM merge_members ORDER BY id LIMIT 1\
+             ), removed_local_links AS (\
+                 DELETE FROM jellyfin.linked_children AS link \
+                 WHERE link.child_type = 2 \
+                   AND link.child_id IN (SELECT id FROM merge_members) \
+                 RETURNING link.child_id\
+             ), local_links AS (\
+                 INSERT INTO jellyfin.linked_children \
+                     (parent_id, child_id, child_type, sort_order) \
+                 SELECT primary_version.id, member.id, 2, NULL \
+                 FROM primary_version \
+                 CROSS JOIN merge_members AS member \
+                 WHERE member.id <> primary_version.id \
+                   AND (SELECT COUNT(*) FROM removed_local_links) >= 0 \
+                 ON CONFLICT (parent_id, child_id) DO NOTHING \
+                 RETURNING child_id\
              ), updated AS (\
                  UPDATE jellyfin.base_items AS item \
                  SET primary_version_id = CASE \
@@ -975,10 +1098,12 @@ impl BaseItemRepository {
                          WHEN item.id = (SELECT id FROM primary_version) THEN NULL \
                          ELSE (SELECT id FROM primary_version) \
                        END \
+                   AND (SELECT COUNT(*) FROM local_links) >= 0 \
                  RETURNING item.id\
              ) \
              SELECT (SELECT COUNT(*) FROM requested_items) AS requested_count, \
-                    (SELECT id FROM primary_version) AS primary_id",
+                    (SELECT id FROM primary_version) AS primary_id, \
+                    (SELECT COUNT(*) FROM updated) AS updated_count",
         );
 
         let transaction = self.database.begin().await?;
@@ -997,6 +1122,87 @@ impl BaseItemRepository {
         let primary_id = result.try_get::<Uuid>("", "primary_id")?;
         transaction.commit().await?;
         Ok(primary_id)
+    }
+
+    /// Applies a batch of scan-discovered local alternate assignments.
+    ///
+    /// The base-item back references and typed linked-child rows change in one
+    /// transaction. Reassigning a child removes only its previous local link;
+    /// user-created alternate and ordinary manual links are left untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the batch cannot be applied.
+    pub async fn assign_local_alternate_versions(
+        &self,
+        assignments: &[(Uuid, Uuid)],
+    ) -> Result<Vec<Uuid>, BaseItemError> {
+        let mut unique = HashMap::with_capacity(assignments.len());
+        for (child_id, parent_id) in assignments.iter().copied() {
+            if child_id != parent_id {
+                unique.entry(child_id).or_insert(parent_id);
+            }
+        }
+        if unique.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut values = Vec::with_capacity(unique.len().saturating_mul(2));
+        let mut sql = String::from("WITH assignments(child_id, parent_id) AS (VALUES ");
+        for (index, (child_id, parent_id)) in unique.into_iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push(child_id.into());
+            let child_bind = values.len();
+            values.push(parent_id.into());
+            let parent_bind = values.len();
+            let _ = write!(sql, "(${child_bind}::uuid, ${parent_bind}::uuid)");
+        }
+        sql.push_str(
+            "), valid AS MATERIALIZED (\
+                 SELECT assignment.child_id, assignment.parent_id \
+                 FROM assignments AS assignment \
+                 INNER JOIN jellyfin.base_items AS child ON child.id = assignment.child_id \
+                 INNER JOIN jellyfin.base_items AS parent ON parent.id = assignment.parent_id\
+             ), removed_local_links AS (\
+                 DELETE FROM jellyfin.linked_children AS link \
+                 USING valid \
+                 WHERE link.child_id = valid.child_id \
+                   AND link.child_type = 2 \
+                   AND link.parent_id <> valid.parent_id \
+                 RETURNING link.child_id\
+             ), local_links AS (\
+                 INSERT INTO jellyfin.linked_children \
+                     (parent_id, child_id, child_type, sort_order) \
+                 SELECT parent_id, child_id, 2, NULL FROM valid \
+                 WHERE (SELECT COUNT(*) FROM removed_local_links) >= 0 \
+                 ON CONFLICT (parent_id, child_id) DO NOTHING \
+                 RETURNING child_id\
+             ), updated AS (\
+                 UPDATE jellyfin.base_items AS item \
+                 SET primary_version_id = valid.parent_id \
+                 FROM valid \
+                 WHERE item.id = valid.child_id \
+                   AND item.primary_version_id IS DISTINCT FROM valid.parent_id \
+                   AND (SELECT COUNT(*) FROM local_links) >= 0 \
+                 RETURNING item.id\
+             ) \
+             SELECT id FROM updated",
+        );
+        let transaction = self.database.begin().await?;
+        let changed = transaction
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<Uuid>("", "id"))
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await?;
+        Ok(changed)
     }
 
     /// Uses the `PostgreSQL` partial hash index to test an exact item path.
@@ -1232,7 +1438,9 @@ impl BaseItemRepository {
         }
         let mut select =
             base_item::Entity::find().filter(base_item::Column::ItemType.ne("PLACEHOLDER"));
-        select = select.filter(base_item::Column::PrimaryVersionId.is_null());
+        if !query.include_alternate_versions {
+            select = select.filter(base_item::Column::PrimaryVersionId.is_null());
+        }
         select = select.filter(Expr::cust(
             "(data ->> 'OwnerId') IS NULL OR (data ->> 'ExtraType') IS NOT NULL",
         ));
@@ -3405,6 +3613,91 @@ impl BaseItemRepository {
     }
 }
 
+fn linked_alternate_version_merge_sql(item_ids: &[Uuid]) -> (String, Vec<SeaValue>) {
+    let mut values = Vec::with_capacity(item_ids.len());
+    let mut sql = String::from("WITH requested(id) AS (VALUES ");
+    for (index, item_id) in item_ids.iter().copied().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        values.push(item_id.into());
+        let _ = write!(sql, "(${}::uuid)", values.len());
+    }
+    sql.push_str(
+        "), requested_distinct AS MATERIALIZED (\
+             SELECT DISTINCT id FROM requested\
+         ), requested_items AS MATERIALIZED (\
+             SELECT item.id, COALESCE(item.primary_version_id, item.id) AS group_id \
+             FROM jellyfin.base_items AS item \
+             INNER JOIN requested_distinct AS requested ON requested.id = item.id\
+         ), merge_groups AS MATERIALIZED (\
+             SELECT DISTINCT group_id FROM requested_items\
+         ), merge_members AS MATERIALIZED (\
+             SELECT item.id, merge_groups.group_id \
+             FROM jellyfin.base_items AS item \
+             INNER JOIN merge_groups \
+               ON item.id = merge_groups.group_id \
+               OR item.primary_version_id = merge_groups.group_id\
+         ), primary_version AS MATERIALIZED (\
+             SELECT group_id AS id FROM merge_groups ORDER BY group_id LIMIT 1\
+         ), inferred_local_links AS (\
+             INSERT INTO jellyfin.linked_children \
+                 (parent_id, child_id, child_type, sort_order) \
+             SELECT member.group_id, member.id, 2, NULL \
+             FROM merge_members AS member \
+             WHERE member.id <> member.group_id \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM jellyfin.linked_children AS link \
+                   WHERE link.child_id = member.id AND link.child_type IN (2, 3)\
+               ) \
+             ON CONFLICT (parent_id, child_id) DO NOTHING \
+             RETURNING child_id\
+         ), subgroup_roots AS MATERIALIZED (\
+             SELECT group_id AS id FROM merge_groups \
+             UNION \
+             SELECT link.child_id \
+             FROM jellyfin.linked_children AS link \
+             INNER JOIN merge_members AS member ON member.id = link.child_id \
+             WHERE link.child_type = 3\
+         ), removed_linked_versions AS (\
+             DELETE FROM jellyfin.linked_children AS link \
+             WHERE link.child_type = 3 \
+               AND link.child_id IN (SELECT id FROM merge_members) \
+               AND link.parent_id IN (SELECT id FROM merge_members) \
+               AND (SELECT COUNT(*) FROM inferred_local_links) >= 0 \
+             RETURNING link.child_id\
+         ), linked_versions AS (\
+             INSERT INTO jellyfin.linked_children \
+                 (parent_id, child_id, child_type, sort_order) \
+             SELECT primary_version.id, subgroup.id, 3, NULL \
+             FROM primary_version \
+             CROSS JOIN subgroup_roots AS subgroup \
+             WHERE subgroup.id <> primary_version.id \
+               AND (SELECT COUNT(*) FROM removed_linked_versions) >= 0 \
+             ON CONFLICT (parent_id, child_id) \
+             DO UPDATE SET child_type = 3 \
+             RETURNING child_id\
+         ), updated AS (\
+             UPDATE jellyfin.base_items AS item \
+             SET primary_version_id = CASE \
+                     WHEN item.id = (SELECT id FROM primary_version) THEN NULL \
+                     ELSE (SELECT id FROM primary_version) \
+                 END \
+             WHERE item.id IN (SELECT id FROM merge_members) \
+               AND item.primary_version_id IS DISTINCT FROM CASE \
+                     WHEN item.id = (SELECT id FROM primary_version) THEN NULL \
+                     ELSE (SELECT id FROM primary_version) \
+                   END \
+               AND (SELECT COUNT(*) FROM linked_versions) >= 0 \
+             RETURNING item.id\
+         ) \
+         SELECT (SELECT COUNT(*) FROM requested_items) AS requested_count, \
+                (SELECT id FROM primary_version) AS primary_id, \
+                (SELECT COUNT(*) FROM updated) AS updated_count",
+    );
+    (sql, values)
+}
+
 const BASE_ITEM_COLUMNS: &str = "id, item_type, data, path, parent_id, top_parent_id, name, \
     clean_name, sort_name, media_type, overview, official_rating, index_number, parent_index_number, production_year, \
     premiere_date, runtime_ticks, is_folder, is_virtual_item, presentation_unique_key, primary_version_id, series_id, season_id, \
@@ -3489,10 +3782,12 @@ fn filtered_query_cte(query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut sql = String::from(
         "WITH filtered AS (\
              SELECT item.* FROM jellyfin.base_items AS item \
-             WHERE item.item_type <> 'PLACEHOLDER' \
-               AND item.primary_version_id IS NULL \
-               AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL)",
+             WHERE item.item_type <> 'PLACEHOLDER'",
     );
+    if !query.include_alternate_versions {
+        sql.push_str(" AND item.primary_version_id IS NULL");
+    }
+    sql.push_str(" AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL)");
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
     (sql, values)

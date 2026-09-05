@@ -51,6 +51,11 @@
 - When item pages request `MediaSources`, expand every alternate-version group and load all streams
   and attachments for the page in bounded batches. Do not issue one version, stream, or attachment
   query per displayed item.
+- Persist scan-discovered versions as `LocalAlternateVersion` relationships and user `MergeVersions`
+  groups as `LinkedAlternateVersion`. Clearing alternate sources removes only the user-created layer
+  and restores every local subgroup. On details, the requested source is `Default`, other manually
+  linked roots are `Grouping`, and local alternates remain `Default`; exact alternate-id details must
+  retain normal target-user policy checks even though list queries fold alternates into the primary.
 - Name versioned media sources from the common prefix of their library file stems so clients see
   concise version labels. For `.strm` items, derive the label from the sidecar filename while using
   the resolved remote target only for the source path and protocol.

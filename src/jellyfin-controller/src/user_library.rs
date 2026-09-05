@@ -131,6 +131,7 @@ impl UserLibraryService {
         }
         let mut query = BaseItemQuery {
             ids: vec![item_id],
+            include_alternate_versions: true,
             ..BaseItemQuery::default()
         };
         self.apply_user_policy(&mut query, target_user_id).await?;

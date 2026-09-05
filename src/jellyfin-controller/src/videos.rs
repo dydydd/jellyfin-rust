@@ -60,7 +60,10 @@ impl VideoService {
             .item_types
             .resolve(&item.item_type)
             .ok_or(VideoError::InvalidItemType)?;
-        if !matches!(item_type.name(), "Video" | "Movie") {
+        if !matches!(
+            item_type.name(),
+            "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+        ) {
             return Err(VideoError::InvalidItemType);
         }
         self.items.clear_alternate_sources(item_id).await?;
@@ -85,10 +88,7 @@ impl VideoService {
         }
 
         let mut video_ids = Vec::new();
-        for item_id in item_ids {
-            let Some(item) = self.items.get(*item_id).await? else {
-                continue;
-            };
+        for item in self.items.get_many(item_ids).await? {
             let Some(item_type) = self.item_types.resolve(&item.item_type) else {
                 continue;
             };
@@ -106,7 +106,7 @@ impl VideoService {
         }
 
         self.items
-            .merge_alternate_versions(&video_ids)
+            .merge_linked_alternate_versions(&video_ids)
             .await
             .map_err(VideoError::BaseItem)
     }

@@ -5,7 +5,10 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, entities::user};
+use jellyfin_data::{
+    BaseItemRepository, DeviceRepository, LinkedChildRepository, LinkedChildType, NewBaseItem,
+    NewDevice, entities::user,
+};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -137,8 +140,9 @@ async fn static_stream_uses_selected_alternate_media_source() {
 }
 
 #[tokio::test]
-async fn primary_and_alternate_entries_persist_complete_group_detachment() {
+async fn clearing_scan_created_local_alternates_does_not_split_the_group() {
     let fixture = Fixture::new().await;
+    let group_a_before = fixture.load_group(&fixture.group_a).await;
     let group_b_before = fixture.load_group(&fixture.group_b).await;
 
     let alternate_route = Fixture::route(fixture.group_a.alternates[0]);
@@ -150,8 +154,7 @@ async fn primary_and_alternate_entries_persist_complete_group_detachment() {
         StatusCode::NO_CONTENT
     );
     let group_a = fixture.load_group(&fixture.group_a).await;
-    assert_eq!(group_a.len(), 3);
-    assert!(group_a.iter().all(|item| item.primary_version_id.is_none()));
+    assert_eq!(group_a, group_a_before);
     assert_eq!(fixture.load_group(&fixture.group_b).await, group_b_before);
 
     let primary_route = Fixture::route(fixture.group_b.primary);
@@ -162,13 +165,7 @@ async fn primary_and_alternate_entries_persist_complete_group_detachment() {
             .status(),
         StatusCode::NO_CONTENT
     );
-    assert!(
-        fixture
-            .load_group(&fixture.group_b)
-            .await
-            .iter()
-            .all(|item| item.primary_version_id.is_none())
-    );
+    assert_eq!(fixture.load_group(&fixture.group_b).await, group_b_before);
     fixture.cleanup().await;
 }
 
@@ -179,7 +176,7 @@ async fn merge_versions_route_enforces_official_contract_and_persists_group() {
         "{},{}",
         fixture.group_a.alternates[0], fixture.group_b.primary
     );
-    let route = format!("/Videos/MergeVersions?ids={merge_ids}");
+    let route = format!("/Videos/MergeVersions?Ids={merge_ids}");
 
     assert_eq!(
         fixture.send(Method::POST, &route, None).await.status(),
@@ -216,18 +213,129 @@ async fn merge_versions_route_enforces_official_contract_and_persists_group() {
         StatusCode::NO_CONTENT
     );
 
-    let mut expected_ids = fixture.group_a.ids().to_vec();
-    expected_ids.extend(fixture.group_b.ids());
-    expected_ids.sort_unstable();
-    let expected_primary = expected_ids[0];
+    let expected_primary = fixture.group_a.primary.min(fixture.group_b.primary);
+    let linked_primary = if expected_primary == fixture.group_a.primary {
+        fixture.group_b.primary
+    } else {
+        fixture.group_a.primary
+    };
     let mut merged = fixture.load_group(&fixture.group_a).await;
     merged.extend(fixture.load_group(&fixture.group_b).await);
-    for item in merged {
+    for item in &merged {
         if item.id == expected_primary {
             assert_eq!(item.primary_version_id, None);
         } else {
             assert_eq!(item.primary_version_id, Some(expected_primary));
         }
+    }
+
+    let links = LinkedChildRepository::new(fixture.database.clone());
+    let primary_links = links.list(expected_primary).await.expect("primary links");
+    assert!(primary_links.iter().any(|link| {
+        link.child_id == linked_primary
+            && link.child_type == LinkedChildType::LinkedAlternateVersion
+    }));
+    for group in [&fixture.group_a, &fixture.group_b] {
+        let local_links = links.list(group.primary).await.expect("local links");
+        for alternate_id in group.alternates {
+            assert!(local_links.iter().any(|link| {
+                link.child_id == alternate_id
+                    && link.child_type == LinkedChildType::LocalAlternateVersion
+            }));
+        }
+    }
+
+    let source_types = fixture.media_source_types(expected_primary).await;
+    assert_eq!(
+        source_types.get(&linked_primary),
+        Some(&"Grouping".to_owned()),
+        "linked={linked_primary}, group_a={:?}, group_b={:?}, sources={source_types:?}",
+        fixture.group_a.ids(),
+        fixture.group_b.ids()
+    );
+    for item in &merged {
+        if item.id != linked_primary {
+            assert_eq!(
+                source_types.get(&item.id),
+                Some(&"Default".to_owned()),
+                "{source_types:?}"
+            );
+        }
+    }
+
+    let linked_source_types = fixture.media_source_types(linked_primary).await;
+    assert_eq!(
+        linked_source_types.get(&linked_primary),
+        Some(&"Default".to_owned())
+    );
+    assert_eq!(
+        linked_source_types.get(&expected_primary),
+        Some(&"Grouping".to_owned())
+    );
+    for group in [&fixture.group_a, &fixture.group_b] {
+        for local_alternate in group.alternates {
+            assert_eq!(
+                linked_source_types.get(&local_alternate),
+                Some(&"Default".to_owned()),
+                "{linked_source_types:?}"
+            );
+        }
+    }
+
+    let expected_group = if expected_primary == fixture.group_a.primary {
+        &fixture.group_a
+    } else {
+        &fixture.group_b
+    };
+    let local_source_types = fixture
+        .media_source_types(expected_group.alternates[0])
+        .await;
+    assert_eq!(
+        local_source_types.get(&expected_group.alternates[0]),
+        Some(&"Default".to_owned())
+    );
+    assert_eq!(
+        local_source_types.get(&expected_primary),
+        Some(&"Default".to_owned())
+    );
+    assert_eq!(
+        local_source_types.get(&linked_primary),
+        Some(&"Grouping".to_owned())
+    );
+    for group in [&fixture.group_a, &fixture.group_b] {
+        for local_alternate in group.alternates {
+            assert_eq!(
+                local_source_types.get(&local_alternate),
+                Some(&"Default".to_owned()),
+                "{local_source_types:?}"
+            );
+        }
+    }
+
+    assert_eq!(
+        fixture
+            .send(
+                Method::DELETE,
+                &Fixture::route(linked_primary),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    for group in [&fixture.group_a, &fixture.group_b] {
+        let restored = fixture.load_group(group).await;
+        assert_eq!(restored[0].primary_version_id, None);
+        assert_eq!(restored[1].primary_version_id, Some(group.primary));
+        assert_eq!(restored[2].primary_version_id, Some(group.primary));
+        assert!(
+            links
+                .list(group.primary)
+                .await
+                .expect("restored links")
+                .iter()
+                .all(|link| link.child_type == LinkedChildType::LocalAlternateVersion)
+        );
     }
 
     fixture.cleanup().await;
@@ -473,6 +581,30 @@ impl Fixture {
         items
     }
 
+    async fn media_source_types(&self, item_id: Uuid) -> std::collections::HashMap<Uuid, String> {
+        let details = body_json(
+            self.send(
+                Method::GET,
+                &format!("/Users/{}/Items/{item_id}", self.user_id),
+                Some(&self.user_token),
+            )
+            .await,
+        )
+        .await;
+        details["MediaSources"]
+            .as_array()
+            .unwrap_or_else(|| panic!("media sources for {item_id}: {details}"))
+            .iter()
+            .map(|source| {
+                (
+                    Uuid::parse_str(source["Id"].as_str().expect("source id"))
+                        .expect("UUID source id"),
+                    source["Type"].as_str().expect("source type").to_owned(),
+                )
+            })
+            .collect()
+    }
+
     async fn cleanup(self) {
         let ids = self
             .group_a
@@ -520,6 +652,10 @@ async fn create_group(
     create_item(repository, primary, label, primary_type, None).await;
     create_item(repository, alternates[0], label, "Video", Some(primary)).await;
     create_item(repository, alternates[1], label, "Movie", Some(primary)).await;
+    repository
+        .assign_local_alternate_versions(&[(alternates[0], primary), (alternates[1], primary)])
+        .await
+        .expect("local alternate relationships");
     VersionGroup {
         primary,
         alternates,
