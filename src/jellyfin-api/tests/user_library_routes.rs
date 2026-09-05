@@ -572,29 +572,50 @@ async fn media_source_defaults_follow_target_user_stream_preferences() {
 #[tokio::test]
 async fn media_sources_expand_all_video_versions_with_requested_version_first() {
     let fixture = UserLibraryFixture::new().await;
+    set_original_language_preference(&fixture.database, fixture.user_id).await;
     let items = BaseItemRepository::new(fixture.database.clone());
 
     let mut primary = item("Movie", "Versioned Movie", Some(fixture.root_id), false);
     primary.media_type = Some("Video".to_owned());
     primary.path = Some("/media/versioned-movie-1080p.mkv".to_owned());
+    primary.data = Some(json!({ "OriginalLanguage": "English" }));
     let primary = items.create(primary).await.expect("primary version");
     let mut alternate = item("Movie", "Versioned Movie", Some(fixture.root_id), false);
     alternate.media_type = Some("Video".to_owned());
     alternate.path = Some("/media/versioned-movie-2160p.mkv".to_owned());
     alternate.primary_version_id = Some(primary.id);
+    alternate.data = Some(json!({ "OriginalLanguage": "French" }));
     let alternate = items.create(alternate).await.expect("alternate version");
 
     for (source, codec) in [(&primary, "h264"), (&alternate, "hevc")] {
         MediaStreamService::new(fixture.database.clone())
             .save_media_streams(
                 source.id,
-                vec![MediaStream {
-                    index: 0,
-                    stream_type: MediaStreamType::Video,
-                    codec: Some(codec.to_owned()),
-                    path: source.path.clone(),
-                    ..MediaStream::default()
-                }],
+                vec![
+                    MediaStream {
+                        index: 0,
+                        stream_type: MediaStreamType::Video,
+                        codec: Some(codec.to_owned()),
+                        path: source.path.clone(),
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 1,
+                        stream_type: MediaStreamType::Audio,
+                        codec: Some("aac".to_owned()),
+                        language: Some("eng".to_owned()),
+                        path: source.path.clone(),
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 2,
+                        stream_type: MediaStreamType::Audio,
+                        codec: Some("aac".to_owned()),
+                        language: Some("fre".to_owned()),
+                        path: source.path.clone(),
+                        ..MediaStream::default()
+                    },
+                ],
             )
             .await
             .expect("version streams");
@@ -605,11 +626,14 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
         fixture.user_id, primary.id
     );
     let dto = get_json(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(dto["OriginalLanguage"], "English");
     let sources = dto["MediaSources"].as_array().expect("media sources");
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0]["Id"], primary.id.simple().to_string());
     assert_eq!(sources[0]["Name"], "1080p");
+    assert_eq!(sources[0]["DefaultAudioStreamIndex"], 1);
     assert_eq!(sources[1]["Name"], "2160p");
+    assert_eq!(sources[1]["DefaultAudioStreamIndex"], 2);
     assert_eq!(
         sources
             .iter()
@@ -625,6 +649,29 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     );
     assert_eq!(dto["MediaStreams"], sources[0]["MediaStreams"]);
 
+    let alternate_dto = get_json(
+        &fixture.app,
+        &format!(
+            "/Users/{}/Items/{}?Fields=MediaSources,MediaStreams",
+            fixture.user_id, alternate.id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(alternate_dto["OriginalLanguage"], "French");
+    assert_eq!(
+        alternate_dto["MediaSources"][0]["Id"],
+        alternate.id.simple().to_string()
+    );
+    assert_eq!(
+        alternate_dto["MediaSources"][0]["DefaultAudioStreamIndex"],
+        2
+    );
+    assert_eq!(
+        alternate_dto["MediaSources"][1]["DefaultAudioStreamIndex"],
+        1
+    );
+
     items.delete(alternate.id).await.expect("alternate cleanup");
     items.delete(primary.id).await.expect("primary cleanup");
     fixture.cleanup().await;
@@ -637,13 +684,40 @@ async fn original_language_audio_preference_uses_item_metadata() {
 
     let items = BaseItemRepository::new(fixture.database.clone());
     let video = create_stream_defaults_video(&fixture, Some("French")).await;
-    let route = format!(
-        "/Users/{}/Items/{}?fields=MediaSources,MediaStreams",
-        fixture.user_id, video.id
-    );
+    for route in [
+        format!(
+            "/Users/{}/Items/{}?fields=MediaSources,MediaStreams",
+            fixture.user_id, video.id
+        ),
+        format!(
+            "/Items/{}?userId={}&fields=MediaSources,MediaStreams",
+            video.id, fixture.user_id
+        ),
+    ] {
+        let item = get_json(&fixture.app, &route, &fixture.user_token).await;
+        assert_eq!(item["OriginalLanguage"], "French", "{route}");
+        assert_eq!(
+            item["MediaSources"][0]["DefaultAudioStreamIndex"], 1,
+            "{route}"
+        );
+    }
 
-    let item = get_json(&fixture.app, &route, &fixture.user_token).await;
-    assert_eq!(item["MediaSources"][0]["DefaultAudioStreamIndex"], 1);
+    let page = get_json(
+        &fixture.app,
+        &format!(
+            "/Items?userId={}&parentId={}&includeItemTypes=Movie",
+            fixture.user_id, fixture.root_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    let listed = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == video.id.simple().to_string())
+        .expect("original-language video in item page");
+    assert_eq!(listed["OriginalLanguage"], "French");
 
     items.delete(video.id).await.expect("video cleanup");
     fixture.cleanup().await;

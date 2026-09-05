@@ -1865,8 +1865,8 @@ pub(crate) async fn page_to_dto_with_options(
     for item in page.items {
         let item_id = item.id;
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
-        let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
+        let original_language = dto.original_language.clone();
         user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
         user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
         if requested_fields.wants_media_source_count() {

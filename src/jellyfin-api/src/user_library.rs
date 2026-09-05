@@ -279,6 +279,8 @@ pub struct BaseItemDto {
     pub official_rating: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_language: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub taglines: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -890,6 +892,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         .as_ref()
         .and_then(Value::as_object)
         .map(|object| object.contains_key("Lyrics") || object.contains_key("lyrics"));
+    let original_language = original_language_from_item(&item);
     BaseItemDto {
         name: item.name,
         server_id: server_id.to_owned(),
@@ -965,6 +968,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             item.data.as_ref(),
             &["OriginalTitle", "original_title", "originalTitle"],
         ),
+        original_language,
         taglines: metadata_taglines(item.data.as_ref()),
         status: metadata_string(item.data.as_ref(), &["Status", "status"]),
         custom_rating: metadata_string(item.data.as_ref(), &["CustomRating", "custom_rating"]),
@@ -1033,10 +1037,10 @@ pub(crate) async fn project_item_to_dto(
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
-    let original_language = original_language_from_item(&item);
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let mut dto = item_to_dto(item, state.server_id());
+    let original_language = dto.original_language.clone();
     attach_relation_metadata(&mut dto, relations.remove(&item_id).unwrap_or_default());
     attach_user_data_dto(&mut dto, user_data);
     if let Some(projection) = state
@@ -1187,8 +1191,8 @@ pub(crate) fn project_item_dto_with_versioned_sources(
 
     for source_item in source_items {
         let source_id = source_item.id;
-        let original_language = original_language_from_item(&source_item);
         let source_dto = item_to_dto(source_item, server_id);
+        let original_language = source_dto.original_language.clone();
         let mut streams = media_streams.remove(&source_id).unwrap_or_default();
         let (default_audio_stream_index, default_subtitle_stream_index) =
             apply_media_stream_defaults(
@@ -2531,6 +2535,7 @@ mod tests {
                 "CommunityRating": 8.5,
                 "CriticRating": 7.0,
                 "OriginalTitle": "Original",
+                "OriginalLanguage": "Japanese",
                 "SeriesName": "Example Series",
                 "SeasonName": "Season 2",
                 "Tagline": "Tag",
@@ -2598,6 +2603,7 @@ mod tests {
             Some("e19f5b6165c1331b55b7c60254e8695a")
         );
         assert_eq!(dto.original_title.as_deref(), Some("Original"));
+        assert_eq!(dto.original_language.as_deref(), Some("Japanese"));
         assert_eq!(dto.series_name.as_deref(), Some("Example Series"));
         assert_eq!(dto.season_name.as_deref(), Some("Season 2"));
         assert_eq!(dto.taglines, ["Tag"]);
