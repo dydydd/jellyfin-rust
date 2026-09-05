@@ -2,6 +2,6 @@ mod episode_metadata_service;
 
 pub use episode_metadata_service::{
     EpisodeLookupInfo, EpisodeMetadata, EpisodeMetadataCapability, EpisodeMetadataResult,
-    EpisodeMetadataService, EpisodeParentContext, EpisodeRefreshOptions, EpisodeRefreshOutcome,
-    SeasonContext, SeriesContext,
+    EpisodeMetadataService, EpisodeNameMergeMode, EpisodeParentContext, EpisodeRefreshOptions,
+    EpisodeRefreshOutcome, SeasonContext, SeriesContext,
 };

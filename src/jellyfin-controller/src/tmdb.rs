@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    path::Path,
     sync::Arc,
     time::Duration,
 };
@@ -17,8 +18,8 @@ use jellyfin_model::{ImageType, ProviderIdMap, RatingType, RemoteImageInfo, Remo
 use jellyfin_providers::tmdb::TmdbUtils;
 use jellyfin_providers::tv::{
     EpisodeLookupInfo, EpisodeMetadata, EpisodeMetadataCapability, EpisodeMetadataResult,
-    EpisodeMetadataService, EpisodeParentContext, EpisodeRefreshOptions, SeasonContext,
-    SeriesContext,
+    EpisodeMetadataService, EpisodeNameMergeMode, EpisodeParentContext, EpisodeRefreshOptions,
+    SeasonContext, SeriesContext,
 };
 use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::{Value, json};
@@ -1038,9 +1039,20 @@ impl TmdbMetadataProvider {
         item: base_item::Model,
         replace_data: bool,
     ) -> Result<bool, MetadataProviderError> {
+        let name_locked = metadata_field_locked(item.data.as_ref(), "Name");
+        let local_name = if name_locked {
+            None
+        } else {
+            local_episode_name(item.path.as_deref()).await
+        };
+        let name_merge_mode =
+            episode_name_merge_mode(replace_data, local_name.is_some(), name_locked);
         let parents = self.episode_parents(&item).await?;
         let item_id = item.id;
         let mut episode = episode_metadata_from_item(item);
+        if let Some(local_name) = local_name {
+            episode.name = Some(local_name);
+        }
         let outcome = EpisodeMetadataService::refresh(
             &mut episode,
             EpisodeParentContext {
@@ -1049,6 +1061,7 @@ impl TmdbMetadataProvider {
             },
             EpisodeRefreshOptions {
                 replace_data,
+                name_merge_mode,
                 metadata_language: Some(self.client.language.as_str()),
                 metadata_country_code: None,
             },
@@ -1644,6 +1657,51 @@ fn combine_episode_details(target: &mut TmdbEpisodeDetails, next: &TmdbEpisodeDe
             .get_or_insert_with(String::new)
             .push_str(&format!(" / {overview}"));
     }
+}
+
+fn episode_name_merge_mode(
+    replace_data: bool,
+    has_local_name: bool,
+    name_locked: bool,
+) -> EpisodeNameMergeMode {
+    if name_locked {
+        EpisodeNameMergeMode::Preserve
+    } else if has_local_name || !replace_data {
+        EpisodeNameMergeMode::FillMissing
+    } else {
+        EpisodeNameMergeMode::Replace
+    }
+}
+
+fn metadata_field_locked(data: Option<&Value>, field: &str) -> bool {
+    let Some(fields) = data.and_then(Value::as_object).and_then(|data| {
+        data.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("LockedFields"))
+            .map(|(_, value)| value)
+    }) else {
+        return false;
+    };
+
+    match fields {
+        Value::Array(fields) => fields.iter().any(|locked| {
+            locked
+                .as_str()
+                .is_some_and(|locked| locked.eq_ignore_ascii_case(field))
+        }),
+        Value::String(fields) => fields
+            .split(['|', ','])
+            .any(|locked| locked.trim().eq_ignore_ascii_case(field)),
+        _ => false,
+    }
+}
+
+async fn local_episode_name(path: Option<&str>) -> Option<String> {
+    let nfo_path = Path::new(path?).with_extension("nfo");
+    let input = tokio::fs::read_to_string(nfo_path).await.ok()?;
+    jellyfin_xbmc_metadata::parse_nfo(&input, jellyfin_xbmc_metadata::NfoDocumentKind::Episode)
+        .ok()?
+        .name
+        .filter(|name| !name.trim().is_empty())
 }
 
 fn episode_metadata_from_item(item: base_item::Model) -> EpisodeMetadata {
@@ -2536,6 +2594,63 @@ mod tests {
     #[test]
     fn tmdb_language_defaults_when_language_is_empty() {
         assert_eq!(tmdb_language("  ", "CN"), "en-US");
+    }
+
+    #[test]
+    fn episode_name_merge_mode_preserves_local_and_locked_names() {
+        assert_eq!(
+            episode_name_merge_mode(true, false, false),
+            EpisodeNameMergeMode::Replace
+        );
+        assert_eq!(
+            episode_name_merge_mode(true, true, false),
+            EpisodeNameMergeMode::FillMissing
+        );
+        assert_eq!(
+            episode_name_merge_mode(false, false, false),
+            EpisodeNameMergeMode::FillMissing
+        );
+        assert_eq!(
+            episode_name_merge_mode(true, false, true),
+            EpisodeNameMergeMode::Preserve
+        );
+    }
+
+    #[test]
+    fn episode_name_lock_lookup_is_case_insensitive() {
+        assert!(metadata_field_locked(
+            Some(&json!({ "lockedfields": ["overview", "name"] })),
+            "Name"
+        ));
+        assert!(metadata_field_locked(
+            Some(&json!({ "LockedFields": "Cast|NAME" })),
+            "Name"
+        ));
+        assert!(!metadata_field_locked(
+            Some(&json!({ "LockedFields": ["Overview"] })),
+            "Name"
+        ));
+    }
+
+    #[tokio::test]
+    async fn episode_nfo_title_is_detected_beside_media_file() {
+        let directory =
+            std::env::temp_dir().join(format!("jellyfin-episode-nfo-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let media_path = directory.join("Episode.mkv");
+        tokio::fs::write(
+            media_path.with_extension("nfo"),
+            "<episodedetails><title>Local Episode</title></episodedetails>",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            local_episode_name(media_path.to_str()).await.as_deref(),
+            Some("Local Episode")
+        );
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 
     #[test]

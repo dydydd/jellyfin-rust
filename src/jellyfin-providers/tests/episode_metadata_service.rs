@@ -3,8 +3,8 @@ use std::cell::RefCell;
 use jellyfin_model::{MetadataProvider, ProviderIdMap};
 use jellyfin_providers::tv::{
     EpisodeLookupInfo, EpisodeMetadata, EpisodeMetadataCapability, EpisodeMetadataResult,
-    EpisodeMetadataService, EpisodeParentContext, EpisodeRefreshOptions, SeasonContext,
-    SeriesContext,
+    EpisodeMetadataService, EpisodeNameMergeMode, EpisodeParentContext, EpisodeRefreshOptions,
+    SeasonContext, SeriesContext,
 };
 
 struct FixtureCapability {
@@ -228,6 +228,7 @@ fn lookup_info_carries_parent_provider_ids_and_normalizes_tmdb_language() {
         },
         EpisodeRefreshOptions {
             replace_data: false,
+            name_merge_mode: EpisodeNameMergeMode::FillMissing,
             metadata_language: Some("es-419"),
             metadata_country_code: Some("AR"),
         },
@@ -274,6 +275,7 @@ async fn refresh_merges_provider_result_and_then_synchronizes_parent_context() {
         parents,
         EpisodeRefreshOptions {
             replace_data: false,
+            name_merge_mode: EpisodeNameMergeMode::FillMissing,
             metadata_language: Some("en-us"),
             metadata_country_code: Some("US"),
         },
@@ -296,6 +298,85 @@ async fn refresh_merges_provider_result_and_then_synchronizes_parent_context() {
     );
     assert_eq!(capability.lookups.borrow().len(), 1);
     assert_eq!(outcome.lookup.metadata_language.as_deref(), Some("en-US"));
+}
+
+#[tokio::test]
+async fn episode_name_merge_modes_do_not_change_other_replace_rules() {
+    for (mode, expected_name) in [
+        (EpisodeNameMergeMode::Replace, "Provider Name"),
+        (EpisodeNameMergeMode::FillMissing, "Path Name"),
+        (EpisodeNameMergeMode::Preserve, "Path Name"),
+    ] {
+        let mut episode = EpisodeMetadata {
+            name: Some("Path Name".to_owned()),
+            overview: Some("Existing Overview".to_owned()),
+            ..EpisodeMetadata::default()
+        };
+        let capability = FixtureCapability {
+            result: Some(EpisodeMetadataResult {
+                item: EpisodeMetadata {
+                    name: Some("Provider Name".to_owned()),
+                    overview: Some("Provider Overview".to_owned()),
+                    ..EpisodeMetadata::default()
+                },
+                has_metadata: true,
+            }),
+            error: None,
+            lookups: RefCell::new(Vec::new()),
+        };
+
+        EpisodeMetadataService::refresh(
+            &mut episode,
+            EpisodeParentContext::default(),
+            EpisodeRefreshOptions {
+                replace_data: true,
+                name_merge_mode: mode,
+                ..EpisodeRefreshOptions::default()
+            },
+            &capability,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(episode.name.as_deref(), Some(expected_name));
+        assert_eq!(episode.overview.as_deref(), Some("Provider Overview"));
+    }
+}
+
+#[tokio::test]
+async fn fill_missing_and_preserve_differ_for_empty_episode_names() {
+    for (mode, expected_name) in [
+        (EpisodeNameMergeMode::FillMissing, Some("Provider Name")),
+        (EpisodeNameMergeMode::Preserve, None),
+    ] {
+        let mut episode = EpisodeMetadata::default();
+        let capability = FixtureCapability {
+            result: Some(EpisodeMetadataResult {
+                item: EpisodeMetadata {
+                    name: Some("Provider Name".to_owned()),
+                    ..EpisodeMetadata::default()
+                },
+                has_metadata: true,
+            }),
+            error: None,
+            lookups: RefCell::new(Vec::new()),
+        };
+
+        EpisodeMetadataService::refresh(
+            &mut episode,
+            EpisodeParentContext::default(),
+            EpisodeRefreshOptions {
+                replace_data: true,
+                name_merge_mode: mode,
+                ..EpisodeRefreshOptions::default()
+            },
+            &capability,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(episode.name.as_deref(), expected_name);
+    }
 }
 
 #[tokio::test]

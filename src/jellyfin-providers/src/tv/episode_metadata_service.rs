@@ -101,10 +101,23 @@ pub struct EpisodeLookupInfo {
     pub tmdb_season_id: Option<String>,
 }
 
+/// Controls remote-provider updates to an episode title independently from other metadata.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EpisodeNameMergeMode {
+    /// Replace a path-derived placeholder with the preferred remote title.
+    Replace,
+    /// Keep a non-empty local title while allowing a remote provider to fill a missing title.
+    #[default]
+    FillMissing,
+    /// Never update the title because the field is explicitly locked.
+    Preserve,
+}
+
 /// Refresh settings relevant to result merge and provider lookup.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EpisodeRefreshOptions<'a> {
     pub replace_data: bool,
+    pub name_merge_mode: EpisodeNameMergeMode,
     pub metadata_language: Option<&'a str>,
     pub metadata_country_code: Option<&'a str>,
 }
@@ -246,8 +259,7 @@ impl EpisodeMetadataService {
 
         let mut metadata_changed = false;
         if let Some(provider_result) = provider_result.filter(|result| result.has_metadata) {
-            metadata_changed |=
-                merge_owned_metadata(provider_result.item, episode, options.replace_data);
+            metadata_changed |= merge_owned_metadata(provider_result.item, episode, options);
         }
         metadata_changed |= Self::sync_parent_context(episode, parents);
 
@@ -262,10 +274,17 @@ impl EpisodeMetadataService {
 fn merge_owned_metadata(
     source: EpisodeMetadata,
     target: &mut EpisodeMetadata,
-    replace_data: bool,
+    options: EpisodeRefreshOptions<'_>,
 ) -> bool {
     let mut changed = false;
-    changed |= merge_owned_non_blank(source.name, &mut target.name, replace_data);
+    changed |= match options.name_merge_mode {
+        EpisodeNameMergeMode::Replace => merge_owned_non_blank(source.name, &mut target.name, true),
+        EpisodeNameMergeMode::FillMissing => {
+            merge_owned_non_blank(source.name, &mut target.name, false)
+        }
+        EpisodeNameMergeMode::Preserve => false,
+    };
+    let replace_data = options.replace_data;
     changed |= merge_owned_optional(source.overview, &mut target.overview, replace_data);
     changed |= merge_owned_optional(source.index_number, &mut target.index_number, replace_data);
     changed |= merge_owned_optional(
