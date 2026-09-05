@@ -8,9 +8,9 @@ use jellyfin_controller::MediaAttachmentService;
 use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewTrickplayInfo, NewUserData,
-    TrickplayInfoRepository, UserDataRepository,
-    entities::{base_item, user},
+    BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem, NewDevice,
+    NewTrickplayInfo, NewUserData, TrickplayInfoRepository, UserDataRepository,
+    entities::{base_item, item_value, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -59,6 +59,66 @@ async fn official_items_controller_contract() {
         assert!(body["TotalRecordCount"].is_number());
         assert!(body["StartIndex"].is_number());
     }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let movie = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("Swift DTO {}", fixture.suffix),
+        root.id,
+        serde_json::json!({
+            "Tagline": "One line",
+            "RemoteTrailers": [
+                "https://trailers.example/legacy",
+                {"Name": "Trailer", "Url": "https://trailers.example/named"}
+            ]
+        }),
+    )
+    .await;
+    let studio = ItemValueRepository::new(fixture.database.clone())
+        .link(
+            movie.id,
+            item_value::ItemValueType::Studios,
+            &format!("Swift Studio {}", fixture.suffix),
+        )
+        .await
+        .expect("studio link");
+
+    let body = body_json(
+        fixture
+            .request(
+                &format!("/Items?ids={}", movie.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let item = &body["Items"][0];
+    assert_eq!(item["Taglines"], serde_json::json!(["One line"]));
+    assert!(item.get("Tagline").is_none());
+    assert_eq!(
+        item["Studios"],
+        serde_json::json!([{
+            "Name": format!("Swift Studio {}", fixture.suffix),
+            "Id": studio.item_value_id.simple().to_string()
+        }])
+    );
+    assert_eq!(
+        item["RemoteTrailers"],
+        serde_json::json!([
+            {"Url": "https://trailers.example/legacy"},
+            {"Name": "Trailer", "Url": "https://trailers.example/named"}
+        ])
+    );
+
+    items.delete(movie.id).await.expect("movie cleanup");
     fixture.cleanup().await;
 }
 

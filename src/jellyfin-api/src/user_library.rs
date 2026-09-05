@@ -14,7 +14,7 @@ use jellyfin_controller::{
 use jellyfin_data::entities::{base_item, item_value, user_data};
 use jellyfin_model::{
     MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
-    SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
+    MediaUrl, NameIdPair, SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use serde::{Deserialize, Serialize};
@@ -161,7 +161,7 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub studios: Vec<String>,
+    pub studios: Vec<NameIdPair>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub community_rating: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,8 +170,8 @@ pub struct BaseItemDto {
     pub official_rating: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tagline: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub taglines: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -187,7 +187,7 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub production_locations: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub remote_trailers: Vec<String>,
+    pub remote_trailers: Vec<MediaUrl>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub air_days: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -766,7 +766,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         genres: metadata_strings(item.data.as_ref(), &["Genres", "genres"]),
         people: Vec::new(),
         tags: metadata_strings(item.data.as_ref(), &["Tags", "tags"]),
-        studios: metadata_strings(item.data.as_ref(), &["Studios", "studios"]),
+        studios: Vec::new(),
         community_rating: metadata_f64(
             item.data.as_ref(),
             &["CommunityRating", "community_rating"],
@@ -777,7 +777,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             item.data.as_ref(),
             &["OriginalTitle", "original_title", "originalTitle"],
         ),
-        tagline: metadata_string(item.data.as_ref(), &["Tagline", "tagline"]),
+        taglines: metadata_taglines(item.data.as_ref()),
         status: metadata_string(item.data.as_ref(), &["Status", "status"]),
         custom_rating: metadata_string(item.data.as_ref(), &["CustomRating", "custom_rating"]),
         collection_name: metadata_string(
@@ -800,10 +800,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             item.data.as_ref(),
             &["ProductionLocations", "production_locations"],
         ),
-        remote_trailers: metadata_strings(
-            item.data.as_ref(),
-            &["RemoteTrailers", "remote_trailers"],
-        ),
+        remote_trailers: metadata_remote_trailers(item.data.as_ref()),
         air_days: metadata_strings(item.data.as_ref(), &["AirDays", "air_days"]),
         end_date: metadata_string(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
@@ -926,7 +923,7 @@ pub(crate) struct ItemRelationMetadata {
     genres: Vec<String>,
     people: Vec<BaseItemPerson>,
     tags: Vec<String>,
-    studios: Vec<String>,
+    studios: Vec<NameIdPair>,
 }
 
 pub(crate) async fn load_relation_metadata(
@@ -946,7 +943,7 @@ pub(crate) async fn load_relation_metadata(
         .map_err(|_| ApiError::Internal)?;
     let mut studios = state
         .item_values
-        .values_for_items(&item_ids, item_value::ItemValueType::Studios)
+        .value_pairs_for_items(&item_ids, item_value::ItemValueType::Studios)
         .await
         .map_err(|_| ApiError::Internal)?;
     let mut people = state
@@ -984,7 +981,15 @@ pub(crate) async fn load_relation_metadata(
                 })
                 .collect(),
             tags: tags.remove(&item.id).unwrap_or_default(),
-            studios: studios.remove(&item.id).unwrap_or_default(),
+            studios: studios
+                .remove(&item.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|studio| NameIdPair {
+                    name: studio.value,
+                    id: studio.id.simple().to_string(),
+                })
+                .collect(),
         };
         result.insert(item.id, metadata);
     }
@@ -1695,6 +1700,48 @@ fn metadata_strings(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn metadata_taglines(data: Option<&Value>) -> Vec<String> {
+    let taglines = metadata_strings(data, &["Taglines", "taglines"]);
+    if taglines.is_empty() {
+        metadata_string(data, &["Tagline", "tagline"])
+            .into_iter()
+            .collect()
+    } else {
+        taglines
+    }
+}
+
+fn metadata_remote_trailers(data: Option<&Value>) -> Vec<MediaUrl> {
+    metadata_value(data, &["RemoteTrailers", "remote_trailers"])
+        .and_then(|value| value.as_array().cloned())
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|value| match value {
+                    Value::String(url) if !url.is_empty() => Some(MediaUrl {
+                        url: Some(url),
+                        name: None,
+                    }),
+                    Value::Object(object) => object
+                        .get("Url")
+                        .or_else(|| object.get("url"))
+                        .and_then(Value::as_str)
+                        .filter(|url| !url.is_empty())
+                        .map(|url| MediaUrl {
+                            url: Some(url.to_owned()),
+                            name: object
+                                .get("Name")
+                                .or_else(|| object.get("name"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                        }),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1738,6 +1785,10 @@ mod tests {
                 "Height": 1080,
                 "AirDays": ["Monday", "Friday"],
                 "ProductionLocations": ["Los Angeles"],
+                "RemoteTrailers": [
+                    "https://trailers.example/legacy",
+                    {"Name": "Official Trailer", "Url": "https://trailers.example/official"}
+                ],
                 "StrmTarget": "/CloudNAS/Movie/movie.mkv"
             })),
             path: Some("/library/Movie.strm".to_owned()),
@@ -1771,7 +1822,20 @@ mod tests {
         assert_eq!(dto.community_rating, Some(8.5));
         assert_eq!(dto.critic_rating, Some(7.0));
         assert_eq!(dto.original_title.as_deref(), Some("Original"));
-        assert_eq!(dto.tagline.as_deref(), Some("Tag"));
+        assert_eq!(dto.taglines, ["Tag"]);
+        assert_eq!(
+            dto.remote_trailers,
+            [
+                MediaUrl {
+                    url: Some("https://trailers.example/legacy".to_owned()),
+                    name: None,
+                },
+                MediaUrl {
+                    url: Some("https://trailers.example/official".to_owned()),
+                    name: Some("Official Trailer".to_owned()),
+                }
+            ]
+        );
         assert_eq!(dto.status.as_deref(), Some("Ended"));
         assert_eq!(dto.is_locked, Some(true));
         assert_eq!(dto.width, Some(1920));
@@ -1790,6 +1854,16 @@ mod tests {
                 .unwrap()
                 .get("MediaSourcePath")
                 .is_none()
+        );
+        let json = serde_json::to_value(&dto).unwrap();
+        assert!(json.get("Tagline").is_none());
+        assert_eq!(json["Taglines"], json!(["Tag"]));
+        assert_eq!(
+            json["RemoteTrailers"],
+            json!([
+                {"Url": "https://trailers.example/legacy"},
+                {"Name": "Official Trailer", "Url": "https://trailers.example/official"}
+            ])
         );
     }
 

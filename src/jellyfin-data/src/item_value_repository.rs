@@ -62,6 +62,12 @@ pub struct ItemValueInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemValuePair {
+    pub id: Uuid,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemValuePage {
     pub values: Vec<ItemValueInfo>,
     pub total_record_count: u64,
@@ -261,6 +267,57 @@ impl ItemValueRepository {
             let item_id = row.try_get("", "item_id")?;
             let value = row.try_get("", "value")?;
             result.entry(item_id).or_default().push(value);
+        }
+        Ok(result)
+    }
+
+    /// Loads normalized value identifiers and display names of one type for
+    /// many items in one query.
+    ///
+    /// Values are ordered by clean name and stable identifier. This is used by
+    /// API projections whose official DTO shape contains both `Name` and `Id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn value_pairs_for_items(
+        &self,
+        item_ids: &[Uuid],
+        value_type: item_value::ItemValueType,
+    ) -> Result<HashMap<Uuid, Vec<ItemValuePair>>, ItemValueError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut values = vec![item_value_type_code(value_type).into()];
+        let placeholders = (2..=item_ids.len() + 1)
+            .map(|index| format!("${index}::uuid"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        values.extend(item_ids.iter().copied().map(SeaValue::from));
+        let rows = self
+            .database
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "SELECT map.item_id, value.item_value_id, value.value \
+                     FROM jellyfin.item_value_map AS map \
+                     INNER JOIN jellyfin.item_values AS value \
+                       ON value.item_value_id = map.item_value_id \
+                     WHERE value.type = $1 \
+                       AND map.item_id IN ({placeholders}) \
+                     ORDER BY map.item_id, value.clean_value, value.item_value_id"
+                ),
+                values,
+            ))
+            .await?;
+        let mut result = HashMap::<Uuid, Vec<ItemValuePair>>::new();
+        for row in rows {
+            let item_id = row.try_get("", "item_id")?;
+            let pair = ItemValuePair {
+                id: row.try_get("", "item_value_id")?,
+                value: row.try_get("", "value")?,
+            };
+            result.entry(item_id).or_default().push(pair);
         }
         Ok(result)
     }

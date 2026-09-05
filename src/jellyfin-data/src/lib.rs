@@ -48,7 +48,7 @@ pub use collection_repository::{CollectionRepository, CollectionStoreError};
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{
-    ItemValueError, ItemValueInfo, ItemValueOrder, ItemValuePage, ItemValueQuery,
+    ItemValueError, ItemValueInfo, ItemValueOrder, ItemValuePage, ItemValuePair, ItemValueQuery,
     ItemValueRepository,
 };
 pub use keyframe_data_repository::{
