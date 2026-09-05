@@ -52,6 +52,15 @@ pub(crate) struct BaseItemDtoFields {
 
 impl BaseItemDtoFields {
     #[must_use]
+    const fn all() -> Self {
+        Self {
+            media_sources: true,
+            media_streams: true,
+            trickplay: true,
+        }
+    }
+
+    #[must_use]
     pub(crate) const fn media_sources() -> Self {
         Self {
             media_sources: true,
@@ -359,14 +368,13 @@ pub(crate) async fn get_item_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
-    Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
     get_item_for(
         state,
         headers,
         Some(user_id),
         item_id,
-        BaseItemDtoFields::from_names(&query.fields),
+        BaseItemDtoFields::all(),
     )
     .await
 }
@@ -382,7 +390,7 @@ pub(crate) async fn get_item(
         headers,
         query.user_id,
         item_id,
-        BaseItemDtoFields::from_names(&query.fields),
+        BaseItemDtoFields::all(),
     )
     .await
 }

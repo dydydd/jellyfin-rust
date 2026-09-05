@@ -132,37 +132,39 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
 async fn media_stream_fields_are_projected_for_single_item_routes() {
     let fixture = UserLibraryFixture::new().await;
 
-    let route = format!(
-        "/Users/{}/Items/{}?fields=MediaSources,MediaStreams",
-        fixture.user_id, fixture.item_id
-    );
-    let item = get_json(&fixture.app, &route, &fixture.user_token).await;
+    let routes = [
+        format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id),
+        format!("/Items/{}?UserId={}", fixture.item_id, fixture.user_id),
+    ];
+    for route in routes {
+        let item = get_json(&fixture.app, &route, &fixture.user_token).await;
 
-    assert_eq!(item["MediaSources"].as_array().unwrap().len(), 1);
-    assert_eq!(item["MediaSources"][0]["Path"], "/media/Test Song.mkv");
-    assert_eq!(item["MediaSources"][0]["Name"], "Test Song");
-    assert_eq!(
-        item["MediaSources"][0]["MediaStreams"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        item["MediaSources"][0]["MediaAttachments"][0]["FileName"],
-        "poster.jpg"
-    );
-    assert_eq!(item["MediaSources"][0]["MediaAttachments"][0]["Index"], 4);
-    assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
-    assert_eq!(item["MediaSources"][0]["MediaStreams"][0]["Type"], "Audio");
-    assert_eq!(item["MediaStreams"][0]["Type"], "Audio");
-    assert_eq!(item["MediaStreams"][0]["Language"], "deu");
+        assert_eq!(item["MediaSources"].as_array().unwrap().len(), 1, "{route}");
+        assert_eq!(item["MediaSources"][0]["Path"], "/media/Test Song.mkv");
+        assert_eq!(item["MediaSources"][0]["Name"], "Test Song");
+        assert_eq!(
+            item["MediaSources"][0]["MediaStreams"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            item["MediaSources"][0]["MediaAttachments"][0]["FileName"],
+            "poster.jpg"
+        );
+        assert_eq!(item["MediaSources"][0]["MediaAttachments"][0]["Index"], 4);
+        assert_eq!(item["MediaStreams"].as_array().unwrap().len(), 1);
+        assert_eq!(item["MediaSources"][0]["MediaStreams"][0]["Type"], "Audio");
+        assert_eq!(item["MediaStreams"][0]["Type"], "Audio");
+        assert_eq!(item["MediaStreams"][0]["Language"], "deu");
+    }
 
     fixture.cleanup().await;
 }
 
 #[tokio::test]
-async fn trickplay_field_is_opt_in_for_single_video_items() {
+async fn trickplay_is_projected_by_default_for_single_video_items() {
     let fixture = UserLibraryFixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
     let mut video = item("Movie", "Trickplay Video", Some(fixture.root_id), false);
@@ -185,14 +187,7 @@ async fn trickplay_field_is_opt_in_for_single_video_items() {
         .expect("trickplay metadata");
 
     let route = format!("/Users/{}/Items/{}", fixture.user_id, video.id);
-    let plain = get_json(&fixture.app, &route, &fixture.user_token).await;
-    assert!(plain.get("Trickplay").is_none());
-    let projected = get_json(
-        &fixture.app,
-        &format!("{route}?fields=trickPLAY"),
-        &fixture.user_token,
-    )
-    .await;
+    let projected = get_json(&fixture.app, &route, &fixture.user_token).await;
     assert_eq!(
         projected["Trickplay"][video.id.simple().to_string()]["640"]["Bandwidth"],
         88_000
