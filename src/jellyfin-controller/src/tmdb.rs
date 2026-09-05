@@ -1651,7 +1651,9 @@ async fn episode_name_merge_policy(
         return (None, EpisodeNameMergeMode::Preserve);
     }
     if let Some(local_name) = local_episode_name(item.path.as_deref()).await {
-        return (Some(local_name), EpisodeNameMergeMode::Preserve);
+        if !episode_title_value_is_placeholder(Some(&local_name), item, series_name) {
+            return (Some(local_name), EpisodeNameMergeMode::Preserve);
+        }
     }
     if episode_name_is_placeholder(item, series_name) {
         (None, EpisodeNameMergeMode::Replace)
@@ -2788,6 +2790,35 @@ mod tests {
             mode
         ));
         assert_eq!(with_nfo.name.as_deref(), Some("Local Episode"));
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn episode_name_policy_does_not_preserve_local_nfo_series_placeholder() {
+        let directory =
+            std::env::temp_dir().join(format!("jellyfin-episode-policy-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let media_path = directory.join("S01E02.mkv");
+        tokio::fs::write(
+            media_path.with_extension("nfo"),
+            "<episodedetails><title>Series Title</title></episodedetails>",
+        )
+        .await
+        .unwrap();
+        let mut episode = episode_item("Series Title", media_path.to_str().unwrap(), 2);
+
+        let (local_name, mode) = episode_name_merge_policy(&episode, Some("Series Title")).await;
+
+        assert!(local_name.is_none());
+        assert_eq!(mode, EpisodeNameMergeMode::Replace);
+        assert!(apply_episode_name(
+            &mut episode,
+            local_name.as_deref(),
+            Some("Remote Episode"),
+            mode,
+        ));
+        assert_eq!(episode.name.as_deref(), Some("Remote Episode"));
 
         tokio::fs::remove_dir_all(directory).await.unwrap();
     }

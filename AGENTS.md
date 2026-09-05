@@ -47,7 +47,7 @@
 - Apply post-provider `OriginalTitle` episode repairs as one PostgreSQL set-based update scoped to the refreshed series or episode. Do not load every series descendant and issue per-episode updates for this repair.
 - Metadata providers must have deterministic priority and merge behavior. Network calls need timeouts, bounded concurrency, and useful error context.
 - Lazy `.strm` probing must have a process-level deadline that terminates FFprobe before returning; an async timeout around an uncancelled blocking child is not sufficient because client retries can accumulate processes and memory.
-- During episode refresh, merge a neighboring local NFO before remote metadata: preserve a non-empty local title, allow the first remote result to replace only a path-derived placeholder when no local title exists, and honor `LockedFields.Name` even for a full refresh.
+- During episode refresh, merge a neighboring local NFO before remote metadata: preserve a non-empty established local title, but continue to treat a local title equal to the series or path-derived name as a replaceable placeholder; allow the first remote result to replace only such placeholders, and honor `LockedFields.Name` even for a full refresh.
 - Cancellation of scans and refreshes must promptly stop new work, release locks/permits, and leave the database in a consistent state.
 
 ## Validation
