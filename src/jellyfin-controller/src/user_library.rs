@@ -524,9 +524,9 @@ impl UserLibraryService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<Value, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        let item = self
+            .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let item = self.load_item(item_id).await?;
         metadata_value(item.data.as_ref(), &["Lyrics", "lyrics"])
             .cloned()
             .ok_or(UserLibraryError::LyricsNotFound)
@@ -543,12 +543,9 @@ impl UserLibraryService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<Vec<Value>, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        let mut item = self
+            .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let mut item = self.load_item(item_id).await?;
-        if !item.item_type.eq_ignore_ascii_case("Audio") {
-            return Err(UserLibraryError::ItemNotFound);
-        }
         let request = LyricSearchRequest {
             song_name: item.name.take(),
             album_name: metadata_string(item.data.as_ref(), &["Album"]),
@@ -577,12 +574,9 @@ impl UserLibraryService {
         item_id: Uuid,
         lyric_id: &str,
     ) -> Result<Value, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        let mut item = self
+            .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let mut item = self.load_item(item_id).await?;
-        if !item.item_type.eq_ignore_ascii_case("Audio") {
-            return Err(UserLibraryError::ItemNotFound);
-        }
         let Some(lyric_file) = self.lyrics.get_lyrics(lyric_id) else {
             return Err(UserLibraryError::LyricsNotFound);
         };
@@ -645,12 +639,9 @@ impl UserLibraryService {
         item_id: Uuid,
         lyrics: Value,
     ) -> Result<Value, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        let mut item = self
+            .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let mut item = self.load_item(item_id).await?;
-        if !item.item_type.eq_ignore_ascii_case("Audio") {
-            return Err(UserLibraryError::ItemNotFound);
-        }
         if !matches!(item.data, Some(Value::Object(_))) {
             item.data = Some(Value::Object(serde_json::Map::default()));
         }
@@ -678,12 +669,9 @@ impl UserLibraryService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<(), UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        let mut item = self
+            .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let mut item = self.load_item(item_id).await?;
-        if !item.item_type.eq_ignore_ascii_case("Audio") {
-            return Err(UserLibraryError::ItemNotFound);
-        }
         let Some(data) = item.data.as_mut().and_then(Value::as_object_mut) else {
             return Ok(());
         };
@@ -691,6 +679,23 @@ impl UserLibraryService {
         data.remove("lyrics");
         self.items.update(item).await?;
         Ok(())
+    }
+
+    /// Matches the official `GetItemById<Audio>(id, user)` lookup used by every item-scoped
+    /// lyrics endpoint: hidden items and non-audio rows both surface as not found.
+    async fn audio_item(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<base_item::Model, UserLibraryError> {
+        let item = self
+            .item(authenticated_user, target_user_id, item_id)
+            .await?;
+        if !item.item_type.eq_ignore_ascii_case("Audio") {
+            return Err(UserLibraryError::ItemNotFound);
+        }
+        Ok(item)
     }
 
     async fn validate_user(

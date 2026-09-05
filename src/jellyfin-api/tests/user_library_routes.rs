@@ -12,7 +12,7 @@ use jellyfin_data::{
     UserDataRepository,
     entities::{base_item, item_value, user},
 };
-use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
+use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
     Set,
@@ -615,6 +615,111 @@ async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata()
     .await;
     assert_eq!(item["HasLyrics"], false);
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn lyric_routes_hide_policy_blocked_and_non_audio_items() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let values = ItemValueRepository::new(fixture.database.clone());
+
+    let mut blocked_audio = item(
+        "Audio",
+        "Policy-blocked lyrics",
+        Some(fixture.root_id),
+        false,
+    );
+    blocked_audio.media_type = Some("Audio".to_owned());
+    blocked_audio.data = Some(json!({
+        "Lyrics": {
+            "Metadata": {},
+            "Lyrics": [{ "Text": "Private line", "Start": null, "Cues": null }]
+        }
+    }));
+    let blocked_audio = items.create(blocked_audio).await.expect("blocked audio");
+    values
+        .link(
+            blocked_audio.id,
+            item_value::ItemValueType::Tags,
+            "BlockedLyrics",
+        )
+        .await
+        .expect("blocked lyric tag");
+
+    let mut non_audio = item(
+        "Movie",
+        "Movie with lyric-shaped metadata",
+        Some(fixture.root_id),
+        false,
+    );
+    non_audio.media_type = Some("Video".to_owned());
+    non_audio.data = Some(json!({
+        "Lyrics": {
+            "Metadata": {},
+            "Lyrics": [{ "Text": "Not audio", "Start": null, "Cues": null }]
+        }
+    }));
+    let non_audio = items.create(non_audio).await.expect("non-audio item");
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.enable_lyric_management = true;
+    policy.blocked_tags = vec!["BlockedLyrics".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("lyric manager policy");
+
+    let blocked_base = format!("/Audio/{}/Lyrics", blocked_audio.id);
+    for response in [
+        request(&fixture.app, &blocked_base, &fixture.user_token).await,
+        request(
+            &fixture.app,
+            &format!("/Audio/{}/RemoteSearch/Lyrics", blocked_audio.id),
+            &fixture.user_token,
+        )
+        .await,
+        request_post_body(
+            &fixture.app,
+            &format!("{blocked_base}?fileName=blocked.txt"),
+            &fixture.user_token,
+            "Replacement line",
+        )
+        .await,
+        request_post(
+            &fixture.app,
+            &format!(
+                "/Audio/{}/RemoteSearch/Lyrics/unavailable",
+                blocked_audio.id
+            ),
+            &fixture.user_token,
+        )
+        .await,
+        request_delete(&fixture.app, &blocked_base, &fixture.user_token).await,
+    ] {
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    let still_present = get_json(&fixture.app, &blocked_base, &fixture.administrator_token).await;
+    assert_eq!(still_present["Lyrics"][0]["Text"], "Private line");
+
+    let non_audio_response = request(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics", non_audio.id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(non_audio_response.status(), StatusCode::NOT_FOUND);
+
+    items
+        .delete(blocked_audio.id)
+        .await
+        .expect("blocked audio cleanup");
+    items.delete(non_audio.id).await.expect("non-audio cleanup");
     fixture.cleanup().await;
 }
 
