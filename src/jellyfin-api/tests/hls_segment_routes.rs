@@ -635,6 +635,7 @@ async fn active_encoding_cleanup_matches_official_auth_and_required_query_contra
         route,
         "/Videos/ActiveEncodings?DeviceId=hls-tests&PlaySessionId=play-session",
         "/Videos/ActiveEncodings?deviceid=hls-tests&playsessionid=play-session",
+        "/videos/activeencodings?deviceid=hls-tests&playsessionid=play-session",
     ] {
         assert_eq!(
             fixture

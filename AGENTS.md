@@ -52,7 +52,8 @@
 - ASP.NET route, query-name, and JSON-property binding is case-insensitive. Compatibility tests must cover PascalCase, camelCase, and representative lowercase legacy requests; do not assume an Axum route or Serde field is equivalent merely because one casing works.
 - When a catch-all implements several official HLS or trickplay route templates, keep concrete
   official-path dispatch tests and representative lowercase aliases so Axum does not regress the
-  case-insensitive ASP.NET route contract.
+  case-insensitive ASP.NET route contract. Lowercase compatibility must include every static path
+  segment, including compound segments such as `ActiveEncodings`.
 - Follow the official `JsonDefaults` value semantics. Where it permits them, accept numeric strings and case-insensitive or integer enum representations, and mirror the full official parameter set when implementing a legacy endpoint.
 - Bind the eight official virtual-folder `CollectionTypeOptions` values case-insensitively and persist/project their canonical lowercase wire names. Keep `mixed` valid for virtual-folder management but omit it from `BaseItemDto.CollectionType`, and tolerate legacy mixed-case persisted view metadata.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.

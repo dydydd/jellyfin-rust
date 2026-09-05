@@ -979,6 +979,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
+            "/videos/activeencodings",
+            axum::routing::delete(hls_segment::stop_active_encoding),
+        )
+        .route(
             "/Videos/{item_id}/stream",
             get(videos::stream).head(videos::stream),
         )
