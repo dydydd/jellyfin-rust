@@ -3,73 +3,9 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use jellyfin_data::entities::base_item;
+use jellyfin_data::{OFFICIAL_ITEM_TYPE_ALIASES, entities::base_item};
 use thiserror::Error;
 use tracing::warn;
-
-const DEFAULT_ITEM_TYPES: &[(&str, &str)] = &[
-    (
-        "AggregateFolder",
-        "MediaBrowser.Controller.Entities.AggregateFolder",
-    ),
-    ("Audio", "MediaBrowser.Controller.Entities.Audio.Audio"),
-    ("AudioBook", "MediaBrowser.Controller.Entities.AudioBook"),
-    (
-        "BasePluginFolder",
-        "MediaBrowser.Controller.Entities.BasePluginFolder",
-    ),
-    ("Book", "MediaBrowser.Controller.Entities.Book"),
-    ("BoxSet", "MediaBrowser.Controller.Entities.Movies.BoxSet"),
-    ("Channel", "MediaBrowser.Controller.Channels.Channel"),
-    (
-        "CollectionFolder",
-        "MediaBrowser.Controller.Entities.CollectionFolder",
-    ),
-    ("Episode", "MediaBrowser.Controller.Entities.TV.Episode"),
-    ("Folder", "MediaBrowser.Controller.Entities.Folder"),
-    ("Genre", "MediaBrowser.Controller.Entities.Genre"),
-    ("Movie", "MediaBrowser.Controller.Entities.Movies.Movie"),
-    (
-        "LiveTvChannel",
-        "MediaBrowser.Controller.LiveTv.LiveTvChannel",
-    ),
-    (
-        "LiveTvProgram",
-        "MediaBrowser.Controller.LiveTv.LiveTvProgram",
-    ),
-    (
-        "MusicAlbum",
-        "MediaBrowser.Controller.Entities.Audio.MusicAlbum",
-    ),
-    (
-        "MusicArtist",
-        "MediaBrowser.Controller.Entities.Audio.MusicArtist",
-    ),
-    (
-        "MusicGenre",
-        "MediaBrowser.Controller.Entities.Audio.MusicGenre",
-    ),
-    ("MusicVideo", "MediaBrowser.Controller.Entities.MusicVideo"),
-    ("Person", "MediaBrowser.Controller.Entities.Person"),
-    ("Photo", "MediaBrowser.Controller.Entities.Photo"),
-    ("PhotoAlbum", "MediaBrowser.Controller.Entities.PhotoAlbum"),
-    ("Playlist", "MediaBrowser.Controller.Playlists.Playlist"),
-    (
-        "PlaylistsFolder",
-        "Emby.Server.Implementations.Playlists.PlaylistsFolder",
-    ),
-    ("Season", "MediaBrowser.Controller.Entities.TV.Season"),
-    ("Series", "MediaBrowser.Controller.Entities.TV.Series"),
-    ("Studio", "MediaBrowser.Controller.Entities.Studio"),
-    ("Trailer", "MediaBrowser.Controller.Entities.Trailer"),
-    (
-        "UserRootFolder",
-        "MediaBrowser.Controller.Entities.UserRootFolder",
-    ),
-    ("UserView", "MediaBrowser.Controller.Entities.UserView"),
-    ("Video", "MediaBrowser.Controller.Entities.Video"),
-    ("Year", "MediaBrowser.Controller.Entities.Year"),
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownItemType {
@@ -128,7 +64,7 @@ pub struct ItemTypeRegistry {
 impl Default for ItemTypeRegistry {
     fn default() -> Self {
         let registry = Self::empty();
-        for &(short_name, qualified_name) in DEFAULT_ITEM_TYPES {
+        for &(short_name, qualified_name) in OFFICIAL_ITEM_TYPE_ALIASES {
             registry
                 .register(short_name, [qualified_name])
                 .expect("default item type names must be unique and valid");

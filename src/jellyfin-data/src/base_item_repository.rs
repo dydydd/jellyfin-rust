@@ -17,7 +17,10 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::entities::{ancestor_id, base_item, item_value, linked_child, user_data};
+use crate::{
+    entities::{ancestor_id, base_item, item_value, linked_child, user_data},
+    item_types::expand_item_type_aliases,
+};
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
 const VIDEO_ITEM_TYPES_SQL: &str = "('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer', \
@@ -1492,14 +1495,12 @@ impl BaseItemRepository {
             ));
         }
         if !query.include_item_types.is_empty() {
-            select = select.filter(
-                base_item::Column::ItemType.is_in(query.include_item_types.iter().cloned()),
-            );
+            let item_types = expand_item_type_aliases(&query.include_item_types);
+            select = select.filter(base_item::Column::ItemType.is_in(item_types));
         }
         if !query.exclude_item_types.is_empty() {
-            select = select.filter(
-                base_item::Column::ItemType.is_not_in(query.exclude_item_types.iter().cloned()),
-            );
+            let item_types = expand_item_type_aliases(&query.exclude_item_types);
+            select = select.filter(base_item::Column::ItemType.is_not_in(item_types));
         }
         if !query.media_types.is_empty() {
             select = select
@@ -4493,20 +4494,10 @@ fn append_raw_item_filters(
         push_bind(sql, values, original_pattern, "");
         sql.push(')');
     }
-    append_string_list_filter(
-        sql,
-        values,
-        "item.item_type",
-        &query.include_item_types,
-        false,
-    );
-    append_string_list_filter(
-        sql,
-        values,
-        "item.item_type",
-        &query.exclude_item_types,
-        true,
-    );
+    let include_item_types = expand_item_type_aliases(&query.include_item_types);
+    append_string_list_filter(sql, values, "item.item_type", &include_item_types, false);
+    let exclude_item_types = expand_item_type_aliases(&query.exclude_item_types);
+    append_string_list_filter(sql, values, "item.item_type", &exclude_item_types, true);
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
     append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
@@ -5840,5 +5831,47 @@ fn map_database_error(error: DbErr) -> BaseItemError {
         BaseItemError::ParentNotFound
     } else {
         BaseItemError::Database(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sea_orm::Value as SeaValue;
+
+    use super::{BaseItemQuery, append_raw_item_filters};
+
+    #[test]
+    fn raw_item_filters_expand_canonical_and_persisted_type_names() {
+        let query = BaseItemQuery {
+            include_item_types: vec!["movie".to_owned()],
+            exclude_item_types: vec!["MediaBrowser.Controller.Entities.TV.Episode".to_owned()],
+            ..Default::default()
+        };
+        let mut sql = String::new();
+        let mut values = Vec::new();
+
+        append_raw_item_filters(&mut sql, &mut values, &query, false);
+
+        assert!(sql.contains("item.item_type IN ($1, $2)"));
+        assert!(sql.contains("item.item_type NOT IN ($3, $4)"));
+        assert_eq!(
+            string_values(&values),
+            [
+                "Movie",
+                "MediaBrowser.Controller.Entities.Movies.Movie",
+                "Episode",
+                "MediaBrowser.Controller.Entities.TV.Episode",
+            ]
+        );
+    }
+
+    fn string_values(values: &[SeaValue]) -> Vec<&str> {
+        values
+            .iter()
+            .map(|value| match value {
+                SeaValue::String(Some(value)) => value.as_str(),
+                value => panic!("expected string bind value, got {value:?}"),
+            })
+            .collect()
     }
 }

@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{
     base_item_repository::{BaseItemQuery, policy_filter_sql},
     entities::{base_item, item_value, item_value_map},
+    item_types::expand_item_type_aliases,
 };
 
 #[derive(Debug, Error)]
@@ -718,7 +719,8 @@ fn append_count_scope_filters(
         }
     }
     let item_type = format!("{table}.item_type");
-    append_string_list_filter(sql, values, &item_type, &query.exclude_item_types, true);
+    let exclude_item_types = expand_item_type_aliases(&query.exclude_item_types);
+    append_string_list_filter(sql, values, &item_type, &exclude_item_types, true);
     let media_type = format!("{table}.media_type");
     append_string_list_filter(sql, values, &media_type, &query.media_types, false);
 }
@@ -761,20 +763,10 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
             push_bind(sql, values, parent_id, " AND item.parent_id = ");
         }
     }
-    append_string_list_filter(
-        sql,
-        values,
-        "item.item_type",
-        &query.include_item_types,
-        false,
-    );
-    append_string_list_filter(
-        sql,
-        values,
-        "item.item_type",
-        &query.exclude_item_types,
-        true,
-    );
+    let include_item_types = expand_item_type_aliases(&query.include_item_types);
+    append_string_list_filter(sql, values, "item.item_type", &include_item_types, false);
+    let exclude_item_types = expand_item_type_aliases(&query.exclude_item_types);
+    append_string_list_filter(sql, values, "item.item_type", &exclude_item_types, true);
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
     append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
@@ -1041,5 +1033,57 @@ fn validate_value(value: &str) -> Result<&str, ItemValueError> {
         Err(ItemValueError::InvalidValue)
     } else {
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sea_orm::Value as SeaValue;
+
+    use super::{ItemValueQuery, append_count_scope_filters, append_item_filters};
+
+    #[test]
+    fn item_value_filters_expand_type_aliases_in_matching_and_count_scopes() {
+        let query = ItemValueQuery {
+            include_item_types: vec!["movie".to_owned()],
+            exclude_item_types: vec!["EPISODE".to_owned()],
+            ..Default::default()
+        };
+        let mut matching_sql = String::new();
+        let mut matching_values = Vec::new();
+
+        append_item_filters(&mut matching_sql, &mut matching_values, &query);
+
+        assert!(matching_sql.contains("item.item_type IN ($1, $2)"));
+        assert!(matching_sql.contains("item.item_type NOT IN ($3, $4)"));
+        assert_eq!(
+            string_values(&matching_values),
+            [
+                "Movie",
+                "MediaBrowser.Controller.Entities.Movies.Movie",
+                "Episode",
+                "MediaBrowser.Controller.Entities.TV.Episode",
+            ]
+        );
+
+        let mut count_sql = String::new();
+        let mut count_values = Vec::new();
+        append_count_scope_filters(&mut count_sql, &mut count_values, &query, "counted");
+
+        assert!(count_sql.contains("counted.item_type NOT IN ($1, $2)"));
+        assert_eq!(
+            string_values(&count_values),
+            ["Episode", "MediaBrowser.Controller.Entities.TV.Episode"]
+        );
+    }
+
+    fn string_values(values: &[SeaValue]) -> Vec<&str> {
+        values
+            .iter()
+            .map(|value| match value {
+                SeaValue::String(Some(value)) => value.as_str(),
+                value => panic!("expected string bind value, got {value:?}"),
+            })
+            .collect()
     }
 }

@@ -6,6 +6,7 @@ mod chapter_repository;
 mod collection_repository;
 mod display_preference_repository;
 pub mod entities;
+mod item_types;
 mod item_update_repository;
 mod item_value_repository;
 mod keyframe_data_repository;
@@ -46,6 +47,7 @@ pub use base_item_repository::{
 pub use chapter_repository::{ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter};
 pub use collection_repository::{CollectionRepository, CollectionStoreError};
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
+pub use item_types::OFFICIAL_ITEM_TYPE_ALIASES;
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{
     ItemValueCounts, ItemValueError, ItemValueInfo, ItemValueOrder, ItemValuePage, ItemValuePair,

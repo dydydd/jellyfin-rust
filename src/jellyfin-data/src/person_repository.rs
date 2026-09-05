@@ -9,7 +9,10 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::entities::{base_item, person, person_base_item_map};
+use crate::{
+    entities::{base_item, person, person_base_item_map},
+    item_types::expand_item_type_aliases,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewPerson {
@@ -552,20 +555,10 @@ fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, quer
     if let Some(item_id) = query.appears_in_item_id {
         push_bind(sql, values, item_id, " AND item.id = ");
     }
-    append_string_list_filter(
-        sql,
-        values,
-        "item.item_type",
-        &query.include_item_types,
-        false,
-    );
-    append_string_list_filter(
-        sql,
-        values,
-        "item.item_type",
-        &query.exclude_item_types,
-        true,
-    );
+    let include_item_types = expand_item_type_aliases(&query.include_item_types);
+    append_string_list_filter(sql, values, "item.item_type", &include_item_types, false);
+    let exclude_item_types = expand_item_type_aliases(&query.exclude_item_types);
+    append_string_list_filter(sql, values, "item.item_type", &exclude_item_types, true);
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
     append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
@@ -858,5 +851,48 @@ fn map_database_error(error: DbErr) -> PersonError {
         PersonError::ItemNotFound
     } else {
         PersonError::Database(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sea_orm::Value as SeaValue;
+
+    use super::{PersonQuery, append_people_item_filters};
+
+    #[test]
+    fn person_item_filters_expand_type_aliases_and_preserve_plugin_types() {
+        let query = PersonQuery {
+            include_item_types: vec!["movie".to_owned(), "Plugin.Media.SpecialItem".to_owned()],
+            exclude_item_types: vec!["episode".to_owned()],
+            ..Default::default()
+        };
+        let mut sql = String::new();
+        let mut values = Vec::new();
+
+        append_people_item_filters(&mut sql, &mut values, &query);
+
+        assert!(sql.contains("item.item_type IN ($1, $2, $3)"));
+        assert!(sql.contains("item.item_type NOT IN ($4, $5)"));
+        assert_eq!(
+            string_values(&values),
+            [
+                "Movie",
+                "MediaBrowser.Controller.Entities.Movies.Movie",
+                "Plugin.Media.SpecialItem",
+                "Episode",
+                "MediaBrowser.Controller.Entities.TV.Episode",
+            ]
+        );
+    }
+
+    fn string_values(values: &[SeaValue]) -> Vec<&str> {
+        values
+            .iter()
+            .map(|value| match value {
+                SeaValue::String(Some(value)) => value.as_str(),
+                value => panic!("expected string bind value, got {value:?}"),
+            })
+            .collect()
     }
 }
