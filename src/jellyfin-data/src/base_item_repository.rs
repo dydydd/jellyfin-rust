@@ -360,6 +360,12 @@ struct ParentChildCount {
     child_count: i64,
 }
 
+#[derive(Debug, Clone, Copy, FromQueryResult)]
+struct ResumePageId {
+    total_record_count: Option<i64>,
+    id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionYearPage {
     pub years: Vec<i32>,
@@ -1442,15 +1448,123 @@ impl BaseItemRepository {
         query: &BaseItemQuery,
     ) -> Result<BaseItemPage, BaseItemError> {
         let (cte, values) = resumable_filtered_cte(user_id, query);
-        self.query_raw_page(
-            cte,
+        self.query_resumable_page(cte, values, query).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn query_resumable_page(
+        &self,
+        cte: String,
+        mut values: Vec<SeaValue>,
+        query: &BaseItemQuery,
+    ) -> Result<BaseItemPage, BaseItemError> {
+        let transaction = self
+            .database
+            .begin_with_config(
+                Some(IsolationLevel::RepeatableRead),
+                Some(AccessMode::ReadOnly),
+            )
+            .await?;
+        let mut sql = cte;
+        if total_count_enabled(query) {
+            sql.push_str(
+                ", page_ids AS MATERIALIZED (\
+                     SELECT id, ROW_NUMBER() OVER (\
+                         ORDER BY resume_last_played_date DESC NULLS LAST, id\
+                     ) AS page_order \
+                     FROM filtered \
+                     ORDER BY resume_last_played_date DESC NULLS LAST, id",
+            );
+            push_bind(
+                &mut sql,
+                &mut values,
+                i64::try_from(query.start_index).unwrap_or(i64::MAX),
+                " OFFSET ",
+            );
+            if let Some(limit) = query.limit {
+                push_bind(
+                    &mut sql,
+                    &mut values,
+                    i64::try_from(limit).unwrap_or(i64::MAX),
+                    " LIMIT ",
+                );
+            }
+            sql.push_str(
+                ") \
+                 SELECT total.total_record_count, page_ids.id \
+                 FROM (SELECT COUNT(*)::bigint AS total_record_count FROM filtered) AS total \
+                 LEFT JOIN page_ids ON true \
+                 ORDER BY page_ids.page_order",
+            );
+        } else {
+            sql.push_str(
+                " SELECT NULL::bigint AS total_record_count, id \
+                  FROM filtered \
+                  ORDER BY resume_last_played_date DESC NULLS LAST, id",
+            );
+            push_bind(
+                &mut sql,
+                &mut values,
+                i64::try_from(query.start_index).unwrap_or(i64::MAX),
+                " OFFSET ",
+            );
+            if let Some(limit) = query.limit {
+                push_bind(
+                    &mut sql,
+                    &mut values,
+                    i64::try_from(limit).unwrap_or(i64::MAX),
+                    " LIMIT ",
+                );
+            }
+        }
+
+        let page_rows = ResumePageId::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
             values,
-            "filtered",
-            "resume_last_played_date DESC NULLS LAST, id",
-            "resume",
-            query,
-        )
-        .await
+        ))
+        .all(&transaction)
+        .await?;
+        let total_record_count = page_rows
+            .first()
+            .and_then(|row| row.total_record_count)
+            .map(|count| u64::try_from(count).unwrap_or_default());
+        let page_ids = page_rows
+            .into_iter()
+            .filter_map(|row| row.id)
+            .collect::<Vec<_>>();
+
+        let page_items = if page_ids.is_empty() {
+            Vec::new()
+        } else {
+            base_item::Entity::find()
+                .filter(base_item::Column::Id.is_in(page_ids.clone()))
+                .all(&transaction)
+                .await?
+        };
+        let mut items_by_id = page_items
+            .into_iter()
+            .map(|item| (item.id, item))
+            .collect::<HashMap<_, _>>();
+        let items = page_ids
+            .into_iter()
+            .map(|id| {
+                items_by_id.remove(&id).ok_or_else(|| {
+                    BaseItemError::Database(DbErr::RecordNotFound(
+                        "resume page item disappeared inside repeatable-read transaction"
+                            .to_owned(),
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await?;
+
+        Ok(BaseItemPage {
+            total_record_count: total_record_count
+                .unwrap_or_else(|| u64::try_from(items.len()).unwrap_or(u64::MAX)),
+            items,
+            start_index: query.start_index,
+        })
     }
 
     async fn query_not_resumable(
@@ -2675,46 +2789,100 @@ fn query_uses_advanced_filters(query: &BaseItemQuery) -> bool {
 fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = vec![user_id.into()];
     let mut sql = String::from(
-        "WITH progress_by_item AS (\
+        "WITH progress_by_item AS MATERIALIZED (\
              SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
              GROUP BY item_id\
-         ), filtered AS (\
-             SELECT item.*, progress.resume_last_played_date \
-             FROM jellyfin.base_items AS item \
-             LEFT JOIN progress_by_item AS progress ON progress.item_id = item.id \
-             WHERE item.item_type <> 'PLACEHOLDER' \
-               AND (item.is_folder = false AND EXISTS (\
-                   SELECT 1 FROM progress_by_item AS progress \
-                   WHERE progress.item_id = item.id\
-               ) OR ",
+         ), progress_leaf_items AS MATERIALIZED (\
+             SELECT item.id, item.primary_version_id, item.is_virtual_item, \
+                    progress.resume_last_played_date \
+             FROM progress_by_item AS progress \
+             JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
+             WHERE item.is_folder = false\
+         ), ranked_progress_leaf_items AS (\
+             SELECT progress.*, ROW_NUMBER() OVER (\
+                        PARTITION BY COALESCE(progress.primary_version_id, progress.id) \
+                        ORDER BY progress.resume_last_played_date DESC NULLS LAST, progress.id\
+                    ) AS resume_rank \
+             FROM progress_leaf_items AS progress\
+         ), in_progress_folder_ids AS (\
+             SELECT closure.parent_item_id AS folder_id \
+             FROM progress_leaf_items AS progress \
+             JOIN jellyfin.ancestor_ids AS closure ON closure.item_id = progress.id \
+             WHERE progress.is_virtual_item = false \
+             UNION \
+             SELECT link.parent_id AS folder_id \
+             FROM progress_leaf_items AS progress \
+             JOIN jellyfin.linked_children AS link ON link.child_id = progress.id \
+             WHERE progress.is_virtual_item = false \
+             UNION \
+             SELECT link.parent_id AS folder_id \
+             FROM progress_leaf_items AS progress \
+             JOIN jellyfin.ancestor_ids AS closure ON closure.item_id = progress.id \
+             JOIN jellyfin.linked_children AS link ON link.child_id = closure.parent_item_id \
+             WHERE progress.is_virtual_item = false\
+         ), played_leaf_items AS MATERIALIZED (\
+             SELECT DISTINCT item.id \
+             FROM jellyfin.user_data AS progress \
+             JOIN jellyfin.base_items AS item ON item.id = progress.item_id \
+             WHERE progress.user_id = $1 AND progress.played = true \
+               AND item.is_folder = false AND item.is_virtual_item = false \
+               AND item.primary_version_id IS NULL \
+               AND (item.data ->> 'OwnerId' IS NULL OR item.data ->> 'ExtraType' IS NOT NULL)\
+         ), played_folder_ids AS (\
+             SELECT closure.parent_item_id AS folder_id \
+             FROM played_leaf_items AS played \
+             JOIN jellyfin.ancestor_ids AS closure ON closure.item_id = played.id \
+             UNION \
+             SELECT link.parent_id AS folder_id \
+             FROM played_leaf_items AS played \
+             JOIN jellyfin.linked_children AS link ON link.child_id = played.id \
+             UNION \
+             SELECT link.parent_id AS folder_id \
+             FROM played_leaf_items AS played \
+             JOIN jellyfin.ancestor_ids AS closure ON closure.item_id = played.id \
+             JOIN jellyfin.linked_children AS link ON link.child_id = closure.parent_item_id\
+         ), partial_folder_ids AS (\
+             SELECT folder.id AS folder_id \
+             FROM played_folder_ids AS played \
+             JOIN jellyfin.base_items AS folder ON folder.id = played.folder_id \
+             WHERE folder.is_folder = true AND folder.item_type IN ('Series', 'Season') AND (",
     );
-    append_folder_is_resumable_condition(&mut sql, &mut values, user_id, "item");
+    // Official Series/Season semantics require both a played and an unplayed
+    // non-owned leaf. The correlated unplayed check is deliberately limited
+    // to folders reached from this user's played rows instead of every item.
+    append_has_descendant_leaf_condition(
+        &mut sql,
+        &mut values,
+        user_id,
+        "folder",
+        false,
+        LeafUserDataCondition::Unplayed,
+    );
     sql.push_str(
-        ") AND (item.is_folder = true OR \
-            (item.primary_version_id IS NULL AND NOT EXISTS (\
-                SELECT 1 FROM jellyfin.base_items AS sibling \
-                WHERE sibling.primary_version_id = item.id\
-            )) OR NOT EXISTS (\
-                SELECT 1 \
-                FROM jellyfin.base_items AS sibling \
-                JOIN progress_by_item AS sibling_progress \
-                  ON sibling_progress.item_id = sibling.id \
-                WHERE sibling.id <> item.id \
-                  AND COALESCE(sibling.primary_version_id, sibling.id) \
-                      = COALESCE(item.primary_version_id, item.id) \
-                  AND (sibling_progress.resume_last_played_date > (\
-                      SELECT progress.resume_last_played_date \
-                      FROM progress_by_item AS progress \
-                      WHERE progress.item_id = item.id\
-                  ) OR (sibling_progress.resume_last_played_date = (\
-                      SELECT progress.resume_last_played_date \
-                      FROM progress_by_item AS progress \
-                      WHERE progress.item_id = item.id\
-                  ) AND sibling.id < item.id))\
-            )\
-        )",
+        ")\
+         ), resumable_folder_ids AS (\
+             SELECT folder.id AS folder_id \
+             FROM jellyfin.base_items AS folder \
+             JOIN in_progress_folder_ids AS progress ON progress.folder_id = folder.id \
+             WHERE folder.is_folder = true AND folder.item_type IN ('Series', 'Season') \
+             UNION \
+             SELECT folder_id FROM partial_folder_ids\
+         ), resume_candidates AS MATERIALIZED (\
+             SELECT progress.id, progress.resume_last_played_date \
+             FROM ranked_progress_leaf_items AS progress \
+             WHERE progress.resume_rank = 1 \
+             UNION ALL \
+             SELECT folder.id, progress.resume_last_played_date \
+             FROM resumable_folder_ids AS resumable \
+             JOIN jellyfin.base_items AS folder ON folder.id = resumable.folder_id \
+             LEFT JOIN progress_by_item AS progress ON progress.item_id = folder.id\
+         ), filtered AS MATERIALIZED (\
+             SELECT item.*, candidate.resume_last_played_date \
+             FROM resume_candidates AS candidate \
+             JOIN jellyfin.base_items AS item ON item.id = candidate.id \
+             WHERE item.item_type <> 'PLACEHOLDER'",
     );
     append_raw_item_filters(&mut sql, &mut values, query, true);
     sql.push(')');
