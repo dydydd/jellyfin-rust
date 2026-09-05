@@ -816,6 +816,10 @@ impl BaseItemRepository {
                      END \
                  FROM merge_members \
                  WHERE item.id = merge_members.id \
+                   AND item.primary_version_id IS DISTINCT FROM CASE \
+                         WHEN item.id = (SELECT id FROM primary_version) THEN NULL \
+                         ELSE (SELECT id FROM primary_version) \
+                       END \
                  RETURNING item.id\
              ) \
              SELECT (SELECT COUNT(*) FROM requested_items) AS requested_count, \

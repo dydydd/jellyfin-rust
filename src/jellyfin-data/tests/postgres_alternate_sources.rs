@@ -184,6 +184,26 @@ async fn merge_versions_expands_existing_groups_and_preserves_rows() {
         );
     }
 
+    let before_repeat = repository
+        .media_source_versions(expected_primary)
+        .await
+        .expect("merged versions before repeat");
+    assert_eq!(
+        repository
+            .merge_alternate_versions(&[group.alternates[0], standalone])
+            .await
+            .expect("repeated version merge"),
+        expected_primary
+    );
+    let after_repeat = repository
+        .media_source_versions(expected_primary)
+        .await
+        .expect("merged versions after repeat");
+    assert_eq!(
+        after_repeat, before_repeat,
+        "an idempotent merge must not change row versions"
+    );
+
     repository
         .delete(standalone)
         .await
