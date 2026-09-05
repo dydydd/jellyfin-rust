@@ -77,7 +77,9 @@ pub use item_update::{ItemUpdateError, ItemUpdateInput, ItemUpdateService};
 pub use library_controller::{LibraryControllerError, LibraryControllerService, media_source_path};
 pub use library_scan::{LibraryScanError, LibraryScanService, LibraryScanSummary};
 pub use localization::LocalizationService;
-pub use lyrics::{LyricManager, LyricProvider, LyricSearchRequest, RemoteLyricInfo};
+pub use lyrics::{
+    LyricManager, LyricProvider, LyricSearchRequest, RemoteLyricInfo, RemoteLyricInfoDto,
+};
 pub use media_attachments::{
     MediaAttachmentFilter, MediaAttachmentMapper, MediaAttachmentService,
     MediaAttachmentServiceError,
