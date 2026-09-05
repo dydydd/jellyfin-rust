@@ -48,6 +48,18 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     .await;
     assert_years(&years, &["2024", "2001"], 4, 0);
 
+    let lowercase_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/years?sortBy=ProductionYear&sortOrder=Descending&limit=1",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&lowercase_years, &["2024"], 4, 0);
+
     let pascal_years = body_json(
         fixture
             .request(
@@ -211,6 +223,19 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
         32
     );
     assert!(virtual_year.get("name").is_none());
+
+    let lowercase_virtual_year = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/years/2024",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_virtual_year["Name"], "2024");
+    assert_eq!(lowercase_virtual_year["Type"], "Year");
 
     let unused_year = body_json(
         fixture

@@ -1096,6 +1096,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/artists/{name}", get(artists::get))
         .route("/Years", get(years::list))
         .route("/Years/{year}", get(years::get))
+        .route("/years", get(years::list))
+        .route("/years/{year}", get(years::get))
         .route("/Genres", get(genres::list))
         .route("/Genres/{genre_name}", get(genres::get))
         .route(
