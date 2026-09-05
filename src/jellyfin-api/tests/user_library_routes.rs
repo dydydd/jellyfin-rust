@@ -7,9 +7,10 @@ use jellyfin_controller::MediaAttachmentService;
 use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice, NewTrickplayInfo, NewUserData,
-    TrickplayInfoRepository, USER_ROOT_FOLDER_ID, UserDataRepository,
-    entities::{base_item, user},
+    BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem, NewDevice,
+    NewTrickplayInfo, NewUserData, TrickplayInfoRepository, USER_ROOT_FOLDER_ID,
+    UserDataRepository,
+    entities::{base_item, item_value, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
 use sea_orm::{
@@ -181,6 +182,123 @@ async fn episode_detail_routes_project_official_series_and_season_names() {
         .delete_many(&[episode.id, season.id, series.id])
         .await
         .expect("episode hierarchy cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn audio_details_and_lists_project_album_and_artist_fields() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let values = ItemValueRepository::new(fixture.database.clone());
+    let artist = items
+        .create(item(
+            "MusicArtist",
+            "Library Artist",
+            Some(fixture.root_id),
+            true,
+        ))
+        .await
+        .expect("music artist");
+    let mut album = item("MusicAlbum", "Nested Album", Some(artist.id), true);
+    album.data = Some(json!({
+        "Artists": ["Zulu Guest", "Alpha Guest", "Zulu Guest"],
+        "AlbumArtists": ["Primary Artist", "Second Artist", "Primary Artist"]
+    }));
+    let album = items.create(album).await.expect("music album");
+    let intermediate = items
+        .create(item("Folder", "Disc 1", Some(album.id), true))
+        .await
+        .expect("intermediate album folder");
+    let mut audio = item("Audio", "Nested Song", Some(intermediate.id), false);
+    audio.media_type = Some("Audio".to_owned());
+    audio.data = Some(json!({
+        "Album": "Nested Album",
+        "Artists": ["Zulu Guest", "Alpha Guest", "Zulu Guest"],
+        "AlbumArtists": ["Primary Artist", "Second Artist", "Primary Artist"]
+    }));
+    let audio = items.create(audio).await.expect("audio item");
+
+    let zulu = values
+        .link(audio.id, item_value::ItemValueType::Artist, "Zulu Guest")
+        .await
+        .expect("zulu artist relation");
+    let alpha = values
+        .link(audio.id, item_value::ItemValueType::Artist, "Alpha Guest")
+        .await
+        .expect("alpha artist relation");
+    let primary = values
+        .link(
+            audio.id,
+            item_value::ItemValueType::AlbumArtist,
+            "Primary Artist",
+        )
+        .await
+        .expect("primary album artist relation");
+    let second = values
+        .link(
+            audio.id,
+            item_value::ItemValueType::AlbumArtist,
+            "Second Artist",
+        )
+        .await
+        .expect("second album artist relation");
+
+    for route in [
+        format!("/Items/{}", audio.id),
+        format!("/Users/{}/Items/{}", fixture.user_id, audio.id),
+    ] {
+        let dto = get_json(&fixture.app, &route, &fixture.user_token).await;
+        assert_eq!(dto["Album"], "Nested Album", "{route}");
+        assert_eq!(dto["AlbumId"], album.id.simple().to_string(), "{route}");
+        assert_eq!(
+            dto["Artists"],
+            json!(["Zulu Guest", "Alpha Guest", "Zulu Guest"]),
+            "{route}"
+        );
+        assert_eq!(
+            dto["ArtistItems"],
+            json!([
+                { "Name": "Zulu Guest", "Id": zulu.item_value_id.simple().to_string() },
+                { "Name": "Alpha Guest", "Id": alpha.item_value_id.simple().to_string() }
+            ]),
+            "{route}"
+        );
+        assert_eq!(dto["AlbumArtist"], "Primary Artist", "{route}");
+        assert_eq!(
+            dto["AlbumArtists"],
+            json!([
+                { "Name": "Primary Artist", "Id": primary.item_value_id.simple().to_string() },
+                { "Name": "Second Artist", "Id": second.item_value_id.simple().to_string() }
+            ]),
+            "{route}"
+        );
+    }
+
+    let page = get_json(
+        &fixture.app,
+        &format!(
+            "/Items?userId={}&parentId={}&includeItemTypes=Audio",
+            fixture.user_id, intermediate.id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+    let dto = &page["Items"][0];
+    assert_eq!(dto["Album"], "Nested Album");
+    assert_eq!(dto["AlbumId"], album.id.simple().to_string());
+    assert_eq!(
+        dto["Artists"],
+        json!(["Zulu Guest", "Alpha Guest", "Zulu Guest"])
+    );
+    assert_eq!(dto["AlbumArtist"], "Primary Artist");
+    assert_eq!(dto["ArtistItems"].as_array().unwrap().len(), 2);
+    assert_eq!(dto["AlbumArtists"].as_array().unwrap().len(), 2);
+
+    items
+        .delete(artist.id)
+        .await
+        .expect("music hierarchy cleanup");
     fixture.cleanup().await;
 }
 

@@ -197,6 +197,8 @@ pub struct BaseItemDto {
     pub(crate) media_source_etag: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_timestamp: Option<TransportStreamTimestamp>,
+    #[serde(skip)]
+    pub(crate) album_artist_names: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -253,6 +255,18 @@ pub struct BaseItemDto {
     pub season_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artists: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist_items: Option<Vec<NameIdPair>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_artist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_artists: Option<Vec<NameIdPair>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -865,6 +879,30 @@ async fn get_lyrics_for(
 #[allow(clippy::too_many_lines)]
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
     let is_user_view = item.item_type == "UserView";
+    let has_artists = has_artist_fields(&item.item_type);
+    let has_album_artists = has_album_artist_fields(&item.item_type);
+    let has_album =
+        is_item_type(&item.item_type, "Audio") || is_item_type(&item.item_type, "MusicVideo");
+    let artists =
+        has_artists.then(|| metadata_strings(item.data.as_ref(), &["Artists", "artists"]));
+    let album_artist_names = has_album_artists.then(|| {
+        let mut names = metadata_strings(
+            item.data.as_ref(),
+            &["AlbumArtists", "albumArtists", "album_artists"],
+        );
+        if names.is_empty()
+            && let Some(name) = metadata_string(
+                item.data.as_ref(),
+                &["AlbumArtist", "albumArtist", "album_artist"],
+            )
+        {
+            names.push(name);
+        }
+        names
+    });
+    let album_artist = album_artist_names
+        .as_ref()
+        .and_then(|names| names.first().cloned());
     let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"])
         .map(|value| canonical_enum_or(&value, EXTRA_TYPES, "Unknown"));
     let media_source_path = metadata_string(item.data.as_ref(), &["StrmTarget", "strm_target"]);
@@ -909,6 +947,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_source_size,
         media_source_etag,
         media_source_timestamp,
+        album_artist_names: album_artist_names.clone().unwrap_or_default(),
         overview: item.overview,
         media_type: item
             .media_type
@@ -949,6 +988,14 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         series_name: metadata_string(item.data.as_ref(), &["SeriesName", "series_name"]),
         season_id: item.season_id.map(|id| id.simple().to_string()),
         season_name: metadata_string(item.data.as_ref(), &["SeasonName", "season_name"]),
+        album: has_album
+            .then(|| metadata_string(item.data.as_ref(), &["Album", "album"]))
+            .flatten(),
+        album_id: None,
+        artists,
+        artist_items: has_artists.then(Vec::new),
+        album_artist,
+        album_artists: album_artist_names.map(|_| Vec::new()),
         extra_type,
         has_lyrics,
         provider_ids: metadata_provider_ids(item.data.as_ref()),
@@ -1249,9 +1296,19 @@ pub(crate) fn attach_dto_image_projection(
 #[derive(Debug, Default)]
 pub(crate) struct ItemRelationMetadata {
     genres: Vec<NameIdPair>,
+    artist_items: Vec<NameIdPair>,
+    album_artist_items: Vec<NameIdPair>,
+    album_id: Option<Uuid>,
     people: Vec<BaseItemPerson>,
     tags: Vec<String>,
     studios: Vec<NameIdPair>,
+}
+
+#[derive(Debug, Default)]
+struct MusicRelationMetadata {
+    artist_items: HashMap<Uuid, Vec<NameIdPair>>,
+    album_artist_items: HashMap<Uuid, Vec<NameIdPair>>,
+    album_ids: HashMap<Uuid, Uuid>,
 }
 
 pub(crate) async fn load_relation_metadata(
@@ -1274,6 +1331,7 @@ pub(crate) async fn load_relation_metadata(
         .value_pairs_for_items(&item_ids, item_value::ItemValueType::Studios)
         .await
         .map_err(|_| ApiError::Internal)?;
+    let mut music = load_music_relation_metadata(state, items).await?;
     let mut people = state
         .people
         .people_for_items(&item_ids)
@@ -1304,6 +1362,12 @@ pub(crate) async fn load_relation_metadata(
                     id: genre.id.simple().to_string(),
                 })
                 .collect(),
+            artist_items: music.artist_items.remove(&item.id).unwrap_or_default(),
+            album_artist_items: music
+                .album_artist_items
+                .remove(&item.id)
+                .unwrap_or_default(),
+            album_id: music.album_ids.remove(&item.id),
             people: people
                 .remove(&item.id)
                 .unwrap_or_default()
@@ -1332,6 +1396,74 @@ pub(crate) async fn load_relation_metadata(
     Ok(result)
 }
 
+async fn load_music_relation_metadata(
+    state: &AppState,
+    items: &[base_item::Model],
+) -> Result<MusicRelationMetadata, ApiError> {
+    let artist_item_ids = items
+        .iter()
+        .filter(|item| has_artist_fields(&item.item_type))
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    let album_artist_item_ids = items
+        .iter()
+        .filter(|item| has_album_artist_fields(&item.item_type))
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    let audio_ids = items
+        .iter()
+        .filter(|item| is_item_type(&item.item_type, "Audio"))
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    let (artist_items, album_artist_items, album_ids) = tokio::try_join!(
+        async {
+            state
+                .item_values
+                .value_pairs_for_items(&artist_item_ids, item_value::ItemValueType::Artist)
+                .await
+                .map_err(|_| ApiError::Internal)
+        },
+        async {
+            state
+                .item_values
+                .value_pairs_for_items(
+                    &album_artist_item_ids,
+                    item_value::ItemValueType::AlbumArtist,
+                )
+                .await
+                .map_err(|_| ApiError::Internal)
+        },
+        async {
+            state
+                .base_items
+                .nearest_ancestor_ids_by_type(&audio_ids, &["MusicAlbum".to_owned()])
+                .await
+                .map_err(ApiError::from)
+        },
+    )?;
+    Ok(MusicRelationMetadata {
+        artist_items: artist_items
+            .into_iter()
+            .map(|(item_id, artists)| (item_id, item_value_pairs_to_dto(artists)))
+            .collect(),
+        album_artist_items: album_artist_items
+            .into_iter()
+            .map(|(item_id, artists)| (item_id, item_value_pairs_to_dto(artists)))
+            .collect(),
+        album_ids,
+    })
+}
+
+fn item_value_pairs_to_dto(pairs: Vec<jellyfin_data::ItemValuePair>) -> Vec<NameIdPair> {
+    pairs
+        .into_iter()
+        .map(|pair| NameIdPair {
+            name: pair.value,
+            id: pair.id.simple().to_string(),
+        })
+        .collect()
+}
+
 pub(crate) fn attach_relation_metadata(dto: &mut BaseItemDto, metadata: ItemRelationMetadata) {
     if !metadata.genres.is_empty() {
         dto.genres = metadata
@@ -1348,6 +1480,54 @@ pub(crate) fn attach_relation_metadata(dto: &mut BaseItemDto, metadata: ItemRela
     if !metadata.studios.is_empty() {
         dto.studios = metadata.studios;
     }
+    if let Some(album_id) = metadata.album_id {
+        dto.album_id = Some(album_id.simple().to_string());
+    }
+    if let Some(artists) = dto.artists.as_ref() {
+        dto.artist_items = Some(ordered_name_id_pairs(artists, &metadata.artist_items));
+    }
+    if let Some(album_artists) = dto.album_artists.as_mut() {
+        *album_artists =
+            ordered_name_id_pairs(&dto.album_artist_names, &metadata.album_artist_items);
+    }
+}
+
+fn ordered_name_id_pairs(names: &[String], pairs: &[NameIdPair]) -> Vec<NameIdPair> {
+    let mut seen = std::collections::HashSet::new();
+    names
+        .iter()
+        .filter(|name| !name.trim().is_empty())
+        .filter(|name| seen.insert((*name).clone()))
+        .filter_map(|name| {
+            pairs
+                .iter()
+                .find(|pair| pair.name.eq_ignore_ascii_case(name))
+                .map(|pair| NameIdPair {
+                    name: name.clone(),
+                    id: pair.id.clone(),
+                })
+        })
+        .collect()
+}
+
+fn has_artist_fields(item_type: &str) -> bool {
+    ["Audio", "MusicAlbum", "MusicVideo"]
+        .iter()
+        .any(|expected| is_item_type(item_type, expected))
+}
+
+fn has_album_artist_fields(item_type: &str) -> bool {
+    ["Audio", "MusicAlbum"]
+        .iter()
+        .any(|expected| is_item_type(item_type, expected))
+}
+
+fn is_item_type(item_type: &str, expected: &str) -> bool {
+    item_type.eq_ignore_ascii_case(expected)
+        || item_type
+            .rsplit('.')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
 }
 
 pub(crate) fn attach_user_data_dto(dto: &mut BaseItemDto, user_data: UserItemDataDto) {

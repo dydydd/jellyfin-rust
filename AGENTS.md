@@ -69,6 +69,9 @@
 - Project persisted `OriginalLanguage` unconditionally on item details and lists. When expanding
   alternate versions, use each source item's own original language for its stream defaults and
   keep an exact alternate-id detail tied to that alternate rather than the displayed primary.
+- Project music `Album`, `AlbumId`, `Artists`, `ArtistItems`, `AlbumArtist`, and `AlbumArtists`
+  unconditionally on item details and lists. Resolve audio albums through one batched nearest-
+  ancestor lookup and preserve metadata artist order while attaching normalized relation ids.
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
 - Apply the playback `DeviceProfile` independently to every returned `MediaSource`, preserving source order and producing version-specific flags and URLs. Only apply explicit audio or subtitle indexes to the source whose id matches an explicitly requested `MediaSourceId`.
