@@ -139,6 +139,33 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     .await;
     assert_years(&lowercase_recursive_years, &["1999"], 2, 1);
 
+    let item_year = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Years?parentId={}&recursive=true",
+                    fixture.non_folder_parent_id
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&item_year, &["1999"], 1, 0);
+
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={}", Uuid::new_v4()),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST,
+    );
+
     let audio_years = body_json(
         fixture
             .request(
@@ -172,7 +199,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             )
             .await
             .status(),
-        StatusCode::BAD_REQUEST
+        StatusCode::BAD_REQUEST,
     );
     assert_eq!(
         fixture
@@ -379,6 +406,17 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     assert!(!returned_ids.contains(&"1966"));
     assert!(!returned_ids.contains(&"1968"));
     assert!(!returned_ids.contains(&"1969"));
+    let hidden_parent_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={hidden_folder_id}"),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&hidden_parent_years, &[], 0, 0);
 
     fixture.cleanup().await;
 }
@@ -442,6 +480,7 @@ struct Fixture {
     user_id: Uuid,
     other_user_id: Uuid,
     parent_id: Uuid,
+    non_folder_parent_id: Uuid,
     user_token: String,
     admin_token: String,
     persisted_year_id: Uuid,
@@ -507,10 +546,11 @@ impl Fixture {
         child_movie.media_type = Some("Video".to_owned());
         child_movie.production_year = Some(1999);
         child_movie.parent_id = Some(parent_id);
-        items
+        let child_movie = items
             .create(child_movie)
             .await
             .expect("child movie creation");
+        let non_folder_parent_id = child_movie.id;
 
         let nested_id = Uuid::new_v4();
         let mut nested = NewBaseItem::new(nested_id, "Folder");
@@ -558,6 +598,7 @@ impl Fixture {
             user_id: user.id,
             other_user_id: other_user.id,
             parent_id,
+            non_folder_parent_id,
             user_token,
             admin_token,
             persisted_year_id,
