@@ -94,6 +94,16 @@ pub struct BaseItemHierarchyEntry {
     pub depth: i32,
 }
 
+/// One top series' official latest-TV grouping decision.
+#[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
+pub struct LatestTvGroup {
+    pub series_id: Uuid,
+    pub most_recent_episode_id: Uuid,
+    pub selected_container_id: Option<Uuid>,
+    pub max_date: DateTime<Utc>,
+    pub recent_child_count: i64,
+}
+
 #[derive(Debug, FromQueryResult)]
 struct NearestAncestorId {
     item_id: Uuid,
@@ -3108,6 +3118,140 @@ impl BaseItemRepository {
             .into_iter()
             .map(|row| (row.item_id, row.ancestor_id))
             .collect(),
+        )
+    }
+
+    /// Computes official 24-hour latest-TV grouping decisions for the top series.
+    ///
+    /// Eligible episodes come from the same filtered query as the latest-media page.
+    /// The top series are selected before the result limit, while complete season and
+    /// series counts use real primary rows. The query emits one bounded projection per
+    /// series and never loads episode collections.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the grouping query fails.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the grouping is one set-based SQL query"
+    )]
+    pub async fn latest_tv_groups(
+        &self,
+        query: &BaseItemQuery,
+        limit: u64,
+    ) -> Result<Vec<LatestTvGroup>, BaseItemError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (mut sql, mut values) = filtered_query_cte(query);
+        let episode_types = quoted_string_list(&expand_item_type_aliases(&["Episode".to_owned()]));
+        let season_types = quoted_string_list(&expand_item_type_aliases(&["Season".to_owned()]));
+        values.push(i64::try_from(limit).unwrap_or(i64::MAX).into());
+        let limit_parameter = values.len();
+        let _ = write!(
+            sql,
+            ", eligible_episode_groups AS MATERIALIZED (\
+                 SELECT episode.id, episode.series_id, episode.season_id, episode.date_created, \
+                        COALESCE(NULLIF(episode.data ->> 'SeriesName', ''), \
+                                 NULLIF(series.name, ''), episode.series_id::text) \
+                            AS series_group_key \
+                 FROM filtered AS episode \
+                 LEFT JOIN jellyfin.base_items AS series ON series.id = episode.series_id \
+                 WHERE episode.item_type IN ({episode_types}) \
+                   AND episode.primary_version_id IS NULL \
+                   AND episode.is_virtual_item = false \
+                   AND episode.series_id IS NOT NULL\
+             ), top_series AS MATERIALIZED (\
+                 SELECT episode.series_group_key, MAX(episode.date_created) AS max_date \
+                 FROM eligible_episode_groups AS episode \
+                 GROUP BY episode.series_group_key \
+                 ORDER BY max_date DESC, episode.series_group_key DESC \
+                 LIMIT ${limit_parameter}\
+             ), eligible_episodes AS MATERIALIZED (\
+                 SELECT episode.* \
+                 FROM eligible_episode_groups AS episode \
+                 JOIN top_series AS candidate \
+                   ON candidate.series_group_key = episode.series_group_key\
+             ), series_max AS (\
+                 SELECT episode.series_group_key, MAX(episode.date_created) AS max_date \
+                 FROM eligible_episodes AS episode \
+                 GROUP BY episode.series_group_key\
+             ), recent_episodes AS MATERIALIZED (\
+                 SELECT episode.*, latest.max_date \
+                 FROM eligible_episodes AS episode \
+                 JOIN series_max AS latest \
+                   ON latest.series_group_key = episode.series_group_key \
+                 WHERE episode.date_created >= latest.max_date - INTERVAL '24 hours'\
+             ), recent_stats AS (\
+                 SELECT recent.series_group_key, \
+                        (ARRAY_AGG(recent.series_id \
+                            ORDER BY recent.date_created DESC, recent.id DESC))[1] AS series_id, \
+                        MAX(recent.max_date) AS max_date, \
+                        (ARRAY_AGG(recent.id ORDER BY recent.date_created DESC, recent.id DESC))[1] \
+                            AS most_recent_episode_id, \
+                        COUNT(*)::bigint AS recent_child_count, \
+                        COUNT(DISTINCT recent.season_id)::bigint AS recent_season_count, \
+                        (ARRAY_AGG(recent.season_id ORDER BY recent.season_id) \
+                            FILTER (WHERE recent.season_id IS NOT NULL))[1] AS recent_season_id \
+                 FROM recent_episodes AS recent \
+                 GROUP BY recent.series_group_key\
+             ), season_episode_counts AS (\
+                 SELECT episode.season_id, COUNT(*)::bigint AS episode_count \
+                 FROM jellyfin.base_items AS episode \
+                 WHERE episode.item_type IN ({episode_types}) \
+                   AND episode.primary_version_id IS NULL \
+                   AND episode.is_virtual_item = false \
+                   AND (episode.data ->> 'OwnerId' IS NULL \
+                        OR episode.data ->> 'ExtraType' IS NOT NULL) \
+                   AND episode.season_id IN (\
+                       SELECT DISTINCT recent.season_id \
+                       FROM recent_episodes AS recent \
+                       WHERE recent.season_id IS NOT NULL\
+                   ) \
+                 GROUP BY episode.season_id\
+             ), series_season_counts AS (\
+                 SELECT COALESCE(season.series_id, season.parent_id) AS series_id, \
+                        COUNT(*)::bigint AS season_count \
+                 FROM jellyfin.base_items AS season \
+                 JOIN (SELECT DISTINCT series_id FROM recent_stats) AS candidate \
+                   ON candidate.series_id = COALESCE(season.series_id, season.parent_id) \
+                 WHERE season.item_type IN ({season_types}) \
+                   AND season.primary_version_id IS NULL \
+                   AND season.is_virtual_item = false \
+                   AND (season.data ->> 'OwnerId' IS NULL \
+                        OR season.data ->> 'ExtraType' IS NOT NULL) \
+                 GROUP BY COALESCE(season.series_id, season.parent_id)\
+             ) \
+             SELECT stats.series_id, stats.most_recent_episode_id, stats.max_date, \
+                    stats.recent_child_count, \
+                    CASE \
+                      WHEN stats.recent_season_count > 1 THEN stats.series_id \
+                      WHEN stats.recent_season_count = 1 \
+                       AND (stats.recent_child_count > 1 \
+                            OR stats.recent_child_count = COALESCE(season_totals.episode_count, 0)) \
+                       AND COALESCE(series_totals.season_count, 1) > 1 \
+                        THEN stats.recent_season_id \
+                      WHEN stats.recent_season_count = 1 \
+                       AND (stats.recent_child_count > 1 \
+                            OR stats.recent_child_count = COALESCE(season_totals.episode_count, 0)) \
+                        THEN stats.series_id \
+                      ELSE NULL \
+                    END AS selected_container_id \
+             FROM recent_stats AS stats \
+             LEFT JOIN season_episode_counts AS season_totals \
+               ON season_totals.season_id = stats.recent_season_id \
+             LEFT JOIN series_season_counts AS series_totals \
+               ON series_totals.series_id = stats.series_id \
+             ORDER BY stats.max_date DESC, stats.series_id DESC"
+        );
+        Ok(
+            LatestTvGroup::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .all(self.database.as_ref())
+            .await?,
         )
     }
 

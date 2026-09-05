@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemCounts, BaseItemError, BaseItemOrder, BaseItemPage, BaseItemQuery, BaseItemRepository,
-    ItemValueQuery, ScoredBaseItem, ScoredBaseItemPage, ServerConfigurationRepository,
+    ItemValueQuery, LatestTvGroup, ScoredBaseItem, ScoredBaseItemPage,
+    ServerConfigurationRepository,
     entities::{base_item, user},
 };
 use jellyfin_model::UserPolicy;
@@ -162,6 +163,28 @@ impl UserLibraryService {
             query.parent_id = Some(self.ensure_user_root().await?.id);
         }
         Ok(self.hydrate_page(self.items.query(&query).await?))
+    }
+
+    /// Computes latest-TV grouping for the top series under the target user's policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, invalid-policy, or persistence errors.
+    pub async fn latest_tv_groups(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        mut query: BaseItemQuery,
+        limit: u64,
+    ) -> Result<Vec<LatestTvGroup>, UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        self.apply_user_policy(&mut query, target_user_id).await?;
+        query.user_id = Some(target_user_id);
+        if query.parent_id.is_none() && query.parent_ids.is_empty() && query.ids.is_empty() {
+            query.parent_id = Some(self.ensure_user_root().await?.id);
+        }
+        Ok(self.items.latest_tv_groups(&query, limit).await?)
     }
 
     /// Applies the target user's normal library visibility policy to a query.

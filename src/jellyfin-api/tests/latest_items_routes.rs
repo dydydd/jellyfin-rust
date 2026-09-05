@@ -74,6 +74,7 @@ async fn exercise_latest_routes(database_name: &str) {
     assert_latest_defaults_hide_played_and_sort_by_created(&fixture).await;
     assert_is_played_and_legacy_routes(&fixture).await;
     assert_default_grouping_and_explicit_ungrouping(&fixture).await;
+    assert_tv_latest_window_grouping(&fixture).await;
     assert_album_ancestor_grouping(&fixture).await;
     assert_latest_dto_options_and_image_fields(&fixture).await;
 
@@ -96,7 +97,15 @@ struct Fixture {
     first_series_episode_id: Uuid,
     second_series_episode_id: Uuid,
     single_series_id: Uuid,
-    single_series_episode_id: Uuid,
+    over_24_series_id: Uuid,
+    over_24_new_episode_id: Uuid,
+    multi_season_series_id: Uuid,
+    multi_recent_season_id: Uuid,
+    cross_season_series_id: Uuid,
+    hidden_series_episode_id: Uuid,
+    saturated_parent_id: Uuid,
+    saturated_new_series_id: Uuid,
+    saturated_old_series_id: Uuid,
     album_id: Uuid,
     album_track_id: Uuid,
     photo_album_id: Uuid,
@@ -172,6 +181,187 @@ impl Fixture {
             single_season.id,
         )
         .await;
+        let mut single_series_alternate = NewBaseItem::new(Uuid::new_v4(), "Episode");
+        single_series_alternate.name = Some("Only Series Episode Alternate".to_owned());
+        single_series_alternate.sort_name = single_series_alternate.name.clone();
+        single_series_alternate.parent_id = Some(single_season.id);
+        single_series_alternate.media_type = Some("Video".to_owned());
+        single_series_alternate.series_id = Some(single_series.id);
+        single_series_alternate.season_id = Some(single_season.id);
+        single_series_alternate.primary_version_id = Some(single_series_episode.id);
+        let single_series_alternate = items
+            .create(single_series_alternate)
+            .await
+            .expect("alternate episode version");
+
+        let over_24_series = create_item(&items, "Series", "Over 24 Hour Series", parent.id).await;
+        let over_24_season =
+            create_item(&items, "Season", "Over 24 Hour Season", over_24_series.id).await;
+        let over_24_old_episode = create_episode(
+            &items,
+            "Over 24 Hour Old Episode",
+            over_24_season.id,
+            over_24_series.id,
+            over_24_season.id,
+        )
+        .await;
+        let over_24_new_episode = create_episode(
+            &items,
+            "Over 24 Hour New Episode",
+            over_24_season.id,
+            over_24_series.id,
+            over_24_season.id,
+        )
+        .await;
+        let mut virtual_episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+        virtual_episode.name = Some("Ignored Virtual Episode".to_owned());
+        virtual_episode.sort_name = virtual_episode.name.clone();
+        virtual_episode.parent_id = Some(over_24_season.id);
+        virtual_episode.media_type = Some("Video".to_owned());
+        virtual_episode.series_id = Some(over_24_series.id);
+        virtual_episode.season_id = Some(over_24_season.id);
+        virtual_episode.is_virtual_item = true;
+        let virtual_episode = items
+            .create(virtual_episode)
+            .await
+            .expect("virtual episode");
+
+        let multi_season_series =
+            create_item(&items, "Series", "Multi Season Series", parent.id).await;
+        let multi_recent_season = create_item(
+            &items,
+            "Season",
+            "Multi Series Recent Season",
+            multi_season_series.id,
+        )
+        .await;
+        let multi_old_season = create_item(
+            &items,
+            "Season",
+            "Multi Series Old Season",
+            multi_season_series.id,
+        )
+        .await;
+        let multi_first_episode = create_episode(
+            &items,
+            "Multi Series First Recent Episode",
+            multi_recent_season.id,
+            multi_season_series.id,
+            multi_recent_season.id,
+        )
+        .await;
+        let multi_second_episode = create_episode(
+            &items,
+            "Multi Series Second Recent Episode",
+            multi_recent_season.id,
+            multi_season_series.id,
+            multi_recent_season.id,
+        )
+        .await;
+        let multi_old_episode = create_episode(
+            &items,
+            "Multi Series Old Episode",
+            multi_old_season.id,
+            multi_season_series.id,
+            multi_old_season.id,
+        )
+        .await;
+
+        let cross_season_series =
+            create_item(&items, "Series", "Cross Season Series", parent.id).await;
+        let cross_regular_season = create_item(
+            &items,
+            "Season",
+            "Cross Regular Season",
+            cross_season_series.id,
+        )
+        .await;
+        let mut cross_special_season =
+            create_item(&items, "Season", "Cross Specials", cross_season_series.id).await;
+        cross_special_season.parent_index_number = Some(0);
+        let cross_special_season = items
+            .update(cross_special_season)
+            .await
+            .expect("special season marker");
+        let cross_regular_episode = create_episode(
+            &items,
+            "Cross Regular Episode",
+            cross_regular_season.id,
+            cross_season_series.id,
+            cross_regular_season.id,
+        )
+        .await;
+        let cross_special_episode = create_episode(
+            &items,
+            "Cross Special Episode",
+            cross_special_season.id,
+            cross_season_series.id,
+            cross_special_season.id,
+        )
+        .await;
+
+        let hidden_series = create_item(&items, "Series", "Policy Hidden Series", parent.id).await;
+        let hidden_season =
+            create_item(&items, "Season", "Policy Hidden Season", hidden_series.id).await;
+        let hidden_series_episode = create_episode(
+            &items,
+            "Visible Episode With Hidden Series",
+            hidden_season.id,
+            hidden_series.id,
+            hidden_season.id,
+        )
+        .await;
+        let saturated_parent =
+            create_item(&items, "Folder", "Series Saturation Parent", root.id).await;
+        let saturated_new_series = create_item(
+            &items,
+            "Series",
+            "Series With Many New Episodes",
+            saturated_parent.id,
+        )
+        .await;
+        let saturated_new_season = create_item(
+            &items,
+            "Season",
+            "Series With Many New Episodes Season",
+            saturated_new_series.id,
+        )
+        .await;
+        let mut saturated_new_episodes = Vec::new();
+        for index in 1..=5 {
+            saturated_new_episodes.push(
+                create_episode(
+                    &items,
+                    &format!("Saturated New Episode {index}"),
+                    saturated_new_season.id,
+                    saturated_new_series.id,
+                    saturated_new_season.id,
+                )
+                .await,
+            );
+        }
+        let saturated_old_series = create_item(
+            &items,
+            "Series",
+            "Series Hidden Beyond Episode Limit",
+            saturated_parent.id,
+        )
+        .await;
+        let saturated_old_season = create_item(
+            &items,
+            "Season",
+            "Series Hidden Beyond Episode Limit Season",
+            saturated_old_series.id,
+        )
+        .await;
+        let saturated_old_episode = create_episode(
+            &items,
+            "Older Series Episode",
+            saturated_old_season.id,
+            saturated_old_series.id,
+            saturated_old_season.id,
+        )
+        .await;
         let outer_album = create_item(&items, "MusicAlbum", "Outer Grouped Album", parent.id).await;
         let outer_album_folder =
             create_item(&items, "Folder", "Outer Album Folder", outer_album.id).await;
@@ -218,6 +408,14 @@ impl Fixture {
             )
             .await
             .expect("visible track tag");
+        ItemValueRepository::new(database.clone())
+            .link(
+                hidden_series_episode.id,
+                item_value::ItemValueType::Tags,
+                "Visible",
+            )
+            .await
+            .expect("visible episode tag");
         let restricted_policy = UserPolicy {
             authentication_provider_id: Some(
                 UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
@@ -249,6 +447,20 @@ impl Fixture {
         set_date_created(&database, first_series_episode.id, 2026, 7, 20).await;
         set_date_created(&database, second_series_episode.id, 2026, 7, 21).await;
         set_date_created(&database, single_series_episode.id, 2026, 7, 18).await;
+        set_date_created(&database, single_series_alternate.id, 2026, 7, 30).await;
+        set_date_created(&database, over_24_old_episode.id, 2026, 7, 10).await;
+        set_date_created(&database, over_24_new_episode.id, 2026, 7, 12).await;
+        set_date_created(&database, virtual_episode.id, 2026, 7, 13).await;
+        set_date_created(&database, multi_old_episode.id, 2026, 7, 10).await;
+        set_date_created(&database, multi_first_episode.id, 2026, 7, 13).await;
+        set_date_created(&database, multi_second_episode.id, 2026, 7, 14).await;
+        set_date_created(&database, cross_regular_episode.id, 2026, 7, 15).await;
+        set_date_created(&database, cross_special_episode.id, 2026, 7, 16).await;
+        set_date_created(&database, hidden_series_episode.id, 2026, 7, 11).await;
+        for episode in saturated_new_episodes {
+            set_date_created(&database, episode.id, 2026, 8, 5).await;
+        }
+        set_date_created(&database, saturated_old_episode.id, 2026, 8, 4).await;
         set_date_created(&database, track.id, 2026, 7, 19).await;
         set_date_created(&database, first_photo.id, 2026, 7, 17).await;
         set_date_created(&database, second_photo.id, 2026, 7, 18).await;
@@ -315,7 +527,15 @@ impl Fixture {
             first_series_episode_id: first_series_episode.id,
             second_series_episode_id: second_series_episode.id,
             single_series_id: single_series.id,
-            single_series_episode_id: single_series_episode.id,
+            over_24_series_id: over_24_series.id,
+            over_24_new_episode_id: over_24_new_episode.id,
+            multi_season_series_id: multi_season_series.id,
+            multi_recent_season_id: multi_recent_season.id,
+            cross_season_series_id: cross_season_series.id,
+            hidden_series_episode_id: hidden_series_episode.id,
+            saturated_parent_id: saturated_parent.id,
+            saturated_new_series_id: saturated_new_series.id,
+            saturated_old_series_id: saturated_old_series.id,
             album_id: album.id,
             album_track_id: track.id,
             photo_album_id: photo_album.id,
@@ -430,10 +650,10 @@ async fn assert_default_grouping_and_explicit_ungrouping(fixture: &Fixture) {
     assert_eq!(singleton.as_array().unwrap().len(), 1);
     assert_eq!(
         singleton[0]["Id"],
-        fixture.single_series_episode_id.simple().to_string()
+        fixture.single_series_id.simple().to_string()
     );
-    assert_eq!(singleton[0]["Type"], "Episode");
-    assert!(singleton[0].get("ChildCount").is_none());
+    assert_eq!(singleton[0]["Type"], "Series");
+    assert_eq!(singleton[0]["ChildCount"], 1);
 
     let limited = get_json(
         &fixture.app,
@@ -483,6 +703,117 @@ async fn assert_default_grouping_and_explicit_ungrouping(fixture: &Fixture) {
     assert_eq!(album[0]["Id"], fixture.album_id.simple().to_string());
     assert_eq!(album[0]["Type"], "MusicAlbum");
     assert_eq!(album[0]["ChildCount"], 1);
+}
+
+async fn assert_tv_latest_window_grouping(fixture: &Fixture) {
+    let outside_window = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&limit=20",
+            fixture.over_24_series_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(outside_window.as_array().unwrap().len(), 1);
+    assert_eq!(
+        outside_window[0]["Id"],
+        fixture.over_24_new_episode_id.simple().to_string()
+    );
+    assert_eq!(outside_window[0]["Type"], "Episode");
+    assert!(outside_window[0].get("ChildCount").is_none());
+
+    let one_recent_season = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&limit=20",
+            fixture.multi_season_series_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(one_recent_season.as_array().unwrap().len(), 1);
+    assert_eq!(
+        one_recent_season[0]["Id"],
+        fixture.multi_recent_season_id.simple().to_string()
+    );
+    assert_eq!(one_recent_season[0]["Type"], "Season");
+    assert_eq!(one_recent_season[0]["ChildCount"], 2);
+
+    let across_seasons = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&limit=20",
+            fixture.cross_season_series_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(across_seasons.as_array().unwrap().len(), 1);
+    assert_eq!(
+        across_seasons[0]["Id"],
+        fixture.cross_season_series_id.simple().to_string()
+    );
+    assert_eq!(across_seasons[0]["Type"], "Series");
+    assert_eq!(across_seasons[0]["ChildCount"], 2);
+
+    let hidden_container = get_json(
+        &fixture.app,
+        "/Items/Latest?includeItemTypes=Episode&limit=20",
+        &fixture.restricted_user_token,
+    )
+    .await;
+    assert_eq!(hidden_container.as_array().unwrap().len(), 1);
+    assert_eq!(
+        hidden_container[0]["Id"],
+        fixture.hidden_series_episode_id.simple().to_string()
+    );
+    assert_eq!(hidden_container[0]["Type"], "Episode");
+    assert!(hidden_container[0].get("ChildCount").is_none());
+
+    let saturated = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&limit=2",
+            fixture.saturated_parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(saturated.as_array().unwrap().len(), 2);
+    assert_eq!(
+        saturated[0]["Id"],
+        fixture.saturated_new_series_id.simple().to_string()
+    );
+    assert_eq!(
+        saturated[1]["Id"],
+        fixture.saturated_old_series_id.simple().to_string()
+    );
+    assert!(
+        saturated
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Series")
+    );
+
+    let ungrouped = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&groupItems=false&limit=20",
+            fixture.multi_season_series_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(ungrouped.as_array().unwrap().len(), 3);
+    assert!(
+        ungrouped
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Episode" && item.get("ChildCount").is_none())
+    );
 }
 
 async fn assert_album_ancestor_grouping(fixture: &Fixture) {

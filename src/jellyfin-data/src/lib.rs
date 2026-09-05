@@ -40,9 +40,9 @@ pub use base_item_image_repository::{
 };
 pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
-    BaseItemQuery, BaseItemRepository, DescendantScanCandidate, MetadataRefreshCandidate,
-    NewBaseItem, ProductionYearOrder, ProductionYearPage, ScoredBaseItem, ScoredBaseItemPage,
-    TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
+    BaseItemQuery, BaseItemRepository, DescendantScanCandidate, LatestTvGroup,
+    MetadataRefreshCandidate, NewBaseItem, ProductionYearOrder, ProductionYearPage, ScoredBaseItem,
+    ScoredBaseItemPage, TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
 };
 pub use chapter_repository::{ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter};
 pub use collection_repository::{CollectionRepository, CollectionStoreError};

@@ -1098,28 +1098,26 @@ async fn latest_for(
     } else {
         query.limit
     };
+    let database_query = BaseItemQuery {
+        parent_id: parent_scope.parent_id,
+        parent_ids: parent_scope.parent_ids,
+        recursive: true,
+        include_item_types,
+        exclude_item_types: exclude_item_types.unwrap_or_default(),
+        is_folder,
+        is_virtual_item: Some(false),
+        user_id: Some(target_user_id),
+        is_played,
+        order: BaseItemOrder::DateCreatedDescending,
+        start_index: 0,
+        limit: Some(candidate_limit),
+        enable_total_record_count: Some(false),
+        ..BaseItemQuery::default()
+    };
+    let grouping_query = database_query.clone();
     let mut page = state
         .user_library
-        .query_items(
-            &authenticated.user,
-            target_user_id,
-            BaseItemQuery {
-                parent_id: parent_scope.parent_id,
-                parent_ids: parent_scope.parent_ids,
-                recursive: true,
-                include_item_types,
-                exclude_item_types: exclude_item_types.unwrap_or_default(),
-                is_folder,
-                is_virtual_item: Some(false),
-                user_id: Some(target_user_id),
-                is_played,
-                order: BaseItemOrder::DateCreatedDescending,
-                start_index: 0,
-                limit: Some(candidate_limit),
-                enable_total_record_count: Some(false),
-                ..BaseItemQuery::default()
-            },
-        )
+        .query_items(&authenticated.user, target_user_id, database_query)
         .await?;
     // The official latest-media repository uses the identifier as its stable
     // descending tie-breaker after DateCreated. Keep that order before
@@ -1137,6 +1135,7 @@ async fn latest_for(
             target_user_id,
             page.items,
             query.limit,
+            grouping_query,
         )
         .await?
     } else {
@@ -1185,23 +1184,27 @@ enum LatestItemGroupKey {
     Presentation(String),
 }
 
+#[derive(Debug)]
+enum LatestGroupingCandidate {
+    Item(base_item::Model),
+    Tv {
+        selection: LatestItemSelection,
+        max_date: DateTime<Utc>,
+    },
+}
+
 async fn group_latest_items(
     state: &AppState,
     authenticated_user: &jellyfin_data::entities::user::Model,
     target_user_id: Uuid,
     candidates: Vec<base_item::Model>,
     limit: u64,
+    grouping_query: BaseItemQuery,
 ) -> Result<Vec<LatestItemSelection>, ApiError> {
-    let mut container_ids = candidates
-        .iter()
-        .filter_map(|item| {
-            if item.item_type.eq_ignore_ascii_case("Episode") {
-                item.series_id
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+    let tv_groups = state
+        .user_library
+        .latest_tv_groups(authenticated_user, target_user_id, grouping_query, limit)
+        .await?;
     let audio_ids = candidates
         .iter()
         .filter(|item| item.item_type.eq_ignore_ascii_case("Audio"))
@@ -1222,11 +1225,16 @@ async fn group_latest_items(
             .base_items
             .nearest_ancestor_ids_by_type(&photo_ids, &photo_album_types),
     )?;
+    let mut container_ids = tv_groups
+        .iter()
+        .filter_map(|group| group.selected_container_id)
+        .collect::<Vec<_>>();
+    container_ids.extend(tv_groups.iter().map(|group| group.most_recent_episode_id));
     container_ids.extend(audio_album_ids.values().copied());
     container_ids.extend(photo_album_ids.values().copied());
     container_ids.sort_unstable();
     container_ids.dedup();
-    let containers = if container_ids.is_empty() {
+    let grouping_items = if container_ids.is_empty() {
         HashMap::new()
     } else {
         state
@@ -1249,22 +1257,72 @@ async fn group_latest_items(
     };
 
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut candidates = candidates
+        .into_iter()
+        .filter(|item| !item.item_type.eq_ignore_ascii_case("Episode") || item.series_id.is_none())
+        .map(LatestGroupingCandidate::Item)
+        .collect::<Vec<_>>();
+    for tv_group in tv_groups {
+        let Some(most_recent_episode) = grouping_items.get(&tv_group.most_recent_episode_id) else {
+            continue;
+        };
+        let container = tv_group
+            .selected_container_id
+            .and_then(|id| grouping_items.get(&id))
+            .filter(|container| {
+                container.item_type.eq_ignore_ascii_case("Season")
+                    || container.item_type.eq_ignore_ascii_case("Series")
+            });
+        candidates.push(LatestGroupingCandidate::Tv {
+            selection: LatestItemSelection {
+                item: container.unwrap_or(most_recent_episode).clone(),
+                child_count: container
+                    .map(|_| u64::try_from(tv_group.recent_child_count).unwrap_or_default()),
+            },
+            max_date: tv_group.max_date,
+        });
+    }
+    candidates.sort_by(|left, right| {
+        let (left_date, left_id) = match left {
+            LatestGroupingCandidate::Item(item) => (item.date_created, item.id),
+            LatestGroupingCandidate::Tv {
+                selection,
+                max_date,
+            } => (*max_date, selection.item.id),
+        };
+        let (right_date, right_id) = match right {
+            LatestGroupingCandidate::Item(item) => (item.date_created, item.id),
+            LatestGroupingCandidate::Tv {
+                selection,
+                max_date,
+            } => (*max_date, selection.item.id),
+        };
+        right_date
+            .cmp(&left_date)
+            .then_with(|| right_id.cmp(&left_id))
+    });
     let mut selections = Vec::<LatestItemSelection>::with_capacity(limit.min(candidates.len()));
     let mut group_indexes = HashMap::<LatestItemGroupKey, usize>::new();
-    for item in candidates {
-        let container = if item.item_type.eq_ignore_ascii_case("Episode") {
-            item.series_id
-                .and_then(|id| containers.get(&id))
-                .filter(|container| container.item_type.eq_ignore_ascii_case("Series"))
-        } else if item.item_type.eq_ignore_ascii_case("Audio") {
+    for candidate in candidates {
+        let item = match candidate {
+            LatestGroupingCandidate::Item(item) => item,
+            LatestGroupingCandidate::Tv { selection, .. } => {
+                if selections.len() < limit {
+                    selections.push(selection);
+                }
+                continue;
+            }
+        };
+
+        let container = if item.item_type.eq_ignore_ascii_case("Audio") {
             audio_album_ids
                 .get(&item.id)
-                .and_then(|id| containers.get(id))
+                .and_then(|id| grouping_items.get(id))
                 .filter(|container| container.item_type.eq_ignore_ascii_case("MusicAlbum"))
         } else if item.item_type.eq_ignore_ascii_case("Photo") {
             photo_album_ids
                 .get(&item.id)
-                .and_then(|id| containers.get(id))
+                .and_then(|id| grouping_items.get(id))
                 .filter(|container| container.item_type.eq_ignore_ascii_case("PhotoAlbum"))
         } else {
             None

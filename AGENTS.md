@@ -99,7 +99,13 @@
   Traverse hierarchy and linked descendants, expand merged folder groups, exclude virtual leaves,
   alternate versions, and owned non-extra rows, and return zero entries without per-folder fallbacks.
 - Order episode detail pages with the official aired-episode comparer before applying `StartItemId`, adjacency, or pagination. Specials with `AirsBeforeSeasonNumber`, `AirsAfterSeasonNumber`, or `AirsBeforeEpisodeNumber` must be positioned relative to regular episodes rather than compared with a single incompatible numeric key; season zero itself remains sorted by `SortName`.
-- `Items/Latest` defaults `GroupItems` to true. Apply target-user policy and alternate-version folding before grouping; keep a single Episode as the Episode, replace multiple recent Episodes from one Series with that Series and the recent-child count, and return a MusicAlbum container even for one recent track. Load the bounded candidate set and its containers in batches rather than issuing per-item queries.
+- `Items/Latest` defaults `GroupItems` to true. For TV, select the top Series groups from the
+  complete policy-filtered Episode set before applying the result limit, then analyze each Series'
+  inclusive 24-hour window in PostgreSQL. Return Series for cross-season additions; for one Season
+  containing multiple recent Episodes or the complete Season, return Season when the Series has
+  multiple Seasons and Series otherwise. Count only visible primary, non-virtual Episodes, expose
+  the recent-child count, and fall back to the newest Episode when the selected container is hidden.
+  Keep candidate buffers bounded and load final containers and fallback Episodes in batches.
 - Resolve `Items/Latest` Audio and Photo grouping containers from the nearest matching
   `MusicAlbum` or `PhotoAlbum` ancestor by closure-table depth, not only the direct parent. Load
   all resolved containers through one target-user-policy-aware batch; fall back to the media item
