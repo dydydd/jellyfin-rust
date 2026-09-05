@@ -443,6 +443,78 @@ async fn genre_routes_match_official_generic_genre_contract() {
 }
 
 #[tokio::test]
+async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let series = create_item(
+        &items,
+        "Series",
+        &format!("Count Series {suffix}"),
+        None,
+        true,
+    )
+    .await;
+    let mut episode_ids = Vec::new();
+    for name in ["First", "Second"] {
+        let mut episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+        episode.name = Some(format!("{name} Episode {suffix}"));
+        episode.sort_name = episode.name.clone();
+        episode.parent_id = Some(series.id);
+        episode.series_id = Some(series.id);
+        episode_ids.push(items.create(episode).await.expect("series episode").id);
+    }
+    let unrelated_episode = create_item(
+        &items,
+        "Episode",
+        &format!("Unrelated Episode {suffix}"),
+        None,
+        false,
+    )
+    .await;
+
+    let values = ItemValueRepository::new(fixture.database.clone());
+    let genre = format!("Series Genre {suffix}");
+    let studio = format!("Series Studio {suffix}");
+    for (value_type, value) in [
+        (item_value::ItemValueType::Genre, genre.as_str()),
+        (item_value::ItemValueType::Studios, studio.as_str()),
+    ] {
+        values
+            .link(series.id, value_type, value)
+            .await
+            .expect("series item value");
+        // This episode is both directly tagged and inherited. It must only be counted once.
+        values
+            .link(episode_ids[0], value_type, value)
+            .await
+            .expect("direct series episode item value");
+        values
+            .link(unrelated_episode.id, value_type, value)
+            .await
+            .expect("unrelated episode item value");
+    }
+
+    for route in [
+        format!("/Genres?fields=ItemCounts&searchTerm={}", encoded(&genre)),
+        format!("/Studios?fields=ItemCounts&searchTerm={}", encoded(&studio)),
+    ] {
+        let body = body_json(
+            fixture
+                .request(Method::GET, &route, Credential::Device(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_eq!(body["TotalRecordCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["SeriesCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["EpisodeCount"], 3, "{route}: {body}");
+        assert_eq!(body["Items"][0]["ChildCount"], 4, "{route}: {body}");
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn genre_image_routes_resolve_public_ordinals() {
     let fixture = Fixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());

@@ -544,9 +544,13 @@ fn item_values_cte(
     value_type: item_value::ItemValueType,
     query: &ItemValueQuery,
 ) -> (String, Vec<SeaValue>) {
+    let inherits_to_episodes = matches!(
+        value_type,
+        item_value::ItemValueType::Genre | item_value::ItemValueType::Studios
+    );
     let mut values = vec![item_value_type_code(value_type).into()];
     let mut sql = String::from(
-        "WITH linked AS (\
+        "WITH matching AS (\
              SELECT value.item_value_id, value.value, value.clean_value, \
                     item.id AS item_id, item.item_type \
              FROM jellyfin.item_values AS value \
@@ -566,7 +570,64 @@ fn item_values_cte(
     }
     append_value_filters(&mut sql, &mut values, query);
     sql.push_str(
-        "), values AS (\
+        "), selected_values AS (\
+             SELECT DISTINCT item_value_id, value, clean_value FROM matching\
+         ), scoped AS (\
+             SELECT selected.item_value_id, selected.value, selected.clean_value, \
+                    item.id AS item_id, item.item_type \
+             FROM selected_values AS selected \
+             JOIN jellyfin.item_value_map AS map \
+               ON map.item_value_id = selected.item_value_id \
+             JOIN jellyfin.base_items AS item ON item.id = map.item_id \
+             WHERE item.item_type <> 'PLACEHOLDER' \
+               AND item.primary_version_id IS NULL \
+               AND (item.data ->> 'OwnerId' IS NULL \
+                    OR item.data ->> 'ExtraType' IS NOT NULL)",
+    );
+    append_count_scope_filters(&mut sql, &mut values, query, "item");
+    if let Some(condition) = policy_filter_sql("item", &query.access_policy) {
+        sql.push_str(" AND (");
+        sql.push_str(&condition);
+        sql.push(')');
+    }
+    sql.push(')');
+    if inherits_to_episodes {
+        sql.push_str(
+            ", inherited_episodes AS (\
+                 SELECT tagged.item_value_id, tagged.value, tagged.clean_value, \
+                        episode.id AS item_id, episode.item_type \
+                 FROM scoped AS tagged \
+                 JOIN jellyfin.base_items AS episode \
+                   ON episode.series_id = tagged.item_id \
+                 WHERE tagged.item_type = 'Series' \
+                   AND episode.item_type = 'Episode' \
+                   AND episode.primary_version_id IS NULL \
+                   AND (episode.data ->> 'OwnerId' IS NULL \
+                        OR episode.data ->> 'ExtraType' IS NOT NULL)",
+        );
+        append_count_scope_filters(&mut sql, &mut values, query, "episode");
+        if let Some(condition) = policy_filter_sql("episode", &query.access_policy) {
+            sql.push_str(" AND (");
+            sql.push_str(&condition);
+            sql.push(')');
+        }
+        sql.push_str(
+            "), counted AS (\
+                 SELECT item_value_id, value, clean_value, item_id, item_type FROM scoped \
+                 UNION ALL \
+                 SELECT item_value_id, value, clean_value, item_id, item_type \
+                 FROM inherited_episodes\
+             )",
+        );
+    } else {
+        sql.push_str(
+            ", counted AS (\
+                 SELECT item_value_id, value, clean_value, item_id, item_type FROM scoped\
+             )",
+        );
+    }
+    sql.push_str(
+        ", values AS (\
              SELECT item_value_id, value, clean_value, \
                     COUNT(DISTINCT item_id)::bigint AS item_count, \
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'MusicAlbum')::bigint AS album_count, \
@@ -578,11 +639,56 @@ fn item_values_cte(
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Series')::bigint AS series_count, \
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Audio')::bigint AS song_count, \
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Trailer')::bigint AS trailer_count \
-             FROM linked \
+             FROM counted \
              GROUP BY item_value_id, value, clean_value\
          )",
     );
     (sql, values)
+}
+
+fn append_count_scope_filters(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    query: &ItemValueQuery,
+    table: &str,
+) {
+    if !query.ids.is_empty() {
+        sql.push_str(" AND ");
+        sql.push_str(table);
+        sql.push_str(".id IN (");
+        for (index, item_id) in query.ids.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push((*item_id).into());
+            sql.push('$');
+            sql.push_str(&values.len().to_string());
+        }
+        sql.push(')');
+    }
+    if let Some(parent_id) = query.parent_id {
+        if query.recursive {
+            values.push(parent_id.into());
+            sql.push_str(" AND ");
+            sql.push_str(table);
+            sql.push_str(
+                ".id IN (SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
+                  WHERE closure.parent_item_id = $",
+            );
+            sql.push_str(&values.len().to_string());
+            sql.push(')');
+        } else {
+            values.push(parent_id.into());
+            sql.push_str(" AND ");
+            sql.push_str(table);
+            sql.push_str(".parent_id = $");
+            sql.push_str(&values.len().to_string());
+        }
+    }
+    let item_type = format!("{table}.item_type");
+    append_string_list_filter(sql, values, &item_type, &query.exclude_item_types, true);
+    let media_type = format!("{table}.media_type");
+    append_string_list_filter(sql, values, &media_type, &query.media_types, false);
 }
 
 const fn item_value_type_code(value_type: item_value::ItemValueType) -> i16 {
