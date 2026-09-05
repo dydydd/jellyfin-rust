@@ -77,6 +77,7 @@ impl ArtistService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         name: &str,
+        query: ItemValueQuery,
     ) -> Result<Artist, ArtistError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
@@ -88,15 +89,11 @@ impl ArtistService {
             let Some(value) = self.find_value(kind, requested_name).await? else {
                 continue;
             };
+            let mut candidate_query = query.clone();
+            candidate_query.search_term = Some(value.value.clone());
             let candidate = self
                 .item_values
-                .query_values(
-                    kind.value_type(),
-                    &ItemValueQuery {
-                        search_term: Some(value.value.clone()),
-                        ..ItemValueQuery::default()
-                    },
-                )
+                .query_values(kind.value_type(), &candidate_query)
                 .await?
                 .values
                 .into_iter()

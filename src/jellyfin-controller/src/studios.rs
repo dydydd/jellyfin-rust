@@ -71,6 +71,7 @@ impl StudioService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         name: &str,
+        mut query: ItemValueQuery,
     ) -> Result<Studio, StudioError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
@@ -81,15 +82,10 @@ impl StudioService {
         let Some(value) = self.find_value(requested_name).await? else {
             return Ok(virtual_studio(requested_name));
         };
+        query.search_term = Some(value.value.clone());
         let candidate = self
             .item_values
-            .query_values(
-                item_value::ItemValueType::Studios,
-                &ItemValueQuery {
-                    search_term: Some(value.value.clone()),
-                    ..ItemValueQuery::default()
-                },
-            )
+            .query_values(item_value::ItemValueType::Studios, &query)
             .await?
             .values
             .into_iter()

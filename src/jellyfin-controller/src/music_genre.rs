@@ -69,6 +69,7 @@ impl MusicGenreService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         name: &str,
+        mut query: ItemValueQuery,
     ) -> Result<MusicGenre, MusicGenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
@@ -76,16 +77,11 @@ impl MusicGenreService {
             .find_value(name)
             .await?
             .ok_or(MusicGenreError::NotFound)?;
+        query.search_term = Some(value.value.clone());
+        query.include_item_types = MUSIC_ITEM_TYPES.iter().map(ToString::to_string).collect();
         let candidate = self
             .item_values
-            .query_values(
-                item_value::ItemValueType::Genre,
-                &ItemValueQuery {
-                    search_term: Some(value.value.clone()),
-                    include_item_types: MUSIC_ITEM_TYPES.iter().map(ToString::to_string).collect(),
-                    ..ItemValueQuery::default()
-                },
-            )
+            .query_values(item_value::ItemValueType::Genre, &query)
             .await?
             .values
             .into_iter()

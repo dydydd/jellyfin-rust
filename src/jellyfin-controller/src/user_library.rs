@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
-    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ScoredBaseItem,
-    ScoredBaseItemPage, ServerConfigurationRepository,
+    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ItemValueQuery,
+    ScoredBaseItem, ScoredBaseItemPage, ServerConfigurationRepository,
     entities::{base_item, user},
 };
 use jellyfin_model::UserPolicy;
@@ -201,6 +201,27 @@ impl UserLibraryService {
         };
         self.apply_user_policy(&mut query, target_user_id).await?;
         Ok(self.items.item_counts(&query).await?)
+    }
+
+    /// Applies the same target-user access policy used by ordinary item pages to an item-by-name
+    /// query. This keeps value discovery and its counts from exposing disabled libraries, blocked
+    /// tags, or parental-rating restricted items.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, or stored-policy errors.
+    pub async fn apply_item_value_policy(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        query: &mut ItemValueQuery,
+    ) -> Result<(), UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        self.apply_user_policy(&mut query.access_policy, target_user_id)
+            .await?;
+        query.user_id = Some(target_user_id);
+        Ok(())
     }
 
     /// Searches a target user's library with official score ordering.

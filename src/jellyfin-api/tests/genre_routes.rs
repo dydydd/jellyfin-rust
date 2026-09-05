@@ -13,6 +13,7 @@ use jellyfin_data::{
     UserDataRepository,
     entities::{base_item, item_value},
 };
+use jellyfin_model::UserPolicy;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
@@ -320,6 +321,79 @@ async fn genre_routes_match_official_generic_genre_contract() {
     )
     .await;
     assert_eq!(admin_targeted["TotalRecordCount"], 5);
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let allowed_folder = create_item(&items, "CollectionFolder", "Allowed", None, true).await;
+    let blocked_folder = create_item(&items, "CollectionFolder", "Blocked", None, true).await;
+    let allowed_movie = create_item(
+        &items,
+        "Movie",
+        "Allowed Movie",
+        Some(allowed_folder.id),
+        false,
+    )
+    .await;
+    let blocked_movie = create_item(
+        &items,
+        "Movie",
+        "Blocked Movie",
+        Some(blocked_folder.id),
+        false,
+    )
+    .await;
+    let allowed_genre = format!("Allowed Policy Genre {}", Uuid::new_v4().simple());
+    let blocked_genre = format!("Blocked Policy Genre {}", Uuid::new_v4().simple());
+    let values = ItemValueRepository::new(fixture.database.clone());
+    values
+        .link(
+            allowed_movie.id,
+            item_value::ItemValueType::Genre,
+            &allowed_genre,
+        )
+        .await
+        .expect("allowed policy genre");
+    values
+        .link(
+            blocked_movie.id,
+            item_value::ItemValueType::Genre,
+            &blocked_genre,
+        )
+        .await
+        .expect("blocked policy genre");
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.enable_all_folders = false;
+    policy.enabled_folders = vec![allowed_folder.id];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted folder policy");
+
+    let allowed = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Genres?searchTerm={}", encoded(&allowed_genre)),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(&allowed, &[&allowed_genre], 1, 0);
+    let blocked = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Genres?searchTerm={}", encoded(&blocked_genre)),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(&blocked, &[], 0, 0);
 
     fixture.cleanup().await;
 }

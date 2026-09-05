@@ -4567,7 +4567,7 @@ fn append_item_value_id_filter(
     sql.push_str("))");
 }
 
-fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<String> {
+pub(crate) fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<String> {
     let mut parts = Vec::new();
     if !query.allowed_official_ratings.is_empty() {
         parts.push(format!(

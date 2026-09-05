@@ -8,7 +8,10 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::entities::{base_item, item_value, item_value_map};
+use crate::{
+    base_item_repository::{BaseItemQuery, policy_filter_sql},
+    entities::{base_item, item_value, item_value_map},
+};
 
 #[derive(Debug, Error)]
 pub enum ItemValueError {
@@ -20,7 +23,7 @@ pub enum ItemValueError {
     Database(#[from] DbErr),
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemValueQuery {
     pub ids: Vec<Uuid>,
     pub parent_id: Option<Uuid>,
@@ -45,6 +48,7 @@ pub struct ItemValueQuery {
     pub order: ItemValueOrder,
     pub descending: bool,
     pub enable_total_record_count: Option<bool>,
+    pub access_policy: BaseItemQuery,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -555,6 +559,11 @@ fn item_values_cte(
                     OR item.data ->> 'ExtraType' IS NOT NULL)",
     );
     append_item_filters(&mut sql, &mut values, query);
+    if let Some(condition) = policy_filter_sql("item", &query.access_policy) {
+        sql.push_str(" AND (");
+        sql.push_str(&condition);
+        sql.push(')');
+    }
     append_value_filters(&mut sql, &mut values, query);
     sql.push_str(
         "), values AS (\

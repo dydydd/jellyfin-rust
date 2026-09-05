@@ -76,27 +76,28 @@ pub(crate) async fn list(
     let include_item_counts = user_library::BaseItemDtoFields::from_names(&query.fields)
         .wants_item_counts()
         || !query.include_item_types.is_empty();
+    let mut item_query = ItemValueQuery {
+        parent_id: query.parent_id,
+        search_term: query.search_term,
+        include_item_types: query.include_item_types,
+        exclude_item_types: query.exclude_item_types,
+        is_favorite: query.is_favorite,
+        user_id: Some(target_user_id),
+        name_starts_with_or_greater: query.name_starts_with_or_greater,
+        name_starts_with: query.name_starts_with,
+        name_less_than: query.name_less_than,
+        start_index: query.start_index,
+        limit: query.limit,
+        enable_total_record_count: Some(enable_total_record_count),
+        ..ItemValueQuery::default()
+    };
+    state
+        .user_library
+        .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
+        .await?;
     let page = state
         .studios
-        .list(
-            &authenticated.user,
-            target_user_id,
-            ItemValueQuery {
-                parent_id: query.parent_id,
-                search_term: query.search_term,
-                include_item_types: query.include_item_types,
-                exclude_item_types: query.exclude_item_types,
-                is_favorite: query.is_favorite,
-                user_id: Some(target_user_id),
-                name_starts_with_or_greater: query.name_starts_with_or_greater,
-                name_starts_with: query.name_starts_with,
-                name_less_than: query.name_less_than,
-                start_index: query.start_index,
-                limit: query.limit,
-                enable_total_record_count: Some(enable_total_record_count),
-                ..ItemValueQuery::default()
-            },
-        )
+        .list(&authenticated.user, target_user_id, item_query)
         .await?;
     let items = page
         .studios
@@ -126,9 +127,14 @@ pub(crate) async fn get(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    let mut item_query = ItemValueQuery::default();
+    state
+        .user_library
+        .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
+        .await?;
     let studio = state
         .studios
-        .get(&authenticated.user, target_user_id, &name)
+        .get(&authenticated.user, target_user_id, &name, item_query)
         .await?;
     Ok(Json(user_library::studio_to_dto(
         studio,

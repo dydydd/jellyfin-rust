@@ -80,6 +80,7 @@ impl GenreService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         name: &str,
+        mut query: ItemValueQuery,
     ) -> Result<Genre, GenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
@@ -92,10 +93,8 @@ impl GenreService {
             return Ok(virtual_genre(requested_name));
         };
         let value_id = value.item_value_id;
-        let mut query = generic_genre_query(ItemValueQuery {
-            search_term: Some(value.value),
-            ..ItemValueQuery::default()
-        });
+        query.search_term = Some(value.value);
+        let mut query = generic_genre_query(query);
         let page = self
             .item_values
             .query_values(item_value::ItemValueType::Genre, &query)
