@@ -163,6 +163,7 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
                     index: 0,
                     stream_type: MediaStreamType::Video,
                     codec: Some("hevc".to_owned()),
+                    bit_rate: Some(4_000_000),
                     ..MediaStream::default()
                 },
                 MediaStream {
@@ -170,6 +171,7 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
                     stream_type: MediaStreamType::Audio,
                     codec: Some("aac".to_owned()),
                     channels: Some(2),
+                    bit_rate: Some(192_000),
                     is_default: true,
                     ..MediaStream::default()
                 },
@@ -185,10 +187,12 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .expect("media sources");
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0]["Id"], fixture.item_id.simple().to_string());
+    assert_eq!(sources[0]["Bitrate"], 5_500_000);
     assert!(sources.iter().any(|source| {
         source["Id"] == alternate_id.simple().to_string()
             && source["Path"].as_str() == Some(alternate_path.as_str())
             && source["MediaStreams"][0]["Codec"] == "hevc"
+            && source["Bitrate"] == 4_192_000
     }));
 
     let profiled = body_json(
@@ -822,6 +826,7 @@ impl Fixture {
         item.name = Some("playback-info-movie".to_owned());
         item.path = Some(item_path.clone());
         item.runtime_ticks = Some(12_345_000_000);
+        item.data = Some(json!({"Bitrate": 5_500_000}));
         BaseItemRepository::new(database.clone())
             .create(item)
             .await

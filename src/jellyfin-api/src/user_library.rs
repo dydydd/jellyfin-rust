@@ -126,6 +126,8 @@ pub struct BaseItemDto {
     pub path: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_path: Option<String>,
+    #[serde(skip)]
+    pub(crate) media_source_bitrate: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -735,6 +737,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
     let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"])
         .map(|value| canonical_enum_or(&value, EXTRA_TYPES, "Unknown"));
     let media_source_path = metadata_string(item.data.as_ref(), &["StrmTarget", "strm_target"]);
+    let media_source_bitrate = metadata_i32(item.data.as_ref(), &["Bitrate", "bitrate"]);
     let has_lyrics = item
         .data
         .as_ref()
@@ -751,6 +754,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         sort_name: item.sort_name,
         path: item.path,
         media_source_path,
+        media_source_bitrate,
         overview: item.overview,
         media_type: item
             .media_type
@@ -1222,12 +1226,16 @@ fn media_source_from_dto(
         .map(|path| get_media_source_name(path, false, None))
         .or_else(|| dto.name.clone());
     let container = path.as_deref().and_then(media_container_from_path);
+    let bitrate = dto
+        .media_source_bitrate
+        .or_else(|| infer_total_bitrate(&media_streams));
     Some(MediaSourceInfo {
         id: Some(dto.id.clone()),
         protocol,
         path,
         name,
         container,
+        bitrate,
         source_type: MediaSourceType::Default,
         is_remote: protocol != MediaProtocol::File,
         run_time_ticks: dto.run_time_ticks,
@@ -1237,6 +1245,20 @@ fn media_source_from_dto(
         default_subtitle_stream_index,
         ..MediaSourceInfo::default()
     })
+}
+
+fn infer_total_bitrate(media_streams: &[MediaStream]) -> Option<i32> {
+    let bitrate = media_streams
+        .iter()
+        .filter(|stream| !stream.is_external)
+        .filter_map(|stream| stream.bit_rate)
+        .map(i64::from)
+        .sum::<i64>();
+    if bitrate > 0 {
+        i32::try_from(bitrate).ok()
+    } else {
+        None
+    }
 }
 
 fn media_protocol_from_path(path: &str) -> MediaProtocol {
@@ -2044,6 +2066,7 @@ mod tests {
                 "IsLocked": true,
                 "Width": 1920,
                 "Height": 1080,
+                "Bitrate": 5500000,
                 "ExtraType": "behindthescenes",
                 "AirDays": ["monday", "Funday", "Friday"],
                 "EndDate": "2020-01-02",
@@ -2091,6 +2114,7 @@ mod tests {
 
         assert_eq!(dto.community_rating, Some(8.5));
         assert_eq!(dto.critic_rating, Some(7.0));
+        assert_eq!(dto.media_source_bitrate, Some(5_500_000));
         assert_eq!(dto.original_title.as_deref(), Some("Original"));
         assert_eq!(dto.taglines, ["Tag"]);
         assert_eq!(
@@ -2127,6 +2151,7 @@ mod tests {
         assert_eq!(dto.path.as_deref(), Some("/library/Movie.strm"));
         let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
         assert_eq!(source.path.as_deref(), Some("/CloudNAS/Movie/movie.mkv"));
+        assert_eq!(source.bitrate, Some(5_500_000));
         assert_eq!(source.container.as_deref(), Some("mkv"));
         assert_eq!(source.protocol, MediaProtocol::File);
         assert!(!source.is_remote);
@@ -2147,6 +2172,38 @@ mod tests {
             ])
         );
         assert_eq!(json["EndDate"], "2020-01-02T00:00:00.000Z");
+    }
+
+    #[test]
+    fn media_source_bitrate_inference_ignores_external_streams_and_overflow() {
+        let streams = [
+            MediaStream {
+                bit_rate: Some(4_000_000),
+                ..MediaStream::default()
+            },
+            MediaStream {
+                bit_rate: Some(192_000),
+                ..MediaStream::default()
+            },
+            MediaStream {
+                bit_rate: Some(10_000_000),
+                is_external: true,
+                ..MediaStream::default()
+            },
+        ];
+        assert_eq!(infer_total_bitrate(&streams), Some(4_192_000));
+
+        let overflow = [
+            MediaStream {
+                bit_rate: Some(i32::MAX),
+                ..MediaStream::default()
+            },
+            MediaStream {
+                bit_rate: Some(1),
+                ..MediaStream::default()
+            },
+        ];
+        assert_eq!(infer_total_bitrate(&overflow), None);
     }
 
     #[test]
