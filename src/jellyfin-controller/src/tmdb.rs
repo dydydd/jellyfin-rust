@@ -252,10 +252,20 @@ impl TmdbClient {
         id: i64,
         season_number: i32,
     ) -> Result<TmdbTvSeasonDetails, MetadataProviderError> {
+        self.tv_season_details_with_language(id, season_number, &self.language)
+            .await
+    }
+
+    async fn tv_season_details_with_language(
+        &self,
+        id: i64,
+        season_number: i32,
+        language: &str,
+    ) -> Result<TmdbTvSeasonDetails, MetadataProviderError> {
         self.get_json(
             &format!("/tv/{id}/season/{season_number}"),
             &[
-                ("language", self.language.as_str()),
+                ("language", language),
                 ("append_to_response", "credits,external_ids,videos"),
             ],
         )
@@ -268,10 +278,21 @@ impl TmdbClient {
         season_number: i32,
         episode_number: i32,
     ) -> Result<TmdbEpisodeDetails, MetadataProviderError> {
+        self.episode_details_with_language(series_id, season_number, episode_number, &self.language)
+            .await
+    }
+
+    async fn episode_details_with_language(
+        &self,
+        series_id: i64,
+        season_number: i32,
+        episode_number: i32,
+        language: &str,
+    ) -> Result<TmdbEpisodeDetails, MetadataProviderError> {
         self.get_json(
             &format!("/tv/{series_id}/season/{season_number}/episode/{episode_number}"),
             &[
-                ("language", self.language.as_str()),
+                ("language", language),
                 ("append_to_response", "credits,external_ids,videos"),
             ],
         )
@@ -642,8 +663,14 @@ impl TmdbMetadataProvider {
             .client
             .tv_season_details(series_tmdb_id, season_number)
             .await?;
-        self.apply_season_metadata(series.id, series.name.as_deref(), season_number, season)
-            .await?;
+        self.apply_season_metadata(
+            series.id,
+            series_tmdb_id,
+            series.name.as_deref(),
+            season_number,
+            season,
+        )
+        .await?;
         Ok(true)
     }
 
@@ -1065,6 +1092,7 @@ impl TmdbMetadataProvider {
             },
             &TmdbEpisodeCapability {
                 client: &self.client,
+                series_name: parents.series.as_ref().map(|series| series.name.as_str()),
             },
         )
         .await?;
@@ -1233,8 +1261,14 @@ impl TmdbMetadataProvider {
             else {
                 continue;
             };
-            self.apply_season_metadata(series_id, series_name.as_deref(), season_number, season)
-                .await?;
+            self.apply_season_metadata(
+                series_id,
+                tmdb_series_id,
+                series_name.as_deref(),
+                season_number,
+                season,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1243,10 +1277,36 @@ impl TmdbMetadataProvider {
     async fn apply_season_metadata(
         &self,
         series_id: Uuid,
+        tmdb_series_id: i64,
         series_name: Option<&str>,
         season_number: i32,
         mut season: TmdbTvSeasonDetails,
     ) -> Result<(), MetadataProviderError> {
+        if !self.client.language.eq_ignore_ascii_case("en-US")
+            && season
+                .episodes
+                .iter()
+                .any(|episode| episode_name_matches_series(episode.name.as_deref(), series_name))
+            && let Ok(fallback) = self
+                .client
+                .tv_season_details_with_language(tmdb_series_id, season_number, "en-US")
+                .await
+        {
+            let fallback_names = fallback
+                .episodes
+                .into_iter()
+                .map(|episode| (episode.episode_number, episode.name))
+                .collect::<HashMap<_, _>>();
+            for episode in &mut season.episodes {
+                replace_episode_series_name_placeholder(
+                    &mut episode.name,
+                    fallback_names
+                        .get(&episode.episode_number)
+                        .and_then(Option::as_deref),
+                    series_name,
+                );
+            }
+        }
         let season_items = self
             .items
             .children(series_id)
@@ -1570,6 +1630,7 @@ struct EpisodeParents {
 
 struct TmdbEpisodeCapability<'a> {
     client: &'a TmdbClient,
+    series_name: Option<&'a str>,
 }
 
 impl EpisodeMetadataCapability for TmdbEpisodeCapability<'_> {
@@ -1582,8 +1643,13 @@ impl EpisodeMetadataCapability for TmdbEpisodeCapability<'_> {
         if lookup.is_missing_episode || lookup.index_number.is_none() {
             return Ok(None);
         }
-        let Some(first) =
-            fetch_episode_details(self.client, lookup, lookup.index_number.unwrap()).await?
+        let Some(first) = fetch_episode_details(
+            self.client,
+            lookup,
+            lookup.index_number.unwrap(),
+            self.series_name,
+        )
+        .await?
         else {
             return Ok(None);
         };
@@ -1591,7 +1657,9 @@ impl EpisodeMetadataCapability for TmdbEpisodeCapability<'_> {
             let mut combined = first;
             let mut number = combined.episode_number + 1;
             while number <= end {
-                if let Some(next) = fetch_episode_details(self.client, lookup, number).await? {
+                if let Some(next) =
+                    fetch_episode_details(self.client, lookup, number, self.series_name).await?
+                {
                     combine_episode_details(&mut combined, &next);
                 }
                 number += 1;
@@ -1611,6 +1679,7 @@ async fn fetch_episode_details(
     client: &TmdbClient,
     lookup: &EpisodeLookupInfo,
     episode_number: i32,
+    series_name: Option<&str>,
 ) -> Result<Option<TmdbEpisodeDetails>, MetadataProviderError> {
     let Some(series_id) = lookup
         .tmdb_series_id
@@ -1620,11 +1689,49 @@ async fn fetch_episode_details(
         return Ok(None);
     };
     let season_number = lookup.parent_index_number.unwrap_or(1);
-    Ok(Some(
-        client
-            .episode_details(series_id, season_number, episode_number)
-            .await?,
-    ))
+    let mut details = client
+        .episode_details(series_id, season_number, episode_number)
+        .await?;
+    if !client.language.eq_ignore_ascii_case("en-US")
+        && episode_name_matches_series(details.name.as_deref(), series_name)
+        && let Ok(fallback) = client
+            .episode_details_with_language(series_id, season_number, episode_number, "en-US")
+            .await
+    {
+        replace_episode_series_name_placeholder(
+            &mut details.name,
+            fallback.name.as_deref(),
+            series_name,
+        );
+    }
+    Ok(Some(details))
+}
+
+fn episode_name_matches_series(name: Option<&str>, series_name: Option<&str>) -> bool {
+    let (Some(name), Some(series_name)) = (name, series_name) else {
+        return false;
+    };
+    !name.trim().is_empty() && name.trim().eq_ignore_ascii_case(series_name.trim())
+}
+
+fn replace_episode_series_name_placeholder(
+    name: &mut Option<String>,
+    fallback_name: Option<&str>,
+    series_name: Option<&str>,
+) -> bool {
+    if !episode_name_matches_series(name.as_deref(), series_name) {
+        return false;
+    }
+    let Some(fallback_name) = fallback_name.filter(|name| !name.trim().is_empty()) else {
+        return false;
+    };
+    if episode_name_matches_series(Some(fallback_name), series_name)
+        || name.as_deref() == Some(fallback_name)
+    {
+        return false;
+    }
+    *name = Some(fallback_name.to_owned());
+    true
 }
 
 #[allow(clippy::format_push_string)]
@@ -2715,6 +2822,38 @@ mod tests {
     #[test]
     fn tmdb_language_defaults_when_language_is_empty() {
         assert_eq!(tmdb_language("  ", "CN"), "en-US");
+    }
+
+    #[test]
+    fn episode_name_language_fallback_replaces_only_series_placeholders() {
+        let mut placeholder = Some("Series Title".to_owned());
+        assert!(replace_episode_series_name_placeholder(
+            &mut placeholder,
+            Some("Fallback Episode"),
+            Some("Series Title"),
+        ));
+        assert_eq!(placeholder.as_deref(), Some("Fallback Episode"));
+
+        let mut established = Some("Localized Episode".to_owned());
+        assert!(!replace_episode_series_name_placeholder(
+            &mut established,
+            Some("Fallback Episode"),
+            Some("Series Title"),
+        ));
+        assert_eq!(established.as_deref(), Some("Localized Episode"));
+
+        let mut still_placeholder = Some("Series Title".to_owned());
+        assert!(!replace_episode_series_name_placeholder(
+            &mut still_placeholder,
+            Some(" series title "),
+            Some("Series Title"),
+        ));
+        assert!(!replace_episode_series_name_placeholder(
+            &mut still_placeholder,
+            Some("  "),
+            Some("Series Title"),
+        ));
+        assert_eq!(still_placeholder.as_deref(), Some("Series Title"));
     }
 
     #[tokio::test]

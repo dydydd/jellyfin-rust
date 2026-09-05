@@ -49,6 +49,7 @@
 - Lazy `.strm` probing must have a process-level deadline that terminates FFprobe before returning; an async timeout around an uncancelled blocking child is not sufficient because client retries can accumulate processes and memory.
 - Coordinate lazy `.strm` probes by item and resolved target so concurrent playback requests share one bounded flight. Keep failure backoff state short-lived and hard-bounded so retries do not repeatedly pay the probe timeout or grow memory without limit.
 - During episode refresh, merge a neighboring local NFO before remote metadata: preserve a non-empty established local title, but continue to treat a local title equal to the series or path-derived name as a replaceable placeholder; allow the first remote result to replace only such placeholders, and honor `LockedFields.Name` even for a full refresh.
+- If TMDb returns an episode name equal to its series name in the preferred language, fetch the English episode metadata once and use only its non-placeholder name as a fallback. Preserve all localized non-name fields, and apply the same rule to direct episode refresh and bulk season refresh.
 - Cancellation of scans and refreshes must promptly stop new work, release locks/permits, and leave the database in a consistent state.
 
 ## Validation
