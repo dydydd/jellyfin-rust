@@ -185,6 +185,28 @@ impl ItemImageService {
         Ok(infos)
     }
 
+    /// Loads persisted image types without projecting image DTO metadata.
+    ///
+    /// Provider refresh uses this for existence checks so it does not inspect
+    /// or decode local image files merely to decide whether a download is
+    /// needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when image types cannot be loaded.
+    pub async fn existing_types(
+        &self,
+        item_id: Uuid,
+    ) -> Result<std::collections::HashSet<ImageType>, ItemImageError> {
+        Ok(self
+            .images
+            .types(item_id)
+            .await?
+            .into_iter()
+            .map(model_image_type)
+            .collect())
+    }
+
     /// Resolves one image by its public zero-based ordinal.
     ///
     /// Remote image stubs are downloaded once, moved into the image cache, and

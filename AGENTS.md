@@ -19,6 +19,7 @@
 - Build playback-aware queries from the target user's `user_data` rows and reverse hierarchy lookups rather than correlated scans over all `base_items`. Materialize shared candidate sets when count and page queries would otherwise repeat expensive work.
 - Project inherited images for an item page with one batched DTO-image lookup. Do not call the image projector once per item.
 - Coordinate remote-image downloads by URL so concurrent items share one bounded download. Validate that upstream content is an image, and remove or otherwise suppress permanently invalid remote references according to official behavior.
+- Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 
 ## Compatibility expectations

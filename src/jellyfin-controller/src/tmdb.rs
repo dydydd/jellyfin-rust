@@ -1022,15 +1022,10 @@ impl TmdbMetadataProvider {
         let Some(image_url) = TmdbUtils::image_url(Some("original"), Some(profile_path)) else {
             return;
         };
-        let Some(item) = self.items.get(item_id).await.ok().flatten() else {
-            return;
-        };
-        let existing = images.list(&item).await.ok();
-        let has_profile = existing.as_ref().is_some_and(|images| {
-            images
-                .iter()
-                .any(|image| image.image_type == ImageType::Primary)
-        });
+        let has_profile = images
+            .existing_types(item_id)
+            .await
+            .is_ok_and(|types| types.contains(&ImageType::Primary));
         if !has_profile
             && let Err(error) = images
                 .download_remote_image(item_id, ImageType::Primary, &image_url)
@@ -1305,12 +1300,10 @@ impl TmdbMetadataProvider {
                 && let Some(url) =
                     TmdbUtils::image_url(Some("original"), season.poster_path.as_deref())
             {
-                let existing = images.list(&season_item).await.ok();
-                let has_primary = existing.as_ref().is_some_and(|images| {
-                    images
-                        .iter()
-                        .any(|image| image.image_type == ImageType::Primary)
-                });
+                let has_primary = images
+                    .existing_types(season_item.id)
+                    .await
+                    .is_ok_and(|types| types.contains(&ImageType::Primary));
                 if !has_primary
                     && let Err(error) = images
                         .download_remote_image(season_item.id, ImageType::Primary, &url)
@@ -1355,12 +1348,10 @@ impl TmdbMetadataProvider {
                         && let Some(url) =
                             TmdbUtils::image_url(Some("original"), remote.still_path.as_deref())
                     {
-                        let existing = images.list(&episode).await.ok();
-                        let has_primary = existing.as_ref().is_some_and(|images| {
-                            images
-                                .iter()
-                                .any(|image| image.image_type == ImageType::Primary)
-                        });
+                        let has_primary = images
+                            .existing_types(episode.id)
+                            .await
+                            .is_ok_and(|types| types.contains(&ImageType::Primary));
                         if !has_primary
                             && let Err(error) = images
                                 .download_remote_image(episode.id, ImageType::Primary, &url)
@@ -1476,11 +1467,11 @@ impl TmdbMetadataProvider {
             }));
             self.items.create(item).await?
         };
-        if images.list(&person_item).await.is_ok_and(|images| {
-            images
-                .iter()
-                .any(|image| image.image_type == ImageType::Primary)
-        }) {
+        if images
+            .existing_types(person_item.id)
+            .await
+            .is_ok_and(|types| types.contains(&ImageType::Primary))
+        {
             return Ok(());
         }
         if let Err(error) = images
@@ -1502,20 +1493,9 @@ impl TmdbMetadataProvider {
         let Some(images) = &self.images else {
             return;
         };
-        let Some(item) = self.items.get(item_id).await.ok().flatten() else {
-            return;
-        };
-        let existing = images.list(&item).await.ok();
-        let has_primary = existing.as_ref().is_some_and(|images| {
-            images
-                .iter()
-                .any(|image| image.image_type == ImageType::Primary)
-        });
-        let has_backdrop = existing.as_ref().is_some_and(|images| {
-            images
-                .iter()
-                .any(|image| image.image_type == ImageType::Backdrop)
-        });
+        let existing = images.existing_types(item_id).await.unwrap_or_default();
+        let has_primary = existing.contains(&ImageType::Primary);
+        let has_backdrop = existing.contains(&ImageType::Backdrop);
         if (!has_primary || replace_all)
             && let Some(url) = TmdbUtils::image_url(Some("original"), poster_path)
         {

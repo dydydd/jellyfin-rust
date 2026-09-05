@@ -304,6 +304,12 @@ async fn assert_replace_reload_and_clear(
         persisted(item.id, &replacement)
     );
     assert_eq!(
+        restarted.types(item.id).await.unwrap(),
+        [BaseItemImageType::Primary, BaseItemImageType::Thumb]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(
         restarted.primary(item.id).await.unwrap(),
         Some(persisted(item.id, &replacement).remove(0))
     );
@@ -343,6 +349,7 @@ async fn assert_replace_reload_and_clear(
     );
 
     assert!(restarted.replace(item.id, &[]).await.unwrap().is_empty());
+    assert!(restarted.types(item.id).await.unwrap().is_empty());
     assert!(restarted.list(item.id).await.unwrap().is_empty());
     assert_eq!(restarted.primary(item.id).await.unwrap(), None);
 }

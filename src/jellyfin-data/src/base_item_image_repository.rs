@@ -221,6 +221,32 @@ impl BaseItemImageRepository {
         rows.into_iter().map(BaseItemImage::try_from).collect()
     }
 
+    /// Lists only the persisted image types for one item.
+    ///
+    /// This deliberately avoids loading image paths and projection metadata so
+    /// callers performing existence checks cannot accidentally trigger file
+    /// inspection or full image decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error or a corrupt image-type error.
+    pub async fn types(
+        &self,
+        item_id: Uuid,
+    ) -> Result<HashSet<BaseItemImageType>, BaseItemImageStoreError> {
+        let types = base_item_image::Entity::find()
+            .select_only()
+            .column(base_item_image::Column::ImageType)
+            .filter(base_item_image::Column::ItemId.eq(item_id))
+            .into_tuple::<i16>()
+            .all(self.database.as_ref())
+            .await?;
+        Ok(types
+            .into_iter()
+            .map(BaseItemImageType::try_from)
+            .collect::<Result<_, _>>()?)
+    }
+
     /// Lists images for several items with one query, ordered by item/type/index.
     ///
     /// # Errors
