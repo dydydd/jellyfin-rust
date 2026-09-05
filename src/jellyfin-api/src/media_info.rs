@@ -838,10 +838,12 @@ async fn media_sources(
         .library_controller
         .item(authenticated_user, target_user_id, item_id)
         .await?;
-    state
-        .library_scan
-        .hydrate_strm_media_streams(item_id)
-        .await?;
+    if let Some(source_id) = selected_playback_source_id(state, item_id, media_source_id).await? {
+        state
+            .library_scan
+            .hydrate_strm_media_streams(source_id)
+            .await?;
+    }
     let dto = user_library::project_item_to_dto(
         state,
         item,
@@ -863,6 +865,27 @@ async fn media_sources(
         });
     }
     Ok(media_sources)
+}
+
+async fn selected_playback_source_id(
+    state: &AppState,
+    item_id: Uuid,
+    media_source_id: Option<&str>,
+) -> Result<Option<Uuid>, ApiError> {
+    let Some(media_source_id) = media_source_id.filter(|value| !value.trim().is_empty()) else {
+        return Ok(Some(item_id));
+    };
+    let Ok(source_id) = Uuid::parse_str(media_source_id) else {
+        return Ok(None);
+    };
+    if source_id == item_id {
+        return Ok(Some(item_id));
+    }
+    Ok(state
+        .base_items
+        .alternate_video_version(item_id, source_id)
+        .await?
+        .map(|source| source.id))
 }
 
 fn sort_media_sources(

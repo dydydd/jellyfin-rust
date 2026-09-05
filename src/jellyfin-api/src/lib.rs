@@ -692,6 +692,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the `FFprobe` executable used for lazy media-source inspection.
+    #[must_use]
+    pub fn with_ffprobe_path(self, ffprobe_path: impl Into<std::path::PathBuf>) -> Self {
+        self.library_scan.set_probe_path(ffprobe_path);
+        self
+    }
+
     /// Replaces the trickplay generation settings used by maintenance tasks.
     #[must_use]
     pub fn with_trickplay_options(self, options: jellyfin_model::TrickplayOptions) -> Self {

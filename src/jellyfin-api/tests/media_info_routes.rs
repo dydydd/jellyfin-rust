@@ -11,6 +11,7 @@ use jellyfin_data::{
 use jellyfin_model::{MediaStream, MediaStreamType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
+use std::{os::unix::fs::PermissionsExt, path::Path};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -267,6 +268,157 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .await
         .expect("alternate cleanup");
     fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn playback_info_hydrates_only_the_selected_strm_version() {
+    let directory = std::env::temp_dir().join(format!(
+        "jellyfin-selected-source-probe-{}",
+        Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&directory).expect("probe fixture directory");
+    let probe_log = directory.join("probe.log");
+    let probe_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../jellyfin-media-encoding/tests/fixtures/probing/video_metadata.json");
+    let probe_script = directory.join("fake-ffprobe");
+    std::fs::write(
+        &probe_script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nexec /bin/cat '{}'\n",
+            probe_log.display(),
+            probe_fixture.display()
+        ),
+    )
+    .expect("fake ffprobe script");
+    let mut permissions = std::fs::metadata(&probe_script)
+        .expect("fake ffprobe metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&probe_script, permissions).expect("fake ffprobe executable");
+
+    let fixture = Fixture::new_with_ffprobe_path(Some(&probe_script)).await;
+    let primary_sidecar = directory.join("Primary.strm");
+    let primary_target = directory.join("primary-target.mkv");
+    std::fs::write(
+        &primary_sidecar,
+        primary_target.to_string_lossy().as_bytes(),
+    )
+    .expect("primary strm sidecar");
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut primary = items
+        .get(fixture.item_id)
+        .await
+        .expect("primary lookup")
+        .expect("primary fixture");
+    primary.path = Some(primary_sidecar.to_string_lossy().into_owned());
+    primary.data = Some(json!({
+        "Container": "mkv",
+        "StrmTarget": primary_target.to_string_lossy()
+    }));
+    items.update(primary).await.expect("primary strm update");
+
+    let alternate_id = Uuid::new_v4();
+    let alternate_sidecar = directory.join("Alternate.strm");
+    let alternate_target = directory.join("alternate-target.mkv");
+    std::fs::write(
+        &alternate_sidecar,
+        alternate_target.to_string_lossy().as_bytes(),
+    )
+    .expect("alternate strm sidecar");
+    let mut alternate = NewBaseItem::new(alternate_id, "Movie");
+    alternate.name = Some("playback-info-movie".to_owned());
+    alternate.path = Some(alternate_sidecar.to_string_lossy().into_owned());
+    alternate.primary_version_id = Some(fixture.item_id);
+    alternate.data = Some(json!({
+        "Container": "mkv",
+        "StrmTarget": alternate_target.to_string_lossy()
+    }));
+    items.create(alternate).await.expect("alternate strm item");
+
+    let streams = MediaStreamService::new(fixture.database.clone());
+    for item_id in [fixture.item_id, alternate_id] {
+        streams
+            .save_media_streams(
+                item_id,
+                vec![MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    is_default: true,
+                    ..MediaStream::default()
+                }],
+            )
+            .await
+            .expect("strm placeholder stream");
+    }
+
+    let route = format!(
+        "/Items/{}/PlaybackInfo?mediasourceid={}",
+        fixture.item_id,
+        alternate_id.simple().to_string().to_ascii_uppercase()
+    );
+    let playback = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&fixture.user_token),
+                Some(&json!({ "DeviceProfile": flexible_video_profile(false) })),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(playback["MediaSources"].as_array().unwrap().len(), 1);
+    let selected = &playback["MediaSources"][0];
+    assert_eq!(selected["Id"], alternate_id.simple().to_string());
+    assert_eq!(selected["MediaStreams"][0]["Codec"], "h264");
+    assert_eq!(selected["MediaStreams"][1]["Codec"], "eac3");
+    assert_eq!(selected["SupportsDirectPlay"], false);
+    assert!(
+        selected["TranscodingUrl"]
+            .as_str()
+            .is_some_and(|url| url.contains(&format!("MediaSourceId={}", alternate_id.simple())))
+    );
+
+    let primary_streams = streams
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("primary placeholder lookup");
+    assert_eq!(primary_streams.len(), 1);
+    assert_eq!(primary_streams[0].codec, None);
+    let probe_arguments = std::fs::read_to_string(&probe_log).expect("probe invocation log");
+    assert!(
+        probe_arguments.contains(alternate_target.to_string_lossy().as_ref()),
+        "selected alternate must be probed"
+    );
+    assert!(
+        !probe_arguments.contains(primary_target.to_string_lossy().as_ref()),
+        "the displayed primary must not be probed"
+    );
+
+    let camel_case = body_json(
+        fixture
+            .post(
+                &format!("/Items/{}/PlaybackInfo", fixture.item_id),
+                Some(&fixture.user_token),
+                Some(&json!({ "mediaSourceId": alternate_id.simple().to_string() })),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(camel_case["MediaSources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        camel_case["MediaSources"][0]["Id"],
+        alternate_id.simple().to_string()
+    );
+
+    base_item::Entity::delete_by_id(alternate_id)
+        .exec(&fixture.database)
+        .await
+        .expect("alternate cleanup");
+    fixture.cleanup().await;
+    std::fs::remove_dir_all(directory).expect("probe fixture cleanup");
 }
 
 #[tokio::test]
@@ -637,6 +789,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::new_with_ffprobe_path(None).await
+    }
+
+    async fn new_with_ffprobe_path(ffprobe_path: Option<&Path>) -> Self {
         let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
             .await
             .expect("local PostgreSQL must be available");
@@ -692,11 +848,15 @@ impl Fixture {
             )
             .await
             .expect("playback info media stream creation");
-        let app = jellyfin_api::router(AppState::new(
+        let mut state = AppState::new(
             database.clone(),
             "Media Info Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
-        ));
+        );
+        if let Some(ffprobe_path) = ffprobe_path {
+            state = state.with_ffprobe_path(ffprobe_path);
+        }
+        let app = jellyfin_api::router(state);
         Self {
             database,
             app,

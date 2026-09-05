@@ -20,8 +20,8 @@ use jellyfin_data::{
     entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_media_encoding::probing::{
-    CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeOptions, ExternalSourceProber,
-    MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol,
+    CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeError, ExternalProbeOptions,
+    ExternalSourceProber, MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol,
     MediaStream as ProbedMediaStream, MediaStreamType,
 };
 use jellyfin_model::{
@@ -185,7 +185,7 @@ pub struct LibraryScanService {
     updates: ItemUpdateRepository,
     chapters: ChapterRepository,
     values: ItemValueRepository,
-    probe_path: Arc<PathBuf>,
+    probe_path: RwLock<Arc<PathBuf>>,
     ffmpeg_path: RwLock<Arc<PathBuf>>,
     image_cache_directory: RwLock<Arc<PathBuf>>,
     media_item_limiter: MediaItemConcurrencyLimiter,
@@ -308,7 +308,7 @@ impl LibraryScanService {
             updates: ItemUpdateRepository::new(Arc::clone(&database)),
             chapters: ChapterRepository::new(Arc::clone(&database)),
             values: ItemValueRepository::new(database),
-            probe_path: Arc::new(probe_path.into()),
+            probe_path: RwLock::new(Arc::new(probe_path.into())),
             ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
             image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
             media_item_limiter: MediaItemConcurrencyLimiter::new(default_fanout_concurrency()),
@@ -326,6 +326,18 @@ impl LibraryScanService {
 
     pub fn set_ffmpeg_path(&self, ffmpeg_path: impl Into<PathBuf>) {
         self.set_shared_ffmpeg_path(Arc::new(ffmpeg_path.into()));
+    }
+
+    /// Replaces the `FFprobe` executable used for media inspection.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the probe-path lock has been poisoned.
+    pub fn set_probe_path(&self, probe_path: impl Into<PathBuf>) {
+        *self
+            .probe_path
+            .write()
+            .expect("library scan probe path lock poisoned") = Arc::new(probe_path.into());
     }
 
     pub fn set_shared_ffmpeg_path(&self, ffmpeg_path: Arc<PathBuf>) {
@@ -473,7 +485,7 @@ impl LibraryScanService {
         }
 
         let Some(mut media_info) = self
-            .probe_media_info_with_timeout(target, kind, Some(STRM_PLAYBACK_PROBE_TIMEOUT))
+            .probe_media_info_with_timeout(item_id, target, kind, Some(STRM_PLAYBACK_PROBE_TIMEOUT))
             .await
         else {
             return Ok(false);
@@ -2176,7 +2188,8 @@ impl LibraryScanService {
             return Ok(None);
         }
         let mut media_info = if should_probe {
-            self.probe_media_info(media_source_path, media_kind).await
+            self.probe_media_info(item_id, media_source_path, media_kind)
+                .await
         } else {
             None
         };
@@ -2391,19 +2404,31 @@ impl LibraryScanService {
         Ok(())
     }
 
-    async fn probe_media_info(&self, path: &str, media_kind: MediaKind) -> Option<MediaInfo> {
-        self.probe_media_info_with_timeout(path, media_kind, None)
+    async fn probe_media_info(
+        &self,
+        item_id: Uuid,
+        path: &str,
+        media_kind: MediaKind,
+    ) -> Option<MediaInfo> {
+        self.probe_media_info_with_timeout(item_id, path, media_kind, None)
             .await
     }
 
     async fn probe_media_info_with_timeout(
         &self,
+        item_id: Uuid,
         path: &str,
         media_kind: MediaKind,
         timeout: Option<std::time::Duration>,
     ) -> Option<MediaInfo> {
-        let probe_path = Arc::clone(&self.probe_path);
+        let probe_path = Arc::clone(
+            &self
+                .probe_path
+                .read()
+                .expect("library scan probe path lock poisoned"),
+        );
         let probe_input = path.to_owned();
+        let target_hash = format!("{:x}", Md5::digest(path.as_bytes()));
         match tokio::task::spawn_blocking(move || {
             probe_media_info(&probe_path, &probe_input, media_kind, timeout)
         })
@@ -2411,11 +2436,21 @@ impl LibraryScanService {
         {
             Ok(Ok(media_info)) => Some(media_info),
             Ok(Err(error)) => {
-                tracing::debug!(path, error = %error, "media probe failed during library scan");
+                tracing::debug!(
+                    %item_id,
+                    %target_hash,
+                    error_kind = media_probe_error_kind(&error),
+                    "media probe failed during library scan"
+                );
                 None
             }
             Err(error) => {
-                tracing::debug!(path, error = %error, "media probe task failed during library scan");
+                tracing::debug!(
+                    %item_id,
+                    %target_hash,
+                    error = %error,
+                    "media probe task failed during library scan"
+                );
                 None
             }
         }
@@ -3580,6 +3615,16 @@ fn probe_media_info(
             ..ExternalProbeOptions::default()
         },
     )
+}
+
+const fn media_probe_error_kind(error: &ExternalProbeError) -> &'static str {
+    match error {
+        ExternalProbeError::InvalidSourcePath => "invalid_source_path",
+        ExternalProbeError::AnalyzeDurationOverflow(_) => "analyze_duration_overflow",
+        ExternalProbeError::ProcessStart(_) => "process_start",
+        ExternalProbeError::ProcessFailed { .. } => "process_failed",
+        ExternalProbeError::Normalize(_) => "normalize",
+    }
 }
 
 fn streams_from_media_info(media_info: &mut MediaInfo) -> Vec<PersistedMediaStream> {
