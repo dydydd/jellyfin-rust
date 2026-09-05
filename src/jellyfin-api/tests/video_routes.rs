@@ -67,6 +67,76 @@ async fn alternate_source_route_enforces_official_contract() {
 }
 
 #[tokio::test]
+async fn static_stream_uses_selected_alternate_media_source() {
+    let fixture = Fixture::new().await;
+    let primary = fixture
+        .repository
+        .get(fixture.group_b.primary)
+        .await
+        .expect("primary lookup")
+        .expect("primary item");
+    let alternate_id = fixture.group_b.alternates[0];
+    let alternate = fixture
+        .repository
+        .get(alternate_id)
+        .await
+        .expect("alternate lookup")
+        .expect("alternate item");
+    let primary_path = primary.path.as_deref().expect("primary path");
+    let alternate_path = alternate.path.as_deref().expect("alternate path");
+    tokio::fs::create_dir_all(
+        std::path::Path::new(primary_path)
+            .parent()
+            .expect("primary parent"),
+    )
+    .await
+    .expect("primary directory creation");
+    tokio::fs::write(primary_path, b"primary-version")
+        .await
+        .expect("primary fixture creation");
+    tokio::fs::write(alternate_path, b"selected-alternate-version")
+        .await
+        .expect("alternate fixture creation");
+
+    for media_source_key in ["MediaSourceId", "mediaSourceId", "mediasourceid"] {
+        let route = format!(
+            "/Videos/{}/stream.mkv?Static=true&{media_source_key}={}",
+            fixture.group_b.primary,
+            alternate_id.simple()
+        );
+        let response = fixture
+            .send(Method::GET, &route, Some(&fixture.user_token))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            "selected-alternate-version",
+            "{route}"
+        );
+    }
+
+    let unrelated_route = format!(
+        "/Videos/{}/stream.mkv?Static=true&MediaSourceId={}",
+        fixture.group_b.primary, fixture.group_a.primary
+    );
+    assert_eq!(
+        fixture
+            .send(Method::GET, &unrelated_route, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    tokio::fs::remove_file(primary_path)
+        .await
+        .expect("primary fixture cleanup");
+    tokio::fs::remove_file(alternate_path)
+        .await
+        .expect("alternate fixture cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn primary_and_alternate_entries_persist_complete_group_detachment() {
     let fixture = Fixture::new().await;
     let group_b_before = fixture.load_group(&fixture.group_b).await;
@@ -469,7 +539,7 @@ async fn create_item(
         label,
         item_type,
         None,
-        Some(format!("/media/{label}/{id}.mkv")),
+        Some(format!("/tmp/jellyfin-rust-video-{label}-{id}.mkv")),
         primary_version_id,
     )
     .await

@@ -23,6 +23,12 @@ pub(crate) struct MergeVersionsQuery {
 pub(crate) struct StreamQuery {
     #[serde(rename = "static", alias = "Static")]
     static_stream: Option<bool>,
+    #[serde(
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid"
+    )]
+    media_source_id: Option<String>,
 }
 
 pub(crate) async fn stream(
@@ -55,16 +61,35 @@ async fn stream_file(
 ) -> Result<Response, ApiError> {
     let authenticated =
         authentication::authenticated_session_for_uri(&state, &headers, request.uri()).await?;
-    let item = state
+    let requested_item = state
         .library_controller
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
     if !matches!(
-        item.item_type.as_str(),
+        requested_item.item_type.as_str(),
         "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
     ) {
         return Err(ApiError::NotFound);
     }
+    let item = if let Some(media_source_id) = query
+        .media_source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let version_id = Uuid::parse_str(media_source_id).map_err(|_| ApiError::NotFound)?;
+        if version_id == requested_item.id {
+            requested_item
+        } else {
+            state
+                .base_items
+                .alternate_video_version(requested_item.id, version_id)
+                .await?
+                .ok_or(ApiError::NotFound)?
+        }
+    } else {
+        requested_item
+    };
     let path = jellyfin_controller::media_source_path(&item)
         .map(str::to_owned)
         .ok_or(ApiError::NotFound)?;
@@ -102,6 +127,7 @@ async fn stream_file(
     let metadata = tokio::fs::metadata(&path).await.ok();
     tracing::info!(
         %item_id,
+        media_source_id = %item.id,
         requested_container = requested_container.unwrap_or_default(),
         range_requested = headers.contains_key(axum::http::header::RANGE),
         source_exists = metadata.is_some(),
