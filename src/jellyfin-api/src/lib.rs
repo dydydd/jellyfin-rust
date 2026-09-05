@@ -1807,6 +1807,16 @@ fn video_routes() -> Router<Arc<AppState>> {
             "/Videos/{item_id}/Trickplay/{width}/{*tile}",
             get(trickplay::tile),
         )
+        // ASP.NET route matching is case-insensitive. Keep the fully lowercase
+        // form used by legacy clients alongside the generated SDK route.
+        .route(
+            "/videos/{item_id}/trickplay/{width}/tiles.m3u8",
+            get(trickplay::playlist),
+        )
+        .route(
+            "/videos/{item_id}/trickplay/{width}/{*tile}",
+            get(trickplay::tile),
+        )
 }
 
 fn live_tv_routes() -> Router<Arc<AppState>> {

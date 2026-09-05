@@ -99,6 +99,20 @@ async fn assert_exact_playlist_and_media_source_override(fixture: &Fixture) {
         expected_primary_playlist(fixture.primary_id, &fixture.user_token)
     );
 
+    let lowercase_route = format!("/videos/{}/trickplay/320/tiles.m3u8", fixture.primary_id);
+    let response = fixture
+        .request(
+            Method::GET,
+            &lowercase_route,
+            Credential::Device(&fixture.user_token),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_string(response).await,
+        expected_primary_playlist(fixture.primary_id, &fixture.user_token)
+    );
+
     let override_route = format!(
         "{}?MediaSourceId={}",
         Fixture::playlist_route(fixture.primary_id, 640),
@@ -170,6 +184,18 @@ async fn assert_tile_visibility_and_file_contract(fixture: &Fixture) {
         .to_str()
         .unwrap()
         .to_owned();
+    assert_eq!(body_bytes(response).await, Bytes::from_static(JPEG));
+
+    let lowercase_route = format!("/videos/{}/trickplay/320/0.jpg", fixture.primary_id);
+    let response = fixture
+        .request(
+            Method::GET,
+            &lowercase_route,
+            Credential::Device(&fixture.user_token),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
     assert_eq!(body_bytes(response).await, Bytes::from_static(JPEG));
 
     let head = fixture
