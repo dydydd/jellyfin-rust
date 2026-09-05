@@ -23,6 +23,86 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Playstate Tests\", Device=\"T
 const TICKS_PER_SECOND: i64 = 10_000_000;
 const ISOLATED_DATABASE_PREFIX: &str = "jellyfin_playstate_config_";
 
+#[derive(Clone, Copy)]
+struct PlaybackQueryNames {
+    media_source_id: &'static str,
+    position_ticks: &'static str,
+    audio_stream_index: &'static str,
+    subtitle_stream_index: &'static str,
+    volume_level: &'static str,
+    play_method: &'static str,
+    live_stream_id: &'static str,
+    play_session_id: &'static str,
+    repeat_mode: &'static str,
+    is_paused: &'static str,
+    is_muted: &'static str,
+    next_media_type: &'static str,
+    can_seek: &'static str,
+}
+
+const PLAYBACK_QUERY_NAMES: [PlaybackQueryNames; 4] = [
+    PlaybackQueryNames {
+        media_source_id: "mediaSourceId",
+        position_ticks: "positionTicks",
+        audio_stream_index: "audioStreamIndex",
+        subtitle_stream_index: "subtitleStreamIndex",
+        volume_level: "volumeLevel",
+        play_method: "playMethod",
+        live_stream_id: "liveStreamId",
+        play_session_id: "playSessionId",
+        repeat_mode: "repeatMode",
+        is_paused: "isPaused",
+        is_muted: "isMuted",
+        next_media_type: "nextMediaType",
+        can_seek: "canSeek",
+    },
+    PlaybackQueryNames {
+        media_source_id: "MediaSourceId",
+        position_ticks: "PositionTicks",
+        audio_stream_index: "AudioStreamIndex",
+        subtitle_stream_index: "SubtitleStreamIndex",
+        volume_level: "VolumeLevel",
+        play_method: "PlayMethod",
+        live_stream_id: "LiveStreamId",
+        play_session_id: "PlaySessionId",
+        repeat_mode: "RepeatMode",
+        is_paused: "IsPaused",
+        is_muted: "IsMuted",
+        next_media_type: "NextMediaType",
+        can_seek: "CanSeek",
+    },
+    PlaybackQueryNames {
+        media_source_id: "mediasourceid",
+        position_ticks: "positionticks",
+        audio_stream_index: "audiostreamindex",
+        subtitle_stream_index: "subtitlestreamindex",
+        volume_level: "volumelevel",
+        play_method: "playmethod",
+        live_stream_id: "livestreamid",
+        play_session_id: "playsessionid",
+        repeat_mode: "repeatmode",
+        is_paused: "ispaused",
+        is_muted: "ismuted",
+        next_media_type: "nextmediatype",
+        can_seek: "canseek",
+    },
+    PlaybackQueryNames {
+        media_source_id: "media_source_id",
+        position_ticks: "position_ticks",
+        audio_stream_index: "audio_stream_index",
+        subtitle_stream_index: "subtitle_stream_index",
+        volume_level: "volume_level",
+        play_method: "play_method",
+        live_stream_id: "live_stream_id",
+        play_session_id: "play_session_id",
+        repeat_mode: "repeat_mode",
+        is_paused: "is_paused",
+        is_muted: "is_muted",
+        next_media_type: "next_media_type",
+        can_seek: "can_seek",
+    },
+];
+
 #[tokio::test]
 async fn delete_mark_unplayed_item_nonexistent_user_id_not_found() {
     let fixture = PlaystateFixture::new().await;
@@ -84,6 +164,7 @@ async fn played_unplayed_permissions_and_concurrency_use_postgres_state() {
     let fixture = PlaystateFixture::new().await;
     assert_authentication_and_permissions(&fixture).await;
     assert_modern_target_user_semantics(&fixture).await;
+    assert_modern_query_casings_persist_target_and_date(&fixture).await;
     assert_default_parental_policy(&fixture).await;
     assert_modern_not_found_semantics(&fixture).await;
     assert_played_and_unplayed(&fixture).await;
@@ -270,43 +351,108 @@ async fn playback_json_accepts_number_strings_and_compatible_enums() {
 #[tokio::test]
 async fn legacy_playback_query_preserves_official_session_fields() {
     let fixture = PlaystateFixture::new().await;
-    let start_route = format!(
-        "/playingitems/{}?MediaSourceId=legacy-source&AudioStreamIndex=2&SubtitleStreamIndex=3&PlayMethod=directplay&LiveStreamId=legacy-live&PlaySessionId=legacy-session&CanSeek=true",
-        fixture.runtime_item_id
-    );
-    let response = request(&fixture.app, "POST", &start_route, &fixture.user_token).await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let repository = UserDataRepository::new(fixture.database.clone());
+    set_stream_remembering(&fixture.database, fixture.user_id, true).await;
+    let alternate_id = fixture.alternate_item_id.simple().to_string();
 
-    let progress_route = format!(
-        "/users/{}/playingitems/{}/progress?PositionTicks={}&AudioStreamIndex=4&SubtitleStreamIndex=5&VolumeLevel=37&PlayMethod=2&LiveStreamId=legacy-live&PlaySessionId=legacy-session&RepeatMode=1&IsPaused=true&IsMuted=true",
-        fixture.administrator_id,
-        fixture.runtime_item_id,
-        ticks(120)
-    );
-    let response = request(&fixture.app, "POST", &progress_route, &fixture.user_token).await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    for (offset, names) in PLAYBACK_QUERY_NAMES.into_iter().enumerate() {
+        let offset = i32::try_from(offset).expect("query casing offset");
+        let start_audio = 2 + offset;
+        let start_subtitle = 6 + offset;
+        let live_stream_id = format!("legacy-live-{offset}");
+        let play_session_id = format!("legacy-session-{offset}");
+        let start_route = format!(
+            "/playingitems/{}?{}={alternate_id}&{}={start_audio}&{}={start_subtitle}&{}=directplay&{}={live_stream_id}&{}={play_session_id}&{}=true",
+            fixture.runtime_item_id,
+            names.media_source_id,
+            names.audio_stream_index,
+            names.subtitle_stream_index,
+            names.play_method,
+            names.live_stream_id,
+            names.play_session_id,
+            names.can_seek,
+        );
+        let response = request(&fixture.app, "POST", &start_route, &fixture.user_token).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    let sessions = body_json(
-        request(
-            &fixture.app,
-            "GET",
-            &format!("/Sessions?deviceId={}", fixture.user_device_id),
-            &fixture.user_token,
+        let play_state = current_play_state(&fixture).await;
+        assert_eq!(play_state["CanSeek"], true);
+        assert_eq!(play_state["AudioStreamIndex"], start_audio);
+        assert_eq!(play_state["SubtitleStreamIndex"], start_subtitle);
+        assert_eq!(play_state["MediaSourceId"], alternate_id);
+        assert_eq!(play_state["PlayMethod"], "DirectPlay");
+        assert_eq!(play_state["LiveStreamId"], live_stream_id);
+
+        let position_ticks = ticks(120 + i64::from(offset));
+        let progress_audio = 10 + offset;
+        let progress_subtitle = 20 + offset;
+        let volume_level = 30 + offset;
+        let progress_route = format!(
+            "/users/{}/playingitems/{}/progress?{}={alternate_id}&{}={position_ticks}&{}={progress_audio}&{}={progress_subtitle}&{}={volume_level}&{}=2&{}={live_stream_id}&{}={play_session_id}&{}=1&{}=true&{}=true",
+            fixture.administrator_id,
+            fixture.runtime_item_id,
+            names.media_source_id,
+            names.position_ticks,
+            names.audio_stream_index,
+            names.subtitle_stream_index,
+            names.volume_level,
+            names.play_method,
+            names.live_stream_id,
+            names.play_session_id,
+            names.repeat_mode,
+            names.is_paused,
+            names.is_muted,
+        );
+        let response = request(&fixture.app, "POST", &progress_route, &fixture.user_token).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_progress(
+            &repository,
+            fixture.alternate_item_id,
+            fixture.user_id,
+            position_ticks,
+            Some(progress_audio),
+            Some(progress_subtitle),
+            false,
         )
-        .await,
-    )
-    .await;
-    let play_state = &sessions.as_array().expect("sessions array")[0]["PlayState"];
-    assert_eq!(play_state["CanSeek"], false);
-    assert_eq!(play_state["PositionTicks"], ticks(120));
-    assert_eq!(play_state["AudioStreamIndex"], 4);
-    assert_eq!(play_state["SubtitleStreamIndex"], 5);
-    assert_eq!(play_state["VolumeLevel"], 37);
-    assert_eq!(play_state["PlayMethod"], "DirectPlay");
-    assert_eq!(play_state["LiveStreamId"], "legacy-live");
-    assert_eq!(play_state["RepeatMode"], "RepeatAll");
-    assert_eq!(play_state["IsPaused"], true);
-    assert_eq!(play_state["IsMuted"], true);
+        .await;
+
+        let play_state = current_play_state(&fixture).await;
+        assert_eq!(play_state["CanSeek"], false);
+        assert_eq!(play_state["PositionTicks"], position_ticks);
+        assert_eq!(play_state["AudioStreamIndex"], progress_audio);
+        assert_eq!(play_state["SubtitleStreamIndex"], progress_subtitle);
+        assert_eq!(play_state["VolumeLevel"], volume_level);
+        assert_eq!(play_state["MediaSourceId"], alternate_id);
+        assert_eq!(play_state["PlayMethod"], "DirectPlay");
+        assert_eq!(play_state["LiveStreamId"], live_stream_id);
+        assert_eq!(play_state["RepeatMode"], "RepeatAll");
+        assert_eq!(play_state["IsPaused"], true);
+        assert_eq!(play_state["IsMuted"], true);
+
+        let stop_position = ticks(240 + i64::from(offset));
+        let stop_route = format!(
+            "/PlayingItems/{}?{}={alternate_id}&{}={stop_position}&{}=Video&{}={live_stream_id}&{}={play_session_id}",
+            fixture.runtime_item_id,
+            names.media_source_id,
+            names.position_ticks,
+            names.next_media_type,
+            names.live_stream_id,
+            names.play_session_id,
+        );
+        let response = request(&fixture.app, "DELETE", &stop_route, &fixture.user_token).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let persisted = repository
+            .get(
+                fixture.alternate_item_id,
+                fixture.user_id,
+                &fixture.alternate_item_id.simple().to_string(),
+            )
+            .await
+            .expect("alternate query-casing lookup")
+            .expect("alternate query-casing row");
+        assert_eq!(persisted.playback_position_ticks, stop_position);
+    }
+
     fixture.cleanup().await;
 }
 
@@ -644,14 +790,21 @@ async fn playback_ping_route_matches_authorization_and_required_query_contract()
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let response = request(
-        &fixture.app,
-        "POST",
-        "/Sessions/Playing/Ping?playSessionId=abc",
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    for parameter in [
+        "playSessionId",
+        "PlaySessionId",
+        "playsessionid",
+        "play_session_id",
+    ] {
+        let response = request(
+            &fixture.app,
+            "POST",
+            &format!("/Sessions/Playing/Ping?{parameter}=abc"),
+            &fixture.user_token,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{parameter}");
+    }
 
     let api_key_route = format!(
         "/Sessions/Playing/Ping?PlaySessionId=abc&api_key={}",
@@ -1485,6 +1638,63 @@ async fn assert_modern_target_user_semantics(fixture: &PlaystateFixture) {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+async fn assert_modern_query_casings_persist_target_and_date(fixture: &PlaystateFixture) {
+    let repository = UserDataRepository::new(fixture.database.clone());
+    let route = modern_playstate_route(fixture.item_id);
+    for (user_parameter, date_parameter, date_played) in [
+        ("userId", "datePlayed", "20260722100000"),
+        ("UserId", "DatePlayed", "20260722100001"),
+        ("userid", "dateplayed", "20260722100002"),
+        ("user_id", "date_played", "20260722100003"),
+    ] {
+        let response = request(
+            &fixture.app,
+            "POST",
+            &format!(
+                "{route}?{user_parameter}={}&{date_parameter}={date_played}",
+                fixture.user_id
+            ),
+            &fixture.administrator_token,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let persisted = repository
+            .get(
+                fixture.item_id,
+                fixture.user_id,
+                &fixture.item_id.simple().to_string(),
+            )
+            .await
+            .expect("query-casing played lookup")
+            .expect("query-casing played row");
+        let expected = chrono::NaiveDateTime::parse_from_str(date_played, "%Y%m%d%H%M%S")
+            .expect("fixed legacy date")
+            .and_utc();
+        assert!(persisted.played);
+        assert_eq!(persisted.last_played_date, Some(expected));
+
+        let response = request(
+            &fixture.app,
+            "DELETE",
+            &format!("{route}?{user_parameter}={}", fixture.user_id),
+            &fixture.administrator_token,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let persisted = repository
+            .get(
+                fixture.item_id,
+                fixture.user_id,
+                &fixture.item_id.simple().to_string(),
+            )
+            .await
+            .expect("query-casing unplayed lookup")
+            .expect("query-casing unplayed row");
+        assert!(!persisted.played);
+    }
+}
+
 async fn assert_default_parental_policy(fixture: &PlaystateFixture) {
     let modern_route = modern_playstate_route(fixture.item_id);
     let response = request(
@@ -1750,6 +1960,20 @@ async fn request_without_header(
         )
         .await
         .unwrap()
+}
+
+async fn current_play_state(fixture: &PlaystateFixture) -> Value {
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    sessions.as_array().expect("sessions array")[0]["PlayState"].clone()
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

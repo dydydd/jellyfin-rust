@@ -22,15 +22,33 @@ use crate::{
 
 #[derive(Debug, Default, Deserialize)]
 pub struct MarkPlayedQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(
+        default,
+        rename = "userId",
+        alias = "UserId",
+        alias = "userid",
+        alias = "user_id"
+    )]
     pub user_id: Option<Uuid>,
-    #[serde(default, rename = "datePlayed", alias = "DatePlayed")]
+    #[serde(
+        default,
+        rename = "datePlayed",
+        alias = "DatePlayed",
+        alias = "dateplayed",
+        alias = "date_played"
+    )]
     pub date_played: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct MarkUnplayedQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(
+        default,
+        rename = "userId",
+        alias = "UserId",
+        alias = "userid",
+        alias = "user_id"
+    )]
     pub user_id: Option<Uuid>,
 }
 
@@ -205,80 +223,212 @@ pub struct PlaybackStopInfo {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PlaybackStartQuery {
-    #[serde(default, rename = "mediaSourceId", alias = "MediaSourceId")]
+    #[serde(
+        default,
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid",
+        alias = "media_source_id"
+    )]
     pub media_source_id: Option<String>,
-    #[serde(default, rename = "audioStreamIndex", alias = "AudioStreamIndex")]
+    #[serde(
+        default,
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex",
+        alias = "audio_stream_index"
+    )]
     pub audio_stream_index: Option<i32>,
-    #[serde(default, rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
+    #[serde(
+        default,
+        rename = "subtitleStreamIndex",
+        alias = "SubtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        alias = "subtitle_stream_index"
+    )]
     pub subtitle_stream_index: Option<i32>,
     #[serde(
         default,
         rename = "playMethod",
         alias = "PlayMethod",
+        alias = "playmethod",
+        alias = "play_method",
         deserialize_with = "deserialize_optional_compat_enum"
     )]
     pub play_method: Option<PlayMethod>,
-    #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
+    #[serde(
+        default,
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid",
+        alias = "live_stream_id"
+    )]
     pub live_stream_id: Option<String>,
-    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        default,
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid",
+        alias = "play_session_id"
+    )]
     pub play_session_id: Option<String>,
-    #[serde(default, rename = "canSeek", alias = "CanSeek")]
+    #[serde(
+        default,
+        rename = "canSeek",
+        alias = "CanSeek",
+        alias = "canseek",
+        alias = "can_seek"
+    )]
     pub can_seek: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PlaybackProgressQuery {
-    #[serde(default, rename = "mediaSourceId", alias = "MediaSourceId")]
+    #[serde(
+        default,
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid",
+        alias = "media_source_id"
+    )]
     pub media_source_id: Option<String>,
-    #[serde(default, rename = "positionTicks", alias = "PositionTicks")]
+    #[serde(
+        default,
+        rename = "positionTicks",
+        alias = "PositionTicks",
+        alias = "positionticks",
+        alias = "position_ticks"
+    )]
     pub position_ticks: Option<i64>,
-    #[serde(default, rename = "audioStreamIndex", alias = "AudioStreamIndex")]
+    #[serde(
+        default,
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex",
+        alias = "audio_stream_index"
+    )]
     pub audio_stream_index: Option<i32>,
-    #[serde(default, rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
+    #[serde(
+        default,
+        rename = "subtitleStreamIndex",
+        alias = "SubtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        alias = "subtitle_stream_index"
+    )]
     pub subtitle_stream_index: Option<i32>,
-    #[serde(default, rename = "volumeLevel", alias = "VolumeLevel")]
+    #[serde(
+        default,
+        rename = "volumeLevel",
+        alias = "VolumeLevel",
+        alias = "volumelevel",
+        alias = "volume_level"
+    )]
     pub volume_level: Option<i32>,
     #[serde(
         default,
         rename = "playMethod",
         alias = "PlayMethod",
+        alias = "playmethod",
+        alias = "play_method",
         deserialize_with = "deserialize_optional_compat_enum"
     )]
     pub play_method: Option<PlayMethod>,
-    #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
+    #[serde(
+        default,
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid",
+        alias = "live_stream_id"
+    )]
     pub live_stream_id: Option<String>,
-    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        default,
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid",
+        alias = "play_session_id"
+    )]
     pub play_session_id: Option<String>,
     #[serde(
         default,
         rename = "repeatMode",
         alias = "RepeatMode",
+        alias = "repeatmode",
+        alias = "repeat_mode",
         deserialize_with = "deserialize_optional_compat_enum"
     )]
     pub repeat_mode: Option<RepeatMode>,
-    #[serde(default, rename = "isPaused", alias = "IsPaused")]
+    #[serde(
+        default,
+        rename = "isPaused",
+        alias = "IsPaused",
+        alias = "ispaused",
+        alias = "is_paused"
+    )]
     pub is_paused: bool,
-    #[serde(default, rename = "isMuted", alias = "IsMuted")]
+    #[serde(
+        default,
+        rename = "isMuted",
+        alias = "IsMuted",
+        alias = "ismuted",
+        alias = "is_muted"
+    )]
     pub is_muted: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PlaybackStopQuery {
-    #[serde(default, rename = "mediaSourceId", alias = "MediaSourceId")]
+    #[serde(
+        default,
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid",
+        alias = "media_source_id"
+    )]
     pub media_source_id: Option<String>,
-    #[serde(default, rename = "positionTicks", alias = "PositionTicks")]
+    #[serde(
+        default,
+        rename = "positionTicks",
+        alias = "PositionTicks",
+        alias = "positionticks",
+        alias = "position_ticks"
+    )]
     pub position_ticks: Option<i64>,
-    #[serde(default, rename = "nextMediaType", alias = "NextMediaType")]
+    #[serde(
+        default,
+        rename = "nextMediaType",
+        alias = "NextMediaType",
+        alias = "nextmediatype",
+        alias = "next_media_type"
+    )]
     pub next_media_type: Option<String>,
-    #[serde(default, rename = "liveStreamId", alias = "LiveStreamId")]
+    #[serde(
+        default,
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid",
+        alias = "live_stream_id"
+    )]
     pub live_stream_id: Option<String>,
-    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        default,
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid",
+        alias = "play_session_id"
+    )]
     pub play_session_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PlaybackPingQuery {
-    #[serde(default, rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        default,
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid",
+        alias = "play_session_id"
+    )]
     pub play_session_id: Option<String>,
 }
 
