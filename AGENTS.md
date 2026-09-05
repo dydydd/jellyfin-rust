@@ -36,6 +36,7 @@
   id, default to `SortName` ascending, and keep `SoundtrackSongsResult` as a distinct empty result.
   Batch candidate loading across the owner chain and apply the target user's normal library policy.
 - Coordinate remote-image downloads by URL so concurrent items share one bounded download. Validate that upstream content is an image, and remove or otherwise suppress permanently invalid remote references according to official behavior.
+- Persist uploaded and remotely downloaded lyrics under the item's internal metadata directory with a same-directory temporary file and atomic rename, then register the file as a Lyric media stream. Keep the parsed JSON only as a compatibility cache; reads prefer the registered stream, and deletion must never remove unregistered files, symlinks, or files outside the internal metadata root.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
@@ -50,6 +51,9 @@
 
 - Match official Jellyfin DTO field names, nullability, defaults, HTTP status codes, authorization requirements, sorting, pagination, and case-insensitive matching.
 - ASP.NET route, query-name, and JSON-property binding is case-insensitive. Compatibility tests must cover PascalCase, camelCase, and representative lowercase legacy requests; do not assume an Axum route or Serde field is equivalent merely because one casing works.
+- Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
+  nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
+  outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.
 - When a catch-all implements several official HLS or trickplay route templates, keep concrete
   official-path dispatch tests and representative lowercase aliases so Axum does not regress the
   case-insensitive ASP.NET route contract. Lowercase compatibility must include every static path

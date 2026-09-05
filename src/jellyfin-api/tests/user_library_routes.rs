@@ -18,6 +18,7 @@ use sea_orm::{
     Set,
 };
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -496,6 +497,15 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
     .await;
     assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
 
+    let traversal = request_post_body(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics?fileName=..%2Fevil.txt", fixture.item_id),
+        &fixture.administrator_token,
+        "Escaping line",
+    )
+    .await;
+    assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
+
     let missing = request_post_body(
         &fixture.app,
         &format!("/Audio/{}/Lyrics?fileName=uploaded.txt", Uuid::new_v4()),
@@ -529,6 +539,49 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
     assert_eq!(uploaded["Lyrics"][0]["Start"], Value::Null);
     assert_eq!(uploaded["Lyrics"][0]["Cues"], Value::Null);
 
+    let item_id = fixture.item_id.simple().to_string();
+    let metadata_directory = fixture
+        .storage_root
+        .join("metadata/library")
+        .join(&item_id[..2])
+        .join(&item_id);
+    let text_path = metadata_directory.join("Test Song.txt");
+    assert_eq!(
+        tokio::fs::read(&text_path).await.expect("uploaded lyric"),
+        b"  First uploaded  \nSecond uploaded"
+    );
+    let streams = MediaStreamService::new(fixture.database.clone())
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("uploaded lyric streams");
+    assert_eq!(
+        streams
+            .iter()
+            .filter(|stream| stream.stream_type == MediaStreamType::Audio)
+            .count(),
+        1
+    );
+    let text_stream = streams
+        .iter()
+        .find(|stream| stream.stream_type == MediaStreamType::Lyric)
+        .expect("text lyric stream");
+    assert_eq!(text_stream.codec.as_deref(), Some("txt"));
+    assert_eq!(text_stream.path.as_deref(), text_path.to_str());
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut stale = items
+        .get(fixture.item_id)
+        .await
+        .expect("load item")
+        .expect("stored item");
+    stale.data.as_mut().unwrap()["Lyrics"] = json!({
+        "Metadata": {},
+        "Lyrics": [{ "Text": "Stale cache", "Start": null, "Cues": null }]
+    });
+    items.update(stale).await.expect("stale lyric cache");
+
     let saved = get_json(
         &fixture.app,
         &format!("/Audio/{}/Lyrics", fixture.item_id),
@@ -551,6 +604,25 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
     assert_eq!(uploaded_lrc["Lyrics"][0]["Cues"], json!([]));
     assert_eq!(uploaded_lrc["Lyrics"][1]["Text"], "Synced later");
     assert_eq!(uploaded_lrc["Lyrics"][1]["Start"], 15_000_000);
+    assert_eq!(
+        tokio::fs::read(metadata_directory.join("Test Song.lrc"))
+            .await
+            .expect("uploaded lrc"),
+        b"[00:01.50]Synced later\n[00:00.25]Synced earlier"
+    );
+    let streams = MediaStreamService::new(fixture.database.clone())
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("multiple lyric streams");
+    assert_eq!(
+        streams
+            .iter()
+            .filter(|stream| stream.stream_type == MediaStreamType::Lyric)
+            .count(),
+        2
+    );
 
     let item = get_json(
         &fixture.app,
@@ -682,6 +754,78 @@ async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata()
     )
     .await;
     assert_eq!(item["HasLyrics"], false);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn delete_lyrics_removes_only_registered_internal_files_and_preserves_other_streams() {
+    let fixture = UserLibraryFixture::new().await;
+    let route = format!("/Audio/{}/Lyrics?fileName=managed.txt", fixture.item_id);
+    let uploaded = request_post_body(
+        &fixture.app,
+        &route,
+        &fixture.administrator_token,
+        "Managed lyric",
+    )
+    .await;
+    assert_eq!(uploaded.status(), StatusCode::OK);
+
+    let item_id = fixture.item_id.simple().to_string();
+    let metadata_directory = fixture
+        .storage_root
+        .join("metadata/library")
+        .join(&item_id[..2])
+        .join(&item_id);
+    let managed = metadata_directory.join("Test Song.txt");
+    let unregistered = metadata_directory.join("unregistered.txt");
+    tokio::fs::write(&unregistered, "keep sibling")
+        .await
+        .expect("unregistered lyric");
+    let external = fixture.storage_root.join("outside-metadata.txt");
+    tokio::fs::write(&external, "keep external")
+        .await
+        .expect("external lyric");
+
+    let service = MediaStreamService::new(fixture.database.clone());
+    let mut streams = service
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("stored streams");
+    streams.push(MediaStream {
+        codec: Some("txt".to_owned()),
+        index: 9,
+        stream_type: MediaStreamType::Lyric,
+        is_external: true,
+        path: Some(external.to_string_lossy().into_owned()),
+        ..MediaStream::default()
+    });
+    service
+        .save_media_streams(fixture.item_id, streams)
+        .await
+        .expect("external lyric stream");
+
+    let deleted = request_delete(
+        &fixture.app,
+        &format!("/Audio/{}/Lyrics", fixture.item_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert!(!tokio::fs::try_exists(managed).await.unwrap());
+    assert!(tokio::fs::try_exists(unregistered).await.unwrap());
+    assert!(tokio::fs::try_exists(external).await.unwrap());
+
+    let streams = service
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("remaining streams");
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].stream_type, MediaStreamType::Audio);
 
     fixture.cleanup().await;
 }
@@ -1112,6 +1256,7 @@ struct UserLibraryFixture {
     intro_id: Uuid,
     trailer_id: Uuid,
     feature_id: Uuid,
+    storage_root: PathBuf,
 }
 
 impl UserLibraryFixture {
@@ -1119,6 +1264,7 @@ impl UserLibraryFixture {
         let database = test_database().await;
         let users = UserService::new(database.clone());
         let suffix = Uuid::new_v4().simple().to_string();
+        let storage_root = std::env::temp_dir().join(format!("jellyfin-user-library-{suffix}"));
         let administrator = users
             .create_initial_administrator(&format!("library-admin-{suffix}"))
             .await
@@ -1180,11 +1326,19 @@ impl UserLibraryFixture {
         feature.data = Some(json!({ "ExtraType": "Featurette" }));
         let feature = items.create(feature).await.expect("feature item");
 
-        let app = jellyfin_api::router(AppState::new(
+        let state = AppState::new(
             database.clone(),
             "User Library Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
-        ));
+        )
+        .with_storage_paths(
+            storage_root.join("programdata"),
+            storage_root.join("web"),
+            storage_root.join("cache/images"),
+            storage_root.join("cache"),
+            storage_root.join("metadata"),
+        );
+        let app = jellyfin_api::router(state);
         Self {
             database,
             app,
@@ -1197,6 +1351,7 @@ impl UserLibraryFixture {
             intro_id: intro.id,
             trailer_id: trailer.id,
             feature_id: feature.id,
+            storage_root,
         }
     }
 
@@ -1210,6 +1365,7 @@ impl UserLibraryFixture {
             .exec(&self.database)
             .await
             .expect("user cleanup");
+        let _ = tokio::fs::remove_dir_all(self.storage_root).await;
     }
 }
 

@@ -621,6 +621,8 @@ impl AppState {
         self.web_directory = web_directory.into();
         self.image_cache_directory = image_cache_directory.into();
         self.internal_metadata_directory = internal_metadata_directory.into();
+        self.user_library
+            .set_internal_metadata_directory(self.internal_metadata_directory.as_path());
         self.library_scan
             .set_image_cache_directory(self.image_cache_directory.as_path());
         self.item_images = Arc::new(ItemImageService::with_storage_directories(
@@ -2454,6 +2456,9 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Stored user policy is invalid",
             ),
+            Self::UserLibrary(UserLibraryError::InvalidLyricFile) => {
+                (StatusCode::BAD_REQUEST, "Invalid lyric file")
+            }
             Self::Genre(
                 GenreError::NotFound
                 | GenreError::UserNotFound

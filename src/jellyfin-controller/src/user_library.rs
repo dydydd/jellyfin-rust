@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
@@ -7,14 +10,16 @@ use jellyfin_data::{
     ServerConfigurationRepository,
     entities::{base_item, user},
 };
-use jellyfin_model::UserPolicy;
+use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use serde_json::Value;
 use thiserror::Error;
+use tokio::{fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::{
     HydratedBaseItem, ItemTypeRegistry, LocalizationService, LyricManager, LyricProvider,
-    LyricSearchRequest, UserError, UserService,
+    LyricSearchRequest, MediaStreamFilter, MediaStreamService, MediaStreamServiceError, UserError,
+    UserService,
 };
 
 #[derive(Debug, Error)]
@@ -27,8 +32,16 @@ pub enum UserLibraryError {
     Forbidden,
     #[error("lyrics not found")]
     LyricsNotFound,
+    #[error("invalid lyric file name or format")]
+    InvalidLyricFile,
+    #[error("lyric path is outside the internal metadata directory")]
+    InvalidLyricPath,
     #[error("stored user policy is invalid")]
     InvalidPolicy(#[source] serde_json::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    MediaStream(#[from] MediaStreamServiceError),
     #[error(transparent)]
     User(#[from] UserError),
     #[error(transparent)]
@@ -54,6 +67,8 @@ pub struct UserLibraryService {
     localization: LocalizationService,
     server_configuration: ServerConfigurationRepository,
     lyrics: LyricManager,
+    media_streams: MediaStreamService,
+    internal_metadata_directory: PathBuf,
 }
 
 impl UserLibraryService {
@@ -73,9 +88,18 @@ impl UserLibraryService {
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             item_types,
             localization: LocalizationService,
-            server_configuration: ServerConfigurationRepository::new(database),
+            server_configuration: ServerConfigurationRepository::new(std::sync::Arc::clone(
+                &database,
+            )),
             lyrics: LyricManager::default(),
+            media_streams: MediaStreamService::new(database),
+            internal_metadata_directory: PathBuf::from("metadata"),
         }
+    }
+
+    /// Replaces the internal metadata directory used for managed lyric files.
+    pub fn set_internal_metadata_directory(&mut self, directory: impl Into<PathBuf>) {
+        self.internal_metadata_directory = directory.into();
     }
 
     /// Replaces the remote lyric providers used by search and download.
@@ -527,6 +551,31 @@ impl UserLibraryService {
         let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
+        let streams = self
+            .media_streams
+            .get_media_streams(MediaStreamFilter {
+                item_id,
+                index: None,
+                stream_type: Some(MediaStreamType::Lyric),
+            })
+            .await?;
+        if let Some(stream) = streams.into_iter().min_by_key(|stream| stream.index) {
+            let path = stream.path.ok_or(UserLibraryError::LyricsNotFound)?;
+            let bytes = fs::read(&path).await?;
+            let content = String::from_utf8_lossy(&bytes);
+            let format = stream
+                .codec
+                .as_deref()
+                .or_else(|| {
+                    Path::new(&path)
+                        .extension()
+                        .and_then(|value| value.to_str())
+                })
+                .ok_or(UserLibraryError::LyricsNotFound)?;
+            return LyricManager::parse_lyrics(format, &content)
+                .ok_or(UserLibraryError::LyricsNotFound);
+        }
+
         metadata_value(item.data.as_ref(), &["Lyrics", "lyrics"])
             .cloned()
             .ok_or(UserLibraryError::LyricsNotFound)
@@ -574,7 +623,7 @@ impl UserLibraryService {
         item_id: Uuid,
         lyric_id: &str,
     ) -> Result<Value, UserLibraryError> {
-        let mut item = self
+        let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
         let Some(lyric_file) = self.lyrics.get_lyrics(lyric_id) else {
@@ -590,20 +639,8 @@ impl UserLibraryService {
         let Some(lyrics) = LyricManager::parse_lyrics(format, &lyric_file.content) else {
             return Err(UserLibraryError::LyricsNotFound);
         };
-        if !matches!(item.data, Some(Value::Object(_))) {
-            item.data = Some(Value::Object(serde_json::Map::default()));
-        }
-        if let Some(Value::Object(object)) = item.data.as_mut() {
-            object.insert("Lyrics".to_owned(), lyrics);
-            object.remove("lyrics");
-        }
-        let mut updated = self.items.update(item).await?;
-        updated
-            .data
-            .as_mut()
-            .and_then(Value::as_object_mut)
-            .and_then(|object| object.remove("Lyrics"))
-            .ok_or(UserLibraryError::LyricsNotFound)
+        self.save_lyric_file(item, format, lyric_file.content.as_bytes(), lyrics)
+            .await
     }
 
     /// Returns parsed remote lyrics without attaching them to the item.
@@ -637,25 +674,14 @@ impl UserLibraryService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
+        format: &str,
+        content: &[u8],
         lyrics: Value,
     ) -> Result<Value, UserLibraryError> {
-        let mut item = self
+        let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        if !matches!(item.data, Some(Value::Object(_))) {
-            item.data = Some(Value::Object(serde_json::Map::default()));
-        }
-        if let Some(Value::Object(object)) = item.data.as_mut() {
-            object.insert("Lyrics".to_owned(), lyrics);
-            object.remove("lyrics");
-        }
-        let mut updated = self.items.update(item).await?;
-        updated
-            .data
-            .as_mut()
-            .and_then(Value::as_object_mut)
-            .and_then(|object| object.remove("Lyrics"))
-            .ok_or(UserLibraryError::LyricsNotFound)
+        self.save_lyric_file(item, format, content, lyrics).await
     }
 
     /// Deletes embedded lyric metadata from an audio item.
@@ -672,13 +698,188 @@ impl UserLibraryService {
         let mut item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let Some(data) = item.data.as_mut().and_then(Value::as_object_mut) else {
-            return Ok(());
-        };
-        data.remove("Lyrics");
-        data.remove("lyrics");
-        self.items.update(item).await?;
+        let original_streams = self
+            .media_streams
+            .get_media_streams(MediaStreamFilter::for_item(item_id))
+            .await?;
+        let retained_streams = original_streams
+            .iter()
+            .filter(|stream| stream.stream_type != MediaStreamType::Lyric)
+            .cloned()
+            .collect::<Vec<_>>();
+        let lyric_paths = original_streams
+            .iter()
+            .filter(|stream| stream.stream_type == MediaStreamType::Lyric)
+            .filter_map(|stream| stream.path.as_deref())
+            .collect::<HashSet<_>>();
+
+        let mut staged = Vec::new();
+        for path in lyric_paths {
+            match self.stage_internal_lyric_delete(Path::new(path)).await {
+                Ok(Some(pair)) => staged.push(pair),
+                Ok(None) => {}
+                Err(error) => {
+                    restore_staged_files(&staged).await;
+                    return Err(error);
+                }
+            }
+        }
+
+        if let Err(error) = self
+            .media_streams
+            .save_media_streams(item_id, retained_streams)
+            .await
+        {
+            restore_staged_files(&staged).await;
+            return Err(error.into());
+        }
+
+        if let Some(data) = item.data.as_mut().and_then(Value::as_object_mut) {
+            data.remove("Lyrics");
+            data.remove("lyrics");
+        }
+        if let Err(error) = self.items.update(item).await {
+            let _ = self
+                .media_streams
+                .save_media_streams(item_id, original_streams)
+                .await;
+            restore_staged_files(&staged).await;
+            return Err(error.into());
+        }
+        cleanup_staged_files(&staged).await;
         Ok(())
+    }
+
+    async fn save_lyric_file(
+        &self,
+        mut item: base_item::Model,
+        format: &str,
+        content: &[u8],
+        lyrics: Value,
+    ) -> Result<Value, UserLibraryError> {
+        let format = normalized_lyric_format(format).ok_or(UserLibraryError::InvalidLyricFile)?;
+        let stem = item
+            .path
+            .as_deref()
+            .and_then(|path| Path::new(path).file_stem())
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| is_safe_file_stem(stem))
+            .ok_or(UserLibraryError::InvalidLyricFile)?;
+        let directory = self.safe_item_metadata_directory(item.id).await?;
+        let target = directory.join(format!("{stem}.{format}"));
+        let backup = replace_file_atomically(&target, content).await?;
+
+        let original_item = item.clone();
+        let original_streams = match self
+            .media_streams
+            .get_media_streams(MediaStreamFilter::for_item(item.id))
+            .await
+        {
+            Ok(streams) => streams,
+            Err(error) => {
+                restore_replaced_file(&target, backup.as_deref()).await;
+                return Err(error.into());
+            }
+        };
+        let target_string = target.to_string_lossy().into_owned();
+        let mut updated_streams = original_streams.clone();
+        if let Some(stream) = updated_streams.iter_mut().find(|stream| {
+            stream.stream_type == MediaStreamType::Lyric
+                && stream.path.as_deref() == Some(target_string.as_str())
+        }) {
+            stream.codec = Some(format.to_owned());
+            stream.is_external = true;
+        } else {
+            let index = updated_streams
+                .iter()
+                .map(|stream| stream.index)
+                .max()
+                .unwrap_or(-1)
+                .saturating_add(1);
+            updated_streams.push(MediaStream {
+                codec: Some(format.to_owned()),
+                index,
+                stream_type: MediaStreamType::Lyric,
+                is_external: true,
+                path: Some(target_string),
+                ..MediaStream::default()
+            });
+        }
+        if let Err(error) = self
+            .media_streams
+            .save_media_streams(item.id, updated_streams)
+            .await
+        {
+            restore_replaced_file(&target, backup.as_deref()).await;
+            return Err(error.into());
+        }
+
+        if !matches!(item.data, Some(Value::Object(_))) {
+            item.data = Some(Value::Object(serde_json::Map::default()));
+        }
+        if let Some(Value::Object(object)) = item.data.as_mut() {
+            object.insert("Lyrics".to_owned(), lyrics.clone());
+            object.remove("lyrics");
+        }
+        if let Err(error) = self.items.update(item).await {
+            let _ = self
+                .media_streams
+                .save_media_streams(original_item.id, original_streams)
+                .await;
+            restore_replaced_file(&target, backup.as_deref()).await;
+            return Err(error.into());
+        }
+        if let Some(backup) = backup {
+            let _ = fs::remove_file(backup).await;
+        }
+        Ok(lyrics)
+    }
+
+    async fn safe_item_metadata_directory(
+        &self,
+        item_id: Uuid,
+    ) -> Result<PathBuf, UserLibraryError> {
+        fs::create_dir_all(&self.internal_metadata_directory).await?;
+        let root = fs::canonicalize(&self.internal_metadata_directory).await?;
+        let id = item_id.simple().to_string();
+        let directory = root.join("library").join(&id[..2]).join(id);
+        fs::create_dir_all(&directory).await?;
+        let directory = fs::canonicalize(directory).await?;
+        if !directory.starts_with(&root) {
+            return Err(UserLibraryError::InvalidLyricPath);
+        }
+        Ok(directory)
+    }
+
+    async fn stage_internal_lyric_delete(
+        &self,
+        path: &Path,
+    ) -> Result<Option<(PathBuf, PathBuf)>, UserLibraryError> {
+        let metadata = match fs::symlink_metadata(path).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Ok(None);
+        }
+        let root = match fs::canonicalize(&self.internal_metadata_directory).await {
+            Ok(root) => root,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let canonical = fs::canonicalize(path).await?;
+        if !canonical.starts_with(root) {
+            return Ok(None);
+        }
+        let file_name = canonical
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or(UserLibraryError::InvalidLyricPath)?;
+        let staged =
+            canonical.with_file_name(format!(".{file_name}-{}.delete", Uuid::new_v4().simple()));
+        fs::rename(&canonical, &staged).await?;
+        Ok(Some((canonical, staged)))
     }
 
     /// Matches the official `GetItemById<Audio>(id, user)` lookup used by every item-scoped
@@ -773,6 +974,102 @@ impl UserLibraryService {
             .map(HydratedBaseItem::into_model)
             .collect();
         page
+    }
+}
+
+fn normalized_lyric_format(format: &str) -> Option<&'static str> {
+    ["lrc", "elrc", "txt"]
+        .into_iter()
+        .find(|supported| format.eq_ignore_ascii_case(supported))
+}
+
+fn is_safe_file_stem(stem: &str) -> bool {
+    !stem.is_empty()
+        && stem != "."
+        && stem != ".."
+        && !stem.chars().any(|character| {
+            character == '/' || character == '\\' || character == '\0' || character.is_control()
+        })
+}
+
+async fn replace_file_atomically(
+    target: &Path,
+    content: &[u8],
+) -> Result<Option<PathBuf>, UserLibraryError> {
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(UserLibraryError::InvalidLyricFile)?;
+    let token = Uuid::new_v4().simple();
+    let temporary = target.with_file_name(format!(".{file_name}-{token}.tmp"));
+    let backup = target.with_file_name(format!(".{file_name}-{token}.backup"));
+    let write_result = async {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .await?;
+        file.write_all(content).await?;
+        file.sync_all().await?;
+        drop(file);
+        Ok::<(), std::io::Error>(())
+    }
+    .await;
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
+
+    let had_target = match fs::symlink_metadata(target).await {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(UserLibraryError::InvalidLyricPath);
+        }
+        Ok(_) => {
+            if let Err(error) = fs::copy(target, &backup).await {
+                let _ = fs::remove_file(&temporary).await;
+                let _ = fs::remove_file(&backup).await;
+                return Err(error.into());
+            }
+            if let Err(error) = fs::File::open(&backup).await?.sync_all().await {
+                let _ = fs::remove_file(&temporary).await;
+                let _ = fs::remove_file(&backup).await;
+                return Err(error.into());
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(error.into());
+        }
+    };
+    if let Err(error) = fs::rename(&temporary, target).await {
+        let _ = fs::remove_file(&temporary).await;
+        let _ = fs::remove_file(&backup).await;
+        return Err(error.into());
+    }
+    Ok(had_target.then_some(backup))
+}
+
+async fn restore_replaced_file(target: &Path, backup: Option<&Path>) {
+    let _ = fs::remove_file(target).await;
+    if let Some(backup) = backup {
+        let _ = fs::rename(backup, target).await;
+    }
+}
+
+async fn restore_staged_files(staged: &[(PathBuf, PathBuf)]) {
+    for (original, staged) in staged.iter().rev() {
+        let _ = fs::rename(staged, original).await;
+    }
+}
+
+async fn cleanup_staged_files(staged: &[(PathBuf, PathBuf)]) {
+    for (_, staged) in staged {
+        if let Err(error) = fs::remove_file(staged).await {
+            tracing::warn!(path = %staged.display(), %error, "could not remove staged lyric file");
+        }
     }
 }
 

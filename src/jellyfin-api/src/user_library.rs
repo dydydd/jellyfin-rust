@@ -655,7 +655,14 @@ pub(crate) async fn upload_lyrics(
     let lyrics = LyricManager::parse_lyrics(format, &content).ok_or(ApiError::InvalidRequest)?;
     let lyrics = state
         .user_library
-        .save_lyrics(&authenticated.user, authenticated.user.id, item_id, lyrics)
+        .save_lyrics(
+            &authenticated.user,
+            authenticated.user.id,
+            item_id,
+            format,
+            body.as_ref(),
+            lyrics,
+        )
         .await?;
     Ok(Json(lyrics))
 }
@@ -711,8 +718,20 @@ pub(crate) async fn get_remote_lyrics(
 }
 
 fn lyric_format(file_name: &str) -> Option<&str> {
-    let (_, extension) = file_name.rsplit_once('.')?;
-    (!extension.is_empty() && !extension.contains('/') && !extension.contains('\\'))
+    if file_name.is_empty()
+        || file_name.trim() != file_name
+        || file_name.contains(['/', '\\', '\0'])
+        || file_name.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let (stem, extension) = file_name.rsplit_once('.')?;
+    (!stem.is_empty()
+        && stem != "."
+        && stem != ".."
+        && !extension.is_empty()
+        && extension != "."
+        && extension != "..")
         .then_some(extension)
 }
 
