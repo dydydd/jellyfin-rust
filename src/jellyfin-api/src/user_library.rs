@@ -55,6 +55,7 @@ pub(crate) struct BaseItemDtoFields {
     media_streams: bool,
     media_source_count: bool,
     item_counts: bool,
+    child_count: bool,
     trickplay: bool,
 }
 
@@ -66,6 +67,7 @@ impl BaseItemDtoFields {
             media_streams: true,
             media_source_count: true,
             item_counts: true,
+            child_count: true,
             trickplay: true,
         }
     }
@@ -77,6 +79,7 @@ impl BaseItemDtoFields {
             media_streams: false,
             media_source_count: false,
             item_counts: false,
+            child_count: false,
             trickplay: false,
         }
     }
@@ -93,6 +96,8 @@ impl BaseItemDtoFields {
                 result.media_source_count = true;
             } else if field.eq_ignore_ascii_case("ItemCounts") {
                 result.item_counts = true;
+            } else if field.eq_ignore_ascii_case("ChildCount") {
+                result.child_count = true;
             } else if field.eq_ignore_ascii_case("Trickplay") {
                 result.trickplay = true;
             }
@@ -123,6 +128,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_item_counts(self) -> bool {
         self.item_counts
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_child_count(self) -> bool {
+        self.child_count
     }
 
     #[must_use]
@@ -677,17 +687,25 @@ async fn get_root_for(
     let remembered_user_data =
         preferred_user_data_for_item(state.as_ref(), target_user_id, &item, requested_fields)
             .await?;
-    Ok(Json(
-        project_item_to_dto(
-            state.as_ref(),
-            item,
-            target_user_id,
-            requested_fields,
-            defaults.as_ref(),
-            remembered_user_data.as_ref(),
-        )
-        .await?,
-    ))
+    let mut child_counts = child_counts_for_items(
+        state.as_ref(),
+        std::slice::from_ref(&item),
+        requested_fields,
+        target_user_id,
+    )
+    .await?;
+    let item_id = item.id;
+    let mut dto = project_item_to_dto(
+        state.as_ref(),
+        item,
+        target_user_id,
+        requested_fields,
+        defaults.as_ref(),
+        remembered_user_data.as_ref(),
+    )
+    .await?;
+    attach_child_count(&mut dto, child_counts.remove(&item_id));
+    Ok(Json(dto))
 }
 
 async fn get_item_for(
@@ -708,17 +726,25 @@ async fn get_item_for(
     let remembered_user_data =
         preferred_user_data_for_item(state.as_ref(), target_user_id, &item, requested_fields)
             .await?;
-    Ok(Json(
-        project_item_to_dto(
-            state.as_ref(),
-            item,
-            target_user_id,
-            requested_fields,
-            defaults.as_ref(),
-            remembered_user_data.as_ref(),
-        )
-        .await?,
-    ))
+    let mut child_counts = child_counts_for_items(
+        state.as_ref(),
+        std::slice::from_ref(&item),
+        requested_fields,
+        target_user_id,
+    )
+    .await?;
+    let item_id = item.id;
+    let mut dto = project_item_to_dto(
+        state.as_ref(),
+        item,
+        target_user_id,
+        requested_fields,
+        defaults.as_ref(),
+        remembered_user_data.as_ref(),
+    )
+    .await?;
+    attach_child_count(&mut dto, child_counts.remove(&item_id));
+    Ok(Json(dto))
 }
 
 async fn get_related_query_for(
@@ -1283,6 +1309,38 @@ pub(crate) async fn trickplay_manifests_for_items(
     }
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
     Ok(state.trickplay.manifests_for_items(&item_ids).await?)
+}
+
+pub(crate) async fn child_counts_for_items(
+    state: &AppState,
+    items: &[base_item::Model],
+    fields: BaseItemDtoFields,
+    target_user_id: Uuid,
+) -> Result<HashMap<Uuid, u64>, ApiError> {
+    if !fields.wants_child_count() {
+        return Ok(HashMap::new());
+    }
+    let parent_ids = items
+        .iter()
+        .filter(|item| item.is_folder)
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    if parent_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let user = state.users.get(target_user_id).await?;
+    let configuration: UserConfiguration =
+        serde_json::from_value(user.preferences).unwrap_or_default();
+    Ok(state
+        .base_items
+        .dto_child_counts(&parent_ids, configuration.display_missing_episodes)
+        .await?)
+}
+
+pub(crate) fn attach_child_count(dto: &mut BaseItemDto, child_count: Option<u64>) {
+    if let Some(child_count) = child_count {
+        dto.child_count = Some(child_count);
+    }
 }
 
 pub(crate) fn attach_trickplay_manifest(

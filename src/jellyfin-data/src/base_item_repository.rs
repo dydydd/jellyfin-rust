@@ -1496,6 +1496,117 @@ impl BaseItemRepository {
             .collect())
     }
 
+    /// Counts immediate children using Jellyfin's folder, season, linked-child, and merged-folder
+    /// rules. All requested parents are aggregated in one PostgreSQL query.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the aggregate query fails.
+    pub async fn dto_child_counts(
+        &self,
+        parent_ids: &[Uuid],
+        include_virtual: bool,
+    ) -> Result<HashMap<Uuid, u64>, BaseItemError> {
+        if parent_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let values = parent_ids
+            .iter()
+            .copied()
+            .map(SeaValue::from)
+            .collect::<Vec<_>>();
+        let requested_values = (1..=parent_ids.len())
+            .map(|index| {
+                let mut placeholder = String::from("($");
+                write!(placeholder, "{index}::uuid)").expect("writing to a String cannot fail");
+                placeholder
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let virtual_filter = if include_virtual {
+            ""
+        } else {
+            " AND child.is_virtual_item = false"
+        };
+        let sql = format!(
+            "WITH requested(parent_id) AS (VALUES {requested_values}), \
+             hierarchical AS (\
+                 SELECT child.parent_id, COUNT(*)::bigint AS child_count \
+                 FROM jellyfin.base_items AS child \
+                 INNER JOIN requested ON requested.parent_id = child.parent_id \
+                 WHERE child.season_id IS NULL{virtual_filter} \
+                 GROUP BY child.parent_id\
+             ), season_children AS (\
+                 SELECT child.season_id AS parent_id, COUNT(*)::bigint AS child_count \
+                 FROM jellyfin.base_items AS child \
+                 INNER JOIN requested ON requested.parent_id = child.season_id \
+                 WHERE child.season_id IS NOT NULL{virtual_filter} \
+                 GROUP BY child.season_id\
+             ), linked AS (\
+                 SELECT link.parent_id, COUNT(*)::bigint AS child_count \
+                 FROM jellyfin.linked_children AS link \
+                 INNER JOIN requested ON requested.parent_id = link.parent_id \
+                 GROUP BY link.parent_id\
+             ), group_members AS (\
+                 SELECT requested.parent_id, member.id AS member_id, \
+                        COUNT(*) OVER (PARTITION BY requested.parent_id) AS member_count \
+                 FROM requested \
+                 INNER JOIN jellyfin.base_items AS target ON target.id = requested.parent_id \
+                 INNER JOIN jellyfin.base_items AS member \
+                   ON member.is_folder = true \
+                  AND target.presentation_unique_key IS NOT NULL \
+                  AND member.presentation_unique_key = target.presentation_unique_key\
+             ), merged_children AS (\
+                 SELECT members.parent_id, \
+                        COALESCE(child.presentation_unique_key, child.id::text) AS child_key \
+                 FROM group_members AS members \
+                 INNER JOIN jellyfin.base_items AS child \
+                   ON (child.parent_id = members.member_id AND child.season_id IS NULL) \
+                   OR child.season_id = members.member_id \
+                 WHERE members.member_count > 1{virtual_filter}\
+             ), merged AS (\
+                 SELECT groups.parent_id, \
+                        COUNT(DISTINCT children.child_key)::bigint AS child_count \
+                 FROM (\
+                     SELECT DISTINCT parent_id FROM group_members WHERE member_count > 1\
+                 ) AS groups \
+                 LEFT JOIN merged_children AS children USING (parent_id) \
+                 GROUP BY groups.parent_id\
+             ) \
+             SELECT requested.parent_id, \
+                    COALESCE(\
+                        merged.child_count, \
+                        CASE WHEN COALESCE(linked.child_count, 0) > 0 \
+                             THEN linked.child_count \
+                             ELSE COALESCE(hierarchical.child_count, 0) \
+                                + COALESCE(season_children.child_count, 0) \
+                        END, \
+                        0\
+                    )::bigint AS child_count \
+             FROM requested \
+             LEFT JOIN hierarchical USING (parent_id) \
+             LEFT JOIN season_children USING (parent_id) \
+             LEFT JOIN linked USING (parent_id) \
+             LEFT JOIN merged USING (parent_id)"
+        );
+        let rows = ParentChildCount::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.parent_id,
+                    u64::try_from(row.child_count).unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
     /// Counts non-virtual library items by Jellyfin's public item-count buckets.
     ///
     /// `PostgreSQL` computes all buckets in one aggregate scan using `FILTER`

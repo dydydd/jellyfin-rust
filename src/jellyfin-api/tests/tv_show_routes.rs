@@ -115,6 +115,48 @@ async fn exercise_seasons_route(database_name: &str) {
     assert_eq!(items[1]["Id"], fixture.first_season_id.simple().to_string());
     assert_eq!(items[1]["ParentId"], fixture.series_id.simple().to_string());
 
+    let seasons_with_child_counts = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Seasons?Fields=childcount", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(seasons_with_child_counts["Items"][0]["ChildCount"], 1);
+    assert_eq!(seasons_with_child_counts["Items"][1]["ChildCount"], 4);
+    assert_eq!(seasons_with_child_counts["Items"][2]["ChildCount"], 1);
+    assert_eq!(seasons_with_child_counts["Items"][3]["ChildCount"], 0);
+
+    let item_page_with_child_counts = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Items?parentId={}&includeItemTypes=Season&fields=childcount",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_page_with_child_counts["Items"][0]["ChildCount"], 1);
+    assert_eq!(item_page_with_child_counts["Items"][1]["ChildCount"], 4);
+    assert_eq!(item_page_with_child_counts["Items"][2]["ChildCount"], 1);
+    assert_eq!(item_page_with_child_counts["Items"][3]["ChildCount"], 0);
+
+    let series_detail = body_json(
+        fixture
+            .get(
+                &format!("/Items/{}", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(series_detail["ChildCount"], 4);
+
     let regular = body_json(
         fixture
             .get(
@@ -1045,7 +1087,7 @@ impl Fixture {
             Some(Utc::now() + Duration::hours(1)),
         )
         .await;
-        let missing_episode = create_episode_with_premiere_date(
+        let mut missing_episode = create_episode_with_premiere_date(
             &items,
             "04 Missing Episode",
             second_season.id,
@@ -1056,6 +1098,11 @@ impl Fixture {
             Some(Utc::now() + Duration::days(1)),
         )
         .await;
+        missing_episode.is_virtual_item = true;
+        let missing_episode = items
+            .update(missing_episode)
+            .await
+            .expect("missing episode virtual state");
         let user_data = UserDataRepository::new(database.clone());
         let mut watched = NewUserData::new(
             first_episode_alternate.id,

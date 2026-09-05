@@ -1180,6 +1180,9 @@ async fn page_to_dto(
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let requested_fields = user_library::BaseItemDtoFields::from_names(&fields);
     let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut child_counts =
+        user_library::child_counts_for_items(state, &page.items, requested_fields, target_user_id)
+            .await?;
     let mut media_source_groups = if requested_fields.wants_media_sources() {
         let sources = state
             .base_items
@@ -1259,6 +1262,7 @@ async fn page_to_dto(
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
+        user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
         if requested_fields.wants_media_source_count() {
             user_library::attach_media_source_count(
                 &mut dto,
