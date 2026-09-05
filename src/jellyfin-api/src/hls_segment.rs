@@ -31,7 +31,11 @@ pub(crate) struct TranscodeQuery {
     device_id: Option<String>,
     #[serde(rename = "playSessionId", alias = "PlaySessionId")]
     play_session_id: Option<String>,
-    #[serde(rename = "mediaSourceId", alias = "MediaSourceId")]
+    #[serde(
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid"
+    )]
     media_source_id: Option<String>,
     #[serde(rename = "videoCodec", alias = "VideoCodec")]
     video_codec: Option<String>,
@@ -402,10 +406,29 @@ async fn start_hls_job(
         audio_bitrate = ?target.audio_bitrate,
         "starting HLS transcode job",
     );
-    let item = state
+    let requested_item = state
         .library_controller
         .item(user, user.id, item_id)
         .await?;
+    let item = if let Some(media_source_id) = query
+        .media_source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let version_id = Uuid::parse_str(media_source_id).map_err(|_| ApiError::NotFound)?;
+        if version_id == requested_item.id {
+            requested_item
+        } else {
+            state
+                .base_items
+                .alternate_video_version(requested_item.id, version_id)
+                .await?
+                .ok_or(ApiError::NotFound)?
+        }
+    } else {
+        requested_item
+    };
     let input = jellyfin_controller::media_source_path(&item)
         .map(str::to_owned)
         .ok_or(ApiError::NotFound)?;

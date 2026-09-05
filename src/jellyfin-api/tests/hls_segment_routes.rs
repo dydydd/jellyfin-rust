@@ -11,7 +11,7 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    ApiKeyRepository, DeviceRepository, NewDevice,
+    ApiKeyRepository, BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice,
     entities::{api_key, user},
 };
 use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, MimeTypes, UserPolicy};
@@ -451,6 +451,36 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
         StatusCode::FORBIDDEN
     );
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn dynamic_hls_rejects_media_sources_outside_the_requested_version_group() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let item_id = Uuid::new_v4();
+    let mut item = NewBaseItem::new(item_id, "Movie");
+    item.path = Some("/media/hls-primary.mkv".to_owned());
+    items.create(item).await.expect("HLS primary item");
+    let unrelated_id = Uuid::new_v4();
+    let mut unrelated = NewBaseItem::new(unrelated_id, "Movie");
+    unrelated.path = Some("/media/hls-unrelated.mkv".to_owned());
+    items.create(unrelated).await.expect("unrelated HLS item");
+
+    for query_name in ["MediaSourceId", "mediaSourceId", "mediasourceid"] {
+        let response = fixture
+            .get(
+                &format!(
+                    "/Videos/{item_id}/master.m3u8?videoCodec=h264&{query_name}={unrelated_id}"
+                ),
+                fixture.device_headers(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{query_name}");
+    }
+
+    items.delete(unrelated_id).await.expect("unrelated cleanup");
+    items.delete(item_id).await.expect("primary cleanup");
     fixture.cleanup().await;
 }
 
