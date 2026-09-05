@@ -1,10 +1,11 @@
 //! Image decoding, transformation, and disk caching for Jellyfin.
 
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::{BufReader, BufWriter, Cursor, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,7 +16,7 @@ use image::{
 use jellyfin_model::ImageFormat;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
 
 const CACHE_VERSION: u8 = 2;
 const DEFAULT_QUALITY: u8 = 100;
@@ -295,6 +296,60 @@ fn inspect_dimensions_blocking(path: &Path) -> Result<(u32, u32), ImageInspectio
 pub struct ImageProcessor {
     cache_directory: Arc<PathBuf>,
     encoding_limit: Arc<Semaphore>,
+    encoding_locks: Arc<StdMutex<HashMap<PathBuf, Weak<Mutex<()>>>>>,
+    #[cfg(test)]
+    test_instrumentation: Arc<TestEncodingInstrumentation>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TestEncodingInstrumentation {
+    arrivals: StdMutex<Option<Arc<tokio::sync::Barrier>>>,
+    attempts: std::sync::atomic::AtomicUsize,
+    delay: StdMutex<Option<std::time::Duration>>,
+}
+
+struct EncodingLockEntry {
+    cache_path: PathBuf,
+    lock: Arc<Mutex<()>>,
+    registry: Arc<StdMutex<HashMap<PathBuf, Weak<Mutex<()>>>>>,
+}
+
+impl EncodingLockEntry {
+    async fn acquire(self) -> EncodingLockGuard {
+        let guard = Arc::clone(&self.lock).lock_owned().await;
+        EncodingLockGuard {
+            guard: Some(guard),
+            _entry: self,
+        }
+    }
+}
+
+impl Drop for EncodingLockEntry {
+    fn drop(&mut self) {
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let is_current_entry = registry
+            .get(&self.cache_path)
+            .is_some_and(|entry| entry.ptr_eq(&Arc::downgrade(&self.lock)));
+        if is_current_entry && Arc::strong_count(&self.lock) == 1 {
+            registry.remove(&self.cache_path);
+        }
+    }
+}
+
+struct EncodingLockGuard {
+    // Drop the mutex guard before the entry checks whether it is the final user.
+    guard: Option<OwnedMutexGuard<()>>,
+    _entry: EncodingLockEntry,
+}
+
+impl Drop for EncodingLockGuard {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+    }
 }
 
 /// Inputs and layout for Jellyfin-style dynamic image collages.
@@ -320,6 +375,9 @@ impl ImageProcessor {
         Self {
             cache_directory: Arc::new(cache_directory.into()),
             encoding_limit: Arc::new(Semaphore::new(LIMIT)),
+            encoding_locks: Arc::new(StdMutex::new(HashMap::new())),
+            #[cfg(test)]
+            test_instrumentation: Arc::new(TestEncodingInstrumentation::default()),
         }
     }
 
@@ -339,6 +397,9 @@ impl ImageProcessor {
         Ok(Self {
             cache_directory: Arc::new(cache_directory.into()),
             encoding_limit: Arc::new(Semaphore::new(max_concurrent_encodes)),
+            encoding_locks: Arc::new(StdMutex::new(HashMap::new())),
+            #[cfg(test)]
+            test_instrumentation: Arc::new(TestEncodingInstrumentation::default()),
         })
     }
 
@@ -383,17 +444,49 @@ impl ImageProcessor {
             return Ok(result);
         }
 
-        let permit = Arc::clone(&self.encoding_limit)
-            .acquire_owned()
-            .await
-            .map_err(|_| ImageProcessingError::SemaphoreClosed)?;
+        #[cfg(test)]
+        let arrivals = self
+            .test_instrumentation
+            .arrivals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        #[cfg(test)]
+        if let Some(arrivals) = arrivals {
+            arrivals.wait().await;
+        }
+
+        // Key by the final derived path so identical cold-cache requests share one decode and
+        // encode. Acquire this before the global limit so followers do not consume scarce permits.
+        let encoding_lock = self.encoding_lock(cache_path.clone()).acquire().await;
         if let Some(result) = cached_result(&cache_path, output_format).await? {
             return Ok(result);
         }
 
+        let permit = Arc::clone(&self.encoding_limit)
+            .acquire_owned()
+            .await
+            .map_err(|_| ImageProcessingError::SemaphoreClosed)?;
+
         let source_path = source.path;
+        #[cfg(test)]
+        let test_instrumentation = Arc::clone(&self.test_instrumentation);
         let cache_path = tokio::task::spawn_blocking(move || {
+            let _encoding_lock = encoding_lock;
             let _permit = permit;
+            #[cfg(test)]
+            {
+                use std::sync::atomic::Ordering;
+
+                test_instrumentation.attempts.fetch_add(1, Ordering::SeqCst);
+                if let Some(delay) = *test_instrumentation
+                    .delay
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                {
+                    std::thread::sleep(delay);
+                }
+            }
             process_to_cache(&source_path, &cache_path, &normalized, output_format)?;
             Ok::<_, ImageProcessingError>(cache_path)
         })
@@ -408,6 +501,27 @@ impl ImageProcessor {
                     "encoded cache file disappeared",
                 ),
             })
+    }
+
+    fn encoding_lock(&self, cache_path: PathBuf) -> EncodingLockEntry {
+        let lock = {
+            let mut registry = self
+                .encoding_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(lock) = registry.get(&cache_path).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                registry.insert(cache_path.clone(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        EncodingLockEntry {
+            cache_path,
+            lock,
+            registry: Arc::clone(&self.encoding_locks),
+        }
     }
 }
 
@@ -1488,6 +1602,75 @@ fn duplicate_hex(value: &str) -> Result<u8, ImageProcessingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_cold_cache_requests_encode_once() {
+        const REQUESTS: usize = 8;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source_path = directory.path().join("source.png");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(512, 288, Rgba([20, 40, 80, 255])))
+            .save(&source_path)
+            .expect("write source fixture");
+        let date_modified = fs::metadata(&source_path)
+            .and_then(|metadata| metadata.modified())
+            .expect("source modification time");
+        let source = ImageSource::new(source_path, date_modified).with_dimensions(512, 288);
+        let request = ImageProcessingRequest {
+            max_width: Some(256),
+            ..ImageProcessingRequest::default()
+        };
+        let processor =
+            ImageProcessor::new(directory.path().join("cache"), REQUESTS).expect("image processor");
+        *processor
+            .test_instrumentation
+            .arrivals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(tokio::sync::Barrier::new(REQUESTS)));
+        *processor
+            .test_instrumentation
+            .delay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(std::time::Duration::from_millis(100));
+
+        let mut tasks = Vec::with_capacity(REQUESTS);
+        for _ in 0..REQUESTS {
+            let processor = processor.clone();
+            let source = source.clone();
+            let request = request.clone();
+            tasks.push(tokio::spawn(async move {
+                processor.process(source, request).await
+            }));
+        }
+
+        let mut output_path = None;
+        for task in tasks {
+            let result = task.await.expect("processing task").expect("process image");
+            if let Some(expected) = &output_path {
+                assert_eq!(&result.path, expected);
+            } else {
+                output_path = Some(result.path);
+            }
+        }
+        assert_eq!(
+            processor
+                .test_instrumentation
+                .attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "identical requests must share a single memory-heavy encode"
+        );
+        assert!(
+            processor
+                .encoding_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "completed cache keys must not accumulate in the lock registry"
+        );
+    }
 
     #[test]
     fn drawing_utils_maximums_scale_down_and_never_upscale() {
