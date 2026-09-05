@@ -131,7 +131,7 @@ async fn studio_routes_match_official_studio_contract() {
             .request(
                 Method::GET,
                 &format!(
-                    "/Studios?searchterm={}&includeitemtypes=Movie&enabletotalrecordcount=false",
+                    "/Studios?searchterm={}&includeitemtypes=Movie&startindex=0&limit=1&enabletotalrecordcount=false",
                     encoded(&fixture.alpha_studio)
                 ),
                 Credential::Device(&fixture.user_token),
@@ -139,7 +139,7 @@ async fn studio_routes_match_official_studio_contract() {
             .await,
     )
     .await;
-    assert_studios(&lowercase_searched, &[&fixture.alpha_studio], 1, 0);
+    assert_studios(&lowercase_searched, &[&fixture.alpha_studio], 0, 0);
     assert_eq!(lowercase_searched["Items"][0]["MovieCount"], 1);
 
     let prefixed = body_json(
@@ -209,14 +209,30 @@ async fn studio_routes_match_official_studio_contract() {
         fixture
             .request(
                 Method::GET,
-                "/Studios?limit=1&enableTotalRecordCount=false",
+                "/Studios?startIndex=1&limit=2&enableTotalRecordCount=false",
                 Credential::Device(&fixture.user_token),
             )
             .await,
     )
     .await;
-    assert_eq!(no_total["Items"].as_array().expect("items").len(), 1);
-    assert_eq!(no_total["TotalRecordCount"], 1);
+    assert_studios(
+        &no_total,
+        &[&fixture.beta_studio, &fixture.gamma_studio],
+        0,
+        1,
+    );
+
+    let pascal_no_total = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Studios?StartIndex=2&Limit=1&EnableTotalRecordCount=false",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_studios(&pascal_no_total, &[&fixture.gamma_studio], 0, 2);
 
     let studio = body_json(
         fixture

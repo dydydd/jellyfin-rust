@@ -135,7 +135,7 @@ pub(crate) async fn list(
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
-        items.len()
+        0
     };
     Ok(Json(user_library::BaseItemQueryResult {
         items,
