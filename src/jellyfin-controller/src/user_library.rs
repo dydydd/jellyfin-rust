@@ -714,7 +714,12 @@ impl UserLibraryService {
         Ok(())
     }
 
-    async fn apply_user_policy(
+    /// Applies the target user's library-access policy to a base-item query.
+    ///
+    /// # Errors
+    ///
+    /// Returns a user lookup or policy-deserialization error.
+    pub async fn apply_user_policy(
         &self,
         query: &mut BaseItemQuery,
         target_user_id: Uuid,

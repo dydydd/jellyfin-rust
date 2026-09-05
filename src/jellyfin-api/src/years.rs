@@ -86,23 +86,23 @@ pub(crate) async fn list(
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
     let order = production_year_order(&query.sort_by, &query.sort_order)?;
+    let mut item_query = BaseItemQuery {
+        parent_id: query.parent_id,
+        recursive: query.recursive,
+        include_item_types: query.include_item_types,
+        exclude_item_types: query.exclude_item_types,
+        media_types: query.media_types,
+        start_index: query.start_index,
+        limit: query.limit,
+        ..BaseItemQuery::default()
+    };
+    state
+        .user_library
+        .apply_user_policy(&mut item_query, target_user_id)
+        .await?;
     let page = state
         .years
-        .list(
-            &authenticated.user,
-            target_user_id,
-            BaseItemQuery {
-                parent_id: query.parent_id,
-                recursive: query.recursive,
-                include_item_types: query.include_item_types,
-                exclude_item_types: query.exclude_item_types,
-                media_types: query.media_types,
-                start_index: query.start_index,
-                limit: query.limit,
-                ..BaseItemQuery::default()
-            },
-            order,
-        )
+        .list(&authenticated.user, target_user_id, item_query, order)
         .await?;
     Ok(Json(user_library::BaseItemQueryResult {
         items: page

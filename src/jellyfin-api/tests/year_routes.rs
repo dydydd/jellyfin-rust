@@ -6,7 +6,11 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice};
+use jellyfin_data::{
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice, entities::item_value,
+};
+use jellyfin_model::UserPolicy;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -314,7 +318,85 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
         fixture.persisted_year_id.simple().to_string()
     );
 
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let visible_folder_id = Uuid::new_v4();
+    let mut visible_folder = NewBaseItem::new(visible_folder_id, "CollectionFolder");
+    visible_folder.name = Some("Visible policy library".to_owned());
+    visible_folder.is_folder = true;
+    items
+        .create(visible_folder)
+        .await
+        .expect("visible policy folder creation");
+    let hidden_folder_id = Uuid::new_v4();
+    let mut hidden_folder = NewBaseItem::new(hidden_folder_id, "CollectionFolder");
+    hidden_folder.name = Some("Hidden policy library".to_owned());
+    hidden_folder.is_folder = true;
+    items
+        .create(hidden_folder)
+        .await
+        .expect("hidden policy folder creation");
+
+    create_policy_video(&items, visible_folder_id, "Visible", 1967, "G").await;
+    create_policy_video(&items, hidden_folder_id, "Hidden", 1966, "G").await;
+    let blocked_video = create_policy_video(&items, visible_folder_id, "Blocked", 1968, "G").await;
+    create_policy_video(&items, visible_folder_id, "Rated", 1969, "R").await;
+    ItemValueRepository::new(fixture.database.clone())
+        .link(blocked_video.id, item_value::ItemValueType::Tags, "Blocked")
+        .await
+        .expect("blocked policy tag");
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.enable_all_folders = false;
+    policy.enabled_folders = vec![visible_folder_id];
+    policy.blocked_tags = vec!["Blocked".to_owned()];
+    policy.max_parental_rating = Some(5);
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted year policy");
+
+    let policy_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?includeItemTypes=Video",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&policy_years, &["1967"], 1, 0);
+    let returned_ids = policy_years["Items"]
+        .as_array()
+        .expect("policy year items")
+        .iter()
+        .map(|item| item["Name"].as_str().expect("policy year name"))
+        .collect::<Vec<_>>();
+    assert!(!returned_ids.contains(&"1966"));
+    assert!(!returned_ids.contains(&"1968"));
+    assert!(!returned_ids.contains(&"1969"));
+
     fixture.cleanup().await;
+}
+
+async fn create_policy_video(
+    items: &BaseItemRepository,
+    parent_id: Uuid,
+    name: &str,
+    year: i32,
+    rating: &str,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut video = NewBaseItem::new(Uuid::new_v4(), "Video");
+    video.name = Some(format!("{name} policy video"));
+    video.media_type = Some("Video".to_owned());
+    video.production_year = Some(year);
+    video.official_rating = Some(rating.to_owned());
+    video.parent_id = Some(parent_id);
+    items.create(video).await.expect("policy video creation")
 }
 
 fn assert_years(
