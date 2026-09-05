@@ -277,15 +277,10 @@ pub(crate) async fn episodes(
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
-    let order = if query
+    let requested_random_order = query
         .sort_by
         .as_deref()
-        .is_some_and(|sort| sort.eq_ignore_ascii_case("Random"))
-    {
-        BaseItemOrder::Random
-    } else {
-        BaseItemOrder::SortName
-    };
+        .is_some_and(|sort| sort.eq_ignore_ascii_case("Random"));
 
     let _ = (
         query.enable_images,
@@ -308,7 +303,7 @@ pub(crate) async fn episodes(
             target_user_id,
             season_id,
             false,
-            order,
+            episode_order(requested_random_order, season.index_number),
         )
         .await?
     } else if let Some(season_number) = query.season {
@@ -351,7 +346,7 @@ pub(crate) async fn episodes(
             target_user_id,
             season.id,
             false,
-            order,
+            episode_order(requested_random_order, season.index_number),
         )
         .await?
     } else {
@@ -368,7 +363,11 @@ pub(crate) async fn episodes(
             target_user_id,
             series_id,
             true,
-            order,
+            if requested_random_order {
+                BaseItemOrder::Random
+            } else {
+                BaseItemOrder::AiredEpisodeOrderAscending
+            },
         )
         .await?
     };
@@ -401,6 +400,18 @@ pub(crate) async fn episodes(
         total_record_count,
         start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
     }))
+}
+
+fn episode_order(random: bool, season_number: Option<i32>) -> BaseItemOrder {
+    if random {
+        BaseItemOrder::Random
+    } else if season_number == Some(0) {
+        // Official Jellyfin sorts specials by their display sort name, while
+        // regular seasons use the aired season/episode sequence.
+        BaseItemOrder::SortName
+    } else {
+        BaseItemOrder::AiredEpisodeOrderAscending
+    }
 }
 
 pub(crate) async fn seasons(

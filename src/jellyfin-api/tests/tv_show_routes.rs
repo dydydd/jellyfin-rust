@@ -665,7 +665,7 @@ impl Fixture {
         .await;
         let first_episode = create_episode_with_premiere_date(
             &items,
-            "01 Episode One",
+            "Zulu Episode One",
             first_season.id,
             series.id,
             1,
@@ -676,7 +676,7 @@ impl Fixture {
         .await;
         let second_episode = create_episode(
             &items,
-            "02 Episode Two",
+            "Alpha Episode Two",
             first_season.id,
             series.id,
             1,
