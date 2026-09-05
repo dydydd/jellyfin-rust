@@ -8,7 +8,7 @@ use jellyfin_data::{
     BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice,
     entities::{base_item, user},
 };
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::Path};
@@ -144,56 +144,43 @@ async fn playback_info_routes_return_postgres_media_sources_with_official_auth_s
 #[tokio::test]
 async fn playback_info_exposes_and_selects_grouped_video_versions() {
     let fixture = Fixture::new().await;
-    let alternate_id = Uuid::new_v4();
-    let alternate_path = format!("/media/playback-info-alternate-{alternate_id}.mkv");
-    let mut alternate = NewBaseItem::new(alternate_id, "Movie");
-    alternate.name = Some("playback-info-movie".to_owned());
-    alternate.path = Some(alternate_path.clone());
-    alternate.primary_version_id = Some(fixture.item_id);
-    alternate.runtime_ticks = Some(12_345_000_000);
-    BaseItemRepository::new(fixture.database.clone())
-        .create(alternate)
-        .await
-        .expect("alternate playback item");
-    MediaStreamService::new(fixture.database.clone())
-        .save_media_streams(
-            alternate_id,
-            vec![
-                MediaStream {
-                    index: 0,
-                    stream_type: MediaStreamType::Video,
-                    codec: Some("hevc".to_owned()),
-                    bit_rate: Some(4_000_000),
-                    ..MediaStream::default()
-                },
-                MediaStream {
-                    index: 1,
-                    stream_type: MediaStreamType::Audio,
-                    codec: Some("aac".to_owned()),
-                    channels: Some(2),
-                    bit_rate: Some(192_000),
-                    is_default: true,
-                    ..MediaStream::default()
-                },
-            ],
-        )
-        .await
-        .expect("alternate media stream");
+    let alternate_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let streams = MediaStreamService::new(fixture.database.clone());
+    for alternate_id in alternate_ids {
+        let mut alternate = NewBaseItem::new(alternate_id, "Movie");
+        alternate.name = Some("playback-info-movie".to_owned());
+        alternate.path = Some(format!("/media/playback-info-alternate-{alternate_id}.mkv"));
+        alternate.primary_version_id = Some(fixture.item_id);
+        alternate.runtime_ticks = Some(12_345_000_000);
+        items
+            .create(alternate)
+            .await
+            .expect("alternate playback item");
+        streams
+            .save_media_streams(alternate_id, version_streams("h264"))
+            .await
+            .expect("alternate media stream");
+    }
 
     let route = format!("/Items/{}/PlaybackInfo", fixture.item_id);
     let all_sources = body_json(fixture.get(&route, Some(&fixture.user_token)).await).await;
     let sources = all_sources["MediaSources"]
         .as_array()
         .expect("media sources");
-    assert_eq!(sources.len(), 2);
+    assert_eq!(sources.len(), 3);
     assert_eq!(sources[0]["Id"], fixture.item_id.simple().to_string());
     assert_eq!(sources[0]["Bitrate"], 5_500_000);
-    assert!(sources.iter().any(|source| {
-        source["Id"] == alternate_id.simple().to_string()
-            && source["Path"].as_str() == Some(alternate_path.as_str())
-            && source["MediaStreams"][0]["Codec"] == "hevc"
-            && source["Bitrate"] == 4_192_000
-    }));
+    let source_order = sources
+        .iter()
+        .map(|source| source["Id"].as_str().expect("media source id").to_owned())
+        .collect::<Vec<_>>();
+    let transcode_id = Uuid::parse_str(&source_order[1]).expect("first alternate id");
+    let direct_alternate_id = Uuid::parse_str(&source_order[2]).expect("second alternate id");
+    streams
+        .save_media_streams(transcode_id, version_streams("hevc"))
+        .await
+        .expect("incompatible alternate stream");
 
     let profiled = body_json(
         fixture
@@ -212,37 +199,56 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
     )
     .await;
     let profiled_sources = profiled["MediaSources"].as_array().unwrap();
+    assert_eq!(
+        profiled_sources
+            .iter()
+            .map(|source| source["Id"].as_str().expect("profiled source id"))
+            .collect::<Vec<_>>(),
+        source_order.iter().map(String::as_str).collect::<Vec<_>>(),
+        "profiling each version must not reorder media sources"
+    );
     let primary = profiled_sources
         .iter()
         .find(|source| source["Id"] == fixture.item_id.simple().to_string())
         .expect("profiled primary source");
     assert_eq!(primary["SupportsDirectPlay"], true, "{profiled}");
+    assert_eq!(primary["SupportsDirectStream"], false, "{profiled}");
+    assert_eq!(primary["SupportsTranscoding"], false, "{profiled}");
     assert!(primary.get("TranscodingUrl").is_none());
     let alternate = profiled_sources
         .iter()
-        .find(|source| source["Id"] == alternate_id.simple().to_string())
+        .find(|source| source["Id"] == transcode_id.simple().to_string())
         .expect("profiled alternate source");
     assert_eq!(alternate["SupportsDirectPlay"], false);
+    assert_eq!(alternate["SupportsDirectStream"], false);
     assert_eq!(alternate["SupportsTranscoding"], true);
     let alternate_url = alternate["TranscodingUrl"]
         .as_str()
         .expect("alternate HLS URL");
     assert!(alternate_url.contains("/master.m3u8"), "{alternate_url}");
     assert!(
-        alternate_url.contains(&format!("MediaSourceId={}", alternate_id.simple())),
+        alternate_url.contains(&format!("MediaSourceId={}", transcode_id.simple())),
         "{alternate_url}"
     );
     assert!(
         !alternate_url.contains("AudioStreamIndex=99"),
         "{alternate_url}"
     );
+    let direct_alternate = profiled_sources
+        .iter()
+        .find(|source| source["Id"] == direct_alternate_id.simple().to_string())
+        .expect("direct-play alternate source");
+    assert_eq!(direct_alternate["SupportsDirectPlay"], true);
+    assert_eq!(direct_alternate["SupportsDirectStream"], false);
+    assert_eq!(direct_alternate["SupportsTranscoding"], false);
+    assert!(direct_alternate.get("TranscodingUrl").is_none());
 
     let selected = body_json(
         fixture
             .post(
                 &format!(
                     "{route}?MediaSourceId={}",
-                    alternate_id.to_string().to_ascii_uppercase()
+                    transcode_id.to_string().to_ascii_uppercase()
                 ),
                 Some(&fixture.user_token),
                 Some(&json!({
@@ -256,9 +262,12 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
     assert_eq!(selected["MediaSources"].as_array().unwrap().len(), 1);
     assert_eq!(
         selected["MediaSources"][0]["Id"],
-        alternate_id.simple().to_string()
+        transcode_id.simple().to_string()
     );
-    assert_eq!(selected["MediaSources"][0]["Path"], alternate_path);
+    assert_eq!(
+        selected["MediaSources"][0]["Path"],
+        format!("/media/playback-info-alternate-{transcode_id}.mkv")
+    );
     let selected_url = selected["MediaSources"][0]["TranscodingUrl"]
         .as_str()
         .expect("selected alternate HLS URL");
@@ -267,10 +276,127 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         "{selected_url}"
     );
 
-    base_item::Entity::delete_by_id(alternate_id)
-        .exec(&fixture.database)
+    for alternate_id in alternate_ids {
+        base_item::Entity::delete_by_id(alternate_id)
+            .exec(&fixture.database)
+            .await
+            .expect("alternate cleanup");
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn playback_capabilities_require_an_implemented_method_and_user_policy() {
+    let fixture = Fixture::new().await;
+    let route = format!("/Items/{}/PlaybackInfo", fixture.item_id);
+
+    let direct = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&fixture.user_token),
+                Some(&json!({ "DeviceProfile": flexible_video_profile(true) })),
+            )
+            .await,
+    )
+    .await;
+    let direct = &direct["MediaSources"][0];
+    assert_eq!(direct["SupportsDirectPlay"], true);
+    assert_eq!(direct["SupportsDirectStream"], false);
+    assert_eq!(direct["SupportsTranscoding"], false);
+    assert!(direct.get("TranscodingUrl").is_none());
+
+    let incompatible = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&fixture.user_token),
+                Some(&json!({
+                    "DeviceProfile": {
+                        "Name": "Incompatible",
+                        "DirectPlayProfiles": [{
+                            "Container": "avi",
+                            "VideoCodec": "vp9",
+                            "AudioCodec": "mp3",
+                            "Type": "Video"
+                        }],
+                        "TranscodingProfiles": []
+                    }
+                })),
+            )
+            .await,
+    )
+    .await;
+    assert_no_playback_capabilities(&incompatible["MediaSources"][0]);
+
+    let unimplemented_http_transcode = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&fixture.user_token),
+                Some(&json!({
+                    "DeviceProfile": {
+                        "Name": "HTTP MP4 Transcode",
+                        "DirectPlayProfiles": [],
+                        "TranscodingProfiles": [{
+                            "Container": "mp4",
+                            "Type": "Video",
+                            "VideoCodec": "h264",
+                            "AudioCodec": "aac",
+                            "Protocol": "http",
+                            "Context": "Streaming"
+                        }]
+                    }
+                })),
+            )
+            .await,
+    )
+    .await;
+    assert_no_playback_capabilities(&unimplemented_http_transcode["MediaSources"][0]);
+
+    let transcoded = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&fixture.user_token),
+                Some(&json!({ "DeviceProfile": flexible_video_profile(false) })),
+            )
+            .await,
+    )
+    .await;
+    let transcoded = &transcoded["MediaSources"][0];
+    assert_eq!(transcoded["SupportsDirectPlay"], false);
+    assert_eq!(transcoded["SupportsDirectStream"], false);
+    assert_eq!(transcoded["SupportsTranscoding"], true);
+    assert!(
+        transcoded["TranscodingUrl"]
+            .as_str()
+            .is_some_and(|url| url.contains("/master.m3u8"))
+    );
+
+    let users = UserService::new(fixture.database.clone());
+    let stored_user = users.get(fixture.user_id).await.expect("playback user");
+    let mut policy: UserPolicy =
+        serde_json::from_value(stored_user.policy).expect("stored playback policy");
+    policy.enable_audio_playback_transcoding = false;
+    policy.enable_video_playback_transcoding = false;
+    policy.enable_playback_remuxing = false;
+    users
+        .update_policy(fixture.user_id, &policy)
         .await
-        .expect("alternate cleanup");
+        .expect("restricted playback policy");
+    let policy_blocked = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&fixture.user_token),
+                Some(&json!({ "DeviceProfile": flexible_video_profile(false) })),
+            )
+            .await,
+    )
+    .await;
+    assert_no_playback_capabilities(&policy_blocked["MediaSources"][0]);
+
     fixture.cleanup().await;
 }
 
@@ -724,9 +850,7 @@ fn assert_playback_info(playback: &Value, fixture: &Fixture) {
     );
     assert_eq!(source["Container"], "mkv");
     assert_eq!(source["RunTimeTicks"], 12_345_000_000_i64);
-    assert_eq!(source["SupportsDirectPlay"], true);
-    assert_eq!(source["SupportsDirectStream"], true);
-    assert_eq!(source["SupportsTranscoding"], true);
+    assert_no_playback_capabilities(source);
     assert_eq!(source["MediaStreams"][0]["Index"], 0);
     assert_eq!(source["MediaStreams"][0]["Type"], "Video");
     assert_eq!(source["MediaStreams"][0]["Codec"], "h264");
@@ -740,6 +864,13 @@ fn assert_playback_info(playback: &Value, fixture: &Fixture) {
         source["MediaStreams"][1]["DisplayTitle"],
         "English - AAC - 2 ch - Default"
     );
+}
+
+fn assert_no_playback_capabilities(source: &Value) {
+    assert_eq!(source["SupportsDirectPlay"], false);
+    assert_eq!(source["SupportsDirectStream"], false);
+    assert_eq!(source["SupportsTranscoding"], false);
+    assert!(source.get("TranscodingUrl").is_none());
 }
 
 fn flexible_video_profile(include_direct_play: bool) -> Value {
@@ -769,6 +900,27 @@ fn flexible_video_profile(include_direct_play: bool) -> Value {
             "segmentLength": "6"
         }]
     })
+}
+
+fn version_streams(video_codec: &str) -> Vec<MediaStream> {
+    vec![
+        MediaStream {
+            index: 0,
+            stream_type: MediaStreamType::Video,
+            codec: Some(video_codec.to_owned()),
+            bit_rate: Some(4_000_000),
+            ..MediaStream::default()
+        },
+        MediaStream {
+            index: 1,
+            stream_type: MediaStreamType::Audio,
+            codec: Some("aac".to_owned()),
+            channels: Some(2),
+            bit_rate: Some(192_000),
+            is_default: true,
+            ..MediaStream::default()
+        },
+    ]
 }
 
 fn assert_bitrate_headers(response: &axum::response::Response, expected_size: usize) {

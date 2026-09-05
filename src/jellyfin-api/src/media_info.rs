@@ -15,8 +15,8 @@ use axum::{
     http::{HeaderValue, Response, header},
 };
 use jellyfin_model::{
-    DeviceProfile, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo, PlayMethod,
-    PlaybackErrorCode, StreamBuilder,
+    DeviceProfile, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo,
+    MediaStreamProtocol, PlayMethod, PlaybackErrorCode, StreamBuilder,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -778,7 +778,6 @@ async fn playback_info(
         &play_session_id,
         remote_ip,
     );
-    sort_media_sources(&mut media_sources, max_streaming_bitrate, item_id);
     if let Some(source) = media_sources.first() {
         tracing::info!(
             %item_id,
@@ -888,25 +887,7 @@ async fn selected_playback_source_id(
         .map(|source| source.id))
 }
 
-fn sort_media_sources(
-    media_sources: &mut [MediaSourceInfo],
-    max_bitrate: Option<i32>,
-    preferred_item_id: Uuid,
-) {
-    let preferred_id =
-        (!preferred_item_id.is_nil()).then(|| preferred_item_id.simple().to_string());
-    media_sources.sort_by_key(|source| {
-        (
-            preferred_rank(source, preferred_id.as_deref()),
-            direct_file_rank(source),
-            direct_rank(source),
-            protocol_rank(source),
-            bitrate_rank(source, max_bitrate),
-        )
-    });
-}
-
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn apply_stream_builder(
     media_sources: &mut Vec<MediaSourceInfo>,
     authenticated_user: &jellyfin_data::entities::user::Model,
@@ -920,6 +901,9 @@ fn apply_stream_builder(
     remote_ip: std::net::IpAddr,
 ) {
     let Some(profile) = playback_options.device_profile.clone() else {
+        for source in media_sources {
+            clear_playback_capabilities(source);
+        }
         return;
     };
     let policy =
@@ -941,8 +925,8 @@ fn apply_stream_builder(
         .map(|value| value.replace('-', ""));
     let original_sources = std::mem::take(media_sources);
     let mut projected_sources = Vec::with_capacity(original_sources.len());
-    for source in original_sources {
-        let is_video = source.video_stream().is_some();
+    for mut source in original_sources {
+        let is_video = source.video_type.is_some() || source.video_stream().is_some();
         let source_is_selected = requested_source_id.as_deref().is_some_and(|requested| {
             source
                 .id
@@ -950,11 +934,22 @@ fn apply_stream_builder(
                 .is_some_and(|source_id| source_id.replace('-', "").eq_ignore_ascii_case(requested))
         });
         let selected_source_id = source_is_selected.then(|| source.id.clone()).flatten();
+        let can_transcode = playback_options.enable_transcoding
+            && policy_can_transcode(&policy, !is_video)
+            && source.path.as_deref().is_some_and(|path| !path.is_empty());
+        source.supports_direct_play &= playback_options.enable_direct_play
+            && source.path.as_deref().is_some_and(|path| !path.is_empty())
+            && (source.protocol == MediaProtocol::File
+                || (is_video && source.protocol == MediaProtocol::Http));
+        // Ordinary HTTP direct-stream/remux URLs are not implemented: the
+        // static route streams the original bytes regardless of its suffix.
+        source.supports_direct_stream = false;
+        source.supports_transcoding &= can_transcode;
         let mut options = MediaOptions {
-            enable_transcoding: playback_options.enable_transcoding
-                && policy_can_transcode(&policy, !is_video),
+            enable_transcoding: can_transcode,
             enable_direct_play: playback_options.enable_direct_play,
-            enable_direct_stream: playback_options.enable_direct_stream,
+            enable_direct_stream: playback_options.enable_direct_stream
+                && source.supports_direct_stream,
             enable_playback_remuxing: policy.enable_playback_remuxing,
             force_remote_source_transcoding: policy.force_remote_source_transcoding,
             allow_audio_stream_copy: playback_options.allow_audio_stream_copy,
@@ -978,12 +973,6 @@ fn apply_stream_builder(
             context: EncodingContext::Streaming,
             ..MediaOptions::default()
         };
-        if !options.force_direct_stream {
-            // Match MediaInfoHelper: ordinary HTTP direct-stream URLs are disabled
-            // because clients can otherwise receive source bytes under a remuxed
-            // extension (for example, MKV bytes from a `stream.mp4` URL).
-            options.enable_direct_stream = false;
-        }
         let selection = if is_video {
             builder.take_optimal_video_stream(&mut options)
         } else {
@@ -1001,6 +990,9 @@ fn apply_stream_builder(
                     .unwrap_or_default(),
                 "device profile did not produce a playable stream",
             );
+            for source in &mut options.media_sources {
+                clear_playback_capabilities(source);
+            }
             projected_sources.append(&mut options.media_sources);
             continue;
         };
@@ -1037,16 +1029,16 @@ fn apply_selected_stream_metadata(
     access_token: &str,
 ) {
     let play_method = stream.play_method;
-    let supports_transcoding = options.enable_transcoding
-        && (play_method == PlayMethod::DirectStream
-            || stream
-                .media_source
-                .as_ref()
-                .is_some_and(|source| source.transcoding_container.is_some())
-            || options.profile.transcoding_profiles.iter().any(|profile| {
-                profile.profile_type == stream.media_type && profile.context == options.context
-            }));
-    let transcoding = if play_method != PlayMethod::DirectPlay && supports_transcoding {
+    let supports_direct_play = play_method == PlayMethod::DirectPlay
+        && options.enable_direct_play
+        && stream
+            .media_source
+            .as_ref()
+            .is_some_and(|source| source.supports_direct_play);
+    let transcoding = if play_method == PlayMethod::Transcode
+        && options.enable_transcoding
+        && stream.sub_protocol == MediaStreamProtocol::Hls
+    {
         // Clients already know the externally reachable server URL. Returning
         // a relative path avoids leaking an internal bind address such as
         // `http://0.0.0.0:8096` when the server runs behind Docker or a proxy.
@@ -1056,10 +1048,9 @@ fn apply_selected_stream_metadata(
         None
     };
     if let Some(source) = stream.media_source.as_mut() {
-        source.supports_direct_play = play_method == PlayMethod::DirectPlay;
-        source.supports_direct_stream = play_method == PlayMethod::DirectPlay
-            || (options.enable_direct_stream && play_method == PlayMethod::DirectStream);
-        source.supports_transcoding = supports_transcoding;
+        clear_playback_capabilities(source);
+        source.supports_direct_play = supports_direct_play;
+        source.supports_transcoding = transcoding.is_some();
         source.default_audio_stream_index = stream.audio_stream_index;
         if let Some((url, container, sub_protocol)) = transcoding {
             source.transcoding_url = Some(url);
@@ -1069,6 +1060,15 @@ fn apply_selected_stream_metadata(
     }
 }
 
+fn clear_playback_capabilities(source: &mut MediaSourceInfo) {
+    source.supports_direct_play = false;
+    source.supports_direct_stream = false;
+    source.supports_transcoding = false;
+    source.transcoding_url = None;
+    source.transcoding_container = None;
+    source.transcoding_sub_protocol = MediaStreamProtocol::Http;
+}
+
 const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: bool) -> bool {
     if is_audio {
         policy.enable_audio_playback_transcoding
@@ -1076,39 +1076,6 @@ const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: boo
         policy.enable_audio_playback_transcoding
             || policy.enable_video_playback_transcoding
             || policy.enable_playback_remuxing
-    }
-}
-
-fn preferred_rank(source: &MediaSourceInfo, preferred_id: Option<&str>) -> u8 {
-    let Some(preferred_id) = preferred_id else {
-        return 1;
-    };
-    u8::from(!source.id.as_deref().is_some_and(|source_id| {
-        source_id
-            .chars()
-            .filter(|character| *character != '-')
-            .collect::<String>()
-            .eq_ignore_ascii_case(preferred_id)
-    }))
-}
-
-fn direct_file_rank(source: &MediaSourceInfo) -> u8 {
-    u8::from(!(source.supports_direct_play && source.protocol == MediaProtocol::File))
-}
-
-fn direct_rank(source: &MediaSourceInfo) -> u8 {
-    u8::from(!(source.supports_direct_play || source.supports_direct_stream))
-}
-
-fn protocol_rank(source: &MediaSourceInfo) -> u8 {
-    u8::from(source.protocol != MediaProtocol::File)
-}
-
-fn bitrate_rank(source: &MediaSourceInfo, max_bitrate: Option<i32>) -> u8 {
-    match (max_bitrate, source.bitrate) {
-        (Some(max_bitrate), Some(bitrate)) if bitrate <= max_bitrate => 0,
-        (Some(_), Some(_)) => 2,
-        _ => 1,
     }
 }
 
@@ -1186,50 +1153,47 @@ mod tests {
         MediaStreamProtocol, MediaStreamType, TranscodingProfile,
     };
 
-    use super::{
-        MediaProtocol, MediaSourceInfo, PlaybackOptions, apply_stream_builder, sort_media_sources,
-    };
+    use super::{MediaProtocol, MediaSourceInfo, PlaybackOptions, apply_stream_builder};
     use uuid::Uuid;
 
-    #[test]
-    fn sort_media_sources_keeps_preferred_item_first_even_over_bitrate_limit() {
-        let preferred_item_id = Uuid::new_v4();
-        let preferred_source = source(preferred_item_id, 80_000_000, false);
-        let sibling_source = source(Uuid::new_v4(), 8_000_000, true);
-        let mut sources = vec![sibling_source, preferred_source];
+    #[tokio::test]
+    async fn playback_info_without_profile_does_not_advertise_unselected_methods() {
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        let mut sources = vec![
+            source(first_id, 8_000_000, true),
+            source(second_id, 4_000_000, true),
+        ];
 
-        sort_media_sources(&mut sources, Some(20_000_000), preferred_item_id);
+        apply_stream_builder(
+            &mut sources,
+            &test_user(),
+            &test_state(),
+            first_id,
+            &PlaybackOptions::default(),
+            &mut None,
+            "device-id",
+            "access-token",
+            "play-session-id",
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        );
 
         assert_eq!(
-            sources[0].id.as_deref(),
-            Some(preferred_item_id.simple().to_string().as_str())
+            sources
+                .iter()
+                .map(|source| source.id.clone())
+                .collect::<Vec<_>>(),
+            [
+                Some(first_id.simple().to_string()),
+                Some(second_id.simple().to_string())
+            ]
         );
-    }
-
-    #[test]
-    fn sort_media_sources_without_preferred_item_orders_by_playability() {
-        let direct_play = source(Uuid::new_v4(), 8_000_000, true);
-        let mut transcode_only = source(Uuid::new_v4(), 8_000_000, false);
-        transcode_only.supports_direct_stream = false;
-        let direct_play_id = direct_play.id.clone();
-        let mut sources = vec![transcode_only, direct_play];
-
-        sort_media_sources(&mut sources, Some(20_000_000), Uuid::nil());
-
-        assert_eq!(sources[0].id, direct_play_id);
-    }
-
-    #[test]
-    fn sort_media_sources_missing_preferred_id_keeps_playability_order() {
-        let direct_play = source(Uuid::new_v4(), 8_000_000, true);
-        let mut transcode_only = source(Uuid::new_v4(), 8_000_000, false);
-        transcode_only.supports_direct_stream = false;
-        let direct_play_id = direct_play.id.clone();
-        let mut sources = vec![transcode_only, direct_play];
-
-        sort_media_sources(&mut sources, Some(20_000_000), Uuid::new_v4());
-
-        assert_eq!(sources[0].id, direct_play_id);
+        assert!(sources.iter().all(|source| {
+            !source.supports_direct_play
+                && !source.supports_direct_stream
+                && !source.supports_transcoding
+                && source.transcoding_url.is_none()
+        }));
     }
 
     #[tokio::test]
@@ -1238,6 +1202,7 @@ mod tests {
         let source = MediaSourceInfo {
             id: Some(item_id.simple().to_string()),
             protocol: MediaProtocol::File,
+            path: Some("/media/movie.mkv".to_owned()),
             container: Some("mkv".to_owned()),
             run_time_ticks: Some(600_000_000),
             media_streams: vec![
@@ -1319,6 +1284,7 @@ mod tests {
         let source = MediaSourceInfo {
             id: Some(item_id.simple().to_string()),
             protocol: MediaProtocol::File,
+            path: Some("/media/movie.mkv".to_owned()),
             container: Some("mkv".to_owned()),
             run_time_ticks: Some(600_000_000),
             media_streams: vec![
@@ -1400,6 +1366,7 @@ mod tests {
         MediaSourceInfo {
             id: Some(item_id.simple().to_string()),
             protocol: MediaProtocol::File,
+            path: Some(format!("/media/{item_id}.mkv")),
             bitrate: Some(bitrate),
             supports_direct_play,
             supports_direct_stream: true,
