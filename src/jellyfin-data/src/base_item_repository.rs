@@ -1405,12 +1405,13 @@ impl BaseItemRepository {
     /// Returns a database error when the aggregate query fails.
     pub async fn item_counts(
         &self,
-        user_id: Option<Uuid>,
-        is_favorite: Option<bool>,
+        query: &BaseItemQuery,
     ) -> Result<BaseItemCounts, BaseItemError> {
+        let (cte, values) = filtered_query_cte(query);
         let statement = Statement::from_sql_and_values(
             DbBackend::Postgres,
-            r"
+            format!(
+                r"{cte}
             SELECT
                 COUNT(*) FILTER (WHERE item.item_type = 'Movie')::bigint AS movie_count,
                 COUNT(*) FILTER (WHERE item.item_type = 'Series')::bigint AS series_count,
@@ -1424,34 +1425,10 @@ impl BaseItemRepository {
                 COUNT(*) FILTER (WHERE item.item_type = 'BoxSet')::bigint AS box_set_count,
                 COUNT(*) FILTER (WHERE item.item_type = 'Book')::bigint AS book_count,
                 COUNT(*)::bigint AS item_count
-            FROM jellyfin.base_items AS item
-            WHERE item.item_type <> 'PLACEHOLDER'
-              AND item.is_virtual_item = false
-              AND (
-                  $1::boolean IS NULL
-                  OR (
-                      $2::uuid IS NOT NULL
-                      AND (
-                          ($1 = true AND EXISTS (
-                              SELECT 1
-                              FROM jellyfin.user_data AS data
-                              WHERE data.item_id = item.id
-                                AND data.user_id = $2
-                                AND data.is_favorite
-                          ))
-                          OR ($1 = false AND NOT EXISTS (
-                              SELECT 1
-                              FROM jellyfin.user_data AS data
-                              WHERE data.item_id = item.id
-                                AND data.user_id = $2
-                                AND data.is_favorite
-                          ))
-                      )
-                  )
-                  OR ($2::uuid IS NULL AND $1 = false)
-              )
-            ",
-            vec![is_favorite.into(), user_id.into()],
+            FROM filtered AS item
+            "
+            ),
+            values,
         );
         base_item::Model::find_by_statement(statement)
             .into_model::<BaseItemCounts>()

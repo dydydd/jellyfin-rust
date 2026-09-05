@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
-    BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ScoredBaseItem,
+    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ScoredBaseItem,
     ScoredBaseItemPage, ServerConfigurationRepository,
     entities::{base_item, user},
 };
@@ -180,6 +180,27 @@ impl UserLibraryService {
         self.apply_user_policy(&mut query, target_user_id).await?;
         query.user_id = Some(target_user_id);
         Ok(self.items.child_counts_by_parent(&query).await?)
+    }
+
+    /// Counts non-virtual items visible to one target user using the normal library policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-policy, or persistence errors.
+    pub async fn item_counts(
+        &self,
+        target_user_id: Uuid,
+        is_favorite: Option<bool>,
+    ) -> Result<BaseItemCounts, UserLibraryError> {
+        let mut query = BaseItemQuery {
+            recursive: true,
+            is_virtual_item: Some(false),
+            is_favorite,
+            user_id: Some(target_user_id),
+            ..BaseItemQuery::default()
+        };
+        self.apply_user_policy(&mut query, target_user_id).await?;
+        Ok(self.items.item_counts(&query).await?)
     }
 
     /// Searches a target user's library with official score ordering.

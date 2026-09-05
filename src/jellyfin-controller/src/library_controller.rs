@@ -1,5 +1,5 @@
 use jellyfin_data::{
-    BaseItemCounts, BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ItemValueError,
+    BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ItemValueError,
     ItemValueRepository, PlaylistRepository, PlaylistStoreError,
     entities::{base_item, item_value, user},
 };
@@ -463,19 +463,6 @@ impl LibraryControllerService {
             limit,
         )
         .await
-    }
-
-    /// Counts non-virtual library items, optionally scoped to a user's favorite state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a persistence error when the aggregate query fails.
-    pub async fn item_counts(
-        &self,
-        user_id: Option<Uuid>,
-        is_favorite: Option<bool>,
-    ) -> Result<BaseItemCounts, LibraryControllerError> {
-        Ok(self.items.item_counts(user_id, is_favorite).await?)
     }
 
     /// Atomically deletes complete item subtrees and their source files.

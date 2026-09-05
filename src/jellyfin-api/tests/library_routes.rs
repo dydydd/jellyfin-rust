@@ -523,6 +523,37 @@ async fn assert_relationships(fixture: &Fixture) {
 }
 
 async fn assert_item_counts(fixture: &Fixture) {
+    let items = fixture.items();
+    let mut movie_alternate = create_item(
+        &items,
+        "Movie",
+        "Count Movie Alternate",
+        fixture.parent_id,
+        None,
+    )
+    .await;
+    movie_alternate.primary_version_id = Some(fixture.child_id);
+    let movie_alternate = items
+        .update(movie_alternate)
+        .await
+        .expect("movie alternate grouping");
+    let mut episode_alternate = create_item(
+        &items,
+        "Episode",
+        "Count Episode Alternate",
+        fixture.child_id,
+        None,
+    )
+    .await;
+    episode_alternate.primary_version_id = Some(fixture.grandchild_id);
+    let episode_alternate = items
+        .update(episode_alternate)
+        .await
+        .expect("episode alternate grouping");
+    let user_data = UserDataRepository::new(fixture.database.clone());
+    favorite(&user_data, fixture.user_id, movie_alternate.id).await;
+    favorite(&user_data, fixture.user_id, episode_alternate.id).await;
+
     assert_eq!(
         fixture.request("GET", "/Items/Counts", None).await.status(),
         StatusCode::UNAUTHORIZED
@@ -540,7 +571,7 @@ async fn assert_item_counts(fixture: &Fixture) {
     );
 
     let counts = fixture
-        .json("GET", "/Items/Counts?isFavorite=true", &fixture.user_token)
+        .json("GET", "/Items/Counts?isfavorite=true", &fixture.user_token)
         .await;
     assert_eq!(
         counts,
@@ -563,11 +594,16 @@ async fn assert_item_counts(fixture: &Fixture) {
     let administrator_counts = fixture
         .json(
             "GET",
-            &format!("/Items/Counts?userId={}&isFavorite=true", fixture.user_id),
+            &format!("/Items/Counts?userid={}&isfavorite=true", fixture.user_id),
             &fixture.admin_token,
         )
         .await;
     assert_eq!(administrator_counts, counts);
+
+    items
+        .delete_many(&[movie_alternate.id, episode_alternate.id])
+        .await
+        .expect("alternate count cleanup");
 }
 
 #[tokio::test]

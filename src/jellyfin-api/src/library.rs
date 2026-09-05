@@ -11,7 +11,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use jellyfin_controller::RelatedItemKind;
-use jellyfin_data::{BaseItemCounts, BaseItemPage};
+use jellyfin_data::{BaseItemCounts, BaseItemPage, BaseItemQuery};
 use jellyfin_model::{
     CollectionType, ImageOption, ImageType, ItemCounts, LibraryOptionsResultDto,
     LibraryTypeOptionsDto,
@@ -42,9 +42,14 @@ pub(crate) struct InstantMixByIdQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ItemCountsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "isFavorite", alias = "IsFavorite")]
+    #[serde(
+        default,
+        rename = "isFavorite",
+        alias = "IsFavorite",
+        alias = "isfavorite"
+    )]
     is_favorite: Option<bool>,
 }
 
@@ -321,18 +326,23 @@ pub(crate) async fn item_counts(
 ) -> Result<Json<ItemCounts>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, None).await?;
     let target_user_id = identity.target_user_id(query.user_id)?;
-    let user_id = if target_user_id.is_nil() {
-        None
-    } else {
-        state.users.get(target_user_id).await?;
-        Some(target_user_id)
-    };
-    Ok(Json(counts_to_dto(
+    let counts = if target_user_id.is_nil() {
         state
-            .library_controller
-            .item_counts(user_id, query.is_favorite)
-            .await?,
-    )))
+            .base_items
+            .item_counts(&BaseItemQuery {
+                recursive: true,
+                is_virtual_item: Some(false),
+                is_favorite: query.is_favorite,
+                ..BaseItemQuery::default()
+            })
+            .await?
+    } else {
+        state
+            .user_library
+            .item_counts(target_user_id, query.is_favorite)
+            .await?
+    };
+    Ok(Json(counts_to_dto(counts)))
 }
 
 pub(crate) async fn media_folders(
