@@ -227,6 +227,12 @@ struct PreloadedMediaState {
     images: Vec<BaseItemImage>,
 }
 
+struct MediaInfoRepairCandidate {
+    item: base_item::Model,
+    path: PathBuf,
+    media_kind: MediaKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MovieVersionCandidate {
     id: Uuid,
@@ -673,6 +679,99 @@ impl LibraryScanService {
         self.strm_probes
             .finish(key, &flight, tracked, false, Instant::now());
         Ok(true)
+    }
+
+    /// Repairs missing or placeholder media information for one local file item.
+    ///
+    /// Official metadata refreshes run the media-info probe provider for local
+    /// audio and video. Keep this focused path bounded by the same permit pool
+    /// as library scans, and leave remote and `.strm` sources to lazy playback
+    /// probing.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence or local filesystem errors. Probe failures are
+    /// best-effort and retain a lightweight stream placeholder.
+    pub async fn repair_item_media_info(&self, item_id: Uuid) -> Result<bool, LibraryScanError> {
+        let mut items = self.items.media_source_versions(item_id).await?;
+        if items.is_empty() {
+            let Some(item) = self.items.get(item_id).await? else {
+                return Ok(false);
+            };
+            items.push(item);
+        }
+        let mut candidates = Vec::with_capacity(items.len());
+        for item in items {
+            if let Some(candidate) = media_info_repair_candidate(item).await? {
+                candidates.push(candidate);
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        let _permit = self.media_item_limiter.acquire().await;
+        let item_ids = candidates
+            .iter()
+            .map(|candidate| candidate.item.id)
+            .collect::<Vec<_>>();
+        let mut streams_by_item = self.streams.query_for_items(&item_ids).await?;
+        let mut images_by_item = HashMap::<Uuid, Vec<BaseItemImage>>::new();
+        for image in self.images.list_many(&item_ids).await? {
+            images_by_item.entry(image.item_id).or_default().push(image);
+        }
+        let mut snapshots = HashMap::<PathBuf, ScanDirectorySnapshot>::new();
+        let mut changed = false;
+        for mut candidate in candidates {
+            let source_path = candidate.path.to_string_lossy().into_owned();
+            let existing = streams_by_item
+                .remove(&candidate.item.id)
+                .unwrap_or_default();
+            if !streams_need_probe(
+                &existing,
+                &default_stream(&source_path, candidate.media_kind),
+            ) {
+                continue;
+            }
+            let parent = candidate
+                .path
+                .parent()
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            if !snapshots.contains_key(&parent) {
+                snapshots.insert(
+                    parent.clone(),
+                    directory_snapshot_for_path(&candidate.path).await?,
+                );
+            }
+            let preloaded = PreloadedMediaState {
+                streams: existing.clone(),
+                images: images_by_item
+                    .remove(&candidate.item.id)
+                    .unwrap_or_default(),
+            };
+            let Some(snapshot) = snapshots.get(&parent) else {
+                continue;
+            };
+            let media_info = self
+                .ensure_media_streams(
+                    candidate.item.id,
+                    &source_path,
+                    &source_path,
+                    candidate.media_kind,
+                    true,
+                    snapshot,
+                    &preloaded,
+                )
+                .await?;
+            changed |= existing.is_empty();
+            if let Some(mut media_info) = media_info {
+                changed = true;
+                if apply_probed_item_metadata(&mut candidate.item, &source_path, &mut media_info) {
+                    self.items.update(candidate.item).await?;
+                }
+            }
+        }
+        Ok(changed)
     }
 
     async fn run_scan_all(
@@ -2694,6 +2793,54 @@ impl LibraryScanService {
             start_index,
         ))
     }
+}
+
+async fn directory_snapshot_for_path(
+    path: &Path,
+) -> Result<ScanDirectorySnapshot, LibraryScanError> {
+    let Some(parent) = path.parent() else {
+        return Ok(ScanDirectorySnapshot::default());
+    };
+    let mut entries = match fs::read_dir(parent).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ScanDirectorySnapshot::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut snapshot = ScanDirectorySnapshot::default();
+    while let Some(entry) = entries.next_entry().await? {
+        let metadata = entry.metadata().await?;
+        snapshot.insert(&entry.path(), &metadata);
+    }
+    Ok(snapshot)
+}
+
+async fn media_info_repair_candidate(
+    item: base_item::Model,
+) -> Result<Option<MediaInfoRepairCandidate>, LibraryScanError> {
+    if item.is_folder || item.is_virtual_item {
+        return Ok(None);
+    }
+    let Some(path) = item.path.as_deref().map(PathBuf::from) else {
+        return Ok(None);
+    };
+    if is_strm_path(&path) {
+        return Ok(None);
+    }
+    let Some(media_kind) = media_kind(&path).filter(|kind| kind.needs_probe()) else {
+        return Ok(None);
+    };
+    let metadata = match fs::metadata(&path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(metadata.is_file().then_some(MediaInfoRepairCandidate {
+        item,
+        path,
+        media_kind,
+    }))
 }
 
 fn tv_hierarchy_candidate(item: base_item::Model) -> TvHierarchyCandidate {

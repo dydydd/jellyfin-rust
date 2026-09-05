@@ -77,6 +77,13 @@ pub(crate) async fn refresh(
         || query.image_refresh_mode != MetadataRefreshMode::None
     {
         crate::websocket::broadcast_refresh_progress(&state, item_id, 40.0).await;
+        if matches!(
+            query.metadata_refresh_mode,
+            MetadataRefreshMode::Default | MetadataRefreshMode::FullRefresh
+        ) && let Err(error) = state.library_scan.repair_item_media_info(item_id).await
+        {
+            tracing::warn!(%item_id, error = %error, "item media-info repair failed");
+        }
         let tmdb_api_key = Arc::clone(&*state.tmdb_api_key.read().await);
         let omdb_api_key = Arc::clone(&*state.omdb_api_key.read().await);
         if let Err(error) = state

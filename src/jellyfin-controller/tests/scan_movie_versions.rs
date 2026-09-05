@@ -1,5 +1,5 @@
 use jellyfin_controller::{LibraryScanService, VirtualFolderService};
-use jellyfin_data::{BaseItemRepository, DatabaseConfig};
+use jellyfin_data::{BaseItemRepository, DatabaseConfig, MediaStreamQuery, MediaStreamRepository};
 use sea_orm::ConnectionTrait;
 use uuid::Uuid;
 
@@ -105,7 +105,29 @@ async fn exercise_scan(database_name: &str) {
         .media_source_versions(primary.id)
         .await
         .expect("versions before repeat scan");
+    let alternate = versions
+        .iter()
+        .find(|item| item.primary_version_id == Some(primary.id))
+        .expect("alternate movie version");
+    let streams = MediaStreamRepository::new(database.clone());
+    streams
+        .replace(alternate.id, &[])
+        .await
+        .expect("remove alternate streams to model legacy data");
     scan.scan_all().await.expect("repeat movie library scan");
+    assert_eq!(
+        streams
+            .query(MediaStreamQuery {
+                item_id: alternate.id,
+                stream_index: None,
+                stream_type: None,
+            })
+            .await
+            .expect("repaired alternate streams")
+            .len(),
+        1,
+        "a bounded repeat scan must repair zero-stream alternate versions"
+    );
     let after_repeat = repository
         .media_source_versions(primary.id)
         .await

@@ -75,6 +75,9 @@
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.
+- Explicit metadata refresh must repair missing or placeholder stream rows for the selected local
+  file through the bounded media-probe pool, including alternate versions. Keep remote and `.strm`
+  sources on the lazy playback probe path instead of opening upstream media during library browsing.
 - Project each source's persisted, probed container before considering its path extension. When a
   persisted container lists alternatives, select the path-matching value or the first value, and
   strip URL query/fragment components before any extension fallback.

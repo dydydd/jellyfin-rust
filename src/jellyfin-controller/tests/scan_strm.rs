@@ -104,6 +104,24 @@ async fn exercise_scan(database_name: &str) {
     assert_eq!(streams.len(), 1);
     assert_eq!(streams[0].stream_index, 0);
     let placeholder_stream = streams[0].clone();
+    assert!(
+        !scan
+            .repair_item_media_info(movie.id)
+            .await
+            .expect("STRM metadata refresh repair")
+    );
+    assert_eq!(
+        stream_repository
+            .query(MediaStreamQuery {
+                item_id: movie.id,
+                stream_index: None,
+                stream_type: None,
+            })
+            .await
+            .expect("streams after STRM metadata refresh"),
+        vec![placeholder_stream.clone()],
+        "ordinary metadata refresh must leave remote STRM probing to playback"
+    );
 
     assert!(
         scan.hydrate_strm_media_streams(movie.id)

@@ -6,10 +6,11 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
-    NewTrickplayInfo, TrickplayInfoRepository,
+    ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, MediaStreamQuery,
+    MediaStreamRepository, NewBaseItem, NewDevice, NewTrickplayInfo, TrickplayInfoRepository,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection};
+use std::{os::unix::fs::PermissionsExt, path::Path};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -155,6 +156,33 @@ async fn exercise_item_refresh_route(database_name: &str) {
             .status(),
         StatusCode::NO_CONTENT
     );
+    let streams = MediaStreamRepository::new(fixture.database.clone())
+        .query(MediaStreamQuery {
+            item_id: fixture.item_id,
+            stream_index: None,
+            stream_type: None,
+        })
+        .await
+        .expect("refreshed media streams");
+    assert_eq!(streams.len(), 3);
+    assert_eq!(streams[0].codec.as_deref(), Some("h264"));
+    assert_eq!(streams[1].codec.as_deref(), Some("eac3"));
+    let alternate_streams = MediaStreamRepository::new(fixture.database.clone())
+        .query(MediaStreamQuery {
+            item_id: fixture.alternate_id,
+            stream_index: None,
+            stream_type: None,
+        })
+        .await
+        .expect("refreshed alternate media streams");
+    assert_eq!(alternate_streams.len(), 3);
+    assert_eq!(alternate_streams[0].codec.as_deref(), Some("h264"));
+    let refreshed_item = BaseItemRepository::new(fixture.database.clone())
+        .get(fixture.item_id)
+        .await
+        .expect("refreshed item lookup")
+        .expect("refreshed item");
+    assert_eq!(refreshed_item.data.as_ref().unwrap()["Bitrate"], 69_432);
     assert!(
         trickplay
             .get(fixture.item_id, trickplay_info.width)
@@ -218,6 +246,7 @@ struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
     item_id: Uuid,
+    alternate_id: Uuid,
     admin_token: String,
     user_token: String,
     api_key: String,
@@ -256,18 +285,51 @@ impl Fixture {
             .await
             .expect("API key creation")
             .access_token;
-        let item = BaseItemRepository::new(database.clone())
-            .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
-            .await
-            .expect("item creation");
         let storage_root = std::env::temp_dir().join(format!("jellyfin-item-refresh-{suffix}"));
         let program_data = storage_root.join("programdata");
+        std::fs::create_dir_all(&storage_root).expect("refresh fixture directory");
+        let media_path = storage_root.join("Refresh Movie.mkv");
+        let alternate_path = storage_root.join("Refresh Movie - 1080p.mkv");
+        std::fs::write(&media_path, b"not a real movie").expect("refresh media fixture");
+        std::fs::write(&alternate_path, b"not a real movie")
+            .expect("alternate refresh media fixture");
+        let probe_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../jellyfin-media-encoding/tests/fixtures/probing/video_metadata.json");
+        let probe_script = storage_root.join("fake-ffprobe");
+        std::fs::write(
+            &probe_script,
+            format!("#!/bin/sh\nexec /bin/cat '{}'\n", probe_fixture.display()),
+        )
+        .expect("fake ffprobe script");
+        let mut permissions = std::fs::metadata(&probe_script)
+            .expect("fake ffprobe metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&probe_script, permissions).expect("fake ffprobe executable");
+        let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        item.path = Some(media_path.to_string_lossy().into_owned());
+        item.media_type = Some("Video".to_owned());
+        item.data = Some(serde_json::json!({ "Container": "mkv" }));
+        let item = BaseItemRepository::new(database.clone())
+            .create(item)
+            .await
+            .expect("item creation");
+        let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        alternate.path = Some(alternate_path.to_string_lossy().into_owned());
+        alternate.media_type = Some("Video".to_owned());
+        alternate.primary_version_id = Some(item.id);
+        alternate.data = Some(serde_json::json!({ "Container": "mkv" }));
+        let alternate = BaseItemRepository::new(database.clone())
+            .create(alternate)
+            .await
+            .expect("alternate item creation");
         let app = jellyfin_api::router(
             AppState::new(
                 database.clone(),
                 "Item Refresh Test Server".to_owned(),
                 "http://127.0.0.1:8096".to_owned(),
             )
+            .with_ffprobe_path(&probe_script)
             .with_storage_paths(
                 &program_data,
                 storage_root.join("web"),
@@ -281,6 +343,7 @@ impl Fixture {
             database,
             app,
             item_id: item.id,
+            alternate_id: alternate.id,
             admin_token,
             user_token,
             api_key,
