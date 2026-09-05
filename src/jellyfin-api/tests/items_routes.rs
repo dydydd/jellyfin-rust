@@ -296,6 +296,11 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     media.parent_id = Some(root.id);
     media.media_type = Some("Video".to_owned());
     media.path = Some(path.clone());
+    media.data = Some(serde_json::json!({
+        "IsoType": "dvd",
+        "Video3DFormat": "mvc",
+        "Timestamp": 1
+    }));
     let media = items.create(media).await.expect("media item");
     let alternate_path = format!("/media/page-{}-2160p.mkv", fixture.suffix);
     let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
@@ -308,7 +313,10 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     alternate.data = Some(serde_json::json!({
         "Bitrate": 25_000_000,
         "Container": "mpegts",
-        "Size": 987_654_321
+        "Size": 987_654_321,
+        "IsoType": 1,
+        "Video3DFormat": "3",
+        "Timestamp": "valid"
     }));
     let alternate = items.create(alternate).await.expect("alternate media item");
     MediaStreamService::new(fixture.database.clone())
@@ -401,6 +409,15 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0]["Id"], media.id.simple().to_string());
     assert_eq!(sources[1]["Id"], alternate.id.simple().to_string());
+    assert_eq!(item["IsoType"], "Dvd");
+    assert_eq!(item["Video3DFormat"], "MVC");
+    assert!(item.get("Timestamp").is_none());
+    assert_eq!(sources[0]["IsoType"], "Dvd");
+    assert_eq!(sources[0]["Video3DFormat"], "MVC");
+    assert_eq!(sources[0]["Timestamp"], "Zero");
+    assert_eq!(sources[1]["IsoType"], "BluRay");
+    assert_eq!(sources[1]["Video3DFormat"], "HalfTopAndBottom");
+    assert_eq!(sources[1]["Timestamp"], "Valid");
     assert_eq!(sources[1]["Bitrate"], 25_000_000);
     assert_eq!(sources[1]["Container"], "mpegts");
     assert_eq!(sources[1]["Size"], 987_654_321);

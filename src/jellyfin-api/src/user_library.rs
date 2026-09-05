@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum::{
     Json,
@@ -18,9 +21,9 @@ use jellyfin_data::{
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
-    MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
-    MediaUrl, NameIdPair, PersonKind, SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
-    VideoType,
+    IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream,
+    MediaStreamType, MediaUrl, NameIdPair, PersonKind, SubtitlePlaybackMode,
+    TransportStreamTimestamp, UserConfiguration, UserItemDataDto, Video3DFormat, VideoType,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use md5::{Digest, Md5};
@@ -195,6 +198,8 @@ pub struct BaseItemDto {
     pub(crate) media_source_size: Option<i64>,
     #[serde(skip)]
     pub(crate) media_source_etag: Option<String>,
+    #[serde(skip)]
+    pub(crate) media_source_timestamp: Option<TransportStreamTimestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,7 +308,9 @@ pub struct BaseItemDto {
     pub has_subtitles: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "Video3DFormat")]
-    pub video_3d_format: Option<String>,
+    pub video_3d_format: Option<Video3DFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iso_type: Option<IsoType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "LockData")]
     pub is_locked: Option<bool>,
@@ -862,6 +869,21 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
     let media_source_container = metadata_string(item.data.as_ref(), &["Container", "container"]);
     let media_source_size = metadata_i64(item.data.as_ref(), &["Size", "size"]);
     let media_source_etag = media_source_etag(item.date_modified);
+    let media_source_timestamp = metadata_enum(
+        item.data.as_ref(),
+        &["Timestamp", "timestamp"],
+        TRANSPORT_STREAM_TIMESTAMPS,
+    );
+    let video_3d_format = metadata_enum(
+        item.data.as_ref(),
+        &["Video3DFormat", "video3DFormat", "video_3d_format"],
+        VIDEO_3D_FORMATS,
+    );
+    let iso_type = metadata_enum(
+        item.data.as_ref(),
+        &["IsoType", "isoType", "iso_type"],
+        ISO_TYPES,
+    );
     let has_lyrics = item
         .data
         .as_ref()
@@ -882,6 +904,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_source_container,
         media_source_size,
         media_source_etag,
+        media_source_timestamp,
         overview: item.overview,
         media_type: item
             .media_type
@@ -968,8 +991,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
         has_subtitles: metadata_bool(item.data.as_ref(), &["HasSubtitles", "has_subtitles"]),
-        video_3d_format: metadata_string(item.data.as_ref(), &["Video3DFormat", "video_3d_format"])
-            .and_then(|value| canonical_enum(&value, VIDEO_3D_FORMATS)),
+        video_3d_format,
+        iso_type,
         is_locked: metadata_bool(item.data.as_ref(), &["IsLocked", "is_locked"]),
         index_number_end: metadata_i32(item.data.as_ref(), &["IndexNumberEnd", "index_number_end"]),
         airs_after_season_number: metadata_i32(
@@ -1117,6 +1140,10 @@ async fn attach_versioned_media_sources(
         .media_attachments
         .get_media_attachments_for_items(&source_ids)
         .await?;
+    let linked_alternate_version_ids = state
+        .base_items
+        .linked_alternate_version_ids(&source_ids)
+        .await?;
     project_item_dto_with_versioned_sources(
         dto,
         source_items,
@@ -1126,6 +1153,7 @@ async fn attach_versioned_media_sources(
         &mut media_attachments,
         defaults,
         remembered_user_data,
+        &linked_alternate_version_ids,
     )
 }
 
@@ -1138,6 +1166,7 @@ pub(crate) fn project_item_dto_with_versioned_sources(
     media_attachments: &mut HashMap<Uuid, Vec<MediaAttachment>>,
     defaults: Option<&MediaStreamDefaults>,
     remembered_user_data: Option<&user_data::Model>,
+    linked_alternate_version_ids: &HashSet<Uuid>,
 ) -> Result<(), ApiError> {
     let requested_id = Uuid::parse_str(&dto.id).map_err(|_| ApiError::Internal)?;
     if let Some(index) = source_items.iter().position(|item| item.id == requested_id) {
@@ -1170,7 +1199,7 @@ pub(crate) fn project_item_dto_with_versioned_sources(
             // ALLOW: the official DTO exposes the selected source streams both here and nested.
             dto.media_streams = Some(streams.clone());
         }
-        if let Some(source) = media_source_from_dto(
+        if let Some(mut source) = media_source_from_dto(
             &source_dto,
             streams,
             media_attachments.remove(&source_id).unwrap_or_default(),
@@ -1179,6 +1208,9 @@ pub(crate) fn project_item_dto_with_versioned_sources(
             has_local_alternates,
             common_prefix.as_deref(),
         ) {
+            if linked_alternate_version_ids.contains(&source_id) {
+                source.source_type = MediaSourceType::Grouping;
+            }
             sources.push(source);
         }
     }
@@ -1511,6 +1543,9 @@ fn media_source_from_dto(
         is_remote: protocol != MediaProtocol::File,
         run_time_ticks: dto.run_time_ticks,
         video_type: is_video_item(dto).then_some(VideoType::VideoFile),
+        iso_type: dto.iso_type,
+        video_3d_format: dto.video_3d_format,
+        timestamp: dto.media_source_timestamp,
         media_streams,
         media_attachments,
         default_audio_stream_index,
@@ -2300,13 +2335,47 @@ const AIR_DAYS: &[&str] = &[
     "Friday",
     "Saturday",
 ];
-const VIDEO_3D_FORMATS: &[&str] = &[
-    "HalfSideBySide",
-    "FullSideBySide",
-    "FullTopAndBottom",
-    "HalfTopAndBottom",
-    "MVC",
+const ISO_TYPES: &[(&str, IsoType)] = &[("Dvd", IsoType::Dvd), ("BluRay", IsoType::BluRay)];
+const VIDEO_3D_FORMATS: &[(&str, Video3DFormat)] = &[
+    ("HalfSideBySide", Video3DFormat::HalfSideBySide),
+    ("FullSideBySide", Video3DFormat::FullSideBySide),
+    ("FullTopAndBottom", Video3DFormat::FullTopAndBottom),
+    ("HalfTopAndBottom", Video3DFormat::HalfTopAndBottom),
+    ("MVC", Video3DFormat::MVC),
 ];
+const TRANSPORT_STREAM_TIMESTAMPS: &[(&str, TransportStreamTimestamp)] = &[
+    ("None", TransportStreamTimestamp::None),
+    ("Zero", TransportStreamTimestamp::Zero),
+    ("Valid", TransportStreamTimestamp::Valid),
+];
+
+fn metadata_enum<T: Copy>(
+    data: Option<&Value>,
+    keys: &[&str],
+    variants: &[(&str, T)],
+) -> Option<T> {
+    let value = metadata_value(data, keys)?;
+    match value {
+        Value::String(value) => variants
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(value.trim()))
+            .map(|(_, variant)| *variant)
+            .or_else(|| {
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| variants.get(index))
+                    .map(|(_, variant)| *variant)
+            }),
+        Value::Number(value) => value
+            .as_u64()
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| variants.get(index))
+            .map(|(_, variant)| *variant),
+        _ => None,
+    }
+}
 
 fn canonical_enum(value: &str, variants: &[&str]) -> Option<String> {
     variants
@@ -2430,7 +2499,8 @@ mod tests {
     #[test]
     fn base_item_dto_uses_official_acronym_and_legacy_property_names() {
         let dto = BaseItemDto {
-            video_3d_format: Some("MVC".to_owned()),
+            video_3d_format: Some(Video3DFormat::MVC),
+            iso_type: Some(IsoType::BluRay),
             is_locked: Some(true),
             parent_backdrop_image_item_id: Some("parent".to_owned()),
             ..BaseItemDto::default()
@@ -2438,6 +2508,7 @@ mod tests {
         let value = serde_json::to_value(dto).unwrap();
 
         assert_eq!(value["Video3DFormat"], "MVC");
+        assert_eq!(value["IsoType"], "BluRay");
         assert_eq!(value["LockData"], true);
         assert_eq!(value["ParentBackdropItemId"], "parent");
         assert!(value.get("Video3dFormat").is_none());
@@ -2466,6 +2537,8 @@ mod tests {
                 "AirDays": ["monday", "Funday", "Friday"],
                 "EndDate": "2020-01-02",
                 "Video3DFormat": "mvc",
+                "IsoType": 1,
+                "Timestamp": "2",
                 "ProductionLocations": ["Los Angeles"],
                 "ProviderIds": {
                     "Tmdb": 42,
@@ -2546,7 +2619,8 @@ mod tests {
         assert_eq!(dto.extra_type.as_deref(), Some("BehindTheScenes"));
         assert_eq!(dto.air_days, ["Monday", "Friday"]);
         assert_eq!(dto.end_date.as_deref(), Some("2020-01-02T00:00:00.000Z"));
-        assert_eq!(dto.video_3d_format.as_deref(), Some("MVC"));
+        assert_eq!(dto.video_3d_format, Some(Video3DFormat::MVC));
+        assert_eq!(dto.iso_type, Some(IsoType::BluRay));
         assert_eq!(dto.production_locations, ["Los Angeles"]);
         assert_eq!(dto.official_rating.as_deref(), Some("PG-13"));
         assert_eq!(dto.path.as_deref(), Some("/library/Movie.strm"));
@@ -2558,6 +2632,9 @@ mod tests {
         assert_eq!(source.container.as_deref(), Some("mkv"));
         assert_eq!(source.size, Some(12_345));
         assert_eq!(source.video_type, Some(VideoType::VideoFile));
+        assert_eq!(source.iso_type, Some(IsoType::BluRay));
+        assert_eq!(source.video_3d_format, Some(Video3DFormat::MVC));
+        assert_eq!(source.timestamp, Some(TransportStreamTimestamp::Valid));
         assert_eq!(
             source.etag.as_deref(),
             Some("e19f5b6165c1331b55b7c60254e8695a")
@@ -2581,6 +2658,36 @@ mod tests {
             ])
         );
         assert_eq!(json["EndDate"], "2020-01-02T00:00:00.000Z");
+    }
+
+    #[test]
+    fn persisted_media_enums_accept_names_numbers_and_numeric_strings() {
+        let data = json!({
+            "IsoType": "dvd",
+            "Video3DFormat": 3,
+            "Timestamp": "1"
+        });
+
+        assert_eq!(
+            metadata_enum(Some(&data), &["IsoType"], ISO_TYPES),
+            Some(IsoType::Dvd)
+        );
+        assert_eq!(
+            metadata_enum(Some(&data), &["Video3DFormat"], VIDEO_3D_FORMATS),
+            Some(Video3DFormat::HalfTopAndBottom)
+        );
+        assert_eq!(
+            metadata_enum(Some(&data), &["Timestamp"], TRANSPORT_STREAM_TIMESTAMPS),
+            Some(TransportStreamTimestamp::Zero)
+        );
+        assert_eq!(
+            metadata_enum(
+                Some(&json!({"Timestamp": 9})),
+                &["Timestamp"],
+                TRANSPORT_STREAM_TIMESTAMPS
+            ),
+            None
+        );
     }
 
     #[test]
