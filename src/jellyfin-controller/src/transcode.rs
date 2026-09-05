@@ -68,6 +68,14 @@ pub struct HlsSegmentSettings {
     pub min_segments: i32,
 }
 
+/// Whether `FFmpeg` should publish a finite VOD playlist or an open event
+/// playlist for a source whose runtime is not known yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlsPlaylistType {
+    Vod,
+    Event,
+}
+
 /// A fully-formed `FFmpeg` invocation without a shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FfmpegCommand {
@@ -104,13 +112,33 @@ impl HlsVariant {
 
 /// Builds the HLS command used to produce transcode segments.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn hls_command(
     ffmpeg_path: &Path,
     input_path: &Path,
     output_prefix: &Path,
     target: &TranscodeTarget,
     settings: &HlsSegmentSettings,
+) -> FfmpegCommand {
+    hls_command_with_playlist_type(
+        ffmpeg_path,
+        input_path,
+        output_prefix,
+        target,
+        settings,
+        HlsPlaylistType::Vod,
+    )
+}
+
+/// Builds the HLS command used to produce VOD or event transcode segments.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn hls_command_with_playlist_type(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+    output_prefix: &Path,
+    target: &TranscodeTarget,
+    settings: &HlsSegmentSettings,
+    playlist_type: HlsPlaylistType,
 ) -> FfmpegCommand {
     let mut arguments = vec![
         "-hide_banner".to_owned(),
@@ -223,7 +251,10 @@ pub fn hls_command(
     arguments.push("-hls_time".to_owned());
     arguments.push(segment_length_seconds);
     arguments.push("-hls_playlist_type".to_owned());
-    arguments.push("vod".to_owned());
+    arguments.push(match playlist_type {
+        HlsPlaylistType::Vod => "vod".to_owned(),
+        HlsPlaylistType::Event => "event".to_owned(),
+    });
     arguments.push("-hls_list_size".to_owned());
     arguments.push("0".to_owned());
     arguments.push("-hls_segment_filename".to_owned());
@@ -233,13 +264,22 @@ pub fn hls_command(
         output_prefix.to_string_lossy(),
         extension
     ));
+    if playlist_type == HlsPlaylistType::Event
+        && let Some(job_id) = output_prefix.file_name().and_then(|name| name.to_str())
+    {
+        arguments.push("-hls_base_url".to_owned());
+        arguments.push(format!("hls/{job_id}/"));
+    }
     arguments.push("-hls_flags".to_owned());
     arguments.push("temp_file+independent_segments".to_owned());
     arguments.push("-f".to_owned());
     arguments.push("hls".to_owned());
 
-    let dummy_playlist = output_prefix.with_extension("hls.m3u8");
-    arguments.push(dummy_playlist.to_string_lossy().into_owned());
+    let playlist = match playlist_type {
+        HlsPlaylistType::Vod => output_prefix.with_extension("hls.m3u8"),
+        HlsPlaylistType::Event => output_prefix.with_extension("m3u8"),
+    };
+    arguments.push(playlist.to_string_lossy().into_owned());
 
     FfmpegCommand {
         program: ffmpeg_path.to_path_buf(),
@@ -947,6 +987,28 @@ mod tests {
     }
 
     #[test]
+    fn hls_event_command_uses_job_scoped_playlist_and_segment_urls() {
+        let command = hls_command_with_playlist_type(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/job1"),
+            &TranscodeTarget::default(),
+            &HlsSegmentSettings {
+                container: "ts".to_owned(),
+                segment_length_ms: 6_000,
+                min_segments: 2,
+            },
+            HlsPlaylistType::Event,
+        );
+
+        let joined = command.arguments.join(" ");
+        assert!(joined.contains("-hls_playlist_type event"));
+        assert!(joined.contains("-hls_list_size 0"));
+        assert!(joined.contains("-hls_base_url hls/job1/"));
+        assert!(joined.ends_with("/tmp/transcodes/job1.m3u8"));
+    }
+
+    #[test]
     fn audio_command_encodes_only_audio_with_requested_limits() {
         let command = audio_command(
             Path::new("/usr/bin/ffmpeg"),
@@ -1082,6 +1144,31 @@ mod tests {
         assert!(playlist.contains("/Videos/00000000-0000-0000-0000-000000000001/hls1/job1/0.ts?"));
         assert!(playlist.contains("runtimeTicks=0&actualSegmentLengthTicks=60000000"));
         assert!(playlist.contains("&api_key=test%20token%26scope%3Dall"));
+    }
+
+    #[test]
+    fn main_playlist_does_not_invent_a_runtime_for_unknown_sources() {
+        let error = build_main_playlist(
+            Uuid::from_u128(1),
+            "job1",
+            None,
+            &HlsSegmentSettings {
+                container: "ts".to_owned(),
+                segment_length_ms: 6_000,
+                min_segments: 2,
+            },
+            "Videos",
+            None,
+        )
+        .expect_err("an unknown runtime is not a finite VOD playlist");
+
+        assert_eq!(
+            error,
+            HlsPlaylistError::InvalidSegmentParameters {
+                desired_segment_length_ms: 6_000,
+                total_runtime_ticks: 0,
+            }
+        );
     }
 
     #[test]

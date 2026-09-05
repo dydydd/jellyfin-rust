@@ -8,9 +8,9 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{
-    HlsJobIdInput, HlsSegmentSettings, HlsVariant, TranscodeTarget, build_main_playlist,
-    build_variant_master_playlist, hls_command, hls_job_id_from_input, run_ffmpeg,
-    wait_for_segment,
+    HlsJobIdInput, HlsPlaylistType, HlsSegmentSettings, HlsVariant, TranscodeTarget,
+    build_main_playlist, build_variant_master_playlist, hls_command_with_playlist_type,
+    hls_job_id_from_input, run_ffmpeg, wait_for_segment,
 };
 use jellyfin_extensions::PathHelper;
 use jellyfin_model::MimeTypes;
@@ -183,10 +183,30 @@ pub(crate) async fn video(
 pub(crate) async fn video_live_playlist(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
-    Path(_item_id): Path<Uuid>,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<TranscodeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    serve_authenticated_playlist(&state, headers, &uri, "live.m3u8").await
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    if query.job_id.is_none() && !query.has_transcode_parameters() {
+        let path = resolve_transcode_file(&state.transcode_directory, "live.m3u8")?;
+        return serve_file(path, headers).await;
+    }
+
+    let segment_length_ms = segment_length_ms(query.segment_length)?;
+    let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
+    start_hls_job(
+        &state,
+        &query,
+        item_id,
+        &job_id,
+        &identity,
+        "Videos",
+        segment_length_ms,
+    )
+    .await?;
+    let path = resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.m3u8"))?;
+    serve_file_if_exists(path, headers).await
 }
 
 pub(crate) async fn video_master_playlist(
@@ -267,15 +287,9 @@ async fn ensure_master_playlist(
     let (item_id, media_type) = media_type_item_id(uri)?;
     let segment_length_ms = segment_length_ms(query.segment_length)?;
     let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
-    let main_url = format!(
-        "main.m3u8?{}&jobId={}",
-        uri.query().unwrap_or_default(),
-        job_id
-    );
-    let content = build_variant_master_playlist(&master_variants(&query, &main_url));
-    start_hls_job(
+    let playlist_type = start_hls_job(
         state,
-        query,
+        &query,
         item_id,
         &job_id,
         identity,
@@ -283,6 +297,16 @@ async fn ensure_master_playlist(
         segment_length_ms,
     )
     .await?;
+    let playlist_name = match playlist_type {
+        HlsPlaylistType::Vod => "main.m3u8",
+        HlsPlaylistType::Event => "live.m3u8",
+    };
+    let main_url = format!(
+        "{playlist_name}?{}&jobId={}",
+        uri.query().unwrap_or_default(),
+        job_id
+    );
+    let content = build_variant_master_playlist(&master_variants(&query, &main_url));
     let path =
         resolve_transcode_file(&state.transcode_directory, &format!("{job_id}.master.m3u8"))?;
     tokio::fs::write(&path, content)
@@ -332,7 +356,7 @@ async fn ensure_main_playlist(
     let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
     start_hls_job(
         state,
-        query,
+        &query,
         item_id,
         &job_id,
         identity,
@@ -346,24 +370,13 @@ async fn ensure_main_playlist(
 
 async fn start_hls_job(
     state: &AppState,
-    query: TranscodeQuery,
+    query: &TranscodeQuery,
     item_id: Uuid,
     job_id: &str,
     identity: &crate::authentication::AuthenticatedIdentity,
     media_type: &str,
     segment_length_ms: i32,
-) -> Result<(), ApiError> {
-    if state.transcode_jobs.is_running(job_id) {
-        tracing::info!(%item_id, %job_id, "reusing running HLS transcode job");
-        if let (Some(device_id), Some(play_session_id)) =
-            (query.device_id.as_deref(), query.play_session_id.as_deref())
-        {
-            state
-                .transcode_jobs
-                .associate(job_id, device_id, play_session_id);
-        }
-        return Ok(());
-    }
+) -> Result<HlsPlaylistType, ApiError> {
     let user = match identity {
         crate::authentication::AuthenticatedIdentity::Device(session) => &session.user,
         crate::authentication::AuthenticatedIdentity::ApiKey(_) => {
@@ -372,9 +385,12 @@ async fn start_hls_job(
     };
     let target = TranscodeTarget {
         is_video: media_type == "Videos",
-        hwaccel: query.hwaccel,
-        video_codec: query.video_codec.or_else(|| Some("h264".to_owned())),
-        audio_codec: query.audio_codec.or_else(|| Some("aac".to_owned())),
+        hwaccel: query.hwaccel.clone(),
+        video_codec: query
+            .video_codec
+            .clone()
+            .or_else(|| Some("h264".to_owned())),
+        audio_codec: query.audio_codec.clone().or_else(|| Some("aac".to_owned())),
         video_bitrate: query.video_bitrate,
         audio_bitrate: query.audio_bitrate,
         audio_channels: query.max_audio_channels,
@@ -390,7 +406,10 @@ async fn start_hls_job(
         start_time_ticks: query.start_time_ticks,
     };
     let settings = HlsSegmentSettings {
-        container: query.segment_container.unwrap_or_else(|| "ts".to_owned()),
+        container: query
+            .segment_container
+            .clone()
+            .unwrap_or_else(|| "ts".to_owned()),
         segment_length_ms,
         min_segments: query.min_segments.unwrap_or(2),
     };
@@ -429,6 +448,29 @@ async fn start_hls_job(
     } else {
         requested_item
     };
+    let playlist_type = if item.runtime_ticks.is_none() {
+        HlsPlaylistType::Event
+    } else {
+        HlsPlaylistType::Vod
+    };
+    if state.transcode_jobs.is_running(job_id) {
+        tracing::info!(%item_id, %job_id, ?playlist_type, "reusing running HLS transcode job");
+        if let (Some(device_id), Some(play_session_id)) =
+            (query.device_id.as_deref(), query.play_session_id.as_deref())
+        {
+            state
+                .transcode_jobs
+                .associate(job_id, device_id, play_session_id);
+        }
+        wait_for_segment(
+            &state.transcode_directory,
+            job_id,
+            settings.container.trim_start_matches('.'),
+        )
+        .await
+        .map_err(|_| ApiError::Internal)?;
+        return Ok(playlist_type);
+    }
     let input = jellyfin_controller::media_source_path(&item)
         .map(str::to_owned)
         .ok_or(ApiError::NotFound)?;
@@ -436,27 +478,30 @@ async fn start_hls_job(
         .await
         .map_err(|_| ApiError::Internal)?;
     let output_prefix = state.transcode_directory.join(job_id);
-    let main = build_main_playlist(
-        item_id,
-        job_id,
-        item.runtime_ticks,
-        &settings,
-        media_type,
-        Some(identity.access_token()),
-    )
-    .map_err(|_| ApiError::Internal)?;
-    tokio::fs::write(
-        state.transcode_directory.join(format!("{job_id}.m3u8")),
-        main,
-    )
-    .await
-    .map_err(|_| ApiError::Internal)?;
-    let command = hls_command(
+    if playlist_type == HlsPlaylistType::Vod {
+        let main = build_main_playlist(
+            item_id,
+            job_id,
+            item.runtime_ticks,
+            &settings,
+            media_type,
+            Some(identity.access_token()),
+        )
+        .map_err(|_| ApiError::Internal)?;
+        tokio::fs::write(
+            state.transcode_directory.join(format!("{job_id}.m3u8")),
+            main,
+        )
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    }
+    let command = hls_command_with_playlist_type(
         &state.ffmpeg_path,
         std::path::Path::new(&input),
         &output_prefix,
         &target,
         &settings,
+        playlist_type,
     );
     let job = match (query.device_id.as_deref(), query.play_session_id.as_deref()) {
         (Some(device_id), Some(play_session_id)) => state
@@ -480,7 +525,8 @@ async fn start_hls_job(
         settings.container.trim_start_matches('.'),
     )
     .await
-    .map_err(|_| ApiError::Internal)
+    .map_err(|_| ApiError::Internal)?;
+    Ok(playlist_type)
 }
 
 pub(crate) async fn cleanup_transcode_job(root: &FilePath, job_id: &str) {
@@ -674,17 +720,6 @@ async fn serve_video_segment(
     }
 
     serve_file(segment_path, headers).await
-}
-
-async fn serve_authenticated_playlist(
-    state: &AppState,
-    headers: HeaderMap,
-    uri: &Uri,
-    filename: &str,
-) -> Result<Response, ApiError> {
-    authorization::require_default(state, &headers, uri).await?;
-    let path = resolve_transcode_file(&state.transcode_directory, filename)?;
-    serve_file(path, headers).await
 }
 
 async fn serve_authenticated_hls1_segment(

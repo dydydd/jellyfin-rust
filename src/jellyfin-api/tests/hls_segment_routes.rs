@@ -1,6 +1,7 @@
 #![allow(clippy::too_many_lines)]
 use std::{
     fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -455,6 +456,110 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
 }
 
 #[tokio::test]
+async fn unknown_alternate_runtime_uses_event_hls_while_known_runtimes_remain_vod() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+
+    let primary_id = Uuid::new_v4();
+    let mut primary = NewBaseItem::new(primary_id, "Movie");
+    primary.path = Some("/media/hls-known-primary.mkv".to_owned());
+    primary.runtime_ticks = Some(120_000_000);
+    items.create(primary).await.expect("known primary item");
+
+    let alternate_id = Uuid::new_v4();
+    let mut alternate = NewBaseItem::new(alternate_id, "Movie");
+    alternate.path = Some("/media/hls-unknown-alternate.mkv".to_owned());
+    alternate.primary_version_id = Some(primary_id);
+    items
+        .create(alternate)
+        .await
+        .expect("unknown runtime alternate");
+
+    let response = fixture
+        .get(
+            &format!(
+                "/Videos/{primary_id}/master.m3u8?videoCodec=h264&mediasourceid={alternate_id}"
+            ),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let master = String::from_utf8(body(response).await).expect("UTF-8 master playlist");
+    let live_url = master
+        .lines()
+        .find(|line| line.starts_with("live.m3u8?"))
+        .expect("unknown runtime master must select the live playlist");
+    assert!(live_url.contains(&format!("mediasourceid={alternate_id}")));
+    let response = fixture
+        .get(
+            &format!("/Videos/{primary_id}/{live_url}"),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let event = String::from_utf8(body(response).await).expect("UTF-8 event playlist");
+    assert!(event.contains("#EXT-X-PLAYLIST-TYPE:EVENT"));
+    let segment_url = event
+        .lines()
+        .find(|line| line.starts_with("hls/"))
+        .expect("event playlist segment URL");
+    let response = fixture
+        .get(
+            &format!("/Videos/{primary_id}/{segment_url}"),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_file_response(
+        response,
+        StatusCode::OK,
+        "video/mp2t",
+        b"hls-unknown-alternate.mkv",
+    )
+    .await;
+
+    let zero_id = Uuid::new_v4();
+    let mut zero = NewBaseItem::new(zero_id, "Movie");
+    zero.path = Some("/media/hls-zero.mkv".to_owned());
+    zero.runtime_ticks = Some(0);
+    items.create(zero).await.expect("zero runtime item");
+    let response = fixture
+        .get(
+            &format!("/Videos/{zero_id}/master.m3u8?videoCodec=h264"),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let response = fixture
+        .get(
+            &format!("/Videos/{primary_id}/master.m3u8?videoCodec=h264"),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let master = String::from_utf8(body(response).await).expect("UTF-8 master playlist");
+    let main_url = master
+        .lines()
+        .find(|line| line.starts_with("main.m3u8?"))
+        .expect("known runtime master must select the VOD playlist");
+    let response = fixture
+        .get(
+            &format!("/Videos/{primary_id}/{main_url}"),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let vod = String::from_utf8(body(response).await).expect("UTF-8 VOD playlist");
+    assert!(vod.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+    assert!(vod.contains("#EXT-X-ENDLIST"));
+
+    for item_id in [alternate_id, primary_id, zero_id] {
+        items.delete(item_id).await.expect("HLS item cleanup");
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn dynamic_hls_rejects_media_sources_outside_the_requested_version_group() {
     let fixture = Fixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
@@ -574,13 +679,22 @@ impl Fixture {
         let temporary = TempDirectory::new();
         let transcode_path = temporary.path().join(TRANSCODE_DIRECTORY_NAME);
         fs::create_dir(&transcode_path).unwrap();
+        let fake_ffmpeg = temporary.path().join("fake-ffmpeg");
+        fs::write(
+            &fake_ffmpeg,
+            b"#!/bin/sh\nsegment_pattern=\nbase_url=\ninput_path=\nplaylist=\nexpect=\nfor argument in \"$@\"; do\n  if [ \"$expect\" = segment ]; then\n    segment_pattern=$argument\n    expect=\n  elif [ \"$expect\" = base ]; then\n    base_url=$argument\n    expect=\n  elif [ \"$expect\" = input ]; then\n    input_path=$argument\n    expect=\n  elif [ \"$argument\" = -hls_segment_filename ]; then\n    expect=segment\n  elif [ \"$argument\" = -hls_base_url ]; then\n    expect=base\n  elif [ \"$argument\" = -i ]; then\n    expect=input\n  fi\n  playlist=$argument\ndone\nsegment_path=$(printf '%s\\n' \"$segment_pattern\" | sed 's/%d/0/')\ninput_name=${input_path##*/}\nprintf '%s' \"$input_name\" > \"$segment_path\"\nsegment_name=${segment_path##*/}\nprintf '#EXTM3U\\n#EXT-X-PLAYLIST-TYPE:EVENT\\n#EXTINF:1,\\n%s%s\\n' \"$base_url\" \"$segment_name\" > \"$playlist\"\n",
+        )
+        .expect("fake ffmpeg");
+        fs::set_permissions(&fake_ffmpeg, fs::Permissions::from_mode(0o700))
+            .expect("fake ffmpeg permissions");
         let app = jellyfin_api::router(
             AppState::new(
                 database.clone(),
                 "HLS Test Server".to_owned(),
                 "http://127.0.0.1:8096".to_owned(),
             )
-            .with_transcode_directory(transcode_path),
+            .with_transcode_directory(transcode_path)
+            .with_ffmpeg_path(fake_ffmpeg),
         );
         Self {
             database,
