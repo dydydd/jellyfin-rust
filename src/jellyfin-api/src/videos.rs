@@ -4,8 +4,8 @@ use axum::{
     Json,
     body::Body,
     extract::{Path, State},
-    http::{HeaderMap, Request, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    http::{HeaderMap, Request, StatusCode, header},
+    response::Response,
 };
 use axum_extra::extract::Query;
 use serde::Deserialize;
@@ -121,8 +121,7 @@ async fn stream_file(
             .get(..8)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
     {
-        tracing::info!(%item_id, "redirecting remote video stream");
-        return Ok(Redirect::temporary(&path).into_response());
+        return proxy_remote_stream(&state.remote_stream_client, &headers, item_id, &path).await;
     }
     let metadata = tokio::fs::metadata(&path).await.ok();
     tracing::info!(
@@ -135,6 +134,66 @@ async fn stream_file(
         "serving local video stream",
     );
     crate::audio::serve_path(headers, &path, request).await
+}
+
+async fn proxy_remote_stream(
+    client: &reqwest::Client,
+    client_headers: &HeaderMap,
+    item_id: Uuid,
+    path: &str,
+) -> Result<Response, ApiError> {
+    let mut request = client.get(path);
+    if let Some(range) = client_headers.get(header::RANGE) {
+        request = request.header(header::RANGE, range);
+    }
+    let upstream = request.send().await.map_err(|error| {
+        tracing::warn!(
+            %item_id,
+            timeout = error.is_timeout(),
+            connect = error.is_connect(),
+            "remote video stream request failed",
+        );
+        ApiError::UpstreamUnavailable
+    })?;
+    let status = upstream.status();
+    let mut response = Response::builder().status(status);
+    let headers = response.headers_mut().ok_or(ApiError::Internal)?;
+    for name in [
+        header::CONTENT_RANGE,
+        header::CONTENT_LENGTH,
+        header::CONTENT_TYPE,
+    ] {
+        if let Some(value) = upstream.headers().get(&name) {
+            headers.insert(name, value.clone());
+        }
+    }
+    if !headers.contains_key(header::CONTENT_TYPE) {
+        headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/octet-stream"),
+        );
+    }
+    let accept_ranges = upstream
+        .headers()
+        .get(header::ACCEPT_RANGES)
+        .cloned()
+        .unwrap_or_else(|| {
+            header::HeaderValue::from_static(if status == StatusCode::PARTIAL_CONTENT {
+                "bytes"
+            } else {
+                "none"
+            })
+        });
+    headers.insert(header::ACCEPT_RANGES, accept_ranges);
+    tracing::info!(
+        %item_id,
+        %status,
+        range_requested = client_headers.contains_key(header::RANGE),
+        "proxying remote video stream",
+    );
+    response
+        .body(Body::from_stream(upstream.bytes_stream()))
+        .map_err(|_| ApiError::Internal)
 }
 
 pub(crate) async fn delete_alternate_sources(
@@ -183,4 +242,102 @@ pub(crate) async fn additional_parts(
         start_index: 0,
         items,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::Duration,
+    };
+
+    use axum::{body::to_bytes, http::header};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn remote_stream_forwards_ranges_without_buffering_the_upstream_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock upstream listener");
+        let address = listener.local_addr().expect("mock upstream address");
+        let (release_sender, release_receiver) = mpsc::channel();
+        let upstream = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("upstream request");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("upstream read timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).expect("upstream request bytes");
+                assert_ne!(read, 0, "request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Type: video/x-matroska\r\nContent-Length: 10\r\nContent-Range: bytes 20-29/100\r\nConnection: close\r\n\r\nhello",
+                )
+                .expect("first upstream chunk");
+            socket.flush().expect("flush upstream headers");
+            release_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("proxy returned before the complete body");
+            socket.write_all(b"world").expect("last upstream chunk");
+            String::from_utf8(request).expect("HTTP request text")
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::RANGE,
+            header::HeaderValue::from_static("bytes=20-29"),
+        );
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            proxy_remote_stream(
+                &reqwest::Client::new(),
+                &headers,
+                Uuid::new_v4(),
+                &format!("http://{address}/signed/video.mkv?token=secret"),
+            ),
+        )
+        .await
+        .expect("proxy must return after upstream headers")
+        .expect("remote response");
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 20-29/100");
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "10");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "video/x-matroska");
+        release_sender.send(()).expect("release upstream body");
+        assert_eq!(
+            to_bytes(response.into_body(), 10)
+                .await
+                .expect("proxied body"),
+            "helloworld"
+        );
+        let request = upstream.join().expect("mock upstream thread");
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("range: bytes=20-29")),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_remote_stream_maps_to_bad_gateway() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("unused listener");
+        let address = listener.local_addr().expect("unused listener address");
+        drop(listener);
+        let error = proxy_remote_stream(
+            &reqwest::Client::new(),
+            &HeaderMap::new(),
+            Uuid::new_v4(),
+            &format!("http://{address}/video.mkv"),
+        )
+        .await
+        .expect_err("closed upstream port must fail");
+        assert!(matches!(error, ApiError::UpstreamUnavailable));
+    }
 }

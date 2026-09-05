@@ -198,6 +198,7 @@ pub struct AppState {
     pub(crate) cache_directory: PathBuf,
     pub(crate) internal_metadata_directory: PathBuf,
     pub(crate) network_manager: Arc<NetworkManager>,
+    pub(crate) remote_stream_client: reqwest::Client,
     pub(crate) transcode_directory: Arc<std::path::Path>,
     pub(crate) ffmpeg_path: Arc<PathBuf>,
     pub(crate) encoder_capabilities: EncoderCapabilities,
@@ -330,6 +331,10 @@ impl AppState {
                 NetworkConfiguration::default(),
                 Vec::new(),
             )),
+            remote_stream_client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             transcode_directory: Arc::from(
                 std::env::temp_dir()
                     .join("jellyfin-rust")
@@ -2044,6 +2049,7 @@ pub(crate) enum ApiError {
     Unauthorized,
     Forbidden,
     Internal,
+    UpstreamUnavailable,
     DeviceNotFound,
     DeviceOptionsNotFound,
     SessionNotFound,
@@ -2323,6 +2329,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::FORBIDDEN, "Forbidden")
             }
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Self::UpstreamUnavailable => {
+                (StatusCode::BAD_GATEWAY, "Upstream media source unavailable")
+            }
             Self::DeviceNotFound => (StatusCode::NOT_FOUND, "Device not found"),
             Self::DeviceOptionsNotFound => (StatusCode::NOT_FOUND, "Device options not found"),
             Self::SessionNotFound => (StatusCode::NOT_FOUND, "Session not found"),
