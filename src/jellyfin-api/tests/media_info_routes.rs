@@ -141,6 +141,52 @@ async fn playback_info_routes_return_postgres_media_sources_with_official_auth_s
 }
 
 #[tokio::test]
+async fn posted_playback_info_accepts_legacy_casing_numeric_strings_and_query_precedence() {
+    let fixture = Fixture::new().await;
+    let uppercase_compact_source_id = fixture.item_id.simple().to_string().to_ascii_uppercase();
+    let route = format!(
+        "/Items/{}/PlaybackInfo?userid={}&maxstreamingbitrate=8000000&starttimeticks=456&audiostreamindex=1&subtitlestreamindex=-1&maxaudiochannels=2&mediasourceid={}&autoopenlivestream=False&enabledirectplay=false&enabledirectstream=True&enabletranscoding=true&allowvideostreamcopy=false&allowaudiostreamcopy=true",
+        fixture.item_id, fixture.user_id, uppercase_compact_source_id
+    );
+    let body = json!({
+        "userid": fixture.admin_id,
+        "maxstreamingbitrate": "1",
+        "starttimeticks": "123",
+        "audiostreamindex": "0",
+        "subtitlestreamindex": "-1",
+        "maxaudiochannels": "1",
+        "mediasourceid": "ignored-by-query",
+        "enabledirectplay": "true",
+        "enabledirectstream": "false",
+        "enabletranscoding": "false",
+        "allowvideostreamcopy": "true",
+        "allowaudiostreamcopy": "false",
+        "autoopenlivestream": "true",
+        "alwaysburninsubtitlewhentranscoding": "true",
+        "deviceprofile": flexible_video_profile(true)
+    });
+
+    let response = fixture
+        .post(&route, Some(&fixture.user_token), Some(&body))
+        .await;
+    let playback = body_json(response).await;
+    let source = &playback["MediaSources"][0];
+    let url = source["TranscodingUrl"]
+        .as_str()
+        .expect("query must force the matching MKV profile to transcode");
+    assert!(url.contains("/master.m3u8"), "{url}");
+    assert!(url.contains("AudioStreamIndex=1"), "{url}");
+    assert!(!url.contains("Static=true"), "{url}");
+    assert_eq!(source["SupportsDirectPlay"], false);
+    assert_eq!(source["SupportsDirectStream"], false);
+    assert_eq!(source["SupportsTranscoding"], true);
+    assert_eq!(source["TranscodingContainer"], "ts");
+    assert_eq!(source["TranscodingSubProtocol"], "hls");
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn posted_playback_info_uses_current_session_capabilities_profile_as_fallback() {
     let fixture = Fixture::new().await;
     let profile = json!({
@@ -356,6 +402,35 @@ fn assert_playback_info(playback: &Value, fixture: &Fixture) {
     assert_eq!(source["MediaStreams"][1]["Type"], "Audio");
     assert_eq!(source["MediaStreams"][1]["Codec"], "aac");
     assert_eq!(source["MediaStreams"][1]["Language"], "eng");
+}
+
+fn flexible_video_profile(include_direct_play: bool) -> Value {
+    let direct_play_profiles = if include_direct_play {
+        json!([{
+            "container": "mkv",
+            "audioCodec": "aac",
+            "videoCodec": "h264",
+            "type": "video"
+        }])
+    } else {
+        json!([])
+    };
+    json!({
+        "name": "Legacy Flexible Profile",
+        "maxStreamingBitrate": "8000000",
+        "directPlayProfiles": direct_play_profiles,
+        "transcodingProfiles": [{
+            "container": "ts",
+            "type": 1,
+            "videoCodec": "h264",
+            "audioCodec": "aac",
+            "protocol": "HLS",
+            "context": "streaming",
+            "transcodeSeekInfo": "1",
+            "minSegments": "2",
+            "segmentLength": "6"
+        }]
+    })
 }
 
 fn assert_bitrate_headers(response: &axum::response::Response, expected_size: usize) {

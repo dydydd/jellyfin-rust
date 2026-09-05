@@ -18,7 +18,7 @@ use jellyfin_model::{
     DeviceProfile, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo, PlayMethod,
     StreamBuilder,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::io::ReaderStream;
@@ -40,22 +40,221 @@ pub(crate) struct BitrateTestQuery {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct PlaybackInfoQuery {
-    #[serde(rename = "userId", alias = "UserId")]
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(rename = "mediaSourceId", alias = "MediaSourceId")]
-    media_source_id: Option<String>,
-    #[serde(rename = "maxStreamingBitrate", alias = "MaxStreamingBitrate")]
+    #[serde(
+        rename = "maxStreamingBitrate",
+        alias = "MaxStreamingBitrate",
+        alias = "maxstreamingbitrate",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
     max_streaming_bitrate: Option<i32>,
+    #[serde(
+        rename = "startTimeTicks",
+        alias = "StartTimeTicks",
+        alias = "starttimeticks",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    start_time_ticks: Option<i64>,
+    #[serde(
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    audio_stream_index: Option<i32>,
+    #[serde(
+        rename = "subtitleStreamIndex",
+        alias = "SubtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    subtitle_stream_index: Option<i32>,
+    #[serde(
+        rename = "maxAudioChannels",
+        alias = "MaxAudioChannels",
+        alias = "maxaudiochannels",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    max_audio_channels: Option<i32>,
+    #[serde(
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid"
+    )]
+    media_source_id: Option<String>,
+    #[serde(
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid"
+    )]
+    live_stream_id: Option<String>,
+    #[serde(
+        rename = "autoOpenLiveStream",
+        alias = "AutoOpenLiveStream",
+        alias = "autoopenlivestream",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    auto_open_live_stream: Option<bool>,
+    #[serde(
+        rename = "enableDirectPlay",
+        alias = "EnableDirectPlay",
+        alias = "enabledirectplay",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_play: Option<bool>,
+    #[serde(
+        rename = "enableDirectStream",
+        alias = "EnableDirectStream",
+        alias = "enabledirectstream",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_stream: Option<bool>,
+    #[serde(
+        rename = "enableTranscoding",
+        alias = "EnableTranscoding",
+        alias = "enabletranscoding",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_transcoding: Option<bool>,
+    #[serde(
+        rename = "allowVideoStreamCopy",
+        alias = "AllowVideoStreamCopy",
+        alias = "allowvideostreamcopy",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    allow_video_stream_copy: Option<bool>,
+    #[serde(
+        rename = "allowAudioStreamCopy",
+        alias = "AllowAudioStreamCopy",
+        alias = "allowaudiostreamcopy",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    allow_audio_stream_copy: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct PlaybackInfoDto {
+    #[serde(alias = "userId", alias = "userid")]
     user_id: Option<Uuid>,
+    #[serde(
+        alias = "maxStreamingBitrate",
+        alias = "maxstreamingbitrate",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    max_streaming_bitrate: Option<i32>,
+    #[serde(
+        alias = "startTimeTicks",
+        alias = "starttimeticks",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    start_time_ticks: Option<i64>,
+    #[serde(
+        alias = "audioStreamIndex",
+        alias = "audiostreamindex",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    audio_stream_index: Option<i32>,
+    #[serde(
+        alias = "subtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    subtitle_stream_index: Option<i32>,
+    #[serde(
+        alias = "maxAudioChannels",
+        alias = "maxaudiochannels",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    max_audio_channels: Option<i32>,
+    #[serde(alias = "mediaSourceId", alias = "mediasourceid")]
+    media_source_id: Option<String>,
+    #[serde(alias = "liveStreamId", alias = "livestreamid")]
+    live_stream_id: Option<String>,
+    #[serde(alias = "deviceProfile", alias = "deviceprofile")]
+    device_profile: Option<Value>,
+    #[serde(
+        alias = "enableDirectPlay",
+        alias = "enabledirectplay",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_play: Option<bool>,
+    #[serde(
+        alias = "enableDirectStream",
+        alias = "enabledirectstream",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_stream: Option<bool>,
+    #[serde(
+        alias = "enableTranscoding",
+        alias = "enabletranscoding",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_transcoding: Option<bool>,
+    #[serde(
+        alias = "allowVideoStreamCopy",
+        alias = "allowvideostreamcopy",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    allow_video_stream_copy: Option<bool>,
+    #[serde(
+        alias = "allowAudioStreamCopy",
+        alias = "allowaudiostreamcopy",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    allow_audio_stream_copy: Option<bool>,
+    #[serde(
+        alias = "autoOpenLiveStream",
+        alias = "autoopenlivestream",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    auto_open_live_stream: Option<bool>,
+    #[serde(
+        alias = "alwaysBurnInSubtitleWhenTranscoding",
+        alias = "alwaysburninsubtitlewhentranscoding",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    always_burn_in_subtitle_when_transcoding: Option<bool>,
+}
+
+#[derive(Debug)]
+struct PlaybackOptions {
     media_source_id: Option<String>,
     max_streaming_bitrate: Option<i32>,
+    start_time_ticks: i64,
+    audio_stream_index: Option<i32>,
+    subtitle_stream_index: Option<i32>,
+    max_audio_channels: Option<i32>,
     device_profile: Option<DeviceProfile>,
+    enable_direct_play: bool,
+    enable_direct_stream: bool,
+    enable_transcoding: bool,
+    allow_video_stream_copy: bool,
+    allow_audio_stream_copy: bool,
+    always_burn_in_subtitle_when_transcoding: bool,
+}
+
+impl Default for PlaybackOptions {
+    fn default() -> Self {
+        Self {
+            media_source_id: None,
+            max_streaming_bitrate: None,
+            start_time_ticks: 0,
+            audio_stream_index: None,
+            subtitle_stream_index: None,
+            max_audio_channels: None,
+            device_profile: None,
+            enable_direct_play: true,
+            enable_direct_stream: true,
+            enable_transcoding: true,
+            allow_video_stream_copy: true,
+            allow_audio_stream_copy: true,
+            always_burn_in_subtitle_when_transcoding: false,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -100,6 +299,42 @@ pub(crate) struct LiveStreamResponse {
     media_source: MediaSourceInfo,
 }
 
+fn deserialize_optional_number_or_string<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned + std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(Value::String(value)) if value.trim().is_empty() => Ok(None),
+        Some(Value::String(value)) => value.parse().map(Some).map_err(serde::de::Error::custom),
+        Some(value) => serde_json::from_value(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+fn deserialize_optional_bool_or_string<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(Value::String(value)) if value.trim().is_empty() => Ok(None),
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("true") => Ok(Some(true)),
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("false") => Ok(Some(false)),
+        Some(Value::String(value)) => Err(serde::de::Error::custom(format_args!(
+            "invalid boolean `{value}`"
+        ))),
+        Some(value) => serde_json::from_value(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 fn stored_device_profile(capabilities: &Value) -> Option<DeviceProfile> {
     let profile = capabilities
         .as_object()?
@@ -107,16 +342,195 @@ fn stored_device_profile(capabilities: &Value) -> Option<DeviceProfile> {
         .find(|(name, _)| name.eq_ignore_ascii_case("DeviceProfile"))?
         .1
         .clone();
-    match serde_json::from_value(profile) {
+    match parse_device_profile(profile) {
         Ok(profile) => Some(profile),
         Err(error) => {
-            tracing::warn!(
-                %error,
-                "ignoring invalid device profile stored by session capabilities"
-            );
+            tracing::warn!(%error, "ignoring invalid stored device profile");
             None
         }
     }
+}
+
+fn parse_device_profile(mut value: Value) -> Result<DeviceProfile, serde_json::Error> {
+    normalize_device_profile_json(&mut value, None);
+    serde_json::from_value(value)
+}
+
+fn normalize_device_profile_json(value: &mut Value, context: Option<&str>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                normalize_device_profile_json(value, context);
+            }
+        }
+        Value::Object(object) => {
+            let original = std::mem::take(object);
+            for (name, mut child) in original {
+                let name = canonical_device_profile_key(&name)
+                    .map(str::to_owned)
+                    .unwrap_or(name);
+                normalize_device_profile_scalar(&name, context, &mut child);
+                normalize_device_profile_json(&mut child, Some(&name));
+                object.insert(name, child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_device_profile_scalar(name: &str, context: Option<&str>, value: &mut Value) {
+    match name {
+        "MaxStreamingBitrate"
+        | "MaxStaticBitrate"
+        | "MusicStreamingTranscodingBitrate"
+        | "MaxStaticMusicBitrate"
+        | "MinSegments"
+        | "SegmentLength" => normalize_json_number(value),
+        "Type" if context == Some("CodecProfiles") => {
+            normalize_json_enum(value, &[(0, "Video"), (1, "VideoAudio"), (2, "Audio")])
+        }
+        "Type" => normalize_json_enum(
+            value,
+            &[
+                (0, "Audio"),
+                (1, "Video"),
+                (2, "Photo"),
+                (3, "Subtitle"),
+                (4, "Lyric"),
+            ],
+        ),
+        "Protocol" => normalize_json_enum(value, &[(0, "http"), (1, "hls")]),
+        "Context" => normalize_json_enum(value, &[(0, "Streaming"), (1, "Static")]),
+        "TranscodeSeekInfo" => normalize_json_enum(value, &[(0, "Auto"), (1, "Bytes")]),
+        "Method" => normalize_json_enum(
+            value,
+            &[
+                (0, "Encode"),
+                (1, "Embed"),
+                (2, "External"),
+                (3, "Hls"),
+                (4, "Drop"),
+            ],
+        ),
+        "Condition" => normalize_json_enum(
+            value,
+            &[
+                (0, "Equals"),
+                (1, "NotEquals"),
+                (2, "LessThanEqual"),
+                (3, "GreaterThanEqual"),
+                (4, "EqualsAny"),
+            ],
+        ),
+        "Property" => normalize_json_enum(value, PROFILE_CONDITION_VALUES),
+        _ => {}
+    }
+}
+
+const PROFILE_CONDITION_VALUES: &[(i64, &str)] = &[
+    (0, "AudioChannels"),
+    (1, "AudioBitrate"),
+    (2, "AudioProfile"),
+    (3, "Width"),
+    (4, "Height"),
+    (5, "Has64BitOffsets"),
+    (6, "PacketLength"),
+    (7, "VideoBitDepth"),
+    (8, "VideoBitrate"),
+    (9, "VideoFramerate"),
+    (10, "VideoLevel"),
+    (11, "VideoProfile"),
+    (12, "VideoTimestamp"),
+    (13, "IsAnamorphic"),
+    (14, "RefFrames"),
+    (16, "NumAudioStreams"),
+    (17, "NumVideoStreams"),
+    (18, "IsSecondaryAudio"),
+    (19, "VideoCodecTag"),
+    (20, "IsAvc"),
+    (21, "IsInterlaced"),
+    (22, "AudioSampleRate"),
+    (23, "AudioBitDepth"),
+    (24, "VideoRangeType"),
+    (25, "NumStreams"),
+    (26, "VideoRotation"),
+];
+
+fn normalize_json_number(value: &mut Value) {
+    if let Value::String(text) = value
+        && let Ok(number) = text.parse::<i64>()
+    {
+        *value = Value::Number(number.into());
+    }
+}
+
+fn normalize_json_enum(value: &mut Value, variants: &[(i64, &str)]) {
+    let number = match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(text) => text.parse::<i64>().ok(),
+        _ => None,
+    };
+    let variant = number
+        .and_then(|number| {
+            variants
+                .iter()
+                .find(|(value, _)| *value == number)
+                .map(|(_, name)| *name)
+        })
+        .or_else(|| {
+            value.as_str().and_then(|text| {
+                variants
+                    .iter()
+                    .find(|(_, name)| name.eq_ignore_ascii_case(text))
+                    .map(|(_, name)| *name)
+            })
+        });
+    if let Some(variant) = variant {
+        *value = Value::String(variant.to_owned());
+    }
+}
+
+fn canonical_device_profile_key(name: &str) -> Option<&'static str> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "name" => "Name",
+        "id" => "Id",
+        "maxstreamingbitrate" => "MaxStreamingBitrate",
+        "maxstaticbitrate" => "MaxStaticBitrate",
+        "musicstreamingtranscodingbitrate" => "MusicStreamingTranscodingBitrate",
+        "maxstaticmusicbitrate" => "MaxStaticMusicBitrate",
+        "directplayprofiles" => "DirectPlayProfiles",
+        "transcodingprofiles" => "TranscodingProfiles",
+        "containerprofiles" => "ContainerProfiles",
+        "codecprofiles" => "CodecProfiles",
+        "subtitleprofiles" => "SubtitleProfiles",
+        "container" => "Container",
+        "audiocodec" => "AudioCodec",
+        "videocodec" => "VideoCodec",
+        "type" => "Type",
+        "protocol" => "Protocol",
+        "estimatecontentlength" => "EstimateContentLength",
+        "enablempegtsm2tsmode" => "EnableMpegtsM2TsMode",
+        "transcodeseekinfo" => "TranscodeSeekInfo",
+        "copytimestamps" => "CopyTimestamps",
+        "context" => "Context",
+        "enablesubtitlesinmanifest" => "EnableSubtitlesInManifest",
+        "maxaudiochannels" => "MaxAudioChannels",
+        "minsegments" => "MinSegments",
+        "segmentlength" => "SegmentLength",
+        "conditions" => "Conditions",
+        "enableaudiovbrencoding" => "EnableAudioVbrEncoding",
+        "applyconditions" => "ApplyConditions",
+        "codec" => "Codec",
+        "subcontainer" => "SubContainer",
+        "format" => "Format",
+        "method" => "Method",
+        "language" => "Language",
+        "condition" => "Condition",
+        "property" => "Property",
+        "value" => "Value",
+        "isrequired" => "IsRequired",
+        _ => return None,
+    })
 }
 
 pub(crate) async fn bitrate_test(
@@ -153,9 +567,7 @@ pub(crate) async fn get_playback_info(
         &identity.user,
         query.user_id.unwrap_or(identity.user.id),
         item_id,
-        query.media_source_id.as_deref(),
-        None,
-        None,
+        PlaybackOptions::default(),
         &identity.device.device_id,
         &identity.access_token,
         remote_ip,
@@ -174,32 +586,64 @@ pub(crate) async fn post_playback_info(
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
     let identity = authentication::authenticated_session(&state, &headers).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let body = optional_playback_body(body)?;
-    let (body_user_id, body_media_source_id, body_max_streaming_bitrate, posted_profile) = body
-        .map_or((None, None, None, None), |body| {
-            (
-                body.user_id,
-                body.media_source_id,
-                body.max_streaming_bitrate,
-                body.device_profile,
-            )
-        });
-    let device_profile =
-        posted_profile.or_else(|| stored_device_profile(&identity.device.capabilities));
-    let target_user_id = query.user_id.or(body_user_id).unwrap_or(identity.user.id);
-    let media_source_id = query
-        .media_source_id
-        .as_deref()
-        .or(body_media_source_id.as_deref());
-    let max_streaming_bitrate = query.max_streaming_bitrate.or(body_max_streaming_bitrate);
+    let body = optional_playback_body(body)?.unwrap_or_default();
+    let target_user_id = query.user_id.or(body.user_id).unwrap_or(identity.user.id);
+    let device_profile = match body.device_profile {
+        Some(profile) => Some(parse_device_profile(profile).map_err(|error| {
+            tracing::debug!(%error, "invalid playback device profile");
+            ApiError::InvalidRequest
+        })?),
+        None => stored_device_profile(&identity.device.capabilities),
+    };
+    // These legacy parameters are relevant only to live sources. Parse and
+    // merge them for wire compatibility, but do not synthesize Live TV state
+    // for ordinary file playback.
+    let _live_stream_id = query.live_stream_id.or(body.live_stream_id);
+    let _auto_open_live_stream = query
+        .auto_open_live_stream
+        .or(body.auto_open_live_stream)
+        .unwrap_or_default();
+    let options = PlaybackOptions {
+        media_source_id: query.media_source_id.or(body.media_source_id),
+        max_streaming_bitrate: query.max_streaming_bitrate.or(body.max_streaming_bitrate),
+        start_time_ticks: query
+            .start_time_ticks
+            .or(body.start_time_ticks)
+            .unwrap_or_default(),
+        audio_stream_index: query.audio_stream_index.or(body.audio_stream_index),
+        subtitle_stream_index: query.subtitle_stream_index.or(body.subtitle_stream_index),
+        max_audio_channels: query.max_audio_channels.or(body.max_audio_channels),
+        device_profile,
+        enable_direct_play: query
+            .enable_direct_play
+            .or(body.enable_direct_play)
+            .unwrap_or(true),
+        enable_direct_stream: query
+            .enable_direct_stream
+            .or(body.enable_direct_stream)
+            .unwrap_or(true),
+        enable_transcoding: query
+            .enable_transcoding
+            .or(body.enable_transcoding)
+            .unwrap_or(true),
+        allow_video_stream_copy: query
+            .allow_video_stream_copy
+            .or(body.allow_video_stream_copy)
+            .unwrap_or(true),
+        allow_audio_stream_copy: query
+            .allow_audio_stream_copy
+            .or(body.allow_audio_stream_copy)
+            .unwrap_or(true),
+        always_burn_in_subtitle_when_transcoding: body
+            .always_burn_in_subtitle_when_transcoding
+            .unwrap_or_default(),
+    };
     playback_info(
         &state,
         &identity.user,
         target_user_id,
         item_id,
-        media_source_id,
-        max_streaming_bitrate,
-        device_profile,
+        options,
         &identity.device.device_id,
         &identity.access_token,
         remote_ip,
@@ -280,22 +724,20 @@ async fn playback_info(
     authenticated_user: &jellyfin_data::entities::user::Model,
     target_user_id: Uuid,
     item_id: Uuid,
-    media_source_id: Option<&str>,
-    max_streaming_bitrate: Option<i32>,
-    device_profile: Option<DeviceProfile>,
+    options: PlaybackOptions,
     device_id: &str,
     access_token: &str,
     remote_ip: std::net::IpAddr,
 ) -> Result<PlaybackInfoResponse, ApiError> {
     let play_session_id = Uuid::new_v4().simple().to_string();
-    let mut max_streaming_bitrate = max_streaming_bitrate;
-    let has_device_profile = device_profile.is_some();
+    let mut max_streaming_bitrate = options.max_streaming_bitrate;
+    let has_device_profile = options.device_profile.is_some();
     let mut media_sources = media_sources(
         state,
         authenticated_user,
         target_user_id,
         item_id,
-        media_source_id,
+        options.media_source_id.as_deref(),
     )
     .await?;
     apply_stream_builder(
@@ -303,7 +745,7 @@ async fn playback_info(
         authenticated_user,
         state,
         item_id,
-        device_profile,
+        &options,
         &mut max_streaming_bitrate,
         device_id,
         access_token,
@@ -387,10 +829,11 @@ async fn media_sources(
     if let Some(media_source_id) = media_source_id.filter(|value| !value.trim().is_empty()) {
         let media_source_id = media_source_id.replace('-', "");
         media_sources.retain(|source| {
-            source
-                .id
-                .as_deref()
-                .is_some_and(|source_id| source_id.replace('-', "") == media_source_id)
+            source.id.as_deref().is_some_and(|source_id| {
+                source_id
+                    .replace('-', "")
+                    .eq_ignore_ascii_case(&media_source_id)
+            })
         });
     }
     Ok(media_sources)
@@ -420,14 +863,14 @@ fn apply_stream_builder(
     authenticated_user: &jellyfin_data::entities::user::Model,
     state: &AppState,
     item_id: Uuid,
-    device_profile: Option<DeviceProfile>,
+    playback_options: &PlaybackOptions,
     max_streaming_bitrate: &mut Option<i32>,
     device_id: &str,
     access_token: &str,
     play_session_id: &str,
     remote_ip: std::net::IpAddr,
 ) {
-    let Some(profile) = device_profile else {
+    let Some(profile) = playback_options.device_profile.clone() else {
         return;
     };
     let is_video = media_sources
@@ -451,19 +894,16 @@ fn apply_stream_builder(
         .and_then(|source| source.id.as_deref())
         .map(str::to_owned);
     let mut options = MediaOptions {
-        enable_transcoding: if is_audio {
-            policy.enable_audio_playback_transcoding
-        } else {
-            policy.enable_audio_playback_transcoding
-                || policy.enable_video_playback_transcoding
-                || policy.enable_playback_remuxing
-        },
-        // Match MediaInfoHelper: ordinary HTTP direct-stream URLs are disabled
-        // because clients can otherwise receive source bytes under a remuxed
-        // extension (for example, MKV bytes from a `stream.mp4` URL).
-        enable_direct_stream: false,
+        enable_transcoding: playback_options.enable_transcoding
+            && policy_can_transcode(&policy, is_audio),
+        enable_direct_play: playback_options.enable_direct_play,
+        enable_direct_stream: playback_options.enable_direct_stream,
         enable_playback_remuxing: policy.enable_playback_remuxing,
         force_remote_source_transcoding: policy.force_remote_source_transcoding,
+        allow_audio_stream_copy: playback_options.allow_audio_stream_copy,
+        allow_video_stream_copy: playback_options.allow_video_stream_copy,
+        always_burn_in_subtitle_when_transcoding: playback_options
+            .always_burn_in_subtitle_when_transcoding,
         item_id,
         media_sources: std::mem::take(media_sources),
         profile,
@@ -471,9 +911,18 @@ fn apply_stream_builder(
         device_id: Some(device_id.to_owned()),
         max_bitrate: *max_streaming_bitrate,
         audio_transcoding_bitrate: *max_streaming_bitrate,
+        audio_stream_index: playback_options.audio_stream_index,
+        subtitle_stream_index: playback_options.subtitle_stream_index,
+        max_audio_channels: playback_options.max_audio_channels,
         context: EncodingContext::Streaming,
         ..MediaOptions::default()
     };
+    if !options.force_direct_stream {
+        // Match MediaInfoHelper: ordinary HTTP direct-stream URLs are disabled
+        // because clients can otherwise receive source bytes under a remuxed
+        // extension (for example, MKV bytes from a `stream.mp4` URL).
+        options.enable_direct_stream = false;
+    }
     let builder =
         StreamBuilder::with_encodable_audio_codecs(["aac", "mp3", "opus", "flac", "ac3", "eac3"]);
     let selection = if is_video {
@@ -506,7 +955,8 @@ fn apply_stream_builder(
         "playback stream selected from device profile",
     );
     stream.play_session_id = Some(play_session_id.to_owned());
-    apply_selected_stream_metadata(&mut stream, &options, &policy, is_audio, access_token);
+    stream.start_position_ticks = playback_options.start_time_ticks;
+    apply_selected_stream_metadata(&mut stream, &options, access_token);
     let source = stream
         .media_source
         .take()
@@ -518,12 +968,10 @@ fn apply_stream_builder(
 fn apply_selected_stream_metadata(
     stream: &mut jellyfin_model::StreamInfo,
     options: &MediaOptions,
-    policy: &jellyfin_model::UserPolicy,
-    is_audio: bool,
     access_token: &str,
 ) {
     let play_method = stream.play_method;
-    let supports_transcoding = policy_can_transcode(policy, is_audio)
+    let supports_transcoding = options.enable_transcoding
         && (play_method == PlayMethod::DirectStream
             || stream
                 .media_source
@@ -672,7 +1120,9 @@ mod tests {
         MediaStreamProtocol, MediaStreamType, TranscodingProfile,
     };
 
-    use super::{MediaProtocol, MediaSourceInfo, apply_stream_builder, sort_media_sources};
+    use super::{
+        MediaProtocol, MediaSourceInfo, PlaybackOptions, apply_stream_builder, sort_media_sources,
+    };
     use uuid::Uuid;
 
     #[test]
@@ -767,7 +1217,10 @@ mod tests {
             &test_user(),
             &test_state(),
             item_id,
-            Some(profile),
+            &PlaybackOptions {
+                device_profile: Some(profile),
+                ..PlaybackOptions::default()
+            },
             &mut None,
             "device-id",
             "access-token",
@@ -849,7 +1302,10 @@ mod tests {
             &test_user(),
             &test_state(),
             item_id,
-            Some(profile),
+            &PlaybackOptions {
+                device_profile: Some(profile),
+                ..PlaybackOptions::default()
+            },
             &mut None,
             "device-id",
             "access-token",
