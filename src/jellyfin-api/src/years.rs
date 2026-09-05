@@ -7,7 +7,7 @@ use axum::{
 };
 use jellyfin_controller::YearItem;
 use jellyfin_data::{BaseItemQuery, ProductionYearOrder};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, user_library};
@@ -22,9 +22,9 @@ pub(crate) struct YearsQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: Option<i32>,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
     #[serde(
@@ -75,25 +75,39 @@ pub(crate) struct YearsQuery {
     sort_order: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct YearsResult {
+    items: Vec<user_library::BaseItemDto>,
+    total_record_count: usize,
+    start_index: i32,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<YearsQuery>,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+) -> Result<Json<YearsResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
     let order = production_year_order(&query.sort_by, &query.sort_order)?;
+    let requested_start_index = query.start_index.unwrap_or_default();
     let mut item_query = BaseItemQuery {
         parent_id: query.parent_id,
         recursive: query.recursive,
         include_item_types: query.include_item_types,
         exclude_item_types: query.exclude_item_types,
         media_types: query.media_types,
-        start_index: query.start_index,
-        limit: query.limit,
+        // LINQ Skip treats negative counts as zero, while the response echoes
+        // the original signed StartIndex.
+        start_index: u64::try_from(requested_start_index).unwrap_or_default(),
+        // LINQ Take returns no items for a non-positive count.
+        limit: query
+            .limit
+            .map(|limit| u64::try_from(limit).unwrap_or_default()),
         ..BaseItemQuery::default()
     };
     if authenticated.user.id != target_user_id && !authenticated.user.is_administrator {
@@ -119,14 +133,14 @@ pub(crate) async fn list(
         .years
         .list(&authenticated.user, target_user_id, item_query, order)
         .await?;
-    Ok(Json(user_library::BaseItemQueryResult {
+    Ok(Json(YearsResult {
         items: page
             .years
             .into_iter()
             .map(|year| user_library::year_to_dto(year, state.server_id()))
             .collect(),
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: requested_start_index,
     }))
 }
 

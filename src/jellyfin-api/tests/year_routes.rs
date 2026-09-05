@@ -88,6 +88,65 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     .await;
     assert_years(&paged, &["1999", "2001"], 4, 1);
 
+    let negative_start = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?startIndex=-1&limit=2&sortBy=ProductionYear&sortOrder=Descending",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&negative_start, &["2024", "2001"], 4, -1);
+
+    let negative_limit = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?limit=-1",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&negative_limit, &[], 4, 0);
+
+    let zero_limit = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?limit=0",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&zero_limit, &[], 4, 0);
+
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?startIndex=2147483648",
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?limit=-2147483649",
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST,
+    );
+
     let direct_child_years = body_json(
         fixture
             .request(
@@ -437,12 +496,7 @@ async fn create_policy_video(
     items.create(video).await.expect("policy video creation")
 }
 
-fn assert_years(
-    body: &Value,
-    expected_names: &[&str],
-    expected_total: usize,
-    expected_start: usize,
-) {
+fn assert_years(body: &Value, expected_names: &[&str], expected_total: usize, expected_start: i32) {
     assert_eq!(body["TotalRecordCount"], expected_total);
     assert_eq!(body["StartIndex"], expected_start);
     let items = body["Items"].as_array().expect("year items");
