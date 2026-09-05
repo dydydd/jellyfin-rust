@@ -8,7 +8,10 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{HydratedBaseItem, ItemTypeRegistry, UserError, UserService};
+use crate::{
+    HydratedBaseItem, ItemTypeRegistry, UserError, UserLibraryError, UserLibraryService,
+    UserService,
+};
 
 #[derive(Debug, Error)]
 pub enum LibraryControllerError {
@@ -28,6 +31,8 @@ pub enum LibraryControllerError {
     ItemValue(#[from] ItemValueError),
     #[error(transparent)]
     Playlist(#[from] PlaylistStoreError),
+    #[error(transparent)]
+    UserLibrary(#[from] UserLibraryError),
 }
 
 fn item_can_download(item: &base_item::Model) -> bool {
@@ -185,6 +190,7 @@ pub struct LibraryControllerService {
     item_types: ItemTypeRegistry,
     item_values: ItemValueRepository,
     playlists: PlaylistRepository,
+    user_library: UserLibraryService,
 }
 
 impl LibraryControllerService {
@@ -202,6 +208,10 @@ impl LibraryControllerService {
         Self {
             users: UserService::new(std::sync::Arc::clone(&database)),
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            user_library: UserLibraryService::with_item_type_registry(
+                std::sync::Arc::clone(&database),
+                item_types.clone(),
+            ),
             item_values: ItemValueRepository::new(std::sync::Arc::clone(&database)),
             playlists: PlaylistRepository::new(database),
             item_types,
@@ -311,21 +321,26 @@ impl LibraryControllerService {
         limit: Option<u64>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
         let item = self
+            .user_library
             .item(authenticated_user, target_user_id, item_id)
             .await?;
         let media_types = item.media_type.into_iter().collect();
-        let page = self
-            .items
-            .query(&BaseItemQuery {
-                exclude_ids: vec![item.id],
-                include_item_types: vec![item.item_type],
-                media_types,
-                is_virtual_item: Some(false),
-                limit,
-                ..Default::default()
-            })
+        let mut query = BaseItemQuery {
+            exclude_ids: vec![item.id],
+            include_item_types: vec![item.item_type],
+            media_types,
+            is_virtual_item: Some(false),
+            limit: Some(limit.unwrap_or(50)),
+            enable_total_record_count: Some(false),
+            ..Default::default()
+        };
+        self.user_library
+            .apply_base_item_policy(authenticated_user, target_user_id, &mut query)
             .await?;
-        Ok(self.hydrate_page(page))
+        let page = self.items.query(&query).await?;
+        let mut page = self.hydrate_page(page);
+        page.total_record_count = u64::try_from(page.items.len()).unwrap_or(u64::MAX);
+        Ok(page)
     }
 
     /// Creates a random audio mix from the seed item's normalized genres.
@@ -344,6 +359,7 @@ impl LibraryControllerService {
         limit: Option<u64>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
         let item = self
+            .user_library
             .item(authenticated_user, target_user_id, item_id)
             .await?;
         if item.item_type == "Playlist" {
@@ -371,9 +387,13 @@ impl LibraryControllerService {
             .map(|genre| genre.item_value_id)
             .collect::<Vec<_>>();
         let seed_is_audio = item.item_type == "Audio";
+        let mut access_policy = BaseItemQuery::default();
+        self.user_library
+            .apply_base_item_policy(authenticated_user, target_user_id, &mut access_policy)
+            .await?;
         let mut items = self
             .item_values
-            .random_audio_for_genres(&genre_ids, 201)
+            .random_audio_for_genres(&genre_ids, 201, &access_policy)
             .await?;
         items.retain(|candidate| candidate.id != item.id);
         items.truncate(200_usize.saturating_sub(usize::from(seed_is_audio)));
@@ -415,9 +435,13 @@ impl LibraryControllerService {
             .get_by_id(genre_id, item_value::ItemValueType::Genre)
             .await?
             .ok_or(LibraryControllerError::ItemNotFound)?;
+        let mut access_policy = BaseItemQuery::default();
+        self.user_library
+            .apply_base_item_policy(authenticated_user, target_user_id, &mut access_policy)
+            .await?;
         let mut items = self
             .item_values
-            .random_audio_for_genres(&[genre_id], 200)
+            .random_audio_for_genres(&[genre_id], 200, &access_policy)
             .await?;
         let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
         items.truncate(

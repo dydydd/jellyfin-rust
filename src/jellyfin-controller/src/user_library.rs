@@ -164,6 +164,27 @@ impl UserLibraryService {
         Ok(self.hydrate_page(self.items.query(&query).await?))
     }
 
+    /// Applies the target user's normal library visibility policy to a query.
+    ///
+    /// This is used by non-`Items` endpoints whose candidates still flow
+    /// through Jellyfin's `InternalItemsQuery(user)` policy checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, stored-policy, or persistence errors.
+    pub(crate) async fn apply_base_item_policy(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        query: &mut BaseItemQuery,
+    ) -> Result<(), UserLibraryError> {
+        self.validate_user(authenticated_user, target_user_id)
+            .await?;
+        self.apply_user_policy(query, target_user_id).await?;
+        query.user_id = Some(target_user_id);
+        Ok(())
+    }
+
     /// Counts visible direct children for several library parents in one
     /// PostgreSQL query.
     ///

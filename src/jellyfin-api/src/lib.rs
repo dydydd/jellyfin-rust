@@ -2997,13 +2997,18 @@ fn library_controller_error_response(error: &LibraryControllerError) -> (StatusC
         | LibraryControllerError::ItemNotFound
         | LibraryControllerError::FileNotFound
         | LibraryControllerError::User(UserError::NotFound)
-        | LibraryControllerError::BaseItem(BaseItemError::NotFound) => {
-            (StatusCode::NOT_FOUND, "User, item, or file not found")
-        }
+        | LibraryControllerError::BaseItem(BaseItemError::NotFound)
+        | LibraryControllerError::UserLibrary(
+            UserLibraryError::UserNotFound
+            | UserLibraryError::ItemNotFound
+            | UserLibraryError::User(UserError::NotFound)
+            | UserLibraryError::BaseItem(BaseItemError::NotFound),
+        ) => (StatusCode::NOT_FOUND, "User, item, or file not found"),
         LibraryControllerError::Forbidden
-        | LibraryControllerError::BaseItem(BaseItemError::ProtectedItem) => {
-            (StatusCode::FORBIDDEN, "Forbidden")
-        }
+        | LibraryControllerError::BaseItem(BaseItemError::ProtectedItem)
+        | LibraryControllerError::UserLibrary(
+            UserLibraryError::Forbidden | UserLibraryError::BaseItem(BaseItemError::ProtectedItem),
+        ) => (StatusCode::FORBIDDEN, "Forbidden"),
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Library persistence failed",

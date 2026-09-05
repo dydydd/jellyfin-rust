@@ -21,6 +21,9 @@
 - Avoid N+1 queries. Use set-based queries or bounded batches, and add migrations for indexes or constraints required by new query patterns.
 - Build playback-aware queries from the target user's `user_data` rows and reverse hierarchy lookups rather than correlated scans over all `base_items`. Materialize shared candidate sets when count and page queries would otherwise repeat expensive work.
 - Project inherited images for an item page with one batched DTO-image lookup. Do not call the image projector once per item.
+- Resolve Similar and InstantMix seeds through the target user's normal library policy, and apply the
+  same folder, tag, rating, and parental filters to every candidate query. Similar defaults to 50
+  returned items and reports the post-limit result count; legacy CLR item types must not bypass policy.
 - Project theme songs and theme videos with the official default all-fields `DtoOptions`. Resolve
   `inheritFromParent` nearest-first and independently for each media kind, preserve that owner's
   id, default to `SortName` ascending, and keep `SoundtrackSongsResult` as a distinct empty result.

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write as _};
 
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
@@ -385,10 +385,12 @@ impl ItemValueRepository {
         &self,
         genre_ids: &[Uuid],
         limit: u64,
+        access_policy: &BaseItemQuery,
     ) -> Result<Vec<base_item::Model>, ItemValueError> {
         if genre_ids.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
+        let audio_item_types = expand_item_type_aliases(&["Audio".to_owned()]);
         let mut values = genre_ids
             .iter()
             .copied()
@@ -398,14 +400,17 @@ impl ItemValueRepository {
             .map(|index| format!("${index}::uuid"))
             .collect::<Vec<_>>()
             .join(", ");
+        let item_type_placeholders = ((genre_ids.len() + 1)
+            ..=(genre_ids.len() + audio_item_types.len()))
+            .map(|index| format!("${index}::text"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        values.extend(audio_item_types.into_iter().map(SeaValue::from));
         values.push(limit.into());
-        Ok(
-            base_item::Model::find_by_statement(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                format!(
-                    "SELECT item.* \
+        let mut sql = format!(
+            "SELECT item.* \
                  FROM jellyfin.base_items AS item \
-                 WHERE item.item_type = 'Audio' \
+                 WHERE item.item_type IN ({item_type_placeholders}) \
                    AND item.is_virtual_item = false \
                    AND EXISTS ( \
                        SELECT 1 FROM jellyfin.item_value_map AS map \
@@ -414,11 +419,18 @@ impl ItemValueRepository {
                        WHERE map.item_id = item.id \
                          AND value.type = 2 \
                          AND value.item_value_id IN ({placeholders}) \
-                   ) \
-                 ORDER BY random() \
-                 LIMIT ${}::bigint",
-                    genre_ids.len() + 1
-                ),
+                   )"
+        );
+        if let Some(condition) = policy_filter_sql("item", access_policy) {
+            sql.push_str(" AND (");
+            sql.push_str(&condition);
+            sql.push(')');
+        }
+        let _ = write!(sql, " ORDER BY random() LIMIT ${}::bigint", values.len());
+        Ok(
+            base_item::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
                 values,
             ))
             .all(self.database.as_ref())

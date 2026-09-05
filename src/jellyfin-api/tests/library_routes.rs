@@ -11,7 +11,7 @@ use jellyfin_data::{
     entities::item_value,
     entities::{user, user_data},
 };
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
 };
@@ -83,6 +83,183 @@ async fn ancestors_download_similar_and_empty_relationships_have_real_success_se
     assert_instant_mix(&fixture).await;
     assert_audio_stream(&fixture).await;
     assert_video_stream(&fixture).await;
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn similar_and_instant_mix_apply_target_user_library_policy() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = fixture.items();
+    let root = items.ensure_user_root().await.expect("user root");
+    let visible_folder =
+        create_item(&items, "CollectionFolder", "Visible library", root.id, None).await;
+    let hidden_folder = create_item(
+        &items,
+        "MediaBrowser.Controller.Entities.CollectionFolder",
+        "Hidden legacy library",
+        root.id,
+        None,
+    )
+    .await;
+
+    let similar_seed = create_item(
+        &items,
+        "Movie",
+        "Policy similar seed",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    for index in 0..55 {
+        create_item(
+            &items,
+            "Movie",
+            &format!("Visible similar {index:02}"),
+            visible_folder.id,
+            None,
+        )
+        .await;
+    }
+    let hidden_similar =
+        create_item(&items, "Movie", "Hidden similar", hidden_folder.id, None).await;
+    let blocked_similar =
+        create_item(&items, "Movie", "Blocked similar", visible_folder.id, None).await;
+
+    let audio_seed = create_item(&items, "Audio", "Policy mix seed", visible_folder.id, None).await;
+    let visible_audio = create_item(
+        &items,
+        "Audio",
+        "Visible mix audio",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    let legacy_audio = create_item(
+        &items,
+        "MediaBrowser.Controller.Entities.Audio.Audio",
+        "Visible legacy mix audio",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    let hidden_audio =
+        create_item(&items, "Audio", "Hidden mix audio", hidden_folder.id, None).await;
+    let blocked_audio = create_item(
+        &items,
+        "Audio",
+        "Blocked mix audio",
+        visible_folder.id,
+        None,
+    )
+    .await;
+
+    let values = ItemValueRepository::new(fixture.database.clone());
+    for id in [
+        audio_seed.id,
+        visible_audio.id,
+        legacy_audio.id,
+        hidden_audio.id,
+        blocked_audio.id,
+    ] {
+        values
+            .link(id, item_value::ItemValueType::Genre, "Policy Mix")
+            .await
+            .expect("policy mix genre");
+    }
+    for id in [blocked_similar.id, blocked_audio.id] {
+        values
+            .link(id, item_value::ItemValueType::Tags, "Blocked")
+            .await
+            .expect("blocked policy tag");
+    }
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.enable_all_folders = false;
+    policy.enabled_folders = vec![visible_folder.id];
+    policy.blocked_tags = vec!["Blocked".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted library policy");
+
+    let similar = fixture
+        .json(
+            "GET",
+            &format!("/Movies/{}/Similar", similar_seed.id),
+            &fixture.user_token,
+        )
+        .await;
+    let similar_items = similar["Items"].as_array().unwrap();
+    assert_eq!(similar_items.len(), 50);
+    assert_eq!(similar["TotalRecordCount"], 50);
+    assert!(similar_items.iter().all(|item| {
+        item["Id"] != hidden_similar.id.simple().to_string()
+            && item["Id"] != blocked_similar.id.simple().to_string()
+    }));
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Movies/{}/Similar", hidden_similar.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let mix = fixture
+        .json(
+            "GET",
+            &format!("/Items/{}/InstantMix", audio_seed.id),
+            &fixture.user_token,
+        )
+        .await;
+    let mix_ids = mix["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(mix["TotalRecordCount"], 3);
+    assert!(mix_ids.contains(&visible_audio.id.simple().to_string().as_str()));
+    assert!(mix_ids.contains(&legacy_audio.id.simple().to_string().as_str()));
+    assert!(!mix_ids.contains(&hidden_audio.id.simple().to_string().as_str()));
+    assert!(!mix_ids.contains(&blocked_audio.id.simple().to_string().as_str()));
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Items/{}/InstantMix", hidden_audio.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let genre_mix = fixture
+        .json(
+            "GET",
+            "/MusicGenres/Policy%20Mix/InstantMix",
+            &fixture.user_token,
+        )
+        .await;
+    let genre_mix_ids = genre_mix["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(genre_mix["TotalRecordCount"], 3);
+    assert!(!genre_mix_ids.contains(&hidden_audio.id.simple().to_string().as_str()));
+    assert!(!genre_mix_ids.contains(&blocked_audio.id.simple().to_string().as_str()));
+
     fixture.cleanup().await;
 }
 

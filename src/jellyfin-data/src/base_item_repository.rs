@@ -5230,6 +5230,8 @@ fn append_item_value_id_filter(
 
 pub(crate) fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<String> {
     let mut parts = Vec::new();
+    let collection_folder_types =
+        quoted_string_list(&expand_item_type_aliases(&["CollectionFolder".to_owned()]));
     if !query.allowed_official_ratings.is_empty() {
         parts.push(format!(
             "({table}.official_rating IS NULL OR {table}.official_rating IN ({}))",
@@ -5269,13 +5271,13 @@ pub(crate) fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<St
     {
         parts.push(format!(
             "NOT (\
-                ({table}.item_type = 'CollectionFolder' AND {table}.id IN ({})) \
+                ({table}.item_type IN ({collection_folder_types}) AND {table}.id IN ({})) \
                 OR EXISTS (\
                     SELECT 1 FROM jellyfin.ancestor_ids AS blocked_closure \
                     JOIN jellyfin.base_items AS blocked_folder \
                       ON blocked_folder.id = blocked_closure.parent_item_id \
                     WHERE blocked_closure.item_id = {table}.id \
-                      AND blocked_folder.item_type = 'CollectionFolder' \
+                      AND blocked_folder.item_type IN ({collection_folder_types}) \
                       AND blocked_folder.id IN ({})\
                 )\
             )",
@@ -5287,26 +5289,26 @@ pub(crate) fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<St
         if query.enabled_folders.is_empty() {
             parts.push(format!(
                 "(\
-                    ({table}.item_type <> 'CollectionFolder' \
+                    ({table}.item_type NOT IN ({collection_folder_types}) \
                      AND NOT EXISTS (\
                          SELECT 1 FROM jellyfin.ancestor_ids AS enabled_closure \
                          JOIN jellyfin.base_items AS enabled_folder \
                            ON enabled_folder.id = enabled_closure.parent_item_id \
                          WHERE enabled_closure.item_id = {table}.id \
-                           AND enabled_folder.item_type = 'CollectionFolder'\
+                           AND enabled_folder.item_type IN ({collection_folder_types})\
                      ))\
                 )"
             ));
         } else {
             parts.push(format!(
                 "(\
-                    ({table}.item_type <> 'CollectionFolder' \
+                    ({table}.item_type NOT IN ({collection_folder_types}) \
                      AND NOT EXISTS (\
                          SELECT 1 FROM jellyfin.ancestor_ids AS enabled_closure \
                          JOIN jellyfin.base_items AS enabled_folder \
                            ON enabled_folder.id = enabled_closure.parent_item_id \
                          WHERE enabled_closure.item_id = {table}.id \
-                           AND enabled_folder.item_type = 'CollectionFolder'\
+                           AND enabled_folder.item_type IN ({collection_folder_types})\
                      ))\
                     OR {table}.id IN ({})\
                     OR EXISTS (\
@@ -5314,7 +5316,7 @@ pub(crate) fn policy_filter_sql(table: &str, query: &BaseItemQuery) -> Option<St
                         JOIN jellyfin.base_items AS enabled_folder \
                           ON enabled_folder.id = enabled_closure.parent_item_id \
                         WHERE enabled_closure.item_id = {table}.id \
-                          AND enabled_folder.item_type = 'CollectionFolder' \
+                          AND enabled_folder.item_type IN ({collection_folder_types}) \
                           AND enabled_folder.id IN ({})\
                     )\
                 )",
