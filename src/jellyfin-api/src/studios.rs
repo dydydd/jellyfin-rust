@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_data::ItemValueQuery;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -26,9 +26,9 @@ pub(crate) struct StudiosQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: Option<i32>,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
     #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
@@ -90,16 +90,25 @@ pub(crate) struct StudiosQuery {
     enable_total_record_count: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct StudiosResult {
+    items: Vec<user_library::BaseItemDto>,
+    total_record_count: usize,
+    start_index: i32,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<StudiosQuery>,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+) -> Result<Json<StudiosResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    let requested_start_index = query.start_index.unwrap_or_default();
     let enable_total_record_count = query.enable_total_record_count;
     let include_item_counts = user_library::BaseItemDtoFields::from_names(&query.fields)
         .wants_item_counts()
@@ -114,8 +123,11 @@ pub(crate) async fn list(
         name_starts_with_or_greater: query.name_starts_with_or_greater,
         name_starts_with: query.name_starts_with,
         name_less_than: query.name_less_than,
-        start_index: query.start_index,
-        limit: query.limit,
+        start_index: u64::try_from(requested_start_index).unwrap_or_default(),
+        limit: query
+            .limit
+            .filter(|limit| *limit >= 0)
+            .map(|limit| u64::try_from(limit).unwrap_or_default()),
         enable_total_record_count: Some(enable_total_record_count),
         ..ItemValueQuery::default()
     };
@@ -137,10 +149,10 @@ pub(crate) async fn list(
     } else {
         0
     };
-    Ok(Json(user_library::BaseItemQueryResult {
+    Ok(Json(StudiosResult {
         items,
         total_record_count,
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: requested_start_index,
     }))
 }
 

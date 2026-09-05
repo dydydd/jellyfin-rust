@@ -114,6 +114,68 @@ async fn studio_routes_match_official_studio_contract() {
         1,
     );
 
+    let negative_start = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Studios?startIndex=-1&limit=2",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_studios(
+        &negative_start,
+        &[&fixture.alpha_studio, &fixture.beta_studio],
+        5,
+        -1,
+    );
+
+    let zero_limit = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Studios?limit=0",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_studios(&zero_limit, &[], 5, 0);
+
+    let negative_limit = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Studios?limit=-1",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(negative_limit["Items"].as_array().expect("items").len(), 5);
+    assert_eq!(negative_limit["TotalRecordCount"], 5);
+    assert_eq!(negative_limit["StartIndex"], 0);
+
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Studios?{query}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
     let searched = body_json(
         fixture
             .request(
@@ -457,7 +519,7 @@ fn assert_studios(
     body: &Value,
     expected_names: &[&str],
     expected_total: usize,
-    expected_start: usize,
+    expected_start: i32,
 ) {
     assert_eq!(body["TotalRecordCount"], expected_total);
     assert_eq!(body["StartIndex"], expected_start);
