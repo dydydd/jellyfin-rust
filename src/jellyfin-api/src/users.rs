@@ -292,7 +292,6 @@ async fn get_user_image_for(
         image.last_modified,
         tag,
         format,
-        90,
     )
     .await
 }

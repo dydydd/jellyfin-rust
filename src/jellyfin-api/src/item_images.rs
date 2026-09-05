@@ -26,19 +26,19 @@ const REAL_TIME_INFO: HeaderName = HeaderName::from_static("realtimeinfo.dlna.or
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct GetItemImageQuery {
     #[serde(default, rename = "maxWidth", alias = "MaxWidth")]
-    max_width: Option<u32>,
+    max_width: Option<i32>,
     #[serde(default, rename = "maxHeight", alias = "MaxHeight")]
-    max_height: Option<u32>,
+    max_height: Option<i32>,
     #[serde(default, rename = "width", alias = "Width")]
-    width: Option<u32>,
+    width: Option<i32>,
     #[serde(default, rename = "height", alias = "Height")]
-    height: Option<u32>,
+    height: Option<i32>,
     #[serde(default, rename = "quality", alias = "Quality")]
-    quality: Option<u8>,
+    quality: Option<i32>,
     #[serde(default, rename = "fillWidth", alias = "FillWidth")]
-    fill_width: Option<u32>,
+    fill_width: Option<i32>,
     #[serde(default, rename = "fillHeight", alias = "FillHeight")]
-    fill_height: Option<u32>,
+    fill_height: Option<i32>,
     #[serde(default, rename = "tag", alias = "Tag")]
     tag: Option<String>,
     #[serde(default, rename = "format", alias = "Format")]
@@ -48,7 +48,7 @@ pub(crate) struct GetItemImageQuery {
     #[serde(default, rename = "unplayedCount", alias = "UnplayedCount")]
     unplayed_count: Option<i32>,
     #[serde(default, rename = "blur", alias = "Blur")]
-    blur: Option<u32>,
+    blur: Option<i32>,
     #[serde(default, rename = "backgroundColor", alias = "BackgroundColor")]
     background_color: Option<String>,
     #[serde(default, rename = "foregroundLayer", alias = "ForegroundLayer")]
@@ -122,7 +122,7 @@ pub(crate) async fn get_legacy_path(
         max_height,
         percent_played,
         unplayed_count,
-    )): Path<(Uuid, String, i32, String, String, u32, u32, f64, i32)>,
+    )): Path<(Uuid, String, i32, String, String, i32, i32, f64, i32)>,
     Query(mut query): Query<GetItemImageQuery>,
 ) -> Result<Response, ApiError> {
     query.tag = Some(tag);
@@ -376,12 +376,10 @@ pub(crate) async fn render_simple_image(
     date_modified: DateTime<Utc>,
     tag: Option<&str>,
     format: Option<&str>,
-    quality: u8,
 ) -> Result<Response, ApiError> {
     if let Some(format) = format {
         parse_image_format(format)?;
     }
-    validate_quality(quality)?;
     let source = ImageSource {
         path,
         date_modified: SystemTime::from(date_modified),
@@ -396,7 +394,6 @@ fn validate_direct_image_request(query: &GetItemImageQuery) -> Result<(), ApiErr
     if let Some(format) = query.format.as_deref() {
         parse_image_format(format)?;
     }
-    validate_quality(query.quality.unwrap_or(100))?;
     if query.percent_played.is_some_and(|value| !value.is_finite()) {
         return Err(ImageProcessingError::InvalidPercentPlayed.into());
     }
@@ -410,6 +407,7 @@ fn validate_direct_image_request(query: &GetItemImageQuery) -> Result<(), ApiErr
         query.max_height,
         query.fill_width,
         query.fill_height,
+        query.quality,
         query.blur,
         query.percent_played,
         query.unplayed_count,
@@ -418,14 +416,6 @@ fn validate_direct_image_request(query: &GetItemImageQuery) -> Result<(), ApiErr
         query.accept.as_deref(),
     );
     Ok(())
-}
-
-fn validate_quality(quality: u8) -> Result<(), ApiError> {
-    if (1..=100).contains(&quality) {
-        Ok(())
-    } else {
-        Err(ImageProcessingError::InvalidQuality(quality).into())
-    }
 }
 
 async fn ensure_visible_item(

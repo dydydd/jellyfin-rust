@@ -167,13 +167,14 @@ async fn splashscreen_routes_match_official_persistence_and_authorization_contra
     let response = fixture
         .request(
             Method::GET,
-            "/Branding/Splashscreen?tag=splash-tag",
+            "/Branding/Splashscreen?tag=splash-tag&format=jpg",
             Credential::None,
             None,
             None,
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
     assert_eq!(response.headers()[header::ETAG], "\"splash-tag\"");
     assert_eq!(body(response).await, uploaded);
     let not_modified = fixture

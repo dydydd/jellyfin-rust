@@ -10,7 +10,7 @@ use jellyfin_data::{
     BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError, BaseItemImageType,
     NewBaseItemImage, entities::base_item,
 };
-use jellyfin_drawing::{generate_blur_hash, inspect_dimensions};
+use jellyfin_drawing::inspect_dimensions;
 use jellyfin_model::{ImageInfo, ImageType};
 use jellyfin_server_implementations::{DtoImage, DtoImageItem, ImageCacheTagProvider};
 use md5::{Digest, Md5};
@@ -160,9 +160,11 @@ impl ItemImageService {
 
     /// Lists one item's images in Jellyfin's single-image-then-multiple order.
     ///
-    /// Local file metadata is best-effort, matching the official endpoint: a
-    /// missing or inaccessible file still produces an image record with zero
-    /// size and no dimensions or blur hash.
+    /// Persisted dimensions and `BlurHash` values are projected as-is. Local file
+    /// size is best-effort: a missing or inaccessible file still produces an
+    /// image record with zero size. The request path deliberately does not
+    /// decode images to repair missing metadata because library clients may
+    /// issue many concurrent image-info requests while browsing.
     ///
     /// # Errors
     ///
@@ -179,7 +181,7 @@ impl ItemImageService {
         for image in single_images.into_iter().chain(multiple_images) {
             let image_index =
                 public_image_index(image.image_type, &mut backdrop_index, &mut chapter_index);
-            infos.push(project_image(&self.images, item.path.as_deref(), image, image_index).await);
+            infos.push(project_image(item.path.as_deref(), image, image_index).await);
         }
 
         Ok(infos)
@@ -824,34 +826,10 @@ const fn upload_file_stem(image_type: BaseItemImageType) -> &'static str {
 }
 
 async fn project_image(
-    images: &BaseItemImageRepository,
     item_path: Option<&str>,
-    mut image: BaseItemImage,
+    image: BaseItemImage,
     image_index: Option<i32>,
 ) -> ImageInfo {
-    if !is_remote_path(&image.path)
-        && let Ok(metadata) = tokio::fs::metadata(&image.path).await
-        && let Ok(modified) = metadata.modified()
-        && local_metadata_needs_refresh(&image)
-        && let Ok((width, height, blurhash)) = generate_blur_hash(&image.path).await
-    {
-        let modified = DateTime::<Utc>::from(modified);
-        match images
-            .refresh_local_metadata_if_matches(&image, modified, width, height, &blurhash)
-            .await
-        {
-            Ok(Some(refreshed)) => image = refreshed,
-            Ok(None) => {
-                if let Ok(Some(current)) = images
-                    .get(image.item_id, image.image_type, image.image_index)
-                    .await
-                {
-                    image = current;
-                }
-            }
-            Err(_) => {}
-        }
-    }
     let (size, width, height) = local_image_metadata(&image).await;
     ImageInfo {
         image_type: model_image_type(image.image_type),
@@ -865,27 +843,21 @@ async fn project_image(
     }
 }
 
-fn local_metadata_needs_refresh(image: &BaseItemImage) -> bool {
-    image.width.is_none()
-        || image.height.is_none()
-        || image.blurhash.as_deref().is_none_or(str::is_empty)
-}
-
 async fn local_image_metadata(image: &BaseItemImage) -> (i64, Option<i32>, Option<i32>) {
+    let width = image.width.and_then(|value| i32::try_from(value).ok());
+    let height = image.height.and_then(|value| i32::try_from(value).ok());
     if image
         .path
         .get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http"))
     {
-        return (0, None, None);
+        return (0, width, height);
     }
 
     let Ok(metadata) = tokio::fs::metadata(&image.path).await else {
-        return (0, None, None);
+        return (0, width, height);
     };
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-    let width = image.width.and_then(|value| i32::try_from(value).ok());
-    let height = image.height.and_then(|value| i32::try_from(value).ok());
     (size, width, height)
 }
 

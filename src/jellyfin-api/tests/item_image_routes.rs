@@ -226,19 +226,16 @@ async fn exercise_legacy_item_image_path(database_name: &str) {
     );
     let response = fixture.request(Method::GET, &path, &[]).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
     assert_eq!(response.headers()[header::ETAG], "\"legacy-tag\"");
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bytes, fs::read(fixture.path("poster.png")).unwrap());
     let decoded = image::load_from_memory(&bytes).unwrap();
-    // `DrawingUtils.Resize` assigns both dimensions verbatim when width and
-    // height are both non-zero, so the requested box is used as-is rather than
-    // being fitted to the source aspect ratio. The 8x4 fixture is not scaled
-    // down because `ScaleDownToFit` only shrinks.
-    assert_eq!((decoded.width(), decoded.height()), (2, 2));
+    assert_eq!((decoded.width(), decoded.height()), (8, 4));
 
     let head = fixture.request(Method::HEAD, &path, &[]).await;
     assert_eq!(head.status(), StatusCode::OK);
-    assert_eq!(head.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(head.headers()[header::CONTENT_TYPE], "image/png");
     assert!(
         to_bytes(head.into_body(), usize::MAX)
             .await
@@ -941,6 +938,29 @@ async fn exercise_item_image_files(database_name: &str) {
         fs::read(fixture.path("poster.png")).unwrap()
     );
 
+    for ignored_signed_parameters in [
+        "maxWidth=-4&maxHeight=-8&width=-1&height=-2&fillWidth=-3&fillHeight=-4&blur=-5&quality=-1",
+        "quality=256",
+    ] {
+        let response = fixture
+            .request(
+                Method::GET,
+                &format!("{primary}?{ignored_signed_parameters}"),
+                &[],
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "query {ignored_signed_parameters}"
+        );
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            fs::read(fixture.path("poster.png")).unwrap()
+        );
+    }
+
     let selected_by_query = fixture
         .request(
             Method::GET,
@@ -974,8 +994,7 @@ async fn exercise_item_image_files(database_name: &str) {
 
     for route in [
         format!("{primary}?format=not-an-image"),
-        format!("{primary}?quality=0"),
-        format!("{primary}?quality=101"),
+        format!("{primary}?quality=not-a-number"),
     ] {
         let invalid = fixture.request(Method::GET, &route, &[]).await;
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST, "route {route}");
@@ -1072,9 +1091,9 @@ async fn exercise_item_image_infos(database_name: &str) {
                 "ImageIndex": null,
                 "ImageTag": IMAGE_TAG,
                 "Path": fixture.path("missing-logo.png"),
-                "BlurHash": null,
-                "Height": null,
-                "Width": null,
+                "BlurHash": "missing-blurhash",
+                "Height": 200,
+                "Width": 400,
                 "Size": 0
             },
             {
@@ -1118,9 +1137,9 @@ async fn exercise_item_image_infos(database_name: &str) {
         let infos = infos.as_array().expect("refreshed image infos");
         assert_eq!(infos.len(), 3);
         assert_eq!(infos[0]["ImageType"], "Primary");
-        assert_eq!(infos[0]["Width"], 10);
-        assert_eq!(infos[0]["Height"], 5);
-        assert_eq!(infos[0]["BlurHash"], fixture.refresh_blurhash.as_str());
+        assert_eq!(infos[0]["Width"], Value::Null);
+        assert_eq!(infos[0]["Height"], Value::Null);
+        assert_eq!(infos[0]["BlurHash"], Value::Null);
         assert_eq!(infos[1]["ImageType"], "Art");
         assert_eq!(infos[1]["BlurHash"], Value::Null);
         assert_eq!(infos[1]["Width"], Value::Null);
@@ -1132,12 +1151,9 @@ async fn exercise_item_image_infos(database_name: &str) {
         .list(fixture.refresh_item_id)
         .await
         .unwrap();
-    assert_eq!(stored[0].width, Some(10));
-    assert_eq!(stored[0].height, Some(5));
-    assert_eq!(
-        stored[0].blurhash.as_deref(),
-        Some(fixture.refresh_blurhash.as_str())
-    );
+    assert_eq!(stored[0].width, None);
+    assert_eq!(stored[0].height, None);
+    assert_eq!(stored[0].blurhash, None);
     assert_eq!(stored[1].blurhash, None);
     assert_eq!(stored[2].blurhash, None);
 
@@ -1152,7 +1168,6 @@ struct Fixture {
     ordinary_user_id: Uuid,
     item_id: Uuid,
     refresh_item_id: Uuid,
-    refresh_blurhash: String,
     empty_item_id: Uuid,
     token: String,
     api_key: String,
@@ -1195,9 +1210,6 @@ impl Fixture {
         );
         let refresh_path = temporary.path().join("refresh.png");
         image_fixture(&refresh_path, 10, 5, [120, 40, 200, 255]);
-        let (_, _, refresh_blurhash) = jellyfin_drawing::generate_blur_hash(&refresh_path)
-            .await
-            .expect("refresh fixture BlurHash");
         fs::write(temporary.path().join("corrupt.png"), b"not an image").unwrap();
 
         let users = UserService::new(database.clone());
@@ -1365,7 +1377,6 @@ impl Fixture {
             ordinary_user_id: ordinary_user.id,
             item_id: item.id,
             refresh_item_id: refresh_item.id,
-            refresh_blurhash,
             empty_item_id: empty_item.id,
             token,
             api_key,

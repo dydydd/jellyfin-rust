@@ -34,7 +34,8 @@
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
   clients. Keep accepting the official image query surface for compatibility, but stream the
   original image bytes and content type so media-library browsing cannot create decoder-sized
-  memory spikes or a family of derived cache files.
+  memory spikes or a family of derived cache files. Image-info endpoints must return persisted
+  dimensions and BlurHash values without lazily decoding the source or writing metadata.
 
 ## Compatibility expectations
 

@@ -287,7 +287,7 @@ async fn exercise_user_image_routes(database_name: &str) {
             .is_empty()
     );
 
-    let jpeg = get_image(
+    let original_with_ignored_transformations = get_image(
         &app,
         axum::http::Method::GET,
         &format!(
@@ -298,13 +298,22 @@ async fn exercise_user_image_routes(database_name: &str) {
         &[],
     )
     .await;
-    assert_eq!(jpeg.status(), StatusCode::OK);
-    assert_eq!(jpeg.headers()[header::CONTENT_TYPE], "image/jpeg");
-    assert!(
-        !to_bytes(jpeg.into_body(), MAX_RESPONSE_SIZE)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        original_with_ignored_transformations.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        original_with_ignored_transformations.headers()[header::CONTENT_TYPE],
+        "image/png"
+    );
+    assert_eq!(
+        to_bytes(
+            original_with_ignored_transformations.into_body(),
+            MAX_RESPONSE_SIZE
+        )
+        .await
+        .unwrap(),
+        png.as_slice()
     );
 
     let tagged = get_image(

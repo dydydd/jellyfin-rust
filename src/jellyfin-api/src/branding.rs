@@ -137,7 +137,6 @@ pub(crate) async fn get_splashscreen(
         modified,
         query.tag.as_deref(),
         query.format.as_deref(),
-        90,
     )
     .await
 }
