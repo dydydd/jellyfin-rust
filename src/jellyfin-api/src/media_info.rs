@@ -436,6 +436,10 @@ fn apply_stream_builder(
                 || policy.enable_video_playback_transcoding
                 || policy.enable_playback_remuxing
         },
+        // Match MediaInfoHelper: ordinary HTTP direct-stream URLs are disabled
+        // because clients can otherwise receive source bytes under a remuxed
+        // extension (for example, MKV bytes from a `stream.mp4` URL).
+        enable_direct_stream: false,
         enable_playback_remuxing: policy.enable_playback_remuxing,
         force_remote_source_transcoding: policy.force_remote_source_transcoding,
         item_id,
@@ -480,26 +484,53 @@ fn apply_stream_builder(
         "playback stream selected from device profile",
     );
     stream.play_session_id = Some(play_session_id.to_owned());
-    if let Some(source) = stream.media_source.as_mut() {
-        source.supports_transcoding = policy_can_transcode(&policy, is_audio);
-    }
-    if stream.play_method != PlayMethod::DirectPlay && policy_can_transcode(&policy, is_audio) {
-        // Clients already know the externally reachable server URL. Returning
-        // a relative path avoids leaking an internal bind address such as
-        // `http://0.0.0.0:8096` when the server runs behind Docker or a proxy.
-        let url = stream.to_url(None, Some(access_token), None);
-        if !url.is_empty()
-            && let Some(source) = stream.media_source.as_mut()
-        {
-            source.transcoding_url = Some(url);
-        }
-    }
+    apply_selected_stream_metadata(&mut stream, &options, &policy, is_audio, access_token);
     let source = stream
         .media_source
         .take()
         .expect("selected stream always owns its media source");
     options.media_sources.insert(source_index, source);
     *media_sources = options.media_sources;
+}
+
+fn apply_selected_stream_metadata(
+    stream: &mut jellyfin_model::StreamInfo,
+    options: &MediaOptions,
+    policy: &jellyfin_model::UserPolicy,
+    is_audio: bool,
+    access_token: &str,
+) {
+    let play_method = stream.play_method;
+    let supports_transcoding = policy_can_transcode(policy, is_audio)
+        && (play_method == PlayMethod::DirectStream
+            || stream
+                .media_source
+                .as_ref()
+                .is_some_and(|source| source.transcoding_container.is_some())
+            || options.profile.transcoding_profiles.iter().any(|profile| {
+                profile.profile_type == stream.media_type && profile.context == options.context
+            }));
+    let transcoding = if play_method != PlayMethod::DirectPlay && supports_transcoding {
+        // Clients already know the externally reachable server URL. Returning
+        // a relative path avoids leaking an internal bind address such as
+        // `http://0.0.0.0:8096` when the server runs behind Docker or a proxy.
+        let url = stream.to_url(None, Some(access_token), None);
+        (!url.is_empty()).then(|| (url, stream.container.clone(), stream.sub_protocol))
+    } else {
+        None
+    };
+    if let Some(source) = stream.media_source.as_mut() {
+        source.supports_direct_play = play_method == PlayMethod::DirectPlay;
+        source.supports_direct_stream = play_method == PlayMethod::DirectPlay
+            || (options.enable_direct_stream && play_method == PlayMethod::DirectStream);
+        source.supports_transcoding = supports_transcoding;
+        source.default_audio_stream_index = stream.audio_stream_index;
+        if let Some((url, container, sub_protocol)) = transcoding {
+            source.transcoding_url = Some(url);
+            source.transcoding_container = container;
+            source.transcoding_sub_protocol = sub_protocol;
+        }
+    }
 }
 
 const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: bool) -> bool {
@@ -615,8 +646,8 @@ mod tests {
     use crate::AppState;
 
     use jellyfin_model::{
-        DeviceProfile, DlnaProfileType, EncodingContext, MediaStream, MediaStreamProtocol,
-        MediaStreamType, TranscodingProfile,
+        DeviceProfile, DirectPlayProfile, DlnaProfileType, EncodingContext, MediaStream,
+        MediaStreamProtocol, MediaStreamType, TranscodingProfile,
     };
 
     use super::{MediaProtocol, MediaSourceInfo, apply_stream_builder, sort_media_sources};
@@ -731,6 +762,94 @@ mod tests {
         assert!(url.contains("DeviceId=device-id"));
         assert!(url.contains("MediaSourceId="));
         assert!(url.contains("ApiKey=access-token"));
+        assert!(!sources[0].supports_direct_play);
+        assert!(!sources[0].supports_direct_stream);
+        assert!(sources[0].supports_transcoding);
+        assert_eq!(sources[0].transcoding_container.as_deref(), Some("ts"));
+        assert_eq!(
+            sources[0].transcoding_sub_protocol,
+            MediaStreamProtocol::Hls
+        );
+    }
+
+    #[tokio::test]
+    async fn playback_info_does_not_wrap_mkv_as_static_mp4_direct_stream() {
+        let item_id = Uuid::new_v4();
+        let source = MediaSourceInfo {
+            id: Some(item_id.simple().to_string()),
+            protocol: MediaProtocol::File,
+            container: Some("mkv".to_owned()),
+            run_time_ticks: Some(600_000_000),
+            media_streams: vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    width: Some(1920),
+                    height: Some(1080),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    channels: Some(2),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+            ],
+            ..MediaSourceInfo::default()
+        };
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: "mp4".to_owned(),
+                audio_codec: Some("aac".to_owned()),
+                video_codec: Some("h264".to_owned()),
+                profile_type: DlnaProfileType::Video,
+            }],
+            transcoding_profiles: vec![TranscodingProfile {
+                container: "ts".to_owned(),
+                profile_type: DlnaProfileType::Video,
+                video_codec: "h264".to_owned(),
+                audio_codec: "aac".to_owned(),
+                protocol: MediaStreamProtocol::Hls,
+                context: EncodingContext::Streaming,
+                segment_length: 6,
+                ..TranscodingProfile::default()
+            }],
+            ..DeviceProfile::default()
+        };
+        let mut sources = vec![source];
+
+        apply_stream_builder(
+            &mut sources,
+            &test_user(),
+            &test_state(),
+            item_id,
+            Some(profile),
+            &mut None,
+            "device-id",
+            "access-token",
+            "play-session-id",
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        );
+
+        let url = sources[0]
+            .transcoding_url
+            .as_deref()
+            .expect("transcoding url");
+        assert!(url.contains("/master.m3u8"));
+        assert!(!url.contains("/stream.mp4"));
+        assert!(!url.contains("Static=true"));
+        assert!(!sources[0].supports_direct_play);
+        assert!(!sources[0].supports_direct_stream);
+        assert!(sources[0].supports_transcoding);
+        assert_eq!(sources[0].transcoding_container.as_deref(), Some("ts"));
+        assert_eq!(
+            sources[0].transcoding_sub_protocol,
+            MediaStreamProtocol::Hls
+        );
     }
 
     fn source(item_id: Uuid, bitrate: i32, supports_direct_play: bool) -> MediaSourceInfo {
