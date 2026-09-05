@@ -53,7 +53,7 @@ pub(crate) struct ItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<Uuid>,
-    #[serde(default, alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "user_id")]
     user_id: Option<Uuid>,
     #[serde(default, alias = "Position")]
     position: Option<i32>,

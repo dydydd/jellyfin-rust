@@ -623,11 +623,7 @@ impl LibraryScanService {
             })
             .await?;
         let placeholder = default_stream(target, kind);
-        let embedded_streams = existing
-            .iter()
-            .filter(|stream| !stream.is_external)
-            .collect::<Vec<_>>();
-        if embedded_streams.len() != 1 || embedded_streams[0] != &placeholder {
+        if !streams_need_probe(&existing, &placeholder) {
             return Ok(false);
         }
 
@@ -2387,7 +2383,7 @@ impl LibraryScanService {
     ) -> Result<Option<MediaInfo>, LibraryScanError> {
         let existing = &preloaded.streams;
         let default_stream = default_stream(media_source_path, media_kind);
-        if !existing.is_empty() && (existing.len() != 1 || existing[0] != default_stream) {
+        if !streams_need_probe(existing, &default_stream) {
             return Ok(None);
         }
         let mut media_info = if should_probe {
@@ -3895,6 +3891,44 @@ fn default_stream(path: &str, media_kind: MediaKind) -> PersistedMediaStream {
     }
 }
 
+fn streams_need_probe(
+    existing: &[PersistedMediaStream],
+    placeholder: &PersistedMediaStream,
+) -> bool {
+    // Official FFProbeVideoInfo keeps external streams separate from embedded media info.
+    // A sidecar subtitle therefore must not make a failed embedded probe look complete.
+    let mut embedded = existing.iter().filter(|stream| !stream.is_external);
+    let Some(candidate) = embedded.next() else {
+        return true;
+    };
+    embedded.next().is_none() && is_placeholder_stream(candidate, placeholder)
+}
+
+fn is_placeholder_stream(
+    candidate: &PersistedMediaStream,
+    placeholder: &PersistedMediaStream,
+) -> bool {
+    let mut candidate = candidate.clone();
+    let mut placeholder = placeholder.clone();
+    normalize_nullable_false_flags(&mut candidate);
+    normalize_nullable_false_flags(&mut placeholder);
+    candidate == placeholder
+}
+
+fn normalize_nullable_false_flags(stream: &mut PersistedMediaStream) {
+    for value in [
+        &mut stream.is_interlaced,
+        &mut stream.is_anamorphic,
+        &mut stream.is_avc,
+        &mut stream.is_hearing_impaired,
+        &mut stream.hdr10_plus_present_flag,
+    ] {
+        if *value == Some(false) {
+            *value = None;
+        }
+    }
+}
+
 fn probe_media_info(
     probe_path: &Path,
     path: &str,
@@ -4265,12 +4299,12 @@ mod tests {
         apply_scanned_group_name, apply_strm_metadata, attachment_image_type,
         attachments_from_media_info, codec_from_extension, default_fanout_concurrency,
         default_stream, display_name, extra_type_name, image_extraction_command_succeeded,
-        is_extras_directory, local_image_type, media_item_data, media_kind, merge_scan_summary,
-        metadata_movie_version_groups, next_stream_index, read_strm_target,
+        is_extras_directory, is_placeholder_stream, local_image_type, media_item_data, media_kind,
+        merge_scan_summary, metadata_movie_version_groups, next_stream_index, read_strm_target,
         relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
-        streams_from_media_info, track_group_change,
+        streams_from_media_info, streams_need_probe, track_group_change,
     };
 
     #[test]
@@ -5106,6 +5140,49 @@ mod tests {
         assert_eq!(audio.codec.as_deref(), Some("flac"));
         assert_eq!(audio.channels, Some(2));
         assert_eq!(audio.sample_rate, Some(48_000));
+    }
+
+    #[test]
+    fn external_subtitle_does_not_mask_an_embedded_placeholder() {
+        let placeholder = default_stream("/media/Movie.mkv", MediaKind::Video);
+        let mut external_subtitle = default_stream("/media/Movie.eng.srt", MediaKind::Video);
+        external_subtitle.stream_index = 1;
+        external_subtitle.stream_type = PersistedMediaStreamType::Subtitle;
+        external_subtitle.codec = Some("srt".to_owned());
+        external_subtitle.is_default = false;
+        external_subtitle.is_external = true;
+
+        assert!(streams_need_probe(
+            &[placeholder.clone(), external_subtitle],
+            &placeholder
+        ));
+    }
+
+    #[test]
+    fn legacy_nullable_false_placeholder_is_retried() {
+        let placeholder = default_stream("/media/Movie.mkv", MediaKind::Video);
+        let mut legacy = placeholder.clone();
+        legacy.is_interlaced = None;
+        legacy.is_hearing_impaired = None;
+        legacy.is_anamorphic = Some(false);
+        legacy.is_avc = Some(false);
+        legacy.hdr10_plus_present_flag = Some(false);
+
+        assert!(is_placeholder_stream(&legacy, &placeholder));
+        assert!(streams_need_probe(&[legacy], &placeholder));
+    }
+
+    #[test]
+    fn real_single_stream_is_not_retried_as_a_placeholder() {
+        let placeholder = default_stream("/media/Movie.mkv", MediaKind::Video);
+        let mut probed = placeholder.clone();
+        probed.codec = Some("hevc".to_owned());
+        probed.width = Some(3_840);
+        probed.height = Some(2_160);
+        probed.time_base = Some("1/1000".to_owned());
+
+        assert!(!is_placeholder_stream(&probed, &placeholder));
+        assert!(!streams_need_probe(&[probed], &placeholder));
     }
 
     #[test]

@@ -1,4 +1,6 @@
 #![allow(clippy::too_many_lines)]
+use std::future::Future;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
@@ -19,6 +21,43 @@ const DATABASE_PREFIX: &str = "jellyfin_playlist_routes_";
 
 #[tokio::test]
 async fn playlist_routes_match_official_permissions_shape_and_order() {
+    with_temporary_database(|database_name| async move {
+        exercise(&database_name).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn playlist_item_user_id_casings_select_the_requested_user() {
+    with_temporary_database(|database_name| async move {
+        let fixture = Fixture::new(&database_name).await;
+        let playlist_id = assert_creation(&fixture).await;
+
+        for parameter in ["userId", "UserId", "user_id"] {
+            let route = format!(
+                "/Playlists/{playlist_id}/Items?ids={}&{parameter}={}",
+                fixture.third_id, fixture.reader_id
+            );
+            assert_eq!(
+                fixture
+                    .request(Method::POST, &route, Some(&fixture.owner_token), None)
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{parameter} must select the read-only target user"
+            );
+        }
+
+        fixture.database.close().await.unwrap();
+    })
+    .await;
+}
+
+async fn with_temporary_database<F, Fut>(test: F)
+where
+    F: FnOnce(String) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -27,8 +66,7 @@ async fn playlist_routes_match_official_permissions_shape_and_order() {
         .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
         .await
         .unwrap();
-    let task_database_name = database_name.clone();
-    let outcome = tokio::spawn(async move { exercise(&task_database_name).await }).await;
+    let outcome = tokio::spawn(test(database_name.clone())).await;
     administrator
         .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
         .await
