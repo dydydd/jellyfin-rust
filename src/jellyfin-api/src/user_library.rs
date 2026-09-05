@@ -722,7 +722,8 @@ async fn get_lyrics_for(
 #[allow(clippy::too_many_lines)]
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
     let is_user_view = item.item_type == "UserView";
-    let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"]);
+    let extra_type = metadata_string(item.data.as_ref(), &["ExtraType", "extra_type"])
+        .map(|value| canonical_enum_or(&value, EXTRA_TYPES, "Unknown"));
     let media_source_path = metadata_string(item.data.as_ref(), &["StrmTarget", "strm_target"]);
     let has_lyrics = item
         .data
@@ -741,12 +742,16 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         path: item.path,
         media_source_path,
         overview: item.overview,
-        media_type: item.media_type,
+        media_type: item
+            .media_type
+            .as_deref()
+            .map(|value| canonical_enum_or(value, MEDIA_TYPES, "Unknown")),
         collection_type: if is_user_view {
             metadata_string(
                 item.data.as_ref(),
                 &["ViewType", "view_type", "CollectionType", "collection_type"],
             )
+            .map(|value| canonical_enum_or(&value, COLLECTION_TYPES, "unknown"))
         } else {
             None
         },
@@ -805,12 +810,13 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             &["ProductionLocations", "production_locations"],
         ),
         remote_trailers: metadata_remote_trailers(item.data.as_ref()),
-        air_days: metadata_strings(item.data.as_ref(), &["AirDays", "air_days"]),
+        air_days: metadata_enum_strings(item.data.as_ref(), &["AirDays", "air_days"], AIR_DAYS),
         end_date: metadata_api_datetime(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
         has_subtitles: metadata_bool(item.data.as_ref(), &["HasSubtitles", "has_subtitles"]),
-        video_3d_format: metadata_string(item.data.as_ref(), &["Video3DFormat", "video_3d_format"]),
+        video_3d_format: metadata_string(item.data.as_ref(), &["Video3DFormat", "video_3d_format"])
+            .and_then(|value| canonical_enum(&value, VIDEO_3D_FORMATS)),
         is_locked: metadata_bool(item.data.as_ref(), &["IsLocked", "is_locked"]),
         index_number_end: metadata_i32(item.data.as_ref(), &["IndexNumberEnd", "index_number_end"]),
         airs_after_season_number: metadata_i32(
@@ -1749,6 +1755,71 @@ fn metadata_strings(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+const MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];
+const COLLECTION_TYPES: &[&str] = &[
+    "unknown",
+    "movies",
+    "tvshows",
+    "music",
+    "musicvideos",
+    "trailers",
+    "homevideos",
+    "boxsets",
+    "books",
+    "photos",
+    "livetv",
+    "playlists",
+    "folders",
+];
+const EXTRA_TYPES: &[&str] = &[
+    "Unknown",
+    "Clip",
+    "Trailer",
+    "BehindTheScenes",
+    "DeletedScene",
+    "Interview",
+    "Scene",
+    "Sample",
+    "ThemeSong",
+    "ThemeVideo",
+    "Featurette",
+    "Short",
+];
+const AIR_DAYS: &[&str] = &[
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+const VIDEO_3D_FORMATS: &[&str] = &[
+    "HalfSideBySide",
+    "FullSideBySide",
+    "FullTopAndBottom",
+    "HalfTopAndBottom",
+    "MVC",
+];
+
+fn canonical_enum(value: &str, variants: &[&str]) -> Option<String> {
+    variants
+        .iter()
+        .find(|variant| variant.eq_ignore_ascii_case(value.trim()))
+        .map(|variant| (*variant).to_owned())
+}
+
+fn canonical_enum_or(value: &str, variants: &[&str], fallback: &str) -> String {
+    canonical_enum(value, variants).unwrap_or_else(|| fallback.to_owned())
+}
+
+fn metadata_enum_strings(data: Option<&Value>, keys: &[&str], variants: &[&str]) -> Vec<String> {
+    metadata_strings(data, keys)
+        .into_iter()
+        .filter_map(|value| canonical_enum(&value, variants))
+        .collect()
+}
+
 fn metadata_provider_ids(data: Option<&Value>) -> Option<HashMap<String, String>> {
     metadata_value(data, &["ProviderIds", "provider_ids"])
         .as_ref()
@@ -1882,8 +1953,10 @@ mod tests {
                 "IsLocked": true,
                 "Width": 1920,
                 "Height": 1080,
-                "AirDays": ["Monday", "Friday"],
+                "ExtraType": "behindthescenes",
+                "AirDays": ["monday", "Funday", "Friday"],
                 "EndDate": "2020-01-02",
+                "Video3DFormat": "mvc",
                 "ProductionLocations": ["Los Angeles"],
                 "ProviderIds": {
                     "Tmdb": 42,
@@ -1903,7 +1976,7 @@ mod tests {
             name: Some("Movie".to_owned()),
             clean_name: None,
             sort_name: None,
-            media_type: None,
+            media_type: Some("video".to_owned()),
             overview: None,
             official_rating: Some("PG-13".to_owned()),
             index_number: None,
@@ -1953,8 +2026,11 @@ mod tests {
         assert_eq!(dto.is_locked, Some(true));
         assert_eq!(dto.width, Some(1920));
         assert_eq!(dto.height, Some(1080));
+        assert_eq!(dto.media_type.as_deref(), Some("Video"));
+        assert_eq!(dto.extra_type.as_deref(), Some("BehindTheScenes"));
         assert_eq!(dto.air_days, ["Monday", "Friday"]);
         assert_eq!(dto.end_date.as_deref(), Some("2020-01-02T00:00:00.000Z"));
+        assert_eq!(dto.video_3d_format.as_deref(), Some("MVC"));
         assert_eq!(dto.production_locations, ["Los Angeles"]);
         assert_eq!(dto.official_rating.as_deref(), Some("PG-13"));
         assert_eq!(dto.path.as_deref(), Some("/library/Movie.strm"));

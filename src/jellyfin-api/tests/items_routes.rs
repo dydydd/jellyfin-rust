@@ -116,6 +116,9 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         serde_json::json!({
             "Tagline": "One line",
             "EndDate": "2020-01-02",
+            "ExtraType": "behindthescenes",
+            "AirDays": ["monday", "Funday"],
+            "Video3DFormat": "mvc",
             "RemoteTrailers": [
                 "https://trailers.example/legacy",
                 {"Name": "Trailer", "Url": "https://trailers.example/named"}
@@ -169,6 +172,9 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     assert_eq!(item["Taglines"], serde_json::json!(["One line"]));
     assert!(item.get("Tagline").is_none());
     assert_eq!(item["EndDate"], "2020-01-02T00:00:00.000Z");
+    assert_eq!(item["ExtraType"], "BehindTheScenes");
+    assert_eq!(item["AirDays"], serde_json::json!(["Monday"]));
+    assert_eq!(item["Video3DFormat"], "MVC");
     assert_eq!(item["People"][0]["Type"], "Unknown");
     assert_eq!(item["People"][1]["Type"], "Director");
     assert_eq!(
