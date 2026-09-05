@@ -93,6 +93,11 @@ pub struct ItemValuePage {
     pub start_index: u64,
 }
 
+#[derive(Debug, FromQueryResult)]
+struct GenreIdRow {
+    item_value_id: Uuid,
+}
+
 /// PostgreSQL-backed normalized item values and their many-to-many base-item
 /// associations.
 #[derive(Clone)]
@@ -480,20 +485,18 @@ impl ItemValueRepository {
             sql.push(')');
         }
         sql.push_str(")) ORDER BY value.item_value_id");
-        #[derive(FromQueryResult)]
-        struct GenreId {
-            item_value_id: Uuid,
-        }
-        Ok(GenreId::find_by_statement(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .all(self.database.as_ref())
-        .await?
-        .into_iter()
-        .map(|row| row.item_value_id)
-        .collect())
+        Ok(
+            GenreIdRow::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .all(self.database.as_ref())
+            .await?
+            .into_iter()
+            .map(|row| row.item_value_id)
+            .collect(),
+        )
     }
 
     /// Deletes all inherited tag associations (post-scan cleanup).
