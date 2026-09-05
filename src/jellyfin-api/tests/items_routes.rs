@@ -8,8 +8,9 @@ use jellyfin_controller::MediaAttachmentService;
 use jellyfin_controller::MediaStreamService;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem, NewDevice,
-    NewTrickplayInfo, NewUserData, TrickplayInfoRepository, UserDataRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DeviceRepository,
+    ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewTrickplayInfo, NewUserData,
+    TrickplayInfoRepository, UserDataRepository,
     entities::{base_item, item_value, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
@@ -119,6 +120,69 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     );
 
     items.delete(movie.id).await.expect("movie cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn item_pages_preserve_image_tags_with_batched_projection() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let images = BaseItemImageRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let first = create_item(
+        &items,
+        "Movie",
+        &format!("First image {}", fixture.suffix),
+        root.id,
+    )
+    .await;
+    let second = create_item(
+        &items,
+        "Movie",
+        &format!("Second image {}", fixture.suffix),
+        root.id,
+    )
+    .await;
+    for (item, name) in [(&first, "first.jpg"), (&second, "second.jpg")] {
+        images
+            .replace(
+                item.id,
+                &[NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: format!("/media/{name}"),
+                    date_modified: Utc::now(),
+                    width: Some(600),
+                    height: Some(900),
+                    blurhash: None,
+                }],
+            )
+            .await
+            .expect("primary image");
+    }
+
+    let body = body_json(
+        fixture
+            .request(
+                &format!("/Items?ids={},{}", first.id, second.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let returned = body["Items"].as_array().expect("items");
+    assert_eq!(returned.len(), 2);
+    for item in returned {
+        assert!(item["ImageTags"]["Primary"].is_string());
+    }
+    assert_ne!(
+        returned[0]["ImageTags"]["Primary"],
+        returned[1]["ImageTags"]["Primary"]
+    );
+
+    items.delete(first.id).await.expect("first cleanup");
+    items.delete(second.id).await.expect("second cleanup");
     fixture.cleanup().await;
 }
 

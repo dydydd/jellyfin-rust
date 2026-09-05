@@ -1179,6 +1179,7 @@ async fn page_to_dto(
     target_user_id: Uuid,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let requested_fields = user_library::BaseItemDtoFields::from_names(&fields);
+    let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
     let defaults =
         user_library::media_stream_defaults_for_user(state, target_user_id, requested_fields)
             .await?;
@@ -1191,7 +1192,6 @@ async fn page_to_dto(
         std::collections::HashMap::new()
     };
     let mut media_streams = if requested_fields.wants_media_streams() {
-        let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
         state
             .media_streams
             .get_media_streams_for_items(&item_ids)
@@ -1200,7 +1200,6 @@ async fn page_to_dto(
         std::collections::HashMap::new()
     };
     let mut media_attachments = if requested_fields.wants_media_attachments() {
-        let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
         state
             .media_attachments
             .get_media_attachments_for_items(&item_ids)
@@ -1215,6 +1214,14 @@ async fn page_to_dto(
         .preferred_dto_map(target_user_id, &page.items)
         .await?;
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
+    let mut image_projections = state
+        .dto_images
+        .project_many(
+            &item_ids,
+            jellyfin_server_implementations::DtoImageOptions::default(),
+        )
+        .await
+        .map_err(|_| ApiError::Internal)?;
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -1227,15 +1234,7 @@ async fn page_to_dto(
         if let Some(metadata) = relations.remove(&item_id) {
             user_library::attach_relation_metadata(&mut dto, metadata);
         }
-        if let Some(projection) = state
-            .dto_images
-            .project(
-                item_id,
-                jellyfin_server_implementations::DtoImageOptions::default(),
-            )
-            .await
-            .map_err(|_| ApiError::Internal)?
-        {
+        if let Some(projection) = image_projections.remove(&item_id) {
             user_library::attach_dto_image_projection(&mut dto, projection);
         }
         if requested_fields.wants_media_streams() {
