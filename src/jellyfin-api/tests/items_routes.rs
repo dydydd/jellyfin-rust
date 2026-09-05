@@ -469,24 +469,29 @@ async fn episode_media_source_count_is_projected_without_loading_sources() {
     singleton.path = Some(format!("/media/{marker} - singleton.mkv"));
     let singleton = items.create(singleton).await.expect("singleton episode");
 
-    let route = format!(
-        "/Items?recursive=true&searchTerm={}&includeItemTypes=Episode&fields=mediasourcecount",
-        marker
-    );
-    let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
-    assert_eq!(body["TotalRecordCount"], 2);
-    let returned = body["Items"].as_array().expect("items");
-    let grouped = returned
-        .iter()
-        .find(|item| item["Id"] == primary.id.simple().to_string())
-        .expect("grouped primary episode");
-    assert_eq!(grouped["MediaSourceCount"], 2);
-    assert!(grouped.get("MediaSources").is_none());
-    let single = returned
-        .iter()
-        .find(|item| item["Id"] == singleton.id.simple().to_string())
-        .expect("singleton episode");
-    assert!(single.get("MediaSourceCount").is_none());
+    for (search_term, include_item_types) in [
+        ("searchTerm", "includeItemTypes"),
+        ("SearchTerm", "IncludeItemTypes"),
+        ("searchterm", "includeitemtypes"),
+    ] {
+        let route = format!(
+            "/Items?recursive=true&{search_term}={marker}&{include_item_types}=Episode&fields=mediasourcecount"
+        );
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body["TotalRecordCount"], 2, "{route}");
+        let returned = body["Items"].as_array().expect("items");
+        let grouped = returned
+            .iter()
+            .find(|item| item["Id"] == primary.id.simple().to_string())
+            .expect("grouped primary episode");
+        assert_eq!(grouped["MediaSourceCount"], 2, "{route}");
+        assert!(grouped.get("MediaSources").is_none(), "{route}");
+        let single = returned
+            .iter()
+            .find(|item| item["Id"] == singleton.id.simple().to_string())
+            .expect("singleton episode");
+        assert!(single.get("MediaSourceCount").is_none(), "{route}");
+    }
 
     items.delete(alternate.id).await.expect("alternate cleanup");
     items.delete(primary.id).await.expect("primary cleanup");
@@ -686,40 +691,53 @@ async fn trickplay_field_is_opt_in_batched_and_matches_official_shape() {
 async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
-    let route = format!(
-        "/Items?recursive=true&searchTerm={}&startIndex=1&limit=2",
-        fixture.suffix.to_uppercase()
-    );
-    let response = fixture.request(&route, Some(&fixture.user_token)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    assert_eq!(body["TotalRecordCount"], 4);
-    assert_eq!(body["StartIndex"], 1);
-    assert_eq!(body["Items"].as_array().unwrap().len(), 2);
-    for item in body["Items"].as_array().unwrap() {
-        assert!(!item["ServerId"].as_str().unwrap().is_empty());
-        assert!(item["Name"].as_str().unwrap().contains(&fixture.suffix));
-        assert!(item.get("item_type").is_none());
+    for (search_term, start_index, enable_total_record_count) in [
+        ("searchTerm", "startIndex", "enableTotalRecordCount"),
+        ("SearchTerm", "StartIndex", "EnableTotalRecordCount"),
+        ("searchterm", "startindex", "enabletotalrecordcount"),
+    ] {
+        let route = format!(
+            "/Items?recursive=true&{search_term}={}&{start_index}=1&limit=2&{enable_total_record_count}=true",
+            fixture.suffix.to_uppercase()
+        );
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let body = body_json(response).await;
+        assert_eq!(body["TotalRecordCount"], 4, "{route}");
+        assert_eq!(body["StartIndex"], 1, "{route}");
+        assert_eq!(body["Items"].as_array().unwrap().len(), 2, "{route}");
+        for item in body["Items"].as_array().unwrap() {
+            assert!(!item["ServerId"].as_str().unwrap().is_empty());
+            assert!(item["Name"].as_str().unwrap().contains(&fixture.suffix));
+            assert!(item.get("item_type").is_none());
+        }
     }
 
-    let movie_route = format!(
-        "/Items?recursive=true&searchTerm={}&includeItemTypes=Movie",
-        fixture.suffix.to_uppercase()
-    );
-    let movies = body_json(
-        fixture
-            .request(&movie_route, Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    assert_eq!(movies["TotalRecordCount"], 2);
-    assert!(
-        movies["Items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|item| item["Type"] == "Movie")
-    );
+    for (search_term, include_item_types) in [
+        ("searchTerm", "includeItemTypes"),
+        ("SearchTerm", "IncludeItemTypes"),
+        ("searchterm", "includeitemtypes"),
+    ] {
+        let movie_route = format!(
+            "/Items?recursive=true&{search_term}={}&{include_item_types}=Movie",
+            fixture.suffix.to_uppercase()
+        );
+        let movies = body_json(
+            fixture
+                .request(&movie_route, Some(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_eq!(movies["TotalRecordCount"], 2, "{movie_route}");
+        assert!(
+            movies["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["Type"] == "Movie"),
+            "{movie_route}"
+        );
+    }
 
     let without_total = body_json(
         fixture
@@ -739,31 +757,38 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
         "search-provider results keep the full candidate count even when total counts are disabled"
     );
 
-    let descending_route = format!(
-        "/Items?recursive=true&searchTerm={}&sortBy=SortName&sortOrder=Descending",
-        fixture.suffix
-    );
-    let descending = body_json(
-        fixture
-            .request(&descending_route, Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    let names = descending["Items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["Name"].as_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names,
-        vec![
-            format!("A {}", fixture.suffix),
-            format!("B {}", fixture.suffix),
-            format!("C {}", fixture.suffix),
-            format!("D {}", fixture.suffix)
-        ]
-    );
+    for (search_term, sort_by, sort_order) in [
+        ("searchTerm", "sortBy", "sortOrder"),
+        ("SearchTerm", "SortBy", "SortOrder"),
+        ("searchterm", "sortby", "sortorder"),
+    ] {
+        let descending_route = format!(
+            "/Items?recursive=true&{search_term}={}&{sort_by}=SortName&{sort_order}=Descending",
+            fixture.suffix
+        );
+        let descending = body_json(
+            fixture
+                .request(&descending_route, Some(&fixture.user_token))
+                .await,
+        )
+        .await;
+        let names = descending["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                format!("A {}", fixture.suffix),
+                format!("B {}", fixture.suffix),
+                format!("C {}", fixture.suffix),
+                format!("D {}", fixture.suffix)
+            ],
+            "{descending_route}"
+        );
+    }
     fixture.cleanup().await;
 }
 
@@ -1030,62 +1055,63 @@ async fn advanced_items_filters_are_applied_to_the_public_query() {
         .expect("audio stream");
 
     let ids = format!("{},{},{},{}", sd.id, hd.id, four_k.id, audio.id);
-    let hd_route = format!("/Items?ids={ids}&isHd=true");
-    let hd_body = body_json(fixture.request(&hd_route, Some(&fixture.user_token)).await).await;
-    assert_eq!(hd_body["TotalRecordCount"], 1);
-    assert_eq!(hd_body["Items"][0]["Id"], hd.id.simple().to_string());
+    for key in ["isHd", "IsHD", "ishd"] {
+        let route = format!("/Items?ids={ids}&{key}=true");
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body["TotalRecordCount"], 1, "{route}");
+        assert_eq!(
+            body["Items"][0]["Id"],
+            hd.id.simple().to_string(),
+            "{route}"
+        );
+    }
 
-    let four_k_route = format!("/Items?ids={ids}&is4K=true");
-    let four_k_body = body_json(
-        fixture
-            .request(&four_k_route, Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    assert_eq!(four_k_body["TotalRecordCount"], 1);
-    assert_eq!(
-        four_k_body["Items"][0]["Id"],
-        four_k.id.simple().to_string()
-    );
+    for key in ["is4K", "Is4K", "is4k"] {
+        let route = format!("/Items?ids={ids}&{key}=true");
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body["TotalRecordCount"], 1, "{route}");
+        assert_eq!(
+            body["Items"][0]["Id"],
+            four_k.id.simple().to_string(),
+            "{route}"
+        );
+    }
 
-    let language_route = format!("/Items?ids={ids}&audioLanguages=eng");
-    let language_body = body_json(
-        fixture
-            .request(&language_route, Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    assert_eq!(language_body["TotalRecordCount"], 1);
-    assert_eq!(
-        language_body["Items"][0]["Id"],
-        audio.id.simple().to_string()
-    );
+    for key in ["audioLanguages", "AudioLanguages", "audiolanguages"] {
+        let route = format!("/Items?ids={ids}&{key}=eng");
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body["TotalRecordCount"], 1, "{route}");
+        assert_eq!(
+            body["Items"][0]["Id"],
+            audio.id.simple().to_string(),
+            "{route}"
+        );
+    }
 
-    let provider_route = format!("/Items?ids={ids}&hasImdbId=true");
-    let provider_body = body_json(
-        fixture
-            .request(&provider_route, Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    assert_eq!(provider_body["TotalRecordCount"], 1);
-    assert_eq!(provider_body["Items"][0]["Id"], hd.id.simple().to_string());
+    for key in ["hasImdbId", "HasImdbId", "hasimdbid"] {
+        let route = format!("/Items?ids={ids}&{key}=true");
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body["TotalRecordCount"], 1, "{route}");
+        assert_eq!(
+            body["Items"][0]["Id"],
+            hd.id.simple().to_string(),
+            "{route}"
+        );
+    }
 
-    let exclude_route = format!("/Items?ids={ids}&excludeItemIds={}", hd.id);
-    let exclude_body = body_json(
-        fixture
-            .request(&exclude_route, Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    assert_eq!(exclude_body["TotalRecordCount"], 3);
-    assert!(
-        exclude_body["Items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|item| item["Id"] != hd.id.simple().to_string())
-    );
+    for key in ["excludeItemIds", "ExcludeItemIds", "excludeitemids"] {
+        let route = format!("/Items?ids={ids}&{key}={}", hd.id);
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body["TotalRecordCount"], 3, "{route}");
+        assert!(
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["Id"] != hd.id.simple().to_string()),
+            "{route}"
+        );
+    }
 
     for item_id in [sd.id, hd.id, four_k.id, audio.id] {
         items.delete(item_id).await.expect("item cleanup");
@@ -1101,6 +1127,19 @@ async fn item_query_authentication_and_target_permissions_are_enforced() {
         fixture.request("/Items", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
+    for route in ["/Items", "/Items/Latest", "/Items/Suggestions"] {
+        for user_id in ["userId", "UserId", "userid"] {
+            let route = format!("{route}?{user_id}={}", fixture.admin_id);
+            assert_eq!(
+                fixture
+                    .request(&route, Some(&fixture.user_token))
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{route}"
+            );
+        }
+    }
     for suffix in ["Items", "Items/Resume"] {
         let admin_route = format!("/Users/{}/{suffix}", fixture.admin_id);
         assert_eq!(
@@ -1119,6 +1158,89 @@ async fn item_query_authentication_and_target_permissions_are_enforced() {
             StatusCode::OK
         );
     }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn latest_and_suggestions_query_names_are_case_insensitive() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let user_data = UserDataRepository::new(fixture.database.clone());
+    let mut played = NewUserData::new(fixture.item_ids[0], fixture.user_id, "main");
+    played.played = true;
+    user_data.upsert(played).await.expect("played user data");
+
+    for (include_item_types, is_played) in [
+        ("includeItemTypes", "isPlayed"),
+        ("IncludeItemTypes", "IsPlayed"),
+        ("includeitemtypes", "isplayed"),
+    ] {
+        let route = format!("/Items/Latest?{include_item_types}=Movie&{is_played}=true&limit=10");
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body.as_array().expect("latest items").len(), 1, "{route}");
+        assert_eq!(
+            body[0]["Id"],
+            fixture.item_ids[0].simple().to_string(),
+            "{route}"
+        );
+    }
+
+    for group_items in ["groupItems", "GroupItems", "groupitems"] {
+        let route = format!("/Items/Latest?{group_items}=not-bool");
+        assert_eq!(
+            fixture
+                .request(&route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{route}"
+        );
+    }
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let suggestion_media_type = format!("Video-{}", fixture.suffix);
+    let mut first = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    first.name = Some(format!("Suggested first {}", fixture.suffix));
+    first.sort_name = first.name.clone();
+    first.parent_id = Some(root.id);
+    first.media_type = Some(suggestion_media_type.clone());
+    let first = items.create(first).await.expect("first suggestion");
+    let mut second = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    second.name = Some(format!("Suggested second {}", fixture.suffix));
+    second.sort_name = second.name.clone();
+    second.parent_id = Some(root.id);
+    second.media_type = Some(suggestion_media_type.clone());
+    let second = items.create(second).await.expect("second suggestion");
+
+    for (media_type, start_index, enable_total_record_count) in [
+        ("mediaType", "startIndex", "enableTotalRecordCount"),
+        ("MediaType", "StartIndex", "EnableTotalRecordCount"),
+        ("mediatype", "startindex", "enabletotalrecordcount"),
+    ] {
+        let route = format!(
+            "/Items/Suggestions?{media_type}={suggestion_media_type}&type=Movie&{start_index}=2&limit=1&{enable_total_record_count}=true"
+        );
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(body["TotalRecordCount"], 2, "{route}");
+        assert_eq!(body["StartIndex"], 2, "{route}");
+        assert!(
+            body["Items"]
+                .as_array()
+                .expect("suggested items")
+                .is_empty(),
+            "{route}"
+        );
+    }
+
+    items
+        .delete(first.id)
+        .await
+        .expect("first suggestion cleanup");
+    items
+        .delete(second.id)
+        .await
+        .expect("second suggestion cleanup");
     fixture.cleanup().await;
 }
 
@@ -1153,6 +1275,7 @@ impl Fixture {
             "HD %",
             "4K %",
             "Audio %",
+            "Suggested %",
             "Collection %",
             "Nested %",
             "Deep Movie %",

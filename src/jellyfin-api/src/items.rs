@@ -35,40 +35,101 @@ pub(crate) struct ItemsQuery {
     search_term: Option<String>,
     #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
-    #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
+    #[serde(default, rename = "isPlayed", alias = "IsPlayed", alias = "isplayed")]
     is_played: Option<bool>,
-    #[serde(default, rename = "isFavorite", alias = "IsFavorite")]
+    #[serde(
+        default,
+        rename = "isFavorite",
+        alias = "IsFavorite",
+        alias = "isfavorite"
+    )]
     is_favorite: Option<bool>,
-    #[serde(default, rename = "minOfficialRating", alias = "MinOfficialRating")]
+    #[serde(
+        default,
+        rename = "minOfficialRating",
+        alias = "MinOfficialRating",
+        alias = "minofficialrating"
+    )]
     min_official_rating: Option<String>,
-    #[serde(default, rename = "maxOfficialRating", alias = "MaxOfficialRating")]
+    #[serde(
+        default,
+        rename = "maxOfficialRating",
+        alias = "MaxOfficialRating",
+        alias = "maxofficialrating"
+    )]
     max_official_rating: Option<String>,
-    #[serde(default, rename = "hasThemeSong", alias = "HasThemeSong")]
+    #[serde(
+        default,
+        rename = "hasThemeSong",
+        alias = "HasThemeSong",
+        alias = "hasthemesong"
+    )]
     has_theme_song: Option<bool>,
-    #[serde(default, rename = "hasThemeVideo", alias = "HasThemeVideo")]
+    #[serde(
+        default,
+        rename = "hasThemeVideo",
+        alias = "HasThemeVideo",
+        alias = "hasthemevideo"
+    )]
     has_theme_video: Option<bool>,
-    #[serde(default, rename = "hasSubtitles", alias = "HasSubtitles")]
+    #[serde(
+        default,
+        rename = "hasSubtitles",
+        alias = "HasSubtitles",
+        alias = "hassubtitles"
+    )]
     has_subtitles: Option<bool>,
-    #[serde(default, rename = "hasSpecialFeature", alias = "HasSpecialFeature")]
+    #[serde(
+        default,
+        rename = "hasSpecialFeature",
+        alias = "HasSpecialFeature",
+        alias = "hasspecialfeature"
+    )]
     has_special_feature: Option<bool>,
-    #[serde(default, rename = "hasTrailer", alias = "HasTrailer")]
+    #[serde(
+        default,
+        rename = "hasTrailer",
+        alias = "HasTrailer",
+        alias = "hastrailer"
+    )]
     has_trailer: Option<bool>,
-    #[serde(default, rename = "adjacentTo", alias = "AdjacentTo")]
+    #[serde(
+        default,
+        rename = "adjacentTo",
+        alias = "AdjacentTo",
+        alias = "adjacentto"
+    )]
     adjacent_to: Option<Uuid>,
-    #[serde(default, rename = "indexNumber", alias = "IndexNumber")]
+    #[serde(
+        default,
+        rename = "indexNumber",
+        alias = "IndexNumber",
+        alias = "indexnumber"
+    )]
     index_number: Option<i32>,
-    #[serde(default, rename = "parentIndexNumber", alias = "ParentIndexNumber")]
+    #[serde(
+        default,
+        rename = "parentIndexNumber",
+        alias = "ParentIndexNumber",
+        alias = "parentindexnumber"
+    )]
     parent_index_number: Option<i32>,
-    #[serde(default, rename = "hasParentalRating", alias = "HasParentalRating")]
+    #[serde(
+        default,
+        rename = "hasParentalRating",
+        alias = "HasParentalRating",
+        alias = "hasparentalrating"
+    )]
     has_parental_rating: Option<bool>,
-    #[serde(default, rename = "isHd", alias = "IsHD")]
+    #[serde(default, rename = "isHd", alias = "IsHD", alias = "ishd")]
     is_hd: Option<bool>,
-    #[serde(default, rename = "is4K", alias = "Is4K")]
+    #[serde(default, rename = "is4K", alias = "Is4K", alias = "is4k")]
     is_4k: Option<bool>,
     #[serde(
         default,
         rename = "locationTypes",
         alias = "LocationTypes",
+        alias = "locationtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     location_types: Vec<String>,
@@ -76,34 +137,86 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "excludeLocationTypes",
         alias = "ExcludeLocationTypes",
+        alias = "excludelocationtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_location_types: Vec<String>,
-    #[serde(default, rename = "isMissing", alias = "IsMissing")]
+    #[serde(
+        default,
+        rename = "isMissing",
+        alias = "IsMissing",
+        alias = "ismissing"
+    )]
     is_missing: Option<bool>,
-    #[serde(default, rename = "isUnaired", alias = "IsUnaired")]
+    #[serde(
+        default,
+        rename = "isUnaired",
+        alias = "IsUnaired",
+        alias = "isunaired"
+    )]
     is_unaired: Option<bool>,
-    #[serde(default, rename = "minCriticRating", alias = "MinCriticRating")]
+    #[serde(
+        default,
+        rename = "minCriticRating",
+        alias = "MinCriticRating",
+        alias = "mincriticrating"
+    )]
     min_critic_rating: Option<f64>,
-    #[serde(default, rename = "minPremiereDate", alias = "MinPremiereDate")]
+    #[serde(
+        default,
+        rename = "minPremiereDate",
+        alias = "MinPremiereDate",
+        alias = "minpremieredate"
+    )]
     min_premiere_date: Option<DateTime<Utc>>,
-    #[serde(default, rename = "maxPremiereDate", alias = "MaxPremiereDate")]
+    #[serde(
+        default,
+        rename = "maxPremiereDate",
+        alias = "MaxPremiereDate",
+        alias = "maxpremieredate"
+    )]
     max_premiere_date: Option<DateTime<Utc>>,
-    #[serde(default, rename = "minDateLastSaved", alias = "MinDateLastSaved")]
+    #[serde(
+        default,
+        rename = "minDateLastSaved",
+        alias = "MinDateLastSaved",
+        alias = "mindatelastsaved"
+    )]
     min_date_last_saved: Option<DateTime<Utc>>,
     #[serde(
         default,
         rename = "minDateLastSavedForUser",
-        alias = "MinDateLastSavedForUser"
+        alias = "MinDateLastSavedForUser",
+        alias = "mindatelastsavedforuser"
     )]
     min_date_last_saved_for_user: Option<DateTime<Utc>>,
-    #[serde(default, rename = "hasOverview", alias = "HasOverview")]
+    #[serde(
+        default,
+        rename = "hasOverview",
+        alias = "HasOverview",
+        alias = "hasoverview"
+    )]
     has_overview: Option<bool>,
-    #[serde(default, rename = "hasImdbId", alias = "HasImdbId")]
+    #[serde(
+        default,
+        rename = "hasImdbId",
+        alias = "HasImdbId",
+        alias = "hasimdbid"
+    )]
     has_imdb_id: Option<bool>,
-    #[serde(default, rename = "hasTmdbId", alias = "HasTmdbId")]
+    #[serde(
+        default,
+        rename = "hasTmdbId",
+        alias = "HasTmdbId",
+        alias = "hastmdbid"
+    )]
     has_tmdb_id: Option<bool>,
-    #[serde(default, rename = "hasTvdbId", alias = "HasTvdbId")]
+    #[serde(
+        default,
+        rename = "hasTvdbId",
+        alias = "HasTvdbId",
+        alias = "hastvdbid"
+    )]
     has_tvdb_id: Option<bool>,
     #[serde(
         default,
@@ -139,6 +252,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "personIds",
         alias = "PersonIds",
+        alias = "personids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     person_ids: Vec<Uuid>,
@@ -146,6 +260,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "personTypes",
         alias = "PersonTypes",
+        alias = "persontypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     person_types: Vec<String>,
@@ -153,6 +268,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "officialRatings",
         alias = "OfficialRatings",
+        alias = "officialratings",
         deserialize_with = "crate::query::pipe::deserialize"
     )]
     official_ratings: Vec<String>,
@@ -174,6 +290,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "excludeArtistIds",
         alias = "ExcludeArtistIds",
+        alias = "excludeartistids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_artist_ids: Vec<Uuid>,
@@ -181,6 +298,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "artistIds",
         alias = "ArtistIds",
+        alias = "artistids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     artist_ids: Vec<Uuid>,
@@ -188,6 +306,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "albumArtistIds",
         alias = "AlbumArtistIds",
+        alias = "albumartistids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     album_artist_ids: Vec<Uuid>,
@@ -195,6 +314,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "contributingArtistIds",
         alias = "ContributingArtistIds",
+        alias = "contributingartistids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     contributing_artist_ids: Vec<Uuid>,
@@ -209,20 +329,26 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "albumIds",
         alias = "AlbumIds",
+        alias = "albumids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     album_ids: Vec<Uuid>,
-    #[serde(default, rename = "minCommunityRating", alias = "MinCommunityRating")]
+    #[serde(
+        default,
+        rename = "minCommunityRating",
+        alias = "MinCommunityRating",
+        alias = "mincommunityrating"
+    )]
     min_community_rating: Option<f64>,
-    #[serde(default, rename = "isMovie", alias = "IsMovie")]
+    #[serde(default, rename = "isMovie", alias = "IsMovie", alias = "ismovie")]
     is_movie: Option<bool>,
-    #[serde(default, rename = "isSeries", alias = "IsSeries")]
+    #[serde(default, rename = "isSeries", alias = "IsSeries", alias = "isseries")]
     is_series: Option<bool>,
-    #[serde(default, rename = "isNews", alias = "IsNews")]
+    #[serde(default, rename = "isNews", alias = "IsNews", alias = "isnews")]
     is_news: Option<bool>,
-    #[serde(default, rename = "isKids", alias = "IsKids")]
+    #[serde(default, rename = "isKids", alias = "IsKids", alias = "iskids")]
     is_kids: Option<bool>,
-    #[serde(default, rename = "isSports", alias = "IsSports")]
+    #[serde(default, rename = "isSports", alias = "IsSports", alias = "issports")]
     is_sports: Option<bool>,
     #[serde(
         default,
@@ -242,6 +368,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
+        alias = "excludeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_item_types: Vec<String>,
@@ -249,6 +376,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "mediaTypes",
         alias = "MediaTypes",
+        alias = "mediatypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     media_types: Vec<String>,
@@ -256,6 +384,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "imageTypes",
         alias = "ImageTypes",
+        alias = "imagetypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     image_types: Vec<String>,
@@ -263,6 +392,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "excludeItemIds",
         alias = "ExcludeItemIds",
+        alias = "excludeitemids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_item_ids: Vec<Uuid>,
@@ -270,48 +400,87 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "videoTypes",
         alias = "VideoTypes",
+        alias = "videotypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     video_types: Vec<String>,
-    #[serde(default, rename = "isLocked", alias = "IsLocked")]
+    #[serde(default, rename = "isLocked", alias = "IsLocked", alias = "islocked")]
     is_locked: Option<bool>,
-    #[serde(default, rename = "isPlaceHolder", alias = "IsPlaceHolder")]
+    #[serde(
+        default,
+        rename = "isPlaceHolder",
+        alias = "IsPlaceHolder",
+        alias = "isplaceholder"
+    )]
     is_place_holder: Option<bool>,
-    #[serde(default, rename = "hasOfficialRating", alias = "HasOfficialRating")]
+    #[serde(
+        default,
+        rename = "hasOfficialRating",
+        alias = "HasOfficialRating",
+        alias = "hasofficialrating"
+    )]
     has_official_rating: Option<bool>,
-    #[serde(default, rename = "collapseBoxSetItems", alias = "CollapseBoxSetItems")]
+    #[serde(
+        default,
+        rename = "collapseBoxSetItems",
+        alias = "CollapseBoxSetItems",
+        alias = "collapseboxsetitems"
+    )]
     collapse_box_set_items: Option<bool>,
-    #[serde(default, rename = "minWidth", alias = "MinWidth")]
+    #[serde(default, rename = "minWidth", alias = "MinWidth", alias = "minwidth")]
     min_width: Option<i32>,
-    #[serde(default, rename = "minHeight", alias = "MinHeight")]
+    #[serde(
+        default,
+        rename = "minHeight",
+        alias = "MinHeight",
+        alias = "minheight"
+    )]
     min_height: Option<i32>,
-    #[serde(default, rename = "maxWidth", alias = "MaxWidth")]
+    #[serde(default, rename = "maxWidth", alias = "MaxWidth", alias = "maxwidth")]
     max_width: Option<i32>,
-    #[serde(default, rename = "maxHeight", alias = "MaxHeight")]
+    #[serde(
+        default,
+        rename = "maxHeight",
+        alias = "MaxHeight",
+        alias = "maxheight"
+    )]
     max_height: Option<i32>,
-    #[serde(default, rename = "is3D", alias = "Is3D")]
+    #[serde(default, rename = "is3D", alias = "Is3D", alias = "is3d")]
     is_3d: Option<bool>,
     #[serde(
         default,
         rename = "seriesStatus",
         alias = "SeriesStatus",
+        alias = "seriesstatus",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     series_status: Vec<String>,
     #[serde(
         default,
         rename = "nameStartsWithOrGreater",
-        alias = "NameStartsWithOrGreater"
+        alias = "NameStartsWithOrGreater",
+        alias = "namestartswithorgreater"
     )]
     name_starts_with_or_greater: Option<String>,
-    #[serde(default, rename = "nameStartsWith", alias = "NameStartsWith")]
+    #[serde(
+        default,
+        rename = "nameStartsWith",
+        alias = "NameStartsWith",
+        alias = "namestartswith"
+    )]
     name_starts_with: Option<String>,
-    #[serde(default, rename = "nameLessThan", alias = "NameLessThan")]
+    #[serde(
+        default,
+        rename = "nameLessThan",
+        alias = "NameLessThan",
+        alias = "namelessthan"
+    )]
     name_less_than: Option<String>,
     #[serde(
         default,
         rename = "studioIds",
         alias = "StudioIds",
+        alias = "studioids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     studio_ids: Vec<Uuid>,
@@ -319,6 +488,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "genreIds",
         alias = "GenreIds",
+        alias = "genreids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     genre_ids: Vec<Uuid>,
@@ -326,6 +496,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "audioLanguages",
         alias = "AudioLanguages",
+        alias = "audiolanguages",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     audio_languages: Vec<String>,
@@ -333,6 +504,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "subtitleLanguages",
         alias = "SubtitleLanguages",
+        alias = "subtitlelanguages",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     subtitle_languages: Vec<String>,
@@ -347,6 +519,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "sortBy",
         alias = "SortBy",
+        alias = "sortby",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_by: Vec<String>,
@@ -354,13 +527,15 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "sortOrder",
         alias = "SortOrder",
+        alias = "sortorder",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,
     #[serde(
         default = "default_total_record_count",
         rename = "enableTotalRecordCount",
-        alias = "EnableTotalRecordCount"
+        alias = "EnableTotalRecordCount",
+        alias = "enabletotalrecordcount"
     )]
     enable_total_record_count: bool,
 }
@@ -418,11 +593,16 @@ pub(crate) struct LatestItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
-    #[serde(default, rename = "isPlayed", alias = "IsPlayed")]
+    #[serde(default, rename = "isPlayed", alias = "IsPlayed", alias = "isplayed")]
     is_played: Option<bool>,
     #[serde(default = "default_latest_limit", alias = "Limit")]
     limit: u64,
-    #[serde(default, rename = "groupItems", alias = "GroupItems")]
+    #[serde(
+        default,
+        rename = "groupItems",
+        alias = "GroupItems",
+        alias = "groupitems"
+    )]
     group_items: bool,
 }
 
@@ -434,6 +614,7 @@ pub(crate) struct SuggestionsQuery {
         default,
         rename = "mediaType",
         alias = "MediaType",
+        alias = "mediatype",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     media_types: Vec<String>,
@@ -456,7 +637,8 @@ pub(crate) struct SuggestionsQuery {
     #[serde(
         default,
         rename = "enableTotalRecordCount",
-        alias = "EnableTotalRecordCount"
+        alias = "EnableTotalRecordCount",
+        alias = "enabletotalrecordcount"
     )]
     enable_total_record_count: bool,
 }
