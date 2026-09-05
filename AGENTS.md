@@ -64,6 +64,10 @@
 - During bulk season refresh, select the visible primary of each alternate-version group before applying episode metadata and use the same title merge rules as direct episode refresh. Missing-metadata repair must include primary episodes whose title is empty or still equals the parent series title, even when an overview and provider identifiers already exist.
 - After local metadata and the configured remote-provider sequence have had a chance to establish an episode title, an unlocked visible primary may use a non-placeholder `OriginalTitle` only when its name is still empty, path-derived, or equal to the parent series. Never let this fallback replace a localized remote/NFO title or update an alternate version.
 - Apply post-provider `OriginalTitle` episode repairs as one PostgreSQL set-based update scoped to the refreshed series or episode. Do not load every series descendant and issue per-episode updates for this repair.
+- Compute Next Up from visible primary episodes, but aggregate played, resume, and activity state
+  across every alternate version. Advance from the highest aired watched position, order series by
+  their latest played date, and apply `NextUpDateCutoff` to that activity date rather than to the
+  candidate episode's premiere date.
 - Metadata providers must have deterministic priority and merge behavior. Network calls need timeouts, bounded concurrency, and useful error context.
 - Lazy `.strm` probing must have a process-level deadline that terminates FFprobe before returning; an async timeout around an uncancelled blocking child is not sufficient because client retries can accumulate processes and memory.
 - Coordinate lazy `.strm` probes by item and resolved target so concurrent playback requests share one bounded flight. Keep failure backoff state short-lived and hard-bounded so retries do not repeatedly pay the probe timeout or grow memory without limit.

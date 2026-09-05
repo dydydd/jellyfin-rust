@@ -417,6 +417,55 @@ async fn assert_next_up_route(fixture: &Fixture) {
             .status(),
         StatusCode::NOT_FOUND
     );
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let older_series = create_item(
+        &items,
+        "Series",
+        "0 Older Series",
+        Some(root.id),
+        None,
+        None,
+    )
+    .await;
+    let older_season = create_item(
+        &items,
+        "Season",
+        "Older Season",
+        Some(older_series.id),
+        Some(1),
+        None,
+    )
+    .await;
+    let older_first = create_episode(
+        &items,
+        "Older Episode One",
+        older_season.id,
+        older_series.id,
+        1,
+        1,
+        None,
+    )
+    .await;
+    let older_second = create_episode(
+        &items,
+        "Older Episode Two",
+        older_season.id,
+        older_series.id,
+        1,
+        2,
+        None,
+    )
+    .await;
+    let mut older_watched =
+        NewUserData::new(older_first.id, fixture.user_id, older_first.id.to_string());
+    older_watched.played = true;
+    older_watched.last_played_date = Some(Utc::now() - Duration::hours(2));
+    UserDataRepository::new(fixture.database.clone())
+        .upsert(older_watched)
+        .await
+        .expect("older series playback state");
     assert_eq!(
         fixture
             .get(
@@ -444,7 +493,7 @@ async fn assert_next_up_route(fixture: &Fixture) {
     assert_eq!(next_up["TotalRecordCount"], 1);
     assert_eq!(
         item_ids(&next_up),
-        vec![fixture.special_episode_id.simple().to_string()]
+        vec![fixture.second_episode_id.simple().to_string()]
     );
 
     let with_rewatching = body_json(
@@ -462,7 +511,36 @@ async fn assert_next_up_route(fixture: &Fixture) {
     assert_eq!(with_rewatching["TotalRecordCount"], 1);
     assert_eq!(
         item_ids(&with_rewatching),
-        vec![fixture.special_episode_id.simple().to_string()]
+        vec![fixture.second_episode_id.simple().to_string()]
+    );
+
+    let all_series = body_json(
+        fixture
+            .get("/Shows/NextUp", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(all_series["TotalRecordCount"], 2);
+    assert_eq!(
+        item_ids(&all_series),
+        vec![
+            fixture.second_episode_id.simple().to_string(),
+            older_second.id.simple().to_string(),
+        ]
+    );
+
+    let zero_limit = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}&limit=0", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&zero_limit),
+        vec![fixture.second_episode_id.simple().to_string()]
     );
 
     let parent_scoped = body_json(
@@ -478,10 +556,100 @@ async fn assert_next_up_route(fixture: &Fixture) {
     )
     .await;
     assert_eq!(parent_scoped["StartIndex"], 0);
-    assert_eq!(parent_scoped["TotalRecordCount"], 1);
+    assert_eq!(parent_scoped["TotalRecordCount"], 0);
     assert_eq!(
         item_ids(&parent_scoped),
-        vec![fixture.first_episode_id.simple().to_string()]
+        vec![fixture.second_episode_id.simple().to_string()]
+    );
+
+    let yesterday = (Utc::now().date_naive() - Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let cutoff_included = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&nextUpDateCutoff={yesterday}",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&cutoff_included),
+        vec![fixture.second_episode_id.simple().to_string()]
+    );
+
+    let tomorrow = (Utc::now().date_naive() + Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let cutoff_excluded = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&nextUpDateCutoff={tomorrow}",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(cutoff_excluded["Items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&nextUpDateCutoff=not-a-date",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let mut resumable = NewUserData::new(
+        fixture.second_episode_alternate_id,
+        fixture.user_id,
+        fixture.second_episode_alternate_id.to_string(),
+    );
+    resumable.playback_position_ticks = 10;
+    UserDataRepository::new(fixture.database.clone())
+        .upsert(resumable)
+        .await
+        .expect("alternate episode resume state");
+    let without_resumable = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableResumable=false",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(without_resumable["Items"].as_array().unwrap().is_empty());
+    let with_resumable = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableResumable=true",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&with_resumable),
+        vec![fixture.second_episode_id.simple().to_string()]
     );
 
     let paged = body_json(
@@ -571,6 +739,7 @@ struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
     admin_id: Uuid,
+    user_id: Uuid,
     admin_token: String,
     user_token: String,
     series_id: Uuid,
@@ -582,6 +751,7 @@ struct Fixture {
     special_episode_id: Uuid,
     first_episode_id: Uuid,
     second_episode_id: Uuid,
+    second_episode_alternate_id: Uuid,
     third_episode_id: Uuid,
     missing_episode_id: Uuid,
 }
@@ -687,6 +857,36 @@ impl Fixture {
             None,
         )
         .await;
+        let mut first_episode_alternate = create_episode(
+            &items,
+            "Zulu Episode One Alternate",
+            first_season.id,
+            series.id,
+            1,
+            1,
+            None,
+        )
+        .await;
+        first_episode_alternate.primary_version_id = Some(first_episode.id);
+        let first_episode_alternate = items
+            .update(first_episode_alternate)
+            .await
+            .expect("first episode alternate grouping");
+        let mut second_episode_alternate = create_episode(
+            &items,
+            "Alpha Episode Two Alternate",
+            first_season.id,
+            series.id,
+            1,
+            2,
+            None,
+        )
+        .await;
+        second_episode_alternate.primary_version_id = Some(second_episode.id);
+        let second_episode_alternate = items
+            .update(second_episode_alternate)
+            .await
+            .expect("second episode alternate grouping");
         let third_episode = create_episode_with_premiere_date(
             &items,
             "03 Episode Three",
@@ -710,9 +910,13 @@ impl Fixture {
         )
         .await;
         let user_data = UserDataRepository::new(database.clone());
-        let mut watched =
-            NewUserData::new(second_episode.id, user.id, second_episode.id.to_string());
+        let mut watched = NewUserData::new(
+            first_episode_alternate.id,
+            user.id,
+            first_episode_alternate.id.to_string(),
+        );
         watched.played = true;
+        watched.last_played_date = Some(Utc::now() - Duration::hours(1));
         user_data
             .upsert(watched)
             .await
@@ -745,6 +949,7 @@ impl Fixture {
             database,
             app,
             admin_id: admin.id,
+            user_id: user.id,
             admin_token,
             user_token,
             series_id: series.id,
@@ -756,6 +961,7 @@ impl Fixture {
             special_episode_id: special_episode.id,
             first_episode_id: first_episode.id,
             second_episode_id: second_episode.id,
+            second_episode_alternate_id: second_episode_alternate.id,
             third_episode_id: third_episode.id,
             missing_episode_id: missing_episode.id,
         }
@@ -840,6 +1046,7 @@ async fn create_episode_with_premiere_date(
     item.index_number = Some(index_number);
     item.series_id = Some(series_id);
     item.season_id = Some(season_id);
+    item.series_presentation_unique_key = Some(series_id.simple().to_string());
     item.media_type = Some("Video".to_owned());
     item.data = data;
     item.premiere_date = premiere_date;

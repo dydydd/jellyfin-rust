@@ -6,7 +6,7 @@ use axum::{
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use jellyfin_controller::UserLibraryError;
 use jellyfin_data::{BaseItemOrder, BaseItemQuery, entities::base_item};
 use serde::Deserialize;
@@ -237,11 +237,11 @@ pub(crate) async fn next_up(
         query.enable_image_types,
         query.enable_user_data,
     );
-    let next_up_date_cutoff = query.next_up_date_cutoff.as_deref().and_then(|value| {
-        DateTime::parse_from_rfc3339(value)
-            .ok()
-            .map(DateTime::<Utc>::from)
-    });
+    let next_up_date_cutoff = query
+        .next_up_date_cutoff
+        .as_deref()
+        .map(parse_next_up_date_cutoff)
+        .transpose()?;
 
     let page = state
         .user_library
@@ -265,6 +265,17 @@ pub(crate) async fn next_up(
         total_record_count,
         start_index,
     }))
+}
+
+fn parse_next_up_date_cutoff(value: &str) -> Result<DateTime<Utc>, ApiError> {
+    if let Ok(value) = DateTime::parse_from_rfc3339(value) {
+        return Ok(value.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .and_then(|value| value.and_hms_opt(0, 0, 0))
+        .map(|value| value.and_utc())
+        .ok_or(ApiError::InvalidRequest)
 }
 
 #[allow(clippy::too_many_lines)]

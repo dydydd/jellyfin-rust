@@ -1880,12 +1880,11 @@ impl BaseItemRepository {
             .await
     }
 
-    /// Queries the next unwatched episode for each eligible series.
+    /// Queries the next regular unwatched episode for each recently active series.
     ///
-    /// A series is eligible when it has at least one unwatched episode and
-    /// either the user has already started watching it (`enable_rewatching`
-    /// false) or rewatching is enabled. Each series contributes at most its
-    /// earliest unwatched episode.
+    /// Playback state is aggregated over every alternate version. The highest aired watched
+    /// position establishes the starting point and each series contributes its first later
+    /// unplayed primary episode. Series are ordered by their most recent version-level activity.
     ///
     /// # Errors
     ///
@@ -1895,7 +1894,7 @@ impl BaseItemRepository {
         &self,
         user_id: Uuid,
         query: &BaseItemQuery,
-        enable_rewatching: bool,
+        _enable_rewatching: bool,
         enable_resumable: bool,
         next_up_date_cutoff: Option<DateTime<Utc>>,
         start_index: u64,
@@ -1903,21 +1902,16 @@ impl BaseItemRepository {
     ) -> Result<BaseItemPage, BaseItemError> {
         let mut values = vec![user_id.into()];
         let mut sql = String::from(
-            "WITH watched AS (\
-                 SELECT DISTINCT data.item_id, data.played \
-                 FROM jellyfin.user_data AS data \
-                 WHERE data.user_id = $1 \
-             ), eligible AS (\
-                 SELECT episode.id AS episode_id, episode.series_id, \
-                        episode.parent_index_number AS season_number, \
-                        episode.index_number AS episode_number, \
-                        episode.sort_name, \
-                        EXISTS (SELECT 1 FROM watched WHERE watched.item_id = episode.id AND watched.played) AS is_watched, \
-                        NOT EXISTS (SELECT 1 FROM watched WHERE watched.item_id = episode.id AND watched.played) AS is_unwatched \
+            "WITH scoped_episodes AS MATERIALIZED (\
+                 SELECT episode.* \
                  FROM jellyfin.base_items AS episode \
                  WHERE episode.item_type = 'Episode' \
                    AND episode.is_virtual_item = false \
-                   AND episode.series_id IS NOT NULL",
+                   AND episode.primary_version_id IS NULL \
+                   AND episode.series_presentation_unique_key IS NOT NULL \
+                   AND episode.parent_index_number <> 0 \
+                   AND (episode.data ->> 'OwnerId' IS NULL \
+                        OR episode.data ->> 'ExtraType' IS NOT NULL)",
         );
         if let Some(parent_id) = query.parent_id {
             values.push(parent_id.into());
@@ -1948,50 +1942,81 @@ impl BaseItemRepository {
             sql.push_str(&condition);
             sql.push(')');
         }
-        if !enable_resumable {
-            sql.push_str(
-                " AND NOT EXISTS (\
-                    SELECT 1 FROM jellyfin.user_data AS resume \
-                    WHERE resume.item_id = episode.id \
-                      AND resume.user_id = $1 \
-                      AND resume.playback_position_ticks > 0\
-                )",
-            );
-        }
+        sql.push_str(
+            "), episode_user_state AS MATERIALIZED (\
+                 SELECT episode.id AS episode_id, \
+                        COALESCE(BOOL_OR(data.played), false) AS is_watched, \
+                        COALESCE(BOOL_OR(data.playback_position_ticks > 0), false) AS is_resumable, \
+                        MAX(data.last_played_date) AS last_played_date \
+                 FROM scoped_episodes AS episode \
+                 INNER JOIN jellyfin.base_items AS version \
+                   ON COALESCE(version.primary_version_id, version.id) = episode.id \
+                  AND version.item_type = 'Episode' \
+                 LEFT JOIN jellyfin.user_data AS data \
+                   ON data.item_id = version.id AND data.user_id = $1 \
+                 GROUP BY episode.id\
+             ), episode_state AS MATERIALIZED (\
+                 SELECT episode.*, state.is_watched, state.is_resumable, \
+                        state.last_played_date \
+                 FROM scoped_episodes AS episode \
+                 INNER JOIN episode_user_state AS state ON state.episode_id = episode.id\
+             ), series_activity AS MATERIALIZED (\
+                 SELECT episode.series_presentation_unique_key AS series_key, \
+                        MAX(episode.last_played_date) AS last_played_date \
+                 FROM episode_state AS episode \
+                 GROUP BY episode.series_presentation_unique_key \
+                 HAVING MAX(episode.last_played_date) IS NOT NULL",
+        );
         if let Some(cutoff) = next_up_date_cutoff {
             values.push(cutoff.into());
-            let _ = write!(sql, " AND episode.premiere_date >= ${}", values.len());
+            let _ = write!(
+                sql,
+                " AND MAX(episode.last_played_date) >= ${}",
+                values.len()
+            );
         }
         sql.push_str(
-            "), ranked AS (\
-                 SELECT eligible.*, \
+            "), last_watched AS MATERIALIZED (\
+                 SELECT DISTINCT ON (episode.series_presentation_unique_key) \
+                        episode.series_presentation_unique_key AS series_key, \
+                        episode.parent_index_number AS season_number, \
+                        episode.index_number AS episode_number \
+                 FROM episode_state AS episode \
+                 INNER JOIN series_activity AS activity \
+                   ON activity.series_key = episode.series_presentation_unique_key \
+                 WHERE episode.is_watched \
+                 ORDER BY episode.series_presentation_unique_key, \
+                          episode.parent_index_number DESC NULLS LAST, \
+                          episode.index_number DESC NULLS LAST, \
+                          episode.sort_name DESC, episode.id DESC\
+             ), ranked_candidates AS (\
+                 SELECT episode.*, activity.last_played_date AS series_last_played_date, \
                         ROW_NUMBER() OVER (\
-                            PARTITION BY eligible.series_id \
-                            ORDER BY eligible.season_number NULLS LAST, \
-                                     eligible.episode_number NULLS LAST, \
-                                     eligible.sort_name, eligible.episode_id\
-                        ) AS episode_rank, \
-                        SUM(CASE WHEN eligible.is_watched THEN 1 ELSE 0 END) \
-                            OVER (PARTITION BY eligible.series_id) AS watched_count \
-                 FROM eligible\
-             ), next_episodes AS (\
-                 SELECT ranked.* FROM ranked \
-                 WHERE ranked.episode_rank = 1 \
-                   AND ranked.is_unwatched \
-                   AND (",
+                            PARTITION BY episode.series_presentation_unique_key \
+                            ORDER BY episode.parent_index_number NULLS LAST, \
+                                     episode.index_number NULLS LAST, \
+                                     episode.sort_name, episode.id\
+                        ) AS candidate_rank \
+                 FROM episode_state AS episode \
+                 INNER JOIN series_activity AS activity \
+                   ON activity.series_key = episode.series_presentation_unique_key \
+                 LEFT JOIN last_watched \
+                   ON last_watched.series_key = episode.series_presentation_unique_key \
+                 WHERE NOT episode.is_watched \
+                   AND (last_watched.series_key IS NULL \
+                        OR episode.parent_index_number > last_watched.season_number \
+                        OR (episode.parent_index_number = last_watched.season_number \
+                            AND episode.index_number > last_watched.episode_number))\
+             ), selected AS MATERIALIZED (\
+                 SELECT item.*, candidate.series_last_played_date \
+                 FROM ranked_candidates AS candidate \
+                 INNER JOIN jellyfin.base_items AS item ON item.id = candidate.id \
+                 WHERE candidate.candidate_rank = 1",
         );
-        if enable_rewatching {
-            sql.push_str("1 = 1");
-        } else {
-            sql.push_str("ranked.watched_count > 0");
+        if !enable_resumable {
+            sql.push_str(" AND NOT candidate.is_resumable");
         }
-        sql.push_str(
-            ")\
-             ), selected AS (\
-                 SELECT item.* FROM next_episodes AS next_episode \
-                 JOIN jellyfin.base_items AS item ON item.id = next_episode.episode_id\
-             )",
-        );
+        sql.push(')');
         let total = if query.enable_total_record_count.unwrap_or(false) {
             Some(
                 self.database
@@ -2012,7 +2037,8 @@ impl BaseItemRepository {
         let mut page_values = values;
         let mut page_sql = format!(
             "{sql} SELECT {BASE_ITEM_COLUMNS} FROM selected \
-             ORDER BY sort_name, id"
+             ORDER BY series_last_played_date DESC, \
+                      series_presentation_unique_key, id"
         );
         push_bind(
             &mut page_sql,
@@ -2020,7 +2046,7 @@ impl BaseItemRepository {
             i64::try_from(start_index).unwrap_or(i64::MAX),
             " OFFSET ",
         );
-        if let Some(limit) = limit {
+        if let Some(limit) = limit.filter(|limit| *limit > 0) {
             push_bind(
                 &mut page_sql,
                 &mut page_values,
@@ -2036,10 +2062,9 @@ impl BaseItemRepository {
         .all(self.database.as_ref())
         .await?;
         Ok(BaseItemPage {
-            total_record_count: total.map_or_else(
-                || u64::try_from(items.len()).unwrap_or(u64::MAX),
-                |count| u64::try_from(count).unwrap_or_default(),
-            ),
+            total_record_count: total
+                .map(|count| u64::try_from(count).unwrap_or_default())
+                .unwrap_or_default(),
             items,
             start_index,
         })
