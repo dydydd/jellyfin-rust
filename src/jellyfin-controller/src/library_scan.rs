@@ -3,8 +3,9 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     str::FromStr,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, Weak},
     thread::available_parallelism,
+    time::{Duration, Instant},
 };
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
@@ -46,7 +47,10 @@ use jellyfin_xbmc_metadata::{
 use md5::{Digest, Md5};
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::{fs, sync::Notify};
+use tokio::{
+    fs,
+    sync::{Notify, OnceCell},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -54,7 +58,9 @@ use crate::{
 };
 
 const SCAN_PATH_QUERY_BATCH_SIZE: usize = 256;
-const STRM_PLAYBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const STRM_PLAYBACK_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const STRM_PROBE_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
+const MAX_STRM_PROBE_COORDINATION_ENTRIES: usize = 1_024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -69,6 +75,134 @@ pub struct LibraryScanSummary {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ScannedPathFingerprint(Uuid);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct StrmProbeKey {
+    item_id: Uuid,
+    target: ScannedPathFingerprint,
+}
+
+impl StrmProbeKey {
+    fn new(item_id: Uuid, target: &str) -> Self {
+        Self {
+            item_id,
+            target: ScannedPathFingerprint(stable_item_id(target, "StrmPlaybackProbe")),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct StrmProbeFlight {
+    streams: OnceCell<Option<Arc<Vec<PersistedMediaStream>>>>,
+    persisted: OnceCell<()>,
+}
+
+#[derive(Debug)]
+enum StrmProbeEntry {
+    InFlight(Weak<StrmProbeFlight>),
+    FailedUntil(Instant),
+}
+
+#[derive(Debug)]
+struct StrmProbeCoordinator {
+    entries: Mutex<HashMap<StrmProbeKey, StrmProbeEntry>>,
+    failure_backoff: Duration,
+    max_entries: usize,
+}
+
+#[derive(Debug)]
+enum StrmProbeLease {
+    Backoff,
+    Flight {
+        flight: Arc<StrmProbeFlight>,
+        tracked: bool,
+    },
+}
+
+impl StrmProbeCoordinator {
+    fn new(failure_backoff: Duration, max_entries: usize) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            failure_backoff,
+            max_entries,
+        }
+    }
+
+    fn acquire(&self, key: StrmProbeKey, now: Instant) -> StrmProbeLease {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("STRM probe coordination lock poisoned");
+        entries.retain(|_, entry| match entry {
+            StrmProbeEntry::InFlight(flight) => flight.strong_count() > 0,
+            StrmProbeEntry::FailedUntil(deadline) => *deadline > now,
+        });
+        if let Some(entry) = entries.get(&key) {
+            return match entry {
+                StrmProbeEntry::InFlight(flight) => flight.upgrade().map_or_else(
+                    || StrmProbeLease::Flight {
+                        flight: Arc::new(StrmProbeFlight::default()),
+                        tracked: false,
+                    },
+                    |flight| StrmProbeLease::Flight {
+                        flight,
+                        tracked: true,
+                    },
+                ),
+                StrmProbeEntry::FailedUntil(_) => StrmProbeLease::Backoff,
+            };
+        }
+
+        if entries.len() >= self.max_entries
+            && let Some(expiring_failure) = entries
+                .iter()
+                .filter_map(|(key, entry)| match entry {
+                    StrmProbeEntry::FailedUntil(deadline) => Some((*key, *deadline)),
+                    StrmProbeEntry::InFlight(_) => None,
+                })
+                .min_by_key(|(_, deadline)| *deadline)
+                .map(|(key, _)| key)
+        {
+            entries.remove(&expiring_failure);
+        }
+
+        let flight = Arc::new(StrmProbeFlight::default());
+        let tracked = entries.len() < self.max_entries;
+        if tracked {
+            entries.insert(key, StrmProbeEntry::InFlight(Arc::downgrade(&flight)));
+        }
+        StrmProbeLease::Flight { flight, tracked }
+    }
+
+    fn finish(
+        &self,
+        key: StrmProbeKey,
+        flight: &Arc<StrmProbeFlight>,
+        tracked: bool,
+        failed: bool,
+        now: Instant,
+    ) {
+        if !tracked {
+            return;
+        }
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("STRM probe coordination lock poisoned");
+        let same_flight = entries.get(&key).is_some_and(|entry| match entry {
+            StrmProbeEntry::InFlight(current) => current.ptr_eq(&Arc::downgrade(flight)),
+            StrmProbeEntry::FailedUntil(_) => false,
+        });
+        if !same_flight {
+            return;
+        }
+        if failed {
+            entries.insert(key, StrmProbeEntry::FailedUntil(now + self.failure_backoff));
+        } else {
+            entries.remove(&key);
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct SeenPaths(HashSet<ScannedPathFingerprint>);
@@ -186,6 +320,7 @@ pub struct LibraryScanService {
     chapters: ChapterRepository,
     values: ItemValueRepository,
     probe_path: RwLock<Arc<PathBuf>>,
+    strm_probes: StrmProbeCoordinator,
     ffmpeg_path: RwLock<Arc<PathBuf>>,
     image_cache_directory: RwLock<Arc<PathBuf>>,
     media_item_limiter: MediaItemConcurrencyLimiter,
@@ -309,6 +444,10 @@ impl LibraryScanService {
             chapters: ChapterRepository::new(Arc::clone(&database)),
             values: ItemValueRepository::new(database),
             probe_path: RwLock::new(Arc::new(probe_path.into())),
+            strm_probes: StrmProbeCoordinator::new(
+                STRM_PROBE_FAILURE_BACKOFF,
+                MAX_STRM_PROBE_COORDINATION_ENTRIES,
+            ),
             ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
             image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
             media_item_limiter: MediaItemConcurrencyLimiter::new(default_fanout_concurrency()),
@@ -433,7 +572,9 @@ impl LibraryScanService {
     /// Playback negotiation, however, needs the real video and audio codecs to
     /// decide whether a client can direct-play the file. This method performs
     /// that work once, immediately before the first playback-info response,
-    /// and persists the result for subsequent requests.
+    /// and persists the result for subsequent requests. Concurrent requests
+    /// for the same item and resolved target share one probe. A failed probe
+    /// is retried only after a short in-process backoff.
     ///
     /// # Errors
     ///
@@ -484,21 +625,51 @@ impl LibraryScanService {
             return Ok(false);
         }
 
-        let Some(mut media_info) = self
-            .probe_media_info_with_timeout(item_id, target, kind, Some(STRM_PLAYBACK_PROBE_TIMEOUT))
-            .await
+        let key = StrmProbeKey::new(item_id, target);
+        let StrmProbeLease::Flight { flight, tracked } =
+            self.strm_probes.acquire(key, Instant::now())
         else {
             return Ok(false);
         };
-        let mut streams = streams_from_media_info(&mut media_info);
-        if streams.is_empty() {
+        let streams = flight
+            .streams
+            .get_or_init(|| async {
+                let mut media_info = self
+                    .probe_media_info_with_timeout(
+                        item_id,
+                        target,
+                        kind,
+                        Some(STRM_PLAYBACK_PROBE_TIMEOUT),
+                    )
+                    .await?;
+                let streams = streams_from_media_info(&mut media_info);
+                (!streams.is_empty()).then(|| Arc::new(streams))
+            })
+            .await
+            .clone();
+        let Some(streams) = streams else {
+            self.strm_probes
+                .finish(key, &flight, tracked, true, Instant::now());
             return Ok(false);
-        }
-        streams.extend(
-            self.resolve_external_subtitle_streams(sidecar_path, next_stream_index(&streams))
-                .await?,
-        );
-        self.streams.replace(item_id, &streams).await?;
+        };
+
+        flight
+            .persisted
+            .get_or_try_init(|| async {
+                let mut streams = streams.as_ref().clone();
+                streams.extend(
+                    self.resolve_external_subtitle_streams(
+                        sidecar_path,
+                        next_stream_index(&streams),
+                    )
+                    .await?,
+                );
+                self.streams.replace(item_id, &streams).await?;
+                Ok::<(), LibraryScanError>(())
+            })
+            .await?;
+        self.strm_probes
+            .finish(key, &flight, tracked, false, Instant::now());
         Ok(true)
     }
 
@@ -3959,12 +4130,13 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 mod tests {
     use super::{
         LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
-        SeenPaths, apply_non_movie_nfo, apply_probed_item_metadata, apply_scanned_group_name,
-        apply_strm_metadata, attachment_image_type, attachments_from_media_info,
-        codec_from_extension, default_fanout_concurrency, default_stream, display_name,
-        extra_type_name, image_extraction_command_succeeded, is_extras_directory, local_image_type,
-        media_item_data, media_kind, merge_scan_summary, metadata_movie_version_groups,
-        next_stream_index, read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
+        SeenPaths, StrmProbeCoordinator, StrmProbeKey, StrmProbeLease, apply_non_movie_nfo,
+        apply_probed_item_metadata, apply_scanned_group_name, apply_strm_metadata,
+        attachment_image_type, attachments_from_media_info, codec_from_extension,
+        default_fanout_concurrency, default_stream, display_name, extra_type_name,
+        image_extraction_command_succeeded, is_extras_directory, local_image_type, media_item_data,
+        media_kind, merge_scan_summary, metadata_movie_version_groups, next_stream_index,
+        read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
         streams_from_media_info, track_group_change,
@@ -4176,8 +4348,104 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
+
+    #[test]
+    fn strm_probe_failures_share_a_flight_and_retry_after_backoff() {
+        let coordinator = StrmProbeCoordinator::new(Duration::from_secs(30), 16);
+        let key = StrmProbeKey::new(
+            uuid::Uuid::new_v4(),
+            "https://media/stream.mkv?token=secret",
+        );
+        let started = Instant::now();
+        let StrmProbeLease::Flight {
+            flight: first,
+            tracked: first_tracked,
+        } = coordinator.acquire(key, started)
+        else {
+            panic!("first probe must start a flight");
+        };
+        let StrmProbeLease::Flight {
+            flight: concurrent,
+            tracked: concurrent_tracked,
+        } = coordinator.acquire(key, started)
+        else {
+            panic!("concurrent probe must join the flight");
+        };
+        assert!(first_tracked);
+        assert!(concurrent_tracked);
+        assert!(Arc::ptr_eq(&first, &concurrent));
+
+        coordinator.finish(key, &first, first_tracked, true, started);
+        assert!(matches!(
+            coordinator.acquire(key, started + Duration::from_secs(29)),
+            StrmProbeLease::Backoff
+        ));
+
+        let StrmProbeLease::Flight {
+            flight: retry,
+            tracked: retry_tracked,
+        } = coordinator.acquire(key, started + Duration::from_secs(30))
+        else {
+            panic!("expired failure must start a retry");
+        };
+        assert!(retry_tracked);
+        assert!(!Arc::ptr_eq(&first, &retry));
+    }
+
+    #[test]
+    fn strm_probe_coordination_state_has_a_hard_entry_limit() {
+        let coordinator = StrmProbeCoordinator::new(Duration::from_secs(30), 2);
+        let started = Instant::now();
+        let keys = (0..3)
+            .map(|index| {
+                StrmProbeKey::new(uuid::Uuid::new_v4(), &format!("https://media/{index}.mkv"))
+            })
+            .collect::<Vec<_>>();
+        let StrmProbeLease::Flight {
+            flight: first,
+            tracked: first_tracked,
+        } = coordinator.acquire(keys[0], started)
+        else {
+            panic!("first probe must start");
+        };
+        let StrmProbeLease::Flight {
+            flight: _second,
+            tracked: second_tracked,
+        } = coordinator.acquire(keys[1], started)
+        else {
+            panic!("second probe must start");
+        };
+        let StrmProbeLease::Flight {
+            tracked: third_tracked,
+            ..
+        } = coordinator.acquire(keys[2], started)
+        else {
+            panic!("overflow probe must still run without being retained");
+        };
+        assert!(first_tracked);
+        assert!(second_tracked);
+        assert!(!third_tracked);
+        assert_eq!(
+            coordinator.entries.lock().expect("coordinator state").len(),
+            2
+        );
+
+        coordinator.finish(keys[0], &first, first_tracked, true, started);
+        let StrmProbeLease::Flight {
+            tracked: replacement_tracked,
+            ..
+        } = coordinator.acquire(keys[2], started)
+        else {
+            panic!("a failed entry should be evicted for a new probe");
+        };
+        assert!(replacement_tracked);
+        assert_eq!(
+            coordinator.entries.lock().expect("coordinator state").len(),
+            2
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]

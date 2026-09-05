@@ -92,7 +92,8 @@ async fn exercise_scan(database_name: &str) {
     assert_eq!(movie.data.as_ref().unwrap()["StrmTarget"], target);
     assert_eq!(movie.data.as_ref().unwrap()["Container"], "mkv");
 
-    let streams = MediaStreamRepository::new(database.clone())
+    let stream_repository = MediaStreamRepository::new(database.clone());
+    let streams = stream_repository
         .query(MediaStreamQuery {
             item_id: movie.id,
             stream_index: None,
@@ -102,13 +103,14 @@ async fn exercise_scan(database_name: &str) {
         .expect("media stream query");
     assert_eq!(streams.len(), 1);
     assert_eq!(streams[0].stream_index, 0);
+    let placeholder_stream = streams[0].clone();
 
     assert!(
         scan.hydrate_strm_media_streams(movie.id)
             .await
             .expect("STRM playback stream hydration")
     );
-    let streams = MediaStreamRepository::new(database.clone())
+    let streams = stream_repository
         .query(MediaStreamQuery {
             item_id: movie.id,
             stream_index: None,
@@ -134,8 +136,59 @@ async fn exercise_scan(database_name: &str) {
         "an unchanged rescan must not broadcast the whole library: {stable_summary:?}"
     );
 
+    let failing_probe_log = library_root.join("failing-probe.log");
+    let failing_probe_script = library_root.join("failing-ffprobe");
+    std::fs::write(
+        &failing_probe_script,
+        format!(
+            "#!/bin/sh\nprintf 'probe\\n' >> '{}'\n/bin/sleep 0.2\nexit 1\n",
+            failing_probe_log.display()
+        ),
+    )
+    .expect("failing ffprobe script");
+    let mut permissions = std::fs::metadata(&failing_probe_script)
+        .expect("failing ffprobe metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&failing_probe_script, permissions)
+        .expect("failing ffprobe executable");
+    scan.set_probe_path(&failing_probe_script);
+    stream_repository
+        .replace(movie.id, &[placeholder_stream])
+        .await
+        .expect("restore STRM placeholder");
+
+    let (first, second, third) = tokio::join!(
+        scan.hydrate_strm_media_streams(movie.id),
+        scan.hydrate_strm_media_streams(movie.id),
+        scan.hydrate_strm_media_streams(movie.id),
+    );
+    assert!(!first.expect("first failed hydration"));
+    assert!(!second.expect("second failed hydration"));
+    assert!(!third.expect("third failed hydration"));
+    assert_eq!(probe_invocations(&failing_probe_log), 1);
+
+    assert!(
+        !scan
+            .hydrate_strm_media_streams(movie.id)
+            .await
+            .expect("backed-off STRM hydration")
+    );
+    assert_eq!(
+        probe_invocations(&failing_probe_log),
+        1,
+        "a request inside the failure backoff must not launch ffprobe again"
+    );
+
     std::fs::remove_dir_all(library_root).expect("movie fixture cleanup");
     database.close().await.expect("database pool cleanup");
+}
+
+fn probe_invocations(path: &Path) -> usize {
+    std::fs::read_to_string(path)
+        .expect("probe invocation log")
+        .lines()
+        .count()
 }
 
 fn assert_temporary_database_name(name: &str) {
