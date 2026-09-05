@@ -2279,6 +2279,151 @@ impl BaseItemRepository {
         hierarchy_entries(closure, true, self.database.as_ref()).await
     }
 
+    /// Repairs fallback episode names from an established original title in one
+    /// set-based update scoped to a series or a single episode.
+    ///
+    /// The update deliberately runs after metadata providers. It only touches
+    /// visible primary episodes whose name is still empty, series-derived, or
+    /// path-derived, and honors a case-insensitive `LockedFields.Name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the update cannot be executed.
+    #[allow(clippy::too_many_lines)] // The set-based SQL is intentionally kept as one atomic statement.
+    pub async fn repair_episode_titles_from_original(
+        &self,
+        scope_id: Uuid,
+    ) -> Result<u64, BaseItemError> {
+        let result = self
+            .database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                WITH scope AS MATERIALIZED (
+                    SELECT item_type
+                    FROM jellyfin.base_items
+                    WHERE id = $1
+                ),
+                candidate_ids AS (
+                    SELECT episode.id
+                    FROM scope
+                    JOIN jellyfin.base_items AS episode
+                      ON episode.series_id = $1
+                    WHERE scope.item_type = 'Series'
+                      AND episode.item_type = 'Episode'
+                      AND episode.primary_version_id IS NULL
+                    UNION ALL
+                    SELECT episode.id
+                    FROM scope
+                    JOIN jellyfin.base_items AS episode
+                      ON episode.id = $1
+                    WHERE scope.item_type = 'Episode'
+                      AND episode.item_type = 'Episode'
+                      AND episode.primary_version_id IS NULL
+                ),
+                raw AS (
+                    SELECT episode.id,
+                           episode.name,
+                           NULLIF(btrim(series.name), '') AS series_title,
+                           NULLIF(btrim(metadata_series.value #>> '{}'), '') AS metadata_series_title,
+                           original.value #>> '{}' AS original_title,
+                           NULLIF(btrim(original.value #>> '{}'), '') AS normalized_original_title,
+                           NULLIF(
+                               btrim(
+                                   CASE
+                                       WHEN path_part.file_name ~ '^\.[^.]+$'
+                                           THEN path_part.file_name
+                                       ELSE regexp_replace(path_part.file_name, '\.[^.]*$', '')
+                                   END
+                               ),
+                               ''
+                           ) AS path_title,
+                           locked.value AS locked_fields
+                    FROM candidate_ids
+                    JOIN jellyfin.base_items AS episode ON episode.id = candidate_ids.id
+                    LEFT JOIN jellyfin.base_items AS series ON series.id = episode.series_id
+                    CROSS JOIN LATERAL (
+                        SELECT regexp_replace(COALESCE(episode.path, ''), '^.*/', '') AS file_name
+                    ) AS path_part
+                    LEFT JOIN LATERAL (
+                        SELECT entry.value
+                        FROM jsonb_each(
+                            CASE
+                                WHEN jsonb_typeof(episode.data) = 'object' THEN episode.data
+                                ELSE '{}'::jsonb
+                            END
+                        ) AS entry(key, value)
+                        WHERE lower(entry.key) = 'originaltitle'
+                          AND jsonb_typeof(entry.value) = 'string'
+                        LIMIT 1
+                    ) AS original ON TRUE
+                    LEFT JOIN LATERAL (
+                        SELECT entry.value
+                        FROM jsonb_each(
+                            CASE
+                                WHEN jsonb_typeof(episode.data) = 'object' THEN episode.data
+                                ELSE '{}'::jsonb
+                            END
+                        ) AS entry(key, value)
+                        WHERE lower(entry.key) = 'seriesname'
+                          AND jsonb_typeof(entry.value) = 'string'
+                        LIMIT 1
+                    ) AS metadata_series ON TRUE
+                    LEFT JOIN LATERAL (
+                        SELECT entry.value
+                        FROM jsonb_each(
+                            CASE
+                                WHEN jsonb_typeof(episode.data) = 'object' THEN episode.data
+                                ELSE '{}'::jsonb
+                            END
+                        ) AS entry(key, value)
+                        WHERE lower(entry.key) = 'lockedfields'
+                        LIMIT 1
+                    ) AS locked ON TRUE
+                ),
+                eligible AS (
+                    SELECT id, original_title
+                    FROM raw
+                    WHERE normalized_original_title IS NOT NULL
+                      AND NOT CASE jsonb_typeof(locked_fields)
+                          WHEN 'array' THEN EXISTS (
+                              SELECT 1
+                              FROM jsonb_array_elements_text(locked_fields) AS field(value)
+                              WHERE lower(field.value) = 'name'
+                          )
+                          WHEN 'string' THEN EXISTS (
+                              SELECT 1
+                              FROM regexp_split_to_table(locked_fields #>> '{}', '[|,]') AS field(value)
+                              WHERE lower(btrim(field.value)) = 'name'
+                          )
+                          ELSE FALSE
+                      END
+                      AND (
+                          name IS NULL
+                          OR btrim(name) = ''
+                          OR (series_title IS NOT NULL AND lower(btrim(name)) = lower(series_title))
+                          OR (metadata_series_title IS NOT NULL AND lower(btrim(name)) = lower(metadata_series_title))
+                          OR (path_title IS NOT NULL AND lower(btrim(name)) = lower(path_title))
+                      )
+                      AND (series_title IS NULL OR lower(normalized_original_title) <> lower(series_title))
+                      AND (
+                          metadata_series_title IS NULL
+                          OR lower(normalized_original_title) <> lower(metadata_series_title)
+                      )
+                      AND (path_title IS NULL OR lower(normalized_original_title) <> lower(path_title))
+                )
+                UPDATE jellyfin.base_items AS episode
+                SET name = eligible.original_title,
+                    sort_name = eligible.original_title
+                FROM eligible
+                WHERE episode.id = eligible.id
+                ",
+                [scope_id.into()],
+            ))
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Loads the minimal descendant projection needed for scan reconciliation.
     ///
     /// # Errors

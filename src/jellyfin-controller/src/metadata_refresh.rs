@@ -35,7 +35,7 @@ use crate::{
         TmdbMetadataProvider, TvMazeMetadataProvider, TvMazeProviderError,
     },
     omdb::OmdbClientFactory,
-    tmdb::{TmdbClientFactory, apply_episode_original_title_fallback},
+    tmdb::TmdbClientFactory,
 };
 
 #[derive(Debug, Error)]
@@ -450,7 +450,11 @@ impl MetadataRefreshService {
                 );
             }
             if repair_episode_titles {
-                refreshed |= self.repair_episode_original_titles(item_id).await?;
+                refreshed |= self
+                    .items
+                    .repair_episode_titles_from_original(item_id)
+                    .await?
+                    > 0;
             }
         }
 
@@ -470,50 +474,6 @@ impl MetadataRefreshService {
             self.save_nfo(updated).await?;
         }
         Ok(refreshed)
-    }
-
-    async fn repair_episode_original_titles(
-        &self,
-        item_id: Uuid,
-    ) -> Result<bool, MetadataRefreshError> {
-        let Some(item) = self.items.get(item_id).await? else {
-            return Ok(false);
-        };
-        let (series_name, episodes) = match item.item_type.as_str() {
-            "Series" => {
-                let series_name = item.name;
-                let episodes = self
-                    .items
-                    .descendants(item.id)
-                    .await?
-                    .into_iter()
-                    .map(|entry| entry.item)
-                    .filter(|item| item.item_type == "Episode")
-                    .collect();
-                (series_name, episodes)
-            }
-            "Episode" => {
-                let series_name = if let Some(series_id) = item.series_id {
-                    self.items
-                        .get(series_id)
-                        .await?
-                        .and_then(|series| series.name)
-                } else {
-                    None
-                };
-                (series_name, vec![item])
-            }
-            _ => return Ok(false),
-        };
-
-        let mut changed = false;
-        for mut episode in episodes {
-            if apply_episode_original_title_fallback(&mut episode, series_name.as_deref()) {
-                self.items.update(episode).await?;
-                changed = true;
-            }
-        }
-        Ok(changed)
     }
 
     async fn refresh_images(

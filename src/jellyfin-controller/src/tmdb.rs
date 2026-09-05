@@ -1686,7 +1686,8 @@ fn episode_title_value_is_placeholder(
     )
 }
 
-pub(crate) fn apply_episode_original_title_fallback(
+#[cfg(test)]
+fn apply_episode_original_title_fallback(
     item: &mut base_item::Model,
     series_name: Option<&str>,
 ) -> bool {
