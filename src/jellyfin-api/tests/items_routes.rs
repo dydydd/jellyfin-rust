@@ -923,6 +923,144 @@ async fn resume_is_deduplicated_recent_first_paginated_and_user_scoped() {
 }
 
 #[tokio::test]
+async fn resume_exclude_active_sessions_is_version_aware_and_user_scoped() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let user_data = UserDataRepository::new(fixture.database.clone());
+    let primary_id = fixture.item_ids[0];
+    let retained_id = fixture.item_ids[1];
+
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate.name = Some(format!("A alternate {}", fixture.suffix));
+    alternate.sort_name = alternate.name.clone();
+    alternate.parent_id = items
+        .get(primary_id)
+        .await
+        .expect("primary lookup")
+        .expect("primary item")
+        .parent_id;
+    alternate.primary_version_id = Some(primary_id);
+    let alternate = items.create(alternate).await.expect("alternate creation");
+    upsert_resume(
+        &user_data,
+        fixture.user_id,
+        alternate.id,
+        "alternate-version",
+        500,
+        Utc::now() + Duration::hours(1),
+    )
+    .await;
+
+    let devices = DeviceRepository::new(fixture.database.clone());
+    let user_session = devices
+        .find_by_token(&fixture.user_token)
+        .await
+        .expect("user session lookup")
+        .expect("user session");
+    devices
+        .update_playback_state(
+            user_session.id,
+            serde_json::json!({}),
+            Some(serde_json::json!({
+                "Id": primary_id.simple().to_string(),
+                "Type": "Movie"
+            })),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("user playback start");
+
+    // A different user's active session must not affect the requested user's
+    // Resume page, even when both users are playing resumable items.
+    let admin_session = devices
+        .find_by_token(&fixture.admin_token)
+        .await
+        .expect("administrator session lookup")
+        .expect("administrator session");
+    devices
+        .update_playback_state(
+            admin_session.id,
+            serde_json::json!({}),
+            Some(serde_json::json!({
+                "Id": retained_id.simple().to_string(),
+                "Type": "Episode"
+            })),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("administrator playback start");
+
+    let route = format!(
+        "/UserItems/Resume?userId={}&searchTerm={}",
+        fixture.user_id,
+        fixture.suffix.to_uppercase()
+    );
+    for suffix in ["", "&excludeActiveSessions=false"] {
+        let body = body_json(
+            fixture
+                .request(&format!("{route}{suffix}"), Some(&fixture.admin_token))
+                .await,
+        )
+        .await;
+        assert_eq!(body["TotalRecordCount"], 2, "{suffix}");
+        assert_eq!(body["Items"][0]["Id"], alternate.id.simple().to_string());
+        assert_eq!(body["Items"][1]["Id"], retained_id.simple().to_string());
+    }
+
+    for parameter in [
+        "excludeActiveSessions",
+        "ExcludeActiveSessions",
+        "excludeactivesessions",
+        "exclude_active_sessions",
+    ] {
+        let excluded = body_json(
+            fixture
+                .request(
+                    &format!("{route}&{parameter}=true&limit=1"),
+                    Some(&fixture.admin_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(excluded["TotalRecordCount"], 1, "{parameter}");
+        assert_eq!(excluded["StartIndex"], 0, "{parameter}");
+        assert_eq!(excluded["Items"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            excluded["Items"][0]["Id"],
+            retained_id.simple().to_string(),
+            "{parameter}"
+        );
+    }
+
+    devices
+        .clear_playback_state(user_session.id, None, None)
+        .await
+        .expect("user playback stop");
+    let after_stop = body_json(
+        fixture
+            .request(
+                &format!("{route}&excludeActiveSessions=true"),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(after_stop["TotalRecordCount"], 2);
+    assert_eq!(
+        after_stop["Items"][0]["Id"],
+        alternate.id.simple().to_string()
+    );
+
+    items.delete(alternate.id).await.expect("alternate cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn collection_folder_with_include_item_types_defaults_to_recursive() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

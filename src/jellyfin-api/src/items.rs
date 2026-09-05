@@ -538,6 +538,14 @@ pub(crate) struct ItemsQuery {
         alias = "enabletotalrecordcount"
     )]
     enable_total_record_count: bool,
+    #[serde(
+        default,
+        rename = "excludeActiveSessions",
+        alias = "ExcludeActiveSessions",
+        alias = "excludeactivesessions",
+        alias = "exclude_active_sessions"
+    )]
+    exclude_active_sessions: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -979,8 +987,32 @@ async fn resume_for(
     )
     .await?;
     query.parent_id = parent_scope.parent_id;
+    let exclude_active_sessions = query.exclude_active_sessions;
     let mut database_query: BaseItemQuery = query.try_into()?;
     database_query.parent_ids = parent_scope.parent_ids;
+    if exclude_active_sessions {
+        let active_item_ids = state
+            .devices
+            .active_now_playing_item_ids(target_user_id)
+            .await?;
+        if !active_item_ids.is_empty() {
+            // Official Jellyfin records the displayed primary in
+            // NowPlayingItem, while Resume can surface the alternate version
+            // that owns the latest progress. Expand all active video groups in
+            // one batch and feed the ids into the shared PostgreSQL candidate
+            // filter so page rows and TotalRecordCount stay consistent.
+            let active_versions = state
+                .base_items
+                .media_source_versions_for_items(&active_item_ids)
+                .await?;
+            database_query.exclude_ids.extend(active_item_ids);
+            database_query
+                .exclude_ids
+                .extend(active_versions.into_iter().map(|version| version.id));
+            database_query.exclude_ids.sort_unstable();
+            database_query.exclude_ids.dedup();
+        }
+    }
     let page = state
         .user_library
         .resume_items(&authenticated.user, target_user_id, database_query)

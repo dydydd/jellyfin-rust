@@ -396,6 +396,47 @@ impl DeviceRepository {
         })
     }
 
+    /// Returns the distinct item identifiers currently playing in active
+    /// sessions owned by `user_id`.
+    ///
+    /// Session playback snapshots use the public DTO wire shape, whose item
+    /// identifier is normally `Id`. Matching that property case-insensitively
+    /// keeps persisted client-supplied snapshots usable without allowing one
+    /// malformed value to invalidate the entire lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when active sessions cannot be loaded.
+    pub async fn active_now_playing_item_ids(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<Uuid>, AuthenticationStoreError> {
+        let now_playing_items = device::Entity::find()
+            .select_only()
+            .column(device::Column::NowPlayingItem)
+            .filter(device::Column::UserId.eq(user_id))
+            .filter(device::Column::IsActive.eq(true))
+            .filter(device::Column::NowPlayingItem.is_not_null())
+            .into_tuple::<Option<Value>>()
+            .all(self.database.as_ref())
+            .await?;
+        let mut item_ids = now_playing_items
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                item.as_object()?
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("id"))
+                    .map(|(_, value)| value)
+                    .and_then(Value::as_str)
+                    .and_then(|id| Uuid::parse_str(id).ok())
+            })
+            .collect::<Vec<_>>();
+        item_ids.sort_unstable();
+        item_ids.dedup();
+        Ok(item_ids)
+    }
+
     /// Returns the most recently active record for a device identifier.
     ///
     /// # Errors

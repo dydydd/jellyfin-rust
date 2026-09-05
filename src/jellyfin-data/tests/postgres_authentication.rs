@@ -221,7 +221,7 @@ async fn test_devices(database: &DatabaseConnection) {
         .await
         .expect("device update must succeed");
     assert_device_query_filters(&repository, &device_id, &activated, &second).await;
-    assert_playback_state_update(database, &repository, activated.id).await;
+    assert_playback_state_update(database, &repository, activated.id, user_id).await;
     assert_now_viewing_item_update(database, &repository, activated.id).await;
     assert_additional_users_update(database, &repository, activated.id).await;
 
@@ -324,7 +324,9 @@ async fn assert_playback_state_update(
     database: &DatabaseConnection,
     repository: &DeviceRepository,
     device_id: i64,
+    user_id: Uuid,
 ) {
+    let now_playing_item_id = Uuid::new_v4();
     assert_eq!(
         repository
             .update_playback_state(
@@ -336,7 +338,7 @@ async fn assert_playback_state_update(
                 }),
                 Some(json!({
                     "Name": "Now Playing",
-                    "Id": Uuid::new_v4().simple().to_string(),
+                    "Id": now_playing_item_id.simple().to_string(),
                     "Type": "Movie"
                 })),
                 Some(json!([{
@@ -364,6 +366,13 @@ async fn assert_playback_state_update(
     assert!(
         updated.date_last_paused.is_some(),
         "paused playback should remember the first paused timestamp"
+    );
+    assert_eq!(
+        repository
+            .active_now_playing_item_ids(user_id)
+            .await
+            .expect("active now-playing lookup must succeed"),
+        vec![now_playing_item_id]
     );
 
     let error = repository
@@ -395,6 +404,13 @@ async fn assert_playback_state_update(
         Some("playlist-after-stop")
     );
     assert!(cleared.date_last_paused.is_none());
+    assert!(
+        repository
+            .active_now_playing_item_ids(user_id)
+            .await
+            .expect("stopped now-playing lookup must succeed")
+            .is_empty()
+    );
 }
 
 async fn assert_now_viewing_item_update(
