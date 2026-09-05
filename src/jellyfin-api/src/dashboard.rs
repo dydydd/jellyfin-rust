@@ -19,12 +19,17 @@ const JSON_UTF8: HeaderValue = HeaderValue::from_static("application/json; chars
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ConfigurationPageQuery {
+    #[serde(rename = "name", alias = "Name")]
     name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ConfigurationPagesQuery {
-    #[serde(rename = "enableInMainMenu", alias = "EnableInMainMenu")]
+    #[serde(
+        rename = "enableInMainMenu",
+        alias = "EnableInMainMenu",
+        alias = "enableinmainmenu"
+    )]
     enable_in_main_menu: Option<bool>,
 }
 

@@ -29,19 +29,25 @@ async fn official_public_dashboard_configuration_page_contract() {
         );
     }
 
-    let response = fixture
-        .get("/web/ConfigurationPage?name=TestPlugin", None, None)
-        .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
-    assert_eq!(
-        response.headers()[header::CONTENT_LENGTH],
-        TEST_PAGE.len().to_string()
-    );
-    assert_eq!(
-        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-        TEST_PAGE.as_bytes()
-    );
+    for query_name in ["name", "Name"] {
+        let response = fixture
+            .get(
+                &format!("/web/ConfigurationPage?{query_name}=TestPlugin"),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{query_name}");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            TEST_PAGE.len().to_string()
+        );
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            TEST_PAGE.as_bytes()
+        );
+    }
     fixture.cleanup().await;
 }
 
@@ -76,21 +82,24 @@ async fn official_configuration_pages_contract_and_elevation() {
     assert_eq!(test_plugin["DisplayName"], "Test Plugin");
     assert_eq!(test_plugin["PluginId"], TEST_PLUGIN_ID.to_string());
 
-    let response = fixture
-        .get(
-            "/web/ConfigurationPages?enableInMainMenu=true",
-            Some(&fixture.admin_token),
-            None,
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers()[header::CONTENT_TYPE],
-        "application/json; charset=utf-8"
-    );
-    let body: Value =
-        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body, serde_json::json!([]));
+    for query_name in ["enableInMainMenu", "EnableInMainMenu", "enableinmainmenu"] {
+        let response = fixture
+            .get(
+                &format!("/web/ConfigurationPages?{query_name}=true"),
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{query_name}");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/json; charset=utf-8"
+        );
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body, serde_json::json!([]), "{query_name}");
+    }
     fixture.cleanup().await;
 }
 
