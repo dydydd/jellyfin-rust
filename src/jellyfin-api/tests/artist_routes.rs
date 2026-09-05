@@ -134,6 +134,21 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_artists(&favorite, &[&fixture.beta_artist], 1, 0);
 
+    let lowercase = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Artists?searchterm={}&mediatypes=Video&isfavorite=true&sortby=SortName&sortorder=Descending&startindex=0&limit=1&enabletotalrecordcount=false",
+                    encoded(&fixture.beta_artist)
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&lowercase, &[&fixture.beta_artist], 1, 0);
+
     let folder_scoped = body_json(
         fixture
             .request(
@@ -238,6 +253,17 @@ async fn artist_routes_match_official_artist_contract() {
             .request(
                 Method::GET,
                 &format!("/Artists?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists?userid={}", fixture.other_user_id),
                 Credential::Device(&fixture.user_token),
             )
             .await
