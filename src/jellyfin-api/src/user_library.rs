@@ -13,7 +13,10 @@ use jellyfin_controller::{
     RelatedItemKind, Studio, TrickplayManifest, Year,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
-use jellyfin_data::entities::{base_item, item_value, user_data};
+use jellyfin_data::{
+    ItemValueCounts,
+    entities::{base_item, item_value, user_data},
+};
 use jellyfin_model::{
     MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
     MediaUrl, NameIdPair, PersonKind, SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
@@ -51,6 +54,7 @@ pub(crate) struct BaseItemDtoFields {
     media_sources: bool,
     media_streams: bool,
     media_source_count: bool,
+    item_counts: bool,
     trickplay: bool,
 }
 
@@ -61,6 +65,7 @@ impl BaseItemDtoFields {
             media_sources: true,
             media_streams: true,
             media_source_count: true,
+            item_counts: true,
             trickplay: true,
         }
     }
@@ -71,6 +76,7 @@ impl BaseItemDtoFields {
             media_sources: true,
             media_streams: false,
             media_source_count: false,
+            item_counts: false,
             trickplay: false,
         }
     }
@@ -85,6 +91,8 @@ impl BaseItemDtoFields {
                 result.media_streams = true;
             } else if field.eq_ignore_ascii_case("MediaSourceCount") {
                 result.media_source_count = true;
+            } else if field.eq_ignore_ascii_case("ItemCounts") {
+                result.item_counts = true;
             } else if field.eq_ignore_ascii_case("Trickplay") {
                 result.trickplay = true;
             }
@@ -110,6 +118,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_media_source_count(self) -> bool {
         self.media_source_count
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_item_counts(self) -> bool {
+        self.item_counts
     }
 
     #[must_use]
@@ -164,6 +177,24 @@ pub struct BaseItemDto {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub movie_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub music_video_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub song_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trailer_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_preferences_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -805,6 +836,15 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         is_virtual_item: item.is_virtual_item,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),
         child_count: None,
+        album_count: None,
+        artist_count: None,
+        episode_count: None,
+        movie_count: None,
+        music_video_count: None,
+        program_count: None,
+        series_count: None,
+        song_count: None,
+        trailer_count: None,
         display_preferences_id: None,
         index_number: item.index_number,
         parent_index_number: item.parent_index_number,
@@ -1638,10 +1678,16 @@ fn projected_media_source_container(container: Option<&str>, path: Option<&str>)
         .or_else(|| path.and_then(media_container_from_path))
 }
 
-pub(crate) fn music_genre_to_dto(genre: MusicGenre, server_id: &str) -> BaseItemDto {
+pub(crate) fn music_genre_to_dto(
+    genre: MusicGenre,
+    server_id: &str,
+    include_item_counts: bool,
+) -> BaseItemDto {
     let presentation_unique_key = Some(format!("MusicGenre-{}", genre.name));
+    let counts = genre.counts;
+    let item_count = genre.item_count;
     let name = genre.name;
-    BaseItemDto {
+    let mut dto = BaseItemDto {
         // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
         name: Some(name.clone()),
         server_id: server_id.to_owned(),
@@ -1681,17 +1727,31 @@ pub(crate) fn music_genre_to_dto(genre: MusicGenre, server_id: &str) -> BaseItem
         media_streams: None,
         trickplay: None,
         ..BaseItemDto::default()
-    }
+    };
+    apply_item_value_counts(
+        &mut dto,
+        counts,
+        item_count,
+        "MusicGenre",
+        include_item_counts,
+    );
+    dto
 }
 
-pub(crate) fn genre_to_dto(genre: Genre, server_id: &str) -> BaseItemDto {
+pub(crate) fn genre_to_dto(
+    genre: Genre,
+    server_id: &str,
+    include_item_counts: bool,
+) -> BaseItemDto {
     let (item_type, presentation_prefix) = match genre.kind {
         GenreKind::Genre => ("Genre", "Genre"),
         GenreKind::MusicGenre => ("MusicGenre", "MusicGenre"),
     };
     let presentation_unique_key = Some(format!("{presentation_prefix}-{}", genre.name));
+    let counts = genre.counts;
+    let item_count = genre.item_count;
     let name = genre.name;
-    BaseItemDto {
+    let mut dto = BaseItemDto {
         // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
         name: Some(name.clone()),
         server_id: server_id.to_owned(),
@@ -1731,13 +1791,21 @@ pub(crate) fn genre_to_dto(genre: Genre, server_id: &str) -> BaseItemDto {
         media_streams: None,
         trickplay: None,
         ..BaseItemDto::default()
-    }
+    };
+    apply_item_value_counts(&mut dto, counts, item_count, item_type, include_item_counts);
+    dto
 }
 
-pub(crate) fn studio_to_dto(studio: Studio, server_id: &str) -> BaseItemDto {
+pub(crate) fn studio_to_dto(
+    studio: Studio,
+    server_id: &str,
+    include_item_counts: bool,
+) -> BaseItemDto {
     let presentation_unique_key = Some(format!("Studio-{}", studio.name));
+    let counts = studio.counts;
+    let item_count = studio.item_count;
     let name = studio.name;
-    BaseItemDto {
+    let mut dto = BaseItemDto {
         // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
         name: Some(name.clone()),
         server_id: server_id.to_owned(),
@@ -1777,13 +1845,21 @@ pub(crate) fn studio_to_dto(studio: Studio, server_id: &str) -> BaseItemDto {
         media_streams: None,
         trickplay: None,
         ..BaseItemDto::default()
-    }
+    };
+    apply_item_value_counts(&mut dto, counts, item_count, "Studio", include_item_counts);
+    dto
 }
 
-pub(crate) fn artist_to_dto(artist: Artist, server_id: &str) -> BaseItemDto {
+pub(crate) fn artist_to_dto(
+    artist: Artist,
+    server_id: &str,
+    include_item_counts: bool,
+) -> BaseItemDto {
     let presentation_unique_key = Some(format!("Artist-{}", artist.name));
+    let counts = artist.counts;
+    let item_count = artist.item_count;
     let name = artist.name;
-    BaseItemDto {
+    let mut dto = BaseItemDto {
         // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
         name: Some(name.clone()),
         server_id: server_id.to_owned(),
@@ -1823,7 +1899,43 @@ pub(crate) fn artist_to_dto(artist: Artist, server_id: &str) -> BaseItemDto {
         media_streams: None,
         trickplay: None,
         ..BaseItemDto::default()
+    };
+    apply_item_value_counts(
+        &mut dto,
+        counts,
+        item_count,
+        "MusicArtist",
+        include_item_counts,
+    );
+    dto
+}
+
+fn apply_item_value_counts(
+    dto: &mut BaseItemDto,
+    counts: ItemValueCounts,
+    item_count: u64,
+    item_type: &str,
+    include_item_counts: bool,
+) {
+    if !include_item_counts {
+        return;
     }
+    dto.child_count = Some(item_count);
+    dto.album_count = Some(counts.album_count);
+    dto.music_video_count = Some(counts.music_video_count);
+    dto.song_count = Some(counts.song_count);
+    if item_type == "MusicArtist" {
+        return;
+    }
+    dto.artist_count = Some(counts.artist_count);
+    if item_type == "MusicGenre" {
+        return;
+    }
+    dto.episode_count = Some(counts.episode_count);
+    dto.movie_count = Some(counts.movie_count);
+    dto.program_count = Some(counts.program_count);
+    dto.series_count = Some(counts.series_count);
+    dto.trailer_count = Some(counts.trailer_count);
 }
 
 pub(crate) fn person_to_dto(person: Person, server_id: &str) -> BaseItemDto {

@@ -28,6 +28,13 @@ pub(crate) struct ArtistsQuery {
     parent_id: Option<Uuid>,
     #[serde(
         default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(
+        default,
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
         deserialize_with = "crate::query::comma::deserialize"
@@ -104,6 +111,9 @@ async fn list_kind(
     let order = crate::query::item_value_order(&query.sort_by)?;
     let descending = descending(&query.sort_order)?;
     let enable_total_record_count = query.enable_total_record_count;
+    let include_item_counts = user_library::BaseItemDtoFields::from_names(&query.fields)
+        .wants_item_counts()
+        || !query.include_item_types.is_empty();
     let page = state
         .artists
         .list(
@@ -133,7 +143,7 @@ async fn list_kind(
     let items = page
         .artists
         .into_iter()
-        .map(|artist| user_library::artist_to_dto(artist, state.server_id()))
+        .map(|artist| user_library::artist_to_dto(artist, state.server_id(), include_item_counts))
         .collect::<Vec<_>>();
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
@@ -162,7 +172,11 @@ pub(crate) async fn get(
         .artists
         .get(&authenticated.user, target_user_id, &name)
         .await?;
-    Ok(Json(user_library::artist_to_dto(artist, state.server_id())))
+    Ok(Json(user_library::artist_to_dto(
+        artist,
+        state.server_id(),
+        true,
+    )))
 }
 
 pub(crate) async fn get_image(

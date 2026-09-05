@@ -29,6 +29,13 @@ pub(crate) struct GenresQuery {
     parent_id: Option<Uuid>,
     #[serde(
         default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(
+        default,
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
         deserialize_with = "crate::query::comma::deserialize"
@@ -81,6 +88,9 @@ pub(crate) async fn list(
     let order = crate::query::item_value_order(&query.sort_by)?;
     let descending = descending(&query.sort_order)?;
     let enable_total_record_count = query.enable_total_record_count;
+    let include_item_counts = user_library::BaseItemDtoFields::from_names(&query.fields)
+        .wants_item_counts()
+        || !query.include_item_types.is_empty();
     let page = state
         .genres
         .list(
@@ -109,7 +119,7 @@ pub(crate) async fn list(
     let items = page
         .genres
         .into_iter()
-        .map(|genre| user_library::genre_to_dto(genre, state.server_id()))
+        .map(|genre| user_library::genre_to_dto(genre, state.server_id(), include_item_counts))
         .collect::<Vec<_>>();
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
@@ -138,7 +148,11 @@ pub(crate) async fn get(
         .genres
         .get(&authenticated.user, target_user_id, &genre_name)
         .await?;
-    Ok(Json(user_library::genre_to_dto(genre, state.server_id())))
+    Ok(Json(user_library::genre_to_dto(
+        genre,
+        state.server_id(),
+        true,
+    )))
 }
 
 pub(crate) async fn get_image(

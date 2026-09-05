@@ -57,6 +57,12 @@ async fn music_genre_returns_pascal_case_base_item_dto() {
     assert_eq!(dto["Type"], "MusicGenre");
     assert_eq!(dto["IsFolder"], true);
     assert_eq!(dto["IsVirtualItem"], false);
+    assert_eq!(dto["ChildCount"], 2);
+    assert_eq!(dto["SongCount"], 1);
+    assert_eq!(dto["MusicVideoCount"], 1);
+    assert_eq!(dto["AlbumCount"], 0);
+    assert_eq!(dto["ArtistCount"], 0);
+    assert!(dto.get("MovieCount").is_none());
     assert_eq!(dto["ServerId"].as_str().unwrap().len(), 32);
     assert!(dto["Etag"].is_string());
     assert!(dto.get("item_type").is_none());

@@ -87,6 +87,42 @@ async fn genre_routes_match_official_generic_genre_contract() {
     )
     .await;
     assert_genres(&searched, &[&fixture.drama_genre], 1, 0);
+    assert!(searched["Items"][0].get("MovieCount").is_none());
+    assert!(searched["Items"][0].get("ChildCount").is_none());
+
+    let with_item_counts = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Genres?fields=itemcounts&searchTerm={}",
+                    encoded(&fixture.drama_genre)
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(with_item_counts["Items"][0]["MovieCount"], 1);
+    assert_eq!(with_item_counts["Items"][0]["ChildCount"], 1);
+    assert_eq!(with_item_counts["Items"][0]["EpisodeCount"], 0);
+    assert!(with_item_counts["Items"][0].get("ItemCounts").is_none());
+
+    let implicit_item_counts = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Genres?includeItemTypes=Movie&searchTerm={}",
+                    encoded(&fixture.drama_genre)
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(implicit_item_counts["Items"][0]["MovieCount"], 1);
+    assert_eq!(implicit_item_counts["Items"][0]["ChildCount"], 1);
 
     let prefixed = body_json(
         fixture
@@ -227,6 +263,8 @@ async fn genre_routes_match_official_generic_genre_contract() {
     assert_eq!(drama["Id"], fixture.drama_genre_id.simple().to_string());
     assert_eq!(drama["Name"], fixture.drama_genre);
     assert_eq!(drama["Type"], "Genre");
+    assert_eq!(drama["MovieCount"], 1);
+    assert_eq!(drama["ChildCount"], 1);
     assert_eq!(
         drama["PresentationUniqueKey"],
         format!("Genre-{}", fixture.drama_genre)
@@ -484,6 +522,13 @@ impl Fixture {
 
         let items = BaseItemRepository::new(database.clone());
         let movie = create_item(&items, "Movie", "Drama Movie", None, false).await;
+        let mut movie_alternate =
+            create_item(&items, "Movie", "Drama Movie Alternate", None, false).await;
+        movie_alternate.primary_version_id = Some(movie.id);
+        let movie_alternate = items
+            .update(movie_alternate)
+            .await
+            .expect("movie alternate grouping");
         let trailer = create_item(&items, "Trailer", "Funny Trailer", None, false).await;
         let audio = create_item(&items, "Audio", "Music Track", None, false).await;
         let parent = create_item(&items, "Folder", "Genre Parent", None, true).await;
@@ -515,6 +560,14 @@ impl Fixture {
             .link(movie.id, item_value::ItemValueType::Genre, &drama_genre)
             .await
             .expect("drama genre");
+        values
+            .link(
+                movie_alternate.id,
+                item_value::ItemValueType::Genre,
+                &drama_genre,
+            )
+            .await
+            .expect("alternate drama genre");
         values
             .link(trailer.id, item_value::ItemValueType::Genre, &comedy_genre)
             .await

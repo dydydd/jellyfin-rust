@@ -1,6 +1,6 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, ItemValueError, ItemValueInfo, ItemValueQuery,
-    ItemValueRepository,
+    BaseItemError, BaseItemRepository, ItemValueCounts, ItemValueError, ItemValueInfo,
+    ItemValueQuery, ItemValueRepository,
     entities::{base_item, item_value, user},
 };
 use md5::{Digest, Md5};
@@ -20,6 +20,7 @@ pub struct Artist {
     pub id: Uuid,
     pub name: String,
     pub item_count: u64,
+    pub counts: ItemValueCounts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,18 +88,25 @@ impl ArtistService {
             let Some(value) = self.find_value(kind, requested_name).await? else {
                 continue;
             };
-            let item_count = self
+            let candidate = self
                 .item_values
-                .items_for_value(kind.value_type(), &value.value)
+                .query_values(
+                    kind.value_type(),
+                    &ItemValueQuery {
+                        search_term: Some(value.value.clone()),
+                        ..ItemValueQuery::default()
+                    },
+                )
                 .await?
+                .values
                 .into_iter()
-                .filter(|item| item.item_type != "PLACEHOLDER")
-                .count();
-            if item_count != 0 {
+                .find(|candidate| candidate.id == value.item_value_id);
+            if let Some(candidate) = candidate {
                 return Ok(Artist {
                     id: value.item_value_id,
                     name: value.value,
-                    item_count: u64::try_from(item_count).unwrap_or(u64::MAX),
+                    item_count: candidate.item_count,
+                    counts: candidate.counts,
                 });
             }
         }
@@ -216,6 +224,7 @@ impl From<ItemValueInfo> for Artist {
             id: value.id,
             name: value.value,
             item_count: value.item_count,
+            counts: value.counts,
         }
     }
 }
@@ -225,6 +234,7 @@ fn virtual_artist(name: &str) -> Artist {
         id: jellyfin_artist_id(name),
         name: name.to_owned(),
         item_count: 0,
+        counts: ItemValueCounts::default(),
     }
 }
 

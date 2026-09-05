@@ -207,6 +207,11 @@ async fn artist_routes_match_official_artist_contract() {
     assert_eq!(artist["Id"], fixture.alpha_artist_id.simple().to_string());
     assert_eq!(artist["Name"], fixture.alpha_artist);
     assert_eq!(artist["Type"], "MusicArtist");
+    assert_eq!(artist["ChildCount"], 1);
+    assert_eq!(artist["SongCount"], 1);
+    assert_eq!(artist["AlbumCount"], 0);
+    assert_eq!(artist["MusicVideoCount"], 0);
+    assert!(artist.get("ArtistCount").is_none());
     assert_eq!(
         artist["PresentationUniqueKey"],
         format!("Artist-{}", fixture.alpha_artist)

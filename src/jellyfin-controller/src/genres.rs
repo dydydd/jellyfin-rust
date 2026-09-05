@@ -1,6 +1,6 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, ItemValueError, ItemValueInfo, ItemValueQuery,
-    ItemValueRepository,
+    BaseItemError, BaseItemRepository, ItemValueCounts, ItemValueError, ItemValueInfo,
+    ItemValueQuery, ItemValueRepository,
     entities::{base_item, item_value, user},
 };
 use md5::{Digest, Md5};
@@ -16,6 +16,7 @@ pub struct Genre {
     pub id: Uuid,
     pub name: String,
     pub item_count: u64,
+    pub counts: ItemValueCounts,
     pub kind: GenreKind,
 }
 
@@ -101,9 +102,14 @@ impl GenreService {
             .await?;
         let item_count = page
             .values
-            .into_iter()
+            .iter()
             .find(|candidate| candidate.id == value_id)
             .map_or(0, |candidate| candidate.item_count);
+        let counts = page
+            .values
+            .into_iter()
+            .find(|candidate| candidate.id == value_id)
+            .map_or_else(ItemValueCounts::default, |candidate| candidate.counts);
         let value = query
             .search_term
             .take()
@@ -115,6 +121,7 @@ impl GenreService {
             id: value_id,
             name: value,
             item_count,
+            counts,
             kind: GenreKind::Genre,
         })
     }
@@ -255,6 +262,7 @@ impl Genre {
             id: value.id,
             name: value.value,
             item_count: value.item_count,
+            counts: value.counts,
             kind,
         }
     }
@@ -316,6 +324,7 @@ fn virtual_genre(name: &str) -> Genre {
         id: jellyfin_genre_id(name),
         name: name.to_owned(),
         item_count: 0,
+        counts: ItemValueCounts::default(),
         kind: GenreKind::Genre,
     }
 }

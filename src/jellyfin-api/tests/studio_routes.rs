@@ -172,6 +172,9 @@ async fn studio_routes_match_official_studio_contract() {
     assert_eq!(studio["Id"], fixture.alpha_studio_id.simple().to_string());
     assert_eq!(studio["Name"], fixture.alpha_studio);
     assert_eq!(studio["Type"], "Studio");
+    assert_eq!(studio["ChildCount"], 1);
+    assert_eq!(studio["MovieCount"], 1);
+    assert_eq!(studio["EpisodeCount"], 0);
     assert_eq!(
         studio["PresentationUniqueKey"],
         format!("Studio-{}", fixture.alpha_studio)

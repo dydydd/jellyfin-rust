@@ -59,6 +59,20 @@ pub struct ItemValueInfo {
     pub id: Uuid,
     pub value: String,
     pub item_count: u64,
+    pub counts: ItemValueCounts,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ItemValueCounts {
+    pub album_count: u64,
+    pub artist_count: u64,
+    pub episode_count: u64,
+    pub movie_count: u64,
+    pub music_video_count: u64,
+    pub program_count: u64,
+    pub series_count: u64,
+    pub song_count: u64,
+    pub trailer_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,7 +470,9 @@ impl ItemValueRepository {
             ItemValueOrder::Random => "random(), item_value_id".to_owned(),
         };
         let mut page_sql = format!(
-            "{cte} SELECT item_value_id, value, item_count \
+            "{cte} SELECT item_value_id, value, item_count, album_count, artist_count, \
+                    episode_count, movie_count, music_video_count, program_count, \
+                    series_count, song_count, trailer_count \
              FROM values ORDER BY {order}"
         );
         push_bind(
@@ -483,11 +499,25 @@ impl ItemValueRepository {
             .await?
             .into_iter()
             .map(|row| {
+                let count = |column| -> Result<u64, DbErr> {
+                    Ok(u64::try_from(row.try_get::<i64>("", column)?).unwrap_or_default())
+                };
                 Ok(ItemValueInfo {
                     id: row.try_get("", "item_value_id")?,
                     value: row.try_get("", "value")?,
                     item_count: u64::try_from(row.try_get::<i64>("", "item_count")?)
                         .unwrap_or_default(),
+                    counts: ItemValueCounts {
+                        album_count: count("album_count")?,
+                        artist_count: count("artist_count")?,
+                        episode_count: count("episode_count")?,
+                        movie_count: count("movie_count")?,
+                        music_video_count: count("music_video_count")?,
+                        program_count: count("program_count")?,
+                        series_count: count("series_count")?,
+                        song_count: count("song_count")?,
+                        trailer_count: count("trailer_count")?,
+                    },
                 })
             })
             .collect::<Result<Vec<_>, DbErr>>()?;
@@ -513,18 +543,32 @@ fn item_values_cte(
     let mut values = vec![item_value_type_code(value_type).into()];
     let mut sql = String::from(
         "WITH linked AS (\
-             SELECT value.item_value_id, value.value, value.clean_value, item.id AS item_id \
+             SELECT value.item_value_id, value.value, value.clean_value, \
+                    item.id AS item_id, item.item_type \
              FROM jellyfin.item_values AS value \
              JOIN jellyfin.item_value_map AS map ON map.item_value_id = value.item_value_id \
              JOIN jellyfin.base_items AS item ON item.id = map.item_id \
              WHERE value.type = $1 \
-               AND item.item_type <> 'PLACEHOLDER'",
+               AND item.item_type <> 'PLACEHOLDER' \
+               AND item.primary_version_id IS NULL \
+               AND (item.data ->> 'OwnerId' IS NULL \
+                    OR item.data ->> 'ExtraType' IS NOT NULL)",
     );
     append_item_filters(&mut sql, &mut values, query);
     append_value_filters(&mut sql, &mut values, query);
     sql.push_str(
         "), values AS (\
-             SELECT item_value_id, value, clean_value, COUNT(DISTINCT item_id)::bigint AS item_count \
+             SELECT item_value_id, value, clean_value, \
+                    COUNT(DISTINCT item_id)::bigint AS item_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'MusicAlbum')::bigint AS album_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'MusicArtist')::bigint AS artist_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Episode')::bigint AS episode_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Movie')::bigint AS movie_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'MusicVideo')::bigint AS music_video_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Program')::bigint AS program_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Series')::bigint AS series_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Audio')::bigint AS song_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Trailer')::bigint AS trailer_count \
              FROM linked \
              GROUP BY item_value_id, value, clean_value\
          )",

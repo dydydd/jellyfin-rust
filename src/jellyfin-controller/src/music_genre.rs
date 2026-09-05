@@ -1,6 +1,6 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, ItemValueError, ItemValueInfo, ItemValueQuery,
-    ItemValueRepository,
+    BaseItemError, BaseItemRepository, ItemValueCounts, ItemValueError, ItemValueInfo,
+    ItemValueQuery, ItemValueRepository,
     entities::{base_item, item_value, user},
 };
 use thiserror::Error;
@@ -29,6 +29,7 @@ pub struct MusicGenre {
     pub id: Uuid,
     pub name: String,
     pub item_count: u64,
+    pub counts: ItemValueCounts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,21 +76,26 @@ impl MusicGenreService {
             .find_value(name)
             .await?
             .ok_or(MusicGenreError::NotFound)?;
-        let linked_items = self
+        let candidate = self
             .item_values
-            .items_for_value(item_value::ItemValueType::Genre, &value.value)
-            .await?;
-        let item_count = linked_items
-            .iter()
-            .filter(|item| is_music_item(item))
-            .count();
-        if item_count == 0 {
-            return Err(MusicGenreError::NotFound);
-        }
+            .query_values(
+                item_value::ItemValueType::Genre,
+                &ItemValueQuery {
+                    search_term: Some(value.value.clone()),
+                    include_item_types: MUSIC_ITEM_TYPES.iter().map(ToString::to_string).collect(),
+                    ..ItemValueQuery::default()
+                },
+            )
+            .await?
+            .values
+            .into_iter()
+            .find(|candidate| candidate.id == value.item_value_id)
+            .ok_or(MusicGenreError::NotFound)?;
         Ok(MusicGenre {
             id: value.item_value_id,
             name: value.value,
-            item_count: u64::try_from(item_count).unwrap_or(u64::MAX),
+            item_count: candidate.item_count,
+            counts: candidate.counts,
         })
     }
 
@@ -219,15 +225,12 @@ impl From<ItemValueInfo> for MusicGenre {
             id: value.id,
             name: value.value,
             item_count: value.item_count,
+            counts: value.counts,
         }
     }
 }
 
 const MUSIC_ITEM_TYPES: [&str; 4] = ["Audio", "MusicVideo", "MusicAlbum", "MusicArtist"];
-
-fn is_music_item(item: &base_item::Model) -> bool {
-    is_music_item_type(&item.item_type)
-}
 
 fn is_music_item_type(candidate: &str) -> bool {
     MUSIC_ITEM_TYPES.iter().any(|item_type| {
