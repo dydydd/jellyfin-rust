@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
     str::FromStr,
@@ -90,6 +90,15 @@ struct ScanDirectorySnapshot {
 struct PreloadedMediaState {
     streams: Vec<PersistedMediaStream>,
     images: Vec<BaseItemImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MovieVersionCandidate {
+    id: Uuid,
+    primary_version_id: Option<Uuid>,
+    normalized_name: String,
+    production_year: i32,
+    identity_provider_ids: [Option<String>; 3],
 }
 
 impl ScanDirectorySnapshot {
@@ -1195,10 +1204,6 @@ impl LibraryScanService {
         summary: &mut LibraryScanSummary,
     ) -> Result<(), LibraryScanError> {
         let groups = resolve_scanned_video_groups(files, kind, library_root);
-        if groups.is_empty() {
-            return Ok(());
-        }
-
         let added_ids = summary.added_ids.iter().copied().collect::<HashSet<_>>();
         let mut changed_ids = summary.changed_ids.iter().copied().collect::<HashSet<_>>();
 
@@ -1268,6 +1273,60 @@ impl LibraryScanService {
         if !assignments.is_empty() {
             for item_id in self.apply_version_assignment_batch(&assignments).await? {
                 track_group_change(summary, &added_ids, &mut changed_ids, item_id);
+            }
+        }
+        if matches!(kind, ScanLibraryKind::Movies) {
+            self.group_scanned_movies_by_metadata(files, summary, &added_ids, &mut changed_ids)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn group_scanned_movies_by_metadata(
+        &self,
+        files: &[(PathBuf, MediaKind)],
+        summary: &mut LibraryScanSummary,
+        added_ids: &HashSet<Uuid>,
+        changed_ids: &mut HashSet<Uuid>,
+    ) -> Result<(), LibraryScanError> {
+        let video_paths = files
+            .iter()
+            .filter(|(_, kind)| *kind == MediaKind::Video)
+            .filter_map(|(path, _)| path.to_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let mut candidates = Vec::with_capacity(video_paths.len());
+        for paths in video_paths.chunks(SCAN_PATH_QUERY_BATCH_SIZE) {
+            candidates.extend(
+                self.items
+                    .by_paths(paths)
+                    .await?
+                    .into_iter()
+                    .filter_map(movie_version_candidate),
+            );
+        }
+
+        for group in metadata_movie_version_groups(&candidates) {
+            let roots = group
+                .iter()
+                .map(|index| {
+                    let candidate = &candidates[*index];
+                    candidate.primary_version_id.unwrap_or(candidate.id)
+                })
+                .collect::<HashSet<_>>();
+            if roots.len() == 1 {
+                continue;
+            }
+            let ids = group
+                .iter()
+                .map(|index| candidates[*index].id)
+                .collect::<Vec<_>>();
+            let primary_id = self.items.merge_alternate_versions(&ids).await?;
+            for index in group {
+                let candidate = &candidates[index];
+                let expected = (candidate.id != primary_id).then_some(primary_id);
+                if candidate.primary_version_id != expected {
+                    track_group_change(summary, added_ids, changed_ids, candidate.id);
+                }
             }
         }
         Ok(())
@@ -2443,7 +2502,11 @@ fn resolve_scanned_video_groups(
     } else {
         Some(jellyfin_naming::video_list::CollectionType::Movies)
     };
-    VideoListResolver::new(options).resolve_owned_with_options(videos, true, collection_type)
+    VideoListResolver::new(options)
+        .resolve_owned_with_options(videos, true, collection_type)
+        .into_iter()
+        .filter(|video| video.files.len() > 1 || !video.alternate_versions.is_empty())
+        .collect()
 }
 
 fn video_group_version_paths(group: &VideoInfo) -> impl Iterator<Item = &str> {
@@ -2458,6 +2521,87 @@ fn video_group_version_paths(group: &VideoInfo) -> impl Iterator<Item = &str> {
                 .flat_map(|alternate| alternate.files.iter()),
         )
         .map(|file| file.path.as_str())
+}
+
+fn movie_version_candidate(item: base_item::Model) -> Option<MovieVersionCandidate> {
+    if item.item_type != "Movie" || metadata_has_non_empty_extra_type(item.data.as_ref()) {
+        return None;
+    }
+    let normalized_name = item.name.as_deref()?.trim().to_lowercase();
+    if normalized_name.is_empty() {
+        return None;
+    }
+    Some(MovieVersionCandidate {
+        id: item.id,
+        primary_version_id: item.primary_version_id,
+        normalized_name,
+        production_year: item.production_year?,
+        identity_provider_ids: ["Tmdb", "Imdb", "Tvdb"]
+            .map(|provider| movie_identity_provider_id(item.data.as_ref(), provider)),
+    })
+}
+
+fn metadata_movie_version_groups(candidates: &[MovieVersionCandidate]) -> Vec<Vec<usize>> {
+    let mut buckets = BTreeMap::<(&str, i32), Vec<usize>>::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        buckets
+            .entry((&candidate.normalized_name, candidate.production_year))
+            .or_default()
+            .push(index);
+    }
+    buckets
+        .into_values()
+        .filter(|bucket| bucket.len() > 1 && !movie_provider_ids_conflict(candidates, bucket))
+        .collect()
+}
+
+fn movie_provider_ids_conflict(candidates: &[MovieVersionCandidate], bucket: &[usize]) -> bool {
+    (0..3).any(|provider_index| {
+        bucket
+            .iter()
+            .filter_map(|index| candidates[*index].identity_provider_ids[provider_index].as_deref())
+            .collect::<HashSet<_>>()
+            .len()
+            > 1
+    })
+}
+
+fn movie_identity_provider_id(data: Option<&Value>, provider: &str) -> Option<String> {
+    let provider_ids = data?
+        .as_object()?
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("ProviderIds"))?
+        .1
+        .as_object()?;
+    let value = provider_ids
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(provider))?
+        .1;
+    let value = match value {
+        Value::String(value) => value.trim().to_lowercase(),
+        Value::Number(value) => value.to_string(),
+        _ => return None,
+    };
+    (!value.is_empty()).then_some(value)
+}
+
+fn metadata_has_non_empty_extra_type(data: Option<&Value>) -> bool {
+    let Some(value) = data
+        .and_then(Value::as_object)
+        .and_then(|object| {
+            object
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("ExtraType"))
+        })
+        .map(|(_, value)| value)
+    else {
+        return false;
+    };
+    match value {
+        Value::Null => false,
+        Value::String(value) => !value.trim().is_empty(),
+        _ => true,
+    }
 }
 
 fn default_fanout_concurrency() -> usize {
@@ -3774,8 +3918,8 @@ mod tests {
         apply_strm_metadata, attachment_image_type, attachments_from_media_info,
         codec_from_extension, default_fanout_concurrency, default_stream, display_name,
         extra_type_name, image_extraction_command_succeeded, is_extras_directory, local_image_type,
-        media_item_data, media_kind, merge_scan_summary, next_stream_index, read_strm_target,
-        relations_from_movie_nfo, relations_from_nfo_metadata,
+        media_item_data, media_kind, merge_scan_summary, metadata_movie_version_groups,
+        next_stream_index, read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
         streams_from_media_info, track_group_change,
@@ -3882,6 +4026,56 @@ mod tests {
                 "/movies/Film/Film - 2160p.mkv"
             ]
         );
+    }
+
+    #[test]
+    fn movie_versions_with_arbitrary_filenames_group_by_metadata() {
+        let candidates = vec![
+            movie_version_candidate_fixture(
+                "Feature Film",
+                2024,
+                [Some("101"), Some("tt0101"), None],
+            ),
+            movie_version_candidate_fixture(" feature film ", 2024, [Some("101"), None, None]),
+        ];
+
+        assert_eq!(metadata_movie_version_groups(&candidates), vec![vec![0, 1]]);
+    }
+
+    #[test]
+    fn conflicting_movie_provider_ids_block_metadata_grouping() {
+        let candidates = vec![
+            movie_version_candidate_fixture("Feature Film", 2024, [Some("101"), None, None]),
+            movie_version_candidate_fixture("Feature Film", 2024, [Some("202"), None, None]),
+            movie_version_candidate_fixture("Feature Film", 2024, [None, None, None]),
+        ];
+
+        assert!(metadata_movie_version_groups(&candidates).is_empty());
+    }
+
+    #[test]
+    fn movie_metadata_groups_require_the_same_title_and_year() {
+        let candidates = vec![
+            movie_version_candidate_fixture("Feature Film", 2024, [None, None, None]),
+            movie_version_candidate_fixture("Feature Film", 2023, [None, None, None]),
+            movie_version_candidate_fixture("Different Film", 2024, [None, None, None]),
+        ];
+
+        assert!(metadata_movie_version_groups(&candidates).is_empty());
+    }
+
+    fn movie_version_candidate_fixture(
+        name: &str,
+        production_year: i32,
+        provider_ids: [Option<&str>; 3],
+    ) -> super::MovieVersionCandidate {
+        super::MovieVersionCandidate {
+            id: uuid::Uuid::new_v4(),
+            primary_version_id: None,
+            normalized_name: name.trim().to_lowercase(),
+            production_year,
+            identity_provider_ids: provider_ids.map(|value| value.map(str::to_owned)),
+        }
     }
 
     #[test]
