@@ -157,21 +157,62 @@ async fn reuses_stable_cache_file() {
 }
 
 #[tokio::test]
-async fn reports_corrupt_source_as_decode_error() {
+async fn returns_corrupt_source_when_conversion_fails() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let source_path = directory.path().join("bad.png");
-    fs::write(&source_path, b"not an image").expect("write corrupt source");
-    let source = ImageSource::new(source_path, SystemTime::now());
+    let source_bytes = b"not an image";
+    fs::write(&source_path, source_bytes).expect("write corrupt source");
+    let date_modified = fs::metadata(&source_path)
+        .and_then(|metadata| metadata.modified())
+        .expect("source modification time");
+    let source = ImageSource::new(source_path.clone(), date_modified);
     let request = ImageProcessingRequest {
         max_width: Some(20),
         ..ImageProcessingRequest::default()
     };
-    let error = processor(&directory)
+    let result = processor(&directory)
         .process(source, request)
         .await
-        .expect_err("corrupt image must fail");
+        .expect("failed conversion must fall back to the original");
 
-    assert!(matches!(error, ImageProcessingError::Decode { .. }));
+    assert_eq!(result.path, source_path);
+    assert_eq!(result.mime_type, "image/png");
+    assert_eq!(result.date_modified, date_modified);
+    assert_eq!(fs::read(result.path).unwrap(), source_bytes);
+}
+
+#[tokio::test]
+async fn does_not_fallback_validation_or_missing_source_errors() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let missing = ImageSource::new(directory.path().join("missing.png"), SystemTime::now());
+    let resize = ImageProcessingRequest {
+        max_width: Some(20),
+        ..ImageProcessingRequest::default()
+    };
+    let missing_error = processor(&directory)
+        .process(missing, resize)
+        .await
+        .expect_err("a missing source must remain an error");
+    assert!(matches!(
+        missing_error,
+        ImageProcessingError::FileAccess { source, .. }
+            if source.kind() == std::io::ErrorKind::NotFound
+    ));
+
+    let (_source_directory, source) = fixture(80, 40);
+    let unsupported = ImageProcessingRequest {
+        format: Some(ImageFormat::Svg),
+        max_width: Some(20),
+        ..ImageProcessingRequest::default()
+    };
+    let unsupported_error = processor(&directory)
+        .process(source, unsupported)
+        .await
+        .expect_err("an unsupported output format must remain an error");
+    assert!(matches!(
+        unsupported_error,
+        ImageProcessingError::UnsupportedOutputFormat(ImageFormat::Svg)
+    ));
 }
 
 #[tokio::test]

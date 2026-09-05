@@ -14,6 +14,7 @@ jellyfin-model = { path = "../jellyfin-model" }
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "sync"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3.20"

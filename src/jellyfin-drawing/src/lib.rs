@@ -434,6 +434,11 @@ impl ImageProcessor {
         }
 
         let output_format = normalized.output_format(source_format)?;
+        let original = ProcessedImage {
+            path: source.path.clone(),
+            mime_type: source_format.map_or("application/octet-stream", ImageFormat::mime_type),
+            date_modified: source.date_modified,
+        };
         let cache_path = cache_path(
             self.cache_directory.as_path(),
             &source,
@@ -471,7 +476,8 @@ impl ImageProcessor {
         let source_path = source.path;
         #[cfg(test)]
         let test_instrumentation = Arc::clone(&self.test_instrumentation);
-        let cache_path = tokio::task::spawn_blocking(move || {
+        let requested_cache_path = cache_path.clone();
+        let encoded = tokio::task::spawn_blocking(move || {
             let _encoding_lock = encoding_lock;
             let _permit = permit;
             #[cfg(test)]
@@ -490,7 +496,22 @@ impl ImageProcessor {
             process_to_cache(&source_path, &cache_path, &normalized, output_format)?;
             Ok::<_, ImageProcessingError>(cache_path)
         })
-        .await??;
+        .await?;
+        let cache_path = match encoded {
+            Ok(cache_path) => cache_path,
+            Err(
+                error @ (ImageProcessingError::Decode { .. } | ImageProcessingError::Encode { .. }),
+            ) => {
+                tracing::error!(
+                    error = %error,
+                    source_path = %original.path.display(),
+                    cache_path = %requested_cache_path.display(),
+                    "error converting image; returning the original file"
+                );
+                return Ok(original);
+            }
+            Err(error) => return Err(error),
+        };
 
         cached_result(&cache_path, output_format)
             .await?
