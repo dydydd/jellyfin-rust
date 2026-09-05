@@ -126,7 +126,8 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         }),
     )
     .await;
-    let studio = ItemValueRepository::new(fixture.database.clone())
+    let item_values = ItemValueRepository::new(fixture.database.clone());
+    let studio = item_values
         .link(
             movie.id,
             item_value::ItemValueType::Studios,
@@ -134,6 +135,14 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         )
         .await
         .expect("studio link");
+    let genre = item_values
+        .link(
+            movie.id,
+            item_value::ItemValueType::Genre,
+            &format!("Swift Genre {}", fixture.suffix),
+        )
+        .await
+        .expect("genre link");
     let people = PersonRepository::new(fixture.database.clone());
     let created_people = people
         .replace_credits(
@@ -182,6 +191,17 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         serde_json::json!([{
             "Name": format!("Swift Studio {}", fixture.suffix),
             "Id": studio.item_value_id.simple().to_string()
+        }])
+    );
+    assert_eq!(
+        item["Genres"],
+        serde_json::json!([format!("Swift Genre {}", fixture.suffix)])
+    );
+    assert_eq!(
+        item["GenreItems"],
+        serde_json::json!([{
+            "Name": format!("Swift Genre {}", fixture.suffix),
+            "Id": genre.item_value_id.simple().to_string()
         }])
     );
     assert_eq!(

@@ -158,6 +158,8 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub genres: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub genre_items: Vec<NameIdPair>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<BaseItemPerson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -773,6 +775,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         provider_ids: metadata_provider_ids(item.data.as_ref()),
         user_data: None,
         genres: metadata_strings(item.data.as_ref(), &["Genres", "genres"]),
+        genre_items: Vec::new(),
         people: Vec::new(),
         tags: metadata_strings(item.data.as_ref(), &["Tags", "tags"]),
         studios: Vec::new(),
@@ -930,7 +933,7 @@ pub(crate) fn attach_dto_image_projection(
 
 #[derive(Debug, Default)]
 pub(crate) struct ItemRelationMetadata {
-    genres: Vec<String>,
+    genres: Vec<NameIdPair>,
     people: Vec<BaseItemPerson>,
     tags: Vec<String>,
     studios: Vec<NameIdPair>,
@@ -943,7 +946,7 @@ pub(crate) async fn load_relation_metadata(
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
     let mut genres = state
         .item_values
-        .values_for_items(&item_ids, item_value::ItemValueType::Genre)
+        .value_pairs_for_items(&item_ids, item_value::ItemValueType::Genre)
         .await
         .map_err(|_| ApiError::Internal)?;
     let mut tags = state
@@ -977,7 +980,15 @@ pub(crate) async fn load_relation_metadata(
     let mut result = HashMap::with_capacity(items.len());
     for item in items {
         let metadata = ItemRelationMetadata {
-            genres: genres.remove(&item.id).unwrap_or_default(),
+            genres: genres
+                .remove(&item.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|genre| NameIdPair {
+                    name: genre.value,
+                    id: genre.id.simple().to_string(),
+                })
+                .collect(),
             people: people
                 .remove(&item.id)
                 .unwrap_or_default()
@@ -1008,7 +1019,12 @@ pub(crate) async fn load_relation_metadata(
 
 pub(crate) fn attach_relation_metadata(dto: &mut BaseItemDto, metadata: ItemRelationMetadata) {
     if !metadata.genres.is_empty() {
-        dto.genres = metadata.genres;
+        dto.genres = metadata
+            .genres
+            .iter()
+            .map(|genre| genre.name.clone())
+            .collect();
+        dto.genre_items = metadata.genres;
     }
     dto.people = metadata.people;
     if !metadata.tags.is_empty() {
