@@ -449,7 +449,7 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
     let suffix = Uuid::new_v4().simple().to_string();
     let series = create_item(
         &items,
-        "Series",
+        "MediaBrowser.Controller.Entities.TV.Series",
         &format!("Count Series {suffix}"),
         None,
         true,
@@ -457,7 +457,10 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
     .await;
     let mut episode_ids = Vec::new();
     for name in ["First", "Second"] {
-        let mut episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+        let mut episode = NewBaseItem::new(
+            Uuid::new_v4(),
+            "MediaBrowser.Controller.Entities.TV.Episode",
+        );
         episode.name = Some(format!("{name} Episode {suffix}"));
         episode.sort_name = episode.name.clone();
         episode.parent_id = Some(series.id);
@@ -466,12 +469,65 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
     }
     let unrelated_episode = create_item(
         &items,
-        "Episode",
+        "MediaBrowser.Controller.Entities.TV.Episode",
         &format!("Unrelated Episode {suffix}"),
         None,
         false,
     )
     .await;
+    let mut direct_bucket_items = Vec::new();
+    for (item_type, name, is_folder) in [
+        (
+            "MediaBrowser.Controller.Entities.Movies.Movie",
+            "Movie",
+            false,
+        ),
+        (
+            "MediaBrowser.Controller.Entities.Audio.MusicAlbum",
+            "Album",
+            true,
+        ),
+        (
+            "MediaBrowser.Controller.Entities.Audio.MusicArtist",
+            "Artist",
+            true,
+        ),
+        (
+            "MediaBrowser.Controller.Entities.MusicVideo",
+            "Music Video",
+            false,
+        ),
+        (
+            "MediaBrowser.Controller.Entities.Audio.Audio",
+            "Audio",
+            false,
+        ),
+        ("MediaBrowser.Controller.Entities.Trailer", "Trailer", false),
+    ] {
+        direct_bucket_items.push(
+            create_item(
+                &items,
+                item_type,
+                &format!("{name} {suffix}"),
+                None,
+                is_folder,
+            )
+            .await,
+        );
+    }
+    let mut movie_alternate = create_item(
+        &items,
+        "MediaBrowser.Controller.Entities.Movies.Movie",
+        &format!("Movie Alternate {suffix}"),
+        None,
+        false,
+    )
+    .await;
+    movie_alternate.primary_version_id = Some(direct_bucket_items[0].id);
+    let movie_alternate = items
+        .update(movie_alternate)
+        .await
+        .expect("legacy movie alternate grouping");
 
     let values = ItemValueRepository::new(fixture.database.clone());
     let genre = format!("Series Genre {suffix}");
@@ -493,6 +549,16 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
             .link(unrelated_episode.id, value_type, value)
             .await
             .expect("unrelated episode item value");
+        for item in &direct_bucket_items {
+            values
+                .link(item.id, value_type, value)
+                .await
+                .expect("direct legacy item value");
+        }
+        values
+            .link(movie_alternate.id, value_type, value)
+            .await
+            .expect("alternate legacy movie item value");
     }
 
     for route in [
@@ -508,7 +574,13 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
         assert_eq!(body["TotalRecordCount"], 1, "{route}: {body}");
         assert_eq!(body["Items"][0]["SeriesCount"], 1, "{route}: {body}");
         assert_eq!(body["Items"][0]["EpisodeCount"], 3, "{route}: {body}");
-        assert_eq!(body["Items"][0]["ChildCount"], 4, "{route}: {body}");
+        assert_eq!(body["Items"][0]["MovieCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["AlbumCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["ArtistCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["MusicVideoCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["SongCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["TrailerCount"], 1, "{route}: {body}");
+        assert_eq!(body["Items"][0]["ChildCount"], 10, "{route}: {body}");
     }
 
     fixture.cleanup().await;

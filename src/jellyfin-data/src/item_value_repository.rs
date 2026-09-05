@@ -592,33 +592,7 @@ fn item_values_cte(
     }
     sql.push(')');
     if inherits_to_episodes {
-        sql.push_str(
-            ", inherited_episodes AS (\
-                 SELECT tagged.item_value_id, tagged.value, tagged.clean_value, \
-                        episode.id AS item_id, episode.item_type \
-                 FROM scoped AS tagged \
-                 JOIN jellyfin.base_items AS episode \
-                   ON episode.series_id = tagged.item_id \
-                 WHERE tagged.item_type = 'Series' \
-                   AND episode.item_type = 'Episode' \
-                   AND episode.primary_version_id IS NULL \
-                   AND (episode.data ->> 'OwnerId' IS NULL \
-                        OR episode.data ->> 'ExtraType' IS NOT NULL)",
-        );
-        append_count_scope_filters(&mut sql, &mut values, query, "episode");
-        if let Some(condition) = policy_filter_sql("episode", &query.access_policy) {
-            sql.push_str(" AND (");
-            sql.push_str(&condition);
-            sql.push(')');
-        }
-        sql.push_str(
-            "), counted AS (\
-                 SELECT item_value_id, value, clean_value, item_id, item_type FROM scoped \
-                 UNION ALL \
-                 SELECT item_value_id, value, clean_value, item_id, item_type \
-                 FROM inherited_episodes\
-             )",
-        );
+        append_inherited_episode_counts_cte(&mut sql, &mut values, query);
     } else {
         sql.push_str(
             ", counted AS (\
@@ -626,24 +600,82 @@ fn item_values_cte(
              )",
         );
     }
+    append_item_value_count_buckets_cte(&mut sql);
+    (sql, values)
+}
+
+fn append_inherited_episode_counts_cte(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    query: &ItemValueQuery,
+) {
+    sql.push_str(
+        ", inherited_episodes AS (\
+             SELECT tagged.item_value_id, tagged.value, tagged.clean_value, \
+                    episode.id AS item_id, episode.item_type \
+             FROM scoped AS tagged \
+             JOIN jellyfin.base_items AS episode \
+               ON episode.series_id = tagged.item_id \
+             WHERE tagged.item_type IN (\
+                     'Series', 'MediaBrowser.Controller.Entities.TV.Series'\
+                 ) \
+               AND episode.item_type IN (\
+                     'Episode', 'MediaBrowser.Controller.Entities.TV.Episode'\
+                 ) \
+               AND episode.primary_version_id IS NULL \
+               AND (episode.data ->> 'OwnerId' IS NULL \
+                    OR episode.data ->> 'ExtraType' IS NOT NULL)",
+    );
+    append_count_scope_filters(sql, values, query, "episode");
+    if let Some(condition) = policy_filter_sql("episode", &query.access_policy) {
+        sql.push_str(" AND (");
+        sql.push_str(&condition);
+        sql.push(')');
+    }
+    sql.push_str(
+        "), counted AS (\
+             SELECT item_value_id, value, clean_value, item_id, item_type FROM scoped \
+             UNION ALL \
+             SELECT item_value_id, value, clean_value, item_id, item_type \
+             FROM inherited_episodes\
+         )",
+    );
+}
+
+fn append_item_value_count_buckets_cte(sql: &mut String) {
     sql.push_str(
         ", values AS (\
              SELECT item_value_id, value, clean_value, \
                     COUNT(DISTINCT item_id)::bigint AS item_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'MusicAlbum')::bigint AS album_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'MusicArtist')::bigint AS artist_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Episode')::bigint AS episode_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Movie')::bigint AS movie_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'MusicVideo')::bigint AS music_video_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'MusicAlbum', 'MediaBrowser.Controller.Entities.Audio.MusicAlbum'\
+                    ))::bigint AS album_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'MusicArtist', 'MediaBrowser.Controller.Entities.Audio.MusicArtist'\
+                    ))::bigint AS artist_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'Episode', 'MediaBrowser.Controller.Entities.TV.Episode'\
+                    ))::bigint AS episode_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'Movie', 'MediaBrowser.Controller.Entities.Movies.Movie'\
+                    ))::bigint AS movie_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'MusicVideo', 'MediaBrowser.Controller.Entities.MusicVideo'\
+                    ))::bigint AS music_video_count, \
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Program')::bigint AS program_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Series')::bigint AS series_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Audio')::bigint AS song_count, \
-                    COUNT(DISTINCT item_id) FILTER (WHERE item_type = 'Trailer')::bigint AS trailer_count \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'Series', 'MediaBrowser.Controller.Entities.TV.Series'\
+                    ))::bigint AS series_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'Audio', 'MediaBrowser.Controller.Entities.Audio.Audio'\
+                    ))::bigint AS song_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'Trailer', 'MediaBrowser.Controller.Entities.Trailer'\
+                    ))::bigint AS trailer_count \
              FROM counted \
              GROUP BY item_value_id, value, clean_value\
          )",
     );
-    (sql, values)
 }
 
 fn append_count_scope_filters(
