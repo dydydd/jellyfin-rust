@@ -37,6 +37,7 @@ struct BackupManifest {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct BackupManifestQuery {
+    #[serde(rename = "path", alias = "Path")]
     path: String,
 }
 

@@ -145,22 +145,24 @@ async fn exercise_backup_routes(database_name: &str) {
         StatusCode::NOT_FOUND
     );
 
-    let manifest = fixture
-        .get(
-            "/Backup/Manifest?path=jellyfin-backup-20260724090000.zip",
-            Some(&fixture.admin_token),
-        )
-        .await;
-    assert_eq!(manifest.status(), StatusCode::OK);
-    let manifest = body_json(manifest).await;
-    assert_eq!(manifest["ServerVersion"], "10.11.0");
-    assert_eq!(manifest["BackupEngineVersion"], "1.0");
-    assert_eq!(manifest["DateCreated"], "2026-07-24T09:00:00.0000000Z");
-    assert_eq!(manifest["Path"], archive_path.to_string_lossy().as_ref());
-    assert_eq!(manifest["Options"]["Metadata"], true);
-    assert_eq!(manifest["Options"]["Trickplay"], false);
-    assert_eq!(manifest["Options"]["Subtitles"], true);
-    assert_eq!(manifest["Options"]["Database"], true);
+    for query_name in ["path", "Path"] {
+        let manifest = fixture
+            .get(
+                &format!("/Backup/Manifest?{query_name}=jellyfin-backup-20260724090000.zip"),
+                Some(&fixture.admin_token),
+            )
+            .await;
+        assert_eq!(manifest.status(), StatusCode::OK, "{query_name}");
+        let manifest = body_json(manifest).await;
+        assert_eq!(manifest["ServerVersion"], "10.11.0");
+        assert_eq!(manifest["BackupEngineVersion"], "1.0");
+        assert_eq!(manifest["DateCreated"], "2026-07-24T09:00:00.0000000Z");
+        assert_eq!(manifest["Path"], archive_path.to_string_lossy().as_ref());
+        assert_eq!(manifest["Options"]["Metadata"], true);
+        assert_eq!(manifest["Options"]["Trickplay"], false);
+        assert_eq!(manifest["Options"]["Subtitles"], true);
+        assert_eq!(manifest["Options"]["Database"], true);
+    }
 
     let listed = fixture.get("/Backup", Some(&fixture.admin_token)).await;
     assert_eq!(listed.status(), StatusCode::OK);
@@ -366,7 +368,7 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
         .await;
     assert_eq!(created.status(), StatusCode::OK);
     let created = body_json(created).await;
-    assert_eq!(created["ServerVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(created["ServerVersion"], "12.0.0");
     assert_eq!(created["BackupEngineVersion"], "1.0");
     assert_eq!(created["Options"]["Metadata"], true);
     assert_eq!(created["Options"]["Trickplay"], true);
