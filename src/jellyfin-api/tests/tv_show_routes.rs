@@ -660,7 +660,10 @@ impl Fixture {
             series.id,
             0,
             1,
-            None,
+            Some(json!({
+                "AirsBeforeSeasonNumber": 1,
+                "AirsBeforeEpisodeNumber": 1
+            })),
         )
         .await;
         let first_episode = create_episode_with_premiere_date(

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -289,7 +289,7 @@ pub(crate) async fn episodes(
         query.enable_user_data,
     );
 
-    let mut episodes = if let Some(season_id) = query.season_id {
+    let (mut episodes, use_aired_episode_order) = if let Some(season_id) = query.season_id {
         let season = state
             .user_library
             .item(&authenticated.user, target_user_id, season_id)
@@ -297,15 +297,18 @@ pub(crate) async fn episodes(
         if !season.item_type.eq_ignore_ascii_case("Season") {
             return Err(UserLibraryError::ItemNotFound.into());
         }
-        query_episodes_under(
-            state.as_ref(),
-            &authenticated.user,
-            target_user_id,
-            season_id,
-            false,
-            episode_order(requested_random_order, season.index_number),
+        (
+            query_episodes_under(
+                state.as_ref(),
+                &authenticated.user,
+                target_user_id,
+                season_id,
+                false,
+                episode_query_order(requested_random_order),
+            )
+            .await?,
+            !requested_random_order && season.index_number != Some(0),
         )
-        .await?
     } else if let Some(season_number) = query.season {
         validate_series(
             state.as_ref(),
@@ -340,15 +343,18 @@ pub(crate) async fn episodes(
                 start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
             }));
         };
-        query_episodes_under(
-            state.as_ref(),
-            &authenticated.user,
-            target_user_id,
-            season.id,
-            false,
-            episode_order(requested_random_order, season.index_number),
+        (
+            query_episodes_under(
+                state.as_ref(),
+                &authenticated.user,
+                target_user_id,
+                season.id,
+                false,
+                episode_query_order(requested_random_order),
+            )
+            .await?,
+            !requested_random_order && season.index_number != Some(0),
         )
-        .await?
     } else {
         validate_series(
             state.as_ref(),
@@ -357,20 +363,26 @@ pub(crate) async fn episodes(
             series_id,
         )
         .await?;
-        query_episodes_under(
-            state.as_ref(),
-            &authenticated.user,
-            target_user_id,
-            series_id,
-            true,
-            if requested_random_order {
-                BaseItemOrder::Random
-            } else {
-                BaseItemOrder::AiredEpisodeOrderAscending
-            },
+        (
+            query_episodes_under(
+                state.as_ref(),
+                &authenticated.user,
+                target_user_id,
+                series_id,
+                true,
+                episode_query_order(requested_random_order),
+            )
+            .await?,
+            !requested_random_order,
         )
-        .await?
     };
+
+    if use_aired_episode_order {
+        // Official Jellyfin first retrieves episodes by SortName, then applies
+        // AiredEpisodeOrderComparer. The stable sort preserves that order for
+        // incomplete metadata which the comparer deliberately treats as equal.
+        episodes.sort_by(compare_aired_episode_order);
+    }
 
     if let Some(expected) = query.is_missing {
         episodes.retain(|item| is_missing(item) == expected);
@@ -402,16 +414,84 @@ pub(crate) async fn episodes(
     }))
 }
 
-fn episode_order(random: bool, season_number: Option<i32>) -> BaseItemOrder {
+fn episode_query_order(random: bool) -> BaseItemOrder {
     if random {
         BaseItemOrder::Random
-    } else if season_number == Some(0) {
-        // Official Jellyfin sorts specials by their display sort name, while
-        // regular seasons use the aired season/episode sequence.
-        BaseItemOrder::SortName
     } else {
-        BaseItemOrder::AiredEpisodeOrderAscending
+        BaseItemOrder::SortName
     }
+}
+
+fn compare_aired_episode_order(left: &base_item::Model, right: &base_item::Model) -> Ordering {
+    let left_is_special = left.parent_index_number.unwrap_or(-1) == 0;
+    let right_is_special = right.parent_index_number.unwrap_or(-1) == 0;
+
+    match (left_is_special, right_is_special) {
+        (true, true) => special_compare_value(left).cmp(&special_compare_value(right)),
+        (false, false) => compare_regular_episodes(left, right),
+        (false, true) => compare_regular_to_special(left, right),
+        (true, false) => compare_regular_to_special(right, left).reverse(),
+    }
+}
+
+fn compare_regular_episodes(left: &base_item::Model, right: &base_item::Model) -> Ordering {
+    let left_value = i64::from(left.parent_index_number.unwrap_or(-1)) * 1_000
+        + i64::from(left.index_number.unwrap_or(-1));
+    let right_value = i64::from(right.parent_index_number.unwrap_or(-1)) * 1_000
+        + i64::from(right.index_number.unwrap_or(-1));
+    let order = left_value.cmp(&right_value);
+    if order == Ordering::Equal
+        && let (Some(left_date), Some(right_date)) = (left.premiere_date, right.premiere_date)
+    {
+        left_date.cmp(&right_date)
+    } else {
+        order
+    }
+}
+
+fn compare_regular_to_special(regular: &base_item::Model, special: &base_item::Model) -> Ordering {
+    let regular_season = regular.parent_index_number.unwrap_or(-1);
+    let special_season = episode_metadata_i32(special, "AirsAfterSeasonNumber")
+        .or_else(|| episode_metadata_i32(special, "AirsBeforeSeasonNumber"))
+        .unwrap_or(-1);
+    let order = regular_season.cmp(&special_season);
+    if order != Ordering::Equal {
+        return order;
+    }
+    if episode_metadata_i32(special, "AirsAfterSeasonNumber").is_some() {
+        return Ordering::Less;
+    }
+    let Some(before_episode) = episode_metadata_i32(special, "AirsBeforeEpisodeNumber") else {
+        return Ordering::Greater;
+    };
+    let Some(regular_episode) = regular.index_number else {
+        return Ordering::Equal;
+    };
+    if regular_episode == before_episode {
+        Ordering::Greater
+    } else {
+        regular_episode.cmp(&before_episode)
+    }
+}
+
+fn special_compare_value(item: &base_item::Model) -> i64 {
+    let airs_after = episode_metadata_i32(item, "AirsAfterSeasonNumber");
+    let season = airs_after
+        .or_else(|| episode_metadata_i32(item, "AirsBeforeSeasonNumber"))
+        .unwrap_or(0);
+    i64::from(season) * 1_000_000_000
+        + i64::from(airs_after.is_some()) * 1_000_000
+        + i64::from(episode_metadata_i32(item, "AirsBeforeEpisodeNumber").unwrap_or(0)) * 1_000
+        + i64::from(item.index_number.unwrap_or(0))
+}
+
+fn episode_metadata_i32(item: &base_item::Model, key: &str) -> Option<i32> {
+    item.data
+        .as_ref()?
+        .as_object()?
+        .get(key)?
+        .as_i64()
+        .and_then(|value| i32::try_from(value).ok())
 }
 
 pub(crate) async fn seasons(
