@@ -75,6 +75,9 @@
 - Item-value `ItemCounts` inherit Genre and Studio links from a Series to its visible descendant
   Episodes, but do not inherit Artist or other value kinds. Count direct and inherited matches with
   set-based PostgreSQL queries and deduplicate Episodes that carry the same value directly.
+- Count and media-source queries must recognize both canonical short item types and official legacy
+  CLR-qualified persisted type names. Continue folding alternate rows before `/Items/Counts` buckets
+  are calculated so legacy versions do not inflate either a typed bucket or `ItemCount`.
 - After scanning a movie directory, supplement the official filename-based version resolver with a conservative metadata match: same directory, non-empty case-insensitive title, and the same non-empty year, while rejecting the whole candidate group when TMDb, IMDb, or TVDb identifiers conflict. Never use collection identifiers as movie identity.
 - Do not advertise a playback method unless the returned URL really implements it. In particular, never label unchanged container bytes as an MP4 direct stream; derive `SupportsDirectPlay`, `SupportsDirectStream`, and `SupportsTranscoding` from the final selected method and device policy.
 - Proxy static HTTP media sources through the server like official Jellyfin instead of redirecting clients to private or signed upstream URLs. Forward byte ranges, preserve upstream status and content headers, stream without whole-file buffering, and keep signed URLs out of logs.

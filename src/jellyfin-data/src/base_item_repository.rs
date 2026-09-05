@@ -1923,17 +1923,37 @@ impl BaseItemRepository {
             format!(
                 r"{cte}
             SELECT
-                COUNT(*) FILTER (WHERE item.item_type = 'Movie')::bigint AS movie_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'Series')::bigint AS series_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'Episode')::bigint AS episode_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'MusicArtist')::bigint AS artist_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'Movie', 'MediaBrowser.Controller.Entities.Movies.Movie'
+                ))::bigint AS movie_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'Series', 'MediaBrowser.Controller.Entities.TV.Series'
+                ))::bigint AS series_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'Episode', 'MediaBrowser.Controller.Entities.TV.Episode'
+                ))::bigint AS episode_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'MusicArtist', 'MediaBrowser.Controller.Entities.Audio.MusicArtist'
+                ))::bigint AS artist_count,
                 COUNT(*) FILTER (WHERE item.item_type = 'Program')::bigint AS program_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'Trailer')::bigint AS trailer_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'Audio')::bigint AS song_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'MusicAlbum')::bigint AS album_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'MusicVideo')::bigint AS music_video_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'BoxSet')::bigint AS box_set_count,
-                COUNT(*) FILTER (WHERE item.item_type = 'Book')::bigint AS book_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'Trailer', 'MediaBrowser.Controller.Entities.Trailer'
+                ))::bigint AS trailer_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'Audio', 'MediaBrowser.Controller.Entities.Audio.Audio'
+                ))::bigint AS song_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'MusicAlbum', 'MediaBrowser.Controller.Entities.Audio.MusicAlbum'
+                ))::bigint AS album_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'MusicVideo', 'MediaBrowser.Controller.Entities.MusicVideo'
+                ))::bigint AS music_video_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'BoxSet', 'MediaBrowser.Controller.Entities.Movies.BoxSet'
+                ))::bigint AS box_set_count,
+                COUNT(*) FILTER (WHERE item.item_type IN (
+                    'Book', 'MediaBrowser.Controller.Entities.Book'
+                ))::bigint AS book_count,
                 COUNT(*)::bigint AS item_count
             FROM filtered AS item
             "

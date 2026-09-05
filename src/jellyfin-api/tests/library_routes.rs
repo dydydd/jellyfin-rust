@@ -593,7 +593,7 @@ async fn assert_item_counts(fixture: &Fixture) {
     let items = fixture.items();
     let mut movie_alternate = create_item(
         &items,
-        "Movie",
+        "MediaBrowser.Controller.Entities.Movies.Movie",
         "Count Movie Alternate",
         fixture.parent_id,
         None,
@@ -606,7 +606,7 @@ async fn assert_item_counts(fixture: &Fixture) {
         .expect("movie alternate grouping");
     let mut episode_alternate = create_item(
         &items,
-        "Episode",
+        "MediaBrowser.Controller.Entities.TV.Episode",
         "Count Episode Alternate",
         fixture.child_id,
         None,
@@ -643,9 +643,9 @@ async fn assert_item_counts(fixture: &Fixture) {
     assert_eq!(
         counts,
         json!({
-            "MovieCount": 1,
+            "MovieCount": 2,
             "SeriesCount": 1,
-            "EpisodeCount": 1,
+            "EpisodeCount": 2,
             "ArtistCount": 1,
             "ProgramCount": 1,
             "TrailerCount": 1,
@@ -654,7 +654,7 @@ async fn assert_item_counts(fixture: &Fixture) {
             "MusicVideoCount": 1,
             "BoxSetCount": 1,
             "BookCount": 1,
-            "ItemCount": 11
+            "ItemCount": 13
         })
     );
 
@@ -852,15 +852,35 @@ impl Fixture {
         let grandchild = create_item(&items, "Episode", "Library Episode", child.id, None).await;
         let mut count_items = Vec::new();
         for (item_type, name) in [
-            ("Series", "Count Series"),
-            ("MusicArtist", "Count Artist"),
+            (
+                "MediaBrowser.Controller.Entities.Movies.Movie",
+                "Count Legacy Movie",
+            ),
+            ("MediaBrowser.Controller.Entities.TV.Series", "Count Series"),
+            (
+                "MediaBrowser.Controller.Entities.TV.Episode",
+                "Count Legacy Episode",
+            ),
+            (
+                "MediaBrowser.Controller.Entities.Audio.MusicArtist",
+                "Count Artist",
+            ),
             ("Program", "Count Program"),
-            ("Trailer", "Count Trailer"),
-            ("Audio", "Count Song"),
-            ("MusicAlbum", "Count Album"),
-            ("MusicVideo", "Count Music Video"),
-            ("BoxSet", "Count Box Set"),
-            ("Book", "Count Book"),
+            ("MediaBrowser.Controller.Entities.Trailer", "Count Trailer"),
+            ("MediaBrowser.Controller.Entities.Audio.Audio", "Count Song"),
+            (
+                "MediaBrowser.Controller.Entities.Audio.MusicAlbum",
+                "Count Album",
+            ),
+            (
+                "MediaBrowser.Controller.Entities.MusicVideo",
+                "Count Music Video",
+            ),
+            (
+                "MediaBrowser.Controller.Entities.Movies.BoxSet",
+                "Count Box Set",
+            ),
+            ("MediaBrowser.Controller.Entities.Book", "Count Book"),
         ] {
             count_items.push(create_item(&items, item_type, name, parent.id, None).await);
         }
