@@ -94,6 +94,12 @@ pub struct BaseItemHierarchyEntry {
     pub depth: i32,
 }
 
+#[derive(Debug, FromQueryResult)]
+struct NearestAncestorId {
+    item_id: Uuid,
+    ancestor_id: Uuid,
+}
+
 /// Minimal descendant fields needed while reconciling a library scan.
 #[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
 pub struct DescendantScanCandidate {
@@ -3054,6 +3060,55 @@ impl BaseItemRepository {
             .all(self.database.as_ref())
             .await?;
         hierarchy_entries(closure, false, self.database.as_ref()).await
+    }
+
+    /// Resolves the nearest ancestor of any requested type for each item in one query.
+    ///
+    /// The closure-table depth, rather than the direct parent, defines proximity so
+    /// callers can find media containers through arbitrary intermediate folders.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the ancestor lookup fails.
+    pub async fn nearest_ancestor_ids_by_type(
+        &self,
+        item_ids: &[Uuid],
+        ancestor_item_types: &[String],
+    ) -> Result<HashMap<Uuid, Uuid>, BaseItemError> {
+        if item_ids.is_empty() || ancestor_item_types.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ancestor_item_types = expand_item_type_aliases(ancestor_item_types);
+        let mut values = Vec::<SeaValue>::new();
+        let mut sql = String::from(
+            "SELECT DISTINCT ON (closure.item_id) \
+                    closure.item_id, closure.parent_item_id AS ancestor_id \
+             FROM jellyfin.ancestor_ids AS closure \
+             JOIN jellyfin.base_items AS ancestor \
+               ON ancestor.id = closure.parent_item_id \
+             WHERE true",
+        );
+        append_uuid_list_filter(&mut sql, &mut values, "closure.item_id", item_ids);
+        append_string_list_filter(
+            &mut sql,
+            &mut values,
+            "ancestor.item_type",
+            &ancestor_item_types,
+            false,
+        );
+        sql.push_str(" ORDER BY closure.item_id, closure.depth ASC, closure.parent_item_id ASC");
+        Ok(
+            NearestAncestorId::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .all(self.database.as_ref())
+            .await?
+            .into_iter()
+            .map(|row| (row.item_id, row.ancestor_id))
+            .collect(),
+        )
     }
 
     /// Loads all descendants in stable depth and identifier order.

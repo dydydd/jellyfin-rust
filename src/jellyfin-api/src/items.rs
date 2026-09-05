@@ -1197,32 +1197,56 @@ async fn group_latest_items(
         .filter_map(|item| {
             if item.item_type.eq_ignore_ascii_case("Episode") {
                 item.series_id
-            } else if item.item_type.eq_ignore_ascii_case("Audio") {
-                item.parent_id
             } else {
                 None
             }
         })
         .collect::<Vec<_>>();
+    let audio_ids = candidates
+        .iter()
+        .filter(|item| item.item_type.eq_ignore_ascii_case("Audio"))
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    let photo_ids = candidates
+        .iter()
+        .filter(|item| item.item_type.eq_ignore_ascii_case("Photo"))
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    let music_album_types = ["MusicAlbum".to_owned()];
+    let photo_album_types = ["PhotoAlbum".to_owned()];
+    let (audio_album_ids, photo_album_ids) = tokio::try_join!(
+        state
+            .base_items
+            .nearest_ancestor_ids_by_type(&audio_ids, &music_album_types),
+        state
+            .base_items
+            .nearest_ancestor_ids_by_type(&photo_ids, &photo_album_types),
+    )?;
+    container_ids.extend(audio_album_ids.values().copied());
+    container_ids.extend(photo_album_ids.values().copied());
     container_ids.sort_unstable();
     container_ids.dedup();
-    let containers = state
-        .user_library
-        .query_items(
-            authenticated_user,
-            target_user_id,
-            BaseItemQuery {
-                ids: container_ids,
-                user_id: Some(target_user_id),
-                enable_total_record_count: Some(false),
-                ..BaseItemQuery::default()
-            },
-        )
-        .await?
-        .items
-        .into_iter()
-        .map(|item| (item.id, item))
-        .collect::<HashMap<_, _>>();
+    let containers = if container_ids.is_empty() {
+        HashMap::new()
+    } else {
+        state
+            .user_library
+            .query_items(
+                authenticated_user,
+                target_user_id,
+                BaseItemQuery {
+                    ids: container_ids,
+                    user_id: Some(target_user_id),
+                    enable_total_record_count: Some(false),
+                    ..BaseItemQuery::default()
+                },
+            )
+            .await?
+            .items
+            .into_iter()
+            .map(|item| (item.id, item))
+            .collect::<HashMap<_, _>>()
+    };
 
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
     let mut selections = Vec::<LatestItemSelection>::with_capacity(limit.min(candidates.len()));
@@ -1233,9 +1257,15 @@ async fn group_latest_items(
                 .and_then(|id| containers.get(&id))
                 .filter(|container| container.item_type.eq_ignore_ascii_case("Series"))
         } else if item.item_type.eq_ignore_ascii_case("Audio") {
-            item.parent_id
-                .and_then(|id| containers.get(&id))
+            audio_album_ids
+                .get(&item.id)
+                .and_then(|id| containers.get(id))
                 .filter(|container| container.item_type.eq_ignore_ascii_case("MusicAlbum"))
+        } else if item.item_type.eq_ignore_ascii_case("Photo") {
+            photo_album_ids
+                .get(&item.id)
+                .and_then(|id| containers.get(id))
+                .filter(|container| container.item_type.eq_ignore_ascii_case("PhotoAlbum"))
         } else {
             None
         };
@@ -1263,7 +1293,7 @@ async fn group_latest_items(
                 let selection = &mut selections[index];
                 let child_count = selection.child_count.get_or_insert(1);
                 *child_count = child_count.saturating_add(1);
-                if !selection.item.item_type.eq_ignore_ascii_case("MusicAlbum") {
+                if selection.item.id != container.id {
                     selection.item = container.clone();
                 }
             }

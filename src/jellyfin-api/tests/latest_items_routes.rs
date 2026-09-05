@@ -7,9 +7,11 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
-    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData, UserDataRepository,
-    entities::base_item,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData,
+    UserDataRepository,
+    entities::{base_item, item_value},
 };
+use jellyfin_model::UserPolicy;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr,
 };
@@ -72,6 +74,7 @@ async fn exercise_latest_routes(database_name: &str) {
     assert_latest_defaults_hide_played_and_sort_by_created(&fixture).await;
     assert_is_played_and_legacy_routes(&fixture).await;
     assert_default_grouping_and_explicit_ungrouping(&fixture).await;
+    assert_album_ancestor_grouping(&fixture).await;
     assert_latest_dto_options_and_image_fields(&fixture).await;
 
     database.close().await.expect("database pool cleanup");
@@ -83,6 +86,7 @@ struct Fixture {
     other_user_id: Uuid,
     admin_token: String,
     user_token: String,
+    restricted_user_token: String,
     parent_id: Uuid,
     old_movie_id: Uuid,
     new_movie_id: Uuid,
@@ -94,6 +98,13 @@ struct Fixture {
     single_series_id: Uuid,
     single_series_episode_id: Uuid,
     album_id: Uuid,
+    album_track_id: Uuid,
+    photo_album_id: Uuid,
+    first_photo_id: Uuid,
+    second_photo_id: Uuid,
+    single_photo_album_id: Uuid,
+    single_photo_id: Uuid,
+    hidden_album_track_id: Uuid,
 }
 
 impl Fixture {
@@ -112,9 +123,19 @@ impl Fixture {
             .create(&format!("latest-other-{suffix}"))
             .await
             .expect("other user creation");
+        let restricted_user = users
+            .create(&format!("latest-restricted-{suffix}"))
+            .await
+            .expect("restricted user creation");
         let devices = DeviceRepository::new(database.clone());
         let admin_token = session(&devices, admin.id, &format!("admin-{suffix}")).await;
         let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
+        let restricted_user_token = session(
+            &devices,
+            restricted_user.id,
+            &format!("restricted-{suffix}"),
+        )
+        .await;
 
         let items = BaseItemRepository::new(database.clone());
         let root = items.ensure_user_root().await.expect("root");
@@ -151,8 +172,66 @@ impl Fixture {
             single_season.id,
         )
         .await;
-        let album = create_item(&items, "MusicAlbum", "Grouped Album", parent.id).await;
-        let track = create_item(&items, "Audio", "Only Album Track", album.id).await;
+        let outer_album = create_item(&items, "MusicAlbum", "Outer Grouped Album", parent.id).await;
+        let outer_album_folder =
+            create_item(&items, "Folder", "Outer Album Folder", outer_album.id).await;
+        let album = create_item(
+            &items,
+            "MusicAlbum",
+            "Nearest Grouped Album",
+            outer_album_folder.id,
+        )
+        .await;
+        let album_folder = create_item(&items, "Folder", "Album Folder", album.id).await;
+        let track = create_item(&items, "Audio", "Only Album Track", album_folder.id).await;
+        let photo_album = create_item(&items, "PhotoAlbum", "Grouped Photo Album", parent.id).await;
+        let photo_folder =
+            create_item(&items, "Folder", "Grouped Photo Folder", photo_album.id).await;
+        let first_photo = create_item(&items, "Photo", "First Photo", photo_folder.id).await;
+        let second_photo = create_item(&items, "Photo", "Second Photo", photo_folder.id).await;
+        let single_photo_album =
+            create_item(&items, "PhotoAlbum", "Single Photo Album", parent.id).await;
+        let single_photo_folder = create_item(
+            &items,
+            "Folder",
+            "Single Photo Folder",
+            single_photo_album.id,
+        )
+        .await;
+        let single_photo = create_item(&items, "Photo", "Only Photo", single_photo_folder.id).await;
+        let hidden_album =
+            create_item(&items, "MusicAlbum", "Policy Hidden Album", parent.id).await;
+        let hidden_album_folder =
+            create_item(&items, "Folder", "Policy Hidden Folder", hidden_album.id).await;
+        let hidden_album_track = create_item(
+            &items,
+            "Audio",
+            "Visible Track With Hidden Album",
+            hidden_album_folder.id,
+        )
+        .await;
+        ItemValueRepository::new(database.clone())
+            .link(
+                hidden_album_track.id,
+                item_value::ItemValueType::Tags,
+                "Visible",
+            )
+            .await
+            .expect("visible track tag");
+        let restricted_policy = UserPolicy {
+            authentication_provider_id: Some(
+                UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+            ),
+            password_reset_provider_id: Some(
+                UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+            ),
+            allowed_tags: vec!["Visible".to_owned()],
+            ..UserPolicy::default()
+        };
+        users
+            .update_policy(restricted_user.id, &restricted_policy)
+            .await
+            .expect("restricted user policy");
         let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
         alternate.name = Some("New Movie Alternate".to_owned());
         alternate.sort_name = alternate.name.clone();
@@ -171,6 +250,10 @@ impl Fixture {
         set_date_created(&database, second_series_episode.id, 2026, 7, 21).await;
         set_date_created(&database, single_series_episode.id, 2026, 7, 18).await;
         set_date_created(&database, track.id, 2026, 7, 19).await;
+        set_date_created(&database, first_photo.id, 2026, 7, 17).await;
+        set_date_created(&database, second_photo.id, 2026, 7, 18).await;
+        set_date_created(&database, single_photo.id, 2026, 7, 16).await;
+        set_date_created(&database, hidden_album_track.id, 2026, 7, 15).await;
         set_date_created(&database, alternate.id, 2026, 7, 30).await;
         set_item_data(
             &database,
@@ -222,6 +305,7 @@ impl Fixture {
             other_user_id: other_user.id,
             admin_token,
             user_token,
+            restricted_user_token,
             parent_id: parent.id,
             old_movie_id: old_movie.id,
             new_movie_id: new_movie.id,
@@ -233,6 +317,13 @@ impl Fixture {
             single_series_id: single_series.id,
             single_series_episode_id: single_series_episode.id,
             album_id: album.id,
+            album_track_id: track.id,
+            photo_album_id: photo_album.id,
+            first_photo_id: first_photo.id,
+            second_photo_id: second_photo.id,
+            single_photo_album_id: single_photo_album.id,
+            single_photo_id: single_photo.id,
+            hidden_album_track_id: hidden_album_track.id,
         }
     }
 }
@@ -394,6 +485,99 @@ async fn assert_default_grouping_and_explicit_ungrouping(fixture: &Fixture) {
     assert_eq!(album[0]["ChildCount"], 1);
 }
 
+async fn assert_album_ancestor_grouping(fixture: &Fixture) {
+    let ungrouped_audio = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Audio&groupItems=false&limit=20",
+            fixture.album_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(ungrouped_audio.as_array().unwrap().len(), 1);
+    assert_eq!(
+        ungrouped_audio[0]["Id"],
+        fixture.album_track_id.simple().to_string()
+    );
+    assert_eq!(ungrouped_audio[0]["Type"], "Audio");
+    assert!(ungrouped_audio[0].get("ChildCount").is_none());
+
+    let grouped_photos = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Photo&limit=20",
+            fixture.photo_album_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(grouped_photos.as_array().unwrap().len(), 1);
+    assert_eq!(
+        grouped_photos[0]["Id"],
+        fixture.photo_album_id.simple().to_string()
+    );
+    assert_eq!(grouped_photos[0]["Type"], "PhotoAlbum");
+    assert_eq!(grouped_photos[0]["ChildCount"], 2);
+
+    let ungrouped_photos = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Photo&groupItems=false&limit=20",
+            fixture.photo_album_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(ungrouped_photos.as_array().unwrap().len(), 2);
+    assert_eq!(
+        ungrouped_photos[0]["Id"],
+        fixture.second_photo_id.simple().to_string()
+    );
+    assert_eq!(
+        ungrouped_photos[1]["Id"],
+        fixture.first_photo_id.simple().to_string()
+    );
+    assert!(
+        ungrouped_photos
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Photo" && item.get("ChildCount").is_none())
+    );
+
+    let single_photo = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Photo&limit=20",
+            fixture.single_photo_album_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(single_photo.as_array().unwrap().len(), 1);
+    assert_eq!(
+        single_photo[0]["Id"],
+        fixture.single_photo_id.simple().to_string()
+    );
+    assert_eq!(single_photo[0]["Type"], "Photo");
+    assert!(single_photo[0].get("ChildCount").is_none());
+
+    let hidden_container_fallback = get_json(
+        &fixture.app,
+        "/Items/Latest?includeItemTypes=Audio&limit=20",
+        &fixture.restricted_user_token,
+    )
+    .await;
+    assert_eq!(hidden_container_fallback.as_array().unwrap().len(), 1);
+    assert_eq!(
+        hidden_container_fallback[0]["Id"],
+        fixture.hidden_album_track_id.simple().to_string()
+    );
+    assert_eq!(hidden_container_fallback[0]["Type"], "Audio");
+    assert!(hidden_container_fallback[0].get("ChildCount").is_none());
+}
+
 async fn assert_latest_dto_options_and_image_fields(fixture: &Fixture) {
     let defaults = get_json(
         &fixture.app,
@@ -548,9 +732,13 @@ async fn create_item(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     item.parent_id = Some(parent_id);
-    item.is_folder = matches!(item_type, "Folder" | "Series" | "Season" | "MusicAlbum");
+    item.is_folder = matches!(
+        item_type,
+        "Folder" | "Series" | "Season" | "MusicAlbum" | "PhotoAlbum"
+    );
     item.media_type = match item_type {
         "Audio" => Some("Audio".to_owned()),
+        "Photo" => Some("Photo".to_owned()),
         _ if !item.is_folder => Some("Video".to_owned()),
         _ => None,
     };
