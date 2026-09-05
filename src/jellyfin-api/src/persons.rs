@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_data::PersonQuery;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -26,9 +26,9 @@ pub(crate) struct PersonsQueryParams {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: Option<i32>,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
     #[serde(
@@ -95,12 +95,26 @@ pub(crate) struct PersonByNameQueryParams {
     user_id: Option<Uuid>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct PersonsQueryResult {
+    items: Vec<user_library::BaseItemDto>,
+    total_record_count: u64,
+    start_index: i32,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<PersonsQueryParams>,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+) -> Result<Json<PersonsQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let response_start_index = query.start_index.unwrap_or_default();
+    let start_index = u64::try_from(response_start_index).unwrap_or_default();
+    let limit = query
+        .limit
+        .filter(|limit| *limit > 0)
+        .and_then(|limit| u64::try_from(limit).ok());
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
@@ -128,8 +142,8 @@ pub(crate) async fn list(
                 name_starts_with_or_greater: query.name_starts_with_or_greater,
                 name_starts_with: query.name_starts_with,
                 name_less_than: query.name_less_than,
-                start_index: query.start_index,
-                limit: query.limit,
+                start_index,
+                limit,
                 ..PersonQuery::default()
             },
         )
@@ -139,10 +153,10 @@ pub(crate) async fn list(
         .into_iter()
         .map(|person| user_library::person_to_dto(person, state.server_id()))
         .collect::<Vec<_>>();
-    Ok(Json(user_library::BaseItemQueryResult {
+    Ok(Json(PersonsQueryResult {
         items,
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        total_record_count: page.total_record_count,
+        start_index: response_start_index,
     }))
 }
 

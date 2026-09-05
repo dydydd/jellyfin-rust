@@ -356,6 +356,95 @@ async fn persons_list_matches_official_persons_contract() {
 }
 
 #[tokio::test]
+async fn persons_list_preserves_official_signed_int32_pagination_semantics() {
+    let fixture = Fixture::new().await;
+    let all_people = [
+        fixture.director_name.as_str(),
+        fixture.nested_person_name.as_str(),
+        fixture.person_name.as_str(),
+    ];
+
+    for start_index_name in ["startIndex", "StartIndex", "startindex"] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Persons?{start_index_name}=-1&limit=1"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_people(&page, &[&fixture.director_name], 3, -1);
+    }
+
+    for limit_name in ["limit", "Limit"] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Persons?{limit_name}=-1"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_people(&page, &all_people, 3, 0);
+    }
+
+    let minimum_start = body_json(
+        fixture
+            .request(
+                "/Persons?startIndex=-2147483648&limit=1",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_people(&minimum_start, &[&fixture.director_name], 3, i32::MIN);
+
+    let maximum_start = body_json(
+        fixture
+            .request(
+                "/Persons?startIndex=2147483647&limit=1",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_people(&maximum_start, &[], 3, i32::MAX);
+
+    for limit in [i32::MIN, i32::MAX] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Persons?limit={limit}"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_people(&page, &all_people, 3, 0);
+    }
+
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture
+                .request(&format!("/Persons?{query}"), Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{query}"
+        );
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn person_image_routes_resolve_public_base_item_ordinals() {
     let fixture = Fixture::new().await;
     assert_ne!(fixture.person_item_id, fixture.person_id);
@@ -443,7 +532,7 @@ fn assert_people(
     body: &Value,
     expected_names: &[&str],
     expected_total: usize,
-    expected_start: usize,
+    expected_start: i32,
 ) {
     assert_eq!(body["TotalRecordCount"], expected_total);
     assert_eq!(body["StartIndex"], expected_start);

@@ -54,6 +54,8 @@
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.
+- Keep `/Persons` pagination signed as well, but preserve its different limit rule: a non-positive
+  `Limit` is unlimited, while a non-positive `StartIndex` skips nothing and is still echoed.
 - When a catch-all implements several official HLS or trickplay route templates, keep concrete
   official-path dispatch tests and representative lowercase aliases so Axum does not regress the
   case-insensitive ASP.NET route contract. Lowercase compatibility must include every static path
