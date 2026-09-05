@@ -143,6 +143,8 @@ pub struct BaseItemDto {
     pub(crate) media_source_path: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_bitrate: Option<i32>,
+    #[serde(skip)]
+    pub(crate) media_source_container: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -755,6 +757,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         .map(|value| canonical_enum_or(&value, EXTRA_TYPES, "Unknown"));
     let media_source_path = metadata_string(item.data.as_ref(), &["StrmTarget", "strm_target"]);
     let media_source_bitrate = metadata_i32(item.data.as_ref(), &["Bitrate", "bitrate"]);
+    let media_source_container = metadata_string(item.data.as_ref(), &["Container", "container"]);
     let has_lyrics = item
         .data
         .as_ref()
@@ -772,6 +775,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         path: item.path,
         media_source_path,
         media_source_bitrate,
+        media_source_container,
         overview: item.overview,
         media_type: item
             .media_type
@@ -1289,7 +1293,8 @@ fn media_source_from_dto(
         .as_deref()
         .map(|path| get_media_source_name(path, false, None))
         .or_else(|| dto.name.clone());
-    let container = path.as_deref().and_then(media_container_from_path);
+    let container =
+        projected_media_source_container(dto.media_source_container.as_deref(), path.as_deref());
     let bitrate = dto
         .media_source_bitrate
         .or_else(|| infer_total_bitrate(&media_streams));
@@ -1567,9 +1572,33 @@ fn is_media_source_item(dto: &BaseItemDto) -> bool {
 }
 
 fn media_container_from_path(path: &str) -> Option<String> {
+    let path = path.split(['?', '#']).next().unwrap_or(path);
     let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let (_, extension) = file_name.rsplit_once('.')?;
-    (!extension.is_empty()).then(|| extension.to_owned())
+    (!extension.is_empty()).then(|| extension.to_ascii_lowercase())
+}
+
+fn normalize_media_source_container(container: Option<&str>, path: Option<&str>) -> Option<String> {
+    let path_container = path.and_then(media_container_from_path);
+    let mut containers = container?
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let first = containers.next()?;
+    if path_container.as_ref().is_some_and(|path_container| {
+        first.eq_ignore_ascii_case(path_container)
+            || containers.any(|container| container.eq_ignore_ascii_case(path_container))
+    }) {
+        path_container
+    } else {
+        Some(first)
+    }
+}
+
+fn projected_media_source_container(container: Option<&str>, path: Option<&str>) -> Option<String> {
+    normalize_media_source_container(container, path)
+        .or_else(|| path.and_then(media_container_from_path))
 }
 
 pub(crate) fn music_genre_to_dto(genre: MusicGenre, server_id: &str) -> BaseItemDto {
@@ -2131,6 +2160,7 @@ mod tests {
                 "Width": 1920,
                 "Height": 1080,
                 "Bitrate": 5500000,
+                "Container": "mkv,webm",
                 "ExtraType": "behindthescenes",
                 "AirDays": ["monday", "Funday", "Friday"],
                 "EndDate": "2020-01-02",
@@ -2179,6 +2209,7 @@ mod tests {
         assert_eq!(dto.community_rating, Some(8.5));
         assert_eq!(dto.critic_rating, Some(7.0));
         assert_eq!(dto.media_source_bitrate, Some(5_500_000));
+        assert_eq!(dto.media_source_container.as_deref(), Some("mkv,webm"));
         assert_eq!(dto.original_title.as_deref(), Some("Original"));
         assert_eq!(dto.taglines, ["Tag"]);
         assert_eq!(
@@ -2291,7 +2322,9 @@ mod tests {
         let dto = BaseItemDto {
             id: "item".to_owned(),
             item_type: "Movie".to_owned(),
-            media_source_path: Some("https://media.example/Movie.mp4".to_owned()),
+            media_source_path: Some(
+                "https://media.example/Movie.MP4?token=secret.mkv#fragment".to_owned(),
+            ),
             ..BaseItemDto::default()
         };
 
@@ -2300,6 +2333,27 @@ mod tests {
         assert_eq!(source.protocol, MediaProtocol::Http);
         assert!(source.is_remote);
         assert_eq!(source.container.as_deref(), Some("mp4"));
+    }
+
+    #[test]
+    fn persisted_media_source_container_wins_and_selects_matching_variant() {
+        let dto = BaseItemDto {
+            id: "item".to_owned(),
+            item_type: "Movie".to_owned(),
+            path: Some("/media/Movie.webm".to_owned()),
+            media_source_container: Some("mkv, WEBM".to_owned()),
+            ..BaseItemDto::default()
+        };
+        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+        assert_eq!(source.container.as_deref(), Some("webm"));
+
+        let dto = BaseItemDto {
+            path: Some("/media/Movie.unknown".to_owned()),
+            media_source_container: Some("Matroska,webm".to_owned()),
+            ..dto
+        };
+        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+        assert_eq!(source.container.as_deref(), Some("matroska"));
     }
 
     fn original_language_defaults() -> MediaStreamDefaults {

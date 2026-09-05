@@ -42,6 +42,9 @@
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.
+- Project each source's persisted, probed container before considering its path extension. When a
+  persisted container lists alternatives, select the path-matching value or the first value, and
+  strip URL query/fragment components before any extension fallback.
 - Project `MediaSourceCount` for item pages with one batched alternate-version query. Preserve the
   official nullable-single-source behavior, and include episode groups so the web client can show
   merged episode versions without loading every `MediaSource`.
