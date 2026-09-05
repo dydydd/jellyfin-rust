@@ -271,20 +271,19 @@ async fn api_key_sources_authenticate_touch_activity_and_never_create_a_user_ses
             .status(),
         StatusCode::OK
     );
-    assert_eq!(
-        fixture
-            .request(&format!("/Plugins?ApiKey={}", fixture.api_key_token), &[],)
-            .await
-            .status(),
-        StatusCode::OK
-    );
-    assert_eq!(
-        fixture
-            .request(&format!("/Plugins?api_key={}", fixture.api_key_token), &[],)
-            .await
-            .status(),
-        StatusCode::OK
-    );
+    for query_name in ["ApiKey", "apiKey", "apikey", "api_key"] {
+        assert_eq!(
+            fixture
+                .request(
+                    &format!("/Plugins?{query_name}={}", fixture.api_key_token),
+                    &[],
+                )
+                .await
+                .status(),
+            StatusCode::OK,
+            "{query_name}"
+        );
+    }
     assert_eq!(
         fixture
             .request(

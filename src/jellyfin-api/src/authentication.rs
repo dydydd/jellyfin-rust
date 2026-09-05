@@ -576,9 +576,11 @@ fn access_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
     }
 
     let query = query?;
+    // ASP.NET query binding is case-insensitive. Keep the underscore form used
+    // by generated SDKs while accepting every casing of both established names.
     for name in ["ApiKey", "api_key"] {
         if let Some((_, token)) = form_urlencoded::parse(query.as_bytes())
-            .find(|(key, value)| key == name && !value.is_empty())
+            .find(|(key, value)| key.eq_ignore_ascii_case(name) && !value.is_empty())
         {
             return Some(token.into_owned());
         }
@@ -793,6 +795,14 @@ mod tests {
         assert_eq!(
             access_token(&headers, Some("ApiKey=&api_key=query-legacy")).as_deref(),
             Some("query-legacy")
+        );
+        assert_eq!(
+            access_token(&headers, Some("apiKey=query-camel")).as_deref(),
+            Some("query-camel")
+        );
+        assert_eq!(
+            access_token(&headers, Some("apikey=query-lowercase")).as_deref(),
+            Some("query-lowercase")
         );
 
         headers.insert(
