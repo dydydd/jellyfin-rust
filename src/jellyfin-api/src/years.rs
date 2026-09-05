@@ -14,19 +14,30 @@ use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct YearsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
-    #[serde(default = "default_recursive")]
+    #[serde(
+        default = "default_recursive",
+        rename = "recursive",
+        alias = "Recursive"
+    )]
     recursive: bool,
     #[serde(
         default,
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
+        alias = "includeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
@@ -34,6 +45,7 @@ pub(crate) struct YearsQuery {
         default,
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
+        alias = "excludeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_item_types: Vec<String>,
@@ -41,6 +53,7 @@ pub(crate) struct YearsQuery {
         default,
         rename = "mediaTypes",
         alias = "MediaTypes",
+        alias = "mediatypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     media_types: Vec<String>,
@@ -48,6 +61,7 @@ pub(crate) struct YearsQuery {
         default,
         rename = "sortBy",
         alias = "SortBy",
+        alias = "sortby",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_by: Vec<String>,
@@ -55,6 +69,7 @@ pub(crate) struct YearsQuery {
         default,
         rename = "sortOrder",
         alias = "SortOrder",
+        alias = "sortorder",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,

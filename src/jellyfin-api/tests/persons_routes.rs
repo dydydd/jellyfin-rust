@@ -121,6 +121,19 @@ async fn persons_list_matches_official_persons_contract() {
         0,
     );
 
+    let pascal_paged = body_json(
+        fixture
+            .request("/Persons?StartIndex=1&Limit=2", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_people(
+        &pascal_paged,
+        &[&fixture.nested_person_name, &fixture.person_name],
+        3,
+        1,
+    );
+
     let unlimited = body_json(
         fixture
             .request("/Persons?limit=0", Some(&fixture.user_token))
@@ -170,6 +183,21 @@ async fn persons_list_matches_official_persons_contract() {
     )
     .await;
     assert_people(&actors, &[&fixture.person_name], 1, 0);
+
+    let lowercase_actors = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Persons?persontypes=Actor&appearsinitemid={}&searchterm={}",
+                    fixture.item_id,
+                    encoded(&fixture.person_name)
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_people(&lowercase_actors, &[&fixture.person_name], 1, 0);
 
     let invalid_types = body_json(
         fixture
@@ -276,6 +304,14 @@ async fn persons_list_matches_official_persons_contract() {
     assert_eq!(
         fixture
             .request(&for_admin, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let lowercase_for_admin = format!("/Persons?userid={}", fixture.admin_id);
+    assert_eq!(
+        fixture
+            .request(&lowercase_for_admin, Some(&fixture.user_token))
             .await
             .status(),
         StatusCode::FORBIDDEN

@@ -48,6 +48,18 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     .await;
     assert_years(&years, &["2024", "2001"], 4, 0);
 
+    let pascal_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years?SortBy=ProductionYear&SortOrder=Descending&StartIndex=1&Limit=2",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&pascal_years, &["2001", "1999"], 4, 1);
+
     let paged = body_json(
         fixture
             .request(
@@ -72,6 +84,18 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     .await;
     assert_years(&direct_child_years, &["1999"], 1, 0);
 
+    let pascal_direct_child_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?ParentId={}&Recursive=false", fixture.parent_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&pascal_direct_child_years, &["1999"], 1, 0);
+
     let recursive_years = body_json(
         fixture
             .request(
@@ -83,6 +107,21 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     )
     .await;
     assert_years(&recursive_years, &["1999", "2001"], 2, 0);
+
+    let lowercase_recursive_years = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Years?parentid={}&recursive=true&sortby=ProductionYear&sortorder=Descending&startindex=1&limit=1",
+                    fixture.parent_id
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&lowercase_recursive_years, &["1999"], 2, 1);
 
     let audio_years = body_json(
         fixture
@@ -135,6 +174,17 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .request(
                 Method::GET,
                 &format!("/Years?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?userid={}", fixture.other_user_id),
                 Credential::Device(&fixture.user_token),
             )
             .await

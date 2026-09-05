@@ -18,15 +18,20 @@ use crate::{
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct GenresQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
     #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
-    #[serde(rename = "searchTerm", alias = "SearchTerm")]
+    #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
     #[serde(
         default,
@@ -39,6 +44,7 @@ pub(crate) struct GenresQuery {
         default,
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
+        alias = "includeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
@@ -46,21 +52,40 @@ pub(crate) struct GenresQuery {
         default,
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
+        alias = "excludeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_item_types: Vec<String>,
-    #[serde(default, rename = "isFavorite", alias = "IsFavorite")]
+    #[serde(
+        default,
+        rename = "isFavorite",
+        alias = "IsFavorite",
+        alias = "isfavorite"
+    )]
     is_favorite: Option<bool>,
-    #[serde(rename = "nameStartsWithOrGreater", alias = "NameStartsWithOrGreater")]
+    #[serde(
+        rename = "nameStartsWithOrGreater",
+        alias = "NameStartsWithOrGreater",
+        alias = "namestartswithorgreater"
+    )]
     name_starts_with_or_greater: Option<String>,
-    #[serde(rename = "nameStartsWith", alias = "NameStartsWith")]
+    #[serde(
+        rename = "nameStartsWith",
+        alias = "NameStartsWith",
+        alias = "namestartswith"
+    )]
     name_starts_with: Option<String>,
-    #[serde(rename = "nameLessThan", alias = "NameLessThan")]
+    #[serde(
+        rename = "nameLessThan",
+        alias = "NameLessThan",
+        alias = "namelessthan"
+    )]
     name_less_than: Option<String>,
     #[serde(
         default,
         rename = "sortBy",
         alias = "SortBy",
+        alias = "sortby",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_by: Vec<String>,
@@ -68,11 +93,16 @@ pub(crate) struct GenresQuery {
         default,
         rename = "sortOrder",
         alias = "SortOrder",
+        alias = "sortorder",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,
     #[serde(default = "default_total_record_count")]
-    #[serde(rename = "enableTotalRecordCount", alias = "EnableTotalRecordCount")]
+    #[serde(
+        rename = "enableTotalRecordCount",
+        alias = "EnableTotalRecordCount",
+        alias = "enabletotalrecordcount"
+    )]
     enable_total_record_count: bool,
 }
 

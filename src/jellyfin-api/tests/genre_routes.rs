@@ -77,6 +77,23 @@ async fn genre_routes_match_official_generic_genre_contract() {
         1,
     );
 
+    let lowercase_paged = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Genres?sortby=SortName&sortorder=Descending&startindex=1&limit=2",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(
+        &lowercase_paged,
+        &[&fixture.nested_genre, &fixture.slug_genre_name],
+        5,
+        1,
+    );
+
     let searched = body_json(
         fixture
             .request(
@@ -90,6 +107,22 @@ async fn genre_routes_match_official_generic_genre_contract() {
     assert_genres(&searched, &[&fixture.drama_genre], 1, 0);
     assert!(searched["Items"][0].get("MovieCount").is_none());
     assert!(searched["Items"][0].get("ChildCount").is_none());
+
+    let lowercase_searched = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Genres?searchterm={}&includeitemtypes=Movie&enabletotalrecordcount=false",
+                    encoded(&fixture.drama_genre)
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(&lowercase_searched, &[&fixture.drama_genre], 1, 0);
+    assert_eq!(lowercase_searched["Items"][0]["MovieCount"], 1);
 
     let with_item_counts = body_json(
         fixture
@@ -304,6 +337,17 @@ async fn genre_routes_match_official_generic_genre_contract() {
             .request(
                 Method::GET,
                 &format!("/Genres?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Genres?userid={}", fixture.other_user_id),
                 Credential::Device(&fixture.user_token),
             )
             .await

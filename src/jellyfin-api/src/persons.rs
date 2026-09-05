@@ -18,19 +18,36 @@ use crate::{
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct PersonsQueryParams {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
     #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
-    #[serde(rename = "searchTerm", alias = "SearchTerm")]
+    #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
-    #[serde(rename = "nameStartsWith", alias = "NameStartsWith")]
+    #[serde(
+        rename = "nameStartsWith",
+        alias = "NameStartsWith",
+        alias = "namestartswith"
+    )]
     name_starts_with: Option<String>,
-    #[serde(rename = "nameLessThan", alias = "NameLessThan")]
+    #[serde(
+        rename = "nameLessThan",
+        alias = "NameLessThan",
+        alias = "namelessthan"
+    )]
     name_less_than: Option<String>,
-    #[serde(rename = "nameStartsWithOrGreater", alias = "NameStartsWithOrGreater")]
+    #[serde(
+        rename = "nameStartsWithOrGreater",
+        alias = "NameStartsWithOrGreater",
+        alias = "namestartswithorgreater"
+    )]
     name_starts_with_or_greater: Option<String>,
     #[serde(
         default,
@@ -39,12 +56,18 @@ pub(crate) struct PersonsQueryParams {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     filters: Vec<String>,
-    #[serde(default, rename = "isFavorite", alias = "IsFavorite")]
+    #[serde(
+        default,
+        rename = "isFavorite",
+        alias = "IsFavorite",
+        alias = "isfavorite"
+    )]
     is_favorite: Option<bool>,
     #[serde(
         default,
         rename = "excludePersonTypes",
         alias = "ExcludePersonTypes",
+        alias = "excludepersontypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_person_types: Vec<String>,
@@ -52,12 +75,17 @@ pub(crate) struct PersonsQueryParams {
         default,
         rename = "personTypes",
         alias = "PersonTypes",
+        alias = "persontypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     person_types: Vec<String>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
-    #[serde(rename = "appearsInItemId", alias = "AppearsInItemId")]
+    #[serde(
+        rename = "appearsInItemId",
+        alias = "AppearsInItemId",
+        alias = "appearsinitemid"
+    )]
     appears_in_item_id: Option<Uuid>,
 }
 

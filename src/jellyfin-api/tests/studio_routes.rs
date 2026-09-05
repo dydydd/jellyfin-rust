@@ -71,6 +71,23 @@ async fn studio_routes_match_official_studio_contract() {
     .await;
     assert_studios(&paged, &[&fixture.beta_studio, &fixture.gamma_studio], 5, 1);
 
+    let pascal_paged = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Studios?StartIndex=1&Limit=2",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_studios(
+        &pascal_paged,
+        &[&fixture.beta_studio, &fixture.gamma_studio],
+        5,
+        1,
+    );
+
     let searched = body_json(
         fixture
             .request(
@@ -82,6 +99,22 @@ async fn studio_routes_match_official_studio_contract() {
     )
     .await;
     assert_studios(&searched, &[&fixture.beta_studio], 1, 0);
+
+    let lowercase_searched = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Studios?searchterm={}&includeitemtypes=Movie&enabletotalrecordcount=false",
+                    encoded(&fixture.alpha_studio)
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_studios(&lowercase_searched, &[&fixture.alpha_studio], 1, 0);
+    assert_eq!(lowercase_searched["Items"][0]["MovieCount"], 1);
 
     let prefixed = body_json(
         fixture
@@ -201,6 +234,17 @@ async fn studio_routes_match_official_studio_contract() {
             .request(
                 Method::GET,
                 &format!("/Studios?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Studios?userid={}", fixture.other_user_id),
                 Credential::Device(&fixture.user_token),
             )
             .await

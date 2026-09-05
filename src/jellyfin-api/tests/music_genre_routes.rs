@@ -166,6 +166,22 @@ async fn music_genre_list_matches_official_music_genre_contract() {
         0,
     );
 
+    let pascal_paged = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?StartIndex=1&Limit=2",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(
+        &pascal_paged,
+        &[&fixture.genre_name, &fixture.slug_genre_name],
+        3,
+        1,
+    );
+
     let descending = body_json(
         request(
             &fixture.app,
@@ -177,6 +193,17 @@ async fn music_genre_list_matches_official_music_genre_contract() {
     .await;
     assert_genres(&descending, &[&fixture.slug_genre_name], 3, 0);
 
+    let lowercase_descending = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?sortby=SortName&sortorder=Descending&startindex=1&limit=1",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&lowercase_descending, &[&fixture.genre_name], 3, 1);
+
     let searched = body_json(
         request(
             &fixture.app,
@@ -187,6 +214,21 @@ async fn music_genre_list_matches_official_music_genre_contract() {
     )
     .await;
     assert_genres(&searched, &[&fixture.genre_name], 1, 0);
+
+    let lowercase_searched = body_json(
+        request(
+            &fixture.app,
+            &format!(
+                "/MusicGenres?searchterm={}&includeitemtypes=Audio&enabletotalrecordcount=false",
+                encoded(&fixture.genre_name)
+            ),
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&lowercase_searched, &[&fixture.genre_name], 1, 0);
+    assert_eq!(lowercase_searched["Items"][0]["SongCount"], 1);
 
     let favorite = body_json(
         request(
@@ -267,6 +309,15 @@ async fn music_genre_list_matches_official_music_genre_contract() {
 
     let for_administrator = format!("/MusicGenres?userId={}", fixture.administrator_id);
     let response = request(&fixture.app, &for_administrator, Some(&fixture.user_token)).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let lowercase_for_administrator = format!("/MusicGenres?userid={}", fixture.administrator_id);
+    let response = request(
+        &fixture.app,
+        &lowercase_for_administrator,
+        Some(&fixture.user_token),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let for_user = format!("/MusicGenres?userId={}", fixture.user_id);
