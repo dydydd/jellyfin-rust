@@ -6,6 +6,8 @@ use jellyfin_data::{
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::{HydratedBaseItem, ItemTypeRegistry};
+
 #[derive(Debug, Error)]
 pub enum PlaylistError {
     #[error("playlist name cannot be blank")]
@@ -25,6 +27,7 @@ pub enum PlaylistError {
 #[derive(Clone)]
 pub struct PlaylistService {
     items: BaseItemRepository,
+    item_types: ItemTypeRegistry,
     playlists: PlaylistRepository,
     links: LinkedChildRepository,
 }
@@ -45,9 +48,18 @@ pub struct PlaylistItemPage {
 impl PlaylistService {
     #[must_use]
     pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
+        Self::with_item_type_registry(database, ItemTypeRegistry::default())
+    }
+
+    #[must_use]
+    pub fn with_item_type_registry(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        item_types: ItemTypeRegistry,
+    ) -> Self {
         let database = database.into();
         Self {
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            item_types,
             playlists: PlaylistRepository::new(std::sync::Arc::clone(&database)),
             links: LinkedChildRepository::new(database),
         }
@@ -162,6 +174,8 @@ impl PlaylistService {
             .get_many(&ids)
             .await?
             .into_iter()
+            .filter_map(|item| self.item_types.hydrate(item))
+            .map(HydratedBaseItem::into_model)
             .map(|item| (item.id, item))
             .collect::<std::collections::HashMap<_, _>>();
         let items = page_links

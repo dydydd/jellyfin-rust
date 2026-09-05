@@ -87,10 +87,102 @@ async fn exercise(database_name: &str) {
     let playlist_id = assert_creation(&fixture).await;
     assert_read_and_edit_permissions(&fixture, playlist_id).await;
     assert_items_projection_and_reordering(&fixture, playlist_id).await;
+    assert_item_type_hydration(&fixture).await;
     assert_update_and_share_routes(&fixture, playlist_id).await;
     assert_user_deletion_lifecycle(&fixture).await;
     assert_invalid_creation_rolls_back(&fixture).await;
     fixture.database.close().await.unwrap();
+}
+
+async fn assert_item_type_hydration(fixture: &Fixture) {
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.unwrap();
+    let mut legacy_movie = NewBaseItem::new(
+        Uuid::new_v4(),
+        "MediaBrowser.Controller.Entities.Movies.Movie",
+    );
+    legacy_movie.parent_id = Some(root.id);
+    legacy_movie.name = Some("Legacy Movie".to_owned());
+    legacy_movie.sort_name = legacy_movie.name.clone();
+    legacy_movie.media_type = Some("Video".to_owned());
+    let legacy_movie = items.create(legacy_movie).await.unwrap();
+
+    let mut unknown = NewBaseItem::new(Uuid::new_v4(), "Plugin.Media.UnknownItem");
+    unknown.parent_id = Some(root.id);
+    unknown.name = Some("Unknown Plugin Item".to_owned());
+    unknown.sort_name = unknown.name.clone();
+    let unknown = items.create(unknown).await.unwrap();
+
+    let playlist_id = Uuid::new_v4();
+    PlaylistRepository::new(fixture.database.clone())
+        .create(
+            playlist_id,
+            "Legacy Types".to_owned(),
+            root.id,
+            fixture.owner_id,
+            false,
+            Some("Video".to_owned()),
+            &[],
+            &[legacy_movie.id, unknown.id, fixture.first_id],
+        )
+        .await
+        .unwrap();
+
+    for suffix in ["", "?fields=PrimaryImageAspectRatio"] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Playlists/{playlist_id}/Items{suffix}"),
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(page["TotalRecordCount"], 3);
+        assert_eq!(page["StartIndex"], 0);
+        assert_eq!(page["Items"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            page["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["Id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                legacy_movie.id.simple().to_string(),
+                fixture.first_id.simple().to_string(),
+            ]
+        );
+        assert!(
+            page["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["Type"] == "Movie")
+        );
+        assert!(
+            !page
+                .to_string()
+                .contains("MediaBrowser.Controller.Entities")
+        );
+    }
+
+    let unknown_page = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Playlists/{playlist_id}/Items?startIndex=1&limit=1"),
+                Some(&fixture.owner_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(unknown_page["TotalRecordCount"], 3);
+    assert_eq!(unknown_page["StartIndex"], 1);
+    assert!(unknown_page["Items"].as_array().unwrap().is_empty());
 }
 
 async fn assert_update_and_share_routes(fixture: &Fixture, playlist_id: Uuid) {

@@ -45,6 +45,9 @@
 - ASP.NET route, query-name, and JSON-property binding is case-insensitive. Compatibility tests must cover PascalCase, camelCase, and representative lowercase legacy requests; do not assume an Axum route or Serde field is equivalent merely because one casing works.
 - Follow the official `JsonDefaults` value semantics. Where it permits them, accept numeric strings and case-insensitive or integer enum representations, and mirror the full official parameter set when implementing a legacy endpoint.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
+- Hydrate every persisted base item through the shared item-type registry before DTO projection,
+  including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an
+  unknown plugin row cannot make a client reject the enclosing page.
 - Keep library-creation `CollectionTypeOptions` distinct from `BaseItemDto.CollectionType`: `mixed`
   is valid for a virtual-folder configuration but must be omitted from user-view item DTOs because
   the client DTO enum cannot decode it.
