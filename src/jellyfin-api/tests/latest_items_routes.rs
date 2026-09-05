@@ -6,13 +6,14 @@ use chrono::{TimeZone, Utc};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
-    UserDataRepository, entities::base_item,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData, UserDataRepository,
+    entities::base_item,
 };
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -70,6 +71,8 @@ async fn exercise_latest_routes(database_name: &str) {
     assert_auth_and_target_user_rules(&fixture).await;
     assert_latest_defaults_hide_played_and_sort_by_created(&fixture).await;
     assert_is_played_and_legacy_routes(&fixture).await;
+    assert_default_grouping_and_explicit_ungrouping(&fixture).await;
+    assert_latest_dto_options_and_image_fields(&fixture).await;
 
     database.close().await.expect("database pool cleanup");
 }
@@ -85,6 +88,12 @@ struct Fixture {
     new_movie_id: Uuid,
     played_movie_id: Uuid,
     episode_id: Uuid,
+    series_id: Uuid,
+    first_series_episode_id: Uuid,
+    second_series_episode_id: Uuid,
+    single_series_id: Uuid,
+    single_series_episode_id: Uuid,
+    album_id: Uuid,
 }
 
 impl Fixture {
@@ -114,10 +123,76 @@ impl Fixture {
         let new_movie = create_item(&items, "Movie", "New Movie", parent.id).await;
         let played_movie = create_item(&items, "Movie", "Played Movie", parent.id).await;
         let episode = create_item(&items, "Episode", "Newest Episode", parent.id).await;
+        let series = create_item(&items, "Series", "Grouped Series", parent.id).await;
+        let season = create_item(&items, "Season", "Grouped Season", series.id).await;
+        let first_series_episode = create_episode(
+            &items,
+            "First Grouped Episode",
+            season.id,
+            series.id,
+            season.id,
+        )
+        .await;
+        let second_series_episode = create_episode(
+            &items,
+            "Second Grouped Episode",
+            season.id,
+            series.id,
+            season.id,
+        )
+        .await;
+        let single_series = create_item(&items, "Series", "Single Episode Series", parent.id).await;
+        let single_season = create_item(&items, "Season", "Single Season", single_series.id).await;
+        let single_series_episode = create_episode(
+            &items,
+            "Only Series Episode",
+            single_season.id,
+            single_series.id,
+            single_season.id,
+        )
+        .await;
+        let album = create_item(&items, "MusicAlbum", "Grouped Album", parent.id).await;
+        let track = create_item(&items, "Audio", "Only Album Track", album.id).await;
+        let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        alternate.name = Some("New Movie Alternate".to_owned());
+        alternate.sort_name = alternate.name.clone();
+        alternate.parent_id = Some(parent.id);
+        alternate.media_type = Some("Video".to_owned());
+        alternate.primary_version_id = Some(new_movie.id);
+        let alternate = items
+            .create(alternate)
+            .await
+            .expect("alternate movie version");
         set_date_created(&database, old_movie.id, 2026, 7, 22).await;
         set_date_created(&database, new_movie.id, 2026, 7, 24).await;
         set_date_created(&database, played_movie.id, 2026, 7, 25).await;
         set_date_created(&database, episode.id, 2026, 7, 26).await;
+        set_date_created(&database, first_series_episode.id, 2026, 7, 20).await;
+        set_date_created(&database, second_series_episode.id, 2026, 7, 21).await;
+        set_date_created(&database, single_series_episode.id, 2026, 7, 18).await;
+        set_date_created(&database, track.id, 2026, 7, 19).await;
+        set_date_created(&database, alternate.id, 2026, 7, 30).await;
+        set_item_data(
+            &database,
+            new_movie.id,
+            json!({ "DefaultPrimaryImageAspectRatio": 1.5 }),
+        )
+        .await;
+        BaseItemImageRepository::new(database.clone())
+            .replace(
+                new_movie.id,
+                &[NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: "/media/new-movie-poster.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(600),
+                    height: Some(900),
+                    blurhash: None,
+                }],
+            )
+            .await
+            .expect("new movie primary image");
 
         let mut played = NewUserData::new(played_movie.id, user.id, "latest-played");
         played.played = true;
@@ -141,6 +216,12 @@ impl Fixture {
             new_movie_id: new_movie.id,
             played_movie_id: played_movie.id,
             episode_id: episode.id,
+            series_id: series.id,
+            first_series_episode_id: first_series_episode.id,
+            second_series_episode_id: second_series_episode.id,
+            single_series_id: single_series.id,
+            single_series_episode_id: single_series_episode.id,
+            album_id: album.id,
         }
     }
 }
@@ -209,7 +290,7 @@ async fn assert_is_played_and_legacy_routes(fixture: &Fixture) {
     let mixed = get_json(
         &fixture.app,
         &format!(
-            "/Users/{}/Items/Latest?parentId={}&includeItemTypes=Movie,Episode&isPlayed=false&limit=2",
+            "/Users/{}/Items/Latest?parentId={}&includeItemTypes=Movie,Episode&isPlayed=false&groupItems=false&limit=2",
             fixture.user_id, fixture.parent_id
         ),
         &fixture.user_token,
@@ -218,6 +299,146 @@ async fn assert_is_played_and_legacy_routes(fixture: &Fixture) {
     assert_eq!(mixed.as_array().unwrap().len(), 2);
     assert_eq!(mixed[0]["Id"], fixture.episode_id.simple().to_string());
     assert_eq!(mixed[1]["Id"], fixture.new_movie_id.simple().to_string());
+}
+
+async fn assert_default_grouping_and_explicit_ungrouping(fixture: &Fixture) {
+    let grouped = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&limit=20",
+            fixture.series_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(grouped.as_array().unwrap().len(), 1);
+    assert_eq!(grouped[0]["Id"], fixture.series_id.simple().to_string());
+    assert_eq!(grouped[0]["Type"], "Series");
+    assert_eq!(grouped[0]["ChildCount"], 2);
+
+    let singleton = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&limit=20",
+            fixture.single_series_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(singleton.as_array().unwrap().len(), 1);
+    assert_eq!(
+        singleton[0]["Id"],
+        fixture.single_series_episode_id.simple().to_string()
+    );
+    assert_eq!(singleton[0]["Type"], "Episode");
+    assert!(singleton[0].get("ChildCount").is_none());
+
+    let limited = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Episode&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(limited.as_array().unwrap().len(), 1);
+    assert_eq!(limited[0]["Id"], fixture.episode_id.simple().to_string());
+
+    for group_items in ["groupItems", "GroupItems", "groupitems"] {
+        let ungrouped = get_json(
+            &fixture.app,
+            &format!(
+                "/Items/Latest?parentId={}&includeItemTypes=Episode&{group_items}=false&limit=20",
+                fixture.series_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+        assert_eq!(ungrouped.as_array().unwrap().len(), 2, "{group_items}");
+        assert_eq!(
+            ungrouped[0]["Id"],
+            fixture.second_series_episode_id.simple().to_string(),
+            "{group_items}"
+        );
+        assert_eq!(
+            ungrouped[1]["Id"],
+            fixture.first_series_episode_id.simple().to_string(),
+            "{group_items}"
+        );
+    }
+
+    let album = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Audio&limit=20",
+            fixture.album_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(album.as_array().unwrap().len(), 1);
+    assert_eq!(album[0]["Id"], fixture.album_id.simple().to_string());
+    assert_eq!(album[0]["Type"], "MusicAlbum");
+    assert_eq!(album[0]["ChildCount"], 1);
+}
+
+async fn assert_latest_dto_options_and_image_fields(fixture: &Fixture) {
+    let defaults = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&limit=2",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    let newest = defaults
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == fixture.new_movie_id.simple().to_string())
+        .expect("new movie in latest results");
+    assert!(newest["ImageTags"]["Primary"].is_string());
+    assert!(newest["UserData"].is_object());
+
+    let disabled = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&fields=PrimaryImageAspectRatio,MediaSourceCount&enableImages=false&enableUserData=false&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(disabled.as_array().unwrap().len(), 1);
+    assert_eq!(disabled[0]["Id"], fixture.new_movie_id.simple().to_string());
+    assert_eq!(disabled[0]["PrimaryImageAspectRatio"], 1.5);
+    assert_eq!(disabled[0]["MediaSourceCount"], 2);
+    assert!(disabled[0].get("ImageTags").is_none());
+    assert!(disabled[0].get("UserData").is_none());
+
+    let thumb_only = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&enableImageTypes=Thumb&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(thumb_only[0].get("ImageTags").is_none());
+
+    let no_images = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&isPlayed=false&imageTypeLimit=0&limit=1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(no_images[0].get("ImageTags").is_none());
 }
 
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::response::Response {
@@ -255,9 +476,39 @@ async fn create_item(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     item.parent_id = Some(parent_id);
-    item.is_folder = item_type == "Folder";
-    item.media_type = (!item.is_folder).then(|| "Video".to_owned());
+    item.is_folder = matches!(item_type, "Folder" | "Series" | "Season" | "MusicAlbum");
+    item.media_type = match item_type {
+        "Audio" => Some("Audio".to_owned()),
+        _ if !item.is_folder => Some("Video".to_owned()),
+        _ => None,
+    };
     repository.create(item).await.expect("base item")
+}
+
+async fn create_episode(
+    repository: &BaseItemRepository,
+    name: &str,
+    parent_id: Uuid,
+    series_id: Uuid,
+    season_id: Uuid,
+) -> base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    item.name = Some(name.to_owned());
+    item.sort_name = item.name.clone();
+    item.parent_id = Some(parent_id);
+    item.media_type = Some("Video".to_owned());
+    item.series_id = Some(series_id);
+    item.season_id = Some(season_id);
+    repository.create(item).await.expect("episode")
+}
+
+async fn set_item_data(database: &DatabaseConnection, item_id: Uuid, data: Value) {
+    base_item::Entity::update_many()
+        .col_expr(base_item::Column::Data, Expr::value(data))
+        .filter(base_item::Column::Id.eq(item_id))
+        .exec(database)
+        .await
+        .expect("item data update");
 }
 
 async fn set_date_created(

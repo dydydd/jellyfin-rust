@@ -57,6 +57,7 @@ pub(crate) struct BaseItemDtoFields {
     item_counts: bool,
     child_count: bool,
     recursive_item_count: bool,
+    primary_image_aspect_ratio: bool,
     trickplay: bool,
 }
 
@@ -70,6 +71,7 @@ impl BaseItemDtoFields {
             item_counts: true,
             child_count: true,
             recursive_item_count: true,
+            primary_image_aspect_ratio: true,
             trickplay: true,
         }
     }
@@ -83,6 +85,7 @@ impl BaseItemDtoFields {
             item_counts: false,
             child_count: false,
             recursive_item_count: false,
+            primary_image_aspect_ratio: false,
             trickplay: false,
         }
     }
@@ -103,6 +106,8 @@ impl BaseItemDtoFields {
                 result.child_count = true;
             } else if field.eq_ignore_ascii_case("RecursiveItemCount") {
                 result.recursive_item_count = true;
+            } else if field.eq_ignore_ascii_case("PrimaryImageAspectRatio") {
+                result.primary_image_aspect_ratio = true;
             } else if field.eq_ignore_ascii_case("Trickplay") {
                 result.trickplay = true;
             }
@@ -143,6 +148,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_recursive_item_count(self) -> bool {
         self.recursive_item_count
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_primary_image_aspect_ratio(self) -> bool {
+        self.primary_image_aspect_ratio
     }
 
     #[must_use]

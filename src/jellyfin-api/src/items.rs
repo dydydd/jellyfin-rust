@@ -8,7 +8,7 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::{DateTime, Utc};
 use jellyfin_controller::SearchProviderQuery;
-use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery};
+use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item};
 use jellyfin_model::{SortOrder, UserConfiguration};
 use serde::Deserialize;
 use std::str::FromStr;
@@ -603,10 +603,36 @@ pub(crate) struct LatestItemsQuery {
     include_item_types: Vec<String>,
     #[serde(default, rename = "isPlayed", alias = "IsPlayed", alias = "isplayed")]
     is_played: Option<bool>,
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
     #[serde(default = "default_latest_limit", alias = "Limit")]
     limit: u64,
     #[serde(
-        default,
+        default = "default_true",
         rename = "groupItems",
         alias = "GroupItems",
         alias = "groupitems"
@@ -1022,6 +1048,7 @@ async fn resume_for(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn latest_for(
     state: Arc<AppState>,
     headers: HeaderMap,
@@ -1042,7 +1069,14 @@ async fn latest_for(
     });
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
-    let _ = query.group_items;
+    let dto_options = PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: std::mem::take(&mut query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
     let parent_scope = resolve_user_view_parent_scope(
         &state,
         &authenticated.user,
@@ -1050,7 +1084,20 @@ async fn latest_for(
         query.parent_id,
     )
     .await?;
-    let page = state
+    let include_item_types = std::mem::take(&mut query.include_item_types);
+    let is_folder = include_item_types.is_empty().then_some(false);
+    let exclude_item_types = include_item_types.is_empty().then(|| {
+        ["Person", "Studio", "Year", "MusicGenre", "Genre"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    });
+    let candidate_limit = if query.group_items {
+        query.limit.saturating_mul(2)
+    } else {
+        query.limit
+    };
+    let mut page = state
         .user_library
         .query_items(
             &authenticated.user,
@@ -1059,23 +1106,187 @@ async fn latest_for(
                 parent_id: parent_scope.parent_id,
                 parent_ids: parent_scope.parent_ids,
                 recursive: true,
-                include_item_types: query.include_item_types,
+                include_item_types,
+                exclude_item_types: exclude_item_types.unwrap_or_default(),
+                is_folder,
                 is_virtual_item: Some(false),
                 user_id: Some(target_user_id),
                 is_played,
                 order: BaseItemOrder::DateCreatedDescending,
                 start_index: 0,
-                limit: Some(query.limit),
+                limit: Some(candidate_limit),
                 enable_total_record_count: Some(false),
                 ..BaseItemQuery::default()
             },
         )
         .await?;
-    Ok(Json(
-        page_to_dto(state.as_ref(), page, fields, target_user_id)
+    // The official latest-media repository uses the identifier as its stable
+    // descending tie-breaker after DateCreated. Keep that order before
+    // application-side container grouping.
+    page.items.sort_by(|left, right| {
+        right
+            .date_created
+            .cmp(&left.date_created)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let selections = if query.group_items {
+        group_latest_items(
+            state.as_ref(),
+            &authenticated.user,
+            target_user_id,
+            page.items,
+            query.limit,
+        )
+        .await?
+    } else {
+        page.items
+            .into_iter()
+            .take(usize::try_from(query.limit).unwrap_or(usize::MAX))
+            .map(|item| LatestItemSelection {
+                item,
+                child_count: None,
+            })
+            .collect()
+    };
+    let child_counts = selections
+        .iter()
+        .map(|selection| selection.child_count)
+        .collect::<Vec<_>>();
+    let page = BaseItemPage {
+        total_record_count: u64::try_from(selections.len()).unwrap_or(u64::MAX),
+        start_index: 0,
+        items: selections
+            .into_iter()
+            .map(|selection| selection.item)
+            .collect(),
+    };
+    let mut items =
+        page_to_dto_with_options(state.as_ref(), page, fields, target_user_id, &dto_options)
             .await?
-            .items,
-    ))
+            .items;
+    for (item, child_count) in items.iter_mut().zip(child_counts) {
+        if child_count.is_some() {
+            item.child_count = child_count;
+        }
+    }
+    Ok(Json(items))
+}
+
+#[derive(Debug)]
+struct LatestItemSelection {
+    item: base_item::Model,
+    child_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum LatestItemGroupKey {
+    Container(Uuid),
+    Presentation(String),
+}
+
+async fn group_latest_items(
+    state: &AppState,
+    authenticated_user: &jellyfin_data::entities::user::Model,
+    target_user_id: Uuid,
+    candidates: Vec<base_item::Model>,
+    limit: u64,
+) -> Result<Vec<LatestItemSelection>, ApiError> {
+    let mut container_ids = candidates
+        .iter()
+        .filter_map(|item| {
+            if item.item_type.eq_ignore_ascii_case("Episode") {
+                item.series_id
+            } else if item.item_type.eq_ignore_ascii_case("Audio") {
+                item.parent_id
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    container_ids.sort_unstable();
+    container_ids.dedup();
+    let containers = state
+        .user_library
+        .query_items(
+            authenticated_user,
+            target_user_id,
+            BaseItemQuery {
+                ids: container_ids,
+                user_id: Some(target_user_id),
+                enable_total_record_count: Some(false),
+                ..BaseItemQuery::default()
+            },
+        )
+        .await?
+        .items
+        .into_iter()
+        .map(|item| (item.id, item))
+        .collect::<HashMap<_, _>>();
+
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut selections = Vec::<LatestItemSelection>::with_capacity(limit.min(candidates.len()));
+    let mut group_indexes = HashMap::<LatestItemGroupKey, usize>::new();
+    for item in candidates {
+        let container = if item.item_type.eq_ignore_ascii_case("Episode") {
+            item.series_id
+                .and_then(|id| containers.get(&id))
+                .filter(|container| container.item_type.eq_ignore_ascii_case("Series"))
+        } else if item.item_type.eq_ignore_ascii_case("Audio") {
+            item.parent_id
+                .and_then(|id| containers.get(&id))
+                .filter(|container| container.item_type.eq_ignore_ascii_case("MusicAlbum"))
+        } else {
+            None
+        };
+        let group_key = container
+            .map(|container| LatestItemGroupKey::Container(container.id))
+            .or_else(|| {
+                item.item_type
+                    .eq_ignore_ascii_case("Movie")
+                    .then(|| item.presentation_unique_key.clone())
+                    .flatten()
+                    .map(LatestItemGroupKey::Presentation)
+            });
+
+        let Some(group_key) = group_key else {
+            if selections.len() < limit {
+                selections.push(LatestItemSelection {
+                    item,
+                    child_count: None,
+                });
+            }
+            continue;
+        };
+        if let Some(index) = group_indexes.get(&group_key).copied() {
+            if let Some(container) = container {
+                let selection = &mut selections[index];
+                let child_count = selection.child_count.get_or_insert(1);
+                *child_count = child_count.saturating_add(1);
+                if !selection.item.item_type.eq_ignore_ascii_case("MusicAlbum") {
+                    selection.item = container.clone();
+                }
+            }
+            continue;
+        }
+        if selections.len() >= limit {
+            continue;
+        }
+        group_indexes.insert(group_key, selections.len());
+        if let Some(container) = container
+            && container.item_type.eq_ignore_ascii_case("MusicAlbum")
+        {
+            selections.push(LatestItemSelection {
+                item: container.clone(),
+                child_count: Some(1),
+            });
+        } else {
+            selections.push(LatestItemSelection {
+                item,
+                child_count: None,
+            });
+        }
+    }
+    Ok(selections)
 }
 
 #[derive(Debug, Default)]
@@ -1382,8 +1593,31 @@ const fn default_latest_limit() -> u64 {
     20
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 const fn default_total_record_count() -> bool {
     true
+}
+
+#[derive(Debug)]
+struct PageDtoOptions {
+    enable_images: bool,
+    image_type_limit: usize,
+    enable_image_types: Vec<String>,
+    enable_user_data: bool,
+}
+
+impl Default for PageDtoOptions {
+    fn default() -> Self {
+        Self {
+            enable_images: true,
+            image_type_limit: usize::MAX,
+            enable_image_types: Vec::new(),
+            enable_user_data: true,
+        }
+    }
 }
 
 async fn page_to_dto(
@@ -1391,6 +1625,24 @@ async fn page_to_dto(
     page: BaseItemPage,
     fields: Vec<String>,
     target_user_id: Uuid,
+) -> Result<user_library::BaseItemQueryResult, ApiError> {
+    page_to_dto_with_options(
+        state,
+        page,
+        fields,
+        target_user_id,
+        &PageDtoOptions::default(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn page_to_dto_with_options(
+    state: &AppState,
+    page: BaseItemPage,
+    fields: Vec<String>,
+    target_user_id: Uuid,
+    dto_options: &PageDtoOptions,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let requested_fields = user_library::BaseItemDtoFields::from_names(&fields);
     let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
@@ -1463,19 +1715,37 @@ async fn page_to_dto(
     };
     let mut trickplay_manifests =
         user_library::trickplay_manifests_for_items(state, &page.items, requested_fields).await?;
-    let mut user_dtos = state
-        .user_data
-        .preferred_dto_map(target_user_id, &page.items)
-        .await?;
+    let mut user_dtos = if dto_options.enable_user_data {
+        state
+            .user_data
+            .preferred_dto_map(target_user_id, &page.items)
+            .await?
+    } else {
+        HashMap::new()
+    };
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
-    let mut image_projections = state
-        .dto_images
-        .project_many(
-            &item_ids,
-            jellyfin_server_implementations::DtoImageOptions::default(),
-        )
-        .await
-        .map_err(|_| ApiError::Internal)?;
+    let mut image_projections =
+        if dto_options.enable_images || requested_fields.wants_primary_image_aspect_ratio() {
+            state
+                .dto_images
+                .project_many(
+                    &item_ids,
+                    jellyfin_server_implementations::DtoImageOptions {
+                        enable_images: dto_options.enable_images,
+                        primary_image_limit: if dto_options.enable_images {
+                            dto_options.image_type_limit
+                        } else {
+                            0
+                        },
+                        include_primary_image_aspect_ratio: requested_fields
+                            .wants_primary_image_aspect_ratio(),
+                    },
+                )
+                .await
+                .map_err(|_| ApiError::Internal)?
+        } else {
+            HashMap::new()
+        };
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -1497,7 +1767,16 @@ async fn page_to_dto(
         if let Some(metadata) = relations.remove(&item_id) {
             user_library::attach_relation_metadata(&mut dto, metadata);
         }
-        if let Some(projection) = image_projections.remove(&item_id) {
+        if let Some(mut projection) = image_projections.remove(&item_id) {
+            constrain_image_projection(
+                &mut projection,
+                &dto_options.enable_image_types,
+                if dto_options.enable_images {
+                    dto_options.image_type_limit
+                } else {
+                    0
+                },
+            );
             user_library::attach_dto_image_projection(&mut dto, projection);
         }
         if requested_fields.wants_media_sources()
@@ -1541,6 +1820,38 @@ async fn page_to_dto(
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
     })
+}
+
+fn constrain_image_projection(
+    projection: &mut jellyfin_server_implementations::DtoImageProjection,
+    enabled_image_types: &[String],
+    image_type_limit: usize,
+) {
+    let includes = |image_type: &str| {
+        enabled_image_types.is_empty()
+            || enabled_image_types
+                .iter()
+                .any(|enabled| enabled.eq_ignore_ascii_case(image_type))
+    };
+    projection
+        .image_tags
+        .retain(|image_type, _| includes(image_type) && image_type_limit > 0);
+    if !includes("Primary") || image_type_limit == 0 {
+        projection.primary_image_tag = None;
+        projection.series_primary_image_tag = None;
+        projection.parent_primary_image_item_id = None;
+        projection.parent_primary_image_tag = None;
+    }
+    if !includes("Backdrop") || image_type_limit == 0 {
+        projection.backdrop_image_tags.clear();
+        projection.parent_backdrop_image_item_id = None;
+        projection.parent_backdrop_image_tags.clear();
+    } else {
+        projection.backdrop_image_tags.truncate(image_type_limit);
+        projection
+            .parent_backdrop_image_tags
+            .truncate(image_type_limit);
+    }
 }
 
 #[cfg(test)]
