@@ -218,6 +218,189 @@ async fn remote_image_download_validates_and_infers_content_type_like_jellyfin()
 }
 
 #[tokio::test]
+async fn forbidden_and_missing_remote_stubs_are_removed_after_one_request() {
+    let database = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
+    let items = BaseItemRepository::new(database.clone());
+    let images = BaseItemImageRepository::new(database.clone());
+    let storage_root =
+        std::env::temp_dir().join(format!("jellyfin-image-permanent-http-{}", Uuid::new_v4()));
+    let service = ItemImageService::with_storage_directories(
+        database.clone(),
+        storage_root.join("cache/images"),
+        storage_root.join("metadata"),
+    );
+
+    for status in [403, 404] {
+        let upstream = CountingImageServer::start_status(status, "/unavailable.jpg");
+        let item_id = create_item_with_remote_primary(
+            &items,
+            &images,
+            &upstream.url,
+            &format!("permanent-{status}"),
+        )
+        .await;
+
+        let first = service.resource(item_id, ImageType::Primary, 0).await;
+        assert!(
+            matches!(
+                first,
+                Err(ItemImageError::RemoteDownload(ref error))
+                    if error.status().is_some_and(|actual| actual.as_u16() == status)
+            ),
+            "unexpected first {status} result: {first:?}"
+        );
+        assert!(
+            images
+                .primary(item_id)
+                .await
+                .expect("primary image lookup")
+                .is_none(),
+            "HTTP {status} must remove the remote stub"
+        );
+
+        let second = service.resource(item_id, ImageType::Primary, 0).await;
+        assert!(matches!(second, Err(ItemImageError::NotFound)));
+        assert_eq!(
+            upstream.stop(),
+            1,
+            "HTTP {status} must not be fetched again after stub removal"
+        );
+        items.delete(item_id).await.expect("base item cleanup");
+    }
+
+    database.close().await.expect("database connection close");
+}
+
+#[tokio::test]
+async fn transient_remote_errors_keep_the_stub_retryable() {
+    let database = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
+    let items = BaseItemRepository::new(database.clone());
+    let images = BaseItemImageRepository::new(database.clone());
+    let storage_root =
+        std::env::temp_dir().join(format!("jellyfin-image-transient-http-{}", Uuid::new_v4()));
+    let service = ItemImageService::with_storage_directories(
+        database.clone(),
+        storage_root.join("cache/images"),
+        storage_root.join("metadata"),
+    );
+    let upstream = CountingImageServer::start_status(500, "/retry.jpg");
+    let item_id =
+        create_item_with_remote_primary(&items, &images, &upstream.url, "transient-500").await;
+
+    for attempt in 1..=2 {
+        let result = service.resource(item_id, ImageType::Primary, 0).await;
+        assert!(
+            matches!(
+                result,
+                Err(ItemImageError::RemoteDownload(ref error))
+                    if error.status() == Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR)
+            ),
+            "unexpected attempt {attempt} result: {result:?}"
+        );
+    }
+    assert_eq!(
+        images
+            .primary(item_id)
+            .await
+            .expect("primary image lookup")
+            .expect("transient error must preserve remote stub")
+            .path,
+        upstream.url
+    );
+    assert_eq!(upstream.stop(), 2, "HTTP 500 must remain retryable");
+
+    items.delete(item_id).await.expect("base item cleanup");
+    database.close().await.expect("database connection close");
+}
+
+#[tokio::test]
+async fn permanent_remote_error_does_not_delete_a_concurrent_replacement() {
+    let database = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
+    let items = BaseItemRepository::new(database.clone());
+    let images = BaseItemImageRepository::new(database.clone());
+    let storage_root =
+        std::env::temp_dir().join(format!("jellyfin-image-concurrent-http-{}", Uuid::new_v4()));
+    let service = ItemImageService::with_storage_directories(
+        database.clone(),
+        storage_root.join("cache/images"),
+        storage_root.join("metadata"),
+    );
+    let upstream = CountingImageServer::start_blocked_status(404, "/stale.jpg");
+    let item_id =
+        create_item_with_remote_primary(&items, &images, &upstream.url, "concurrent-replace").await;
+
+    let request_service = service.clone();
+    let request = tokio::spawn(async move {
+        request_service
+            .resource(item_id, ImageType::Primary, 0)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while upstream.request_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("mock upstream request must arrive");
+
+    let replacement_path = storage_root.join("replacement.jpg");
+    images
+        .replace(
+            item_id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: replacement_path.to_string_lossy().into_owned(),
+                date_modified: Utc::now(),
+                width: None,
+                height: None,
+                blurhash: None,
+            }],
+        )
+        .await
+        .expect("concurrent image replacement");
+    upstream.release_response();
+
+    let result = request.await.expect("remote request task");
+    assert!(
+        matches!(
+            result,
+            Err(ItemImageError::RemoteDownload(ref error))
+                if error.status() == Some(reqwest::StatusCode::NOT_FOUND)
+        ),
+        "unexpected remote result: {result:?}"
+    );
+    assert_eq!(
+        images
+            .primary(item_id)
+            .await
+            .expect("primary image lookup")
+            .expect("concurrent replacement must survive")
+            .path,
+        replacement_path.to_string_lossy()
+    );
+    assert_eq!(upstream.stop(), 1);
+
+    items.delete(item_id).await.expect("base item cleanup");
+    database.close().await.expect("database connection close");
+}
+
+#[tokio::test]
 async fn failed_remote_replacement_preserves_the_existing_image_and_file() {
     let database = jellyfin_data::connect(&DatabaseConfig::default())
         .await
@@ -348,10 +531,40 @@ fn item_metadata_directory(metadata_root: &Path, item_id: Uuid) -> std::path::Pa
     metadata_root.join("library").join(&id[..2]).join(id)
 }
 
+async fn create_item_with_remote_primary(
+    items: &BaseItemRepository,
+    images: &BaseItemImageRepository,
+    url: &str,
+    label: &str,
+) -> Uuid {
+    let item_id = Uuid::new_v4();
+    let mut item = NewBaseItem::new(item_id, "Movie");
+    item.name = Some(format!("remote-image-{label}-{item_id}"));
+    item.sort_name.clone_from(&item.name);
+    items.create(item).await.expect("base item creation");
+    images
+        .replace(
+            item_id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: url.to_owned(),
+                date_modified: Utc::now(),
+                width: None,
+                height: None,
+                blurhash: None,
+            }],
+        )
+        .await
+        .expect("remote image stub persistence");
+    item_id
+}
+
 struct CountingImageServer {
     url: String,
     requests: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
     thread: thread::JoinHandle<()>,
 }
 
@@ -361,6 +574,24 @@ impl CountingImageServer {
     }
 
     fn start_response(bytes: Vec<u8>, path: &str, content_type: Option<&str>) -> Self {
+        Self::start_http_response(bytes, path, content_type, 200, true)
+    }
+
+    fn start_status(status: u16, path: &str) -> Self {
+        Self::start_http_response(Vec::new(), path, None, status, true)
+    }
+
+    fn start_blocked_status(status: u16, path: &str) -> Self {
+        Self::start_http_response(Vec::new(), path, None, status, false)
+    }
+
+    fn start_http_response(
+        bytes: Vec<u8>,
+        path: &str,
+        content_type: Option<&str>,
+        status: u16,
+        released: bool,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("mock image server bind");
         listener
             .set_nonblocking(true)
@@ -368,8 +599,10 @@ impl CountingImageServer {
         let address = listener.local_addr().expect("mock image server address");
         let requests = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(released));
         let server_requests = Arc::clone(&requests);
         let server_stop = Arc::clone(&stop);
+        let server_release = Arc::clone(&release);
         let content_type = content_type.map(str::to_owned);
         let thread = thread::spawn(move || {
             while !server_stop.load(Ordering::Acquire) {
@@ -378,13 +611,18 @@ impl CountingImageServer {
                         server_requests.fetch_add(1, Ordering::AcqRel);
                         let mut request = [0_u8; 2048];
                         let _ = stream.read(&mut request);
+                        while !server_release.load(Ordering::Acquire)
+                            && !server_stop.load(Ordering::Acquire)
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                        }
                         thread::sleep(Duration::from_millis(150));
                         let content_type_header = content_type
                             .as_deref()
                             .map_or_else(String::new, |value| format!("Content-Type: {value}\r\n"));
                         write!(
                             stream,
-                            "HTTP/1.1 200 OK\r\n{content_type_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            "HTTP/1.1 {status} Test\r\n{content_type_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
                             bytes.len()
                         )
                         .expect("mock image response headers");
@@ -402,12 +640,22 @@ impl CountingImageServer {
             url: format!("http://{address}{path}"),
             requests,
             stop,
+            release,
             thread,
         }
     }
 
+    fn request_count(&self) -> usize {
+        self.requests.load(Ordering::Acquire)
+    }
+
+    fn release_response(&self) {
+        self.release.store(true, Ordering::Release);
+    }
+
     fn stop(self) -> usize {
         self.stop.store(true, Ordering::Release);
+        self.release.store(true, Ordering::Release);
         self.thread.join().expect("mock image server thread");
         self.requests.load(Ordering::Acquire)
     }

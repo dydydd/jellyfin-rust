@@ -642,7 +642,23 @@ impl ItemImageService {
         &self,
         image: BaseItemImage,
     ) -> Result<BaseItemImage, ItemImageError> {
-        let download = self.download_image(&image.path).await?;
+        let download = match self.download_image(&image.path).await {
+            Ok(download) => download,
+            Err(error) => {
+                if remote_image_is_permanently_unavailable(&error) {
+                    let removed = self.images.delete_if_path_matches(&image).await?;
+                    tracing::debug!(
+                        item_id = %image.item_id,
+                        image_type = ?image.image_type,
+                        image_index = image.image_index,
+                        url = %image.path,
+                        removed,
+                        "remote image returned a permanent error"
+                    );
+                }
+                return Err(error);
+            }
+        };
         let target_directory = self.cache_directory.join("remote");
         fs::create_dir_all(&target_directory).await?;
         let source_key = format!("{:x}", Md5::digest(image.path.as_bytes()));
@@ -747,6 +763,17 @@ async fn remove_managed_image_file(path: &str, directory: &Path) {
 fn is_remote_path(path: &str) -> bool {
     path.get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http"))
+}
+
+fn remote_image_is_permanently_unavailable(error: &ItemImageError) -> bool {
+    matches!(
+        error,
+        ItemImageError::RemoteDownload(error)
+            if matches!(
+                error.status(),
+                Some(reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FORBIDDEN)
+            )
+    )
 }
 
 const fn allows_multiple_images(image_type: BaseItemImageType) -> bool {

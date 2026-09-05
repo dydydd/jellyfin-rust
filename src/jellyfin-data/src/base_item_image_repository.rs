@@ -371,6 +371,33 @@ impl BaseItemImageRepository {
         Ok(deleted)
     }
 
+    /// Deletes a fixed image only while its persisted path still matches.
+    ///
+    /// This compare-and-delete guard prevents a slow remote-image request from
+    /// removing metadata that a concurrent refresh has already replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error or an out-of-range image-index error.
+    pub async fn delete_if_path_matches(
+        &self,
+        image: &BaseItemImage,
+    ) -> Result<bool, BaseItemImageStoreError> {
+        let image_index = i32::try_from(image.image_index).map_err(|_| {
+            BaseItemImageStoreError::ImageIndexOutOfRange {
+                value: image.image_index,
+            }
+        })?;
+        let deleted = base_item_image::Entity::delete_many()
+            .filter(base_item_image::Column::ItemId.eq(image.item_id))
+            .filter(base_item_image::Column::ImageType.eq(image.image_type.as_i16()))
+            .filter(base_item_image::Column::ImageIndex.eq(image_index))
+            .filter(base_item_image::Column::Path.eq(&image.path))
+            .exec(self.database.as_ref())
+            .await?;
+        Ok(deleted.rows_affected != 0)
+    }
+
     /// Locks and selects two images by public ordinal for a file-content swap.
     ///
     /// A missing ordinal is an intentional no-op. The returned guard retains
