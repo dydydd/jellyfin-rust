@@ -16,7 +16,7 @@ use axum::{
 };
 use jellyfin_model::{
     DeviceProfile, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo, PlayMethod,
-    StreamBuilder,
+    PlaybackErrorCode, StreamBuilder,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -288,9 +288,10 @@ pub(crate) struct CloseLiveStreamQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PlaybackInfoResponse {
     media_sources: Vec<MediaSourceInfo>,
-    play_session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error_code: Option<String>,
+    play_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<PlaybackErrorCode>,
 }
 
 #[derive(Debug, Serialize)]
@@ -746,7 +747,6 @@ async fn playback_info(
     access_token: &str,
     remote_ip: std::net::IpAddr,
 ) -> Result<PlaybackInfoResponse, ApiError> {
-    let play_session_id = Uuid::new_v4().simple().to_string();
     let mut max_streaming_bitrate = options.max_streaming_bitrate;
     let has_device_profile = options.device_profile.is_some();
     let mut media_sources = media_sources(
@@ -757,6 +757,15 @@ async fn playback_info(
         options.media_source_id.as_deref(),
     )
     .await?;
+    if media_sources.is_empty() {
+        tracing::warn!(%item_id, %device_id, has_device_profile, "no compatible media source found");
+        return Ok(PlaybackInfoResponse {
+            media_sources,
+            play_session_id: None,
+            error_code: Some(PlaybackErrorCode::NoCompatibleStream),
+        });
+    }
+    let play_session_id = Uuid::new_v4().simple().to_string();
     apply_stream_builder(
         &mut media_sources,
         authenticated_user,
@@ -793,7 +802,7 @@ async fn playback_info(
     }
     Ok(PlaybackInfoResponse {
         media_sources,
-        play_session_id,
+        play_session_id: Some(play_session_id),
         error_code: None,
     })
 }

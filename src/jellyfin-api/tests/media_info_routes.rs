@@ -212,6 +212,30 @@ async fn posted_playback_info_accepts_legacy_casing_numeric_strings_and_query_pr
 }
 
 #[tokio::test]
+async fn playback_info_returns_no_compatible_stream_for_an_empty_source_selection() {
+    let fixture = Fixture::new().await;
+    let playback = body_json(
+        fixture
+            .post(
+                &format!(
+                    "/Items/{}/PlaybackInfo?MediaSourceId=missing-source",
+                    fixture.item_id
+                ),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+
+    assert_eq!(playback["MediaSources"], json!([]));
+    assert_eq!(playback["ErrorCode"], "NoCompatibleStream");
+    assert!(playback.get("PlaySessionId").is_none());
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn posted_playback_info_uses_current_session_capabilities_profile_as_fallback() {
     let fixture = Fixture::new().await;
     let profile = json!({
