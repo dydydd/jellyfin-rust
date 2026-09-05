@@ -929,7 +929,27 @@ async fn startup_and_password_authentication_use_persisted_device_sessions() {
     assert_startup_user_configuration(&fixture).await;
     let token = assert_password_authentication(&fixture).await;
     assert_current_user_and_complete(&fixture, &token).await;
+    assert_legacy_server_domain_probe(&fixture, &token).await;
     cleanup_startup_auth_fixture(&fixture, &token).await;
+}
+
+async fn assert_legacy_server_domain_probe(fixture: &StartupAuthFixture, token: &str) {
+    for prefix in ["", "/api", "/emby"] {
+        let uri = format!("{prefix}/System/Ext/ServerDomains");
+        assert_eq!(
+            get_response(&fixture.app, &uri).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(authenticated_request("GET", &uri, token, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        assert_eq!(body_text(response).await, "[]");
+    }
 }
 
 struct StartupAuthFixture {

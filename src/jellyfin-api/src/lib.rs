@@ -1158,6 +1158,7 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/Info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
+        .route("/System/Ext/ServerDomains", get(system::server_domains))
         .route("/System/Restart", post(system::restart))
         .route("/System/Shutdown", post(system::shutdown))
         .route("/Document", post(client_log::document))

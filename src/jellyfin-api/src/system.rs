@@ -171,6 +171,14 @@ pub(crate) async fn endpoint_info(
     }))
 }
 
+/// Compatibility response for the authenticated Infuse/plugin domain probe.
+///
+/// This is not part of Jellyfin's public API. An empty array is preferable to
+/// inventing externally reachable hostnames the server cannot validate.
+pub(crate) async fn server_domains() -> Json<Vec<String>> {
+    Json(Vec::new())
+}
+
 pub(crate) async fn restart(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
