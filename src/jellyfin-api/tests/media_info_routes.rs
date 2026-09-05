@@ -141,6 +141,58 @@ async fn playback_info_routes_return_postgres_media_sources_with_official_auth_s
 }
 
 #[tokio::test]
+async fn posted_playback_info_uses_current_session_capabilities_profile_as_fallback() {
+    let fixture = Fixture::new().await;
+    let profile = json!({
+        "DeviceProfile": {
+            "Name": "Session Capabilities Profile",
+            "DirectPlayProfiles": [],
+            "TranscodingProfiles": [{
+                "Container": "ts",
+                "Type": "Video",
+                "VideoCodec": "h264",
+                "AudioCodec": "aac",
+                "Protocol": "hls",
+                "Context": "Streaming",
+                "SegmentLength": 6
+            }]
+        }
+    });
+    let capabilities_response = fixture
+        .post(
+            "/Sessions/Capabilities/Full",
+            Some(&fixture.user_token),
+            Some(&profile),
+        )
+        .await;
+    assert_eq!(capabilities_response.status(), StatusCode::NO_CONTENT);
+
+    let playback = body_json(
+        fixture
+            .post(
+                &format!("/Items/{}/PlaybackInfo", fixture.item_id),
+                Some(&fixture.user_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    let source = &playback["MediaSources"][0];
+    let url = source["TranscodingUrl"]
+        .as_str()
+        .expect("stored session profile must select transcoding");
+    assert!(url.contains("/master.m3u8"), "{url}");
+    assert!(url.contains("SegmentLength=6"), "{url}");
+    assert_eq!(source["SupportsDirectPlay"], false);
+    assert_eq!(source["SupportsDirectStream"], false);
+    assert_eq!(source["SupportsTranscoding"], true);
+    assert_eq!(source["TranscodingContainer"], "ts");
+    assert_eq!(source["TranscodingSubProtocol"], "hls");
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn live_stream_routes_open_postgres_media_sources_and_close_by_required_id() {
     let fixture = Fixture::new().await;
 

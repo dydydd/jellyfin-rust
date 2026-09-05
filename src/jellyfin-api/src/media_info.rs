@@ -19,6 +19,7 @@ use jellyfin_model::{
     StreamBuilder,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
@@ -99,6 +100,25 @@ pub(crate) struct LiveStreamResponse {
     media_source: MediaSourceInfo,
 }
 
+fn stored_device_profile(capabilities: &Value) -> Option<DeviceProfile> {
+    let profile = capabilities
+        .as_object()?
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("DeviceProfile"))?
+        .1
+        .clone();
+    match serde_json::from_value(profile) {
+        Ok(profile) => Some(profile),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "ignoring invalid device profile stored by session capabilities"
+            );
+            None
+        }
+    }
+}
+
 pub(crate) async fn bitrate_test(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -155,7 +175,7 @@ pub(crate) async fn post_playback_info(
     let identity = authentication::authenticated_session(&state, &headers).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let body = optional_playback_body(body)?;
-    let (body_user_id, body_media_source_id, body_max_streaming_bitrate, device_profile) = body
+    let (body_user_id, body_media_source_id, body_max_streaming_bitrate, posted_profile) = body
         .map_or((None, None, None, None), |body| {
             (
                 body.user_id,
@@ -164,6 +184,8 @@ pub(crate) async fn post_playback_info(
                 body.device_profile,
             )
         });
+    let device_profile =
+        posted_profile.or_else(|| stored_device_profile(&identity.device.capabilities));
     let target_user_id = query.user_id.or(body_user_id).unwrap_or(identity.user.id);
     let media_source_id = query
         .media_source_id
