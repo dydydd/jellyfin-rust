@@ -64,6 +64,45 @@ async fn official_items_controller_contract() {
 }
 
 #[tokio::test]
+async fn legacy_item_collection_accepts_empty_trailing_path_segments() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let item_id = fixture.item_ids[0];
+
+    let anonymous_route = format!("/Users/{}/Items//?ids={item_id}", fixture.user_id);
+    assert_eq!(
+        fixture.request(&anonymous_route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    for prefix in ["", "/api", "/emby"] {
+        for trailing in ["/", "//"] {
+            let route = format!(
+                "{prefix}/Users/{}/Items{trailing}?ids={item_id}",
+                fixture.user_id
+            );
+            let response = fixture.request(&route, Some(&fixture.user_token)).await;
+            assert_eq!(response.status(), StatusCode::OK, "{route}");
+            let body = body_json(response).await;
+            assert_eq!(body["TotalRecordCount"], 1, "{route}");
+            assert_eq!(body["Items"][0]["Id"], item_id.simple().to_string());
+        }
+    }
+
+    let item_route = format!("/Users/{}/Items/{item_id}", fixture.user_id);
+    let response = fixture
+        .request(&item_route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["Id"],
+        item_id.simple().to_string()
+    );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
