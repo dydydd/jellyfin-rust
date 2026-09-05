@@ -46,6 +46,8 @@ async fn person_returns_pascal_case_base_item_dto_for_unicode_clean_name() {
     assert_eq!(dto["Name"], fixture.person_name);
     assert_eq!(dto["Type"], "Person");
     assert_eq!(dto["ProviderIds"]["Tmdb"], fixture.tmdb_id);
+    assert_eq!(dto["ProviderIds"]["Numeric"], "42");
+    assert!(dto["ProviderIds"].get("Missing").is_none());
     assert_eq!(dto["IsFolder"], false);
     assert!(dto.get("item_type").is_none());
     assert!(dto.get("provider_ids").is_none());
@@ -454,7 +456,12 @@ impl Fixture {
         let variant_name = format!("ZOE---東京---{suffix}");
         let tmdb_id = format!("person-{suffix}");
         let mut input = NewPerson::new(person_name.clone());
-        input.provider_ids = json!({ "Tmdb": tmdb_id });
+        input.provider_ids = json!({
+            "Tmdb": tmdb_id,
+            "Numeric": 42,
+            "Missing": null,
+            "Nested": {"Id": "invalid"}
+        });
         let person = people
             .link(item.id, input, "Actor", Some("Lead"), Some(0), 0)
             .await

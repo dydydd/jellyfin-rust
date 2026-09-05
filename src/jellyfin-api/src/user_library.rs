@@ -151,7 +151,7 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_lyrics: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_ids: Option<Value>,
+    pub provider_ids: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_data: Option<UserItemDataDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -761,7 +761,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         season_id: item.season_id.map(|id| id.simple().to_string()),
         extra_type,
         has_lyrics,
-        provider_ids: metadata_value(item.data.as_ref(), &["ProviderIds", "provider_ids"]),
+        provider_ids: metadata_provider_ids(item.data.as_ref()),
         user_data: None,
         genres: metadata_strings(item.data.as_ref(), &["Genres", "genres"]),
         people: Vec::new(),
@@ -1576,6 +1576,7 @@ pub(crate) fn artist_to_dto(artist: Artist, server_id: &str) -> BaseItemDto {
 pub(crate) fn person_to_dto(person: Person, server_id: &str) -> BaseItemDto {
     let model = person.model;
     let presentation_unique_key = Some(format!("Person-{}", model.name));
+    let provider_ids = provider_ids_from_value(&model.provider_ids);
     let name = model.name;
     BaseItemDto {
         // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
@@ -1604,7 +1605,7 @@ pub(crate) fn person_to_dto(person: Person, server_id: &str) -> BaseItemDto {
         season_id: None,
         extra_type: None,
         has_lyrics: None,
-        provider_ids: Some(model.provider_ids),
+        provider_ids,
         image_tags: HashMap::new(),
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
@@ -1700,6 +1701,29 @@ fn metadata_strings(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn metadata_provider_ids(data: Option<&Value>) -> Option<HashMap<String, String>> {
+    metadata_value(data, &["ProviderIds", "provider_ids"])
+        .as_ref()
+        .and_then(provider_ids_from_value)
+}
+
+fn provider_ids_from_value(value: &Value) -> Option<HashMap<String, String>> {
+    let object = value.as_object()?;
+    Some(
+        object
+            .iter()
+            .filter_map(|(key, value)| {
+                let value = match value {
+                    Value::String(value) if !value.is_empty() => value.clone(),
+                    Value::Number(value) => value.to_string(),
+                    _ => return None,
+                };
+                Some((key.clone(), value))
+            })
+            .collect(),
+    )
+}
+
 fn metadata_taglines(data: Option<&Value>) -> Vec<String> {
     let taglines = metadata_strings(data, &["Taglines", "taglines"]);
     if taglines.is_empty() {
@@ -1785,6 +1809,12 @@ mod tests {
                 "Height": 1080,
                 "AirDays": ["Monday", "Friday"],
                 "ProductionLocations": ["Los Angeles"],
+                "ProviderIds": {
+                    "Tmdb": 42,
+                    "Imdb": "tt123",
+                    "Missing": null,
+                    "Nested": {"Id": "invalid"}
+                },
                 "RemoteTrailers": [
                     "https://trailers.example/legacy",
                     {"Name": "Official Trailer", "Url": "https://trailers.example/official"}
@@ -1823,6 +1853,13 @@ mod tests {
         assert_eq!(dto.critic_rating, Some(7.0));
         assert_eq!(dto.original_title.as_deref(), Some("Original"));
         assert_eq!(dto.taglines, ["Tag"]);
+        assert_eq!(
+            dto.provider_ids,
+            Some(HashMap::from([
+                ("Imdb".to_owned(), "tt123".to_owned()),
+                ("Tmdb".to_owned(), "42".to_owned()),
+            ]))
+        );
         assert_eq!(
             dto.remote_trailers,
             [
