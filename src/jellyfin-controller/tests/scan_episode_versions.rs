@@ -82,6 +82,17 @@ async fn exercise_scan(database_name: &str) {
         .expect("episode version lookup");
     assert_eq!(versions.len(), 2);
     assert!(versions.iter().all(|item| item.item_type == "Episode"));
+    for item in &versions {
+        let path = item.path.as_deref().expect("episode path");
+        let expected_size = std::fs::metadata(path).expect("episode metadata").len();
+        assert_eq!(
+            item.data
+                .as_ref()
+                .and_then(|data| data.get("Size"))
+                .and_then(serde_json::Value::as_u64),
+            Some(expected_size)
+        );
+    }
     let primary = versions
         .iter()
         .find(|item| item.primary_version_id.is_none())

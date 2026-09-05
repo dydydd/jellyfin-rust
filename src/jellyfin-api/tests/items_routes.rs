@@ -307,7 +307,8 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     alternate.primary_version_id = Some(media.id);
     alternate.data = Some(serde_json::json!({
         "Bitrate": 25_000_000,
-        "Container": "mpegts"
+        "Container": "mpegts",
+        "Size": 987_654_321
     }));
     let alternate = items.create(alternate).await.expect("alternate media item");
     MediaStreamService::new(fixture.database.clone())
@@ -402,6 +403,9 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(sources[1]["Id"], alternate.id.simple().to_string());
     assert_eq!(sources[1]["Bitrate"], 25_000_000);
     assert_eq!(sources[1]["Container"], "mpegts");
+    assert_eq!(sources[1]["Size"], 987_654_321);
+    assert_eq!(sources[1]["VideoType"], "VideoFile");
+    assert_eq!(sources[1]["ETag"].as_str().unwrap().len(), 32);
     assert_eq!(sources[1]["Name"], "2160p");
     assert_eq!(sources[1]["MediaStreams"][0]["Codec"], "hevc");
     assert_eq!(

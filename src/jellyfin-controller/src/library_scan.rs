@@ -218,6 +218,7 @@ struct MediaItemScanOutcome {
 struct ScanDirectorySnapshot {
     entries: Vec<MediaFileSystemEntry>,
     modified: HashMap<String, chrono::DateTime<chrono::Utc>>,
+    sizes: HashMap<String, u64>,
 }
 
 #[derive(Debug, Default)]
@@ -249,7 +250,12 @@ impl ScanDirectorySnapshot {
                 .map(chrono::DateTime::<chrono::Utc>::from)
                 .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
             self.modified.insert(path.to_owned(), modified);
+            self.sizes.insert(path.to_owned(), metadata.len());
         }
+    }
+
+    fn file_size(&self, path: &str) -> Option<u64> {
+        self.sizes.get(path).copied()
     }
 }
 
@@ -1946,6 +1952,12 @@ impl LibraryScanService {
                 {
                     changed = true;
                 }
+                changed |= apply_scanned_file_size(
+                    &mut existing.data,
+                    (!is_strm)
+                        .then(|| directory_snapshot.file_size(path_str))
+                        .flatten(),
+                );
                 if media_kind.needs_probe()
                     && let Some(mut media_info) = self
                         .ensure_media_streams(
@@ -2024,6 +2036,12 @@ impl LibraryScanService {
             media_source_path,
             strm_target.as_deref(),
         ));
+        apply_scanned_file_size(
+            &mut item.data,
+            (!is_strm)
+                .then(|| directory_snapshot.file_size(path_str))
+                .flatten(),
+        );
         let mut item = self.items.create(item).await?;
         if media_kind.needs_probe()
             && let Some(mut media_info) = self
@@ -2141,6 +2159,12 @@ impl LibraryScanService {
             if is_strm {
                 apply_strm_metadata(&mut existing, media_source_path, strm_target);
             }
+            apply_scanned_file_size(
+                &mut existing.data,
+                (!is_strm)
+                    .then(|| directory_snapshot.file_size(path_str))
+                    .flatten(),
+            );
             apply_episode_nfo_metadata(&mut existing, path, resolved_series_name.as_deref());
             self.persist_scan_relations(existing.id, path_str, &existing.item_type, season_number)
                 .await?;
@@ -2180,6 +2204,12 @@ impl LibraryScanService {
         item.season_id = season_id;
         item.series_presentation_unique_key = series_puk;
         item.data = Some(media_item_data_with_strm(media_source_path, strm_target));
+        apply_scanned_file_size(
+            &mut item.data,
+            (!is_strm)
+                .then(|| directory_snapshot.file_size(path_str))
+                .flatten(),
+        );
         let mut item = self.items.create(item).await?;
         if apply_episode_nfo_metadata(&mut item, path, resolved_series_name.as_deref()) {
             item = self.items.update(item).await?;
@@ -3735,6 +3765,26 @@ fn media_item_data_with_strm(media_source_path: &str, strm_target: Option<&str>)
     data
 }
 
+fn apply_scanned_file_size(data: &mut Option<Value>, size: Option<u64>) -> bool {
+    let Some(size) = size.and_then(|size| i64::try_from(size).ok()) else {
+        return false;
+    };
+    if data
+        .as_ref()
+        .and_then(|data| data.get("Size"))
+        .and_then(Value::as_i64)
+        == Some(size)
+    {
+        return false;
+    }
+    let object = data
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("media item data is always an object");
+    object.insert("Size".to_owned(), json!(size));
+    true
+}
+
 fn apply_strm_metadata(
     item: &mut base_item::Model,
     media_source_path: &str,
@@ -4211,12 +4261,13 @@ mod tests {
     use super::{
         LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
         SeenPaths, StrmProbeCoordinator, StrmProbeKey, StrmProbeLease, apply_episode_nfo,
-        apply_non_movie_nfo, apply_probed_item_metadata, apply_scanned_group_name,
-        apply_strm_metadata, attachment_image_type, attachments_from_media_info,
-        codec_from_extension, default_fanout_concurrency, default_stream, display_name,
-        extra_type_name, image_extraction_command_succeeded, is_extras_directory, local_image_type,
-        media_item_data, media_kind, merge_scan_summary, metadata_movie_version_groups,
-        next_stream_index, read_strm_target, relations_from_movie_nfo, relations_from_nfo_metadata,
+        apply_non_movie_nfo, apply_probed_item_metadata, apply_scanned_file_size,
+        apply_scanned_group_name, apply_strm_metadata, attachment_image_type,
+        attachments_from_media_info, codec_from_extension, default_fanout_concurrency,
+        default_stream, display_name, extra_type_name, image_extraction_command_succeeded,
+        is_extras_directory, local_image_type, media_item_data, media_kind, merge_scan_summary,
+        metadata_movie_version_groups, next_stream_index, read_strm_target,
+        relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
         streams_from_media_info, track_group_change,
@@ -5274,6 +5325,15 @@ mod tests {
             media_item_data("/media/Movie.mp4", None),
             json!({ "Container": "mp4" })
         );
+    }
+
+    #[test]
+    fn scanned_file_size_is_persisted_without_rewriting_equal_values() {
+        let mut data = Some(json!({ "Container": "mkv" }));
+        assert!(apply_scanned_file_size(&mut data, Some(1234)));
+        assert_eq!(data.as_ref().unwrap()["Size"], 1234);
+        assert!(!apply_scanned_file_size(&mut data, Some(1234)));
+        assert!(!apply_scanned_file_size(&mut data, None));
     }
 
     #[test]

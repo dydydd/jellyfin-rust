@@ -54,6 +54,8 @@
 - Name versioned media sources from the common prefix of their library file stems so clients see
   concise version labels. For `.strm` items, derive the label from the sidecar filename while using
   the resolved remote target only for the source path and protocol.
+- Persist media file sizes from the scan's directory snapshot and project each source's own Size,
+  file ETag, and VideoType. Do not stat media files while serving browse or playback-info APIs.
 - Build item-count aggregates from the same filtered candidate set as item pages: exclude alternate
   versions and owned non-extra rows by default, and apply the target user's folder, tag, parental,
   virtual-item, and favorite filters before grouping by item type.

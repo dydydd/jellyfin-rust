@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::Query;
-use chrono::{NaiveDate, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, LyricManager, MusicGenre, Person,
     RelatedItemKind, Studio, TrickplayManifest, Year,
@@ -17,8 +17,10 @@ use jellyfin_data::entities::{base_item, item_value, user_data};
 use jellyfin_model::{
     MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType,
     MediaUrl, NameIdPair, PersonKind, SubtitlePlaybackMode, UserConfiguration, UserItemDataDto,
+    VideoType,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
+use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -146,6 +148,10 @@ pub struct BaseItemDto {
     pub(crate) media_source_bitrate: Option<i32>,
     #[serde(skip)]
     pub(crate) media_source_container: Option<String>,
+    #[serde(skip)]
+    pub(crate) media_source_size: Option<i64>,
+    #[serde(skip)]
+    pub(crate) media_source_etag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -759,6 +765,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
     let media_source_path = metadata_string(item.data.as_ref(), &["StrmTarget", "strm_target"]);
     let media_source_bitrate = metadata_i32(item.data.as_ref(), &["Bitrate", "bitrate"]);
     let media_source_container = metadata_string(item.data.as_ref(), &["Container", "container"]);
+    let media_source_size = metadata_i64(item.data.as_ref(), &["Size", "size"]);
+    let media_source_etag = media_source_etag(item.date_modified);
     let has_lyrics = item
         .data
         .as_ref()
@@ -777,6 +785,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_source_path,
         media_source_bitrate,
         media_source_container,
+        media_source_size,
+        media_source_etag,
         overview: item.overview,
         media_type: item
             .media_type
@@ -1315,6 +1325,11 @@ fn media_source_from_dto(
     let bitrate = dto
         .media_source_bitrate
         .or_else(|| infer_total_bitrate(&media_streams));
+    let source_type = if path.is_some() {
+        MediaSourceType::Default
+    } else {
+        MediaSourceType::Placeholder
+    };
     Some(MediaSourceInfo {
         id: Some(dto.id.clone()),
         protocol,
@@ -1322,13 +1337,18 @@ fn media_source_from_dto(
         name,
         container,
         bitrate,
-        source_type: MediaSourceType::Default,
+        size: dto.media_source_size,
+        source_type,
         is_remote: protocol != MediaProtocol::File,
         run_time_ticks: dto.run_time_ticks,
+        video_type: is_video_item(dto).then_some(VideoType::VideoFile),
         media_streams,
         media_attachments,
         default_audio_stream_index,
         default_subtitle_stream_index,
+        etag: (protocol == MediaProtocol::File)
+            .then(|| dto.media_source_etag.clone())
+            .flatten(),
         ..MediaSourceInfo::default()
     })
 }
@@ -1962,6 +1982,28 @@ fn metadata_i32(data: Option<&Value>, keys: &[&str]) -> Option<i32> {
         .and_then(|value| value.as_i64().and_then(|value| i32::try_from(value).ok()))
 }
 
+fn metadata_i64(data: Option<&Value>, keys: &[&str]) -> Option<i64> {
+    metadata_value(data, keys).and_then(|value| value.as_i64())
+}
+
+fn media_source_etag(date_modified: DateTime<Utc>) -> Option<String> {
+    const UNIX_EPOCH_DOTNET_TICKS: i64 = 621_355_968_000_000_000;
+    let ticks = date_modified
+        .timestamp()
+        .checked_mul(10_000_000)?
+        .checked_add(i64::from(date_modified.timestamp_subsec_nanos() / 100))?
+        .checked_add(UNIX_EPOCH_DOTNET_TICKS)?;
+    let mut hasher = Md5::new();
+    for unit in ticks.to_string().encode_utf16() {
+        hasher.update(unit.to_le_bytes());
+    }
+    Some(
+        Uuid::from_bytes_le(hasher.finalize().into())
+            .simple()
+            .to_string(),
+    )
+}
+
 fn metadata_bool(data: Option<&Value>, keys: &[&str]) -> Option<bool> {
     metadata_value(data, keys).and_then(|value| value.as_bool())
 }
@@ -2178,6 +2220,7 @@ mod tests {
                 "Height": 1080,
                 "Bitrate": 5500000,
                 "Container": "mkv,webm",
+                "Size": 12345,
                 "ExtraType": "behindthescenes",
                 "AirDays": ["monday", "Funday", "Friday"],
                 "EndDate": "2020-01-02",
@@ -2227,6 +2270,11 @@ mod tests {
         assert_eq!(dto.critic_rating, Some(7.0));
         assert_eq!(dto.media_source_bitrate, Some(5_500_000));
         assert_eq!(dto.media_source_container.as_deref(), Some("mkv,webm"));
+        assert_eq!(dto.media_source_size, Some(12_345));
+        assert_eq!(
+            dto.media_source_etag.as_deref(),
+            Some("e19f5b6165c1331b55b7c60254e8695a")
+        );
         assert_eq!(dto.original_title.as_deref(), Some("Original"));
         assert_eq!(dto.taglines, ["Tag"]);
         assert_eq!(
@@ -2267,6 +2315,12 @@ mod tests {
         assert_eq!(source.name.as_deref(), Some("Movie"));
         assert_eq!(source.bitrate, Some(5_500_000));
         assert_eq!(source.container.as_deref(), Some("mkv"));
+        assert_eq!(source.size, Some(12_345));
+        assert_eq!(source.video_type, Some(VideoType::VideoFile));
+        assert_eq!(
+            source.etag.as_deref(),
+            Some("e19f5b6165c1331b55b7c60254e8695a")
+        );
         assert_eq!(source.protocol, MediaProtocol::File);
         assert!(!source.is_remote);
         assert!(
@@ -2355,6 +2409,20 @@ mod tests {
         assert!(source.is_remote);
         assert_eq!(source.container.as_deref(), Some("mp4"));
         assert_eq!(source.name.as_deref(), Some("Cloud Movie"));
+        assert_eq!(source.etag, None);
+    }
+
+    #[test]
+    fn pathless_video_source_is_an_official_placeholder() {
+        let dto = BaseItemDto {
+            id: "item".to_owned(),
+            item_type: "Movie".to_owned(),
+            ..BaseItemDto::default()
+        };
+        let source =
+            media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None, false, None).unwrap();
+        assert_eq!(source.source_type, MediaSourceType::Placeholder);
+        assert_eq!(source.video_type, Some(VideoType::VideoFile));
     }
 
     #[test]
