@@ -1754,11 +1754,19 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             get(user_library::search_remote_lyrics),
         )
         .route(
+            "/audio/{item_id}/remotesearch/lyrics",
+            get(user_library::search_remote_lyrics),
+        )
+        .route(
             "/Items/{item_id}/RemoteSearch/Subtitles/{id}",
             get(subtitles::search_remote_subtitles).post(subtitles::download_remote_subtitles),
         )
         .route(
             "/Audio/{item_id}/RemoteSearch/Lyrics/{lyric_id}",
+            post(user_library::download_remote_lyrics),
+        )
+        .route(
+            "/audio/{item_id}/remotesearch/lyrics/{lyric_id}",
             post(user_library::download_remote_lyrics),
         )
         .route(
@@ -1768,7 +1776,17 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .delete(user_library::delete_lyrics),
         )
         .route(
+            "/audio/{item_id}/lyrics",
+            get(user_library::get_lyrics)
+                .post(user_library::upload_lyrics)
+                .delete(user_library::delete_lyrics),
+        )
+        .route(
             "/Providers/Lyrics/{lyric_id}",
+            get(user_library::get_remote_lyrics),
+        )
+        .route(
+            "/providers/lyrics/{lyric_id}",
             get(user_library::get_remote_lyrics),
         )
         .route(

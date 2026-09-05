@@ -45,7 +45,7 @@ pub(crate) struct UserIdQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UploadLyricsQuery {
-    #[serde(default, rename = "fileName", alias = "FileName")]
+    #[serde(default, rename = "fileName", alias = "FileName", alias = "filename")]
     file_name: Option<String>,
 }
 

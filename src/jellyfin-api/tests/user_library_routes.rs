@@ -564,6 +564,74 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
 }
 
 #[tokio::test]
+async fn lyric_routes_accept_lowercase_paths_and_query_names() {
+    let fixture = UserLibraryFixture::new().await;
+    let lowercase_lyrics = format!("/audio/{}/lyrics", fixture.item_id);
+
+    let original = get_json(&fixture.app, &lowercase_lyrics, &fixture.user_token).await;
+    assert_eq!(original["Lyrics"][0]["Text"], "First line");
+
+    let pascal_query = request_post_body(
+        &fixture.app,
+        &format!(
+            "/Audio/{}/Lyrics?FileName=pascal-query.txt",
+            fixture.item_id
+        ),
+        &fixture.administrator_token,
+        "Pascal query",
+    )
+    .await;
+    assert_eq!(pascal_query.status(), StatusCode::OK);
+
+    let lowercase_query = request_post_body(
+        &fixture.app,
+        &format!("{lowercase_lyrics}?filename=lowercase-query.txt"),
+        &fixture.administrator_token,
+        "Lowercase query",
+    )
+    .await;
+    assert_eq!(lowercase_query.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(lowercase_query).await["Lyrics"][0]["Text"],
+        "Lowercase query"
+    );
+
+    let search = request(
+        &fixture.app,
+        &format!("/audio/{}/remotesearch/lyrics", fixture.item_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(search.status(), StatusCode::OK);
+
+    let download = request_post(
+        &fixture.app,
+        &format!("/audio/{}/remotesearch/lyrics/unavailable", fixture.item_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(download.status(), StatusCode::NOT_FOUND);
+
+    let provider = request(
+        &fixture.app,
+        "/providers/lyrics/unavailable",
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(provider.status(), StatusCode::NOT_FOUND);
+
+    let deleted = request_delete(
+        &fixture.app,
+        &lowercase_lyrics,
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata() {
     let fixture = UserLibraryFixture::new().await;
     let route = format!("/Audio/{}/Lyrics", fixture.item_id);
