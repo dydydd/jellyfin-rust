@@ -88,6 +88,33 @@ async fn authentication_and_target_user_permissions_are_enforced() {
             .status(),
         StatusCode::OK
     );
+    for user_id_query in ["UserId", "userid"] {
+        let for_user = format!("{route}?{user_id_query}={}", fixture.user_id);
+        assert_eq!(
+            fixture
+                .request(&for_user, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::OK,
+            "{user_id_query}"
+        );
+    }
+    let nil_user = format!("{route}?userId={}", Uuid::nil());
+    assert_eq!(
+        fixture
+            .request(&nil_user, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let ignored_list_parameters = format!("{route}?limit=bad&parentId=bad&isFavorite=bad");
+    assert_eq!(
+        fixture
+            .request(&ignored_list_parameters, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::OK
+    );
     let missing_user = format!("{route}?userId={}", Uuid::new_v4());
     assert_eq!(
         fixture

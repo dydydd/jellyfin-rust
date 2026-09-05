@@ -89,6 +89,12 @@ pub(crate) struct PersonsQueryParams {
     appears_in_item_id: Option<Uuid>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct PersonByNameQueryParams {
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -144,10 +150,13 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(name): Path<String>,
-    Query(query): Query<PersonsQueryParams>,
+    Query(query): Query<PersonByNameQueryParams>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let person = state
         .persons
         .get(&authenticated.user, target_user_id, &name)
