@@ -222,6 +222,16 @@ async fn exercise_search_routes(database_name: &str) {
         .status(),
         StatusCode::FORBIDDEN
     );
+    assert_eq!(
+        request(
+            &app,
+            &format!("/Search/Hints?searchterm=Matrix&userid={}", other.id),
+            Some(&user_token),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
 
     let hints = body_json(
         request(
@@ -301,6 +311,19 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(audio["TotalRecordCount"], 1);
     assert_eq!(audio["SearchHints"][0]["Name"], "Matrix Theme");
     assert_eq!(audio["SearchHints"][0]["MediaType"], "Audio");
+
+    let lowercase = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchterm=Matrix&includeitemtypes=Movie&mediatypes=Video&includemedia=true&includepeople=false&includegenres=false&includestudios=false&includeartists=false&startindex=1&limit=1",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(lowercase["TotalRecordCount"], 2);
+    assert_eq!(lowercase["SearchHints"].as_array().unwrap().len(), 1);
+    assert_eq!(lowercase["SearchHints"][0]["Name"], "The Matrix");
 
     let folder_request = body_json(
         request(

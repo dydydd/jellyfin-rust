@@ -17,52 +17,76 @@ const DEFAULT_EXCLUDE_ITEM_TYPES: [&str; 3] = ["Year", "Folder", "CollectionFold
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct SearchHintsQuery {
-    #[serde(rename = "startIndex", alias = "StartIndex")]
+    #[serde(rename = "startIndex", alias = "StartIndex", alias = "startindex")]
     start_index: u64,
+    #[serde(alias = "Limit")]
     limit: Option<u64>,
-    #[serde(rename = "userId", alias = "UserId")]
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(rename = "searchTerm", alias = "SearchTerm")]
+    #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
     #[serde(
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
+        alias = "includeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
     #[serde(
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
+        alias = "excludeitemtypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_item_types: Vec<String>,
     #[serde(
         rename = "mediaTypes",
         alias = "MediaTypes",
+        alias = "mediatypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     media_types: Vec<String>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
-    #[serde(rename = "isMovie", alias = "IsMovie")]
+    #[serde(rename = "isMovie", alias = "IsMovie", alias = "ismovie")]
     is_movie: Option<bool>,
-    #[serde(rename = "isSeries", alias = "IsSeries")]
+    #[serde(rename = "isSeries", alias = "IsSeries", alias = "isseries")]
     is_series: Option<bool>,
-    #[serde(rename = "isNews", alias = "IsNews")]
+    #[serde(rename = "isNews", alias = "IsNews", alias = "isnews")]
     is_news: Option<bool>,
-    #[serde(rename = "isKids", alias = "IsKids")]
+    #[serde(rename = "isKids", alias = "IsKids", alias = "iskids")]
     is_kids: Option<bool>,
-    #[serde(rename = "isSports", alias = "IsSports")]
+    #[serde(rename = "isSports", alias = "IsSports", alias = "issports")]
     is_sports: Option<bool>,
-    #[serde(rename = "includePeople", alias = "IncludePeople")]
+    #[serde(
+        rename = "includePeople",
+        alias = "IncludePeople",
+        alias = "includepeople"
+    )]
     include_people: Option<bool>,
-    #[serde(rename = "includeMedia", alias = "IncludeMedia")]
+    #[serde(
+        rename = "includeMedia",
+        alias = "IncludeMedia",
+        alias = "includemedia"
+    )]
     include_media: Option<bool>,
-    #[serde(rename = "includeGenres", alias = "IncludeGenres")]
+    #[serde(
+        rename = "includeGenres",
+        alias = "IncludeGenres",
+        alias = "includegenres"
+    )]
     include_genres: Option<bool>,
-    #[serde(rename = "includeStudios", alias = "IncludeStudios")]
+    #[serde(
+        rename = "includeStudios",
+        alias = "IncludeStudios",
+        alias = "includestudios"
+    )]
     include_studios: Option<bool>,
-    #[serde(rename = "includeArtists", alias = "IncludeArtists")]
+    #[serde(
+        rename = "includeArtists",
+        alias = "IncludeArtists",
+        alias = "includeartists"
+    )]
     include_artists: Option<bool>,
 }
 
