@@ -2107,7 +2107,7 @@ impl LibraryScanService {
                     season.is_virtual_item = false;
                     season.series_id = Some(series_item_id);
                     season.series_presentation_unique_key = series_puk.clone();
-                    self.items.create(season).await?;
+                    self.items.create_if_absent(season).await?;
                 }
                 if let Some(mut season) = self.items.get(season_item_id).await?
                     && apply_season_nfo_metadata(&mut season, path, Some(sn))
@@ -2283,14 +2283,14 @@ impl LibraryScanService {
             |path| path.to_string_lossy().into_owned(),
         ));
         series.data = Some(json!({ "CollectionType": "tvshows" }));
-        let mut series = self.items.create(series).await?;
+        let (mut series, created) = self.items.create_if_absent(series).await?;
         let mut series = if apply_series_nfo_metadata(&mut series, episode_path) {
             self.items.update(series).await?
         } else {
             series
         };
         series.is_folder = true;
-        Ok((series.id, true))
+        Ok((series.id, created))
     }
 
     async fn persist_scan_relations(
