@@ -899,9 +899,6 @@ fn apply_stream_builder(
     let Some(profile) = playback_options.device_profile.clone() else {
         return;
     };
-    let is_video = media_sources
-        .first()
-        .is_some_and(|source| source.video_stream().is_some());
     let policy =
         jellyfin_model::UserPolicy::deserialize(&authenticated_user.policy).unwrap_or_default();
     let remote_client_bitrate_limit = policy.remote_client_bitrate_limit;
@@ -912,83 +909,103 @@ fn apply_stream_builder(
             }),
         );
     }
-    let is_audio = media_sources
-        .first()
-        .is_some_and(|source| source.video_stream().is_none());
-    let media_source_id = media_sources
-        .first()
-        .and_then(|source| source.id.as_deref())
-        .map(str::to_owned);
-    let mut options = MediaOptions {
-        enable_transcoding: playback_options.enable_transcoding
-            && policy_can_transcode(&policy, is_audio),
-        enable_direct_play: playback_options.enable_direct_play,
-        enable_direct_stream: playback_options.enable_direct_stream,
-        enable_playback_remuxing: policy.enable_playback_remuxing,
-        force_remote_source_transcoding: policy.force_remote_source_transcoding,
-        allow_audio_stream_copy: playback_options.allow_audio_stream_copy,
-        allow_video_stream_copy: playback_options.allow_video_stream_copy,
-        always_burn_in_subtitle_when_transcoding: playback_options
-            .always_burn_in_subtitle_when_transcoding,
-        item_id,
-        media_sources: std::mem::take(media_sources),
-        profile,
-        media_source_id,
-        device_id: Some(device_id.to_owned()),
-        max_bitrate: *max_streaming_bitrate,
-        audio_transcoding_bitrate: *max_streaming_bitrate,
-        audio_stream_index: playback_options.audio_stream_index,
-        subtitle_stream_index: playback_options.subtitle_stream_index,
-        max_audio_channels: playback_options.max_audio_channels,
-        context: EncodingContext::Streaming,
-        ..MediaOptions::default()
-    };
-    if !options.force_direct_stream {
-        // Match MediaInfoHelper: ordinary HTTP direct-stream URLs are disabled
-        // because clients can otherwise receive source bytes under a remuxed
-        // extension (for example, MKV bytes from a `stream.mp4` URL).
-        options.enable_direct_stream = false;
-    }
     let builder =
         StreamBuilder::with_encodable_audio_codecs(["aac", "mp3", "opus", "flac", "ac3", "eac3"]);
-    let selection = if is_video {
-        builder.take_optimal_video_stream(&mut options)
-    } else {
-        builder.take_optimal_audio_stream(&mut options)
-    };
-    let Ok(Some((source_index, mut stream))) = selection else {
-        tracing::warn!(
+    let requested_source_id = playback_options
+        .media_source_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.replace('-', ""));
+    let original_sources = std::mem::take(media_sources);
+    let mut projected_sources = Vec::with_capacity(original_sources.len());
+    for source in original_sources {
+        let is_video = source.video_stream().is_some();
+        let source_is_selected = requested_source_id.as_deref().is_some_and(|requested| {
+            source
+                .id
+                .as_deref()
+                .is_some_and(|source_id| source_id.replace('-', "").eq_ignore_ascii_case(requested))
+        });
+        let selected_source_id = source_is_selected.then(|| source.id.clone()).flatten();
+        let mut options = MediaOptions {
+            enable_transcoding: playback_options.enable_transcoding
+                && policy_can_transcode(&policy, !is_video),
+            enable_direct_play: playback_options.enable_direct_play,
+            enable_direct_stream: playback_options.enable_direct_stream,
+            enable_playback_remuxing: policy.enable_playback_remuxing,
+            force_remote_source_transcoding: policy.force_remote_source_transcoding,
+            allow_audio_stream_copy: playback_options.allow_audio_stream_copy,
+            allow_video_stream_copy: playback_options.allow_video_stream_copy,
+            always_burn_in_subtitle_when_transcoding: playback_options
+                .always_burn_in_subtitle_when_transcoding,
+            item_id,
+            media_sources: vec![source],
+            profile: profile.clone(),
+            media_source_id: selected_source_id,
+            device_id: Some(device_id.to_owned()),
+            max_bitrate: *max_streaming_bitrate,
+            audio_transcoding_bitrate: *max_streaming_bitrate,
+            audio_stream_index: source_is_selected
+                .then_some(playback_options.audio_stream_index)
+                .flatten(),
+            subtitle_stream_index: source_is_selected
+                .then_some(playback_options.subtitle_stream_index)
+                .flatten(),
+            max_audio_channels: playback_options.max_audio_channels,
+            context: EncodingContext::Streaming,
+            ..MediaOptions::default()
+        };
+        if !options.force_direct_stream {
+            // Match MediaInfoHelper: ordinary HTTP direct-stream URLs are disabled
+            // because clients can otherwise receive source bytes under a remuxed
+            // extension (for example, MKV bytes from a `stream.mp4` URL).
+            options.enable_direct_stream = false;
+        }
+        let selection = if is_video {
+            builder.take_optimal_video_stream(&mut options)
+        } else {
+            builder.take_optimal_audio_stream(&mut options)
+        };
+        let Ok(Some((_source_index, mut stream))) = selection else {
+            tracing::warn!(
+                %item_id,
+                %device_id,
+                is_video,
+                media_source_id = options
+                    .media_sources
+                    .first()
+                    .and_then(|source| source.id.as_deref())
+                    .unwrap_or_default(),
+                "device profile did not produce a playable stream",
+            );
+            projected_sources.append(&mut options.media_sources);
+            continue;
+        };
+        tracing::info!(
             %item_id,
             %device_id,
-            is_video,
-            source_count = options.media_sources.len(),
-            "device profile did not produce a playable stream",
+            media_source_id = stream.media_source_id().unwrap_or_default(),
+            play_method = ?stream.play_method,
+            container = stream.container.as_deref().unwrap_or_default(),
+            video_codecs = ?stream.video_codecs,
+            audio_codecs = ?stream.audio_codecs,
+            video_bitrate = ?stream.video_bitrate,
+            audio_bitrate = ?stream.audio_bitrate,
+            segment_length = ?stream.segment_length,
+            transcode_reason_bits = stream.transcode_reasons.bits(),
+            "playback stream selected from device profile",
         );
-        *media_sources = options.media_sources;
-        return;
-    };
-    tracing::info!(
-        %item_id,
-        %device_id,
-        play_method = ?stream.play_method,
-        container = stream.container.as_deref().unwrap_or_default(),
-        video_codecs = ?stream.video_codecs,
-        audio_codecs = ?stream.audio_codecs,
-        video_bitrate = ?stream.video_bitrate,
-        audio_bitrate = ?stream.audio_bitrate,
-        segment_length = ?stream.segment_length,
-        transcode_reason_bits = stream.transcode_reasons.bits(),
-        "playback stream selected from device profile",
-    );
-    stream.play_session_id = Some(play_session_id.to_owned());
-    stream.start_position_ticks = playback_options.start_time_ticks;
-    apply_selected_stream_metadata(&mut stream, &options, access_token);
-    let source = stream
-        .media_source
-        .take()
-        .expect("selected stream always owns its media source");
-    options.media_sources.insert(source_index, source);
-    *media_sources = options.media_sources;
+        stream.play_session_id = Some(play_session_id.to_owned());
+        stream.start_position_ticks = playback_options.start_time_ticks;
+        apply_selected_stream_metadata(&mut stream, &options, access_token);
+        projected_sources.push(
+            stream
+                .media_source
+                .take()
+                .expect("selected stream always owns its media source"),
+        );
+    }
+    *media_sources = projected_sources;
 }
 
 fn apply_selected_stream_metadata(

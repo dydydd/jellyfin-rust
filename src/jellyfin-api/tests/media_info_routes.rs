@@ -157,12 +157,22 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
     MediaStreamService::new(fixture.database.clone())
         .save_media_streams(
             alternate_id,
-            vec![MediaStream {
-                index: 0,
-                stream_type: MediaStreamType::Video,
-                codec: Some("hevc".to_owned()),
-                ..MediaStream::default()
-            }],
+            vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("hevc".to_owned()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    channels: Some(2),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+            ],
         )
         .await
         .expect("alternate media stream");
@@ -180,15 +190,60 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
             && source["MediaStreams"][0]["Codec"] == "hevc"
     }));
 
+    let profiled = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&fixture.user_token),
+                Some(&json!({
+                    // Official Jellyfin only applies an explicit stream index
+                    // when the request also selects its MediaSourceId.
+                    "AudioStreamIndex": 99,
+                    "MaxStreamingBitrate": 100_000_000,
+                    "DeviceProfile": flexible_video_profile(true)
+                })),
+            )
+            .await,
+    )
+    .await;
+    let profiled_sources = profiled["MediaSources"].as_array().unwrap();
+    let primary = profiled_sources
+        .iter()
+        .find(|source| source["Id"] == fixture.item_id.simple().to_string())
+        .expect("profiled primary source");
+    assert_eq!(primary["SupportsDirectPlay"], true, "{profiled}");
+    assert!(primary.get("TranscodingUrl").is_none());
+    let alternate = profiled_sources
+        .iter()
+        .find(|source| source["Id"] == alternate_id.simple().to_string())
+        .expect("profiled alternate source");
+    assert_eq!(alternate["SupportsDirectPlay"], false);
+    assert_eq!(alternate["SupportsTranscoding"], true);
+    let alternate_url = alternate["TranscodingUrl"]
+        .as_str()
+        .expect("alternate HLS URL");
+    assert!(alternate_url.contains("/master.m3u8"), "{alternate_url}");
+    assert!(
+        alternate_url.contains(&format!("MediaSourceId={}", alternate_id.simple())),
+        "{alternate_url}"
+    );
+    assert!(
+        !alternate_url.contains("AudioStreamIndex=99"),
+        "{alternate_url}"
+    );
+
     let selected = body_json(
         fixture
             .post(
                 &format!(
                     "{route}?MediaSourceId={}",
-                    alternate_id.simple().to_string().to_ascii_uppercase()
+                    alternate_id.to_string().to_ascii_uppercase()
                 ),
                 Some(&fixture.user_token),
-                None,
+                Some(&json!({
+                    "AudioStreamIndex": 1,
+                    "DeviceProfile": flexible_video_profile(false)
+                })),
             )
             .await,
     )
@@ -199,6 +254,13 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         alternate_id.simple().to_string()
     );
     assert_eq!(selected["MediaSources"][0]["Path"], alternate_path);
+    let selected_url = selected["MediaSources"][0]["TranscodingUrl"]
+        .as_str()
+        .expect("selected alternate HLS URL");
+    assert!(
+        selected_url.contains("AudioStreamIndex=1"),
+        "{selected_url}"
+    );
 
     base_item::Entity::delete_by_id(alternate_id)
         .exec(&fixture.database)
