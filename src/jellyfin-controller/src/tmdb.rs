@@ -1650,10 +1650,10 @@ async fn episode_name_merge_policy(
     if metadata_field_locked(item.data.as_ref(), "Name") {
         return (None, EpisodeNameMergeMode::Preserve);
     }
-    if let Some(local_name) = local_episode_name(item.path.as_deref()).await {
-        if !episode_title_value_is_placeholder(Some(&local_name), item, series_name) {
-            return (Some(local_name), EpisodeNameMergeMode::Preserve);
-        }
+    if let Some(local_name) = local_episode_name(item.path.as_deref()).await
+        && !episode_title_value_is_placeholder(Some(&local_name), item, series_name)
+    {
+        return (Some(local_name), EpisodeNameMergeMode::Preserve);
     }
     if episode_name_is_placeholder(item, series_name) {
         (None, EpisodeNameMergeMode::Replace)
