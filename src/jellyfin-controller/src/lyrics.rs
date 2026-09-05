@@ -107,8 +107,9 @@ impl LyricManager {
         {
             return Some(json!({
                 "Metadata": {},
-                "Lyrics": content.split('\n')
-                    .map(|line| line.strip_suffix('\r').unwrap_or(line).trim())
+                "Lyrics": split_unsynced_lyric_lines(content)
+                    .into_iter()
+                    .map(str::trim)
                     .map(|text| json!({ "Text": text, "Start": null, "Cues": null }))
                     .collect::<Vec<_>>()
             }));
@@ -124,6 +125,30 @@ fn lyric_provider_id(name: &str) -> String {
 fn lyric_format(file_name: &str) -> Option<&str> {
     let (_, extension) = file_name.rsplit_once('.')?;
     (!extension.is_empty()).then_some(extension)
+}
+
+fn split_unsynced_lyric_lines(content: &str) -> Vec<&str> {
+    let bytes = content.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' => {
+                lines.push(&content[start..index]);
+                index += usize::from(bytes.get(index + 1) == Some(&b'\n')) + 1;
+                start = index;
+            }
+            b'\n' => {
+                lines.push(&content[start..index]);
+                index += 1;
+                start = index;
+            }
+            _ => index += 1,
+        }
+    }
+    lines.push(&content[start..]);
+    lines
 }
 
 fn lyric_dto_to_json(parsed: &jellyfin_providers::lyrics::LyricDto) -> Value {
@@ -184,6 +209,29 @@ mod tests {
     #[test]
     fn rejects_unknown_formats() {
         assert!(LyricManager::parse_lyrics("srt", "1\n00:00:01,000 --> 00:00:02,000").is_none());
+    }
+
+    #[test]
+    fn unsynced_lyrics_split_all_official_line_endings_without_leaking_cr() {
+        for format in ["txt", "lrc"] {
+            for content in [
+                "  First  \nSecond\n",
+                "  First  \r\nSecond\r\n",
+                "  First  \rSecond\r",
+            ] {
+                let parsed = LyricManager::parse_lyrics(format, content).expect("plain lyrics");
+                let lines = parsed["Lyrics"].as_array().expect("lyric lines");
+                assert_eq!(lines.len(), 3, "{format}: {content:?}");
+                assert_eq!(lines[0]["Text"], "First", "{format}: {content:?}");
+                assert_eq!(lines[1]["Text"], "Second", "{format}: {content:?}");
+                assert_eq!(lines[2]["Text"], "", "{format}: {content:?}");
+                assert!(
+                    lines
+                        .iter()
+                        .all(|line| !line["Text"].as_str().unwrap().contains('\r'))
+                );
+            }
+        }
     }
 
     #[test]
