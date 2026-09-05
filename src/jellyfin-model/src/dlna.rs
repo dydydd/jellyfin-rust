@@ -407,6 +407,7 @@ pub struct MediaSourceInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iso_type: Option<IsoType>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Video3DFormat")]
     pub video_3d_format: Option<Video3DFormat>,
     pub media_streams: Vec<crate::MediaStream>,
     pub media_attachments: Vec<MediaAttachment>,

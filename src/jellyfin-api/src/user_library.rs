@@ -200,8 +200,10 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_subtitles: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Video3DFormat")]
     pub video_3d_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "LockData")]
     pub is_locked: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_number_end: Option<i32>,
@@ -224,6 +226,7 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series_primary_image_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ParentBackdropItemId")]
     pub parent_backdrop_image_item_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parent_backdrop_image_tags: Vec<String>,
@@ -1845,6 +1848,24 @@ mod tests {
             person_kind_from_name(" Cinematographer "),
             PersonKind::Unknown
         );
+    }
+
+    #[test]
+    fn base_item_dto_uses_official_acronym_and_legacy_property_names() {
+        let dto = BaseItemDto {
+            video_3d_format: Some("MVC".to_owned()),
+            is_locked: Some(true),
+            parent_backdrop_image_item_id: Some("parent".to_owned()),
+            ..BaseItemDto::default()
+        };
+        let value = serde_json::to_value(dto).unwrap();
+
+        assert_eq!(value["Video3DFormat"], "MVC");
+        assert_eq!(value["LockData"], true);
+        assert_eq!(value["ParentBackdropItemId"], "parent");
+        assert!(value.get("Video3dFormat").is_none());
+        assert!(value.get("IsLocked").is_none());
+        assert!(value.get("ParentBackdropImageItemId").is_none());
     }
 
     #[test]

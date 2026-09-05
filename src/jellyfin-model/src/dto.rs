@@ -117,6 +117,7 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forced_sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Video3DFormat")]
     pub video_3d_format: Option<Video3DFormat>,
     #[serde(
         default,

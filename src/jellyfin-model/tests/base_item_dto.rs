@@ -1,5 +1,6 @@
 use jellyfin_model::{
-    BaseItemDto, BaseItemKind, BaseItemPerson, MediaType, NameGuidPair, PersonKind,
+    BaseItemDto, BaseItemKind, BaseItemPerson, MediaSourceInfo, MediaType, NameGuidPair,
+    PersonKind, Video3DFormat,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -26,6 +27,13 @@ fn base_item_dto_uses_official_wire_contract() {
             name: Some("Paramount".to_owned()),
             id,
         }]),
+        video_3d_format: Some(Video3DFormat::MVC),
+        lock_data: Some(true),
+        parent_backdrop_item_id: Some(id),
+        media_sources: Some(vec![MediaSourceInfo {
+            video_3d_format: Some(Video3DFormat::HalfSideBySide),
+            ..Default::default()
+        }]),
         ..Default::default()
     };
 
@@ -41,9 +49,13 @@ fn base_item_dto_uses_official_wire_contract() {
     assert_eq!(value["People"][0]["Id"], id.simple().to_string());
     assert_eq!(value["People"][0]["Type"], "Director");
     assert_eq!(value["Studios"][0]["Name"], "Paramount");
+    assert_eq!(value["Video3DFormat"], "MVC");
+    assert_eq!(value["LockData"], true);
+    assert_eq!(value["ParentBackdropItemId"], id.simple().to_string());
+    assert_eq!(value["MediaSources"][0]["Video3DFormat"], "HalfSideBySide");
+    assert!(value.get("Video3dFormat").is_none());
     assert!(value.get("Etag").is_none());
     assert!(value.get("PremiereDate").is_none());
-    assert!(value.get("MediaSources").is_none());
 }
 
 #[test]
