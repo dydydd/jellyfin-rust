@@ -66,7 +66,7 @@ async fn item_image_infos_match_official_postgres_contract() {
 }
 
 #[tokio::test]
-async fn item_image_files_match_official_processing_and_cache_contract() {
+async fn item_image_files_return_original_bytes_and_match_cache_contract() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -922,18 +922,24 @@ async fn exercise_item_image_files(database_name: &str) {
     assert!(!no_cache.headers().contains_key(header::LAST_MODIFIED));
     assert!(!no_cache.headers().contains_key(header::ETAG));
 
-    let resized = fixture
+    let requested_derivative = fixture
         .request(
             Method::GET,
             &format!("{primary}?maxWidth=4&format=Jpg&quality=75"),
             &[(header::ACCEPT.as_str(), "image/jpeg")],
         )
         .await;
-    assert_eq!(resized.status(), StatusCode::OK);
-    assert_eq!(resized.headers()[header::CONTENT_TYPE], "image/jpeg");
-    let resized_bytes = to_bytes(resized.into_body(), usize::MAX).await.unwrap();
-    let decoded = image::load_from_memory(&resized_bytes).unwrap();
-    assert_eq!((decoded.width(), decoded.height()), (4, 2));
+    assert_eq!(requested_derivative.status(), StatusCode::OK);
+    assert_eq!(
+        requested_derivative.headers()[header::CONTENT_TYPE],
+        "image/png"
+    );
+    assert_eq!(
+        to_bytes(requested_derivative.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        fs::read(fixture.path("poster.png")).unwrap()
+    );
 
     let selected_by_query = fixture
         .request(
@@ -950,18 +956,20 @@ async fn exercise_item_image_files(database_name: &str) {
         fs::read(fixture.path("remote-backdrop.png")).unwrap()
     );
 
-    let webp = fixture
+    let webp_requested = fixture
         .request(
             Method::GET,
             &format!("{primary}?maxWidth=4"),
             &[(header::ACCEPT.as_str(), "image/webp")],
         )
         .await;
-    assert_eq!(webp.status(), StatusCode::OK);
-    assert_eq!(webp.headers()[header::CONTENT_TYPE], "image/webp");
+    assert_eq!(webp_requested.status(), StatusCode::OK);
+    assert_eq!(webp_requested.headers()[header::CONTENT_TYPE], "image/png");
     assert_eq!(
-        image::guess_format(&to_bytes(webp.into_body(), usize::MAX).await.unwrap()).unwrap(),
-        image::ImageFormat::WebP
+        to_bytes(webp_requested.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        fs::read(fixture.path("poster.png")).unwrap()
     );
 
     for route in [

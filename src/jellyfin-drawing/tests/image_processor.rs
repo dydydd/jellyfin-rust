@@ -3,7 +3,7 @@ use std::{fs, time::SystemTime};
 use image::{DynamicImage, ImageFormat as DecoderFormat, Rgba, RgbaImage};
 use jellyfin_drawing::{
     ImageCollageOptions, ImageProcessingError, ImageProcessingRequest, ImageProcessor, ImageSource,
-    create_collage,
+    create_collage, original_image,
 };
 use jellyfin_model::ImageFormat;
 use tempfile::TempDir;
@@ -30,6 +30,26 @@ fn fixture(width: u32, height: u32) -> (TempDir, ImageSource) {
 
 fn processor(directory: &TempDir) -> ImageProcessor {
     ImageProcessor::new(directory.path().join("cache"), 2).expect("image processor")
+}
+
+#[tokio::test]
+async fn original_image_never_decodes_or_reencodes_source() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source_path = directory.path().join("corrupt.png");
+    let source_bytes = b"not decoded by direct image responses";
+    fs::write(&source_path, source_bytes).expect("write source fixture");
+    let modified = fs::metadata(&source_path)
+        .and_then(|metadata| metadata.modified())
+        .expect("source modification time");
+
+    let result = original_image(ImageSource::new(source_path.clone(), modified))
+        .await
+        .expect("serve source directly");
+
+    assert_eq!(result.path, source_path);
+    assert_eq!(result.mime_type, "image/png");
+    assert_eq!(result.date_modified, modified);
+    assert_eq!(fs::read(result.path).unwrap(), source_bytes);
 }
 
 #[tokio::test]

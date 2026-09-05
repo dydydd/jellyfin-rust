@@ -104,6 +104,21 @@ pub struct ProcessedImage {
     pub date_modified: SystemTime,
 }
 
+/// Returns an image source unchanged without decoding or re-encoding its bytes.
+///
+/// # Errors
+///
+/// Returns [`ImageProcessingError::FileAccess`] when the source is not accessible.
+pub async fn original_image(source: ImageSource) -> Result<ProcessedImage, ImageProcessingError> {
+    ensure_source_exists(&source.path).await?;
+    Ok(ProcessedImage {
+        mime_type: format_from_path(&source.path)
+            .map_or("application/octet-stream", ImageFormat::mime_type),
+        path: source.path,
+        date_modified: source.date_modified,
+    })
+}
+
 /// Typed failures produced while validating or processing an image.
 #[derive(Debug, Error)]
 pub enum ImageProcessingError {

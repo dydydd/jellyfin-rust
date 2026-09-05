@@ -11,7 +11,7 @@ use axum_extra::extract::Query;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
 use jellyfin_data::BaseItemError;
-use jellyfin_drawing::{ImageProcessingRequest, ImageSource};
+use jellyfin_drawing::{ImageProcessingError, ImageSource, original_image};
 use jellyfin_model::{ImageFormat, ImageInfo, ImageType, MimeTypes};
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -355,43 +355,22 @@ pub(crate) async fn render_item_image(
         .item_images
         .resource(item_id, image_type, image_index)
         .await?;
-    let format = query
-        .format
-        .as_deref()
-        .map(parse_image_format)
-        .transpose()?;
-    let supported_formats = format.map_or_else(
-        || negotiated_formats(headers, query.accept.as_deref()),
-        |format| vec![format],
-    );
+    validate_direct_image_request(&query)?;
     let source = ImageSource {
         path: resource.path,
         date_modified: SystemTime::from(resource.date_modified),
         width: resource.width,
         height: resource.height,
     };
-    let request = ImageProcessingRequest {
-        width: query.width,
-        height: query.height,
-        max_width: query.max_width,
-        max_height: query.max_height,
-        fill_width: query.fill_width,
-        fill_height: query.fill_height,
-        quality: query.quality.unwrap_or(100),
-        format,
-        supported_formats,
-        blur: query.blur,
-        percent_played: query.percent_played,
-        unplayed_count: query.unplayed_count,
-        background_color: query.background_color,
-        foreground_layer: query.foreground_layer,
-    };
-    let processed = state.image_processor.process(source, request).await?;
+    // This server intentionally ignores image transformation parameters. Media-library clients
+    // request many differently sized derivatives while browsing; serving the source bytes avoids
+    // decoder-sized memory spikes and an unbounded family of cached variants.
+    let processed = original_image(source).await?;
     build_response(headers, query.tag.as_deref(), processed).await
 }
 
 pub(crate) async fn render_simple_image(
-    state: &AppState,
+    _state: &AppState,
     headers: &HeaderMap,
     path: std::path::PathBuf,
     date_modified: DateTime<Utc>,
@@ -399,23 +378,54 @@ pub(crate) async fn render_simple_image(
     format: Option<&str>,
     quality: u8,
 ) -> Result<Response, ApiError> {
-    let format = format.map(parse_image_format).transpose()?;
-    let supported_formats =
-        format.map_or_else(|| negotiated_formats(headers, None), |format| vec![format]);
+    if let Some(format) = format {
+        parse_image_format(format)?;
+    }
+    validate_quality(quality)?;
     let source = ImageSource {
         path,
         date_modified: SystemTime::from(date_modified),
         width: None,
         height: None,
     };
-    let request = ImageProcessingRequest {
-        quality,
-        format,
-        supported_formats,
-        ..ImageProcessingRequest::default()
-    };
-    let processed = state.image_processor.process(source, request).await?;
+    let processed = original_image(source).await?;
     build_response(headers, tag, processed).await
+}
+
+fn validate_direct_image_request(query: &GetItemImageQuery) -> Result<(), ApiError> {
+    if let Some(format) = query.format.as_deref() {
+        parse_image_format(format)?;
+    }
+    validate_quality(query.quality.unwrap_or(100))?;
+    if query.percent_played.is_some_and(|value| !value.is_finite()) {
+        return Err(ImageProcessingError::InvalidPercentPlayed.into());
+    }
+
+    // Keep accepting the official transformation surface even though this deployment policy
+    // intentionally ignores it and returns the source file.
+    let _ignored_transformations = (
+        query.width,
+        query.height,
+        query.max_width,
+        query.max_height,
+        query.fill_width,
+        query.fill_height,
+        query.blur,
+        query.percent_played,
+        query.unplayed_count,
+        query.background_color.as_deref(),
+        query.foreground_layer.as_deref(),
+        query.accept.as_deref(),
+    );
+    Ok(())
+}
+
+fn validate_quality(quality: u8) -> Result<(), ApiError> {
+    if (1..=100).contains(&quality) {
+        Ok(())
+    } else {
+        Err(ImageProcessingError::InvalidQuality(quality).into())
+    }
 }
 
 async fn ensure_visible_item(
@@ -454,34 +464,6 @@ const fn format_name(format: ImageFormat) -> &'static str {
         ImageFormat::Webp => "webp",
         ImageFormat::Svg => "svg",
     }
-}
-
-fn negotiated_formats(headers: &HeaderMap, accept_query: Option<&str>) -> Vec<ImageFormat> {
-    let accepted = headers
-        .get_all(header::ACCEPT)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .filter_map(|value| value.split(';').next())
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    let supports_webp = accepted
-        .iter()
-        .any(|value| value.eq_ignore_ascii_case("image/webp"))
-        || accept_query.is_some_and(|value| value.eq_ignore_ascii_case("webp"));
-    let supports_gif = accepted
-        .iter()
-        .any(|value| value.eq_ignore_ascii_case("image/gif") || value.eq_ignore_ascii_case("*/*"))
-        || accept_query.is_some_and(|value| value.eq_ignore_ascii_case("gif"));
-    let mut formats = Vec::with_capacity(4);
-    if supports_webp {
-        formats.push(ImageFormat::Webp);
-    }
-    formats.extend([ImageFormat::Jpg, ImageFormat::Png]);
-    if supports_gif {
-        formats.push(ImageFormat::Gif);
-    }
-    formats
 }
 
 async fn build_response(

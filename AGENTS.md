@@ -21,6 +21,10 @@
 - Coordinate remote-image downloads by URL so concurrent items share one bounded download. Validate that upstream content is an image, and remove or otherwise suppress permanently invalid remote references according to official behavior.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
+- Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
+  clients. Keep accepting the official image query surface for compatibility, but stream the
+  original image bytes and content type so media-library browsing cannot create decoder-sized
+  memory spikes or a family of derived cache files.
 
 ## Compatibility expectations
 
