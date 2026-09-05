@@ -71,7 +71,7 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     let root = items.ensure_user_root().await.expect("user root");
     let movie = create_item_with_data(
         &items,
-        "Movie",
+        "MediaBrowser.Controller.Entities.Movies.Movie",
         &format!("Swift DTO {}", fixture.suffix),
         root.id,
         serde_json::json!({
@@ -126,6 +126,7 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     )
     .await;
     let item = &body["Items"][0];
+    assert_eq!(item["Type"], "Movie");
     assert_eq!(item["Taglines"], serde_json::json!(["One line"]));
     assert!(item.get("Tagline").is_none());
     assert_eq!(item["EndDate"], "2020-01-02T00:00:00.000Z");

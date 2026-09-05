@@ -101,7 +101,8 @@ impl HydratedBaseItem {
     }
 
     #[must_use]
-    pub fn into_model(self) -> base_item::Model {
+    pub fn into_model(mut self) -> base_item::Model {
+        self.model.item_type = self.item_type.name().to_owned();
         self.model
     }
 }

@@ -54,6 +54,7 @@ fn official_qualified_type_hydrates_to_canonical_kind() {
         hydrated.model().item_type,
         "MediaBrowser.Controller.Entities.Movies.Movie"
     );
+    assert_eq!(hydrated.into_model().item_type, "Movie");
 }
 
 #[test]
