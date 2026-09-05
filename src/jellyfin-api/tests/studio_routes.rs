@@ -41,6 +41,20 @@ async fn studio_routes_match_official_studio_contract() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    assert_eq!(
+        fixture
+            .request(Method::GET, "/studios", Credential::None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request(Method::GET, "/studios/Pixar", Credential::None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
 
     let studios = body_json(
         fixture
@@ -58,6 +72,18 @@ async fn studio_routes_match_official_studio_contract() {
         5,
         0,
     );
+
+    let lowercase_studios = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/studios?limit=1",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_studios(&lowercase_studios, &[&fixture.alpha_studio], 5, 0);
 
     let paged = body_json(
         fixture
@@ -214,6 +240,22 @@ async fn studio_routes_match_official_studio_contract() {
     );
     assert!(studio.get("item_type").is_none());
 
+    let lowercase_studio = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/studios/{}", encoded(&fixture.alpha_studio)),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        lowercase_studio["Id"],
+        fixture.alpha_studio_id.simple().to_string()
+    );
+    assert_eq!(lowercase_studio["Name"], fixture.alpha_studio);
+
     let missing = body_json(
         fixture
             .request(
@@ -315,6 +357,22 @@ async fn studio_image_routes_resolve_public_base_item_ordinals() {
             .unwrap();
         assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
     }
+    let lowercase_base = format!(
+        "/studios/{}/images/Backdrop",
+        encoded(&fixture.alpha_studio)
+    );
+    for route in [
+        format!("{lowercase_base}?imageIndex=1"),
+        format!("{lowercase_base}/1"),
+    ] {
+        let response = fixture.request(Method::GET, &route, Credential::None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
+    }
 
     let head = fixture
         .request(Method::HEAD, &format!("{base}/0"), Credential::None)
@@ -346,7 +404,29 @@ async fn studio_image_routes_resolve_public_base_item_ordinals() {
     );
     assert_eq!(
         fixture
+            .request(
+                Method::GET,
+                &format!("/studios/{}/images/Backdrop/0", encoded("missing studio")),
+                Credential::None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
             .request(Method::GET, &base, Credential::Device("invalid-token"))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &lowercase_base,
+                Credential::Device("invalid-token"),
+            )
             .await
             .status(),
         StatusCode::UNAUTHORIZED

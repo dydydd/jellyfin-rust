@@ -1120,6 +1120,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Studios/{name}/Images/{image_type}/{image_index}",
             get(studios::get_image_by_index),
         )
+        .route("/studios", get(studios::list))
+        .route("/studios/{name}", get(studios::get))
+        .route(
+            "/studios/{name}/images/{image_type}",
+            get(studios::get_image),
+        )
+        .route(
+            "/studios/{name}/images/{image_type}/{image_index}",
+            get(studios::get_image_by_index),
+        )
         .route("/Trailers", get(trailers::list))
         .route("/MusicGenres", get(music_genre::list))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
