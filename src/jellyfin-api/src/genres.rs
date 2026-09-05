@@ -22,6 +22,7 @@ pub(crate) struct GenresQuery {
     user_id: Option<Uuid>,
     #[serde(default, rename = "startIndex", alias = "StartIndex")]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
     #[serde(rename = "searchTerm", alias = "SearchTerm")]
     search_term: Option<String>,

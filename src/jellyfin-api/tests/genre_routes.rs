@@ -47,7 +47,7 @@ async fn genre_routes_match_official_generic_genre_contract() {
         fixture
             .request(
                 Method::GET,
-                "/Genres?sortBy=SortName&sortOrder=Descending&limit=2",
+                "/Genres?SortBy=SortName&SortOrder=Descending&Limit=2",
                 Credential::Device(&fixture.user_token),
             )
             .await,
