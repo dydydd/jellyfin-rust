@@ -25,18 +25,26 @@ use crate::{ApiError, AppState, authentication, authorization, user_library};
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct LibraryQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
+    #[serde(alias = "Limit")]
     limit: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct InstantMixByIdQuery {
+    #[serde(alias = "Id")]
     id: Option<Uuid>,
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
+    #[serde(alias = "Limit")]
     limit: Option<u64>,
 }
 
@@ -56,34 +64,45 @@ pub(crate) struct ItemCountsQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct MediaFoldersQuery {
-    #[serde(rename = "isHidden", alias = "IsHidden")]
+    #[serde(rename = "isHidden", alias = "IsHidden", alias = "ishidden")]
     is_hidden: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct AvailableOptionsQuery {
-    #[serde(default, rename = "libraryContentType", alias = "LibraryContentType")]
+    #[serde(
+        default,
+        rename = "libraryContentType",
+        alias = "LibraryContentType",
+        alias = "librarycontenttype"
+    )]
     library_content_type: Option<CollectionType>,
-    #[serde(default, rename = "isNewLibrary", alias = "IsNewLibrary")]
+    #[serde(
+        default,
+        rename = "isNewLibrary",
+        alias = "IsNewLibrary",
+        alias = "isnewlibrary"
+    )]
     is_new_library: bool,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DeleteItemsQuery {
+    #[serde(alias = "Ids")]
     ids: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UpdatedSeriesQuery {
-    #[serde(default, rename = "tvdbId", alias = "TvdbId")]
+    #[serde(default, rename = "tvdbId", alias = "TvdbId", alias = "tvdbid")]
     tvdb_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UpdatedMoviesQuery {
-    #[serde(default, rename = "tmdbId", alias = "TmdbId")]
+    #[serde(default, rename = "tmdbId", alias = "TmdbId", alias = "tmdbid")]
     tmdb_id: Option<String>,
-    #[serde(default, rename = "imdbId", alias = "ImdbId")]
+    #[serde(default, rename = "imdbId", alias = "ImdbId", alias = "imdbid")]
     imdb_id: Option<String>,
 }
 

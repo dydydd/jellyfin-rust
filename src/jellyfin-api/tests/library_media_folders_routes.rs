@@ -201,6 +201,9 @@ async fn exercise_library_media_folders(database_name: &str) {
     );
     let hidden = get_json(&app, "/Library/MediaFolders?IsHidden=true", &admin_token).await;
     assert_eq!(names(&hidden), vec![format!("Hidden {suffix}")]);
+    let lowercase_hidden =
+        get_json(&app, "/Library/MediaFolders?ishidden=true", &admin_token).await;
+    assert_eq!(names(&lowercase_hidden), vec![format!("Hidden {suffix}")]);
     let api_key = get_json(
         &app,
         &format!("/Library/MediaFolders?api_key={api_key_token}"),

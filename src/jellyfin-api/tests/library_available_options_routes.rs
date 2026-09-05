@@ -177,6 +177,21 @@ async fn exercise_library_available_options(database_name: &str) {
             .is_empty()
     );
 
+    let lowercase_tv = get_json(
+        &app,
+        "/Libraries/AvailableOptions?librarycontenttype=tvshows&isnewlibrary=true",
+        Some(&admin_token),
+    )
+    .await;
+    assert_eq!(type_names(&lowercase_tv), ["Series", "Season", "Episode"]);
+    assert_eq!(lowercase_tv["MetadataSavers"][0]["DefaultEnabled"], false);
+    assert_image_option(
+        &type_option(&lowercase_tv, "Season")["DefaultImageOptions"][1],
+        "Primary",
+        1,
+        0,
+    );
+
     database.close().await.expect("database pool cleanup");
 }
 

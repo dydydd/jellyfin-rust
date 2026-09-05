@@ -356,6 +356,16 @@ async fn assert_instant_mix(fixture: &Fixture) {
         .await;
     assert_eq!(legacy_mix["TotalRecordCount"], 3);
     assert_eq!(legacy_mix["Items"].as_array().unwrap().len(), 1);
+
+    let pascal_genre_route = format!(
+        "/MusicGenres/InstantMix?Id={}&Limit=1",
+        fixture.instant_genre_id
+    );
+    let pascal_genre_mix = fixture
+        .json("GET", &pascal_genre_route, &fixture.user_token)
+        .await;
+    assert_eq!(pascal_genre_mix["TotalRecordCount"], 3);
+    assert_eq!(pascal_genre_mix["Items"].as_array().unwrap().len(), 1);
 }
 
 async fn assert_ancestors(fixture: &Fixture) {
@@ -469,6 +479,20 @@ async fn assert_streamed_downloads(fixture: &Fixture) {
 }
 
 async fn assert_similar_items(fixture: &Fixture) {
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!(
+                    "/Movies/{}/Similar?userid={}",
+                    fixture.child_id, fixture.admin_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
     let similar = fixture
         .json(
             "GET",
@@ -546,6 +570,23 @@ async fn assert_relationships(fixture: &Fixture) {
         fixture.second_collection_id.simple().to_string()
     );
     assert_eq!(collection_items[0]["Type"], "BoxSet");
+
+    let lowercase_collections = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Items/{}/Collections?startindex=1&Limit=1",
+                fixture.child_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(lowercase_collections["TotalRecordCount"], 2);
+    assert_eq!(lowercase_collections["StartIndex"], 1);
+    assert_eq!(
+        lowercase_collections["Items"][0]["Id"],
+        fixture.second_collection_id.simple().to_string()
+    );
 }
 
 async fn assert_item_counts(fixture: &Fixture) {
