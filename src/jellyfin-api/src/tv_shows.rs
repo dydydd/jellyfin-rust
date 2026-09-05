@@ -17,7 +17,7 @@ use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct SeasonsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(
         default,
@@ -26,30 +26,47 @@ pub(crate) struct SeasonsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
-    #[serde(rename = "isSpecialSeason", alias = "IsSpecialSeason")]
+    #[serde(
+        rename = "isSpecialSeason",
+        alias = "IsSpecialSeason",
+        alias = "isspecialseason"
+    )]
     is_special_season: Option<bool>,
-    #[serde(rename = "isMissing", alias = "IsMissing")]
+    #[serde(rename = "isMissing", alias = "IsMissing", alias = "ismissing")]
     is_missing: Option<bool>,
-    #[serde(rename = "adjacentTo", alias = "AdjacentTo")]
+    #[serde(rename = "adjacentTo", alias = "AdjacentTo", alias = "adjacentto")]
     adjacent_to: Option<Uuid>,
-    #[serde(rename = "enableImages", alias = "EnableImages")]
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
     enable_images: Option<bool>,
-    #[serde(rename = "imageTypeLimit", alias = "ImageTypeLimit")]
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
     image_type_limit: Option<i32>,
     #[serde(
         default,
         rename = "enableImageTypes",
         alias = "EnableImageTypes",
+        alias = "enableimagetypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     enable_image_types: Vec<String>,
-    #[serde(rename = "enableUserData", alias = "EnableUserData")]
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
     enable_user_data: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct EpisodesQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(
         default,
@@ -58,41 +75,67 @@ pub(crate) struct EpisodesQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+    #[serde(rename = "season", alias = "Season")]
     season: Option<i32>,
-    #[serde(rename = "seasonId", alias = "SeasonId")]
+    #[serde(rename = "seasonId", alias = "SeasonId", alias = "seasonid")]
     season_id: Option<Uuid>,
-    #[serde(rename = "isMissing", alias = "IsMissing")]
+    #[serde(rename = "isMissing", alias = "IsMissing", alias = "ismissing")]
     is_missing: Option<bool>,
-    #[serde(rename = "adjacentTo", alias = "AdjacentTo")]
+    #[serde(rename = "adjacentTo", alias = "AdjacentTo", alias = "adjacentto")]
     adjacent_to: Option<Uuid>,
-    #[serde(rename = "startItemId", alias = "StartItemId")]
+    #[serde(rename = "startItemId", alias = "StartItemId", alias = "startitemid")]
     start_item_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
-    #[serde(rename = "enableImages", alias = "EnableImages")]
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
     enable_images: Option<bool>,
-    #[serde(rename = "imageTypeLimit", alias = "ImageTypeLimit")]
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
     image_type_limit: Option<i32>,
     #[serde(
         default,
         rename = "enableImageTypes",
         alias = "EnableImageTypes",
+        alias = "enableimagetypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     enable_image_types: Vec<String>,
-    #[serde(rename = "enableUserData", alias = "EnableUserData")]
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
     enable_user_data: Option<bool>,
-    #[serde(rename = "sortBy", alias = "SortBy")]
+    #[serde(rename = "sortBy", alias = "SortBy", alias = "sortby")]
     sort_by: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct NextUpQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
     #[serde(
         default,
@@ -101,47 +144,77 @@ pub(crate) struct NextUpQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
-    #[serde(rename = "seriesId", alias = "SeriesId")]
+    #[serde(rename = "seriesId", alias = "SeriesId", alias = "seriesid")]
     series_id: Option<Uuid>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
-    #[serde(rename = "enableImages", alias = "EnableImages")]
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
     enable_images: Option<bool>,
-    #[serde(rename = "imageTypeLimit", alias = "ImageTypeLimit")]
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
     image_type_limit: Option<i32>,
     #[serde(
         default,
         rename = "enableImageTypes",
         alias = "EnableImageTypes",
+        alias = "enableimagetypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     enable_image_types: Vec<String>,
-    #[serde(rename = "enableUserData", alias = "EnableUserData")]
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
     enable_user_data: Option<bool>,
-    #[serde(rename = "nextUpDateCutoff", alias = "NextUpDateCutoff")]
+    #[serde(
+        rename = "nextUpDateCutoff",
+        alias = "NextUpDateCutoff",
+        alias = "nextupdatecutoff"
+    )]
     next_up_date_cutoff: Option<String>,
     #[serde(
         default = "default_enable_total_record_count",
         rename = "enableTotalRecordCount",
-        alias = "EnableTotalRecordCount"
+        alias = "EnableTotalRecordCount",
+        alias = "enabletotalrecordcount"
     )]
     enable_total_record_count: bool,
     #[serde(
         default = "default_true",
         rename = "enableResumable",
-        alias = "EnableResumable"
+        alias = "EnableResumable",
+        alias = "enableresumable"
     )]
     enable_resumable: bool,
-    #[serde(default, rename = "enableRewatching", alias = "EnableRewatching")]
+    #[serde(
+        default,
+        rename = "enableRewatching",
+        alias = "EnableRewatching",
+        alias = "enablerewatching"
+    )]
     enable_rewatching: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UpcomingQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
     #[serde(
         default,
@@ -150,20 +223,33 @@ pub(crate) struct UpcomingQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
-    #[serde(rename = "parentId", alias = "ParentId")]
+    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
-    #[serde(rename = "enableImages", alias = "EnableImages")]
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
     enable_images: Option<bool>,
-    #[serde(rename = "imageTypeLimit", alias = "ImageTypeLimit")]
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
     image_type_limit: Option<i32>,
     #[serde(
         default,
         rename = "enableImageTypes",
         alias = "EnableImageTypes",
+        alias = "enableimagetypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     enable_image_types: Vec<String>,
-    #[serde(rename = "enableUserData", alias = "EnableUserData")]
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
     enable_user_data: Option<bool>,
 }
 

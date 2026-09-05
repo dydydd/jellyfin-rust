@@ -59,19 +59,22 @@ async fn exercise_seasons_route(database_name: &str) {
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        fixture
-            .get(
-                &format!(
-                    "/Shows/{}/Seasons?userId={}",
-                    fixture.series_id, fixture.admin_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
+    for parameter in ["userId", "UserId", "userid"] {
+        assert_eq!(
+            fixture
+                .get(
+                    &format!(
+                        "/Shows/{}/Seasons?{parameter}={}",
+                        fixture.series_id, fixture.admin_id
+                    ),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "{parameter} must select the requested user"
+        );
+    }
     assert_eq!(
         fixture
             .get(
@@ -175,6 +178,17 @@ async fn exercise_seasons_route(database_name: &str) {
             .all(|item| item["IndexNumber"] != 0)
     );
 
+    let lowercase_regular = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Seasons?isspecialseason=false", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_ids(&lowercase_regular), item_ids(&regular));
+
     let missing = body_json(
         fixture
             .get(
@@ -226,19 +240,22 @@ async fn assert_episodes_route(fixture: &Fixture) {
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        fixture
-            .get(
-                &format!(
-                    "/Shows/{}/Episodes?userId={}",
-                    fixture.series_id, fixture.admin_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
+    for parameter in ["userId", "UserId", "userid"] {
+        assert_eq!(
+            fixture
+                .get(
+                    &format!(
+                        "/Shows/{}/Episodes?{parameter}={}",
+                        fixture.series_id, fixture.admin_id
+                    ),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "{parameter} must select the requested user"
+        );
+    }
     assert_eq!(
         fixture
             .get(
@@ -322,6 +339,17 @@ async fn assert_episodes_route(fixture: &Fixture) {
         ]
     );
 
+    let pascal_season = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes?Season=1", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_ids(&pascal_season), item_ids(&first_season));
+
     let by_season_id = body_json(
         fixture
             .get(
@@ -342,6 +370,20 @@ async fn assert_episodes_route(fixture: &Fixture) {
             fixture.missing_episode_id.simple().to_string(),
         ]
     );
+
+    let lowercase_season_id = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/{}/Episodes?seasonid={}",
+                    fixture.series_id, fixture.second_season_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_ids(&lowercase_season_id), item_ids(&by_season_id));
 
     let no_such_season = body_json(
         fixture
@@ -432,6 +474,18 @@ async fn assert_episodes_route(fixture: &Fixture) {
             fixture.second_episode_id.simple().to_string(),
         ]
     );
+
+    let pascal_limit = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes?Limit=2", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(pascal_limit["StartIndex"], 0);
+    assert_eq!(pascal_limit["Items"].as_array().unwrap().len(), 2);
 }
 
 async fn assert_next_up_route(fixture: &Fixture) {
@@ -439,16 +493,19 @@ async fn assert_next_up_route(fixture: &Fixture) {
         fixture.get("/Shows/NextUp", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        fixture
-            .get(
-                &format!("/Shows/NextUp?userId={}", fixture.admin_id),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
+    for parameter in ["userId", "UserId", "userid"] {
+        assert_eq!(
+            fixture
+                .get(
+                    &format!("/Shows/NextUp?{parameter}={}", fixture.admin_id),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "{parameter} must select the requested user"
+        );
+    }
     assert_eq!(
         fixture
             .get(
@@ -569,6 +626,33 @@ async fn assert_next_up_route(fixture: &Fixture) {
             fixture.second_episode_id.simple().to_string(),
             older_second.id.simple().to_string(),
         ]
+    );
+
+    let pascal_limit = body_json(
+        fixture
+            .get("/Shows/NextUp?Limit=1", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(pascal_limit["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(item_ids(&pascal_limit)[0], item_ids(&all_series)[0]);
+
+    let lowercase_legacy = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesid={}&enabletotalrecordcount=false",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_legacy["TotalRecordCount"], 0);
+    assert_eq!(
+        item_ids(&lowercase_legacy),
+        vec![fixture.second_episode_id.simple().to_string()]
     );
 
     let zero_limit = body_json(
@@ -863,16 +947,19 @@ async fn assert_upcoming_route(fixture: &Fixture) {
         fixture.get("/Shows/Upcoming", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        fixture
-            .get(
-                &format!("/Shows/Upcoming?userId={}", fixture.admin_id),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
+    for parameter in ["userId", "UserId", "userid"] {
+        assert_eq!(
+            fixture
+                .get(
+                    &format!("/Shows/Upcoming?{parameter}={}", fixture.admin_id),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "{parameter} must select the requested user"
+        );
+    }
 
     let upcoming = body_json(
         fixture
@@ -906,6 +993,26 @@ async fn assert_upcoming_route(fixture: &Fixture) {
         item_ids(&parent_scoped),
         vec![fixture.first_episode_id.simple().to_string()]
     );
+
+    let lowercase_parent = body_json(
+        fixture
+            .get(
+                &format!("/Shows/Upcoming?parentid={}", fixture.first_season_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_ids(&lowercase_parent), item_ids(&parent_scoped));
+
+    let pascal_limit = body_json(
+        fixture
+            .get("/Shows/Upcoming?Limit=1", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(pascal_limit["StartIndex"], 0);
+    assert_eq!(pascal_limit["Items"].as_array().unwrap().len(), 1);
 
     let paged = body_json(
         fixture
