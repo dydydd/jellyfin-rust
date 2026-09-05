@@ -119,20 +119,26 @@ async fn exercise_package_routes(database_name: &str) {
     assert_eq!(by_name["name"], "Bookshelf");
     assert_eq!(by_name["guid"], package_id.simple().to_string());
 
-    let by_guid = body_json(
-        request(
-            &app,
-            &format!(
-                "/Packages/not-the-name?assemblyGuid={}",
-                alternate_id.hyphenated()
-            ),
-            Some(&admin_token),
+    for query_name in ["assemblyGuid", "AssemblyGuid", "assemblyguid"] {
+        let by_guid = body_json(
+            request(
+                &app,
+                &format!(
+                    "/Packages/not-the-name?{query_name}={}",
+                    alternate_id.hyphenated()
+                ),
+                Some(&admin_token),
+            )
+            .await,
         )
-        .await,
-    )
-    .await;
-    assert_eq!(by_guid["name"], "Playback Reporting");
-    assert_eq!(by_guid["guid"], alternate_id.simple().to_string());
+        .await;
+        assert_eq!(by_guid["name"], "Playback Reporting", "{query_name}");
+        assert_eq!(
+            by_guid["guid"],
+            alternate_id.simple().to_string(),
+            "{query_name}"
+        );
+    }
 
     assert_eq!(
         request(&app, "/Packages/Missing", Some(&admin_token))
@@ -169,16 +175,18 @@ async fn exercise_package_routes(database_name: &str) {
     )
     .await;
 
-    assert_no_content(
-        mutation(
-            &app,
-            Method::POST,
-            &format!("/Packages/Installed/not-the-name?assemblyGuid={alternate_id}"),
-            Some(&admin_token),
+    for query_name in ["assemblyGuid", "AssemblyGuid", "assemblyguid"] {
+        assert_no_content(
+            mutation(
+                &app,
+                Method::POST,
+                &format!("/Packages/Installed/not-the-name?{query_name}={alternate_id}"),
+                Some(&admin_token),
+            )
+            .await,
         )
-        .await,
-    )
-    .await;
+        .await;
+    }
     assert_no_content(
         mutation(
             &app,
@@ -200,16 +208,45 @@ async fn exercise_package_routes(database_name: &str) {
     )
     .await;
 
-    for route in [
-        "/Packages/Installed/Missing",
-        "/Packages/Installed/Bookshelf?version=9.9.9.9",
-        "/Packages/Installed/Bookshelf?repositoryUrl=https://repo.example.test/manifest.json",
-    ] {
+    assert_eq!(
+        mutation(
+            &app,
+            Method::POST,
+            "/Packages/Installed/Missing",
+            Some(&admin_token),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    for query_name in ["version", "Version"] {
         assert_eq!(
-            mutation(&app, Method::POST, route, Some(&admin_token))
-                .await
-                .status(),
-            StatusCode::NOT_FOUND
+            mutation(
+                &app,
+                Method::POST,
+                &format!("/Packages/Installed/Bookshelf?{query_name}=9.9.9.9"),
+                Some(&admin_token),
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND,
+            "{query_name}"
+        );
+    }
+    for query_name in ["repositoryUrl", "RepositoryUrl", "repositoryurl"] {
+        assert_eq!(
+            mutation(
+                &app,
+                Method::POST,
+                &format!(
+                    "/Packages/Installed/Bookshelf?{query_name}=https://repo.example.test/manifest.json"
+                ),
+                Some(&admin_token),
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND,
+            "{query_name}"
         );
     }
 

@@ -14,17 +14,30 @@ use crate::{ApiError, AppState, authentication};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct PackageQuery {
-    #[serde(rename = "assemblyGuid", alias = "AssemblyGuid")]
+    #[serde(
+        rename = "assemblyGuid",
+        alias = "AssemblyGuid",
+        alias = "assemblyguid"
+    )]
     assembly_guid: Option<Uuid>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct InstallPackageQuery {
-    #[serde(rename = "assemblyGuid", alias = "AssemblyGuid")]
+    #[serde(
+        rename = "assemblyGuid",
+        alias = "AssemblyGuid",
+        alias = "assemblyguid"
+    )]
     assembly_guid: Option<Uuid>,
+    #[serde(rename = "version", alias = "Version")]
     version: Option<String>,
-    #[serde(rename = "repositoryUrl", alias = "RepositoryUrl")]
+    #[serde(
+        rename = "repositoryUrl",
+        alias = "RepositoryUrl",
+        alias = "repositoryurl"
+    )]
     repository_url: Option<String>,
 }
 
