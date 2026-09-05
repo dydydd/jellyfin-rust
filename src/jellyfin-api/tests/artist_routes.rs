@@ -149,6 +149,43 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_artists(&lowercase, &[&fixture.beta_artist], 1, 0);
 
+    let lowercase_path = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/artists?searchTerm={}", encoded(&fixture.beta_artist)),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&lowercase_path, &[&fixture.beta_artist], 1, 0);
+
+    let lowercase_album_artists = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/artists/albumartists?limit=1",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&lowercase_album_artists, &[&fixture.album_artist], 2, 0);
+
+    let lowercase_item = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/artists/{}", encoded(&fixture.alpha_artist)),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_item["Name"], fixture.alpha_artist);
+    assert_eq!(lowercase_item["Type"], "MusicArtist");
+
     let folder_scoped = body_json(
         fixture
             .request(
