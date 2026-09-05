@@ -32,16 +32,31 @@ async fn session_capabilities_are_persisted_and_projected_from_postgres_jsonb() 
         StatusCode::UNAUTHORIZED
     );
 
-    let query_response = fixture
-        .request(
-            "POST",
-            "/Sessions/Capabilities?playableMediaTypes=Video,Audio&supportedCommands=Play,DisplayMessage&supportsMediaControl=true&supportsPersistentIdentifier=false",
-            Some(&fixture.token),
-            Body::empty(),
-        )
-        .await;
-    assert_eq!(query_response.status(), StatusCode::NO_CONTENT);
-    assert_query_capabilities(&fixture.sessions().await);
+    for query in [
+        format!(
+            "id={}&playableMediaTypes=Video,Audio&supportedCommands=Play,DisplayMessage&supportsMediaControl=true&supportsPersistentIdentifier=false",
+            fixture.session_id
+        ),
+        format!(
+            "Id={}&PlayableMediaTypes=Video,Audio&SupportedCommands=Play,DisplayMessage&SupportsMediaControl=true&SupportsPersistentIdentifier=false",
+            fixture.session_id
+        ),
+        format!(
+            "id={}&playablemediatypes=Video,Audio&supportedcommands=Play,DisplayMessage&supportsmediacontrol=true&supportspersistentidentifier=false",
+            fixture.session_id
+        ),
+    ] {
+        let query_response = fixture
+            .request(
+                "POST",
+                &format!("/Sessions/Capabilities?{query}"),
+                Some(&fixture.token),
+                Body::empty(),
+            )
+            .await;
+        assert_eq!(query_response.status(), StatusCode::NO_CONTENT);
+        assert_query_capabilities(&fixture.sessions().await);
+    }
 
     let full_response = fixture
         .request(
@@ -68,15 +83,17 @@ async fn session_capabilities_are_persisted_and_projected_from_postgres_jsonb() 
     assert_eq!(full_response.status(), StatusCode::NO_CONTENT);
     assert_full_capabilities(&fixture.sessions().await);
 
-    let invalid_id_response = fixture
-        .request(
-            "POST",
-            "/Sessions/Capabilities?id=not-this-session",
-            Some(&fixture.token),
-            Body::empty(),
-        )
-        .await;
-    assert_eq!(invalid_id_response.status(), StatusCode::BAD_REQUEST);
+    for key in ["id", "Id"] {
+        let invalid_id_response = fixture
+            .request(
+                "POST",
+                &format!("/Sessions/Capabilities?{key}=not-this-session"),
+                Some(&fixture.token),
+                Body::empty(),
+            )
+            .await;
+        assert_eq!(invalid_id_response.status(), StatusCode::BAD_REQUEST);
+    }
 
     fixture.cleanup().await;
 }

@@ -67,34 +67,42 @@ async fn assert_viewing_validation(fixture: &Fixture) {
             .status(),
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &format!(
-                    "/Sessions/Viewing?sessionId=missing-session&itemId={}",
-                    fixture.item_id.simple()
-                ),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
+    for (session_key, item_key) in [
+        ("sessionId", "itemId"),
+        ("SessionId", "ItemId"),
+        ("sessionid", "itemid"),
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    "POST",
+                    &format!(
+                        "/Sessions/Viewing?{session_key}=missing-session&{item_key}={}",
+                        fixture.item_id.simple()
+                    ),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 }
 
 async fn assert_report_viewing_persists_and_projects(fixture: &Fixture) {
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &format!("/Sessions/Viewing?itemId={}", fixture.item_id.simple()),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
+    for item_key in ["itemId", "ItemId", "itemid"] {
+        assert_eq!(
+            fixture
+                .request(
+                    "POST",
+                    &format!("/Sessions/Viewing?{item_key}={}", fixture.item_id.simple()),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
 
     let stored = device::Entity::find_by_id(fixture.device_row_id)
         .one(&fixture.database)

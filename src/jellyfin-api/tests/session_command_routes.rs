@@ -36,6 +36,97 @@ async fn session_command_routes_queue_official_commands_in_postgres() {
 }
 
 #[tokio::test]
+async fn session_command_query_names_accept_official_casing() {
+    let _guard = TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let item_ids = play_item_ids();
+    let cases = [
+        (
+            format!(
+                "Viewing?itemType=Movie&itemId={}&itemName=camel",
+                item_ids[0].simple()
+            ),
+            format!(
+                "Playing?playCommand=PlayNow&itemIds={},{}&startPositionTicks=123&mediaSourceId=camel&audioStreamIndex=2&subtitleStreamIndex=3&startIndex=1",
+                item_ids[0].simple(),
+                item_ids[1].simple()
+            ),
+            "Playing/Seek?seekPositionTicks=987",
+            "camel",
+        ),
+        (
+            format!(
+                "Viewing?ItemType=Movie&ItemId={}&ItemName=pascal",
+                item_ids[0].simple()
+            ),
+            format!(
+                "Playing?PlayCommand=PlayNow&ItemIds={},{}&StartPositionTicks=123&MediaSourceId=pascal&AudioStreamIndex=2&SubtitleStreamIndex=3&StartIndex=1",
+                item_ids[0].simple(),
+                item_ids[1].simple()
+            ),
+            "Playing/Seek?SeekPositionTicks=987",
+            "pascal",
+        ),
+        (
+            format!(
+                "Viewing?itemtype=Movie&itemid={}&itemname=lower",
+                item_ids[0].simple()
+            ),
+            format!(
+                "Playing?playcommand=PlayNow&itemids={},{}&startpositionticks=123&mediasourceid=lower&audiostreamindex=2&subtitlestreamindex=3&startindex=1",
+                item_ids[0].simple(),
+                item_ids[1].simple()
+            ),
+            "Playing/Seek?seekpositionticks=987",
+            "lower",
+        ),
+    ];
+
+    for (viewing, playing, playstate, _) in &cases {
+        fixture.post_command(viewing, Body::empty()).await;
+        fixture.post_command(playing, Body::empty()).await;
+        fixture.post_command(playstate, Body::empty()).await;
+    }
+
+    let queued = SessionCommandRepository::new(fixture.database.clone())
+        .list_for_session(&fixture.target_session_id)
+        .await
+        .expect("queued commands must load");
+    assert_eq!(queued.len(), 9);
+    for (commands, (_, _, _, label)) in queued.chunks_exact(3).zip(&cases) {
+        let viewing = &commands[0].payload;
+        assert_eq!(viewing["Name"], "DisplayContent");
+        assert_eq!(viewing["Arguments"]["ItemType"], "Movie");
+        assert_eq!(viewing["Arguments"]["ItemName"], *label);
+        assert_eq!(
+            viewing["Arguments"]["ItemId"],
+            item_ids[0].simple().to_string()
+        );
+
+        let playing = &commands[1].payload;
+        assert_eq!(playing["PlayCommand"], "PlayNow");
+        assert_eq!(playing["StartPositionTicks"], 123);
+        assert_eq!(playing["MediaSourceId"], *label);
+        assert_eq!(playing["AudioStreamIndex"], 2);
+        assert_eq!(playing["SubtitleStreamIndex"], 3);
+        assert_eq!(playing["StartIndex"], 1);
+        assert_eq!(
+            playing["ItemIds"],
+            json!([
+                item_ids[0].simple().to_string(),
+                item_ids[1].simple().to_string()
+            ])
+        );
+
+        let playstate = &commands[2].payload;
+        assert_eq!(playstate["Command"], "Seek");
+        assert_eq!(playstate["SeekPositionTicks"], 987);
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn session_command_outbox_is_consumed_over_websocket() {
     let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

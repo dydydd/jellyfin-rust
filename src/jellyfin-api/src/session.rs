@@ -24,57 +24,90 @@ use crate::{ApiError, AppState, authentication, user_library, user_primary_image
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct SessionQuery {
+    #[serde(alias = "ControllableByUserId", alias = "controllablebyuserid")]
     controllable_by_user_id: Option<Uuid>,
+    #[serde(alias = "DeviceId", alias = "deviceid")]
     device_id: Option<String>,
+    #[serde(alias = "ActiveWithinSeconds", alias = "activewithinseconds")]
     active_within_seconds: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct CapabilitiesQuery {
+    #[serde(alias = "Id")]
     id: Option<String>,
-    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    #[serde(
+        default,
+        alias = "PlayableMediaTypes",
+        alias = "playablemediatypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
     playable_media_types: Vec<MediaType>,
-    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    #[serde(
+        default,
+        alias = "SupportedCommands",
+        alias = "supportedcommands",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
     supported_commands: Vec<GeneralCommandType>,
+    #[serde(alias = "SupportsMediaControl", alias = "supportsmediacontrol")]
     supports_media_control: bool,
+    #[serde(
+        alias = "SupportsPersistentIdentifier",
+        alias = "supportspersistentidentifier"
+    )]
     supports_persistent_identifier: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct ViewingQuery {
-    #[serde(rename = "itemType")]
+    #[serde(rename = "itemType", alias = "ItemType", alias = "itemtype")]
     ty: Option<String>,
-    #[serde(rename = "itemId")]
+    #[serde(rename = "itemId", alias = "ItemId", alias = "itemid")]
     id: Option<String>,
-    #[serde(rename = "itemName")]
+    #[serde(rename = "itemName", alias = "ItemName", alias = "itemname")]
     name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct ReportViewingQuery {
+    #[serde(alias = "SessionId", alias = "sessionid")]
     session_id: Option<String>,
+    #[serde(alias = "ItemId", alias = "itemid")]
     item_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct PlayCommandQuery {
+    #[serde(alias = "PlayCommand", alias = "playcommand")]
     play_command: Option<PlayCommand>,
-    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    #[serde(
+        default,
+        alias = "ItemIds",
+        alias = "itemids",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
     item_ids: Vec<Uuid>,
+    #[serde(alias = "StartPositionTicks", alias = "startpositionticks")]
     start_position_ticks: Option<i64>,
+    #[serde(alias = "MediaSourceId", alias = "mediasourceid")]
     media_source_id: Option<String>,
+    #[serde(alias = "AudioStreamIndex", alias = "audiostreamindex")]
     audio_stream_index: Option<i32>,
+    #[serde(alias = "SubtitleStreamIndex", alias = "subtitlestreamindex")]
     subtitle_stream_index: Option<i32>,
+    #[serde(alias = "StartIndex", alias = "startindex")]
     start_index: Option<i32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct PlaystateCommandQuery {
+    #[serde(alias = "SeekPositionTicks", alias = "seekpositionticks")]
     seek_position_ticks: Option<i64>,
 }
 

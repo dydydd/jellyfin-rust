@@ -305,25 +305,27 @@ fn assert_user_session_projection(sessions: &Value, fixture: &Fixture) {
 }
 
 async fn assert_recent_scope(fixture: &Fixture) {
-    let recent = body_json(
-        fixture
-            .get(
-                "/Sessions?activeWithinSeconds=60",
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_device_ids(&recent, &[&fixture.user_device_id]);
+    for key in [
+        "activeWithinSeconds",
+        "ActiveWithinSeconds",
+        "activewithinseconds",
+    ] {
+        let recent = body_json(
+            fixture
+                .get(&format!("/Sessions?{key}=60"), Some(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_device_ids(&recent, &[&fixture.user_device_id]);
+    }
 }
 
 async fn assert_device_filter(fixture: &Fixture) {
-    let uri = format!(
-        "/Sessions?deviceId={}",
-        fixture.user_device_id.to_lowercase()
-    );
-    let filtered = body_json(fixture.get(&uri, Some(&fixture.admin_token)).await).await;
-    assert_device_ids(&filtered, &[&fixture.user_device_id]);
+    for key in ["deviceId", "DeviceId", "deviceid"] {
+        let uri = format!("/Sessions?{key}={}", fixture.user_device_id.to_lowercase());
+        let filtered = body_json(fixture.get(&uri, Some(&fixture.admin_token)).await).await;
+        assert_device_ids(&filtered, &[&fixture.user_device_id]);
+    }
 }
 
 async fn assert_elevated_scope(fixture: &Fixture) {
@@ -355,16 +357,22 @@ async fn assert_elevated_scope(fixture: &Fixture) {
 }
 
 async fn assert_controllable_scope(fixture: &Fixture) {
-    let controllable = body_json(
-        fixture
-            .get(
-                &format!("/Sessions?controllableByUserId={}", fixture.user_id),
-                Some(&fixture.admin_token),
-            )
-            .await,
-    )
-    .await;
-    assert_eq!(controllable, json!([]));
+    for key in [
+        "controllableByUserId",
+        "ControllableByUserId",
+        "controllablebyuserid",
+    ] {
+        let controllable = body_json(
+            fixture
+                .get(
+                    &format!("/Sessions?{key}={}", fixture.user_id),
+                    Some(&fixture.admin_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(controllable, json!([]));
+    }
 }
 
 async fn session(
