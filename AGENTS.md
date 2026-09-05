@@ -51,6 +51,9 @@
 - When item pages request `MediaSources`, expand every alternate-version group and load all streams
   and attachments for the page in bounded batches. Do not issue one version, stream, or attachment
   query per displayed item.
+- Name versioned media sources from the common prefix of their library file stems so clients see
+  concise version labels. For `.strm` items, derive the label from the sidecar filename while using
+  the resolved remote target only for the source path and protocol.
 - Build item-count aggregates from the same filtered candidate set as item pages: exclude alternate
   versions and owned non-extra rows by default, and apply the target user's folder, tag, parental,
   virtual-item, and favorite filters before grouping by item type.

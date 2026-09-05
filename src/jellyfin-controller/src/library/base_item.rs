@@ -84,6 +84,13 @@ pub fn get_common_version_prefix(file_names: &[&str]) -> String {
     prefix.into_iter().collect()
 }
 
+/// Finds the version prefix shared by the file stems of several media paths.
+#[must_use]
+pub fn get_common_media_source_prefix(paths: &[&str]) -> String {
+    let names = paths.iter().map(|path| file_stem(path)).collect::<Vec<_>>();
+    get_common_version_prefix(&names)
+}
+
 /// Builds the display label for a file-backed media source.
 #[must_use]
 pub fn get_media_source_name(
@@ -324,12 +331,12 @@ impl VersionGroup {
         source_id: Uuid,
     ) -> Result<Vec<MediaSourceVersion>, VersionGroupError> {
         let versions = self.all_versions(source_id)?;
-        let names: Vec<_> = versions
+        let paths: Vec<_> = versions
             .iter()
-            .map(|version| file_stem(&version.path))
+            .map(|version| version.path.as_str())
             .collect();
-        let common_prefix = (names.len() >= 2)
-            .then(|| get_common_version_prefix(&names))
+        let common_prefix = (paths.len() >= 2)
+            .then(|| get_common_media_source_prefix(&paths))
             .filter(|prefix| !prefix.is_empty());
 
         let mut sources: Vec<_> = versions

@@ -10,7 +10,8 @@ use axum_extra::extract::Query;
 use chrono::{NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, LyricManager, MusicGenre, Person,
-    RelatedItemKind, Studio, TrickplayManifest, Year, library::get_media_source_name,
+    RelatedItemKind, Studio, TrickplayManifest, Year,
+    library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::entities::{base_item, item_value, user_data};
 use jellyfin_model::{
@@ -1027,6 +1028,14 @@ pub(crate) fn project_item_dto_with_versioned_sources(
     if let Some(index) = source_items.iter().position(|item| item.id == requested_id) {
         source_items.swap(0, index);
     }
+    let source_paths = source_items
+        .iter()
+        .filter_map(|item| item.path.as_deref())
+        .collect::<Vec<_>>();
+    let has_local_alternates = source_paths.len() > 1;
+    let common_prefix = has_local_alternates
+        .then(|| get_common_media_source_prefix(&source_paths))
+        .filter(|prefix| !prefix.is_empty());
     let mut sources = Vec::with_capacity(source_items.len());
 
     for source_item in source_items {
@@ -1052,6 +1061,8 @@ pub(crate) fn project_item_dto_with_versioned_sources(
             media_attachments.remove(&source_id).unwrap_or_default(),
             default_audio_stream_index,
             default_subtitle_stream_index,
+            has_local_alternates,
+            common_prefix.as_deref(),
         ) {
             sources.push(source);
         }
@@ -1264,6 +1275,8 @@ pub(crate) fn project_item_dto_with_streams(
             media_attachments,
             default_audio_stream_index,
             default_subtitle_stream_index,
+            false,
+            None,
         ) {
             dto.media_sources = Some(vec![source]);
         }
@@ -1279,6 +1292,8 @@ fn media_source_from_dto(
     media_attachments: Vec<MediaAttachment>,
     default_audio_stream_index: Option<i32>,
     default_subtitle_stream_index: Option<i32>,
+    has_local_alternates: bool,
+    common_prefix: Option<&str>,
 ) -> Option<MediaSourceInfo> {
     if dto.is_folder || !is_media_source_item(dto) {
         return None;
@@ -1289,9 +1304,11 @@ fn media_source_from_dto(
         .as_deref()
         .map(media_protocol_from_path)
         .unwrap_or(MediaProtocol::File);
-    let name = path
+    let name = dto
+        .path
         .as_deref()
-        .map(|path| get_media_source_name(path, false, None))
+        .or(path.as_deref())
+        .map(|path| get_media_source_name(path, has_local_alternates, common_prefix))
         .or_else(|| dto.name.clone());
     let container =
         projected_media_source_container(dto.media_source_container.as_deref(), path.as_deref());
@@ -2244,8 +2261,10 @@ mod tests {
         assert_eq!(dto.production_locations, ["Los Angeles"]);
         assert_eq!(dto.official_rating.as_deref(), Some("PG-13"));
         assert_eq!(dto.path.as_deref(), Some("/library/Movie.strm"));
-        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+        let source =
+            media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None, false, None).unwrap();
         assert_eq!(source.path.as_deref(), Some("/CloudNAS/Movie/movie.mkv"));
+        assert_eq!(source.name.as_deref(), Some("Movie"));
         assert_eq!(source.bitrate, Some(5_500_000));
         assert_eq!(source.container.as_deref(), Some("mkv"));
         assert_eq!(source.protocol, MediaProtocol::File);
@@ -2322,17 +2341,20 @@ mod tests {
         let dto = BaseItemDto {
             id: "item".to_owned(),
             item_type: "Movie".to_owned(),
+            path: Some("/library/Cloud Movie.strm".to_owned()),
             media_source_path: Some(
                 "https://media.example/Movie.MP4?token=secret.mkv#fragment".to_owned(),
             ),
             ..BaseItemDto::default()
         };
 
-        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+        let source =
+            media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None, false, None).unwrap();
 
         assert_eq!(source.protocol, MediaProtocol::Http);
         assert!(source.is_remote);
         assert_eq!(source.container.as_deref(), Some("mp4"));
+        assert_eq!(source.name.as_deref(), Some("Cloud Movie"));
     }
 
     #[test]
@@ -2344,7 +2366,8 @@ mod tests {
             media_source_container: Some("mkv, WEBM".to_owned()),
             ..BaseItemDto::default()
         };
-        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+        let source =
+            media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None, false, None).unwrap();
         assert_eq!(source.container.as_deref(), Some("webm"));
 
         let dto = BaseItemDto {
@@ -2352,7 +2375,8 @@ mod tests {
             media_source_container: Some("Matroska,webm".to_owned()),
             ..dto
         };
-        let source = media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None).unwrap();
+        let source =
+            media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None, false, None).unwrap();
         assert_eq!(source.container.as_deref(), Some("matroska"));
     }
 

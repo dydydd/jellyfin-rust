@@ -402,6 +402,7 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(sources[1]["Id"], alternate.id.simple().to_string());
     assert_eq!(sources[1]["Bitrate"], 25_000_000);
     assert_eq!(sources[1]["Container"], "mpegts");
+    assert_eq!(sources[1]["Name"], "2160p");
     assert_eq!(sources[1]["MediaStreams"][0]["Codec"], "hevc");
     assert_eq!(
         item["MediaSources"][0]["MediaAttachments"][0]["FileName"],

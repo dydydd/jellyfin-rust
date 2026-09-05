@@ -552,6 +552,8 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     let sources = dto["MediaSources"].as_array().expect("media sources");
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0]["Id"], primary.id.simple().to_string());
+    assert_eq!(sources[0]["Name"], "1080p");
+    assert_eq!(sources[1]["Name"], "2160p");
     assert_eq!(
         sources
             .iter()
