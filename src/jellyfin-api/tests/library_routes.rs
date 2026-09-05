@@ -1468,9 +1468,31 @@ async fn assert_item_counts(fixture: &Fixture) {
         .update(episode_alternate)
         .await
         .expect("episode alternate grouping");
+    let audio_primary = create_item(
+        &items,
+        "MediaBrowser.Controller.Entities.Audio.Audio",
+        "Count Audio Primary",
+        fixture.parent_id,
+        None,
+    )
+    .await;
+    let mut audio_alternate = create_item(
+        &items,
+        "Audio",
+        "Count Audio Alternate",
+        fixture.parent_id,
+        None,
+    )
+    .await;
+    audio_alternate.primary_version_id = Some(audio_primary.id);
+    let audio_alternate = items
+        .update(audio_alternate)
+        .await
+        .expect("audio alternate grouping");
     let user_data = UserDataRepository::new(fixture.database.clone());
     favorite(&user_data, fixture.user_id, movie_alternate.id).await;
     favorite(&user_data, fixture.user_id, episode_alternate.id).await;
+    favorite(&user_data, fixture.user_id, audio_alternate.id).await;
 
     assert_eq!(
         fixture.request("GET", "/Items/Counts", None).await.status(),
@@ -1486,6 +1508,27 @@ async fn assert_item_counts(fixture: &Fixture) {
             .await
             .status(),
         StatusCode::FORBIDDEN
+    );
+
+    let all_counts = fixture
+        .json("GET", "/Items/Counts", &fixture.user_token)
+        .await;
+    assert_eq!(
+        all_counts,
+        json!({
+            "MovieCount": 4,
+            "SeriesCount": 1,
+            "EpisodeCount": 2,
+            "ArtistCount": 1,
+            "ProgramCount": 1,
+            "TrailerCount": 1,
+            "SongCount": 7,
+            "AlbumCount": 2,
+            "MusicVideoCount": 1,
+            "BoxSetCount": 3,
+            "BookCount": 1,
+            "ItemCount": 29
+        })
     );
 
     let counts = fixture
@@ -1509,6 +1552,27 @@ async fn assert_item_counts(fixture: &Fixture) {
         })
     );
 
+    let not_favorite_counts = fixture
+        .json("GET", "/Items/Counts?IsFavorite=false", &fixture.user_token)
+        .await;
+    assert_eq!(
+        not_favorite_counts,
+        json!({
+            "MovieCount": 2,
+            "SeriesCount": 0,
+            "EpisodeCount": 0,
+            "ArtistCount": 0,
+            "ProgramCount": 0,
+            "TrailerCount": 0,
+            "SongCount": 6,
+            "AlbumCount": 1,
+            "MusicVideoCount": 0,
+            "BoxSetCount": 2,
+            "BookCount": 0,
+            "ItemCount": 16
+        })
+    );
+
     let administrator_counts = fixture
         .json(
             "GET",
@@ -1518,8 +1582,109 @@ async fn assert_item_counts(fixture: &Fixture) {
         .await;
     assert_eq!(administrator_counts, counts);
 
+    let root = items.ensure_user_root().await.expect("user root");
+    let visible_folder = create_item(
+        &items,
+        "CollectionFolder",
+        "Count visible library",
+        root.id,
+        None,
+    )
+    .await;
+    let disabled_folder = create_item(
+        &items,
+        "MediaBrowser.Controller.Entities.CollectionFolder",
+        "Count disabled library",
+        root.id,
+        None,
+    )
+    .await;
+    create_item(
+        &items,
+        "Movie",
+        "Count visible policy movie",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    create_item(
+        &items,
+        "Audio",
+        "Count disabled policy audio",
+        disabled_folder.id,
+        None,
+    )
+    .await;
+    let blocked_episode = create_item(
+        &items,
+        "Episode",
+        "Count blocked policy episode",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            blocked_episode.id,
+            item_value::ItemValueType::Tags,
+            "Blocked",
+        )
+        .await
+        .expect("blocked count tag");
+    let mut rated_series = create_item(
+        &items,
+        "Series",
+        "Count parental policy series",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    rated_series.official_rating = Some("R".to_owned());
     items
-        .delete_many(&[movie_alternate.id, episode_alternate.id])
+        .update(rated_series)
+        .await
+        .expect("parental count rating");
+
+    let users = UserService::new(fixture.database.clone());
+    let original_policy: UserPolicy =
+        serde_json::from_value(users.get(fixture.user_id).await.expect("count user").policy)
+            .expect("count user policy");
+    let mut restricted_policy = original_policy.clone();
+    restricted_policy.enable_all_folders = false;
+    restricted_policy.enabled_folders = vec![visible_folder.id];
+    restricted_policy.blocked_tags = vec!["Blocked".to_owned()];
+    restricted_policy.max_parental_rating = Some(5);
+    users
+        .update_policy(fixture.user_id, &restricted_policy)
+        .await
+        .expect("restricted count policy");
+
+    let policy_counts = fixture
+        .json("GET", "/Items/Counts", &fixture.user_token)
+        .await;
+    assert_eq!(
+        policy_counts["MovieCount"],
+        all_counts["MovieCount"].as_i64().unwrap() + 1
+    );
+    assert_eq!(policy_counts["SongCount"], all_counts["SongCount"]);
+    assert_eq!(policy_counts["EpisodeCount"], all_counts["EpisodeCount"]);
+    assert_eq!(policy_counts["SeriesCount"], all_counts["SeriesCount"]);
+    assert_eq!(
+        policy_counts["ItemCount"],
+        all_counts["ItemCount"].as_i64().unwrap() + 2
+    );
+
+    users
+        .update_policy(fixture.user_id, &original_policy)
+        .await
+        .expect("restore count policy");
+    items
+        .delete_many(&[
+            movie_alternate.id,
+            episode_alternate.id,
+            audio_primary.id,
+            audio_alternate.id,
+        ])
         .await
         .expect("alternate count cleanup");
 }
