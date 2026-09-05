@@ -519,6 +519,65 @@ async fn media_source_defaults_follow_target_user_stream_preferences() {
 }
 
 #[tokio::test]
+async fn media_sources_expand_all_video_versions_with_requested_version_first() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+
+    let mut primary = item("Movie", "Versioned Movie", Some(fixture.root_id), false);
+    primary.media_type = Some("Video".to_owned());
+    primary.path = Some("/media/versioned-movie-1080p.mkv".to_owned());
+    let primary = items.create(primary).await.expect("primary version");
+    let mut alternate = item("Movie", "Versioned Movie", Some(fixture.root_id), false);
+    alternate.media_type = Some("Video".to_owned());
+    alternate.path = Some("/media/versioned-movie-2160p.mkv".to_owned());
+    alternate.primary_version_id = Some(primary.id);
+    let alternate = items.create(alternate).await.expect("alternate version");
+
+    for (source, codec) in [(&primary, "h264"), (&alternate, "hevc")] {
+        MediaStreamService::new(fixture.database.clone())
+            .save_media_streams(
+                source.id,
+                vec![MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some(codec.to_owned()),
+                    path: source.path.clone(),
+                    ..MediaStream::default()
+                }],
+            )
+            .await
+            .expect("version streams");
+    }
+
+    let route = format!(
+        "/Users/{}/Items/{}?Fields=MediaSources,MediaStreams",
+        fixture.user_id, primary.id
+    );
+    let dto = get_json(&fixture.app, &route, &fixture.user_token).await;
+    let sources = dto["MediaSources"].as_array().expect("media sources");
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["Id"], primary.id.simple().to_string());
+    assert_eq!(
+        sources
+            .iter()
+            .map(|source| source["Id"].as_str().expect("source id"))
+            .collect::<std::collections::HashSet<_>>(),
+        [
+            primary.id.simple().to_string(),
+            alternate.id.simple().to_string()
+        ]
+        .iter()
+        .map(String::as_str)
+        .collect()
+    );
+    assert_eq!(dto["MediaStreams"], sources[0]["MediaStreams"]);
+
+    items.delete(alternate.id).await.expect("alternate cleanup");
+    items.delete(primary.id).await.expect("primary cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn original_language_audio_preference_uses_item_metadata() {
     let fixture = UserLibraryFixture::new().await;
     set_original_language_preference(&fixture.database, fixture.user_id).await;

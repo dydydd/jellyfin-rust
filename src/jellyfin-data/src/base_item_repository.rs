@@ -652,6 +652,45 @@ impl BaseItemRepository {
             .await?)
     }
 
+    /// Loads every local video source in the version group containing `item_id`.
+    ///
+    /// The explicitly requested version is returned first, followed by the
+    /// primary and remaining alternates in stable identifier order. Keeping the
+    /// group expansion in PostgreSQL lets playback callers batch stream and
+    /// attachment projection without issuing one lookup per version.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the group cannot be loaded.
+    pub async fn media_source_versions(
+        &self,
+        item_id: Uuid,
+    ) -> Result<Vec<base_item::Model>, BaseItemError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!(
+                "WITH requested AS MATERIALIZED (\
+                     SELECT COALESCE(primary_version_id, id) AS group_id \
+                     FROM jellyfin.base_items \
+                     WHERE id = $1 \
+                       AND item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer')\
+                 ) \
+                 SELECT {BASE_ITEM_COLUMNS} \
+                 FROM jellyfin.base_items AS item \
+                 INNER JOIN requested \
+                   ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
+                 WHERE item.item_type IN ('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer') \
+                 ORDER BY CASE WHEN item.id = $1 THEN 0 ELSE 1 END, \
+                          CASE WHEN item.primary_version_id IS NULL THEN 0 ELSE 1 END, \
+                          item.id"
+            ),
+            [item_id.into()],
+        );
+        Ok(base_item::Model::find_by_statement(statement)
+            .all(self.database.as_ref())
+            .await?)
+    }
+
     /// Reports whether an item identifier is present.
     ///
     /// # Errors

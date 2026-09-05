@@ -6,6 +6,50 @@ use tokio::sync::Barrier;
 use uuid::Uuid;
 
 #[tokio::test]
+async fn media_source_versions_expand_the_group_with_the_requested_version_first() {
+    let repository = repository().await;
+    let group = create_group(&repository, "playback-order").await;
+
+    let from_primary = repository
+        .media_source_versions(group.primary)
+        .await
+        .expect("primary media-source versions");
+    assert_eq!(from_primary.len(), 3);
+    assert_eq!(from_primary[0].id, group.primary);
+    assert!(
+        from_primary
+            .iter()
+            .skip(1)
+            .all(|item| item.primary_version_id == Some(group.primary))
+    );
+
+    let requested_alternate = group.alternates[1];
+    let from_alternate = repository
+        .media_source_versions(requested_alternate)
+        .await
+        .expect("alternate media-source versions");
+    assert_eq!(from_alternate.len(), 3);
+    assert_eq!(from_alternate[0].id, requested_alternate);
+    assert_eq!(from_alternate[1].id, group.primary);
+    assert_eq!(
+        from_alternate
+            .iter()
+            .map(|item| item.id)
+            .collect::<std::collections::HashSet<_>>(),
+        group.ids().into_iter().collect()
+    );
+
+    assert!(
+        repository
+            .media_source_versions(Uuid::new_v4())
+            .await
+            .expect("missing media-source versions")
+            .is_empty()
+    );
+    cleanup(&repository, [&group]).await;
+}
+
+#[tokio::test]
 async fn clear_from_primary_or_alternate_is_atomic_and_preserves_rows() {
     let repository = repository().await;
     assert!(matches!(

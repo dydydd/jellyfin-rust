@@ -885,6 +885,22 @@ pub(crate) async fn project_item_to_dto(
         return Ok(dto);
     }
 
+    if fields.media_sources {
+        let source_items = state.base_items.media_source_versions(item_id).await?;
+        if !source_items.is_empty() {
+            attach_versioned_media_sources(
+                state,
+                &mut dto,
+                source_items,
+                fields,
+                defaults,
+                remembered_user_data,
+            )
+            .await?;
+            return Ok(dto);
+        }
+    }
+
     let media_streams = state
         .media_streams
         .get_media_streams_for_items(&[item_id])
@@ -911,6 +927,57 @@ pub(crate) async fn project_item_to_dto(
         original_language.as_deref(),
     );
     Ok(dto)
+}
+
+async fn attach_versioned_media_sources(
+    state: &AppState,
+    dto: &mut BaseItemDto,
+    source_items: Vec<base_item::Model>,
+    fields: BaseItemDtoFields,
+    defaults: Option<&MediaStreamDefaults>,
+    remembered_user_data: Option<&user_data::Model>,
+) -> Result<(), ApiError> {
+    let requested_id = Uuid::parse_str(&dto.id).map_err(|_| ApiError::Internal)?;
+    let source_ids = source_items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut media_streams = state
+        .media_streams
+        .get_media_streams_for_items(&source_ids)
+        .await?;
+    let mut media_attachments = state
+        .media_attachments
+        .get_media_attachments_for_items(&source_ids)
+        .await?;
+    let mut sources = Vec::with_capacity(source_items.len());
+
+    for source_item in source_items {
+        let source_id = source_item.id;
+        let original_language = original_language_from_item(&source_item);
+        let source_dto = item_to_dto(source_item, state.server_id());
+        let mut streams = media_streams.remove(&source_id).unwrap_or_default();
+        let (default_audio_stream_index, default_subtitle_stream_index) =
+            apply_media_stream_defaults(
+                &source_dto,
+                &mut streams,
+                defaults,
+                remembered_user_data,
+                original_language.as_deref(),
+            );
+        if source_id == requested_id && fields.media_streams {
+            // ALLOW: the official DTO exposes the selected source streams both here and nested.
+            dto.media_streams = Some(streams.clone());
+        }
+        if let Some(source) = media_source_from_dto(
+            &source_dto,
+            streams,
+            media_attachments.remove(&source_id).unwrap_or_default(),
+            default_audio_stream_index,
+            default_subtitle_stream_index,
+        ) {
+            sources.push(source);
+        }
+    }
+    dto.media_sources = Some(sources);
+    Ok(())
 }
 
 pub(crate) fn attach_dto_image_projection(
