@@ -1,5 +1,7 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -13,7 +15,7 @@ use jellyfin_model::{ImageInfo, ImageType};
 use jellyfin_server_implementations::{DtoImage, DtoImageItem, ImageCacheTagProvider};
 use md5::{Digest, Md5};
 use thiserror::Error;
-use tokio::{fs, io::AsyncWriteExt};
+use tokio::{fs, io::AsyncWriteExt, sync::OnceCell};
 use uuid::Uuid;
 
 const DOTNET_UNIX_EPOCH_TICKS: i128 = 621_355_968_000_000_000;
@@ -31,7 +33,7 @@ pub enum ItemImageError {
     #[error("remote image exceeded the download limit")]
     RemoteImageTooLarge,
     #[error("remote image download failed")]
-    RemoteDownload(#[source] reqwest::Error),
+    RemoteDownload(#[source] Arc<reqwest::Error>),
     #[error("item image file operation failed")]
     Io(#[from] std::io::Error),
     #[error("the requested item image type cannot be uploaded")]
@@ -55,8 +57,48 @@ pub struct ItemImageResource {
 pub struct ItemImageService {
     images: BaseItemImageRepository,
     http: reqwest::Client,
+    remote_downloads: Arc<RemoteImageDownloadCoordinator>,
     cache_directory: PathBuf,
     internal_metadata_directory: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct RemoteImageDownloadCoordinator {
+    flights: Mutex<HashMap<String, Weak<RemoteImageDownloadFlight>>>,
+}
+
+#[derive(Debug, Default)]
+struct RemoteImageDownloadFlight {
+    result: OnceCell<Result<RemoteImageDownload, RemoteImageDownloadError>>,
+}
+
+#[derive(Clone, Debug)]
+struct RemoteImageDownload {
+    bytes: Arc<Vec<u8>>,
+    extension: String,
+}
+
+#[derive(Clone, Debug)]
+enum RemoteImageDownloadError {
+    InvalidUrl,
+    TooLarge,
+    Request(Arc<reqwest::Error>),
+}
+
+impl From<RemoteImageDownloadError> for ItemImageError {
+    fn from(error: RemoteImageDownloadError) -> Self {
+        match error {
+            RemoteImageDownloadError::InvalidUrl => Self::InvalidRemoteUrl,
+            RemoteImageDownloadError::TooLarge => Self::RemoteImageTooLarge,
+            RemoteImageDownloadError::Request(error) => Self::RemoteDownload(error),
+        }
+    }
+}
+
+struct RemoteImageDownloadLease {
+    bytes: Arc<Vec<u8>>,
+    extension: String,
+    _flight: Arc<RemoteImageDownloadFlight>,
 }
 
 impl ItemImageService {
@@ -93,6 +135,7 @@ impl ItemImageService {
                     tracing::error!(%error, "could not configure the item image HTTP client");
                     reqwest::Client::new()
                 }),
+            remote_downloads: Arc::new(RemoteImageDownloadCoordinator::default()),
             cache_directory: cache_directory.into(),
             internal_metadata_directory: internal_metadata_directory.into(),
         }
@@ -313,8 +356,9 @@ impl ItemImageService {
         image_type: ImageType,
         url: &str,
     ) -> Result<(), ItemImageError> {
-        let (bytes, extension) = self.download_image_bytes(url).await?;
-        self.upload(item_id, image_type, &extension, &bytes).await
+        let download = self.download_image(url).await?;
+        self.upload(item_id, image_type, &download.extension, &download.bytes)
+            .await
     }
 
     /// Downloads a replacement before pruning the previously managed images.
@@ -360,8 +404,9 @@ impl ItemImageService {
                 return Ok(());
             }
         }
-        let (bytes, extension) = self.download_image_bytes(url).await?;
-        self.upload(item_id, image_type, &extension, &bytes).await?;
+        let download = self.download_image(url).await?;
+        self.upload(item_id, image_type, &download.extension, &download.bytes)
+            .await?;
 
         if allows_multiple_images(stored_type) {
             for previous in existing {
@@ -485,24 +530,56 @@ impl ItemImageService {
             .join(id)
     }
 
-    async fn download_image_bytes(&self, url: &str) -> Result<(Vec<u8>, String), ItemImageError> {
-        let url = reqwest::Url::parse(url).map_err(|_| ItemImageError::InvalidRemoteUrl)?;
+    async fn download_image(&self, url: &str) -> Result<RemoteImageDownloadLease, ItemImageError> {
+        let flight = {
+            let mut flights = self
+                .remote_downloads
+                .flights
+                .lock()
+                .expect("remote image download coordination lock poisoned");
+            flights.retain(|_, flight| flight.strong_count() > 0);
+            if let Some(flight) = flights.get(url).and_then(Weak::upgrade) {
+                flight
+            } else {
+                let flight = Arc::new(RemoteImageDownloadFlight::default());
+                flights.insert(url.to_owned(), Arc::downgrade(&flight));
+                flight
+            }
+        };
+        let result = flight
+            .result
+            .get_or_init(|| self.download_image_bytes(url))
+            .await
+            .clone()
+            .map_err(ItemImageError::from)?;
+        Ok(RemoteImageDownloadLease {
+            bytes: result.bytes,
+            extension: result.extension,
+            _flight: flight,
+        })
+    }
+
+    async fn download_image_bytes(
+        &self,
+        url: &str,
+    ) -> Result<RemoteImageDownload, RemoteImageDownloadError> {
+        let url = reqwest::Url::parse(url).map_err(|_| RemoteImageDownloadError::InvalidUrl)?;
         if !matches!(url.scheme(), "http" | "https") {
-            return Err(ItemImageError::InvalidRemoteUrl);
+            return Err(RemoteImageDownloadError::InvalidUrl);
         }
         let mut response = self
             .http
             .get(url)
             .send()
             .await
-            .map_err(ItemImageError::RemoteDownload)?
+            .map_err(|error| RemoteImageDownloadError::Request(Arc::new(error)))?
             .error_for_status()
-            .map_err(ItemImageError::RemoteDownload)?;
+            .map_err(|error| RemoteImageDownloadError::Request(Arc::new(error)))?;
         if response
             .content_length()
             .is_some_and(|length| length > MAX_REMOTE_IMAGE_BYTES)
         {
-            return Err(ItemImageError::RemoteImageTooLarge);
+            return Err(RemoteImageDownloadError::TooLarge);
         }
         let content_type = response
             .headers()
@@ -518,11 +595,11 @@ impl ItemImageService {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(ItemImageError::RemoteDownload)?
+            .map_err(|error| RemoteImageDownloadError::Request(Arc::new(error)))?
         {
             let next_length = bytes.len().saturating_add(chunk.len());
             if u64::try_from(next_length).unwrap_or(u64::MAX) > MAX_REMOTE_IMAGE_BYTES {
-                return Err(ItemImageError::RemoteImageTooLarge);
+                return Err(RemoteImageDownloadError::TooLarge);
             }
             bytes.extend_from_slice(&chunk);
         }
@@ -534,14 +611,17 @@ impl ItemImageService {
                     .map(|extension| format!(".{extension}"))
             })
             .unwrap_or_else(|| ".img".to_owned());
-        Ok((bytes, extension))
+        Ok(RemoteImageDownload {
+            bytes: Arc::new(bytes),
+            extension,
+        })
     }
 
     async fn materialize_remote(
         &self,
         image: BaseItemImage,
     ) -> Result<BaseItemImage, ItemImageError> {
-        let (bytes, extension) = self.download_image_bytes(&image.path).await?;
+        let download = self.download_image(&image.path).await?;
         let target_directory = self.cache_directory.join("remote");
         fs::create_dir_all(&target_directory).await?;
         let source_key = format!("{:x}", Md5::digest(image.path.as_bytes()));
@@ -550,13 +630,13 @@ impl ItemImageService {
             image.item_id.simple(),
             image.image_type.as_i16(),
             image.image_index,
-            extension
+            download.extension
         );
         let target = target_directory.join(file_name);
         let temporary = target.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
         let write_result = async {
             let mut file = fs::File::create(&temporary).await?;
-            file.write_all(&bytes).await?;
+            file.write_all(&download.bytes).await?;
             file.sync_all().await?;
             drop(file);
             fs::rename(&temporary, &target).await
