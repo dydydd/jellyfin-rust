@@ -318,19 +318,28 @@ impl LibraryControllerService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
-        limit: Option<u64>,
+        exclude_artist_ids: &[Uuid],
+        limit: Option<i32>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
         let item = self
             .user_library
             .item(authenticated_user, target_user_id, item_id)
             .await?;
+        if item_has_empty_similar_result(&item) || limit.is_some_and(|limit| limit <= 0) {
+            return Ok(BaseItemPage {
+                items: Vec::new(),
+                total_record_count: 0,
+                start_index: 0,
+            });
+        }
         let media_types = item.media_type.into_iter().collect();
         let mut query = BaseItemQuery {
             exclude_ids: vec![item.id],
+            exclude_artist_ids: exclude_artist_ids.to_vec(),
             include_item_types: vec![item.item_type],
             media_types,
             is_virtual_item: Some(false),
-            limit: Some(limit.unwrap_or(50)),
+            limit: Some(limit.map_or(50, |limit| u64::try_from(limit).unwrap_or_default())),
             enable_total_record_count: Some(false),
             ..Default::default()
         };
@@ -593,4 +602,11 @@ impl LibraryControllerService {
             .collect();
         page
     }
+}
+
+fn item_has_empty_similar_result(item: &base_item::Model) -> bool {
+    matches!(
+        item.item_type.as_str(),
+        "Episode" | "Genre" | "MusicGenre" | "Person" | "Studio" | "Year"
+    )
 }

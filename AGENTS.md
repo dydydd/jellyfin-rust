@@ -24,6 +24,9 @@
 - Resolve Similar and InstantMix seeds through the target user's normal library policy, and apply the
   same folder, tag, rating, and parental filters to every candidate query. Similar defaults to 50
   returned items and reports the post-limit result count; legacy CLR item types must not bypass policy.
+- Keep the six Similar routes on one contract: bind `ExcludeArtistIds`, `UserId`, signed `Limit`, and
+  `Fields` case-insensitively; return official empty results for Episodes and named items other than
+  MusicArtist; and project the bounded page with default images, user data, and ProviderIds.
 - Project theme songs and theme videos with the official default all-fields `DtoOptions`. Resolve
   `inheritFromParent` nearest-first and independently for each media kind, preserve that owner's
   id, default to `SortName` ascending, and keep `SoundtrackSongsResult` as a distinct empty result.
@@ -44,6 +47,7 @@
 - Match official Jellyfin DTO field names, nullability, defaults, HTTP status codes, authorization requirements, sorting, pagination, and case-insensitive matching.
 - ASP.NET route, query-name, and JSON-property binding is case-insensitive. Compatibility tests must cover PascalCase, camelCase, and representative lowercase legacy requests; do not assume an Axum route or Serde field is equivalent merely because one casing works.
 - Follow the official `JsonDefaults` value semantics. Where it permits them, accept numeric strings and case-insensitive or integer enum representations, and mirror the full official parameter set when implementing a legacy endpoint.
+- Bind the eight official virtual-folder `CollectionTypeOptions` values case-insensitively and persist/project their canonical lowercase wire names. Keep `mixed` valid for virtual-folder management but omit it from `BaseItemDto.CollectionType`, and tolerate legacy mixed-case persisted view metadata.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an
@@ -88,6 +92,11 @@
   alternate versions, and owned non-extra rows, and return zero entries without per-folder fallbacks.
 - Order episode detail pages with the official aired-episode comparer before applying `StartItemId`, adjacency, or pagination. Specials with `AirsBeforeSeasonNumber`, `AirsAfterSeasonNumber`, or `AirsBeforeEpisodeNumber` must be positioned relative to regular episodes rather than compared with a single incompatible numeric key; season zero itself remains sorted by `SortName`.
 - `Items/Latest` defaults `GroupItems` to true. Apply target-user policy and alternate-version folding before grouping; keep a single Episode as the Episode, replace multiple recent Episodes from one Series with that Series and the recent-child count, and return a MusicAlbum container even for one recent track. Load the bounded candidate set and its containers in batches rather than issuing per-item queries.
+- Resolve `Items/Latest` Audio and Photo grouping containers from the nearest matching
+  `MusicAlbum` or `PhotoAlbum` ancestor by closure-table depth, not only the direct parent. Load
+  all resolved containers through one target-user-policy-aware batch; fall back to the media item
+  when its container is not visible. A `MusicAlbum` replaces even one recent Audio item, while a
+  `PhotoAlbum` replaces its Photos only when at least two recent items share it.
 - Item-value `ItemCounts` inherit Genre and Studio links from a Series to its visible descendant
   Episodes, but do not inherit Artist or other value kinds. Count direct and inherited matches with
   set-based PostgreSQL queries and deduplicate Episodes that carry the same value directly.

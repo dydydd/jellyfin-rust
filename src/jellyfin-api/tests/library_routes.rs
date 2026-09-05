@@ -3,11 +3,13 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository,
-    LinkedChildRepository, NewBaseItem, NewDevice, NewUserData, UserDataRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, ItemValueRepository, LinkedChildRepository, NewBaseItem, NewBaseItemImage,
+    NewDevice, NewUserData, UserDataRepository,
     entities::item_value,
     entities::{user, user_data},
 };
@@ -657,6 +659,54 @@ async fn assert_streamed_downloads(fixture: &Fixture) {
 }
 
 async fn assert_similar_items(fixture: &Fixture) {
+    let items = fixture.items();
+    let mut similar_item = items
+        .get(fixture.similar_id)
+        .await
+        .unwrap()
+        .expect("similar fixture item");
+    similar_item.data = Some(json!({
+        "ProviderIds": { "Tmdb": "12345" },
+        "Overview": "Projected similar overview"
+    }));
+    items
+        .update(similar_item)
+        .await
+        .expect("similar item metadata");
+    favorite(
+        &UserDataRepository::new(fixture.database.clone()),
+        fixture.user_id,
+        fixture.similar_id,
+    )
+    .await;
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            fixture.similar_id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: "/media/similar-primary.jpg".to_owned(),
+                date_modified: Utc::now(),
+                width: Some(600),
+                height: Some(900),
+                blurhash: None,
+            }],
+        )
+        .await
+        .expect("similar primary image");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            fixture.similar_id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("h264".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("similar media stream");
+
     assert_eq!(
         fixture
             .request(
@@ -696,6 +746,200 @@ async fn assert_similar_items(fixture: &Fixture) {
             .iter()
             .all(|item| item.get("item_type").is_none())
     );
+    let projected = similar_items
+        .iter()
+        .find(|item| item["Id"] == fixture.similar_id.simple().to_string())
+        .expect("projected similar item");
+    assert_eq!(projected["ProviderIds"]["Tmdb"], "12345");
+    assert_eq!(projected["UserData"]["IsFavorite"], true);
+    assert!(projected["ImageTags"]["Primary"].is_string());
+    assert!(projected.get("MediaStreams").is_none());
+
+    let nil = Uuid::nil();
+    for (route, query) in [
+        ("Artists", format!("userId={nil}&limit=1&fields=Overview")),
+        ("Items", format!("UserId={nil}&Limit=1&Fields=Overview")),
+        ("Albums", format!("userid={nil}&limit=1&fields=Overview")),
+        ("Shows", "limit=1".to_owned()),
+        ("Movies", "Limit=1".to_owned()),
+        ("Trailers", "limit=1".to_owned()),
+    ] {
+        let body = fixture
+            .json(
+                "GET",
+                &format!("/{route}/{}/Similar?{query}", fixture.child_id),
+                &fixture.user_token,
+            )
+            .await;
+        assert_eq!(body["Items"].as_array().unwrap().len(), 1, "{route}");
+        assert_eq!(body["TotalRecordCount"], 1, "{route}");
+    }
+
+    let with_fields = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Movies/{}/Similar?Fields=MediaStreams%2COverview&Fields=Path",
+                fixture.child_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    let projected = with_fields["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == fixture.similar_id.simple().to_string())
+        .expect("field-projected similar item");
+    assert!(projected["MediaStreams"].is_array());
+    assert_eq!(projected["ProviderIds"]["Tmdb"], "12345");
+
+    for limit in [-1, 0] {
+        let empty = fixture
+            .json(
+                "GET",
+                &format!("/Movies/{}/Similar?limit={limit}", fixture.child_id),
+                &fixture.user_token,
+            )
+            .await;
+        assert!(empty["Items"].as_array().unwrap().is_empty());
+        assert_eq!(empty["TotalRecordCount"], 0);
+    }
+
+    let excluded_candidates = [
+        create_item(
+            &items,
+            "Movie",
+            "Excluded Artist A",
+            fixture.parent_id,
+            None,
+        )
+        .await,
+        create_item(
+            &items,
+            "Movie",
+            "Excluded Artist B",
+            fixture.parent_id,
+            None,
+        )
+        .await,
+        create_item(
+            &items,
+            "Movie",
+            "Excluded Artist C",
+            fixture.parent_id,
+            None,
+        )
+        .await,
+    ];
+    let values = ItemValueRepository::new(fixture.database.clone());
+    let mut excluded_artist_ids = Vec::new();
+    for (index, item) in excluded_candidates.iter().enumerate() {
+        excluded_artist_ids.push(
+            values
+                .link(
+                    item.id,
+                    item_value::ItemValueType::Artist,
+                    &format!("Excluded Artist {index}"),
+                )
+                .await
+                .expect("excluded artist link")
+                .item_value_id,
+        );
+    }
+    let exclusions = fixture
+        .json(
+            "GET",
+            &format!(
+                "/Movies/{}/Similar?excludeartistids={}%2C{}&excludeartistids={}",
+                fixture.child_id,
+                excluded_artist_ids[0],
+                excluded_artist_ids[1],
+                excluded_artist_ids[2]
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert!(exclusions["Items"].as_array().unwrap().iter().all(|item| {
+        excluded_candidates
+            .iter()
+            .all(|excluded| item["Id"] != excluded.id.simple().to_string())
+    }));
+
+    let named_seed = create_item(
+        &items,
+        "Genre",
+        "Empty Similar Genre",
+        fixture.parent_id,
+        None,
+    )
+    .await;
+    for item_id in [fixture.grandchild_id, named_seed.id] {
+        let empty = fixture
+            .json(
+                "GET",
+                &format!("/Items/{item_id}/Similar"),
+                &fixture.user_token,
+            )
+            .await;
+        assert!(empty["Items"].as_array().unwrap().is_empty());
+        assert_eq!(empty["TotalRecordCount"], 0);
+    }
+
+    let artist_seed = create_item(
+        &items,
+        "MusicArtist",
+        "Similar Artist Seed",
+        fixture.parent_id,
+        None,
+    )
+    .await;
+    let artist_candidate = create_item(
+        &items,
+        "MusicArtist",
+        "Similar Artist Candidate",
+        fixture.parent_id,
+        None,
+    )
+    .await;
+    let artist_similar = fixture
+        .json(
+            "GET",
+            &format!("/Artists/{}/Similar", artist_seed.id),
+            &fixture.user_token,
+        )
+        .await;
+    assert!(
+        artist_similar["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["Id"] == artist_candidate.id.simple().to_string())
+    );
+
+    let root_similar = fixture
+        .json("GET", &format!("/Items/{nil}/Similar"), &fixture.user_token)
+        .await;
+    assert_eq!(root_similar["StartIndex"], 0);
+    assert_eq!(root_similar["TotalRecordCount"], 0);
+    assert!(root_similar["Items"].as_array().unwrap().is_empty());
+
+    items
+        .delete_many(
+            &excluded_candidates
+                .iter()
+                .map(|item| item.id)
+                .chain([named_seed.id, artist_seed.id, artist_candidate.id])
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("similar contract fixture cleanup");
+    user_data::Entity::delete_many()
+        .filter(user_data::Column::UserId.eq(fixture.user_id))
+        .filter(user_data::Column::ItemId.eq(fixture.similar_id))
+        .exec(&fixture.database)
+        .await
+        .expect("similar user data cleanup");
 }
 
 async fn assert_relationships(fixture: &Fixture) {

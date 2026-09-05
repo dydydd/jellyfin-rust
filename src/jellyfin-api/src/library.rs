@@ -10,6 +10,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
+use axum_extra::extract::Query as RepeatedQuery;
 use jellyfin_controller::RelatedItemKind;
 use jellyfin_data::{BaseItemCounts, BaseItemPage, BaseItemQuery};
 use jellyfin_model::{
@@ -36,6 +37,29 @@ pub(crate) struct LibraryQuery {
     start_index: u64,
     #[serde(alias = "Limit")]
     limit: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub(crate) struct SimilarQuery {
+    #[serde(
+        default,
+        rename = "excludeArtistIds",
+        alias = "ExcludeArtistIds",
+        alias = "excludeartistids",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    exclude_artist_ids: Vec<Uuid>,
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
+    #[serde(alias = "Limit")]
+    limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -299,15 +323,33 @@ pub(crate) async fn similar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<LibraryQuery>,
+    RepeatedQuery(query): RepeatedQuery<SimilarQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let page = state
         .library_controller
-        .similar_items(&authenticated.user, target_user_id, item_id, query.limit)
+        .similar_items(
+            &authenticated.user,
+            target_user_id,
+            item_id,
+            &query.exclude_artist_ids,
+            query.limit,
+        )
         .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    let mut fields = query.fields;
+    if !fields
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case("ProviderIds"))
+    {
+        fields.push("ProviderIds".to_owned());
+    }
+    Ok(Json(
+        crate::items::page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
+    ))
 }
 
 pub(crate) async fn instant_mix(

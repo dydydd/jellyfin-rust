@@ -23,7 +23,7 @@ pub mod comma {
         D: Deserializer<'de>,
         T: std::str::FromStr,
     {
-        super::deserialize_delimited::<D, T, ','>(deserializer)
+        super::deserialize_delimited::<D, T, ',', true>(deserializer)
     }
 }
 
@@ -44,7 +44,7 @@ pub mod pipe {
         D: Deserializer<'de>,
         T: std::str::FromStr,
     {
-        super::deserialize_delimited::<D, T, '|'>(deserializer)
+        super::deserialize_delimited::<D, T, '|', false>(deserializer)
     }
 }
 
@@ -100,19 +100,22 @@ pub(crate) fn parse_sort_order(order: &str) -> Result<SortOrder, ApiError> {
     }
 }
 
-fn deserialize_delimited<'de, D, T, const DELIMITER: char>(
+fn deserialize_delimited<'de, D, T, const DELIMITER: char, const SPLIT_REPEATED: bool>(
     deserializer: D,
 ) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: FromStr,
 {
-    deserializer.deserialize_any(DelimitedVisitor::<T, DELIMITER>(PhantomData))
+    deserializer.deserialize_any(DelimitedVisitor::<T, DELIMITER, SPLIT_REPEATED>(
+        PhantomData,
+    ))
 }
 
-struct DelimitedVisitor<T, const DELIMITER: char>(PhantomData<T>);
+struct DelimitedVisitor<T, const DELIMITER: char, const SPLIT_REPEATED: bool>(PhantomData<T>);
 
-impl<'de, T, const DELIMITER: char> serde::de::Visitor<'de> for DelimitedVisitor<T, DELIMITER>
+impl<'de, T, const DELIMITER: char, const SPLIT_REPEATED: bool> serde::de::Visitor<'de>
+    for DelimitedVisitor<T, DELIMITER, SPLIT_REPEATED>
 where
     T: FromStr,
 {
@@ -159,7 +162,9 @@ where
     {
         let mut parsed = Vec::new();
         while let Some(value) = values.next_element::<String>()? {
-            if let Some(value) = parse_value(&value) {
+            if SPLIT_REPEATED {
+                parsed.extend(parse_values::<T, DELIMITER>(&value));
+            } else if let Some(value) = parse_value(&value) {
                 parsed.push(value);
             }
         }
@@ -296,10 +301,10 @@ mod tests {
     }
 
     #[test]
-    fn comma_does_not_resplit_repeated_values() {
+    fn comma_splits_each_repeated_value() {
         assert_eq!(
             query::<CommaStrings>("test=lol%2Cxd&test=separate").test,
-            ["lol,xd", "separate"]
+            ["lol", "xd", "separate"]
         );
     }
 
