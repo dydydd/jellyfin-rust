@@ -15,6 +15,7 @@ use crate::{ApiError, AppState, authentication};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct CreateKeyQuery {
+    #[serde(alias = "App")]
     app: Option<String>,
 }
 

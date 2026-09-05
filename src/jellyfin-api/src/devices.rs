@@ -22,19 +22,26 @@ use crate::{ApiError, AppState, authentication};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct DevicesQuery {
+    #[serde(alias = "UserId", alias = "userid", alias = "user_id")]
     user_id: Option<Uuid>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct DeviceIdQuery {
+    #[serde(alias = "Id", alias = "ID")]
     id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct DeleteDevicesQuery {
-    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    #[serde(
+        default,
+        alias = "Id",
+        alias = "ID",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
     id: Vec<String>,
 }
 

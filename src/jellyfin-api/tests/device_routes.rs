@@ -262,20 +262,22 @@ async fn assert_admin_default_scope(fixture: &Fixture) {
 }
 
 async fn assert_admin_target_user_scope(fixture: &Fixture) {
-    let devices = body_json(
-        fixture
-            .request(
-                "GET",
-                &format!("/Devices?userId={}", fixture.user_id),
-                Some(&fixture.admin_token),
-            )
-            .await,
-    )
-    .await;
-    assert_device_ids(
-        &devices,
-        &[&fixture.user_device_id, &fixture.user_device_id],
-    );
+    for parameter in ["userId", "UserId", "userid", "user_id"] {
+        let devices = body_json(
+            fixture
+                .request(
+                    "GET",
+                    &format!("/Devices?{parameter}={}", fixture.user_id),
+                    Some(&fixture.admin_token),
+                )
+                .await,
+        )
+        .await;
+        assert_device_ids(
+            &devices,
+            &[&fixture.user_device_id, &fixture.user_device_id],
+        );
+    }
 }
 
 async fn assert_api_key_global_scope(fixture: &Fixture) {
@@ -352,7 +354,7 @@ async fn assert_option_only_device_options_upsert(fixture: &Fixture) -> Value {
         fixture
             .request_json(
                 "POST",
-                &format!("/Devices/Options?id={}", fixture.option_only_device_id),
+                &format!("/Devices/Options?Id={}", fixture.option_only_device_id),
                 Some(&fixture.admin_token),
                 json!({ "CustomName": "Ghost Console" }),
             )
@@ -364,7 +366,7 @@ async fn assert_option_only_device_options_upsert(fixture: &Fixture) -> Value {
         fixture
             .request(
                 "GET",
-                &format!("/Devices/Options?id={}", fixture.option_only_device_id),
+                &format!("/Devices/Options?ID={}", fixture.option_only_device_id),
                 Some(&fixture.admin_token),
             )
             .await,
@@ -416,25 +418,27 @@ async fn assert_session_device_options_projection(fixture: &Fixture, ghost_optio
 }
 
 async fn assert_device_info_latest_projection(fixture: &Fixture) {
-    let info = body_json(
-        fixture
-            .request(
-                "GET",
-                &format!("/Devices/Info?id={}", fixture.user_device_id),
-                Some(&fixture.admin_token),
-            )
-            .await,
-    )
-    .await;
-    assert_eq!(info["Id"], fixture.user_device_id);
-    assert_eq!(info["Name"], "Latest Browser");
-    assert_eq!(info["AppName"], "Latest Client");
-    assert_eq!(info["AppVersion"], "2.0");
-    assert_eq!(info["CustomName"], "Family TV");
-    assert_eq!(info["LastUserId"], fixture.user_id.simple().to_string());
-    assert!(info["LastUserName"].as_str().is_some());
-    assert_eq!(info["Capabilities"]["PlayableMediaTypes"], json!(["Video"]));
-    assert_eq!(info["IconUrl"], "https://example.test/device.png");
+    for parameter in ["id", "Id", "ID"] {
+        let info = body_json(
+            fixture
+                .request(
+                    "GET",
+                    &format!("/Devices/Info?{parameter}={}", fixture.user_device_id),
+                    Some(&fixture.admin_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(info["Id"], fixture.user_device_id);
+        assert_eq!(info["Name"], "Latest Browser");
+        assert_eq!(info["AppName"], "Latest Client");
+        assert_eq!(info["AppVersion"], "2.0");
+        assert_eq!(info["CustomName"], "Family TV");
+        assert_eq!(info["LastUserId"], fixture.user_id.simple().to_string());
+        assert!(info["LastUserName"].as_str().is_some());
+        assert_eq!(info["Capabilities"]["PlayableMediaTypes"], json!(["Video"]));
+        assert_eq!(info["IconUrl"], "https://example.test/device.png");
+    }
 
     assert_eq!(
         fixture
@@ -465,7 +469,7 @@ async fn assert_delete_device(fixture: &Fixture) {
         fixture
             .request(
                 "DELETE",
-                &format!("/Devices?id={}", fixture.user_device_id),
+                &format!("/Devices?Id={}", fixture.user_device_id),
                 Some(&fixture.admin_token),
             )
             .await

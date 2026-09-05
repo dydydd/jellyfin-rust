@@ -80,19 +80,21 @@ async fn initiate_quick_connect(fixture: &Fixture) -> (String, String) {
 }
 
 async fn assert_pending_request(fixture: &Fixture, secret: &str, code: &str) {
-    let pending = body_json(
-        fixture
-            .request(
-                "GET",
-                &format!("/QuickConnect/Connect?secret={secret}"),
-                None,
-                Body::empty(),
-            )
-            .await,
-    )
-    .await;
-    assert_eq!(pending["Authenticated"], false);
-    assert_eq!(pending["Code"], code);
+    for parameter in ["secret", "Secret"] {
+        let pending = body_json(
+            fixture
+                .request(
+                    "GET",
+                    &format!("/QuickConnect/Connect?{parameter}={secret}"),
+                    None,
+                    Body::empty(),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(pending["Authenticated"], false);
+        assert_eq!(pending["Code"], code);
+    }
 }
 
 async fn authorize_quick_connect(fixture: &Fixture, code: &str) {
@@ -108,21 +110,29 @@ async fn authorize_quick_connect(fixture: &Fixture, code: &str) {
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &format!(
-                    "/QuickConnect/Authorize?code={code}&userId={}",
-                    fixture.other_user_id
-                ),
-                Some(&fixture.user_authorization),
-                Body::empty(),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
+    for (code_parameter, user_parameter) in [
+        ("code", "userId"),
+        ("Code", "UserId"),
+        ("code", "userid"),
+        ("Code", "user_id"),
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    "POST",
+                    &format!(
+                        "/QuickConnect/Authorize?{code_parameter}={code}&{user_parameter}={}",
+                        fixture.other_user_id
+                    ),
+                    Some(&fixture.user_authorization),
+                    Body::empty(),
+                )
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "{code_parameter}/{user_parameter} must select the requested user"
+        );
+    }
 
     let authorized = body_json(
         fixture
@@ -139,18 +149,20 @@ async fn authorize_quick_connect(fixture: &Fixture, code: &str) {
 }
 
 async fn assert_connected_request(fixture: &Fixture, secret: &str) {
-    let connected = body_json(
-        fixture
-            .request(
-                "GET",
-                &format!("/QuickConnect/Connect?secret={secret}"),
-                None,
-                Body::empty(),
-            )
-            .await,
-    )
-    .await;
-    assert_eq!(connected["Authenticated"], true);
+    for parameter in ["secret", "Secret"] {
+        let connected = body_json(
+            fixture
+                .request(
+                    "GET",
+                    &format!("/QuickConnect/Connect?{parameter}={secret}"),
+                    None,
+                    Body::empty(),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(connected["Authenticated"], true);
+    }
 }
 
 async fn authenticate_with_quick_connect(fixture: &Fixture, secret: &str) -> String {

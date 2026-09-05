@@ -15,13 +15,16 @@ use crate::{ApiError, AppState, authentication};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct ConnectQuery {
+    #[serde(alias = "Secret")]
     secret: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct AuthorizeQuery {
+    #[serde(alias = "Code")]
     code: Option<String>,
+    #[serde(alias = "UserId", alias = "userid", alias = "user_id")]
     user_id: Option<Uuid>,
 }
 

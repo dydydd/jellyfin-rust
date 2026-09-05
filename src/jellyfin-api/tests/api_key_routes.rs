@@ -40,14 +40,20 @@ async fn api_key_routes_match_official_elevated_persisted_contract() {
         StatusCode::BAD_REQUEST
     );
 
-    let create_response = fixture
-        .request(
-            "POST",
-            &format!("/Auth/Keys?app={}", fixture.created_key_name),
-            Some(&fixture.admin_token),
-        )
-        .await;
-    assert_eq!(create_response.status(), StatusCode::NO_CONTENT);
+    for (parameter, app_name) in ["app", "App"].into_iter().zip(&fixture.created_key_names) {
+        let create_response = fixture
+            .request(
+                "POST",
+                &format!("/Auth/Keys?{parameter}={app_name}"),
+                Some(&fixture.admin_token),
+            )
+            .await;
+        assert_eq!(
+            create_response.status(),
+            StatusCode::NO_CONTENT,
+            "{parameter} must bind the API key app name"
+        );
+    }
 
     let keys = body_json(
         fixture
@@ -59,20 +65,24 @@ async fn api_key_routes_match_official_elevated_persisted_contract() {
     assert!(
         keys["TotalRecordCount"]
             .as_u64()
-            .is_some_and(|count| count >= 2),
+            .is_some_and(|count| count >= 3),
         "list must include existing persisted keys: {keys}"
     );
-    let created = find_key(&keys, &fixture.created_key_name);
-    let created_token = created["AccessToken"]
-        .as_str()
-        .expect("API key token must be listed");
-    assert!(!created_token.is_empty());
-    assert_eq!(created["IsActive"], true);
-    assert_eq!(created["UserId"], Uuid::nil().simple().to_string());
-    assert!(created["DateCreated"].as_str().is_some());
-    assert!(created["DateLastActivity"].as_str().is_some());
-    assert!(created.get("DateRevoked").is_none());
-    assert!(created.get("DeviceId").is_none());
+    let mut created_tokens = Vec::new();
+    for app_name in &fixture.created_key_names {
+        let created = find_key(&keys, app_name);
+        let created_token = created["AccessToken"]
+            .as_str()
+            .expect("API key token must be listed");
+        assert!(!created_token.is_empty());
+        assert_eq!(created["IsActive"], true);
+        assert_eq!(created["UserId"], Uuid::nil().simple().to_string());
+        assert!(created["DateCreated"].as_str().is_some());
+        assert!(created["DateLastActivity"].as_str().is_some());
+        assert!(created.get("DateRevoked").is_none());
+        assert!(created.get("DeviceId").is_none());
+        created_tokens.push(created_token.to_owned());
+    }
 
     let api_key_list = body_json(
         fixture
@@ -80,26 +90,32 @@ async fn api_key_routes_match_official_elevated_persisted_contract() {
             .await,
     )
     .await;
-    assert!(find_key_optional(&api_key_list, &fixture.created_key_name).is_some());
+    for app_name in &fixture.created_key_names {
+        assert!(find_key_optional(&api_key_list, app_name).is_some());
+    }
 
-    assert_eq!(
-        fixture
-            .request(
-                "DELETE",
-                &format!("/Auth/Keys/{created_token}"),
-                Some(&fixture.admin_token),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
+    for created_token in created_tokens {
+        assert_eq!(
+            fixture
+                .request(
+                    "DELETE",
+                    &format!("/Auth/Keys/{created_token}"),
+                    Some(&fixture.admin_token),
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
     let after_delete = body_json(
         fixture
             .request("GET", "/Auth/Keys", Some(&fixture.admin_token))
             .await,
     )
     .await;
-    assert!(find_key_optional(&after_delete, &fixture.created_key_name).is_none());
+    for app_name in &fixture.created_key_names {
+        assert!(find_key_optional(&after_delete, app_name).is_none());
+    }
 
     fixture.cleanup().await;
 }
@@ -113,7 +129,7 @@ struct Fixture {
     user_token: String,
     seed_api_key_id: i64,
     seed_api_key_token: String,
-    created_key_name: String,
+    created_key_names: [String; 2],
 }
 
 impl Fixture {
@@ -154,7 +170,10 @@ impl Fixture {
             user_token,
             seed_api_key_id: seed_api_key.id,
             seed_api_key_token: seed_api_key.access_token,
-            created_key_name: format!("api-key-created-{suffix}"),
+            created_key_names: [
+                format!("api-key-created-lower-{suffix}"),
+                format!("api-key-created-pascal-{suffix}"),
+            ],
         }
     }
 
@@ -184,7 +203,7 @@ impl Fixture {
             .await
             .expect("seed API key cleanup");
         api_key::Entity::delete_many()
-            .filter(api_key::Column::Name.eq(self.created_key_name))
+            .filter(api_key::Column::Name.is_in(self.created_key_names))
             .exec(&self.database)
             .await
             .expect("created API key cleanup");
