@@ -1596,7 +1596,7 @@ fn parse_color(value: &str) -> Result<Rgba<u8>, ImageProcessingError> {
         ]),
         6 | 8 => {
             let mut channels = [0, 0, 0, 255];
-            for (index, chunk) in normalized.as_bytes().chunks_exact(2).enumerate() {
+            for (index, chunk) in normalized.as_bytes().as_chunks::<2>().0.iter().enumerate() {
                 let chunk = std::str::from_utf8(chunk)
                     .map_err(|_| ImageProcessingError::InvalidBackgroundColor(value.into()))?;
                 channels[index] = u8::from_str_radix(chunk, 16)
