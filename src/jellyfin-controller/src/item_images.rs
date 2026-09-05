@@ -82,6 +82,7 @@ struct RemoteImageDownload {
 enum RemoteImageDownloadError {
     InvalidUrl,
     TooLarge,
+    InvalidContentType(String),
     Request(Arc<reqwest::Error>),
 }
 
@@ -90,6 +91,12 @@ impl From<RemoteImageDownloadError> for ItemImageError {
         match error {
             RemoteImageDownloadError::InvalidUrl => Self::InvalidRemoteUrl,
             RemoteImageDownloadError::TooLarge => Self::RemoteImageTooLarge,
+            RemoteImageDownloadError::InvalidContentType(content_type) => {
+                Self::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("remote response content type '{content_type}' is not an image"),
+                ))
+            }
             RemoteImageDownloadError::Request(error) => Self::RemoteDownload(error),
         }
     }
@@ -581,11 +588,25 @@ impl ItemImageService {
         {
             return Err(RemoteImageDownloadError::TooLarge);
         }
-        let content_type = response
+        let declared_content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let content_type = match declared_content_type {
+            Some(content_type)
+                if !content_type.eq_ignore_ascii_case("application/octet-stream") =>
+            {
+                content_type.to_owned()
+            }
+            _ => jellyfin_model::MimeTypes::get_mime_type(response.url().path())
+                .unwrap_or_else(|_| "application/octet-stream".to_owned()),
+        };
+        if !jellyfin_model::MimeTypes::is_image(&content_type) {
+            return Err(RemoteImageDownloadError::InvalidContentType(content_type));
+        }
         let mut bytes = Vec::with_capacity(
             response
                 .content_length()
@@ -603,7 +624,7 @@ impl ItemImageService {
             }
             bytes.extend_from_slice(&chunk);
         }
-        let extension = jellyfin_model::MimeTypes::try_get_image_extension(content_type.as_deref())
+        let extension = jellyfin_model::MimeTypes::try_get_image_extension(Some(&content_type))
             .or_else(|| {
                 Path::new(response.url().path())
                     .extension()

@@ -97,6 +97,127 @@ async fn concurrent_remote_image_downloads_share_one_upstream_request() {
 }
 
 #[tokio::test]
+async fn remote_image_download_validates_and_infers_content_type_like_jellyfin() {
+    struct Case {
+        name: &'static str,
+        path: &'static str,
+        content_type: Option<&'static str>,
+        expected_extension: Option<&'static str>,
+    }
+
+    let database = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
+    let items = BaseItemRepository::new(database.clone());
+    let images = BaseItemImageRepository::new(database.clone());
+    let storage_root =
+        std::env::temp_dir().join(format!("jellyfin-image-content-type-{}", Uuid::new_v4()));
+    let service = ItemImageService::with_storage_directories(
+        database.clone(),
+        storage_root.join("cache/images"),
+        storage_root.join("metadata"),
+    );
+    let cases = [
+        Case {
+            name: "declared HTML is rejected despite an image URL extension",
+            path: "/not-an-image.jpg",
+            content_type: Some("text/html; charset=utf-8"),
+            expected_extension: None,
+        },
+        Case {
+            name: "declared image MIME overrides a non-image URL extension",
+            path: "/image.bin",
+            content_type: Some("image/png"),
+            expected_extension: Some("png"),
+        },
+        Case {
+            name: "missing content type is inferred from an image URL extension",
+            path: "/image.jpg",
+            content_type: None,
+            expected_extension: Some("jpg"),
+        },
+        Case {
+            name: "missing content type without an image extension is rejected",
+            path: "/image",
+            content_type: None,
+            expected_extension: None,
+        },
+        Case {
+            name: "generic binary content type is inferred from an image URL extension",
+            path: "/image.png",
+            content_type: Some("application/octet-stream"),
+            expected_extension: Some("png"),
+        },
+    ];
+
+    for case in cases {
+        let item_id = Uuid::new_v4();
+        let mut item = NewBaseItem::new(item_id, "Movie");
+        item.name = Some(format!("remote-image-content-type-{}-{item_id}", case.name));
+        item.sort_name.clone_from(&item.name);
+        items.create(item).await.expect("base item creation");
+        let image_bytes = format!("image bytes for {}", case.name).into_bytes();
+        let upstream =
+            CountingImageServer::start_response(image_bytes.clone(), case.path, case.content_type);
+
+        let result = service
+            .download_remote_image(item_id, ImageType::Primary, &upstream.url)
+            .await;
+        assert_eq!(upstream.stop(), 1, "{}", case.name);
+        if let Some(expected_extension) = case.expected_extension {
+            result.expect(case.name);
+            let image = images
+                .primary(item_id)
+                .await
+                .expect("primary image lookup")
+                .expect(case.name);
+            assert_eq!(
+                Path::new(&image.path)
+                    .extension()
+                    .and_then(|value| value.to_str()),
+                Some(expected_extension),
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                fs::read(image.path).await.expect("downloaded image read"),
+                image_bytes,
+                "{}",
+                case.name
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(ItemImageError::Io(ref error))
+                        if error.kind() == std::io::ErrorKind::InvalidData
+                ),
+                "{}: {result:?}",
+                case.name
+            );
+            assert!(
+                images
+                    .primary(item_id)
+                    .await
+                    .expect("primary image lookup")
+                    .is_none(),
+                "{}",
+                case.name
+            );
+        }
+        items.delete(item_id).await.expect("base item cleanup");
+    }
+
+    fs::remove_dir_all(&storage_root)
+        .await
+        .expect("image storage cleanup");
+    database.close().await.expect("database connection close");
+}
+
+#[tokio::test]
 async fn failed_remote_replacement_preserves_the_existing_image_and_file() {
     let database = jellyfin_data::connect(&DatabaseConfig::default())
         .await
@@ -236,6 +357,10 @@ struct CountingImageServer {
 
 impl CountingImageServer {
     fn start(bytes: Vec<u8>) -> Self {
+        Self::start_response(bytes, "/shared.jpg", Some("image/jpeg"))
+    }
+
+    fn start_response(bytes: Vec<u8>, path: &str, content_type: Option<&str>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("mock image server bind");
         listener
             .set_nonblocking(true)
@@ -245,6 +370,7 @@ impl CountingImageServer {
         let stop = Arc::new(AtomicBool::new(false));
         let server_requests = Arc::clone(&requests);
         let server_stop = Arc::clone(&stop);
+        let content_type = content_type.map(str::to_owned);
         let thread = thread::spawn(move || {
             while !server_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -253,9 +379,12 @@ impl CountingImageServer {
                         let mut request = [0_u8; 2048];
                         let _ = stream.read(&mut request);
                         thread::sleep(Duration::from_millis(150));
+                        let content_type_header = content_type
+                            .as_deref()
+                            .map_or_else(String::new, |value| format!("Content-Type: {value}\r\n"));
                         write!(
                             stream,
-                            "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            "HTTP/1.1 200 OK\r\n{content_type_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
                             bytes.len()
                         )
                         .expect("mock image response headers");
@@ -270,7 +399,7 @@ impl CountingImageServer {
             }
         });
         Self {
-            url: format!("http://{address}/shared.jpg"),
+            url: format!("http://{address}{path}"),
             requests,
             stop,
             thread,
