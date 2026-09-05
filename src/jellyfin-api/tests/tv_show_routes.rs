@@ -667,6 +667,153 @@ async fn assert_next_up_route(fixture: &Fixture) {
     assert_eq!(paged["StartIndex"], 1);
     assert_eq!(paged["TotalRecordCount"], 1);
     assert_eq!(paged["Items"].as_array().expect("items").len(), 0);
+
+    let root = items.ensure_user_root().await.expect("user root");
+    let rewatch_series = create_item(
+        &items,
+        "Series",
+        "Rewatch Series",
+        Some(root.id),
+        None,
+        None,
+    )
+    .await;
+    let rewatch_season = create_item(
+        &items,
+        "Season",
+        "Rewatch Season",
+        Some(rewatch_series.id),
+        Some(1),
+        None,
+    )
+    .await;
+    let rewatch_first = create_episode(
+        &items,
+        "Rewatch Episode One",
+        rewatch_season.id,
+        rewatch_series.id,
+        1,
+        1,
+        None,
+    )
+    .await;
+    create_episode(
+        &items,
+        "Rewatch Episode Two",
+        rewatch_season.id,
+        rewatch_series.id,
+        1,
+        2,
+        None,
+    )
+    .await;
+    let rewatch_third = create_episode(
+        &items,
+        "Rewatch Episode Three",
+        rewatch_season.id,
+        rewatch_series.id,
+        1,
+        3,
+        None,
+    )
+    .await;
+    let rewatch_fourth = create_episode(
+        &items,
+        "Rewatch Episode Four",
+        rewatch_season.id,
+        rewatch_series.id,
+        1,
+        4,
+        None,
+    )
+    .await;
+    let user_data = UserDataRepository::new(fixture.database.clone());
+    let mut first_watched = NewUserData::new(
+        rewatch_first.id,
+        fixture.user_id,
+        rewatch_first.id.to_string(),
+    );
+    first_watched.played = true;
+    first_watched.last_played_date = Some(Utc::now() - Duration::hours(1));
+    user_data
+        .upsert(first_watched)
+        .await
+        .expect("recent rewatch playback state");
+    let mut third_watched = NewUserData::new(
+        rewatch_third.id,
+        fixture.user_id,
+        rewatch_third.id.to_string(),
+    );
+    third_watched.played = true;
+    third_watched.last_played_date = Some(Utc::now() - Duration::hours(2));
+    user_data
+        .upsert(third_watched)
+        .await
+        .expect("older rewatch playback state");
+
+    let without_rewatching = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", rewatch_series.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&without_rewatching),
+        vec![rewatch_fourth.id.simple().to_string()]
+    );
+
+    let rewatching = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableRewatching=true",
+                    rewatch_series.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(rewatching["TotalRecordCount"], 2);
+    assert_eq!(
+        item_ids(&rewatching),
+        vec![
+            rewatch_third.id.simple().to_string(),
+            rewatch_fourth.id.simple().to_string(),
+        ]
+    );
+
+    let mut resumable_rewatch = NewUserData::new(
+        rewatch_third.id,
+        fixture.user_id,
+        rewatch_third.id.to_string(),
+    );
+    resumable_rewatch.played = true;
+    resumable_rewatch.playback_position_ticks = 10;
+    resumable_rewatch.last_played_date = Some(Utc::now() - Duration::hours(2));
+    user_data
+        .upsert(resumable_rewatch)
+        .await
+        .expect("resumable rewatch playback state");
+    let without_resumable_rewatch = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableRewatching=true",
+                    rewatch_series.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&without_resumable_rewatch),
+        vec![rewatch_fourth.id.simple().to_string()]
+    );
 }
 
 async fn assert_upcoming_route(fixture: &Fixture) {

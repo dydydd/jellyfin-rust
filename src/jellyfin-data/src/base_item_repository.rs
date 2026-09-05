@@ -1880,11 +1880,13 @@ impl BaseItemRepository {
             .await
     }
 
-    /// Queries the next regular unwatched episode for each recently active series.
+    /// Queries the next regular episode for each recently active series.
     ///
     /// Playback state is aggregated over every alternate version. The highest aired watched
     /// position establishes the starting point and each series contributes its first later
-    /// unplayed primary episode. Series are ordered by their most recent version-level activity.
+    /// unplayed primary episode. Rewatching additionally contributes the first watched episode
+    /// after the most recently played position. Series are ordered by their most recent
+    /// version-level activity.
     ///
     /// # Errors
     ///
@@ -1894,7 +1896,7 @@ impl BaseItemRepository {
         &self,
         user_id: Uuid,
         query: &BaseItemQuery,
-        _enable_rewatching: bool,
+        enable_rewatching: bool,
         enable_resumable: bool,
         next_up_date_cutoff: Option<DateTime<Utc>>,
         start_index: u64,
@@ -1980,7 +1982,8 @@ impl BaseItemRepository {
                  SELECT DISTINCT ON (episode.series_presentation_unique_key) \
                         episode.series_presentation_unique_key AS series_key, \
                         episode.parent_index_number AS season_number, \
-                        episode.index_number AS episode_number \
+                        episode.index_number AS episode_number, \
+                        episode.last_played_date \
                  FROM episode_state AS episode \
                  INNER JOIN series_activity AS activity \
                    ON activity.series_key = episode.series_presentation_unique_key \
@@ -1990,7 +1993,7 @@ impl BaseItemRepository {
                           episode.index_number DESC NULLS LAST, \
                           episode.sort_name DESC, episode.id DESC\
              ), ranked_candidates AS (\
-                 SELECT episode.*, activity.last_played_date AS series_last_played_date, \
+                 SELECT episode.*, last_watched.last_played_date AS series_last_played_date, \
                         ROW_NUMBER() OVER (\
                             PARTITION BY episode.series_presentation_unique_key \
                             ORDER BY episode.parent_index_number NULLS LAST, \
@@ -2007,8 +2010,8 @@ impl BaseItemRepository {
                         OR episode.parent_index_number > last_watched.season_number \
                         OR (episode.parent_index_number = last_watched.season_number \
                             AND episode.index_number > last_watched.episode_number))\
-             ), selected AS MATERIALIZED (\
-                 SELECT item.*, candidate.series_last_played_date \
+             ), normal_selected AS MATERIALIZED (\
+                 SELECT item.*, candidate.series_last_played_date, 0 AS result_rank \
                  FROM ranked_candidates AS candidate \
                  INNER JOIN jellyfin.base_items AS item ON item.id = candidate.id \
                  WHERE candidate.candidate_rank = 1",
@@ -2017,6 +2020,56 @@ impl BaseItemRepository {
             sql.push_str(" AND NOT candidate.is_resumable");
         }
         sql.push(')');
+        if enable_rewatching {
+            sql.push_str(
+                ", last_watched_for_rewatching AS MATERIALIZED (\
+                     SELECT DISTINCT ON (episode.series_presentation_unique_key) \
+                            episode.series_presentation_unique_key AS series_key, \
+                            episode.parent_index_number AS season_number, \
+                            episode.index_number AS episode_number, \
+                            episode.last_played_date \
+                     FROM episode_state AS episode \
+                     INNER JOIN series_activity AS activity \
+                       ON activity.series_key = episode.series_presentation_unique_key \
+                     WHERE episode.is_watched \
+                     ORDER BY episode.series_presentation_unique_key, \
+                              episode.last_played_date DESC NULLS LAST, \
+                              episode.parent_index_number DESC NULLS LAST, \
+                              episode.index_number DESC NULLS LAST, \
+                              episode.sort_name DESC, episode.id DESC\
+                 ), ranked_rewatch_candidates AS (\
+                     SELECT episode.*, \
+                            last_watched.last_played_date AS series_last_played_date, \
+                            ROW_NUMBER() OVER (\
+                                PARTITION BY episode.series_presentation_unique_key \
+                                ORDER BY episode.parent_index_number NULLS LAST, \
+                                         episode.index_number NULLS LAST, \
+                                         episode.sort_name, episode.id\
+                            ) AS candidate_rank \
+                     FROM episode_state AS episode \
+                     INNER JOIN last_watched_for_rewatching AS last_watched \
+                       ON last_watched.series_key = episode.series_presentation_unique_key \
+                     WHERE episode.is_watched \
+                       AND NOT episode.is_resumable \
+                       AND (last_watched.season_number IS NULL \
+                            OR last_watched.episode_number IS NULL \
+                            OR episode.parent_index_number > last_watched.season_number \
+                            OR (episode.parent_index_number = last_watched.season_number \
+                                AND episode.index_number > last_watched.episode_number))\
+                 ), rewatch_selected AS MATERIALIZED (\
+                     SELECT item.*, candidate.series_last_played_date, 1 AS result_rank \
+                     FROM ranked_rewatch_candidates AS candidate \
+                     INNER JOIN jellyfin.base_items AS item ON item.id = candidate.id \
+                     WHERE candidate.candidate_rank = 1\
+                 ), selected AS MATERIALIZED (\
+                     SELECT * FROM normal_selected \
+                     UNION ALL \
+                     SELECT * FROM rewatch_selected\
+                 )",
+            );
+        } else {
+            sql.push_str(", selected AS MATERIALIZED (SELECT * FROM normal_selected)");
+        }
         let total = if query.enable_total_record_count.unwrap_or(false) {
             Some(
                 self.database
@@ -2037,7 +2090,8 @@ impl BaseItemRepository {
         let mut page_values = values;
         let mut page_sql = format!(
             "{sql} SELECT {BASE_ITEM_COLUMNS} FROM selected \
-             ORDER BY series_last_played_date DESC, \
+             ORDER BY series_last_played_date DESC NULLS LAST, \
+                      result_rank, \
                       series_presentation_unique_key, id"
         );
         push_bind(
