@@ -77,6 +77,36 @@ async fn media_segments_route_matches_official_contract_and_returns_persisted_se
     assert_eq!(intro_only["TotalRecordCount"], 1);
     assert_eq!(intro_only["Items"][0]["Type"], "Intro");
 
+    let commercial_only = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/MediaSegments/{}?IncludeSegmentTypes=Commercial",
+                    fixture.item_id
+                ),
+                &fixture.user_token,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(commercial_only["TotalRecordCount"], 1);
+    assert_eq!(commercial_only["Items"][0]["Type"], "Commercial");
+
+    let lowercase_intro_only = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/MediaSegments/{}?includesegmenttypes=Intro",
+                    fixture.item_id
+                ),
+                &fixture.user_token,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_intro_only["TotalRecordCount"], 1);
+    assert_eq!(lowercase_intro_only["Items"][0]["Type"], "Intro");
+
     let unknown_only = body_json(
         fixture
             .get(

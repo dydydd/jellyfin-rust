@@ -25,11 +25,15 @@ use crate::{ApiError, AppState, authorization};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct TranscodeQuery {
-    #[serde(rename = "jobId", alias = "JobId")]
+    #[serde(rename = "jobId", alias = "JobId", alias = "jobid")]
     job_id: Option<String>,
-    #[serde(rename = "deviceId", alias = "DeviceId")]
+    #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
     device_id: Option<String>,
-    #[serde(rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid"
+    )]
     play_session_id: Option<String>,
     #[serde(
         rename = "mediaSourceId",
@@ -37,46 +41,95 @@ pub(crate) struct TranscodeQuery {
         alias = "mediasourceid"
     )]
     media_source_id: Option<String>,
-    #[serde(rename = "videoCodec", alias = "VideoCodec")]
+    #[serde(rename = "videoCodec", alias = "VideoCodec", alias = "videocodec")]
     video_codec: Option<String>,
-    #[serde(rename = "audioCodec", alias = "AudioCodec")]
+    #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
     audio_codec: Option<String>,
-    #[serde(rename = "videoBitrate", alias = "VideoBitrate")]
+    #[serde(
+        rename = "videoBitrate",
+        alias = "VideoBitrate",
+        alias = "videobitrate"
+    )]
     video_bitrate: Option<i64>,
-    #[serde(rename = "audioBitrate", alias = "AudioBitrate")]
+    #[serde(
+        rename = "audioBitrate",
+        alias = "AudioBitrate",
+        alias = "audiobitrate"
+    )]
     audio_bitrate: Option<i64>,
-    #[serde(rename = "audioStreamIndex", alias = "AudioStreamIndex")]
+    #[serde(
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex"
+    )]
     audio_stream_index: Option<i32>,
-    #[serde(rename = "subtitleStreamIndex", alias = "SubtitleStreamIndex")]
+    #[serde(
+        rename = "subtitleStreamIndex",
+        alias = "SubtitleStreamIndex",
+        alias = "subtitlestreamindex"
+    )]
     subtitle_stream_index: Option<i32>,
-    #[serde(rename = "burnSubtitles", alias = "BurnSubtitles")]
+    #[serde(
+        rename = "burnSubtitles",
+        alias = "BurnSubtitles",
+        alias = "burnsubtitles"
+    )]
     burn_subtitles: Option<bool>,
-    #[serde(rename = "audioNormalize", alias = "AudioNormalize")]
+    #[serde(
+        rename = "audioNormalize",
+        alias = "AudioNormalize",
+        alias = "audionormalize"
+    )]
     audio_normalize: Option<bool>,
-    #[serde(rename = "enableHDRToneMapping", alias = "EnableHDRToneMapping")]
+    #[serde(
+        rename = "enableHDRToneMapping",
+        alias = "EnableHDRToneMapping",
+        alias = "enablehdrtonemapping"
+    )]
     enable_hdr_tone_mapping: Option<bool>,
     #[serde(rename = "hwaccel", alias = "Hwaccel")]
     hwaccel: Option<String>,
-    #[serde(rename = "audioSampleRate", alias = "AudioSampleRate")]
+    #[serde(
+        rename = "audioSampleRate",
+        alias = "AudioSampleRate",
+        alias = "audiosamplerate"
+    )]
     audio_sample_rate: Option<i32>,
-    #[serde(rename = "maxWidth", alias = "MaxWidth")]
+    #[serde(rename = "maxWidth", alias = "MaxWidth", alias = "maxwidth")]
     max_width: Option<i32>,
-    #[serde(rename = "maxHeight", alias = "MaxHeight")]
+    #[serde(rename = "maxHeight", alias = "MaxHeight", alias = "maxheight")]
     max_height: Option<i32>,
-    #[serde(rename = "maxFramerate", alias = "MaxFramerate")]
+    #[serde(
+        rename = "maxFramerate",
+        alias = "MaxFramerate",
+        alias = "maxframerate"
+    )]
     max_framerate: Option<f32>,
     #[serde(
         rename = "transcodingMaxAudioChannels",
-        alias = "TranscodingMaxAudioChannels"
+        alias = "TranscodingMaxAudioChannels",
+        alias = "transcodingmaxaudiochannels"
     )]
     max_audio_channels: Option<i32>,
-    #[serde(rename = "segmentContainer", alias = "SegmentContainer")]
+    #[serde(
+        rename = "segmentContainer",
+        alias = "SegmentContainer",
+        alias = "segmentcontainer"
+    )]
     segment_container: Option<String>,
-    #[serde(rename = "segmentLength", alias = "SegmentLength")]
+    #[serde(
+        rename = "segmentLength",
+        alias = "SegmentLength",
+        alias = "segmentlength"
+    )]
     segment_length: Option<i32>,
-    #[serde(rename = "minSegments", alias = "MinSegments")]
+    #[serde(rename = "minSegments", alias = "MinSegments", alias = "minsegments")]
     min_segments: Option<i32>,
-    #[serde(rename = "startTimeTicks", alias = "StartTimeTicks")]
+    #[serde(
+        rename = "startTimeTicks",
+        alias = "StartTimeTicks",
+        alias = "starttimeticks"
+    )]
     start_time_ticks: Option<i64>,
 }
 
@@ -105,9 +158,13 @@ impl TranscodeQuery {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ActiveEncodingQuery {
-    #[serde(rename = "deviceId", alias = "DeviceId")]
+    #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
     device_id: String,
-    #[serde(rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid"
+    )]
     play_session_id: String,
 }
 
@@ -633,14 +690,23 @@ fn segment_length_ms(segment_length_seconds: Option<i32>) -> Result<i32, ApiErro
 #[derive(Debug, Deserialize)]
 #[allow(clippy::struct_field_names)]
 pub(crate) struct DynamicSegmentQuery {
-    #[serde(rename = "runtimeTicks", alias = "RuntimeTicks")]
+    #[serde(
+        rename = "runtimeTicks",
+        alias = "RuntimeTicks",
+        alias = "runtimeticks"
+    )]
     runtime_ticks: i64,
     #[serde(
         rename = "actualSegmentLengthTicks",
-        alias = "ActualSegmentLengthTicks"
+        alias = "ActualSegmentLengthTicks",
+        alias = "actualsegmentlengthticks"
     )]
     actual_segment_length_ticks: i64,
-    #[serde(rename = "startTimeTicks", alias = "StartTimeTicks")]
+    #[serde(
+        rename = "startTimeTicks",
+        alias = "StartTimeTicks",
+        alias = "starttimeticks"
+    )]
     start_time_ticks: Option<i64>,
 }
 

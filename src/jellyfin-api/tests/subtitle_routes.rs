@@ -388,23 +388,30 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         Bytes::from_static(b"1\n00:00:01,000 --> 00:00:02,000\nHello from upload\n")
     );
 
-    let converted = fixture
-        .send(
-            Method::GET,
-            &format!(
-                "{}?addVttTimeMap=true&startPositionTicks=10000000",
-                Fixture::stream_route(fixture.item_id, 4, "vtt")
+    for query in [
+        "addVttTimeMap=true&startPositionTicks=10000000",
+        "AddVttTimeMap=true&StartPositionTicks=10000000",
+        "addvtttimemap=true&startpositionticks=10000000",
+    ] {
+        let converted = fixture
+            .send(
+                Method::GET,
+                &format!(
+                    "{}?{query}",
+                    Fixture::stream_route(fixture.item_id, 4, "vtt")
+                ),
+                None,
+            )
+            .await;
+        assert_eq!(converted.status(), StatusCode::OK, "{query}");
+        assert_eq!(
+            body_bytes(converted).await,
+            Bytes::from_static(
+                b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
             ),
-            None,
-        )
-        .await;
-    assert_eq!(converted.status(), StatusCode::OK);
-    assert_eq!(
-        body_bytes(converted).await,
-        Bytes::from_static(
-            b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
-        )
-    );
+            "{query}"
+        );
+    }
 
     let converted_from_ticks_route = fixture
         .send(
@@ -448,24 +455,43 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         .send(Method::GET, &playlist_route, Some(&fixture.manager_token))
         .await;
     assert_eq!(playlist.status(), StatusCode::OK);
+    let expected_playlist = format!(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:10\n\
+         #EXT-X-VERSION:3\n\
+         #EXT-X-MEDIA-SEQUENCE:0\n\
+         #EXT-X-PLAYLIST-TYPE:VOD\n\
+         #EXTINF:10,\n\
+         stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=0&EndPositionTicks=100000000&ApiKey={}\n\
+         #EXTINF:10,\n\
+         stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=100000000&EndPositionTicks=200000000&ApiKey={}\n\
+         #EXTINF:5,\n\
+         stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=200000000&EndPositionTicks=250000000&ApiKey={}\n\
+         #EXT-X-ENDLIST\n",
+        fixture.manager_token, fixture.manager_token, fixture.manager_token
+    );
     assert_eq!(
         String::from_utf8(body_bytes(playlist).await.to_vec()).expect("playlist text"),
-        format!(
-            "#EXTM3U\n\
-             #EXT-X-TARGETDURATION:10\n\
-             #EXT-X-VERSION:3\n\
-             #EXT-X-MEDIA-SEQUENCE:0\n\
-             #EXT-X-PLAYLIST-TYPE:VOD\n\
-             #EXTINF:10,\n\
-             stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=0&EndPositionTicks=100000000&ApiKey={}\n\
-             #EXTINF:10,\n\
-             stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=100000000&EndPositionTicks=200000000&ApiKey={}\n\
-             #EXTINF:5,\n\
-             stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=200000000&EndPositionTicks=250000000&ApiKey={}\n\
-             #EXT-X-ENDLIST\n",
-            fixture.manager_token, fixture.manager_token, fixture.manager_token
-        )
+        expected_playlist
     );
+    for query_name in ["SegmentLength", "segmentlength"] {
+        let playlist = fixture
+            .send(
+                Method::GET,
+                &format!(
+                    "/Videos/{}/{}/Subtitles/4/subtitles.m3u8?{query_name}=10",
+                    fixture.item_id, fixture.item_id
+                ),
+                Some(&fixture.manager_token),
+            )
+            .await;
+        assert_eq!(playlist.status(), StatusCode::OK, "{query_name}");
+        assert_eq!(
+            String::from_utf8(body_bytes(playlist).await.to_vec()).expect("playlist text"),
+            expected_playlist,
+            "{query_name}"
+        );
+    }
     assert_eq!(
         fixture
             .send(

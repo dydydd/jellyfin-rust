@@ -23,19 +23,40 @@ pub(crate) struct StreamQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UniversalQuery {
-    #[serde(default, deserialize_with = "crate::query::comma::deserialize")]
+    #[serde(
+        default,
+        rename = "container",
+        alias = "Container",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
     container: Vec<String>,
-    #[serde(rename = "userId", alias = "UserId")]
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(rename = "audioCodec", alias = "AudioCodec")]
+    #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
     audio_codec: Option<String>,
-    #[serde(rename = "maxAudioChannels", alias = "MaxAudioChannels")]
+    #[serde(
+        rename = "maxAudioChannels",
+        alias = "MaxAudioChannels",
+        alias = "maxaudiochannels"
+    )]
     max_audio_channels: Option<i32>,
-    #[serde(rename = "maxStreamingBitrate", alias = "MaxStreamingBitrate")]
+    #[serde(
+        rename = "maxStreamingBitrate",
+        alias = "MaxStreamingBitrate",
+        alias = "maxstreamingbitrate"
+    )]
     max_streaming_bitrate: Option<i64>,
-    #[serde(rename = "startTimeTicks", alias = "StartTimeTicks")]
+    #[serde(
+        rename = "startTimeTicks",
+        alias = "StartTimeTicks",
+        alias = "starttimeticks"
+    )]
     start_time_ticks: Option<i64>,
-    #[serde(rename = "transcodingContainer", alias = "TranscodingContainer")]
+    #[serde(
+        rename = "transcodingContainer",
+        alias = "TranscodingContainer",
+        alias = "transcodingcontainer"
+    )]
     transcoding_container: Option<String>,
 }
 

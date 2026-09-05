@@ -15,7 +15,11 @@ use crate::{ApiError, AppState, authentication::AuthenticatedIdentity, authoriza
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct TrickplayQuery {
-    #[serde(rename = "mediaSourceId", alias = "MediaSourceId")]
+    #[serde(
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid"
+    )]
     media_source_id: Option<Uuid>,
 }
 

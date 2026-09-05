@@ -402,6 +402,19 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
         .await;
     assert_file_response(response, StatusCode::OK, "audio/aac", b"dynamic-audio").await;
 
+    for query in [
+        "RuntimeTicks=0&ActualSegmentLengthTicks=40000000",
+        "runtimeticks=0&actualsegmentlengthticks=40000000",
+    ] {
+        let response = fixture
+            .get(
+                &format!("/Videos/{item_id}/hls1/main/0.ts?{query}"),
+                fixture.device_headers(),
+            )
+            .await;
+        assert_file_response(response, StatusCode::OK, "video/mp2t", b"dynamic-video").await;
+    }
+
     let response = fixture
         .get(
             &format!(
@@ -618,13 +631,20 @@ async fn active_encoding_cleanup_matches_official_auth_and_required_query_contra
             .status(),
         StatusCode::BAD_REQUEST
     );
-    assert_eq!(
-        fixture
-            .delete(route, fixture.device_headers())
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
+    for route in [
+        route,
+        "/Videos/ActiveEncodings?DeviceId=hls-tests&PlaySessionId=play-session",
+        "/Videos/ActiveEncodings?deviceid=hls-tests&playsessionid=play-session",
+    ] {
+        assert_eq!(
+            fixture
+                .delete(route, fixture.device_headers())
+                .await
+                .status(),
+            StatusCode::NO_CONTENT,
+            "{route}"
+        );
+    }
 
     fixture.block_ordinary_user().await;
     assert_eq!(

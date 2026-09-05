@@ -117,6 +117,24 @@ async fn assert_exact_playlist_and_media_source_override(fixture: &Fixture) {
         expected_alternate_playlist(fixture.alternate_id, &fixture.user_token)
     );
 
+    let lowercase_override_route = format!(
+        "{}?mediasourceid={}",
+        Fixture::playlist_route(fixture.primary_id, 640),
+        fixture.alternate_id
+    );
+    let response = fixture
+        .request(
+            Method::GET,
+            &lowercase_override_route,
+            Credential::Device(&fixture.user_token),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_string(response).await,
+        expected_alternate_playlist(fixture.alternate_id, &fixture.user_token)
+    );
+
     // The official playlist lookup is metadata-only and does not apply item visibility.
     let hidden_route = Fixture::playlist_route(fixture.hidden_id, 320);
     assert_eq!(

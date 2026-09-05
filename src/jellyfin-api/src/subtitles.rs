@@ -37,7 +37,7 @@ struct EncodingOptionsSubset {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct RemoteSubtitleSearchQuery {
-    #[serde(alias = "isPerfectMatch")]
+    #[serde(alias = "isPerfectMatch", alias = "isperfectmatch")]
     is_perfect_match: Option<bool>,
 }
 
@@ -54,28 +54,28 @@ pub(crate) struct UploadSubtitleDto {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct SubtitleStreamQuery {
-    #[serde(alias = "ItemId")]
+    #[serde(alias = "ItemId", alias = "itemid")]
     item_id: Option<Uuid>,
-    #[serde(alias = "MediaSourceId")]
+    #[serde(alias = "MediaSourceId", alias = "mediasourceid")]
     media_source_id: Option<String>,
     #[serde(alias = "Index")]
     index: Option<i32>,
     #[serde(alias = "Format")]
     format: Option<String>,
-    #[serde(alias = "EndPositionTicks")]
+    #[serde(alias = "EndPositionTicks", alias = "endpositionticks")]
     end_position_ticks: Option<i64>,
-    #[serde(alias = "CopyTimestamps")]
+    #[serde(alias = "CopyTimestamps", alias = "copytimestamps")]
     copy_timestamps: bool,
-    #[serde(alias = "AddVttTimeMap")]
+    #[serde(alias = "AddVttTimeMap", alias = "addvtttimemap")]
     add_vtt_time_map: bool,
-    #[serde(alias = "StartPositionTicks")]
+    #[serde(alias = "StartPositionTicks", alias = "startpositionticks")]
     start_position_ticks: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct SubtitlePlaylistQuery {
-    #[serde(alias = "SegmentLength")]
+    #[serde(alias = "SegmentLength", alias = "segmentlength")]
     segment_length: Option<i64>,
 }
 

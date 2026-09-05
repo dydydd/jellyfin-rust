@@ -96,6 +96,18 @@ async fn assert_video_stream(fixture: &Fixture) {
         to_bytes(response.into_body(), usize::MAX).await.unwrap(),
         media_bytes
     );
+    let pascal_universal = format!(
+        "/Audio/{}/universal?Container=mp3,bin|pcm",
+        fixture.stream_audio_id
+    );
+    let response = fixture
+        .request("GET", &pascal_universal, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
     let head = fixture
         .request("HEAD", &route, Some(&fixture.user_token))
         .await;
@@ -261,6 +273,20 @@ async fn assert_audio_stream(fixture: &Fixture) {
                 "GET",
                 &format!(
                     "/Audio/{}/universal?container=mp3&transcodingContainer=mp3",
+                    fixture.stream_audio_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!(
+                    "/Audio/{}/universal?container=mp3&transcodingcontainer=mp3",
                     fixture.stream_audio_id
                 ),
                 Some(&fixture.user_token),

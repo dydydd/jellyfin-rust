@@ -18,6 +18,7 @@ pub(crate) struct MediaSegmentsQuery {
         default,
         rename = "includeSegmentTypes",
         alias = "IncludeSegmentTypes",
+        alias = "includesegmenttypes",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_segment_types: Vec<MediaSegmentType>,
