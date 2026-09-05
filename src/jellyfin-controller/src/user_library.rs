@@ -182,6 +182,29 @@ impl UserLibraryService {
         Ok(self.items.child_counts_by_parent(&query).await?)
     }
 
+    /// Counts real leaf descendants for several folders using the target user's normal library
+    /// access policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-policy, or persistence errors.
+    pub async fn recursive_item_counts(
+        &self,
+        target_user_id: Uuid,
+        parent_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, u64>, UserLibraryError> {
+        let mut query = BaseItemQuery {
+            is_virtual_item: Some(false),
+            user_id: Some(target_user_id),
+            ..BaseItemQuery::default()
+        };
+        self.apply_user_policy(&mut query, target_user_id).await?;
+        Ok(self
+            .items
+            .dto_recursive_item_counts(parent_ids, &query)
+            .await?)
+    }
+
     /// Counts non-virtual items visible to one target user using the normal library policy.
     ///
     /// # Errors

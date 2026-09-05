@@ -62,6 +62,9 @@
 - Project requested folder ChildCount values in one batch. Count episodes by SeasonId, prefer linked
   children, deduplicate merged folder children by PresentationUniqueKey, and honor the user's
   DisplayMissingEpisodes preference without issuing per-folder queries.
+- Project requested `RecursiveItemCount` values with one batched, user-policy-aware leaf query.
+  Traverse hierarchy and linked descendants, expand merged folder groups, exclude virtual leaves,
+  alternate versions, and owned non-extra rows, and return zero entries without per-folder fallbacks.
 - Order episode detail pages with the official aired-episode comparer before applying `StartItemId`, adjacency, or pagination. Specials with `AirsBeforeSeasonNumber`, `AirsAfterSeasonNumber`, or `AirsBeforeEpisodeNumber` must be positioned relative to regular episodes rather than compared with a single incompatible numeric key; season zero itself remains sorted by `SortName`.
 - After scanning a movie directory, supplement the official filename-based version resolver with a conservative metadata match: same directory, non-empty case-insensitive title, and the same non-empty year, while rejecting the whole candidate group when TMDb, IMDb, or TVDb identifiers conflict. Never use collection identifiers as movie identity.
 - Do not advertise a playback method unless the returned URL really implements it. In particular, never label unchanged container bytes as an MP4 direct stream; derive `SupportsDirectPlay`, `SupportsDirectStream`, and `SupportsTranscoding` from the final selected method and device policy.

@@ -1183,6 +1183,13 @@ async fn page_to_dto(
     let mut child_counts =
         user_library::child_counts_for_items(state, &page.items, requested_fields, target_user_id)
             .await?;
+    let mut recursive_item_counts = user_library::recursive_item_counts_for_items(
+        state,
+        &page.items,
+        requested_fields,
+        target_user_id,
+    )
+    .await?;
     let mut media_source_groups = if requested_fields.wants_media_sources() {
         let sources = state
             .base_items
@@ -1263,6 +1270,7 @@ async fn page_to_dto(
         let original_language = user_library::original_language_from_item(&item);
         let mut dto = user_library::item_to_dto(item, state.server_id());
         user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
+        user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
         if requested_fields.wants_media_source_count() {
             user_library::attach_media_source_count(
                 &mut dto,

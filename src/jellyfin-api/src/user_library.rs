@@ -56,6 +56,7 @@ pub(crate) struct BaseItemDtoFields {
     media_source_count: bool,
     item_counts: bool,
     child_count: bool,
+    recursive_item_count: bool,
     trickplay: bool,
 }
 
@@ -68,6 +69,7 @@ impl BaseItemDtoFields {
             media_source_count: true,
             item_counts: true,
             child_count: true,
+            recursive_item_count: true,
             trickplay: true,
         }
     }
@@ -80,6 +82,7 @@ impl BaseItemDtoFields {
             media_source_count: false,
             item_counts: false,
             child_count: false,
+            recursive_item_count: false,
             trickplay: false,
         }
     }
@@ -98,6 +101,8 @@ impl BaseItemDtoFields {
                 result.item_counts = true;
             } else if field.eq_ignore_ascii_case("ChildCount") {
                 result.child_count = true;
+            } else if field.eq_ignore_ascii_case("RecursiveItemCount") {
+                result.recursive_item_count = true;
             } else if field.eq_ignore_ascii_case("Trickplay") {
                 result.trickplay = true;
             }
@@ -133,6 +138,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_child_count(self) -> bool {
         self.child_count
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_recursive_item_count(self) -> bool {
+        self.recursive_item_count
     }
 
     #[must_use]
@@ -187,6 +197,8 @@ pub struct BaseItemDto {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recursive_item_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub album_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -694,6 +706,13 @@ async fn get_root_for(
         target_user_id,
     )
     .await?;
+    let mut recursive_item_counts = recursive_item_counts_for_items(
+        state.as_ref(),
+        std::slice::from_ref(&item),
+        requested_fields,
+        target_user_id,
+    )
+    .await?;
     let item_id = item.id;
     let mut dto = project_item_to_dto(
         state.as_ref(),
@@ -705,6 +724,7 @@ async fn get_root_for(
     )
     .await?;
     attach_child_count(&mut dto, child_counts.remove(&item_id));
+    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
     Ok(Json(dto))
 }
 
@@ -733,6 +753,13 @@ async fn get_item_for(
         target_user_id,
     )
     .await?;
+    let mut recursive_item_counts = recursive_item_counts_for_items(
+        state.as_ref(),
+        std::slice::from_ref(&item),
+        requested_fields,
+        target_user_id,
+    )
+    .await?;
     let item_id = item.id;
     let mut dto = project_item_to_dto(
         state.as_ref(),
@@ -744,6 +771,7 @@ async fn get_item_for(
     )
     .await?;
     attach_child_count(&mut dto, child_counts.remove(&item_id));
+    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
     Ok(Json(dto))
 }
 
@@ -862,6 +890,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         is_virtual_item: item.is_virtual_item,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),
         child_count: None,
+        recursive_item_count: None,
         album_count: None,
         artist_count: None,
         episode_count: None,
@@ -1337,9 +1366,41 @@ pub(crate) async fn child_counts_for_items(
         .await?)
 }
 
+pub(crate) async fn recursive_item_counts_for_items(
+    state: &AppState,
+    items: &[base_item::Model],
+    fields: BaseItemDtoFields,
+    target_user_id: Uuid,
+) -> Result<HashMap<Uuid, u64>, ApiError> {
+    if !fields.wants_recursive_item_count() {
+        return Ok(HashMap::new());
+    }
+    let parent_ids = items
+        .iter()
+        .filter(|item| item.is_folder)
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    if parent_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    Ok(state
+        .user_library
+        .recursive_item_counts(target_user_id, &parent_ids)
+        .await?)
+}
+
 pub(crate) fn attach_child_count(dto: &mut BaseItemDto, child_count: Option<u64>) {
     if let Some(child_count) = child_count {
         dto.child_count = Some(child_count);
+    }
+}
+
+pub(crate) fn attach_recursive_item_count(
+    dto: &mut BaseItemDto,
+    recursive_item_count: Option<u64>,
+) {
+    if let Some(recursive_item_count) = recursive_item_count {
+        dto.recursive_item_count = Some(recursive_item_count);
     }
 }
 

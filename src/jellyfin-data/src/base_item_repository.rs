@@ -1607,6 +1607,94 @@ impl BaseItemRepository {
             .collect())
     }
 
+    /// Counts visible, real leaf descendants for multiple folders in one query.
+    ///
+    /// Folder traversal follows both the physical hierarchy and linked children, expands merged
+    /// folder rows that share a presentation key, and terminates linked-child cycles. The filtered
+    /// leaf set reuses ordinary item-query access rules, including alternate-version, owned-item,
+    /// virtual-item, library, tag, and parental restrictions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the aggregate query fails.
+    pub async fn dto_recursive_item_counts(
+        &self,
+        parent_ids: &[Uuid],
+        query: &BaseItemQuery,
+    ) -> Result<HashMap<Uuid, u64>, BaseItemError> {
+        if parent_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let (cte, mut values) = filtered_query_cte(query);
+        let mut sql = cte.replacen("WITH ", "WITH RECURSIVE ", 1);
+        let requested_values = parent_ids
+            .iter()
+            .map(|parent_id| {
+                values.push((*parent_id).into());
+                let mut placeholder = String::from("($");
+                write!(placeholder, "{}::uuid)", values.len())
+                    .expect("writing to a String cannot fail");
+                placeholder
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(
+            sql,
+            ", requested(parent_id) AS (VALUES {requested_values}), \
+             group_members AS (\
+                 SELECT requested.parent_id, member.id AS member_id \
+                 FROM requested \
+                 INNER JOIN jellyfin.base_items AS target ON target.id = requested.parent_id \
+                 INNER JOIN jellyfin.base_items AS member \
+                   ON member.is_folder = true \
+                  AND (member.id = target.id \
+                       OR (target.presentation_unique_key IS NOT NULL \
+                           AND member.presentation_unique_key = target.presentation_unique_key))\
+             ), traversal(parent_id, item_id) AS (\
+                 SELECT parent_id, member_id FROM group_members \
+                 UNION \
+                 SELECT traversal.parent_id, edge.child_id \
+                 FROM traversal \
+                 CROSS JOIN LATERAL (\
+                     SELECT child.id AS child_id \
+                     FROM jellyfin.base_items AS child \
+                     WHERE child.parent_id = traversal.item_id \
+                     UNION \
+                     SELECT link.child_id \
+                     FROM jellyfin.linked_children AS link \
+                     WHERE link.parent_id = traversal.item_id\
+                 ) AS edge\
+             ), counts AS (\
+                 SELECT traversal.parent_id, COUNT(DISTINCT leaf.id)::bigint AS child_count \
+                 FROM traversal \
+                 INNER JOIN filtered AS leaf ON leaf.id = traversal.item_id \
+                 WHERE leaf.is_folder = false \
+                 GROUP BY traversal.parent_id\
+             ) \
+             SELECT requested.parent_id, COALESCE(counts.child_count, 0)::bigint AS child_count \
+             FROM requested LEFT JOIN counts USING (parent_id)"
+        )
+        .expect("writing to a String cannot fail");
+
+        let rows = ParentChildCount::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.parent_id,
+                    u64::try_from(row.child_count).unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
     /// Counts non-virtual library items by Jellyfin's public item-count buckets.
     ///
     /// `PostgreSQL` computes all buckets in one aggregate scan using `FILTER`

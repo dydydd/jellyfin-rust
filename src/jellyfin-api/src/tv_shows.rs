@@ -633,6 +633,9 @@ async fn project_items_to_dtos(
         user_library::trickplay_manifests_for_items(state, &items, fields).await?;
     let mut child_counts =
         user_library::child_counts_for_items(state, &items, fields, target_user_id).await?;
+    let mut recursive_item_counts =
+        user_library::recursive_item_counts_for_items(state, &items, fields, target_user_id)
+            .await?;
 
     let mut dtos = Vec::with_capacity(items.len());
     for item in items {
@@ -648,6 +651,7 @@ async fn project_items_to_dtos(
         )
         .await?;
         user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
+        user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
         user_library::attach_trickplay_manifest(
             &mut dto,
             fields,

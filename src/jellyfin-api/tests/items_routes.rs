@@ -495,6 +495,96 @@ async fn episode_media_source_count_is_projected_without_loading_sources() {
 }
 
 #[tokio::test]
+async fn recursive_item_count_is_opt_in_for_pages_and_defaulted_for_details() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut folder = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    folder.name = Some(format!("Recursive count {}", fixture.suffix));
+    folder.sort_name = folder.name.clone();
+    folder.parent_id = Some(root.id);
+    folder.is_folder = true;
+    let folder = items.create(folder).await.expect("counted folder");
+    let primary = create_item(
+        &items,
+        "Movie",
+        &format!("Primary recursive {}", fixture.suffix),
+        folder.id,
+    )
+    .await;
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate.parent_id = Some(folder.id);
+    alternate.primary_version_id = Some(primary.id);
+    let _alternate = items.create(alternate).await.expect("alternate leaf");
+    let mut virtual_item = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    virtual_item.parent_id = Some(folder.id);
+    virtual_item.is_virtual_item = true;
+    let _virtual_item = items.create(virtual_item).await.expect("virtual leaf");
+    let mut nested = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    nested.parent_id = Some(folder.id);
+    nested.is_folder = true;
+    let nested = items.create(nested).await.expect("nested folder");
+    let _nested_leaf = create_item(
+        &items,
+        "Episode",
+        &format!("Nested recursive {}", fixture.suffix),
+        nested.id,
+    )
+    .await;
+
+    let without_field = body_json(
+        fixture
+            .request(
+                &format!("/Items?ids={}", folder.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        without_field["Items"][0]
+            .get("RecursiveItemCount")
+            .is_none()
+    );
+
+    for field in [
+        "RecursiveItemCount",
+        "recursiveItemCount",
+        "recursiveitemcount",
+    ] {
+        let with_field = body_json(
+            fixture
+                .request(
+                    &format!("/Items?ids={}&fields={field}", folder.id),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(with_field["Items"][0]["RecursiveItemCount"], 2);
+    }
+
+    let detail = body_json(
+        fixture
+            .request(
+                &format!("/Users/{}/Items/{}", fixture.user_id, folder.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(detail["RecursiveItemCount"], 2);
+
+    items
+        .delete(folder.id)
+        .await
+        .expect("folder subtree cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn trickplay_field_is_opt_in_batched_and_matches_official_shape() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

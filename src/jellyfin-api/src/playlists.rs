@@ -288,8 +288,17 @@ pub(crate) async fn get_items(
     let fields = BaseItemDtoFields::from_names(&query.fields);
     let defaults =
         crate::user_library::media_stream_defaults_for_user(&state, user_id, fields).await?;
+    let page_items = page
+        .items
+        .iter()
+        .map(|entry| entry.item.clone())
+        .collect::<Vec<_>>();
+    let mut recursive_item_counts =
+        crate::user_library::recursive_item_counts_for_items(&state, &page_items, fields, user_id)
+            .await?;
     let mut items = Vec::<BaseItemDto>::with_capacity(page.items.len());
     for entry in page.items {
+        let item_id = entry.item.id;
         let mut dto = if fields == BaseItemDtoFields::default() {
             item_to_dto(entry.item, state.server_id())
         } else {
@@ -303,6 +312,10 @@ pub(crate) async fn get_items(
             )
             .await?
         };
+        crate::user_library::attach_recursive_item_count(
+            &mut dto,
+            recursive_item_counts.remove(&item_id),
+        );
         dto.playlist_item_id = Some(entry.entry_id.simple().to_string());
         items.push(dto);
     }
