@@ -30,6 +30,7 @@
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Preserve unknown or optional metadata where the official server does; a partial provider response must not erase valid existing metadata.
 - Metadata providers must have deterministic priority and merge behavior. Network calls need timeouts, bounded concurrency, and useful error context.
+- During episode refresh, merge a neighboring local NFO before remote metadata: preserve a non-empty local title, allow the first remote result to replace only a path-derived placeholder when no local title exists, and honor `LockedFields.Name` even for a full refresh.
 - Cancellation of scans and refreshes must promptly stop new work, release locks/permits, and leave the database in a consistent state.
 
 ## Validation
