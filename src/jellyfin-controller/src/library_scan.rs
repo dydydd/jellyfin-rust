@@ -1176,7 +1176,7 @@ impl LibraryScanService {
                 summary,
             )
             .await?;
-        self.group_scanned_video_entries(&regular_files, kind, library_root)
+        self.group_scanned_video_entries(&regular_files, kind, library_root, summary)
             .await?;
         self.ensure_extras(&extra_entries, kind, summary, seen_paths, library_root)
             .await?;
@@ -1188,11 +1188,15 @@ impl LibraryScanService {
         files: &[(PathBuf, MediaKind)],
         kind: ScanLibraryKind,
         library_root: &Path,
+        summary: &mut LibraryScanSummary,
     ) -> Result<(), LibraryScanError> {
         let groups = resolve_scanned_video_groups(files, kind, library_root);
         if groups.is_empty() {
             return Ok(());
         }
+
+        let added_ids = summary.added_ids.iter().copied().collect::<HashSet<_>>();
+        let mut changed_ids = summary.changed_ids.iter().copied().collect::<HashSet<_>>();
 
         // Retain only identifiers between passes. The complete database models
         // used to update names and version links stay bounded to one path batch.
@@ -1233,16 +1237,10 @@ impl LibraryScanService {
                         .collect::<Vec<_>>();
                     primary_changed |= set_additional_parts(&mut updated_primary, &parts);
                 }
-                if !group.name.is_empty()
-                    && (updated_primary.name.as_deref() != Some(group.name.as_str())
-                        || updated_primary.sort_name.as_deref() != Some(group.name.as_str()))
-                {
-                    updated_primary.name = Some(group.name.clone());
-                    updated_primary.sort_name = Some(group.name.clone());
-                    primary_changed = true;
-                }
+                primary_changed |= apply_scanned_group_name(&mut updated_primary, &group.name);
                 if primary_changed {
                     self.items.update(updated_primary).await?;
+                    track_group_change(summary, &added_ids, &mut changed_ids, primary_id);
                 }
                 primary_ids.push(Some(primary_id));
             }
@@ -1256,13 +1254,17 @@ impl LibraryScanService {
             for path in video_group_version_paths(group) {
                 assignments.push((path, primary_id));
                 if assignments.len() == SCAN_PATH_QUERY_BATCH_SIZE {
-                    self.apply_version_assignment_batch(&assignments).await?;
+                    for item_id in self.apply_version_assignment_batch(&assignments).await? {
+                        track_group_change(summary, &added_ids, &mut changed_ids, item_id);
+                    }
                     assignments.clear();
                 }
             }
         }
         if !assignments.is_empty() {
-            self.apply_version_assignment_batch(&assignments).await?;
+            for item_id in self.apply_version_assignment_batch(&assignments).await? {
+                track_group_change(summary, &added_ids, &mut changed_ids, item_id);
+            }
         }
         Ok(())
     }
@@ -1270,7 +1272,7 @@ impl LibraryScanService {
     async fn apply_version_assignment_batch(
         &self,
         assignments: &[(&str, Uuid)],
-    ) -> Result<(), LibraryScanError> {
+    ) -> Result<Vec<Uuid>, LibraryScanError> {
         let paths = assignments
             .iter()
             .map(|(path, _)| (*path).to_owned())
@@ -1282,6 +1284,7 @@ impl LibraryScanService {
             .into_iter()
             .filter_map(|item| Some((item.path.as_deref()?.to_owned(), item)))
             .collect::<HashMap<_, _>>();
+        let mut changed_ids = Vec::new();
         for (path, primary_id) in assignments {
             let Some(mut item) = by_path.remove(*path) else {
                 continue;
@@ -1290,9 +1293,10 @@ impl LibraryScanService {
                 continue;
             }
             item.primary_version_id = Some(*primary_id);
+            changed_ids.push(item.id);
             self.items.update(item).await?;
         }
-        Ok(())
+        Ok(changed_ids)
     }
 
     fn extra_paths_for_resolver_entries(
@@ -3634,6 +3638,39 @@ fn display_name(path: &str) -> String {
         .to_owned()
 }
 
+fn apply_scanned_group_name(item: &mut base_item::Model, group_name: &str) -> bool {
+    if group_name.trim().is_empty() {
+        return false;
+    }
+    let path_name = item.path.as_deref().map(display_name);
+    let is_placeholder = |value: Option<&str>| {
+        value.is_none_or(|value| {
+            value.trim().is_empty() || path_name.as_deref().is_some_and(|name| value == name)
+        })
+    };
+    let mut changed = false;
+    if is_placeholder(item.name.as_deref()) && item.name.as_deref() != Some(group_name) {
+        item.name = Some(group_name.to_owned());
+        changed = true;
+    }
+    if is_placeholder(item.sort_name.as_deref()) && item.sort_name.as_deref() != Some(group_name) {
+        item.sort_name = Some(group_name.to_owned());
+        changed = true;
+    }
+    changed
+}
+
+fn track_group_change(
+    summary: &mut LibraryScanSummary,
+    added_ids: &HashSet<Uuid>,
+    changed_ids: &mut HashSet<Uuid>,
+    item_id: Uuid,
+) {
+    if !added_ids.contains(&item_id) && changed_ids.insert(item_id) {
+        summary.changed_ids.push(item_id);
+    }
+}
+
 fn set_additional_parts<I>(item: &mut base_item::Model, parts: &[I]) -> bool
 where
     I: AsRef<str>,
@@ -3715,15 +3752,15 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 mod tests {
     use super::{
         LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
-        SeenPaths, apply_non_movie_nfo, apply_probed_item_metadata, apply_strm_metadata,
-        attachment_image_type, attachments_from_media_info, codec_from_extension,
-        default_fanout_concurrency, default_stream, display_name, extra_type_name,
-        image_extraction_command_succeeded, is_extras_directory, local_image_type, media_item_data,
-        media_kind, merge_scan_summary, next_stream_index, read_strm_target,
+        SeenPaths, apply_non_movie_nfo, apply_probed_item_metadata, apply_scanned_group_name,
+        apply_strm_metadata, attachment_image_type, attachments_from_media_info,
+        codec_from_extension, default_fanout_concurrency, default_stream, display_name,
+        extra_type_name, image_extraction_command_succeeded, is_extras_directory, local_image_type,
+        media_item_data, media_kind, merge_scan_summary, next_stream_index, read_strm_target,
         relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
-        streams_from_media_info,
+        streams_from_media_info, track_group_change,
     };
 
     #[test]
@@ -3827,6 +3864,45 @@ mod tests {
                 "/movies/Film/Film - 2160p.mkv"
             ]
         );
+    }
+
+    #[test]
+    fn grouped_episode_rescan_preserves_scraped_title_and_sort_name() {
+        let mut item = base_item_default();
+        item.item_type = "Episode".to_owned();
+        item.path = Some("/tv/Show/Season 1/Show - S01E01 - 2160p.mkv".to_owned());
+        item.name = Some("Pilot".to_owned());
+        item.sort_name = Some("Pilot, The".to_owned());
+
+        assert!(!apply_scanned_group_name(&mut item, "Show - S01E01"));
+        assert_eq!(item.name.as_deref(), Some("Pilot"));
+        assert_eq!(item.sort_name.as_deref(), Some("Pilot, The"));
+    }
+
+    #[test]
+    fn grouped_episode_fills_filename_placeholder_and_tracks_existing_change() {
+        let mut item = base_item_default();
+        item.id = uuid::Uuid::new_v4();
+        item.item_type = "Episode".to_owned();
+        item.path = Some("/tv/Show/Season 1/Show - S01E01 - 2160p.mkv".to_owned());
+        item.name = Some("Show - S01E01 - 2160p".to_owned());
+        item.sort_name = item.name.clone();
+
+        assert!(apply_scanned_group_name(&mut item, "Show - S01E01"));
+        assert_eq!(item.name.as_deref(), Some("Show - S01E01"));
+        assert_eq!(item.sort_name.as_deref(), Some("Show - S01E01"));
+
+        let added_id = uuid::Uuid::new_v4();
+        let mut summary = super::LibraryScanSummary {
+            added_ids: vec![added_id],
+            ..Default::default()
+        };
+        let added_ids = summary.added_ids.iter().copied().collect();
+        let mut changed_ids = std::collections::HashSet::new();
+        track_group_change(&mut summary, &added_ids, &mut changed_ids, item.id);
+        track_group_change(&mut summary, &added_ids, &mut changed_ids, item.id);
+        track_group_change(&mut summary, &added_ids, &mut changed_ids, added_id);
+        assert_eq!(summary.changed_ids, [item.id]);
     }
 
     use chrono::Utc;
