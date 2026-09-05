@@ -134,6 +134,87 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_artists(&favorite, &[&fixture.beta_artist], 1, 0);
 
+    for filter in ["IsFavorite", "isfavorite", "5"] {
+        let filtered = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!(
+                        "/Artists?filters={filter}&isFavorite=false&startIndex=0&limit=1&enableTotalRecordCount=false"
+                    ),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_artists(&filtered, &[&fixture.beta_artist], 1, 0);
+    }
+
+    for (filter, expected) in [
+        ("Likes", fixture.beta_artist.as_str()),
+        ("Dislikes", fixture.alpha_artist.as_str()),
+        ("IsPlayed", fixture.alpha_artist.as_str()),
+        ("IsUnplayed", fixture.beta_artist.as_str()),
+        ("IsFavoriteOrLikes", fixture.beta_artist.as_str()),
+    ] {
+        let filtered = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Artists?Filters={filter}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_artists(&filtered, &[expected], 1, 0);
+    }
+
+    let album_favorite = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists/AlbumArtists?Filters=IsFavorite",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_artists(&album_favorite, &[&fixture.album_artist], 1, 0);
+
+    for ignored in ["IsFolder", "IsNotFolder", "IsResumable"] {
+        let filtered = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Artists?filters={ignored}&limit=1"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_artists(&filtered, &[&fixture.alpha_artist], 4, 0);
+    }
+
+    for filters in [
+        "IsFolder,IsNotFolder",
+        "IsPlayed,IsUnplayed",
+        "Likes,Dislikes",
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Artists?filters={filters}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{filters}"
+        );
+    }
+
     let lowercase = body_json(
         fixture
             .request(
@@ -585,20 +666,45 @@ impl Fixture {
             .await
             .expect("second album artist");
 
-        let artist_item = create_item(&items, "MusicArtist", &beta_artist, None, true, "").await;
+        let alpha_artist_item =
+            create_item(&items, "MusicArtist", &alpha_artist, None, true, "").await;
+        let beta_artist_item =
+            create_item(&items, "MusicArtist", &beta_artist, None, true, "").await;
+        let album_artist_item =
+            create_item(&items, "MusicArtist", &album_artist, None, true, "").await;
+        let mut audio = audio;
+        audio.parent_id = Some(alpha_artist_item.id);
+        let audio = items.update(audio).await.expect("audio artist parent");
+        let mut video = video;
+        video.parent_id = Some(beta_artist_item.id);
+        items.update(video).await.expect("video artist parent");
         let user_data = UserDataRepository::new(database.clone());
+        let mut audio_played = NewUserData::new(audio.id, user.id, "ArtistPlayed");
+        audio_played.played = true;
+        user_data
+            .upsert(audio_played)
+            .await
+            .expect("played artist child user data");
         let mut linked_item_favorite = NewUserData::new(audio.id, user.id, "LinkedArtistFavorite");
         linked_item_favorite.is_favorite = true;
         user_data
             .upsert(linked_item_favorite)
             .await
             .expect("linked item favorite user data");
-        let mut artist_favorite = NewUserData::new(artist_item.id, user.id, "ArtistFavorite");
+        let mut artist_favorite = NewUserData::new(beta_artist_item.id, user.id, "ArtistFavorite");
         artist_favorite.is_favorite = true;
+        artist_favorite.likes = Some(true);
         user_data
             .upsert(artist_favorite)
             .await
             .expect("artist favorite user data");
+        let mut album_artist_favorite =
+            NewUserData::new(album_artist_item.id, user.id, "AlbumArtistFavorite");
+        album_artist_favorite.is_favorite = true;
+        user_data
+            .upsert(album_artist_favorite)
+            .await
+            .expect("album artist favorite user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),

@@ -72,6 +72,10 @@
 - Project music `Album`, `AlbumId`, `Artists`, `ArtistItems`, `AlbumArtist`, and `AlbumArtists`
   unconditionally on item details and lists. Resolve audio albums through one batched nearest-
   ancestor lookup and preserve metadata artist order while attaching normalized relation ids.
+- Bind legacy Artists `Filters` by case-insensitive name or integer and reject the three official
+  conflicting pairs. Apply favorite, liked, and played state to the target user's matching
+  item-by-name `MusicArtist` rows; preserve the official no-op behavior for folder and resumable
+  filters and its favorite-only `IsFavoriteOrLikes` behavior.
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
 - Apply the playback `DeviceProfile` independently to every returned `MediaSource`, preserving source order and producing version-specific flags and URLs. Only apply explicit audio or subtitle indexes to the source whose id matches an explicitly requested `MediaSourceId`.

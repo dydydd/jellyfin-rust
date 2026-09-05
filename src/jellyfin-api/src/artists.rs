@@ -9,6 +9,7 @@ use axum::{
 use jellyfin_controller::ArtistValueKind;
 use jellyfin_data::ItemValueQuery;
 use serde::Deserialize;
+use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::item_images::{GetItemImageQuery, parse_image_type, render_item_image};
@@ -46,6 +47,13 @@ pub(crate) struct ArtistsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
+    #[serde(
+        default,
+        rename = "filters",
+        alias = "Filters",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    filters: Vec<ArtistItemFilter>,
     #[serde(
         default,
         rename = "excludeItemTypes",
@@ -163,6 +171,7 @@ async fn list_kind(
         enable_total_record_count: Some(enable_total_record_count),
         ..ItemValueQuery::default()
     };
+    apply_filters(&mut item_query, &query.filters)?;
     state
         .user_library
         .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
@@ -254,4 +263,104 @@ fn descending(sort_order: &[String]) -> Result<bool, ApiError> {
 
 const fn default_total_record_count() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtistItemFilter {
+    IsFolder,
+    IsNotFolder,
+    IsUnplayed,
+    IsPlayed,
+    IsFavorite,
+    IsResumable,
+    Likes,
+    Dislikes,
+    IsFavoriteOrLikes,
+}
+
+impl FromStr for ArtistItemFilter {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim() {
+            "1" => Ok(Self::IsFolder),
+            "2" => Ok(Self::IsNotFolder),
+            "3" => Ok(Self::IsUnplayed),
+            "4" => Ok(Self::IsPlayed),
+            "5" => Ok(Self::IsFavorite),
+            "7" => Ok(Self::IsResumable),
+            "8" => Ok(Self::Likes),
+            "9" => Ok(Self::Dislikes),
+            "10" => Ok(Self::IsFavoriteOrLikes),
+            name if name.eq_ignore_ascii_case("IsFolder") => Ok(Self::IsFolder),
+            name if name.eq_ignore_ascii_case("IsNotFolder") => Ok(Self::IsNotFolder),
+            name if name.eq_ignore_ascii_case("IsUnplayed") => Ok(Self::IsUnplayed),
+            name if name.eq_ignore_ascii_case("IsPlayed") => Ok(Self::IsPlayed),
+            name if name.eq_ignore_ascii_case("IsFavorite") => Ok(Self::IsFavorite),
+            name if name.eq_ignore_ascii_case("IsResumable") => Ok(Self::IsResumable),
+            name if name.eq_ignore_ascii_case("Likes") => Ok(Self::Likes),
+            name if name.eq_ignore_ascii_case("Dislikes") => Ok(Self::Dislikes),
+            name if name.eq_ignore_ascii_case("IsFavoriteOrLikes") => Ok(Self::IsFavoriteOrLikes),
+            _ => Err(()),
+        }
+    }
+}
+
+fn apply_filters(query: &mut ItemValueQuery, filters: &[ArtistItemFilter]) -> Result<(), ApiError> {
+    if (filters.contains(&ArtistItemFilter::IsFolder)
+        && filters.contains(&ArtistItemFilter::IsNotFolder))
+        || (filters.contains(&ArtistItemFilter::IsPlayed)
+            && filters.contains(&ArtistItemFilter::IsUnplayed))
+        || (filters.contains(&ArtistItemFilter::Likes)
+            && filters.contains(&ArtistItemFilter::Dislikes))
+    {
+        return Err(ApiError::InvalidRequest);
+    }
+    for filter in filters {
+        match filter {
+            // Jellyfin's item-by-name artist query accepts these flags, but
+            // intentionally omits them from the outer MusicArtist filter.
+            ArtistItemFilter::IsFolder
+            | ArtistItemFilter::IsNotFolder
+            | ArtistItemFilter::IsResumable => {}
+            ArtistItemFilter::IsUnplayed => query.is_played = Some(false),
+            ArtistItemFilter::IsPlayed => query.is_played = Some(true),
+            ArtistItemFilter::IsFavorite => query.is_favorite = Some(true),
+            ArtistItemFilter::Likes => query.is_liked = Some(true),
+            ArtistItemFilter::Dislikes => query.is_liked = Some(false),
+            ArtistItemFilter::IsFavoriteOrLikes => query.is_favorite_or_liked = Some(true),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ArtistItemFilter, apply_filters};
+    use jellyfin_data::ItemValueQuery;
+    use std::str::FromStr;
+
+    #[test]
+    fn artist_filters_accept_official_names_and_integer_values() {
+        assert_eq!(
+            ArtistItemFilter::from_str("isfavorite").unwrap(),
+            ArtistItemFilter::IsFavorite
+        );
+        assert_eq!(
+            ArtistItemFilter::from_str("10").unwrap(),
+            ArtistItemFilter::IsFavoriteOrLikes
+        );
+        assert!(ArtistItemFilter::from_str("6").is_err());
+    }
+
+    #[test]
+    fn artist_filters_reject_official_conflicting_pairs() {
+        for filters in [
+            [ArtistItemFilter::IsFolder, ArtistItemFilter::IsNotFolder],
+            [ArtistItemFilter::IsPlayed, ArtistItemFilter::IsUnplayed],
+            [ArtistItemFilter::Likes, ArtistItemFilter::Dislikes],
+        ] {
+            assert!(apply_filters(&mut ItemValueQuery::default(), &filters).is_err());
+        }
+    }
 }

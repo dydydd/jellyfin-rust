@@ -9,7 +9,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    base_item_repository::{BaseItemQuery, policy_filter_sql},
+    base_item_repository::{BaseItemQuery, append_is_played_filter, policy_filter_sql},
     entities::{base_item, item_value, item_value_map},
     item_types::expand_item_type_aliases,
 };
@@ -39,6 +39,9 @@ pub struct ItemValueQuery {
     pub is_kids: Option<bool>,
     pub is_sports: Option<bool>,
     pub is_favorite: Option<bool>,
+    pub is_liked: Option<bool>,
+    pub is_favorite_or_liked: Option<bool>,
+    pub is_played: Option<bool>,
     pub user_id: Option<Uuid>,
     pub by_name_item_type: Option<String>,
     pub name_starts_with_or_greater: Option<String>,
@@ -938,27 +941,31 @@ fn media_class_expression(json_key: &'static str, item_types: &'static [&'static
 }
 
 fn append_value_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &ItemValueQuery) {
-    if let Some(is_favorite) = query.is_favorite
-        && let Some(item_type) = query.by_name_item_type.as_deref()
+    if let Some(expected) = query.is_favorite {
+        append_by_name_user_data_filter(sql, values, query, "data.is_favorite = true", expected);
+    }
+    if let Some(expected) = query.is_favorite_or_liked {
+        // Official Jellyfin currently applies this item-by-name filter to the
+        // favorite flag only, despite the legacy parameter name.
+        append_by_name_user_data_filter(sql, values, query, "data.is_favorite = true", expected);
+    }
+    if let Some(expected) = query.is_liked {
+        append_by_name_user_data_filter(sql, values, query, "data.likes = true", expected);
+    }
+    if let Some(is_played) = query.is_played
+        && let (Some(item_type), Some(user_id)) =
+            (query.by_name_item_type.as_deref(), query.user_id)
     {
-        let Some(user_id) = query.user_id else {
-            return;
-        };
         push_bind(
             sql,
             values,
             item_type.to_owned(),
-            " AND (EXISTS (
+            " AND EXISTS (
                 SELECT 1 FROM jellyfin.base_items AS by_name
-                JOIN jellyfin.user_data AS data ON data.item_id = by_name.id
                 WHERE by_name.item_type = ",
         );
-        sql.push_str(" AND by_name.clean_name = value.clean_value");
-        push_bind(sql, values, user_id, " AND data.user_id = ");
-        sql.push_str(" AND data.is_favorite = true) = ");
-        values.push(is_favorite.into());
-        sql.push('$');
-        sql.push_str(&values.len().to_string());
+        sql.push_str(" AND by_name.clean_name = value.clean_value AND");
+        append_is_played_filter(sql, values, user_id, "by_name", is_played);
         sql.push(')');
     }
     if let Some(search_term) = query
@@ -1008,6 +1015,42 @@ fn append_value_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &It
     {
         push_bind(sql, values, name.clean_value(), " AND value.clean_value < ");
     }
+}
+
+fn append_by_name_user_data_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    query: &ItemValueQuery,
+    predicate: &str,
+    expected: bool,
+) {
+    let (Some(item_type), Some(user_id)) = (query.by_name_item_type.as_deref(), query.user_id)
+    else {
+        return;
+    };
+    push_bind(
+        sql,
+        values,
+        item_type.to_owned(),
+        " AND EXISTS (
+            SELECT 1 FROM jellyfin.base_items AS by_name
+            WHERE by_name.item_type = ",
+    );
+    sql.push_str(" AND by_name.clean_name = value.clean_value AND (EXISTS (");
+    push_bind(
+        sql,
+        values,
+        user_id,
+        "SELECT 1 FROM jellyfin.user_data AS data
+         WHERE data.item_id = by_name.id AND data.user_id = ",
+    );
+    sql.push_str(" AND ");
+    sql.push_str(predicate);
+    sql.push_str(")) = ");
+    values.push(expected.into());
+    sql.push('$');
+    sql.push_str(&values.len().to_string());
+    sql.push(')');
 }
 
 fn append_string_list_filter(

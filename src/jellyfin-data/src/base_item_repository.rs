@@ -4559,7 +4559,7 @@ fn append_has_descendant_leaf_condition(
     sql.push_str(")))");
 }
 
-fn append_is_played_filter(
+pub(crate) fn append_is_played_filter(
     sql: &mut String,
     values: &mut Vec<SeaValue>,
     user_id: Uuid,
