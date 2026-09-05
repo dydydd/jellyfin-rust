@@ -129,6 +129,62 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
 }
 
 #[tokio::test]
+async fn episode_detail_routes_project_official_series_and_season_names() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let series = items
+        .create(item(
+            "Series",
+            "Example Series",
+            Some(fixture.root_id),
+            true,
+        ))
+        .await
+        .expect("series item");
+    let mut season = item("Season", "Season 2", Some(series.id), true);
+    season.series_id = Some(series.id);
+    let season = items.create(season).await.expect("season item");
+    let mut episode = item("Episode", "Episode 3", Some(season.id), false);
+    episode.media_type = Some("Video".to_owned());
+    episode.series_id = Some(series.id);
+    episode.season_id = Some(season.id);
+    episode.data = Some(json!({
+        "SeriesName": "Example Series",
+        "SeasonName": "Season 2"
+    }));
+    let episode = items.create(episode).await.expect("episode item");
+
+    for route in [
+        format!("/Items/{}", episode.id),
+        format!("/Users/{}/Items/{}", fixture.user_id, episode.id),
+    ] {
+        let dto = get_json(&fixture.app, &route, &fixture.user_token).await;
+        assert_eq!(dto["SeriesName"], "Example Series", "{route}");
+        assert_eq!(dto["SeasonName"], "Season 2", "{route}");
+        assert_eq!(dto["SeriesId"], series.id.simple().to_string(), "{route}");
+        assert_eq!(dto["SeasonId"], season.id.simple().to_string(), "{route}");
+    }
+    let page = get_json(
+        &fixture.app,
+        &format!(
+            "/Items?userId={}&parentId={}&includeItemTypes=Episode",
+            fixture.user_id, season.id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["Items"][0]["SeriesName"], "Example Series");
+    assert_eq!(page["Items"][0]["SeasonName"], "Season 2");
+
+    items
+        .delete_many(&[episode.id, season.id, series.id])
+        .await
+        .expect("episode hierarchy cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn media_stream_fields_are_projected_for_single_item_routes() {
     let fixture = UserLibraryFixture::new().await;
 

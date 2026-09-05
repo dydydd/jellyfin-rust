@@ -248,7 +248,11 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub season_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -939,7 +943,9 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_source_count: None,
         presentation_unique_key: item.presentation_unique_key,
         series_id: item.series_id.map(|id| id.simple().to_string()),
+        series_name: metadata_string(item.data.as_ref(), &["SeriesName", "series_name"]),
         season_id: item.season_id.map(|id| id.simple().to_string()),
+        season_name: metadata_string(item.data.as_ref(), &["SeasonName", "season_name"]),
         extra_type,
         has_lyrics,
         provider_ids: metadata_provider_ids(item.data.as_ref()),
@@ -2525,12 +2531,14 @@ mod tests {
                 "CommunityRating": 8.5,
                 "CriticRating": 7.0,
                 "OriginalTitle": "Original",
+                "SeriesName": "Example Series",
+                "SeasonName": "Season 2",
                 "Tagline": "Tag",
                 "Status": "Ended",
                 "IsLocked": true,
                 "Width": 1920,
                 "Height": 1080,
-                "Bitrate": 5500000,
+                "Bitrate": 5_500_000,
                 "Container": "mkv,webm",
                 "Size": 12345,
                 "ExtraType": "behindthescenes",
@@ -2590,6 +2598,8 @@ mod tests {
             Some("e19f5b6165c1331b55b7c60254e8695a")
         );
         assert_eq!(dto.original_title.as_deref(), Some("Original"));
+        assert_eq!(dto.series_name.as_deref(), Some("Example Series"));
+        assert_eq!(dto.season_name.as_deref(), Some("Season 2"));
         assert_eq!(dto.taglines, ["Tag"]);
         assert_eq!(
             dto.provider_ids,
