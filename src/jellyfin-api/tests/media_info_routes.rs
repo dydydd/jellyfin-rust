@@ -141,6 +141,31 @@ async fn playback_info_routes_return_postgres_media_sources_with_official_auth_s
 }
 
 #[tokio::test]
+async fn get_playback_info_preserves_media_source_and_bitrate_query_options() {
+    let fixture = Fixture::new().await;
+    let source_id = fixture.item_id.simple().to_string().to_ascii_uppercase();
+    let playback = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Items/{}/PlaybackInfo?MediaSourceId={source_id}&MaxStreamingBitrate=1",
+                    fixture.item_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+
+    assert_eq!(
+        playback["MediaSources"][0]["Id"],
+        fixture.item_id.simple().to_string()
+    );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn posted_playback_info_accepts_legacy_casing_numeric_strings_and_query_precedence() {
     let fixture = Fixture::new().await;
     let uppercase_compact_source_id = fixture.item_id.simple().to_string().to_ascii_uppercase();

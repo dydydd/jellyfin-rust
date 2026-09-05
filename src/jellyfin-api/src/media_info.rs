@@ -562,12 +562,29 @@ pub(crate) async fn get_playback_info(
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
     let identity = authentication::authenticated_session(&state, &headers).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let target_user_id = query.user_id.unwrap_or(identity.user.id);
+    let _live_stream_id = query.live_stream_id;
+    let _auto_open_live_stream = query.auto_open_live_stream.unwrap_or_default();
+    let options = PlaybackOptions {
+        media_source_id: query.media_source_id,
+        max_streaming_bitrate: query.max_streaming_bitrate,
+        start_time_ticks: query.start_time_ticks.unwrap_or_default(),
+        audio_stream_index: query.audio_stream_index,
+        subtitle_stream_index: query.subtitle_stream_index,
+        max_audio_channels: query.max_audio_channels,
+        enable_direct_play: query.enable_direct_play.unwrap_or(true),
+        enable_direct_stream: query.enable_direct_stream.unwrap_or(true),
+        enable_transcoding: query.enable_transcoding.unwrap_or(true),
+        allow_video_stream_copy: query.allow_video_stream_copy.unwrap_or(true),
+        allow_audio_stream_copy: query.allow_audio_stream_copy.unwrap_or(true),
+        ..PlaybackOptions::default()
+    };
     playback_info(
         &state,
         &identity.user,
-        query.user_id.unwrap_or(identity.user.id),
+        target_user_id,
         item_id,
-        PlaybackOptions::default(),
+        options,
         &identity.device.device_id,
         &identity.access_token,
         remote_ip,
