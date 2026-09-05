@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, Query, State},
+    extract::{OriginalUri, Path, State},
     http::HeaderMap,
     response::Response,
 };
+use axum_extra::extract::Query;
 use jellyfin_controller::ArtistValueKind;
 use jellyfin_data::ItemValueQuery;
 use serde::Deserialize;
@@ -17,6 +18,13 @@ use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ArtistsQuery {
+    #[serde(
+        default,
+        rename = "minCommunityRating",
+        alias = "MinCommunityRating",
+        alias = "mincommunityrating"
+    )]
+    _min_community_rating: Option<f64>,
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(
@@ -122,6 +130,24 @@ pub(crate) struct ArtistsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     studio_ids: Vec<Uuid>,
+    #[serde(default, rename = "person", alias = "Person")]
+    _person: Option<String>,
+    #[serde(
+        default,
+        rename = "personIds",
+        alias = "PersonIds",
+        alias = "personids",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    _person_ids: Vec<Uuid>,
+    #[serde(
+        default,
+        rename = "personTypes",
+        alias = "PersonTypes",
+        alias = "persontypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    _person_types: Vec<String>,
     #[serde(
         default,
         rename = "isFavorite",

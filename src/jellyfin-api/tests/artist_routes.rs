@@ -335,6 +335,71 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_artists(&album_artist_metadata, &[&fixture.album_artist], 1, 0);
 
+    for (path, expected, total) in [
+        (
+            format!(
+                "/Artists?minCommunityRating=9.5&person=ignored&personIds=invalid,{}&personIds={}&personTypes=Actor,Director&personTypes=Writer",
+                Uuid::new_v4(),
+                Uuid::new_v4()
+            ),
+            vec![
+                fixture.alpha_artist.as_str(),
+                fixture.beta_artist.as_str(),
+                fixture.gamma_artist.as_str(),
+                fixture.movie_artist.as_str(),
+            ],
+            4,
+        ),
+        (
+            format!(
+                "/Artists/AlbumArtists?MinCommunityRating=9.5&Person=ignored&PersonIds=invalid,{}&PersonIds={}&PersonTypes=Actor,Director&PersonTypes=Writer",
+                Uuid::new_v4(),
+                Uuid::new_v4()
+            ),
+            vec![
+                fixture.album_artist.as_str(),
+                fixture.second_album_artist.as_str(),
+            ],
+            2,
+        ),
+        (
+            format!(
+                "/Artists?mincommunityrating=9.5&person=ignored&personids=invalid,{}&personids={}&persontypes=Actor,Director&persontypes=Writer",
+                Uuid::new_v4(),
+                Uuid::new_v4()
+            ),
+            vec![
+                fixture.alpha_artist.as_str(),
+                fixture.beta_artist.as_str(),
+                fixture.gamma_artist.as_str(),
+                fixture.movie_artist.as_str(),
+            ],
+            4,
+        ),
+    ] {
+        let ignored_official_filters = body_json(
+            fixture
+                .request(Method::GET, &path, Credential::Device(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_artists(&ignored_official_filters, &expected, total, 0);
+    }
+
+    for path in [
+        "/Artists?minCommunityRating=not-a-number",
+        "/Artists/AlbumArtists?MinCommunityRating=not-a-number",
+    ] {
+        assert_eq!(
+            fixture
+                .request(Method::GET, path, Credential::Device(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+
     for ignored in ["IsFolder", "IsNotFolder", "IsResumable"] {
         let filtered = body_json(
             fixture
