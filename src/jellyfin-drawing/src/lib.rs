@@ -499,9 +499,7 @@ impl ImageProcessor {
         .await?;
         let cache_path = match encoded {
             Ok(cache_path) => cache_path,
-            Err(
-                error @ (ImageProcessingError::Decode { .. } | ImageProcessingError::Encode { .. }),
-            ) => {
+            Err(error) => {
                 tracing::error!(
                     error = %error,
                     source_path = %original.path.display(),
@@ -510,7 +508,6 @@ impl ImageProcessor {
                 );
                 return Ok(original);
             }
-            Err(error) => return Err(error),
         };
 
         cached_result(&cache_path, output_format)

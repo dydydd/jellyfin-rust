@@ -182,6 +182,31 @@ async fn returns_corrupt_source_when_conversion_fails() {
 }
 
 #[tokio::test]
+async fn returns_unknown_source_format_when_conversion_fails() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source_path = directory.path().join("bad.img");
+    let source_bytes = b"not an image";
+    fs::write(&source_path, source_bytes).expect("write unknown source fixture");
+    let date_modified = fs::metadata(&source_path)
+        .and_then(|metadata| metadata.modified())
+        .expect("source modification time");
+    let source = ImageSource::new(source_path.clone(), date_modified);
+    let request = ImageProcessingRequest {
+        max_width: Some(20),
+        ..ImageProcessingRequest::default()
+    };
+    let result = processor(&directory)
+        .process(source, request)
+        .await
+        .expect("unknown source conversion must fall back to the original");
+
+    assert_eq!(result.path, source_path);
+    assert_eq!(result.mime_type, "application/octet-stream");
+    assert_eq!(result.date_modified, date_modified);
+    assert_eq!(fs::read(result.path).unwrap(), source_bytes);
+}
+
+#[tokio::test]
 async fn does_not_fallback_validation_or_missing_source_errors() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let missing = ImageSource::new(directory.path().join("missing.png"), SystemTime::now());
