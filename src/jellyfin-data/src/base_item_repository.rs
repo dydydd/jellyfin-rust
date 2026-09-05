@@ -2079,12 +2079,13 @@ impl BaseItemRepository {
             .await
     }
 
-    /// Queries the next regular episode for each recently active series.
+    /// Queries the next aired episode for each recently active series.
     ///
     /// Playback state is aggregated over every alternate version. The highest aired watched
     /// position establishes the starting point and each series contributes its first later
-    /// unplayed primary episode. Rewatching additionally contributes the first watched episode
-    /// after the most recently played position. Series are ordered by their most recent
+    /// unplayed primary episode. When configured, placed specials participate in the same aired
+    /// ordering as the official server. Rewatching additionally contributes the first watched
+    /// episode after the most recently played position. Series are ordered by their most recent
     /// version-level activity.
     ///
     /// # Errors
@@ -2097,6 +2098,7 @@ impl BaseItemRepository {
         query: &BaseItemQuery,
         enable_rewatching: bool,
         enable_resumable: bool,
+        display_specials_within_seasons: bool,
         next_up_date_cutoff: Option<DateTime<Utc>>,
         start_index: u64,
         limit: Option<u64>,
@@ -2110,10 +2112,12 @@ impl BaseItemRepository {
                    AND episode.is_virtual_item = false \
                    AND episode.primary_version_id IS NULL \
                    AND episode.series_presentation_unique_key IS NOT NULL \
-                   AND episode.parent_index_number <> 0 \
                    AND (episode.data ->> 'OwnerId' IS NULL \
                         OR episode.data ->> 'ExtraType' IS NOT NULL)",
         );
+        if !display_specials_within_seasons {
+            sql.push_str(" AND episode.parent_index_number <> 0");
+        }
         if let Some(parent_id) = query.parent_id {
             values.push(parent_id.into());
             let _ = write!(
@@ -2161,10 +2165,38 @@ impl BaseItemRepository {
                         state.last_played_date \
                  FROM scoped_episodes AS episode \
                  INNER JOIN episode_user_state AS state ON state.episode_id = episode.id\
+             ), aired_episode_state AS MATERIALIZED (\
+                 SELECT episode.*, \
+                        CASE WHEN COALESCE(episode.parent_index_number, -1) = 0 \
+                             THEN COALESCE(\
+                                 NULLIF(episode.data ->> 'AirsAfterSeasonNumber', '')::integer, \
+                                 NULLIF(episode.data ->> 'AirsBeforeSeasonNumber', '')::integer, \
+                                 -1) \
+                             ELSE COALESCE(episode.parent_index_number, -1) \
+                        END AS aired_season, \
+                        CASE WHEN COALESCE(episode.parent_index_number, -1) = 0 \
+                                       AND episode.data ->> 'AirsAfterSeasonNumber' IS NOT NULL \
+                             THEN 1 ELSE 0 END AS aired_after_season, \
+                        CASE WHEN COALESCE(episode.parent_index_number, -1) = 0 \
+                             THEN COALESCE(\
+                                 NULLIF(episode.data ->> 'AirsBeforeEpisodeNumber', '')::integer, \
+                                 0) \
+                             ELSE COALESCE(episode.index_number, -1) \
+                        END AS aired_episode, \
+                        CASE WHEN COALESCE(episode.parent_index_number, -1) = 0 \
+                             THEN 0 ELSE 1 END AS aired_item_kind, \
+                        CASE WHEN COALESCE(episode.parent_index_number, -1) = 0 \
+                             THEN COALESCE(episode.index_number, 0) ELSE 0 \
+                        END AS aired_special_number \
+                 FROM episode_state AS episode\
+             ), regular_state AS MATERIALIZED (\
+                 SELECT episode.* \
+                 FROM aired_episode_state AS episode \
+                 WHERE COALESCE(episode.parent_index_number, -1) <> 0\
              ), series_activity AS MATERIALIZED (\
                  SELECT episode.series_presentation_unique_key AS series_key, \
                         MAX(episode.last_played_date) AS last_played_date \
-                 FROM episode_state AS episode \
+                 FROM regular_state AS episode \
                  GROUP BY episode.series_presentation_unique_key \
                  HAVING MAX(episode.last_played_date) IS NOT NULL",
         );
@@ -2180,39 +2212,103 @@ impl BaseItemRepository {
             "), last_watched AS MATERIALIZED (\
                  SELECT DISTINCT ON (episode.series_presentation_unique_key) \
                         episode.series_presentation_unique_key AS series_key, \
-                        episode.parent_index_number AS season_number, \
-                        episode.index_number AS episode_number, \
+                        episode.id AS episode_id, \
                         episode.last_played_date \
-                 FROM episode_state AS episode \
+                 FROM regular_state AS episode \
                  INNER JOIN series_activity AS activity \
                    ON activity.series_key = episode.series_presentation_unique_key \
                  WHERE episode.is_watched \
                  ORDER BY episode.series_presentation_unique_key, \
-                          episode.parent_index_number DESC NULLS LAST, \
-                          episode.index_number DESC NULLS LAST, \
+                          episode.aired_season DESC, \
+                          episode.aired_after_season DESC, \
+                          episode.aired_episode DESC, \
+                          episode.aired_item_kind DESC, \
+                          episode.premiere_date DESC NULLS LAST, \
                           episode.sort_name DESC, episode.id DESC\
              ), ranked_candidates AS (\
-                 SELECT episode.*, last_watched.last_played_date AS series_last_played_date, \
+                 SELECT episode.id AS episode_id, \
                         ROW_NUMBER() OVER (\
                             PARTITION BY episode.series_presentation_unique_key \
-                            ORDER BY episode.parent_index_number NULLS LAST, \
-                                     episode.index_number NULLS LAST, \
+                            ORDER BY episode.aired_season, \
+                                     episode.aired_after_season, \
+                                     episode.aired_episode, \
+                                     episode.aired_item_kind, \
+                                     episode.premiere_date NULLS LAST, \
                                      episode.sort_name, episode.id\
                         ) AS candidate_rank \
-                 FROM episode_state AS episode \
+                 FROM regular_state AS episode \
                  INNER JOIN series_activity AS activity \
                    ON activity.series_key = episode.series_presentation_unique_key \
                  LEFT JOIN last_watched \
                    ON last_watched.series_key = episode.series_presentation_unique_key \
+                 LEFT JOIN regular_state AS watched \
+                   ON watched.id = last_watched.episode_id \
                  WHERE NOT episode.is_watched \
                    AND (last_watched.series_key IS NULL \
-                        OR episode.parent_index_number > last_watched.season_number \
-                        OR (episode.parent_index_number = last_watched.season_number \
-                            AND episode.index_number > last_watched.episode_number))\
-             ), normal_selected AS MATERIALIZED (\
-                 SELECT item.*, candidate.series_last_played_date, 0 AS result_rank \
+                        OR (episode.aired_season, episode.aired_after_season, \
+                            episode.aired_episode, episode.aired_item_kind, \
+                            COALESCE(episode.premiere_date, '-infinity'::timestamptz), \
+                            episode.sort_name, episode.id) \
+                           > (watched.aired_season, watched.aired_after_season, \
+                              watched.aired_episode, watched.aired_item_kind, \
+                              COALESCE(watched.premiere_date, '-infinity'::timestamptz), \
+                              watched.sort_name, watched.id))\
+             ), normal_considered AS MATERIALIZED (\
+                 SELECT special.*, false AS is_marker \
+                 FROM aired_episode_state AS special \
+                 INNER JOIN series_activity AS activity \
+                   ON activity.series_key = special.series_presentation_unique_key \
+                 WHERE COALESCE(special.parent_index_number, -1) = 0 \
+                   AND (special.data ->> 'AirsBeforeSeasonNumber' IS NOT NULL \
+                        OR special.data ->> 'AirsAfterSeasonNumber' IS NOT NULL) \
+                   AND NOT special.is_watched \
+                 UNION ALL \
+                 SELECT episode.*, false AS is_marker \
                  FROM ranked_candidates AS candidate \
+                 INNER JOIN aired_episode_state AS episode \
+                   ON episode.id = candidate.episode_id \
+                 WHERE candidate.candidate_rank = 1 \
+                 UNION ALL \
+                 SELECT episode.*, true AS is_marker \
+                 FROM last_watched \
+                 INNER JOIN aired_episode_state AS episode \
+                   ON episode.id = last_watched.episode_id\
+             ), normal_ranked AS (\
+                 SELECT considered.*, \
+                        ROW_NUMBER() OVER (\
+                            PARTITION BY considered.series_presentation_unique_key \
+                            ORDER BY considered.aired_season, \
+                                     considered.aired_after_season, \
+                                     considered.aired_episode, \
+                                     considered.aired_item_kind, \
+                                     considered.aired_special_number, \
+                                     considered.premiere_date NULLS LAST, \
+                                     considered.sort_name, considered.id\
+                        ) AS aired_rank \
+                 FROM normal_considered AS considered\
+             ), normal_bounded AS (\
+                 SELECT ranked.*, \
+                        MAX(ranked.aired_rank) FILTER (WHERE ranked.is_marker) OVER (\
+                            PARTITION BY ranked.series_presentation_unique_key\
+                        ) AS marker_rank \
+                 FROM normal_ranked AS ranked\
+             ), normal_eligible AS (\
+                 SELECT bounded.*, \
+                        ROW_NUMBER() OVER (\
+                            PARTITION BY bounded.series_presentation_unique_key \
+                            ORDER BY bounded.aired_rank\
+                        ) AS candidate_rank \
+                 FROM normal_bounded AS bounded \
+                 WHERE NOT bounded.is_marker \
+                   AND (bounded.marker_rank IS NULL \
+                        OR bounded.aired_rank > bounded.marker_rank)\
+             ), normal_selected AS MATERIALIZED (\
+                 SELECT item.*, last_watched.last_played_date AS series_last_played_date, \
+                        0 AS result_rank \
+                 FROM normal_eligible AS candidate \
                  INNER JOIN jellyfin.base_items AS item ON item.id = candidate.id \
+                 LEFT JOIN last_watched \
+                   ON last_watched.series_key = candidate.series_presentation_unique_key \
                  WHERE candidate.candidate_rank = 1",
         );
         if !enable_resumable {
@@ -2224,42 +2320,102 @@ impl BaseItemRepository {
                 ", last_watched_for_rewatching AS MATERIALIZED (\
                      SELECT DISTINCT ON (episode.series_presentation_unique_key) \
                             episode.series_presentation_unique_key AS series_key, \
-                            episode.parent_index_number AS season_number, \
-                            episode.index_number AS episode_number, \
+                            episode.id AS episode_id, \
                             episode.last_played_date \
-                     FROM episode_state AS episode \
+                     FROM regular_state AS episode \
                      INNER JOIN series_activity AS activity \
                        ON activity.series_key = episode.series_presentation_unique_key \
                      WHERE episode.is_watched \
                      ORDER BY episode.series_presentation_unique_key, \
                               episode.last_played_date DESC NULLS LAST, \
-                              episode.parent_index_number DESC NULLS LAST, \
-                              episode.index_number DESC NULLS LAST, \
+                              episode.aired_season DESC, \
+                              episode.aired_after_season DESC, \
+                              episode.aired_episode DESC, \
+                              episode.aired_item_kind DESC, \
+                              episode.premiere_date DESC NULLS LAST, \
                               episode.sort_name DESC, episode.id DESC\
                  ), ranked_rewatch_candidates AS (\
-                     SELECT episode.*, \
-                            last_watched.last_played_date AS series_last_played_date, \
+                     SELECT episode.id AS episode_id, \
                             ROW_NUMBER() OVER (\
                                 PARTITION BY episode.series_presentation_unique_key \
-                                ORDER BY episode.parent_index_number NULLS LAST, \
-                                         episode.index_number NULLS LAST, \
+                                ORDER BY episode.aired_season, \
+                                         episode.aired_after_season, \
+                                         episode.aired_episode, \
+                                         episode.aired_item_kind, \
+                                         episode.premiere_date NULLS LAST, \
                                          episode.sort_name, episode.id\
                             ) AS candidate_rank \
-                     FROM episode_state AS episode \
+                     FROM regular_state AS episode \
                      INNER JOIN last_watched_for_rewatching AS last_watched \
                        ON last_watched.series_key = episode.series_presentation_unique_key \
+                     INNER JOIN regular_state AS watched \
+                       ON watched.id = last_watched.episode_id \
                      WHERE episode.is_watched \
-                       AND NOT episode.is_resumable \
-                       AND (last_watched.season_number IS NULL \
-                            OR last_watched.episode_number IS NULL \
-                            OR episode.parent_index_number > last_watched.season_number \
-                            OR (episode.parent_index_number = last_watched.season_number \
-                                AND episode.index_number > last_watched.episode_number))\
-                 ), rewatch_selected AS MATERIALIZED (\
-                     SELECT item.*, candidate.series_last_played_date, 1 AS result_rank \
+                       AND (episode.aired_season, episode.aired_after_season, \
+                            episode.aired_episode, episode.aired_item_kind, \
+                            COALESCE(episode.premiere_date, '-infinity'::timestamptz), \
+                            episode.sort_name, episode.id) \
+                           > (watched.aired_season, watched.aired_after_season, \
+                              watched.aired_episode, watched.aired_item_kind, \
+                              COALESCE(watched.premiere_date, '-infinity'::timestamptz), \
+                              watched.sort_name, watched.id)\
+                 ), rewatch_considered AS MATERIALIZED (\
+                     SELECT special.*, false AS is_marker \
+                     FROM aired_episode_state AS special \
+                     INNER JOIN series_activity AS activity \
+                       ON activity.series_key = special.series_presentation_unique_key \
+                     WHERE COALESCE(special.parent_index_number, -1) = 0 \
+                       AND (special.data ->> 'AirsBeforeSeasonNumber' IS NOT NULL \
+                            OR special.data ->> 'AirsAfterSeasonNumber' IS NOT NULL) \
+                     UNION ALL \
+                     SELECT episode.*, false AS is_marker \
                      FROM ranked_rewatch_candidates AS candidate \
+                     INNER JOIN aired_episode_state AS episode \
+                       ON episode.id = candidate.episode_id \
+                     WHERE candidate.candidate_rank = 1 \
+                     UNION ALL \
+                     SELECT episode.*, true AS is_marker \
+                     FROM last_watched_for_rewatching \
+                     INNER JOIN aired_episode_state AS episode \
+                       ON episode.id = last_watched_for_rewatching.episode_id\
+                 ), rewatch_ranked AS (\
+                     SELECT considered.*, \
+                            ROW_NUMBER() OVER (\
+                                PARTITION BY considered.series_presentation_unique_key \
+                                ORDER BY considered.aired_season, \
+                                         considered.aired_after_season, \
+                                         considered.aired_episode, \
+                                         considered.aired_item_kind, \
+                                         considered.aired_special_number, \
+                                         considered.premiere_date NULLS LAST, \
+                                         considered.sort_name, considered.id\
+                            ) AS aired_rank \
+                     FROM rewatch_considered AS considered\
+                 ), rewatch_bounded AS (\
+                     SELECT ranked.*, \
+                            MAX(ranked.aired_rank) FILTER (WHERE ranked.is_marker) OVER (\
+                                PARTITION BY ranked.series_presentation_unique_key\
+                            ) AS marker_rank \
+                     FROM rewatch_ranked AS ranked\
+                 ), rewatch_eligible AS (\
+                     SELECT bounded.*, \
+                            ROW_NUMBER() OVER (\
+                                PARTITION BY bounded.series_presentation_unique_key \
+                                ORDER BY bounded.aired_rank\
+                            ) AS candidate_rank \
+                     FROM rewatch_bounded AS bounded \
+                     WHERE NOT bounded.is_marker \
+                       AND (bounded.marker_rank IS NULL \
+                            OR bounded.aired_rank > bounded.marker_rank)\
+                 ), rewatch_selected AS MATERIALIZED (\
+                     SELECT item.*, last_watched.last_played_date AS series_last_played_date, \
+                            1 AS result_rank \
+                     FROM rewatch_eligible AS candidate \
                      INNER JOIN jellyfin.base_items AS item ON item.id = candidate.id \
-                     WHERE candidate.candidate_rank = 1\
+                     INNER JOIN last_watched_for_rewatching AS last_watched \
+                       ON last_watched.series_key = candidate.series_presentation_unique_key \
+                     WHERE candidate.candidate_rank = 1 \
+                       AND NOT candidate.is_resumable\
                  ), selected AS MATERIALIZED (\
                      SELECT * FROM normal_selected \
                      UNION ALL \

@@ -794,6 +794,322 @@ async fn assert_next_up_route(fixture: &Fixture) {
     assert_eq!(paged["TotalRecordCount"], 1);
     assert_eq!(paged["Items"].as_array().expect("items").len(), 0);
 
+    let specials_series = create_item(
+        &items,
+        "Series",
+        "Specials Ordering Series",
+        Some(root.id),
+        None,
+        None,
+    )
+    .await;
+    let specials_season = create_item(
+        &items,
+        "Season",
+        "Specials Ordering Specials",
+        Some(specials_series.id),
+        Some(0),
+        None,
+    )
+    .await;
+    let specials_first_season = create_item(
+        &items,
+        "Season",
+        "Specials Ordering Season One",
+        Some(specials_series.id),
+        Some(1),
+        None,
+    )
+    .await;
+    let specials_second_season = create_item(
+        &items,
+        "Season",
+        "Specials Ordering Season Two",
+        Some(specials_series.id),
+        Some(2),
+        None,
+    )
+    .await;
+    let specials_first = create_episode(
+        &items,
+        "Specials Ordering S01E01",
+        specials_first_season.id,
+        specials_series.id,
+        1,
+        1,
+        None,
+    )
+    .await;
+    let before_second = create_episode(
+        &items,
+        "Special Before S01E02",
+        specials_season.id,
+        specials_series.id,
+        0,
+        1,
+        Some(json!({
+            "AirsBeforeSeasonNumber": 1,
+            "AirsBeforeEpisodeNumber": 2
+        })),
+    )
+    .await;
+    let specials_second = create_episode(
+        &items,
+        "Specials Ordering S01E02",
+        specials_first_season.id,
+        specials_series.id,
+        1,
+        2,
+        None,
+    )
+    .await;
+    let after_first_season = create_episode(
+        &items,
+        "Special After Season One",
+        specials_season.id,
+        specials_series.id,
+        0,
+        2,
+        Some(json!({ "AirsAfterSeasonNumber": 1 })),
+    )
+    .await;
+    let before_second_season = create_episode(
+        &items,
+        "Special Before Season Two",
+        specials_season.id,
+        specials_series.id,
+        0,
+        3,
+        Some(json!({ "AirsBeforeSeasonNumber": 2 })),
+    )
+    .await;
+    let specials_third = create_episode(
+        &items,
+        "Specials Ordering S02E01",
+        specials_second_season.id,
+        specials_series.id,
+        2,
+        1,
+        None,
+    )
+    .await;
+    let mut before_second_alternate = create_episode(
+        &items,
+        "Special Before S01E02 Alternate",
+        specials_season.id,
+        specials_series.id,
+        0,
+        1,
+        Some(json!({
+            "AirsBeforeSeasonNumber": 1,
+            "AirsBeforeEpisodeNumber": 2
+        })),
+    )
+    .await;
+    before_second_alternate.primary_version_id = Some(before_second.id);
+    let before_second_alternate = items
+        .update(before_second_alternate)
+        .await
+        .expect("special alternate grouping");
+    let specials_user_data = UserDataRepository::new(fixture.database.clone());
+
+    let mut watched_specials_first = NewUserData::new(
+        specials_first.id,
+        fixture.user_id,
+        specials_first.id.to_string(),
+    );
+    watched_specials_first.played = true;
+    watched_specials_first.last_played_date = Some(Utc::now() - Duration::minutes(30));
+    specials_user_data
+        .upsert(watched_specials_first)
+        .await
+        .expect("specials ordering initial playback state");
+
+    let with_placed_special = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableTotalRecordCount=true",
+                    specials_series.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(with_placed_special["TotalRecordCount"], 1);
+    assert_eq!(
+        item_ids(&with_placed_special),
+        vec![before_second.id.simple().to_string()]
+    );
+
+    let paged_after_special_selection = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&startIndex=1&limit=1&enableTotalRecordCount=true",
+                    specials_series.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(paged_after_special_selection["TotalRecordCount"], 1);
+    assert!(
+        paged_after_special_selection["Items"]
+            .as_array()
+            .expect("items")
+            .is_empty()
+    );
+
+    fixture
+        .database
+        .execute_unprepared(
+            "UPDATE jellyfin.server_configuration \
+             SET display_specials_within_seasons = false WHERE id = 1",
+        )
+        .await
+        .expect("disable specials within seasons");
+    let without_placed_specials = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", specials_series.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&without_placed_specials),
+        vec![specials_second.id.simple().to_string()]
+    );
+    fixture
+        .database
+        .execute_unprepared(
+            "UPDATE jellyfin.server_configuration \
+             SET display_specials_within_seasons = true WHERE id = 1",
+        )
+        .await
+        .expect("restore specials within seasons");
+
+    let mut watched_special = NewUserData::new(
+        before_second_alternate.id,
+        fixture.user_id,
+        before_second_alternate.id.to_string(),
+    );
+    watched_special.played = true;
+    specials_user_data
+        .upsert(watched_special)
+        .await
+        .expect("alternate special playback state");
+    let after_playing_special = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", specials_series.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&after_playing_special),
+        vec![specials_second.id.simple().to_string()]
+    );
+    let rewatching_includes_played_special = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&enableRewatching=true",
+                    specials_series.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(rewatching_includes_played_special["TotalRecordCount"], 2);
+    assert_eq!(
+        item_ids(&rewatching_includes_played_special),
+        vec![
+            specials_second.id.simple().to_string(),
+            before_second.id.simple().to_string(),
+        ]
+    );
+
+    let mut watched_specials_second = NewUserData::new(
+        specials_second.id,
+        fixture.user_id,
+        specials_second.id.to_string(),
+    );
+    watched_specials_second.played = true;
+    watched_specials_second.last_played_date = Some(Utc::now() - Duration::minutes(20));
+    specials_user_data
+        .upsert(watched_specials_second)
+        .await
+        .expect("second regular episode playback state");
+    let after_regular_season = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", specials_series.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&after_regular_season),
+        vec![after_first_season.id.simple().to_string()]
+    );
+
+    let mut watched_after_season = NewUserData::new(
+        after_first_season.id,
+        fixture.user_id,
+        after_first_season.id.to_string(),
+    );
+    watched_after_season.played = true;
+    specials_user_data
+        .upsert(watched_after_season)
+        .await
+        .expect("after-season special playback state");
+    let before_next_season = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", specials_series.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&before_next_season),
+        vec![before_second_season.id.simple().to_string()]
+    );
+
+    let mut watched_before_season = NewUserData::new(
+        before_second_season.id,
+        fixture.user_id,
+        before_second_season.id.to_string(),
+    );
+    watched_before_season.played = true;
+    specials_user_data
+        .upsert(watched_before_season)
+        .await
+        .expect("before-season special playback state");
+    let next_regular_season = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", specials_series.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&next_regular_season),
+        vec![specials_third.id.simple().to_string()]
+    );
+
     let root = items.ensure_user_root().await.expect("user root");
     let rewatch_series = create_item(
         &items,

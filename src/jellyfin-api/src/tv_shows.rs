@@ -328,6 +328,11 @@ pub(crate) async fn next_up(
         .as_deref()
         .map(parse_next_up_date_cutoff)
         .transpose()?;
+    let display_specials_within_seasons = state
+        .server_configuration
+        .load()
+        .await?
+        .display_specials_within_seasons;
 
     let page = state
         .user_library
@@ -337,6 +342,7 @@ pub(crate) async fn next_up(
             parent_id,
             query.enable_rewatching,
             query.enable_resumable,
+            display_specials_within_seasons,
             next_up_date_cutoff,
             query.start_index,
             query.limit,

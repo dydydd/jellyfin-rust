@@ -83,6 +83,10 @@
   across every alternate version. Advance from the highest aired watched position, order series by
   their latest played date, and apply `NextUpDateCutoff` to that activity date rather than to the
   candidate episode's premiere date.
+- When `DisplaySpecialsWithinSeasons` is enabled, include only placed season-zero specials in Next
+  Up and compare them with the last watched and next regular episode using the official aired-episode
+  comparer. Apply played/rewatch semantics before final count and pagination; keep ordinary season-zero
+  ordering by `SortName` on episode-list routes.
 - Metadata providers must have deterministic priority and merge behavior. Network calls need timeouts, bounded concurrency, and useful error context.
 - Lazy `.strm` probing must have a process-level deadline that terminates FFprobe before returning; an async timeout around an uncancelled blocking child is not sufficient because client retries can accumulate processes and memory.
 - Coordinate lazy `.strm` probes by item and resolved target so concurrent playback requests share one bounded flight. Keep failure backoff state short-lived and hard-bounded so retries do not repeatedly pay the probe timeout or grow memory without limit.
