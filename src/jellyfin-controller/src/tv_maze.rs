@@ -212,9 +212,13 @@ impl TvMazeMetadataProvider {
         mut show: TvMazeShow,
         replace_data: bool,
     ) -> Result<(), TvMazeProviderError> {
-        self.updates
-            .update(item_id, show_metadata_patch(&mut show, replace_data))
-            .await?;
+        let existing = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(BaseItemError::NotFound)?;
+        let patch = show_metadata_patch(&mut show, replace_data, existing.data.as_ref());
+        let mut item = self.updates.update(item_id, patch).await?;
         if let Some(network) = show
             .network
             .as_ref()
@@ -231,11 +235,6 @@ impl TvMazeMetadataProvider {
                 .await?;
         }
 
-        let mut item = self
-            .items
-            .get(item_id)
-            .await?
-            .ok_or(BaseItemError::NotFound)?;
         merge_name(
             &mut item.name,
             &mut item.sort_name,
@@ -264,12 +263,16 @@ impl TvMazeMetadataProvider {
     }
 }
 
-fn show_metadata_patch(show: &mut TvMazeShow, replace_data: bool) -> ItemMetadataPatch {
+fn show_metadata_patch(
+    show: &mut TvMazeShow,
+    replace_data: bool,
+    existing_data: Option<&Value>,
+) -> ItemMetadataPatch {
     let provider_ids = show_provider_ids(show);
     let genres = std::mem::take(&mut show.genres);
     ItemMetadataPatch {
         tags: replace_data.then(|| genres.clone()),
-        genres: replace_data.then_some(genres),
+        genres: crate::tmdb::remote_genres_patch(existing_data, genres, replace_data),
         provider_ids: Some(provider_ids),
     }
 }
@@ -632,20 +635,48 @@ mod tests {
     }
 
     #[test]
-    fn lower_priority_result_does_not_replace_genres_or_tags() {
+    fn lower_priority_result_fills_only_missing_unlocked_genres() {
         let mut show = TvMazeShow {
             id: 82,
             genres: vec!["Drama".to_owned(), "Comedy".to_owned()],
             ..TvMazeShow::default()
         };
 
-        let patch = show_metadata_patch(&mut show, false);
+        let patch = show_metadata_patch(&mut show, false, Some(&json!({ "Genres": [] })));
 
         assert_eq!(patch.tags, None);
-        assert_eq!(patch.genres, None);
+        assert_eq!(
+            patch.genres,
+            Some(vec!["Drama".to_owned(), "Comedy".to_owned()])
+        );
         assert_eq!(
             patch.provider_ids.unwrap().get("TvMaze"),
             Some(&"82".to_owned())
+        );
+
+        let existing = json!({ "Genres": ["Preferred"] });
+        let mut show = TvMazeShow {
+            id: 82,
+            genres: vec!["Fallback".to_owned()],
+            ..TvMazeShow::default()
+        };
+        assert_eq!(
+            show_metadata_patch(&mut show, false, Some(&existing)).genres,
+            None
+        );
+
+        let locked = json!({
+            "Genres": [],
+            "LockedFields": ["genres"]
+        });
+        let mut show = TvMazeShow {
+            id: 82,
+            genres: vec!["Fallback".to_owned()],
+            ..TvMazeShow::default()
+        };
+        assert_eq!(
+            show_metadata_patch(&mut show, false, Some(&locked)).genres,
+            None
         );
     }
 }

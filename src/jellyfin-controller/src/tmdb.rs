@@ -1773,7 +1773,7 @@ fn metadata_string_field<'a>(data: Option<&'a Value>, field: &str) -> Option<&'a
         .and_then(Value::as_str)
 }
 
-fn remote_genres_patch(
+pub(crate) fn remote_genres_patch(
     data: Option<&Value>,
     remote_genres: Vec<String>,
     replace_data: bool,

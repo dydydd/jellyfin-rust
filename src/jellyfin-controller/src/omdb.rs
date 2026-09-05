@@ -225,23 +225,23 @@ impl OmdbMetadataProvider {
             &DefaultMetadataServiceCapability,
         );
 
-        let mut provider_ids = self
+        let existing = self
             .items
             .get(item_id)
             .await?
-            .and_then(|item| provider_ids(item.data.as_ref()))
-            .unwrap_or_default();
+            .ok_or(BaseItemError::NotFound)?;
+        let mut provider_ids = provider_ids(existing.data.as_ref()).unwrap_or_default();
         provider_ids.extend(std::mem::take(&mut result.item.core.provider_ids));
         let genres = std::mem::take(&mut result.item.genres);
         let studios = std::mem::take(&mut result.item.studios);
-        self.updates
+        let genres = crate::tmdb::remote_genres_patch(existing.data.as_ref(), genres, replace_data);
+        let mut item = self
+            .updates
             .update(
                 item_id,
                 ItemMetadataPatch {
                     tags: None,
-                    // A lower-priority provider must not replace genres that
-                    // the preferred provider already supplied.
-                    genres: replace_data.then_some(genres),
+                    genres,
                     provider_ids: Some(provider_ids),
                 },
             )
@@ -252,11 +252,6 @@ impl OmdbMetadataProvider {
                 .await?;
         }
 
-        let mut item = self
-            .items
-            .get(item_id)
-            .await?
-            .ok_or(BaseItemError::NotFound)?;
         if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
             && let Some(name) = result
                 .item
