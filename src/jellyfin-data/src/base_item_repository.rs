@@ -407,6 +407,18 @@ pub struct ProductionYearPage {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaStreamLanguageLists {
+    pub audio: Vec<String>,
+    pub subtitles: Vec<String>,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct MediaStreamLanguageRow {
+    stream_type: i16,
+    language: String,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ProductionYearOrder {
     #[default]
@@ -1365,6 +1377,57 @@ impl BaseItemRepository {
             .into_iter()
             .map(|row| row.try_get::<String>("", "official_rating"))
             .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Returns distinct audio and subtitle languages for filtered items.
+    ///
+    /// Owned rows, including alternate media versions, intentionally remain in
+    /// scope because an alternate can be the only source carrying a language.
+    /// Null and empty persisted values use Jellyfin's `und` language code.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the set-based language query fails.
+    pub async fn media_stream_languages_including_owned(
+        &self,
+        query: &BaseItemQuery,
+    ) -> Result<MediaStreamLanguageLists, BaseItemError> {
+        let mut values = Vec::new();
+        let mut sql = String::from(
+            "WITH filtered AS (\
+                 SELECT item.id \
+                 FROM jellyfin.base_items AS item \
+                 WHERE item.item_type <> 'PLACEHOLDER'",
+        );
+        append_raw_item_filters(&mut sql, &mut values, query, true);
+        sql.push_str(
+            ") \
+             SELECT stream.stream_type, \
+                    COALESCE(NULLIF(stream.language, ''), 'und') AS language \
+             FROM filtered \
+             JOIN jellyfin.media_streams AS stream ON stream.item_id = filtered.id \
+             WHERE stream.stream_type IN (0, 2) \
+             GROUP BY stream.stream_type, \
+                      COALESCE(NULLIF(stream.language, ''), 'und') \
+             ORDER BY stream.stream_type, language",
+        );
+
+        let rows = MediaStreamLanguageRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?;
+        let mut languages = MediaStreamLanguageLists::default();
+        for row in rows {
+            match row.stream_type {
+                0 => languages.audio.push(row.language),
+                2 => languages.subtitles.push(row.language),
+                _ => unreachable!("language query only selects audio and subtitle streams"),
+            }
+        }
+        Ok(languages)
     }
 
     /// Queries persisted library items with stable sorting and database-side

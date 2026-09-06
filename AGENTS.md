@@ -115,6 +115,9 @@
   details and `PlaybackInfo`, including every alternate media source. Canonicalize recognized ISO
   639-2 bibliographic codes, preserve unrecognized codes, and let `DisplayTitle` fall back to that
   raw code when `LocalizedLanguage` is unavailable.
+- Build `Items/Filters2` audio and subtitle language options with one target-user-policy-aware
+  set query. Include alternate versions, add Episode to Series or Season stream searches, map
+  missing language values to `und`, and sort the localized `NameValuePair` values by display name.
 - Project `MediaSourceCount` for item pages with one batched alternate-version query. Preserve the
   official nullable-single-source behavior, and include episode groups so the web client can show
   merged episode versions without loading every `MediaSource`.

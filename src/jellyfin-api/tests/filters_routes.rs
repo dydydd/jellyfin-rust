@@ -11,7 +11,8 @@ use jellyfin_data::{
     NewDevice,
     entities::{base_item, item_value},
 };
-use sea_orm::{ConnectionTrait, DatabaseConnection};
+use jellyfin_model::UserPolicy;
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -77,6 +78,7 @@ async fn lowercase_filter_routes_match_canonical_routes() {
 #[tokio::test]
 async fn filters2_returns_official_query_filter_shape() {
     let fixture = Fixture::new().await;
+    fixture.apply_blocked_library_policy().await;
 
     assert_eq!(
         fixture
@@ -103,8 +105,26 @@ async fn filters2_returns_official_query_filter_shape() {
         ],
     );
     assert_eq!(movie_filters["Tags"], Value::Array(Vec::new()));
-    assert_eq!(movie_filters["AudioLanguages"], Value::Array(Vec::new()));
-    assert_eq!(movie_filters["SubtitleLanguages"], Value::Array(Vec::new()));
+    assert_name_value_pairs(
+        &movie_filters["AudioLanguages"],
+        &[
+            ("Dutch; Flemish (nld)", "nld"),
+            ("English (eng)", "eng"),
+            ("French (fra)", "fra"),
+            ("Japanese (jpn)", "jpn"),
+            ("Portuguese (por)", "por"),
+            ("Undetermined (und)", "und"),
+        ],
+    );
+    assert_name_value_pairs(
+        &movie_filters["SubtitleLanguages"],
+        &[
+            ("Spanish; Castilian (spa)", "spa"),
+            ("Swedish (swe)", "swe"),
+            ("Undetermined (und)", "und"),
+            ("zzz", "zzz"),
+        ],
+    );
     assert!(movie_filters.get("genres").is_none());
 
     let music_filters = body_json(
@@ -120,11 +140,16 @@ async fn filters2_returns_official_query_filter_shape() {
         &music_filters["Genres"],
         &[(&fixture.music_genre, fixture.music_genre_id)],
     );
+    assert_name_value_pairs(&music_filters["AudioLanguages"], &[]);
+    assert_name_value_pairs(&music_filters["SubtitleLanguages"], &[]);
 
     let parent_scoped = body_json(
         fixture
             .request(
-                &format!("/Items/Filters2?parentId={}", fixture.parent_id),
+                &format!(
+                    "/Items/Filters2?parentId={}&includeItemTypes=Movie",
+                    fixture.parent_id
+                ),
                 Credential::Device(&fixture.user_token),
             )
             .await,
@@ -134,12 +159,20 @@ async fn filters2_returns_official_query_filter_shape() {
         &parent_scoped["Genres"],
         &[(&fixture.nested_genre, fixture.nested_genre_id)],
     );
+    assert_name_value_pairs(
+        &parent_scoped["AudioLanguages"],
+        &[("Dutch; Flemish (nld)", "nld"), ("French (fra)", "fra")],
+    );
+    assert_name_value_pairs(
+        &parent_scoped["SubtitleLanguages"],
+        &[("Swedish (swe)", "swe"), ("zzz", "zzz")],
+    );
 
     let direct_children = body_json(
         fixture
             .request(
                 &format!(
-                    "/Items/Filters2?parentId={}&recursive=false",
+                    "/Items/Filters2?parentId={}&recursive=false&includeItemTypes=Movie",
                     fixture.parent_id
                 ),
                 Credential::Device(&fixture.user_token),
@@ -151,6 +184,11 @@ async fn filters2_returns_official_query_filter_shape() {
         &direct_children["Genres"],
         &[(&fixture.nested_genre, fixture.nested_genre_id)],
     );
+    assert_name_value_pairs(
+        &direct_children["AudioLanguages"],
+        &[("French (fra)", "fra")],
+    );
+    assert_name_value_pairs(&direct_children["SubtitleLanguages"], &[("zzz", "zzz")]);
 
     let trailer_parent_is_ignored = body_json(
         fixture
@@ -167,6 +205,26 @@ async fn filters2_returns_official_query_filter_shape() {
     assert_pairs(
         &trailer_parent_is_ignored["Genres"],
         &[(&fixture.trailer_genre, fixture.trailer_genre_id)],
+    );
+    assert_name_value_pairs(&trailer_parent_is_ignored["AudioLanguages"], &[]);
+    assert_name_value_pairs(&trailer_parent_is_ignored["SubtitleLanguages"], &[]);
+
+    let series_languages = body_json(
+        fixture
+            .request(
+                "/Items/Filters2?includeItemTypes=Series",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_name_value_pairs(
+        &series_languages["AudioLanguages"],
+        &[("Korean (kor)", "kor")],
+    );
+    assert_name_value_pairs(
+        &series_languages["SubtitleLanguages"],
+        &[("Japanese (jpn)", "jpn")],
     );
 
     assert_eq!(
@@ -233,7 +291,7 @@ async fn filters_legacy_returns_distinct_library_filters() {
         &[&fixture.featured_tag, &fixture.root_tag],
     );
     assert_string_array(&movie_filters["OfficialRatings"], &["PG", "PG-13"]);
-    assert_i32_array(&movie_filters["Years"], &[1984, 1999]);
+    assert_i32_array(&movie_filters["Years"], &[1984, 1999, 2001]);
     assert!(movie_filters.get("genres").is_none());
 
     let audio_filters = body_json(
@@ -262,7 +320,7 @@ async fn filters_legacy_returns_distinct_library_filters() {
     assert_string_array(&parent_scoped["Genres"], &[&fixture.nested_genre]);
     assert_string_array(&parent_scoped["Tags"], &[&fixture.featured_tag]);
     assert_string_array(&parent_scoped["OfficialRatings"], &["PG"]);
-    assert_i32_array(&parent_scoped["Years"], &[1984]);
+    assert_i32_array(&parent_scoped["Years"], &[1984, 2001]);
 
     let non_folder_parent = body_json(
         fixture
@@ -328,6 +386,21 @@ fn assert_pairs(value: &Value, expected: &[(&str, Uuid)]) {
     assert_eq!(actual, expected);
 }
 
+fn assert_name_value_pairs(value: &Value, expected: &[(&str, &str)]) {
+    let actual = value
+        .as_array()
+        .expect("name-value pairs")
+        .iter()
+        .map(|item| {
+            (
+                item["Name"].as_str().expect("language name"),
+                item["Value"].as_str().expect("language value"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
 fn assert_string_array(value: &Value, expected: &[&str]) {
     let actual = value
         .as_array()
@@ -374,6 +447,7 @@ struct Fixture {
     other_user_id: Uuid,
     movie_id: Uuid,
     parent_id: Uuid,
+    blocked_library_id: Uuid,
     user_token: String,
     admin_token: String,
     drama_genre: String,
@@ -474,6 +548,98 @@ impl Fixture {
             "PG",
         )
         .await;
+        let mut alternate_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        alternate_movie.name = Some("Filter Movie Alternate".to_owned());
+        alternate_movie.sort_name = alternate_movie.name.clone();
+        alternate_movie.parent_id = Some(root.id);
+        alternate_movie.media_type = Some("Video".to_owned());
+        alternate_movie.primary_version_id = Some(movie.id);
+        alternate_movie.data = Some(serde_json::json!({ "OwnerId": movie.id }));
+        let alternate_movie = items
+            .create(alternate_movie)
+            .await
+            .expect("alternate movie creation");
+        let deep_folder = create_item(
+            &items,
+            "Folder",
+            "Deep Filter Folder",
+            Some(parent.id),
+            true,
+        )
+        .await;
+        let deep_movie = create_media_item(
+            &items,
+            "Movie",
+            "Deep Filter Movie",
+            Some(deep_folder.id),
+            "Video",
+            2001,
+            "PG",
+        )
+        .await;
+        let episode = create_media_item(
+            &items,
+            "Episode",
+            "Filter Episode",
+            Some(root.id),
+            "Video",
+            2025,
+            "TV-PG",
+        )
+        .await;
+        let blocked_library = create_item(
+            &items,
+            "CollectionFolder",
+            "Blocked Filter Library",
+            Some(root.id),
+            true,
+        )
+        .await;
+        let blocked_movie = create_media_item(
+            &items,
+            "Movie",
+            "Blocked Filter Movie",
+            Some(blocked_library.id),
+            "Video",
+            2023,
+            "R",
+        )
+        .await;
+        let visible_library = create_item(
+            &items,
+            "CollectionFolder",
+            "Visible Filter Library",
+            Some(root.id),
+            true,
+        )
+        .await;
+        let visible_movie = create_media_item(
+            &items,
+            "Movie",
+            "Visible Filter Movie",
+            Some(visible_library.id),
+            "Video",
+            2022,
+            "PG",
+        )
+        .await;
+
+        insert_media_stream(&database, movie.id, 0, 0, Some("eng")).await;
+        insert_media_stream(&database, movie.id, 1, 0, None).await;
+        insert_media_stream(&database, movie.id, 2, 2, Some("spa")).await;
+        insert_media_stream(&database, nested_movie.id, 0, 0, Some("fra")).await;
+        insert_media_stream(&database, nested_movie.id, 1, 2, Some("zzz")).await;
+        insert_media_stream(&database, deep_movie.id, 0, 0, Some("nld")).await;
+        insert_media_stream(&database, deep_movie.id, 1, 2, Some("swe")).await;
+        insert_media_stream(&database, alternate_movie.id, 0, 0, Some("jpn")).await;
+        insert_media_stream(&database, alternate_movie.id, 1, 0, Some("eng")).await;
+        insert_media_stream(&database, alternate_movie.id, 2, 2, Some("")).await;
+        insert_media_stream(&database, audio.id, 0, 0, Some("deu")).await;
+        insert_media_stream(&database, episode.id, 0, 0, Some("kor")).await;
+        insert_media_stream(&database, episode.id, 1, 2, Some("jpn")).await;
+        insert_media_stream(&database, blocked_movie.id, 0, 0, Some("ita")).await;
+        insert_media_stream(&database, blocked_movie.id, 1, 2, Some("ita")).await;
+        insert_media_stream(&database, visible_movie.id, 0, 0, Some("por")).await;
 
         let values = ItemValueRepository::new(database.clone());
         let drama_genre = format!("Drama {suffix}");
@@ -534,6 +700,7 @@ impl Fixture {
             other_user_id: other_user.id,
             movie_id: movie.id,
             parent_id: parent.id,
+            blocked_library_id: blocked_library.id,
             user_token,
             admin_token,
             drama_genre,
@@ -563,6 +730,18 @@ impl Fixture {
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    async fn apply_blocked_library_policy(&self) {
+        let users = UserService::new(self.database.clone());
+        let user = users.get(self.user_id).await.expect("filter user");
+        let mut policy: UserPolicy =
+            serde_json::from_value(user.policy).expect("stored user policy");
+        policy.blocked_media_folders = Some(vec![self.blocked_library_id]);
+        users
+            .update_policy(self.user_id, &policy)
+            .await
+            .expect("restricted filter policy");
     }
 
     async fn cleanup(self) {
@@ -617,6 +796,31 @@ async fn create_item(
     item.parent_id = parent_id;
     item.is_folder = is_folder;
     repository.create(item).await.expect("base item creation")
+}
+
+async fn insert_media_stream(
+    database: &DatabaseConnection,
+    item_id: Uuid,
+    stream_index: i32,
+    stream_type: i16,
+    language: Option<&str>,
+) {
+    database
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "INSERT INTO jellyfin.media_streams (\
+                 item_id, stream_index, stream_type, language, is_default, is_forced, \
+                 is_external, is_original\
+             ) VALUES ($1, $2, $3, $4, false, false, false, false)",
+            [
+                item_id.into(),
+                stream_index.into(),
+                stream_type.into(),
+                language.map(str::to_owned).into(),
+            ],
+        ))
+        .await
+        .expect("media stream creation");
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

@@ -80,9 +80,11 @@ pub(crate) async fn filters2(
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
     let recursive = query.recursive.unwrap_or(true);
+    let parent_id = scoped_parent_id(&query);
     let is_music_filter = is_music_filter(&query.include_item_types);
+    let stream_language_item_types = stream_language_item_types(&query.include_item_types);
     let item_query = ItemValueQuery {
-        parent_id: scoped_parent_id(&query),
+        parent_id,
         recursive,
         include_item_types: query.include_item_types,
         user_id: Some(target_user_id),
@@ -113,11 +115,35 @@ pub(crate) async fn filters2(
             })
             .collect()
     };
+    let (audio_languages, subtitle_languages) =
+        if let Some(include_item_types) = stream_language_item_types {
+            let mut stream_query = BaseItemQuery {
+                parent_id,
+                recursive,
+                include_item_types,
+                user_id: Some(target_user_id),
+                ..BaseItemQuery::default()
+            };
+            state
+                .user_library
+                .apply_user_policy(&mut stream_query, target_user_id)
+                .await?;
+            let languages = state
+                .base_items
+                .media_stream_languages_including_owned(&stream_query)
+                .await?;
+            (
+                localized_languages(&state, languages.audio),
+                localized_languages(&state, languages.subtitles),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
     Ok(Json(QueryFilters {
         genres,
         tags: Vec::new(),
-        audio_languages: Vec::new(),
-        subtitle_languages: Vec::new(),
+        audio_languages,
+        subtitle_languages,
     }))
 }
 
@@ -239,4 +265,45 @@ fn is_music_filter(include_item_types: &[String]) -> bool {
         && MUSIC_ITEM_TYPES
             .iter()
             .any(|item_type| include_item_types[0].eq_ignore_ascii_case(item_type))
+}
+
+fn stream_language_item_types(include_item_types: &[String]) -> Option<Vec<String>> {
+    if !include_item_types.iter().any(|item_type| {
+        ["Movie", "Series", "Season", "Episode"]
+            .iter()
+            .any(|video_type| item_type.eq_ignore_ascii_case(video_type))
+    }) {
+        return None;
+    }
+
+    let mut stream_item_types = include_item_types.to_vec();
+    let includes_series_or_season = stream_item_types.iter().any(|item_type| {
+        item_type.eq_ignore_ascii_case("Series") || item_type.eq_ignore_ascii_case("Season")
+    });
+    let includes_episode = stream_item_types
+        .iter()
+        .any(|item_type| item_type.eq_ignore_ascii_case("Episode"));
+    if includes_series_or_season && !includes_episode {
+        stream_item_types.push("Episode".to_owned());
+    }
+    Some(stream_item_types)
+}
+
+fn localized_languages(state: &AppState, languages: Vec<String>) -> Vec<NameValuePair> {
+    let mut languages = languages
+        .into_iter()
+        .map(|value| {
+            let name = state.localization.find_language_info(&value).map_or_else(
+                || value.clone(),
+                |culture| format!("{} ({value})", culture.display_name),
+            );
+            NameValuePair { name, value }
+        })
+        .collect::<Vec<_>>();
+    languages.sort_unstable_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    languages
 }
