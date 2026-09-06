@@ -1,9 +1,10 @@
 use jellyfin_migration::{
     AddBaseItemOfficialRatingMigration, AddBaseItemPremiereDateMigration,
-    AddUserPolicyProvidersMigration, CreateUsersMigration, OptimizeYearQueriesMigration,
+    AddUserPolicyProvidersMigration, CreateUsersMigration, Migrator, OptimizeYearQueriesMigration,
+    RepairAlternateRelationshipOrderMigration,
 };
 use sea_orm::{ConnectionTrait, Statement, TryGetable};
-use sea_orm_migration::{MigrationTrait, SchemaManager};
+use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -276,6 +277,127 @@ async fn exercise_provider_migration(database_name: &str) {
     assert_eq!(valid_reset, "Custom.PasswordReset");
     assert_eq!(valid_policy["AuthenticationProviderId"], valid_auth);
     assert_eq!(valid_policy["PasswordResetProviderId"], valid_reset);
+
+    database
+        .close()
+        .await
+        .expect("temporary database connection must close");
+}
+
+#[tokio::test]
+async fn alternate_relationship_order_migration_repairs_legacy_nulls() {
+    let administrator = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("jellyfin_alt_order_{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name, "jellyfin_alt_order_");
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        exercise_alternate_relationship_order_migration(&task_database_name).await;
+    })
+    .await;
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
+async fn exercise_alternate_relationship_order_migration(database_name: &str) {
+    let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig {
+        url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
+        max_connections: 4,
+        min_connections: 1,
+    })
+    .await
+    .expect("temporary PostgreSQL database must be available");
+    Migrator::up(&database, Some(57))
+        .await
+        .expect("pre-order-repair schema migrations must succeed");
+
+    let parent_id = Uuid::new_v4();
+    let manual_id = Uuid::new_v4();
+    let local_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    let linked_id = Uuid::new_v4();
+    let rejected_id = Uuid::new_v4();
+    database
+        .execute_unprepared(&format!(
+            r"
+            INSERT INTO jellyfin.base_items (id, item_type)
+            VALUES ('{parent_id}', 'Movie'),
+                   ('{manual_id}', 'Movie'),
+                   ('{}', 'Movie'),
+                   ('{}', 'Movie'),
+                   ('{linked_id}', 'Movie'),
+                   ('{rejected_id}', 'Movie');
+            INSERT INTO jellyfin.linked_children
+                (parent_id, child_id, child_type, sort_order)
+            VALUES ('{parent_id}', '{manual_id}', 0, 5),
+                   ('{parent_id}', '{}', 2, NULL),
+                   ('{parent_id}', '{}', 2, NULL),
+                   ('{parent_id}', '{linked_id}', 3, NULL);
+            ",
+            local_ids[0], local_ids[1], local_ids[0], local_ids[1]
+        ))
+        .await
+        .expect("legacy unordered relationship fixtures must insert");
+
+    let schema = SchemaManager::new(&database);
+    RepairAlternateRelationshipOrderMigration
+        .up(&schema)
+        .await
+        .expect("alternate relationship order repair must succeed");
+    RepairAlternateRelationshipOrderMigration
+        .up(&schema)
+        .await
+        .expect("alternate relationship order repair must be idempotent");
+
+    let rows = database
+        .query_all(Statement::from_string(
+            database.get_database_backend(),
+            format!(
+                "SELECT child_id::text, child_type, sort_order \
+                 FROM jellyfin.linked_children \
+                 WHERE parent_id = '{parent_id}' AND child_type IN (2, 3) \
+                 ORDER BY sort_order"
+            ),
+        ))
+        .await
+        .expect("repaired relationships must be queryable");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows.iter()
+            .map(|row| i32::try_get(row, "", "sort_order").expect("non-null relationship order"))
+            .collect::<Vec<_>>(),
+        vec![6, 7, 8],
+        "legacy null relationships append after the parent's existing order"
+    );
+    assert_eq!(
+        i16::try_get(&rows[2], "", "child_type").expect("linked relationship type"),
+        3,
+        "local relationships must be repaired before linked alternates"
+    );
+
+    assert!(
+        database
+            .execute_unprepared(&format!(
+                "INSERT INTO jellyfin.linked_children \
+                 (parent_id, child_id, child_type, sort_order) \
+                 VALUES ('{parent_id}', '{rejected_id}', 2, NULL)"
+            ))
+            .await
+            .is_err(),
+        "new alternate relationships must not persist a null order"
+    );
 
     database
         .close()

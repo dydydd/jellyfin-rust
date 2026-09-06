@@ -323,6 +323,9 @@
 - Filter alternate `MediaSources` and their full-source `MediaSourceCount` by the target user's
   standalone item visibility before loading streams or attachments. Always retain the explicitly
   displayed source, while user-less global projections retain every source.
+- Persist alternate-version relationships with a deterministic parent-local `sort_order`, repair
+  legacy null orders under the PostgreSQL hierarchy lock, and preserve that order on repeated
+  merges so playback groups remain stable across scans and Kotlin client deserialization.
 - When item pages request `MediaSources`, expand every alternate-version group and load all streams
   and attachments for the page in bounded batches. Do not issue one version, stream, or attachment
   query per displayed item.

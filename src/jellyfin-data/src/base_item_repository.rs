@@ -1265,6 +1265,7 @@ impl BaseItemRepository {
         let (sql, values) = linked_alternate_version_merge_sql(item_ids);
 
         let transaction = self.database.begin().await?;
+        acquire_hierarchy_lock(&transaction).await?;
         let result = transaction
             .query_one(Statement::from_sql_and_values(
                 DbBackend::Postgres,
@@ -1333,7 +1334,8 @@ impl BaseItemRepository {
              ), local_links AS (\
                  INSERT INTO jellyfin.linked_children \
                      (parent_id, child_id, child_type, sort_order) \
-                 SELECT primary_version.id, member.id, 2, NULL \
+                 SELECT primary_version.id, member.id, 2, \
+                        CAST(ROW_NUMBER() OVER (ORDER BY member.id) - 1 AS integer) \
                  FROM primary_version \
                  CROSS JOIN merge_members AS member \
                  WHERE member.id <> primary_version.id \
@@ -1361,6 +1363,7 @@ impl BaseItemRepository {
         );
 
         let transaction = self.database.begin().await?;
+        acquire_hierarchy_lock(&transaction).await?;
         let result = transaction
             .query_one(Statement::from_sql_and_values(
                 DbBackend::Postgres,
@@ -4428,16 +4431,26 @@ fn linked_alternate_version_merge_sql(item_ids: &[Uuid]) -> (String, Vec<SeaValu
                OR item.primary_version_id = merge_groups.group_id\
          ), primary_version AS MATERIALIZED (\
              SELECT group_id AS id FROM merge_groups ORDER BY group_id LIMIT 1\
-         ), inferred_local_links AS (\
-             INSERT INTO jellyfin.linked_children \
-                 (parent_id, child_id, child_type, sort_order) \
-             SELECT member.group_id, member.id, 2, NULL \
+         ), inferred_local_candidates AS MATERIALIZED (\
+             SELECT member.group_id AS parent_id, member.id AS child_id, \
+                    CAST(COALESCE((\
+                        SELECT MAX(link.sort_order) \
+                        FROM jellyfin.linked_children AS link \
+                        WHERE link.parent_id = member.group_id\
+                    ), -1) + ROW_NUMBER() OVER (\
+                        PARTITION BY member.group_id ORDER BY member.id\
+                    ) AS integer) AS sort_order \
              FROM merge_members AS member \
              WHERE member.id <> member.group_id \
                AND NOT EXISTS (\
                    SELECT 1 FROM jellyfin.linked_children AS link \
                    WHERE link.child_id = member.id AND link.child_type IN (2, 3)\
-               ) \
+               )\
+         ), inferred_local_links AS (\
+             INSERT INTO jellyfin.linked_children \
+                 (parent_id, child_id, child_type, sort_order) \
+             SELECT candidate.parent_id, candidate.child_id, 2, candidate.sort_order \
+             FROM inferred_local_candidates AS candidate \
              ON CONFLICT (parent_id, child_id) DO NOTHING \
              RETURNING child_id\
          ), subgroup_roots AS MATERIALIZED (\
@@ -4454,16 +4467,40 @@ fn linked_alternate_version_merge_sql(item_ids: &[Uuid]) -> (String, Vec<SeaValu
                AND link.parent_id IN (SELECT id FROM merge_members) \
                AND (SELECT COUNT(*) FROM inferred_local_links) >= 0 \
              RETURNING link.child_id\
+         ), linked_version_candidates AS MATERIALIZED (\
+             SELECT primary_version.id AS parent_id, subgroup.id AS child_id, \
+                    CAST(COALESCE((\
+                        SELECT MAX(retained.sort_order) \
+                        FROM (\
+                            SELECT link.sort_order \
+                            FROM jellyfin.linked_children AS link \
+                            WHERE link.parent_id = primary_version.id \
+                              AND NOT (link.child_type = 3 \
+                                       AND link.child_id IN (SELECT id FROM subgroup_roots)) \
+                            UNION ALL \
+                            SELECT inferred.sort_order \
+                            FROM inferred_local_candidates AS inferred \
+                            WHERE inferred.parent_id = primary_version.id\
+                        ) AS retained\
+                    ), -1) + ROW_NUMBER() OVER (\
+                        ORDER BY existing_link.sort_order IS NULL, \
+                                 existing_link.sort_order, subgroup.id\
+                    ) AS integer) AS sort_order \
+             FROM primary_version \
+             CROSS JOIN subgroup_roots AS subgroup \
+             LEFT JOIN jellyfin.linked_children AS existing_link \
+               ON existing_link.parent_id = primary_version.id \
+              AND existing_link.child_id = subgroup.id \
+              AND existing_link.child_type = 3 \
+             WHERE subgroup.id <> primary_version.id\
          ), linked_versions AS (\
              INSERT INTO jellyfin.linked_children \
                  (parent_id, child_id, child_type, sort_order) \
-             SELECT primary_version.id, subgroup.id, 3, NULL \
-             FROM primary_version \
-             CROSS JOIN subgroup_roots AS subgroup \
-             WHERE subgroup.id <> primary_version.id \
-               AND (SELECT COUNT(*) FROM removed_linked_versions) >= 0 \
+             SELECT candidate.parent_id, candidate.child_id, 3, candidate.sort_order \
+             FROM linked_version_candidates AS candidate \
+             WHERE (SELECT COUNT(*) FROM removed_linked_versions) >= 0 \
              ON CONFLICT (parent_id, child_id) \
-             DO UPDATE SET child_type = 3 \
+             DO UPDATE SET child_type = 3, sort_order = EXCLUDED.sort_order \
              RETURNING child_id\
          ), updated AS (\
              UPDATE jellyfin.base_items AS item \

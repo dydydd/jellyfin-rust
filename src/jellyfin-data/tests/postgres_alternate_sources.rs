@@ -811,6 +811,30 @@ async fn linked_merge_and_clear_restore_each_local_version_group() {
         link.child_type == LinkedChildType::LocalAlternateVersion
             && (link.child_id == group_a.alternates[0] || link.child_id == group_b.alternates[0])
     }));
+    assert_eq!(
+        linked
+            .iter()
+            .map(|link| link.sort_order)
+            .collect::<Vec<_>>(),
+        vec![Some(0), Some(1), Some(2)],
+        "official alternate relationships share one non-null parent order"
+    );
+    let links_before_repeat = linked.clone();
+    assert_eq!(
+        repository
+            .merge_linked_alternate_versions(&[group_a.primary, group_b.primary])
+            .await
+            .expect("repeated linked version merge"),
+        expected_primary
+    );
+    assert_eq!(
+        links
+            .list(expected_primary)
+            .await
+            .expect("links after repeated merge"),
+        links_before_repeat,
+        "repeating a merge must preserve relationship order"
+    );
 
     repository
         .clear_alternate_sources(linked_primary)
@@ -904,6 +928,11 @@ async fn merge_versions_expands_existing_groups_and_preserves_rows() {
             .iter()
             .all(|link| link.child_type == LinkedChildType::LocalAlternateVersion)
     );
+    assert_eq!(
+        links.iter().map(|link| link.sort_order).collect::<Vec<_>>(),
+        vec![Some(0), Some(1), Some(2)],
+        "scan-created relationships must be continuously ordered"
+    );
 
     repository
         .delete(standalone)
@@ -911,6 +940,38 @@ async fn merge_versions_expands_existing_groups_and_preserves_rows() {
         .expect("standalone cleanup");
     std::fs::remove_dir_all(&standalone_directory).expect("standalone media cleanup");
     cleanup(&repository, [&group]).await;
+}
+
+#[tokio::test]
+async fn linked_merge_orders_inferred_legacy_local_relationships() {
+    let repository = repository().await;
+    let links = linked_repository().await;
+    let legacy_root = create_ordering_item(&repository, "legacy-linked-root").await;
+    let legacy_child = create_version_item(
+        &repository,
+        "legacy-linked-child",
+        "Legacy linked child",
+        Some(legacy_root.id),
+    )
+    .await;
+    let standalone = create_ordering_item(&repository, "legacy-linked-standalone").await;
+
+    repository
+        .merge_linked_alternate_versions(&[legacy_root.id, standalone.id])
+        .await
+        .expect("merge group containing a legacy back-reference");
+
+    assert_eq!(
+        local_link_order(&links, legacy_root.id).await,
+        vec![(legacy_child.id, Some(0))],
+        "a recovered local subgroup must receive an official non-null order"
+    );
+
+    delete_ordering_items(
+        &repository,
+        &[legacy_root.id, legacy_child.id, standalone.id],
+    )
+    .await;
 }
 
 fn spawn_clear(

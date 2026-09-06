@@ -57,6 +57,7 @@ mod m20260905_000054_optimize_episode_title_repairs;
 mod m20260906_000055_index_item_by_name_entities;
 mod m20260906_000056_add_case_sensitive_item_ids;
 mod m20260906_000057_optimize_chapter_queries;
+mod m20260906_000058_repair_alternate_relationship_order;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -161,6 +162,7 @@ pub use m20260905_000054_optimize_episode_title_repairs::Migration as OptimizeEp
 pub use m20260906_000055_index_item_by_name_entities::Migration as IndexItemByNameEntitiesMigration;
 pub use m20260906_000056_add_case_sensitive_item_ids::Migration as AddCaseSensitiveItemIdsMigration;
 pub use m20260906_000057_optimize_chapter_queries::Migration as OptimizeChapterQueriesMigration;
+pub use m20260906_000058_repair_alternate_relationship_order::Migration as RepairAlternateRelationshipOrderMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -229,6 +231,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260906_000055_index_item_by_name_entities::Migration),
             Box::new(m20260906_000056_add_case_sensitive_item_ids::Migration),
             Box::new(m20260906_000057_optimize_chapter_queries::Migration),
+            Box::new(m20260906_000058_repair_alternate_relationship_order::Migration),
         ]
     }
 }
