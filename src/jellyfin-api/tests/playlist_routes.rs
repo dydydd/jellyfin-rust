@@ -6,11 +6,12 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     BaseItemRepository, DatabaseConfig, DeviceRepository, LinkedChildRepository, NewBaseItem,
     NewDevice, PlaylistRepository,
 };
+use jellyfin_model::{MediaStream, MediaStreamType};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -88,10 +89,97 @@ async fn exercise(database_name: &str) {
     assert_read_and_edit_permissions(&fixture, playlist_id).await;
     assert_items_projection_and_reordering(&fixture, playlist_id).await;
     assert_item_type_hydration(&fixture).await;
+    assert_has_lyrics_projection(&fixture).await;
     assert_update_and_share_routes(&fixture, playlist_id).await;
     assert_user_deletion_lifecycle(&fixture).await;
     assert_invalid_creation_rolls_back(&fixture).await;
     fixture.database.close().await.unwrap();
+}
+
+async fn assert_has_lyrics_projection(fixture: &Fixture) {
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.unwrap();
+
+    let mut with_lyrics = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    with_lyrics.parent_id = Some(root.id);
+    with_lyrics.name = Some("Playlist Audio With Lyrics".to_owned());
+    with_lyrics.sort_name = with_lyrics.name.clone();
+    with_lyrics.media_type = Some("Audio".to_owned());
+    let with_lyrics = items.create(with_lyrics).await.unwrap();
+
+    let mut stale_audio_book = NewBaseItem::new(Uuid::new_v4(), "AudioBook");
+    stale_audio_book.parent_id = Some(root.id);
+    stale_audio_book.name = Some("Playlist AudioBook Without Lyrics".to_owned());
+    stale_audio_book.sort_name = stale_audio_book.name.clone();
+    stale_audio_book.media_type = Some("Audio".to_owned());
+    stale_audio_book.data = Some(json!({
+        "Lyrics": { "Lyrics": [{ "Text": "stale JSON" }] }
+    }));
+    let stale_audio_book = items.create(stale_audio_book).await.unwrap();
+
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.parent_id = Some(root.id);
+    movie.name = Some("Playlist Non-Audio With Lyric Stream".to_owned());
+    movie.sort_name = movie.name.clone();
+    movie.media_type = Some("Video".to_owned());
+    let movie = items.create(movie).await.unwrap();
+
+    let streams = MediaStreamService::new(fixture.database.clone());
+    for item_id in [with_lyrics.id, movie.id] {
+        streams
+            .save_media_streams(
+                item_id,
+                vec![MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Lyric,
+                    codec: Some("lrc".to_owned()),
+                    ..MediaStream::default()
+                }],
+            )
+            .await
+            .unwrap();
+    }
+
+    let playlist_id = Uuid::new_v4();
+    PlaylistRepository::new(fixture.database.clone())
+        .create(
+            playlist_id,
+            "Lyric Projection".to_owned(),
+            root.id,
+            fixture.owner_id,
+            false,
+            None,
+            &[],
+            &[with_lyrics.id, stale_audio_book.id, movie.id],
+        )
+        .await
+        .unwrap();
+
+    for suffix in ["", "?fields=PrimaryImageAspectRatio"] {
+        let route = format!("/Playlists/{playlist_id}/Items{suffix}");
+        let page = body_json(
+            fixture
+                .request(Method::GET, &route, Some(&fixture.owner_token), None)
+                .await,
+        )
+        .await;
+        let response_items = page["Items"].as_array().unwrap();
+        let with_lyrics_dto = response_items
+            .iter()
+            .find(|item| item["Id"] == with_lyrics.id.simple().to_string())
+            .unwrap();
+        assert_eq!(with_lyrics_dto["HasLyrics"], true, "{route}");
+        let stale_audio_book_dto = response_items
+            .iter()
+            .find(|item| item["Id"] == stale_audio_book.id.simple().to_string())
+            .unwrap();
+        assert_eq!(stale_audio_book_dto["HasLyrics"], false, "{route}");
+        let movie_dto = response_items
+            .iter()
+            .find(|item| item["Id"] == movie.id.simple().to_string())
+            .unwrap();
+        assert!(movie_dto.get("HasLyrics").is_none(), "{route}");
+    }
 }
 
 async fn assert_item_type_hydration(fixture: &Fixture) {

@@ -45,8 +45,9 @@
   extension, not its persisted codec. Continue to later streams when no parser accepts one, while
   preserving filesystem read failures instead of hiding them behind a fallback lyric.
 - Project `HasLyrics` only for Audio items and derive it from persisted Lyric media-stream
-  existence. Use one set-based PostgreSQL query for item pages; stale JSON lyric caches must not
-  produce a true value, and non-Audio DTOs must omit the property even if they own a Lyric stream.
+  existence. Use one set-based PostgreSQL query for item and playlist pages; stale JSON lyric caches
+  must not produce a true value, and non-Audio DTOs must omit the property even if they own a Lyric
+  stream.
 - For lyric uploads, resolve the authorized Audio item before validating the body or filename so
   missing, hidden, and non-Audio targets retain the official 404 precedence over malformed uploads.
   Parse and persist through the same service operation without loading the item twice.

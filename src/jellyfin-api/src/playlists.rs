@@ -5,11 +5,11 @@ use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_data::PlaylistUserPermission;
+use jellyfin_data::{BaseItemPage, PlaylistUserPermission};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::user_library::{BaseItemDto, BaseItemDtoFields, BaseItemQueryResult, item_to_dto};
+use crate::user_library::BaseItemQueryResult;
 use crate::{ApiError, AppState, authorization};
 
 #[derive(Debug, Default, Deserialize)]
@@ -285,45 +285,23 @@ pub(crate) async fn get_items(
         .playlists
         .items(playlist_id, user_id, query.start_index, query.limit)
         .await?;
-    let fields = BaseItemDtoFields::from_names(&query.fields);
-    let defaults =
-        crate::user_library::media_stream_defaults_for_user(&state, user_id, fields).await?;
-    let page_items = page
+    let total_record_count = page.total_record_count;
+    let start_index = page.start_index;
+    let entry_ids = page
         .items
         .iter()
-        .map(|entry| entry.item.clone())
+        .map(|entry| entry.entry_id)
         .collect::<Vec<_>>();
-    let mut recursive_item_counts =
-        crate::user_library::recursive_item_counts_for_items(&state, &page_items, fields, user_id)
-            .await?;
-    let mut items = Vec::<BaseItemDto>::with_capacity(page.items.len());
-    for entry in page.items {
-        let item_id = entry.item.id;
-        let mut dto = if fields == BaseItemDtoFields::default() {
-            item_to_dto(entry.item, state.server_id())
-        } else {
-            crate::user_library::project_item_to_dto(
-                &state,
-                entry.item,
-                user_id,
-                fields,
-                defaults.as_ref(),
-                None,
-            )
-            .await?
-        };
-        crate::user_library::attach_recursive_item_count(
-            &mut dto,
-            recursive_item_counts.remove(&item_id),
-        );
-        dto.playlist_item_id = Some(entry.entry_id.simple().to_string());
-        items.push(dto);
+    let page = BaseItemPage {
+        items: page.items.into_iter().map(|entry| entry.item).collect(),
+        total_record_count: u64::try_from(total_record_count).unwrap_or(u64::MAX),
+        start_index: u64::try_from(start_index).unwrap_or(u64::MAX),
+    };
+    let mut result = crate::items::page_to_dto(&state, page, query.fields, user_id).await?;
+    for (dto, entry_id) in result.items.iter_mut().zip(entry_ids) {
+        dto.playlist_item_id = Some(entry_id.simple().to_string());
     }
-    Ok(Json(BaseItemQueryResult {
-        items,
-        total_record_count: page.total_record_count,
-        start_index: page.start_index,
-    }))
+    Ok(Json(result))
 }
 
 pub(crate) async fn move_item(
