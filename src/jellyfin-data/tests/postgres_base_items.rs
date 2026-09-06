@@ -18,9 +18,109 @@ async fn postgres_base_items_vertical_slice() {
 
     assert_placeholder_and_validation(&repository).await;
     assert_crud_hierarchy_and_move(&database, &repository).await;
+    assert_collection_folder_membership(&repository).await;
     assert_concurrent_hierarchy_mutations(&repository).await;
     assert_postgres_catalog(&database).await;
     assert_postgres_query_plans(&database, &repository).await;
+}
+
+async fn assert_collection_folder_membership(repository: &BaseItemRepository) {
+    let canonical = create_item(
+        repository,
+        "CollectionFolder",
+        "Delete Scope Canonical",
+        None,
+        true,
+    )
+    .await;
+    let canonical_child = create_item(
+        repository,
+        "Movie",
+        "Delete Scope Canonical Child",
+        Some(canonical.id),
+        false,
+    )
+    .await;
+    let legacy = create_item(
+        repository,
+        "MediaBrowser.Controller.Entities.CollectionFolder",
+        "Delete Scope Legacy",
+        None,
+        true,
+    )
+    .await;
+    let legacy_child = create_item(
+        repository,
+        "Movie",
+        "Delete Scope Legacy Child",
+        Some(legacy.id),
+        false,
+    )
+    .await;
+    let ordinary = create_item(repository, "Folder", "Delete Scope Ordinary", None, true).await;
+    let ordinary_child = create_item(
+        repository,
+        "Movie",
+        "Delete Scope Ordinary Child",
+        Some(ordinary.id),
+        false,
+    )
+    .await;
+    let sibling = create_item(repository, "Movie", "Delete Scope Sibling", None, false).await;
+
+    let requested = [
+        canonical.id,
+        canonical_child.id,
+        legacy.id,
+        legacy_child.id,
+        ordinary_child.id,
+        sibling.id,
+        canonical_child.id,
+    ];
+    let matched = repository
+        .item_ids_in_collection_folders(&requested, &[canonical.id, legacy.id, ordinary.id])
+        .await
+        .expect("collection-folder membership query");
+    assert_eq!(
+        matched,
+        std::collections::HashSet::from([
+            canonical.id,
+            canonical_child.id,
+            legacy.id,
+            legacy_child.id,
+        ])
+    );
+    assert!(
+        repository
+            .item_ids_in_collection_folders(&[], &[canonical.id])
+            .await
+            .expect("empty item membership")
+            .is_empty()
+    );
+    assert!(
+        repository
+            .item_ids_in_collection_folders(&requested, &[])
+            .await
+            .expect("empty folder membership")
+            .is_empty()
+    );
+
+    repository
+        .delete(canonical.id)
+        .await
+        .expect("canonical membership cleanup");
+    repository
+        .delete(legacy.id)
+        .await
+        .expect("legacy membership cleanup");
+    repository
+        .delete(ordinary.id)
+        .await
+        .expect("ordinary membership cleanup");
+    repository
+        .delete(sibling.id)
+        .await
+        .expect("sibling membership cleanup");
 }
 
 async fn prepare_database() -> DatabaseConnection {

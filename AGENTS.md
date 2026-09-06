@@ -130,6 +130,12 @@
   the value.
 - Stream trickplay tile files with bounded chunks and preserve HEAD and byte-range semantics; never
   read an entire tile into a response buffer.
+- Project `CanDelete` only when requested, except on official default all-fields item and root
+  details. For user-less pages expose only the item's intrinsic capability; for user pages combine
+  it with the target user's global or CollectionFolder-scoped deletion policy in one batched
+  hierarchy lookup. Preserve the official single-item Playlist owner/administrator override and
+  the BoxSet collection-management authorization, while keeping batched Playlist DTOs on the normal
+  intrinsic-plus-policy wrapper.
 
 ## Compatibility expectations
 

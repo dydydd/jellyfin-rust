@@ -122,6 +122,11 @@ struct NearestAncestorId {
     ancestor_id: Uuid,
 }
 
+#[derive(Debug, FromQueryResult)]
+struct ItemIdRow {
+    item_id: Uuid,
+}
+
 /// Minimal descendant fields needed while reconciling a library scan.
 #[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
 pub struct DescendantScanCandidate {
@@ -3386,6 +3391,68 @@ impl BaseItemRepository {
             .map(|row| (row.item_id, row.ancestor_id))
             .collect(),
         )
+    }
+
+    /// Returns requested items that are collection folders or descendants of
+    /// one of the selected collection folders.
+    ///
+    /// The folder type check is deliberate: user deletion preferences contain
+    /// identifiers, but only real `CollectionFolder` rows grant scoped delete
+    /// access. The closure-table join keeps this one set-based query for a DTO
+    /// page instead of walking every item's ancestors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the membership query fails.
+    pub async fn item_ids_in_collection_folders(
+        &self,
+        item_ids: &[Uuid],
+        collection_folder_ids: &[Uuid],
+    ) -> Result<HashSet<Uuid>, BaseItemError> {
+        if item_ids.is_empty() || collection_folder_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let collection_folder_types = expand_item_type_aliases(&["CollectionFolder".to_owned()]);
+        let mut sql = String::from(
+            "WITH requested AS MATERIALIZED (\
+                 SELECT item.id FROM jellyfin.base_items AS item WHERE true",
+        );
+        let mut values = Vec::<SeaValue>::new();
+        append_uuid_list_filter(&mut sql, &mut values, "item.id", item_ids);
+        sql.push_str(
+            "), allowed_folders AS MATERIALIZED (\
+                 SELECT folder.id FROM jellyfin.base_items AS folder WHERE true",
+        );
+        append_uuid_list_filter(&mut sql, &mut values, "folder.id", collection_folder_ids);
+        append_string_list_filter(
+            &mut sql,
+            &mut values,
+            "folder.item_type",
+            &collection_folder_types,
+            false,
+        );
+        sql.push_str(
+            ") SELECT requested.id AS item_id \
+               FROM requested \
+               INNER JOIN allowed_folders ON allowed_folders.id = requested.id \
+               UNION \
+               SELECT closure.item_id \
+               FROM jellyfin.ancestor_ids AS closure \
+               INNER JOIN requested ON requested.id = closure.item_id \
+               INNER JOIN allowed_folders ON allowed_folders.id = closure.parent_item_id",
+        );
+
+        Ok(ItemIdRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?
+        .into_iter()
+        .map(|row| row.item_id)
+        .collect())
     }
 
     /// Computes official 24-hour latest-TV grouping decisions for the top series.

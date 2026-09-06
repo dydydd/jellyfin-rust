@@ -122,6 +122,33 @@ impl PlaylistService {
         }
     }
 
+    /// Returns the official single-item delete capability for a playlist.
+    ///
+    /// Playlist ownership is a special case used by `GetBaseItemDto`: unlike
+    /// batched DTO projection, an administrator or the owner can delete the
+    /// playlist independently of its file-backed intrinsic capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or persistence errors when playlist metadata cannot
+    /// be loaded.
+    pub async fn can_delete(
+        &self,
+        playlist_id: Uuid,
+        user_id: Uuid,
+        is_administrator: bool,
+    ) -> Result<bool, PlaylistError> {
+        if is_administrator {
+            return Ok(true);
+        }
+        let playlist = self
+            .playlists
+            .get(playlist_id)
+            .await?
+            .ok_or(PlaylistError::NotFound)?;
+        Ok(playlist.owner_user_id == Some(user_id))
+    }
+
     /// Lists ordered item identifiers visible through one playlist.
     ///
     /// # Errors

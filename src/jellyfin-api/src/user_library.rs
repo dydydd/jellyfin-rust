@@ -13,7 +13,7 @@ use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, MusicGenre, RelatedItemKind, Studio,
-    TrickplayManifest, Year, item_can_download,
+    TrickplayManifest, Year, item_can_delete, item_can_download,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
@@ -41,13 +41,6 @@ use crate::{ApiError, AppState, authentication};
 pub(crate) struct UserIdQuery {
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     pub(crate) user_id: Option<Uuid>,
-    #[serde(
-        default,
-        rename = "fields",
-        alias = "Fields",
-        deserialize_with = "crate::query::comma::deserialize"
-    )]
-    fields: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -58,6 +51,7 @@ pub(crate) struct UploadLyricsQuery {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct BaseItemDtoFields {
+    can_delete: bool,
     can_download: bool,
     play_access: bool,
     media_sources: bool,
@@ -78,6 +72,7 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn all() -> Self {
         Self {
+            can_delete: true,
             can_download: true,
             play_access: true,
             media_sources: true,
@@ -98,6 +93,7 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn media_sources() -> Self {
         Self {
+            can_delete: false,
             can_download: false,
             play_access: false,
             media_sources: true,
@@ -119,7 +115,9 @@ impl BaseItemDtoFields {
     pub(crate) fn from_names(fields: &[String]) -> Self {
         let mut result = Self::default();
         for field in fields {
-            if field.eq_ignore_ascii_case("CanDownload") || field.trim() == "2" {
+            if field.eq_ignore_ascii_case("CanDelete") || field.trim() == "1" {
+                result.can_delete = true;
+            } else if field.eq_ignore_ascii_case("CanDownload") || field.trim() == "2" {
                 result.can_download = true;
             } else if field.eq_ignore_ascii_case("PlayAccess") || field.trim() == "23" {
                 result.play_access = true;
@@ -163,13 +161,18 @@ impl BaseItemDtoFields {
     }
 
     #[must_use]
+    pub(crate) const fn wants_can_delete(self) -> bool {
+        self.can_delete
+    }
+
+    #[must_use]
     pub(crate) const fn wants_play_access(self) -> bool {
         self.play_access
     }
 
     #[must_use]
     pub(crate) const fn wants_item_access_policy(self) -> bool {
-        self.can_download || self.play_access
+        self.can_delete || self.can_download || self.play_access
     }
 
     #[must_use]
@@ -263,6 +266,8 @@ pub struct BaseItemDto {
     #[serde(rename = "Type")]
     pub item_type: String,
     pub etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_delete: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub can_download: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -569,15 +574,9 @@ pub(crate) async fn get_root_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(user_id): Path<Uuid>,
-    Query(query): Query<UserIdQuery>,
+    Query(_query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_root_for(
-        state,
-        headers,
-        Some(user_id),
-        BaseItemDtoFields::from_names(&query.fields),
-    )
-    .await
+    get_root_for(state, headers, Some(user_id), BaseItemDtoFields::all()).await
 }
 
 pub(crate) async fn get_root(
@@ -585,13 +584,7 @@ pub(crate) async fn get_root(
     headers: HeaderMap,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_root_for(
-        state,
-        headers,
-        query.user_id,
-        BaseItemDtoFields::from_names(&query.fields),
-    )
-    .await
+    get_root_for(state, headers, query.user_id, BaseItemDtoFields::all()).await
 }
 
 pub(crate) async fn get_item_legacy(
@@ -1099,6 +1092,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         playlist_item_id: None,
         item_type: item.item_type,
         etag: item.row_version.to_string(),
+        can_delete: None,
         can_download: None,
         play_access: None,
         date_created: Some(item.date_created.to_rfc3339()),
@@ -1245,6 +1239,7 @@ pub(crate) fn item_to_dto_with_fields(
     server_id: &str,
     fields: BaseItemDtoFields,
 ) -> BaseItemDto {
+    let can_delete = fields.wants_can_delete().then(|| item_can_delete(&item));
     let can_download = fields
         .wants_can_download()
         .then(|| item_can_download(&item));
@@ -1255,6 +1250,7 @@ pub(crate) fn item_to_dto_with_fields(
         .wants_remote_trailers()
         .then(|| metadata_remote_trailers(item.data.as_ref()));
     let mut dto = item_to_dto(item, server_id);
+    dto.can_delete = can_delete;
     dto.can_download = can_download;
     dto.chapters = fields.wants_chapters().then(Vec::new);
     dto.external_urls = fields.wants_external_urls().then(Vec::new);
@@ -1269,35 +1265,80 @@ pub(crate) fn item_to_dto_with_fields(
     dto
 }
 
+pub(crate) struct ItemAccessPolicy {
+    policy: UserPolicy,
+    is_administrator: bool,
+}
+
 pub(crate) async fn item_access_policy_for_user(
     state: &AppState,
     user_id: Uuid,
     fields: BaseItemDtoFields,
-) -> Result<Option<UserPolicy>, ApiError> {
+) -> Result<Option<ItemAccessPolicy>, ApiError> {
     if !fields.wants_item_access_policy() {
         return Ok(None);
     }
     let user = state.users.get(user_id).await?;
-    serde_json::from_value(user.policy)
-        .map(Some)
-        .map_err(|_| ApiError::Internal)
+    let policy = serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
+    Ok(Some(ItemAccessPolicy {
+        policy,
+        is_administrator: user.is_administrator,
+    }))
+}
+
+pub(crate) async fn deletion_folder_item_ids(
+    state: &AppState,
+    item_ids: &[Uuid],
+    fields: BaseItemDtoFields,
+    access: Option<&ItemAccessPolicy>,
+) -> Result<HashSet<Uuid>, ApiError> {
+    let Some(access) = access.filter(|_| fields.wants_can_delete()) else {
+        return Ok(HashSet::new());
+    };
+    if access.policy.enable_content_deletion {
+        return Ok(HashSet::new());
+    }
+    let collection_folder_ids = access
+        .policy
+        .enable_content_deletion_from_folders
+        .iter()
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect::<Vec<_>>();
+    Ok(state
+        .base_items
+        .item_ids_in_collection_folders(item_ids, &collection_folder_ids)
+        .await?)
 }
 
 pub(crate) fn attach_item_access_fields(
     dto: &mut BaseItemDto,
     fields: BaseItemDtoFields,
-    policy: Option<&UserPolicy>,
+    access: Option<&ItemAccessPolicy>,
+    deletion_folder_allowed: bool,
+    playlist_can_delete: Option<bool>,
 ) {
+    if fields.wants_can_delete() {
+        if let Some(playlist_can_delete) = playlist_can_delete {
+            dto.can_delete = Some(playlist_can_delete);
+        } else if let Some(access) = access {
+            let authorized = if is_item_type(&dto.item_type, "BoxSet") {
+                access.is_administrator || access.policy.enable_collection_management
+            } else {
+                access.policy.enable_content_deletion || deletion_folder_allowed
+            };
+            dto.can_delete = Some(dto.can_delete.unwrap_or_default() && authorized);
+        }
+    }
     if fields.wants_can_download()
-        && let Some(policy) = policy
+        && let Some(access) = access
     {
         dto.can_download =
-            Some(dto.can_download.unwrap_or_default() && policy.enable_content_downloading);
+            Some(dto.can_download.unwrap_or_default() && access.policy.enable_content_downloading);
     }
     if fields.wants_play_access()
-        && let Some(policy) = policy
+        && let Some(access) = access
     {
-        dto.play_access = Some(if policy.enable_media_playback {
+        dto.play_access = Some(if access.policy.enable_media_playback {
             PlayAccess::Full
         } else {
             PlayAccess::None
@@ -1417,6 +1458,7 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     hierarchy_names: Option<&EpisodeHierarchyNames>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
+    let is_playlist = is_item_type(&item.item_type, "Playlist");
     let mut external_urls =
         external_urls_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut chapters = chapters_for_items(state, std::slice::from_ref(&item), fields).await?;
@@ -1428,6 +1470,30 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let item_access_policy = item_access_policy_for_user(state, target_user_id, fields).await?;
+    let deletion_folder_item_ids = if is_playlist {
+        HashSet::new()
+    } else {
+        deletion_folder_item_ids(
+            state,
+            std::slice::from_ref(&item_id),
+            fields,
+            item_access_policy.as_ref(),
+        )
+        .await?
+    };
+    let playlist_can_delete = if fields.wants_can_delete() && is_playlist {
+        let is_administrator = item_access_policy
+            .as_ref()
+            .is_some_and(|access| access.is_administrator);
+        Some(
+            state
+                .playlists
+                .can_delete(item_id, target_user_id, is_administrator)
+                .await?,
+        )
+    } else {
+        None
+    };
     let mut dto = item_to_dto_with_fields(item, state.server_id(), fields);
     attach_external_urls(
         &mut dto,
@@ -1439,7 +1505,13 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
         fields,
         chapters.remove(&item_id).unwrap_or_default(),
     );
-    attach_item_access_fields(&mut dto, fields, item_access_policy.as_ref());
+    attach_item_access_fields(
+        &mut dto,
+        fields,
+        item_access_policy.as_ref(),
+        deletion_folder_item_ids.contains(&item_id),
+        playlist_can_delete,
+    );
     attach_episode_hierarchy_names(&mut dto, hierarchy_names);
     if is_audio_item(&dto) {
         let lyric_item_ids = state
@@ -3597,43 +3669,118 @@ mod tests {
 
     #[test]
     fn access_field_binding_and_projection_match_user_context() {
-        for (name, can_download, play_access) in [
-            ("CanDownload", true, false),
-            ("candownload", true, false),
-            ("2", true, false),
-            ("PLAYACCESS", false, true),
-            ("23", false, true),
+        for (name, can_delete, can_download, play_access) in [
+            ("CanDelete", true, false, false),
+            ("candelete", true, false, false),
+            ("CANDELETE", true, false, false),
+            ("1", true, false, false),
+            ("CanDownload", false, true, false),
+            ("candownload", false, true, false),
+            ("2", false, true, false),
+            ("PLAYACCESS", false, false, true),
+            ("23", false, false, true),
         ] {
             let fields = BaseItemDtoFields::from_names(&[name.to_owned()]);
+            assert_eq!(fields.wants_can_delete(), can_delete, "{name}");
             assert_eq!(fields.wants_can_download(), can_download, "{name}");
             assert_eq!(fields.wants_play_access(), play_access, "{name}");
         }
+        assert!(!BaseItemDtoFields::default().wants_can_delete());
+        assert!(!BaseItemDtoFields::media_sources().wants_can_delete());
+        assert!(BaseItemDtoFields::all().wants_can_delete());
+
+        let omitted = serde_json::to_value(BaseItemDto::default()).unwrap();
+        assert!(omitted.get("CanDelete").is_none());
+        let explicit_false = serde_json::to_value(BaseItemDto {
+            can_delete: Some(false),
+            ..BaseItemDto::default()
+        })
+        .unwrap();
+        assert_eq!(explicit_false["CanDelete"], false);
 
         let fields = BaseItemDtoFields::all();
         let mut dto = BaseItemDto {
+            can_delete: Some(true),
             can_download: Some(true),
             ..BaseItemDto::default()
         };
-        let mut policy = UserPolicy {
-            enable_content_downloading: false,
-            enable_media_playback: false,
-            ..UserPolicy::default()
+        let mut access = ItemAccessPolicy {
+            policy: UserPolicy {
+                enable_content_downloading: false,
+                enable_media_playback: false,
+                ..UserPolicy::default()
+            },
+            is_administrator: false,
         };
-        attach_item_access_fields(&mut dto, fields, Some(&policy));
+        attach_item_access_fields(&mut dto, fields, Some(&access), false, None);
+        assert_eq!(dto.can_delete, Some(false));
         assert_eq!(dto.can_download, Some(false));
         assert_eq!(dto.play_access, Some(PlayAccess::None));
 
-        policy.enable_content_downloading = true;
-        policy.enable_media_playback = true;
+        access.policy.enable_content_deletion = true;
+        access.policy.enable_content_downloading = true;
+        access.policy.enable_media_playback = true;
+        dto.can_delete = Some(true);
         dto.can_download = Some(true);
-        attach_item_access_fields(&mut dto, fields, Some(&policy));
+        attach_item_access_fields(&mut dto, fields, Some(&access), false, None);
+        assert_eq!(dto.can_delete, Some(true));
         assert_eq!(dto.can_download, Some(true));
         assert_eq!(dto.play_access, Some(PlayAccess::Full));
 
+        access.policy.enable_content_deletion = false;
+        dto.can_delete = Some(true);
+        attach_item_access_fields(&mut dto, fields, Some(&access), true, None);
+        assert_eq!(dto.can_delete, Some(true));
+
+        dto.can_delete = Some(false);
+        attach_item_access_fields(&mut dto, fields, Some(&access), true, None);
+        assert_eq!(dto.can_delete, Some(false));
+
+        dto.can_delete = Some(false);
+        attach_item_access_fields(&mut dto, fields, Some(&access), false, Some(true));
+        assert_eq!(dto.can_delete, Some(true));
+
+        dto.can_delete = Some(true);
         dto.play_access = None;
-        attach_item_access_fields(&mut dto, fields, None);
+        attach_item_access_fields(&mut dto, fields, None, false, None);
+        assert_eq!(dto.can_delete, Some(true));
         assert_eq!(dto.can_download, Some(true));
         assert_eq!(dto.play_access, None);
+    }
+
+    #[test]
+    fn box_set_delete_authorization_uses_collection_management_permission() {
+        let fields = BaseItemDtoFields::from_names(&["CanDelete".to_owned()]);
+        let mut dto = BaseItemDto {
+            item_type: "BoxSet".to_owned(),
+            can_delete: Some(true),
+            ..BaseItemDto::default()
+        };
+        let mut access = ItemAccessPolicy {
+            policy: UserPolicy {
+                enable_content_deletion: true,
+                ..UserPolicy::default()
+            },
+            is_administrator: false,
+        };
+
+        attach_item_access_fields(&mut dto, fields, Some(&access), true, None);
+        assert_eq!(dto.can_delete, Some(false));
+
+        access.policy.enable_collection_management = true;
+        dto.can_delete = Some(true);
+        attach_item_access_fields(&mut dto, fields, Some(&access), false, None);
+        assert_eq!(dto.can_delete, Some(true));
+
+        access.policy.enable_collection_management = false;
+        access.is_administrator = true;
+        dto.can_delete = Some(true);
+        attach_item_access_fields(&mut dto, fields, Some(&access), false, None);
+        assert_eq!(dto.can_delete, Some(true));
+
+        dto.can_delete = Some(false);
+        attach_item_access_fields(&mut dto, fields, Some(&access), false, None);
+        assert_eq!(dto.can_delete, Some(false));
     }
 
     #[test]

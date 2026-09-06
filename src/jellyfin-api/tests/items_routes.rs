@@ -5,7 +5,8 @@ use axum::{
 use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
 use jellyfin_controller::{
-    ItemByNameKind, ItemByNameService, MediaAttachmentService, MediaStreamService, UserService,
+    ItemByNameKind, ItemByNameService, MediaAttachmentService, MediaStreamService, PlaylistService,
+    UserService,
 };
 use jellyfin_data::{
     ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
@@ -824,6 +825,212 @@ async fn download_and_play_access_fields_follow_official_field_and_user_policy_r
         .expect("restore access policy");
     items.delete(photo.id).await.expect("access photo cleanup");
     items.delete(movie.id).await.expect("access movie cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn can_delete_uses_intrinsic_folder_policy_and_single_playlist_override() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let collection = create_item(
+        &items,
+        "CollectionFolder",
+        &format!("SD Delete collection {}", fixture.suffix),
+        root.id,
+    )
+    .await;
+    let mut scoped_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    scoped_movie.name = Some(format!("SD Delete scoped {}", fixture.suffix));
+    scoped_movie.sort_name = scoped_movie.name.clone();
+    scoped_movie.parent_id = Some(collection.id);
+    scoped_movie.path = Some(format!("/media/delete-scoped-{}.mkv", fixture.suffix));
+    let scoped_movie = items.create(scoped_movie).await.expect("scoped movie");
+
+    let mut outside_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    outside_movie.name = Some(format!("SD Delete outside {}", fixture.suffix));
+    outside_movie.sort_name = outside_movie.name.clone();
+    outside_movie.parent_id = Some(root.id);
+    outside_movie.path = Some(format!("/media/delete-outside-{}.mkv", fixture.suffix));
+    let outside_movie = items.create(outside_movie).await.expect("outside movie");
+
+    let no_path = create_item(
+        &items,
+        "Movie",
+        &format!("SD Delete no path {}", fixture.suffix),
+        collection.id,
+    )
+    .await;
+    let playlist = PlaylistService::new(fixture.database.clone());
+    let playlist_id = playlist
+        .create(
+            format!("SD Delete playlist {}", fixture.suffix),
+            fixture.user_id,
+            false,
+            None,
+            &[],
+            &[],
+        )
+        .await
+        .expect("owner playlist");
+
+    let ids = format!("{},{},{}", scoped_movie.id, outside_movie.id, no_path.id);
+    let unrequested = body_json(
+        fixture
+            .request(&format!("/Items?Ids={ids}"), Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    for dto in unrequested["Items"].as_array().expect("unrequested page") {
+        assert!(dto.get("CanDelete").is_none(), "{dto}");
+    }
+
+    let users = UserService::new(fixture.database.clone());
+    let original_policy: UserPolicy = serde_json::from_value(
+        users
+            .get(fixture.user_id)
+            .await
+            .expect("delete policy user")
+            .policy,
+    )
+    .expect("delete policy");
+    let mut scoped_policy = original_policy.clone();
+    scoped_policy.enable_content_deletion = false;
+    scoped_policy.enable_content_deletion_from_folders = vec![collection.id.to_string()];
+    users
+        .update_policy(fixture.user_id, &scoped_policy)
+        .await
+        .expect("scoped delete policy");
+
+    for field in ["CanDelete", "candelete", "CANDELETE", "1"] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Items?Ids={ids}&Fields={field}"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let page = page["Items"].as_array().expect("delete page");
+        let can_delete = |id: Uuid| {
+            page.iter()
+                .find(|dto| dto["Id"] == id.simple().to_string())
+                .expect("requested delete DTO")["CanDelete"]
+                .as_bool()
+                .expect("CanDelete bool")
+        };
+        assert!(can_delete(scoped_movie.id), "{field}");
+        assert!(!can_delete(outside_movie.id), "{field}");
+        assert!(!can_delete(no_path.id), "{field}");
+    }
+
+    let global = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?Ids={ids}&Fields=CanDelete&api_key={}",
+                    fixture.api_key_token
+                ),
+                None,
+            )
+            .await,
+    )
+    .await;
+    let global = global["Items"].as_array().expect("global delete page");
+    for id in [scoped_movie.id, outside_movie.id] {
+        let dto = global
+            .iter()
+            .find(|dto| dto["Id"] == id.simple().to_string())
+            .expect("global delete DTO");
+        assert_eq!(dto["CanDelete"], true, "{dto}");
+    }
+    let no_path_dto = global
+        .iter()
+        .find(|dto| dto["Id"] == no_path.id.simple().to_string())
+        .expect("global no-path DTO");
+    assert_eq!(no_path_dto["CanDelete"], false);
+
+    let targeted = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?Ids={ids}&UserId={}&Fields=CanDelete&api_key={}",
+                    fixture.user_id, fixture.api_key_token
+                ),
+                None,
+            )
+            .await,
+    )
+    .await;
+    let targeted = targeted["Items"].as_array().expect("targeted delete page");
+    let targeted_outside = targeted
+        .iter()
+        .find(|dto| dto["Id"] == outside_movie.id.simple().to_string())
+        .expect("targeted outside DTO");
+    assert_eq!(targeted_outside["CanDelete"], false);
+
+    for route in [
+        format!("/Items/{}?UserId={}", scoped_movie.id, fixture.user_id),
+        format!("/Users/{}/Items/{}", fixture.user_id, scoped_movie.id),
+    ] {
+        let dto = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(dto["CanDelete"], true, "{route}: {dto}");
+    }
+    for route in [
+        format!("/Items/Root?Fields=CanDownload&UserId={}", fixture.user_id),
+        format!("/Users/{}/Items/Root?Fields=CanDownload", fixture.user_id),
+    ] {
+        let dto = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(dto["CanDelete"], false, "{route}: {dto}");
+    }
+
+    let playlist_page = body_json(
+        fixture
+            .request(
+                &format!("/Items?Ids={playlist_id}&Fields=CanDelete"),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(playlist_page["Items"][0]["CanDelete"], false);
+    let owner_detail = body_json(
+        fixture
+            .request(
+                &format!("/Items/{playlist_id}?UserId={}", fixture.user_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(owner_detail["CanDelete"], true);
+    let admin_detail = body_json(
+        fixture
+            .request(
+                &format!("/Items/{playlist_id}?UserId={}", fixture.admin_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(admin_detail["CanDelete"], true);
+
+    users
+        .update_policy(fixture.user_id, &original_policy)
+        .await
+        .expect("restore delete policy");
+    items.delete(playlist_id).await.expect("playlist cleanup");
+    items
+        .delete(outside_movie.id)
+        .await
+        .expect("outside movie cleanup");
+    items
+        .delete(collection.id)
+        .await
+        .expect("collection cleanup");
     fixture.cleanup().await;
 }
 

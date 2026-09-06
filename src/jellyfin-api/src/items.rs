@@ -2296,6 +2296,13 @@ async fn page_to_dto_with_fields_and_options(
         }
         None => None,
     };
+    let deletion_folder_item_ids = user_library::deletion_folder_item_ids(
+        state,
+        &item_ids,
+        requested_fields,
+        item_access_policy.as_ref(),
+    )
+    .await?;
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -2317,6 +2324,8 @@ async fn page_to_dto_with_fields_and_options(
             &mut dto,
             requested_fields,
             item_access_policy.as_ref(),
+            deletion_folder_item_ids.contains(&item_id),
+            None,
         );
         user_library::attach_episode_hierarchy_names(
             &mut dto,
