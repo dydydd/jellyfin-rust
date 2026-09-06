@@ -47,6 +47,9 @@
 - For lyric uploads, resolve the authorized Audio item before validating the body or filename so
   missing, hidden, and non-Audio targets retain the official 404 precedence over malformed uploads.
   Parse and persist through the same service operation without loading the item twice.
+- Keep remote lyric metadata on the official strongly typed `LyricMetadata` wire contract. Omit
+  absent nullable fields and never let arbitrary provider JSON make the enclosing Swift SDK search
+  result undecodable.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API

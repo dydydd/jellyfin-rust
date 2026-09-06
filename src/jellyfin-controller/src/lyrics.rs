@@ -131,7 +131,10 @@ impl LyricManager {
                 let Some(object) = lyrics.as_object_mut() else {
                     continue;
                 };
-                object.insert("Metadata".to_owned(), result.metadata);
+                object.insert(
+                    "Metadata".to_owned(),
+                    project_lyric_metadata(&result.metadata),
+                );
                 projected.push(RemoteLyricInfoDto {
                     id: format!("{provider_id}_{}", result.id),
                     provider_name: result.provider_name,
@@ -226,6 +229,43 @@ fn lyric_dto_to_json(parsed: &jellyfin_providers::lyrics::LyricDto) -> Value {
             })).collect::<Vec<_>>()
         })).collect::<Vec<_>>()
     })
+}
+
+fn project_lyric_metadata(metadata: &Value) -> Value {
+    let Some(source) = metadata.as_object() else {
+        return json!({});
+    };
+    let mut projected = serde_json::Map::new();
+    for (wire_name, camel_name) in [
+        ("Artist", "artist"),
+        ("Album", "album"),
+        ("Title", "title"),
+        ("Author", "author"),
+        ("By", "by"),
+        ("Creator", "creator"),
+        ("Version", "version"),
+    ] {
+        if let Some(value) = metadata_field(source, wire_name, camel_name).and_then(Value::as_str) {
+            projected.insert(wire_name.to_owned(), Value::String(value.to_owned()));
+        }
+    }
+    for (wire_name, camel_name) in [("Length", "length"), ("Offset", "offset")] {
+        if let Some(value) = metadata_field(source, wire_name, camel_name).and_then(Value::as_i64) {
+            projected.insert(wire_name.to_owned(), Value::from(value));
+        }
+    }
+    if let Some(value) = metadata_field(source, "IsSynced", "isSynced").and_then(Value::as_bool) {
+        projected.insert("IsSynced".to_owned(), Value::Bool(value));
+    }
+    Value::Object(projected)
+}
+
+fn metadata_field<'a>(
+    metadata: &'a serde_json::Map<String, Value>,
+    wire_name: &str,
+    camel_name: &str,
+) -> Option<&'a Value> {
+    metadata.get(wire_name).or_else(|| metadata.get(camel_name))
 }
 
 #[cfg(test)]
@@ -370,7 +410,13 @@ mod tests {
                 RemoteLyricInfo {
                     id: "second_result_with_underscores".to_owned(),
                     provider_name: "Second Provider".to_owned(),
-                    metadata: json!({ "Album": "Remote Album" }),
+                    metadata: json!({
+                        "Album": "Remote Album",
+                        "Artist": 42,
+                        "Length": "invalid",
+                        "IsSynced": "true",
+                        "UnknownPluginField": { "nested": true }
+                    }),
                     lyrics: LyricFile::new("second.txt", "Second result"),
                 },
             ],
@@ -386,6 +432,10 @@ mod tests {
         assert_eq!(results[0].lyrics["Lyrics"][0]["Text"], "First result");
         assert_eq!(results[1].provider_name, "Second Provider");
         assert_eq!(results[1].lyrics["Metadata"]["Album"], "Remote Album");
+        assert_eq!(
+            results[1].lyrics["Metadata"],
+            json!({ "Album": "Remote Album" })
+        );
         assert_eq!(results[1].lyrics["Lyrics"][0]["Text"], "Second result");
         assert_eq!(
             results[0].id,
@@ -399,6 +449,46 @@ mod tests {
             ["Id", "Lyrics", "ProviderName"]
         );
         assert!(wire.get("Name").is_none());
+    }
+
+    #[test]
+    fn lyric_metadata_matches_sdk_types_and_omits_invalid_fields() {
+        assert_eq!(
+            project_lyric_metadata(&json!({
+                "artist": "Artist",
+                "Album": "Album",
+                "title": "Title",
+                "Author": "Author",
+                "length": 1_234_567,
+                "By": "Editor",
+                "offset": -10_000,
+                "Creator": "Creator",
+                "version": "1.0",
+                "isSynced": false,
+                "Unknown": "discarded"
+            })),
+            json!({
+                "Artist": "Artist",
+                "Album": "Album",
+                "Title": "Title",
+                "Author": "Author",
+                "Length": 1_234_567,
+                "By": "Editor",
+                "Offset": -10_000,
+                "Creator": "Creator",
+                "Version": "1.0",
+                "IsSynced": false
+            })
+        );
+        assert_eq!(
+            project_lyric_metadata(&json!({
+                "Artist": 123,
+                "Length": 1.5,
+                "IsSynced": "false"
+            })),
+            json!({})
+        );
+        assert_eq!(project_lyric_metadata(&Value::Null), json!({}));
     }
 
     #[test]
