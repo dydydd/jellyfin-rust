@@ -304,6 +304,9 @@
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.
+- For profiled playback, generate `TranscodingUrl` for HTTP progressive as well as HLS
+  transcoding selections. Match the official rewrite of non-DirectPlay selections to
+  `PlayMethod.Transcode`, including Android audio profiles that consume `/audio/{id}/stream`.
 - Project `SupportsExternalStream` on every persisted media stream using the official rule: true
   for external streams and for text, PGS, or VobSub subtitles. Keep the value consistent between
   top-level streams and every single- or alternate-version media source.

@@ -1046,9 +1046,16 @@ fn apply_selected_stream_metadata(
             || options.profile.transcoding_profiles.iter().any(|profile| {
                 profile.profile_type == stream.media_type && profile.context == options.context
             }));
-    let transcoding = if play_method == PlayMethod::Transcode
+    // The official helper rewrites every non-DirectPlay selection to Transcode
+    // before building its URL. This includes HTTP progressive audio profiles;
+    // restricting the URL to HLS leaves Android with SupportsTranscoding=true
+    // but no playable TranscodingUrl.
+    if !supports_direct_play && supports_transcoding {
+        stream.play_method = PlayMethod::Transcode;
+    }
+    let transcoding = if stream.play_method == PlayMethod::Transcode
         && options.enable_transcoding
-        && stream.sub_protocol == MediaStreamProtocol::Hls
+        && supports_transcoding
     {
         // Clients already know the externally reachable server URL. Returning
         // a relative path avoids leaking an internal bind address such as
@@ -1369,6 +1376,69 @@ mod tests {
             sources[0].transcoding_sub_protocol,
             MediaStreamProtocol::Hls
         );
+    }
+
+    #[tokio::test]
+    async fn playback_info_exposes_http_progressive_audio_transcoding_url() {
+        let item_id = Uuid::new_v4();
+        let source = MediaSourceInfo {
+            id: Some(item_id.simple().to_string()),
+            protocol: MediaProtocol::File,
+            path: Some("/media/song.flac".to_owned()),
+            container: Some("flac".to_owned()),
+            media_streams: vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Audio,
+                codec: Some("flac".to_owned()),
+                channels: Some(2),
+                is_default: true,
+                ..MediaStream::default()
+            }],
+            ..MediaSourceInfo::default()
+        };
+        let profile = DeviceProfile {
+            direct_play_profiles: Vec::new(),
+            transcoding_profiles: vec![TranscodingProfile {
+                container: "mp3".to_owned(),
+                profile_type: DlnaProfileType::Audio,
+                audio_codec: "mp3".to_owned(),
+                protocol: MediaStreamProtocol::Http,
+                context: EncodingContext::Streaming,
+                ..TranscodingProfile::default()
+            }],
+            ..DeviceProfile::default()
+        };
+        let mut sources = vec![source];
+
+        apply_stream_builder(
+            &mut sources,
+            &UserPolicy::default(),
+            &test_state(),
+            item_id,
+            &PlaybackOptions {
+                device_profile: Some(profile),
+                ..PlaybackOptions::default()
+            },
+            &mut None,
+            "android-device",
+            "access-token",
+            "play-session-id",
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        );
+
+        let source = &sources[0];
+        let url = source
+            .transcoding_url
+            .as_deref()
+            .expect("HTTP audio profile needs a progressive transcoding URL");
+        assert!(url.starts_with("/audio/"));
+        assert!(url.contains("/stream.mp3"));
+        assert!(!url.contains("Static=true"));
+        assert!(url.contains("AudioCodec=mp3"));
+        assert_eq!(source.transcoding_container.as_deref(), Some("mp3"));
+        assert_eq!(source.transcoding_sub_protocol, MediaStreamProtocol::Http);
+        assert!(source.supports_transcoding);
+        assert!(!source.supports_direct_play);
     }
 
     #[tokio::test]
