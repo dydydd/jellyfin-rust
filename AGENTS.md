@@ -41,6 +41,9 @@
   and UTF-32BE behavior. Without a BOM, use UTF-8 replacement fallback; malformed or incomplete
   UTF-16/UTF-32 must produce replacement characters rather than fail. Parse the decoded text while
   preserving uploaded file bytes exactly as received.
+- Read registered lyric streams in stream-index order and select parsers from each file path's actual
+  extension, not its persisted codec. Continue to later streams when no parser accepts one, while
+  preserving filesystem read failures instead of hiding them behind a fallback lyric.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API

@@ -651,7 +651,7 @@ impl UserLibraryService {
         let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let streams = self
+        let mut streams = self
             .media_streams
             .get_media_streams(MediaStreamFilter {
                 item_id,
@@ -659,21 +659,24 @@ impl UserLibraryService {
                 stream_type: Some(MediaStreamType::Lyric),
             })
             .await?;
-        if let Some(stream) = streams.into_iter().min_by_key(|stream| stream.index) {
+        streams.sort_by_key(|stream| stream.index);
+        let has_lyric_streams = !streams.is_empty();
+        for stream in streams {
             let path = stream.path.ok_or(UserLibraryError::LyricsNotFound)?;
             let bytes = fs::read(&path).await?;
+            let Some(format) = Path::new(&path)
+                .extension()
+                .and_then(|value| value.to_str())
+            else {
+                continue;
+            };
             let content = decode_lyric_bytes(&bytes);
-            let format = stream
-                .codec
-                .as_deref()
-                .or_else(|| {
-                    Path::new(&path)
-                        .extension()
-                        .and_then(|value| value.to_str())
-                })
-                .ok_or(UserLibraryError::LyricsNotFound)?;
-            return LyricManager::parse_lyrics(format, &content)
-                .ok_or(UserLibraryError::LyricsNotFound);
+            if let Some(lyrics) = LyricManager::parse_lyrics(format, &content) {
+                return Ok(lyrics);
+            }
+        }
+        if has_lyric_streams {
+            return Err(UserLibraryError::LyricsNotFound);
         }
 
         metadata_value(item.data.as_ref(), &["Lyrics", "lyrics"])

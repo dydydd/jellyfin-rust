@@ -780,6 +780,91 @@ async fn uploaded_lyrics_detect_boms_preserve_bytes_and_redecode_local_files() {
 }
 
 #[tokio::test]
+async fn local_lyrics_try_streams_by_index_and_use_path_extensions() {
+    let fixture = UserLibraryFixture::new().await;
+    let item_id = fixture.item_id.simple().to_string();
+    let metadata_directory = fixture
+        .storage_root
+        .join("metadata/library")
+        .join(&item_id[..2])
+        .join(&item_id);
+    tokio::fs::create_dir_all(&metadata_directory)
+        .await
+        .expect("lyric metadata directory");
+    let unsupported_path = metadata_directory.join("Test Song.srt");
+    let valid_path = metadata_directory.join("Test Song.txt");
+    tokio::fs::write(&unsupported_path, "Unsupported first stream")
+        .await
+        .expect("unsupported lyric stream");
+    tokio::fs::write(&valid_path, "Valid later stream")
+        .await
+        .expect("valid lyric stream");
+
+    let media_streams = MediaStreamService::new(fixture.database.clone());
+    let mut streams = media_streams
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("existing media streams");
+    streams.extend([
+        MediaStream {
+            codec: Some("txt".to_owned()),
+            index: 1,
+            stream_type: MediaStreamType::Lyric,
+            is_external: true,
+            path: Some(unsupported_path.to_string_lossy().into_owned()),
+            ..MediaStream::default()
+        },
+        MediaStream {
+            codec: Some("srt".to_owned()),
+            index: 2,
+            stream_type: MediaStreamType::Lyric,
+            is_external: true,
+            path: Some(valid_path.to_string_lossy().into_owned()),
+            ..MediaStream::default()
+        },
+    ]);
+    media_streams
+        .save_media_streams(fixture.item_id, streams)
+        .await
+        .expect("multiple lyric streams");
+
+    let route = format!("/Audio/{}/Lyrics", fixture.item_id);
+    let lyrics = get_json(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(lyrics["Lyrics"][0]["Text"], "Valid later stream");
+
+    let mut streams = media_streams
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("stored media streams");
+    let missing_path = metadata_directory
+        .join("missing.srt")
+        .to_string_lossy()
+        .into_owned();
+    streams
+        .iter_mut()
+        .find(|stream| stream.index == 1)
+        .expect("first lyric stream")
+        .path = Some(missing_path);
+    media_streams
+        .save_media_streams(fixture.item_id, streams)
+        .await
+        .expect("missing first lyric stream");
+
+    let missing_first = request(&fixture.app, &route, &fixture.user_token).await;
+    assert_eq!(
+        missing_first.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "filesystem errors from earlier streams must not be skipped"
+    );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata() {
     let fixture = UserLibraryFixture::new().await;
     let route = format!("/Audio/{}/Lyrics", fixture.item_id);
