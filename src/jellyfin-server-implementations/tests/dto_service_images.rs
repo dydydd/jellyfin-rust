@@ -216,7 +216,7 @@ fn local_episode_images_suppress_inherited_logo_thumb_and_backdrop() {
         image(ImageType::Thumb, "episode-thumb.jpg"),
         image(ImageType::Backdrop, "episode-backdrop.jpg"),
     ]);
-    let service = service([season.clone(), series], []);
+    let service = service([season, series], []);
 
     let projection = service.project(&episode, DtoImageOptions::default());
 

@@ -624,20 +624,19 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         let inherits_backdrop = projection.backdrop_image_tags.is_empty();
 
         for parent in parents {
-            if inherits_logo && projection.parent_logo_item_id.is_none() {
-                if let Some(tag) = self.image_tag(parent, ImageType::Logo) {
-                    projection.parent_logo_item_id = Some(parent.id);
-                    projection.parent_logo_image_tag = Some(tag);
-                }
+            if inherits_logo
+                && projection.parent_logo_item_id.is_none()
+                && let Some(tag) = self.image_tag(parent, ImageType::Logo)
+            {
+                projection.parent_logo_item_id = Some(parent.id);
+                projection.parent_logo_image_tag = Some(tag);
             }
 
             // Jellyfin deliberately lets a Series thumb replace a Season thumb. Iterating
             // Season then Series and keeping the last tagged parent preserves that behavior.
-            if inherits_thumb {
-                if let Some(tag) = self.image_tag(parent, ImageType::Thumb) {
-                    projection.parent_thumb_item_id = Some(parent.id);
-                    projection.parent_thumb_image_tag = Some(tag);
-                }
+            if inherits_thumb && let Some(tag) = self.image_tag(parent, ImageType::Thumb) {
+                projection.parent_thumb_item_id = Some(parent.id);
+                projection.parent_thumb_image_tag = Some(tag);
             }
 
             if inherits_backdrop && projection.parent_backdrop_image_item_id.is_none() {
