@@ -89,6 +89,15 @@ async fn exercise_chapters(database_name: &str) {
         &[2, 5, 8],
         &[100, 100, 300],
     );
+    let indexed = chapters
+        .get(first.id, 5)
+        .await
+        .expect("indexed chapter lookup must succeed")
+        .expect("persisted chapter index must resolve");
+    assert_eq!(indexed.name.as_deref(), Some("Part two"));
+    assert_eq!(indexed.start_position_ticks, 100);
+    assert_eq!(chapters.get(first.id, 6).await.unwrap(), None);
+    assert_eq!(chapters.get(without_chapters.id, 5).await.unwrap(), None);
 
     let grouped = chapters
         .list_many(&[second.id, first.id, first.id, without_chapters.id])
@@ -104,7 +113,7 @@ async fn exercise_chapters(database_name: &str) {
         "an empty page must not require a database query"
     );
 
-    assert_chapter_query_index(&database, first.id).await;
+    assert_chapter_query_indexes(&database, first.id).await;
     database
         .close()
         .await
@@ -132,7 +141,7 @@ fn assert_indexes_then_start_positions(
     );
 }
 
-async fn assert_chapter_query_index(database: &DatabaseConnection, item_id: Uuid) {
+async fn assert_chapter_query_indexes(database: &DatabaseConnection, item_id: Uuid) {
     let transaction = database.begin().await.expect("EXPLAIN transaction");
     transaction
         .execute_unprepared("SET LOCAL enable_seqscan = off")
@@ -155,6 +164,26 @@ async fn assert_chapter_query_index(database: &DatabaseConnection, item_id: Uuid
     assert!(
         plan.contains("chapters_item_start_idx"),
         "expected chapter start-position index plan:\n{plan}"
+    );
+
+    let plan = transaction
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "EXPLAIN (FORMAT TEXT) SELECT * FROM jellyfin.chapters \
+             WHERE item_id = $1 AND index_number = $2",
+            [item_id.into(), 5_i32.into()],
+        ))
+        .await
+        .expect("chapter index lookup EXPLAIN")
+        .iter()
+        .map(explain_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        plan.contains("Index Scan")
+            && (plan.contains("chapters_item_index_unique")
+                || plan.contains("chapters_item_start_idx")),
+        "expected indexed chapter lookup plan:\n{plan}"
     );
     transaction.rollback().await.expect("EXPLAIN rollback");
 }

@@ -164,6 +164,24 @@ impl ChapterRepository {
         Ok(grouped)
     }
 
+    /// Gets one chapter by its persisted index within an item.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when lookup fails.
+    pub async fn get(
+        &self,
+        item_id: Uuid,
+        index_number: i32,
+    ) -> Result<Option<ChapterRecord>, ChapterStoreError> {
+        Ok(chapter::Entity::find()
+            .filter(chapter::Column::ItemId.eq(item_id))
+            .filter(chapter::Column::IndexNumber.eq(index_number))
+            .one(self.database.as_ref())
+            .await?
+            .map(Into::into))
+    }
+
     /// Updates the generated-image metadata for one chapter.
     ///
     /// # Errors
