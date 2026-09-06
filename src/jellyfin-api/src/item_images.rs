@@ -400,17 +400,43 @@ pub(crate) async fn render_item_image(
     query: GetItemImageQuery,
 ) -> Result<Response, ApiError> {
     let image_index = u32::try_from(image_index).map_err(|_| BaseItemError::NotFound)?;
-    let resource = state
-        .item_images
-        .resource(item_id, image_type, image_index)
-        .await?;
-    validate_direct_image_request(&query)?;
-    let source = ImageSource {
-        path: resource.path,
-        date_modified: SystemTime::from(resource.date_modified),
-        width: resource.width,
-        height: resource.height,
+    let source = if image_type == ImageType::Chapter {
+        let chapter = state
+            .chapters
+            .get(
+                item_id,
+                i32::try_from(image_index).map_err(|_| BaseItemError::NotFound)?,
+            )
+            .await
+            .map_err(|_| ApiError::Internal)?
+            .ok_or(jellyfin_controller::ItemImageError::NotFound)?;
+        let path = chapter
+            .image_path
+            .filter(|path| !path.is_empty())
+            .ok_or(jellyfin_controller::ItemImageError::NotFound)?;
+        ImageSource {
+            path: path.into(),
+            date_modified: SystemTime::from(
+                chapter
+                    .image_date_modified
+                    .unwrap_or_else(|| jellyfin_model::ChapterInfo::default().image_date_modified),
+            ),
+            width: None,
+            height: None,
+        }
+    } else {
+        let resource = state
+            .item_images
+            .resource(item_id, image_type, image_index)
+            .await?;
+        ImageSource {
+            path: resource.path,
+            date_modified: SystemTime::from(resource.date_modified),
+            width: resource.width,
+            height: resource.height,
+        }
     };
+    validate_direct_image_request(&query)?;
     // This server intentionally ignores image transformation parameters. Media-library clients
     // request many differently sized derivatives while browsing; serving the source bytes avoids
     // decoder-sized memory spikes and an unbounded family of cached variants.

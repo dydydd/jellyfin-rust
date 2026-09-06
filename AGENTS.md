@@ -28,6 +28,9 @@
   details must include an empty array when none exist. Load page chapters in one PostgreSQL batch,
   order by `StartPositionTicks`, keep alternate versions isolated, and derive chapter image tags
   from the owning item's media path without applying DTO image enablement, selectors, or limits.
+  Resolve Chapter image GET/HEAD by `(item_id, ChapterIndex)` from the chapter repository; never
+  store or enumerate chapter thumbnails as ordinary `base_item_images`, and serve their source
+  bytes without decoding or resizing.
 - Match official TV hierarchy image inheritance from relational Series/Season links: Episode and
   Season DTOs always derive `SeriesPrimaryImageTag`; Episode parent Primary prefers Season then
   Series; parent Logo prefers the nearest parent, parent Thumb prefers Series over Season, and

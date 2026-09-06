@@ -18,7 +18,8 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
-    DatabaseConfig, DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice,
+    ChapterRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewBaseItemImage, NewChapter,
+    NewDevice,
     entities::{base_item, base_item_image, user},
 };
 use sea_orm::{
@@ -991,6 +992,45 @@ async fn exercise_item_image_files(database_name: &str) {
         fs::read(fixture.path("remote-backdrop.png")).unwrap()
     );
 
+    for route in [
+        format!("/Items/{}/Images/Chapter/8", fixture.item_id),
+        format!(
+            "/Items/{}/Images/10?imageIndex=8&maxWidth=1&format=Jpg",
+            fixture.item_id
+        ),
+        format!("/items/{}/images/chapter/8", fixture.item_id),
+    ] {
+        let chapter = fixture.request(Method::GET, &route, &[]).await;
+        assert_eq!(chapter.status(), StatusCode::OK, "route {route}");
+        assert_eq!(chapter.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(
+            to_bytes(chapter.into_body(), usize::MAX).await.unwrap(),
+            fs::read(fixture.path("chapter.png")).unwrap(),
+            "route {route}"
+        );
+    }
+    let chapter_head = fixture
+        .request(
+            Method::HEAD,
+            &format!("/Items/{}/Images/Chapter/8", fixture.item_id),
+            &[],
+        )
+        .await;
+    assert_eq!(chapter_head.status(), StatusCode::OK);
+    assert_eq!(
+        chapter_head.headers()[header::CONTENT_LENGTH],
+        fs::metadata(fixture.path("chapter.png"))
+            .unwrap()
+            .len()
+            .to_string()
+    );
+    assert!(
+        to_bytes(chapter_head.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
     let webp_requested = fixture
         .request(
             Method::GET,
@@ -1058,6 +1098,8 @@ async fn exercise_item_image_files(database_name: &str) {
     for route in [
         format!("/Items/{}/Images/Backdrop/2", fixture.item_id),
         format!("/Items/{}/Images/Primary/-1", fixture.item_id),
+        format!("/Items/{}/Images/Chapter", fixture.item_id),
+        format!("/Items/{}/Images/Chapter/9", fixture.item_id),
         format!("/Items/{}/Images/Primary", Uuid::new_v4()),
         format!("/Items/{}/Images/Logo", fixture.item_id),
     ] {
@@ -1131,16 +1173,6 @@ async fn exercise_item_image_infos(database_name: &str) {
                 "Width": 1280,
                 "Size": fs::metadata(fixture.path("remote-backdrop.png")).unwrap().len()
             },
-            {
-                "ImageType": "Chapter",
-                "ImageIndex": 0,
-                "ImageTag": IMAGE_TAG,
-                "Path": fixture.path("chapter.png"),
-                "BlurHash": "chapter-blurhash",
-                "Height": 360,
-                "Width": 640,
-                "Size": fs::metadata(fixture.path("chapter.png")).unwrap().len()
-            }
         ])
     );
 
@@ -1325,18 +1357,30 @@ impl Fixture {
                         Some((400, 200)),
                         Some("missing-blurhash"),
                     ),
-                    image(
-                        BaseItemImageType::Chapter,
-                        8,
-                        temporary.path().join("chapter.png"),
-                        modified,
-                        Some((640, 360)),
-                        Some("chapter-blurhash"),
-                    ),
                 ],
             )
             .await
             .expect("image metadata replacement");
+        let stored_chapters = ChapterRepository::new(database.clone())
+            .replace(
+                item.id,
+                vec![NewChapter {
+                    index_number: 8,
+                    start_position_ticks: 80_000_000,
+                    end_position_ticks: 90_000_000,
+                    name: Some("Chapter image".to_owned()),
+                }],
+            )
+            .await
+            .expect("chapter metadata replacement");
+        ChapterRepository::new(database.clone())
+            .set_image_data(
+                stored_chapters[0].id,
+                temporary.path().join("chapter.png").to_string_lossy(),
+                modified,
+            )
+            .await
+            .expect("chapter image metadata");
         BaseItemImageRepository::new(database.clone())
             .replace(
                 refresh_item.id,
