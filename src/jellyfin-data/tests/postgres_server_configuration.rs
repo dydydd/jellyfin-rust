@@ -3,9 +3,10 @@ use jellyfin_data::{
     ServerConfigurationUpdate, StartupConfigurationUpdate,
 };
 use jellyfin_migration::{
-    AddClientLogUploadConfigurationMigration, AddOfficialServerConfigurationFieldsMigration,
-    AddPlaystateResumeConfigurationMigration, AddPluginRepositoriesMigration,
-    AddRemoteAccessConfigurationMigration, CreateServerConfigurationMigration,
+    AddCaseSensitiveItemIdsMigration, AddClientLogUploadConfigurationMigration,
+    AddOfficialServerConfigurationFieldsMigration, AddPlaystateResumeConfigurationMigration,
+    AddPluginRepositoriesMigration, AddRemoteAccessConfigurationMigration,
+    CreateServerConfigurationMigration,
 };
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -88,6 +89,7 @@ async fn exercise_server_configuration(database_name: &str) {
     assert_eq!(seeded.max_audiobook_resume, 5);
     assert!(seeded.allow_client_log_upload);
     assert!(seeded.enable_remote_access);
+    assert!(seeded.enable_case_sensitive_item_ids);
     assert_eq!(seeded.trickplay_options["Interval"], 10_000);
     assert_eq!(seeded.trickplay_options["ScanBehavior"], "NonBlocking");
     // Seeding the default plugin repository and cast receivers counts as real
@@ -230,6 +232,14 @@ async fn assert_configuration_migrations_are_idempotent(schema: &SchemaManager<'
         .up(schema)
         .await
         .expect("official configuration DDL must remain idempotent");
+    AddCaseSensitiveItemIdsMigration
+        .up(schema)
+        .await
+        .expect("reapplying case-sensitive item-id DDL must succeed");
+    AddCaseSensitiveItemIdsMigration
+        .up(schema)
+        .await
+        .expect("case-sensitive item-id DDL must remain idempotent");
 }
 
 async fn assert_content_type_updates(
@@ -382,6 +392,7 @@ async fn assert_server_configuration_update(
     assert_eq!(updated.log_file_retention_days, 45);
     assert!(updated.enable_metrics);
     assert!(!updated.enable_normalized_item_by_name_ids);
+    assert!(!updated.enable_case_sensitive_item_ids);
     assert_eq!(updated.metadata_path, "/var/lib/jellyfin/metadata");
     assert_eq!(updated.sort_replace_characters, json!([".", "+", "%", "!"]));
     assert_eq!(updated.sort_remove_characters, json!(["&", "-", "'"]));
@@ -484,6 +495,7 @@ fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
         log_file_retention_days: 45,
         enable_metrics: true,
         enable_normalized_item_by_name_ids: false,
+        enable_case_sensitive_item_ids: false,
         metadata_path: "/var/lib/jellyfin/metadata".to_owned(),
         sort_replace_characters: json!([".", "+", "%", "!"]),
         sort_remove_characters: json!(["&", "-", "'"]),
@@ -552,6 +564,7 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
     assert_playstate_resume_schema(database).await;
     assert_client_log_upload_schema(database).await;
     assert_remote_access_schema(database).await;
+    assert_case_sensitive_item_ids_schema(database).await;
     assert_plugin_repositories_schema(database).await;
     assert_trickplay_configuration_schema(database).await;
     assert_provider_configuration_schema(database).await;
@@ -597,6 +610,31 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("plugin-repositories constraint catalog query")
         .expect("plugin-repositories constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_case_sensitive_item_ids_schema(database: &sea_orm::DatabaseConnection) {
+    let column = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name = 'enable_case_sensitive_item_ids'"
+                .to_owned(),
+        ))
+        .await
+        .expect("case-sensitive item-id column catalog query")
+        .expect("case-sensitive item-id column");
+    assert_eq!(
+        String::try_get(&column, "", "data_type").unwrap(),
+        "boolean"
+    );
+    assert_eq!(String::try_get(&column, "", "is_nullable").unwrap(), "NO");
+    assert_eq!(
+        String::try_get(&column, "", "column_default").unwrap(),
+        "true"
+    );
 }
 
 async fn assert_provider_configuration_schema(database: &sea_orm::DatabaseConnection) {

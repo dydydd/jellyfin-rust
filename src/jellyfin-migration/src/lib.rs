@@ -55,6 +55,7 @@ mod m20260901_000052_add_official_server_configuration_fields;
 mod m20260902_000053_add_chapter_images;
 mod m20260905_000054_optimize_episode_title_repairs;
 mod m20260906_000055_index_item_by_name_entities;
+mod m20260906_000056_add_case_sensitive_item_ids;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -157,6 +158,7 @@ pub use m20260901_000052_add_official_server_configuration_fields::Migration as 
 pub use m20260902_000053_add_chapter_images::Migration as AddChapterImagesMigration;
 pub use m20260905_000054_optimize_episode_title_repairs::Migration as OptimizeEpisodeTitleRepairsMigration;
 pub use m20260906_000055_index_item_by_name_entities::Migration as IndexItemByNameEntitiesMigration;
+pub use m20260906_000056_add_case_sensitive_item_ids::Migration as AddCaseSensitiveItemIdsMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -223,6 +225,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260902_000053_add_chapter_images::Migration),
             Box::new(m20260905_000054_optimize_episode_title_repairs::Migration),
             Box::new(m20260906_000055_index_item_by_name_entities::Migration),
+            Box::new(m20260906_000056_add_case_sensitive_item_ids::Migration),
         ]
     }
 }

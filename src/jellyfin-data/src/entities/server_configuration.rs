@@ -34,6 +34,7 @@ pub struct Model {
     pub log_file_retention_days: i32,
     pub enable_metrics: bool,
     pub enable_normalized_item_by_name_ids: bool,
+    pub enable_case_sensitive_item_ids: bool,
     pub metadata_path: String,
     pub sort_replace_characters: Value,
     pub sort_remove_characters: Value,

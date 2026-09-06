@@ -144,6 +144,7 @@ fn server_configuration(
         log_file_retention_days: model.log_file_retention_days,
         enable_metrics: model.enable_metrics,
         enable_normalized_item_by_name_ids: model.enable_normalized_item_by_name_ids,
+        enable_case_sensitive_item_ids: model.enable_case_sensitive_item_ids,
         metadata_path: model.metadata_path,
         sort_replace_characters: serde_json::from_value(model.sort_replace_characters)
             .map_err(|_| ApiError::Internal)?,
@@ -202,6 +203,7 @@ fn server_configuration_update(
         log_file_retention_days: configuration.log_file_retention_days,
         enable_metrics: configuration.enable_metrics,
         enable_normalized_item_by_name_ids: configuration.enable_normalized_item_by_name_ids,
+        enable_case_sensitive_item_ids: configuration.enable_case_sensitive_item_ids,
         metadata_path: configuration.metadata_path,
         sort_replace_characters: serde_json::to_value(configuration.sort_replace_characters)
             .map_err(|_| ApiError::Internal)?,

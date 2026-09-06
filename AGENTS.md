@@ -187,6 +187,9 @@
   scans. Create their official metadata paths before insertion, derive IDs with the configured
   official UTF-16LE/.NET `Guid(byte[])` semantics, process deterministic keyset pages in bounded
   PostgreSQL batches, and never replace or delete existing entities, images, or metadata.
+- Persist and round-trip both `EnableNormalizedItemByNameIds` and `EnableCaseSensitiveItemIds`
+  (default true). Lowercase item-by-name ID keys when normalization is forced or case-sensitive IDs
+  are disabled; only preserve path casing when normalization is disabled and case sensitivity is enabled.
 - `IncludeItemTypes` and `ExcludeItemTypes` filters, count queries, and media-source queries must
   recognize canonical short item types and official legacy CLR-qualified persisted names, including
   case-insensitive API enum input. Preserve unknown plugin-defined types instead of discarding them.

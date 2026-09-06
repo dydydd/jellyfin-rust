@@ -192,6 +192,7 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(configuration["MinResumePct"], 5);
     assert_eq!(configuration["MaxResumePct"], 90);
     assert_eq!(configuration["QuickConnectAvailable"], true);
+    assert_eq!(configuration["EnableCaseSensitiveItemIds"], true);
     assert_eq!(
         configuration["MetadataOptions"][4]["DisabledMetadataFetchers"],
         json!(["TheAudioDB"])
@@ -402,6 +403,7 @@ async fn exercise_configuration_routes(database_name: &str) {
     updated.insert("LogFileRetentionDays".to_owned(), json!(45));
     updated.insert("EnableMetrics".to_owned(), json!(true));
     updated.insert("EnableNormalizedItemByNameIds".to_owned(), json!(false));
+    updated.insert("EnableCaseSensitiveItemIds".to_owned(), json!(false));
     updated.insert("MetadataPath".to_owned(), json!("/media/metadata"));
     updated.insert(
         "SortReplaceCharacters".to_owned(),
@@ -500,6 +502,7 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(saved["LogFileRetentionDays"], 45);
     assert_eq!(saved["EnableMetrics"], true);
     assert_eq!(saved["EnableNormalizedItemByNameIds"], false);
+    assert_eq!(saved["EnableCaseSensitiveItemIds"], false);
     assert_eq!(saved["MetadataPath"], "/media/metadata");
     assert_eq!(saved["SortReplaceCharacters"], json!([".", "+", "%", "!"]));
     assert_eq!(saved["SortRemoveCharacters"], json!(["&", "-", "'"]));
@@ -548,6 +551,7 @@ async fn exercise_configuration_routes(database_name: &str) {
     );
     assert_eq!(persisted.trickplay_options["Interval"], 2_500);
     assert!(!persisted.quick_connect_available);
+    assert!(!persisted.enable_case_sensitive_item_ids);
     assert_eq!(
         body_json(request(&app, "/QuickConnect/Enabled", None).await).await,
         json!(false)

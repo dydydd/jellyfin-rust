@@ -933,7 +933,13 @@ impl LibraryScanService {
     }
 
     async fn reconcile_genre_entities(&self) -> Result<(), LibraryScanError> {
-        let configuration = self.server_configuration.load().await?;
+        let (force_case_insensitive, enable_case_sensitive_item_ids) = {
+            let configuration = self.server_configuration.load().await?;
+            (
+                configuration.enable_normalized_item_by_name_ids,
+                configuration.enable_case_sensitive_item_ids,
+            )
+        };
         let (program_data, internal_metadata) = self.item_by_name_directories();
         let mut after = None;
         let mut required_total = 0;
@@ -973,8 +979,8 @@ impl LibraryScanService {
                         &path,
                         &program_data,
                         clr_type,
-                        configuration.enable_normalized_item_by_name_ids,
-                        true,
+                        force_case_insensitive,
+                        enable_case_sensitive_item_ids,
                     ),
                     presentation_unique_key: format!(
                         "{}-{}",
@@ -4707,8 +4713,16 @@ mod tests {
             false,
             false,
         );
+        let forced_case_insensitive_configuration = official_item_by_name_id(
+            Path::new("/srv/config/metadata/Genre/Science Fiction"),
+            Path::new("/srv/config"),
+            "MediaBrowser.Controller.Entities.Genre",
+            true,
+            false,
+        );
         assert_ne!(case_sensitive, id);
         assert_eq!(case_insensitive_configuration, id);
+        assert_eq!(forced_case_insensitive_configuration, id);
     }
 
     #[test]
