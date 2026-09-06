@@ -1,6 +1,5 @@
-use jellyfin_model::{MetadataProvider, ProviderIdMap};
+use jellyfin_model::{ExternalUrl, MetadataProvider, ProviderIdMap};
 
-use super::encoding::{encode_component, encode_relative_path};
 use super::{ExternalUrlItem, ExternalUrlItemKind};
 
 const AUDIO_DB_BASE_URL: &str = "https://www.theaudiodb.com/";
@@ -9,17 +8,83 @@ const GOOGLE_BOOKS_URL: &str = "https://books.google.com/books?id=";
 const IMDB_BASE_URL: &str = "https://www.imdb.com/";
 const MUSIC_BRAINZ_DEFAULT_SERVER: &str = "https://musicbrainz.org";
 const TMDB_BASE_URL: &str = "https://www.themoviedb.org/";
-const TVDB_BASE_URL: &str = "https://www.thetvdb.com/?tab=series&id=";
-const TV_MAZE_BASE_URL: &str = "https://www.tvmaze.com/shows/";
-const TV_COM_BASE_URL: &str = "https://www.tv.com/shows/";
-const TV_RAGE_BASE_URL: &str = "https://www.tvrage.com/shows/id-";
 const WORLDCAT_ISBN_URL: &str = "https://search.worldcat.org/search?q=bn:";
 const ZAP2IT_URL: &str = "http://tvlistings.zap2it.com/overview.html?programSeriesId=";
 
 /// Produces related external URLs for one item projection.
-pub trait ExternalUrlProvider {
+pub trait ExternalUrlProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String>;
+}
+
+/// Official external URL providers in the same name order used by Jellyfin's provider manager.
+pub struct ExternalUrlProviderRegistry {
+    providers: Vec<Box<dyn ExternalUrlProvider>>,
+}
+
+impl ExternalUrlProviderRegistry {
+    /// Builds the official provider set with a configurable MusicBrainz server.
+    #[must_use]
+    pub fn new(music_brainz_server: impl Into<String>) -> Self {
+        let music_brainz_server = music_brainz_server.into();
+        Self {
+            providers: vec![
+                Box::new(ComicVineExternalUrlProvider),
+                Box::new(GoogleBooksExternalUrlProvider),
+                Box::new(ImdbExternalUrlProvider),
+                Box::new(IsbnExternalUrlProvider),
+                Box::new(MusicBrainzAlbumExternalUrlProvider::new(
+                    &music_brainz_server,
+                )),
+                Box::new(MusicBrainzAlbumArtistExternalUrlProvider::new(
+                    &music_brainz_server,
+                )),
+                Box::new(MusicBrainzArtistExternalUrlProvider::new(
+                    &music_brainz_server,
+                )),
+                Box::new(MusicBrainzReleaseGroupExternalUrlProvider::new(
+                    &music_brainz_server,
+                )),
+                Box::new(MusicBrainzTrackExternalUrlProvider::new(
+                    &music_brainz_server,
+                )),
+                Box::new(AudioDbAlbumExternalUrlProvider),
+                Box::new(AudioDbArtistExternalUrlProvider),
+                Box::new(TmdbExternalUrlProvider),
+                Box::new(Zap2ItExternalUrlProvider),
+            ],
+        }
+    }
+
+    /// Returns provider names in their externally visible projection order.
+    #[must_use]
+    pub fn provider_names(&self) -> Vec<&'static str> {
+        self.providers
+            .iter()
+            .map(|provider| provider.name())
+            .collect()
+    }
+
+    /// Projects every official external URL for one item.
+    #[must_use]
+    pub fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<ExternalUrl> {
+        let mut urls = Vec::new();
+        for provider in &self.providers {
+            for url in provider.get_external_urls(item) {
+                urls.push(ExternalUrl {
+                    name: Some(provider.name().to_owned()),
+                    url: Some(url),
+                });
+            }
+        }
+        urls
+    }
+}
+
+impl Default for ExternalUrlProviderRegistry {
+    fn default() -> Self {
+        Self::new(MUSIC_BRAINZ_DEFAULT_SERVER)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -77,7 +142,7 @@ impl ExternalUrlProvider for ComicVineExternalUrlProvider {
             return Vec::new();
         }
         one(provider_id(&item.provider_ids, "ComicVine")
-            .map(|id| format!("{COMIC_VINE_BASE_URL}{}", encode_relative_path(id))))
+            .map(|id| format!("{COMIC_VINE_BASE_URL}{id}")))
     }
 }
 
@@ -131,10 +196,7 @@ impl ExternalUrlProvider for ImdbExternalUrlProvider {
                 provider_id(&item.series_provider_ids, MetadataProvider::Imdb.as_str())
                     .zip(item.index_number)
                     .map(|(id, season)| {
-                        format!(
-                            "{IMDB_BASE_URL}title/{}/episodes/?season={season}",
-                            encode_component(id)
-                        )
+                        format!("{IMDB_BASE_URL}title/{id}/episodes/?season={season}")
                     }),
             );
         }
@@ -145,7 +207,7 @@ impl ExternalUrlProvider for ImdbExternalUrlProvider {
         };
         one(
             provider_id(&item.provider_ids, MetadataProvider::Imdb.as_str())
-                .map(|id| format!("{IMDB_BASE_URL}{resource}/{}", encode_component(id))),
+                .map(|id| format!("{IMDB_BASE_URL}{resource}/{id}")),
         )
     }
 }
@@ -240,13 +302,7 @@ impl ExternalUrlProvider for TmdbExternalUrlProvider {
                 &item.provider_ids,
                 MetadataProvider::Tmdb.as_str(),
             )
-            .or_else(|| {
-                provider_id(
-                    &item.provider_ids,
-                    MetadataProvider::TmdbCollection.as_str(),
-                )
-            })
-            .map(|id| format!("{TMDB_BASE_URL}collection/{}", encode_component(id)))),
+            .map(|id| format!("{TMDB_BASE_URL}collection/{id}"))),
             ExternalUrlItemKind::Season => tmdb_season_url(item),
             ExternalUrlItemKind::Episode => tmdb_episode_url(item),
             _ => Vec::new(),
@@ -265,88 +321,7 @@ impl ExternalUrlProvider for Zap2ItExternalUrlProvider {
     fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
         one(
             provider_id(&item.provider_ids, MetadataProvider::Zap2It.as_str())
-                .map(|id| format!("{ZAP2IT_URL}{}", encode_component(id))),
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TheTvdbExternalUrlProvider;
-
-impl ExternalUrlProvider for TheTvdbExternalUrlProvider {
-    fn name(&self) -> &'static str {
-        "TheTVDB"
-    }
-
-    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
-        match item.kind {
-            ExternalUrlItemKind::Series => supported_url(
-                item,
-                &[ExternalUrlItemKind::Series],
-                MetadataProvider::Tvdb.as_str(),
-                TVDB_BASE_URL,
-            ),
-            ExternalUrlItemKind::Season | ExternalUrlItemKind::Episode => one(provider_id(
-                &item.series_provider_ids,
-                MetadataProvider::Tvdb.as_str(),
-            )
-            .map(|id| format!("{TVDB_BASE_URL}{}", encode_component(id)))),
-            _ => Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TvMazeExternalUrlProvider;
-
-impl ExternalUrlProvider for TvMazeExternalUrlProvider {
-    fn name(&self) -> &'static str {
-        "TVmaze"
-    }
-
-    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
-        supported_url(
-            item,
-            &[ExternalUrlItemKind::Series],
-            MetadataProvider::TvMaze.as_str(),
-            TV_MAZE_BASE_URL,
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TvcomExternalUrlProvider;
-
-impl ExternalUrlProvider for TvcomExternalUrlProvider {
-    fn name(&self) -> &'static str {
-        "TV.com"
-    }
-
-    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
-        if item.kind != ExternalUrlItemKind::Series {
-            return Vec::new();
-        }
-        one(
-            provider_id(&item.provider_ids, MetadataProvider::Tvcom.as_str())
-                .map(|id| format!("{TV_COM_BASE_URL}{}/", encode_relative_path(id))),
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TvRageExternalUrlProvider;
-
-impl ExternalUrlProvider for TvRageExternalUrlProvider {
-    fn name(&self) -> &'static str {
-        "TVRage"
-    }
-
-    fn get_external_urls(&self, item: &ExternalUrlItem) -> Vec<String> {
-        supported_url(
-            item,
-            &[ExternalUrlItemKind::Series],
-            MetadataProvider::TvRage.as_str(),
-            TV_RAGE_BASE_URL,
+                .map(|id| format!("{ZAP2IT_URL}{id}")),
         )
     }
 }
@@ -354,7 +329,7 @@ impl ExternalUrlProvider for TvRageExternalUrlProvider {
 fn tmdb_item_url(item: &ExternalUrlItem, resource: &str) -> Vec<String> {
     one(
         provider_id(&item.provider_ids, MetadataProvider::Tmdb.as_str())
-            .map(|id| format!("{TMDB_BASE_URL}{resource}/{}", encode_component(id))),
+            .map(|id| format!("{TMDB_BASE_URL}{resource}/{id}")),
     )
 }
 
@@ -362,7 +337,7 @@ fn tmdb_season_url(item: &ExternalUrlItem) -> Vec<String> {
     one(tmdb_series_id(item)
         .zip(item.index_number)
         .filter(|_| uses_tmdb_air_date_order(item))
-        .map(|(id, season)| format!("{TMDB_BASE_URL}tv/{}/season/{season}", encode_component(id))))
+        .map(|(id, season)| format!("{TMDB_BASE_URL}tv/{id}/season/{season}")))
 }
 
 fn tmdb_episode_url(item: &ExternalUrlItem) -> Vec<String> {
@@ -371,10 +346,7 @@ fn tmdb_episode_url(item: &ExternalUrlItem) -> Vec<String> {
         .zip(item.index_number)
         .filter(|_| uses_tmdb_air_date_order(item))
         .map(|((id, season), episode)| {
-            format!(
-                "{TMDB_BASE_URL}tv/{}/season/{season}/episode/{episode}",
-                encode_component(id)
-            )
+            format!("{TMDB_BASE_URL}tv/{id}/season/{season}/episode/{episode}")
         }))
 }
 
@@ -397,8 +369,7 @@ fn supported_url(
     if !supported_kinds.contains(&item.kind) {
         return Vec::new();
     }
-    one(provider_id(&item.provider_ids, provider)
-        .map(|id| format!("{prefix}{}", encode_component(id))))
+    one(provider_id(&item.provider_ids, provider).map(|id| format!("{prefix}{id}")))
 }
 
 fn provider_id<'a>(provider_ids: &'a ProviderIdMap, provider: &str) -> Option<&'a str> {
@@ -406,7 +377,7 @@ fn provider_id<'a>(provider_ids: &'a ProviderIdMap, provider: &str) -> Option<&'
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(provider))
         .map(|(_, value)| value.as_str())
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.is_empty())
 }
 
 fn one(url: Option<String>) -> Vec<String> {

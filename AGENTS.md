@@ -97,6 +97,10 @@
   available options, case-insensitively deduplicate provider names, and mark every returned option
   enabled by default. Do not expose lyric fetchers for representative types that omit Audio.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
+- Keep the external-URL provider registry limited to the providers present in the checked-out
+  official server and preserve its provider-name ordering. Interpolate persisted provider ids
+  verbatim, ignore only empty values, and do not substitute collection or legacy TV provider ids
+  where the official provider does not.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
   clients. Keep accepting the official image query surface for compatibility, but stream the

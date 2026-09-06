@@ -2,12 +2,11 @@ use jellyfin_model::MetadataProvider;
 use jellyfin_providers::external_url::{
     AudioDbAlbumExternalUrlProvider, AudioDbArtistExternalUrlProvider,
     ComicVineExternalUrlProvider, ExternalUrlItem, ExternalUrlItemKind, ExternalUrlProvider,
-    GoogleBooksExternalUrlProvider, ImdbExternalUrlProvider, IsbnExternalUrlProvider,
-    MusicBrainzAlbumArtistExternalUrlProvider, MusicBrainzAlbumExternalUrlProvider,
-    MusicBrainzArtistExternalUrlProvider, MusicBrainzReleaseGroupExternalUrlProvider,
-    MusicBrainzTrackExternalUrlProvider, TheTvdbExternalUrlProvider, TmdbExternalUrlProvider,
-    TvMazeExternalUrlProvider, TvRageExternalUrlProvider, TvcomExternalUrlProvider,
-    Zap2ItExternalUrlProvider,
+    ExternalUrlProviderRegistry, GoogleBooksExternalUrlProvider, ImdbExternalUrlProvider,
+    IsbnExternalUrlProvider, MusicBrainzAlbumArtistExternalUrlProvider,
+    MusicBrainzAlbumExternalUrlProvider, MusicBrainzArtistExternalUrlProvider,
+    MusicBrainzReleaseGroupExternalUrlProvider, MusicBrainzTrackExternalUrlProvider,
+    TmdbExternalUrlProvider, Zap2ItExternalUrlProvider,
 };
 
 const MBID: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
@@ -362,14 +361,14 @@ fn tmdb_official_matrix() {
                 .is_empty()
         );
     }
-    assert_only(
-        &provider,
-        &with_id(
-            ExternalUrlItemKind::BoxSet,
-            MetadataProvider::TmdbCollection.as_str(),
-            "10",
-        ),
-        "https://www.themoviedb.org/collection/10",
+    assert!(
+        provider
+            .get_external_urls(&with_id(
+                ExternalUrlItemKind::BoxSet,
+                MetadataProvider::TmdbCollection.as_str(),
+                "10",
+            ))
+            .is_empty()
     );
 
     let season = ExternalUrlItem::new(ExternalUrlItemKind::Season)
@@ -417,64 +416,6 @@ fn tmdb_official_matrix() {
 }
 
 #[test]
-fn tv_provider_external_url_matrix() {
-    let tvdb = TheTvdbExternalUrlProvider;
-    assert_only(
-        &tvdb,
-        &with_id(
-            ExternalUrlItemKind::Series,
-            MetadataProvider::Tvdb.as_str(),
-            "121361",
-        ),
-        "https://www.thetvdb.com/?tab=series&id=121361",
-    );
-    let season = ExternalUrlItem::new(ExternalUrlItemKind::Season)
-        .with_series_provider_id(MetadataProvider::Tvdb.as_str(), "121361");
-    assert_only(
-        &tvdb,
-        &season,
-        "https://www.thetvdb.com/?tab=series&id=121361",
-    );
-    assert!(
-        tvdb.get_external_urls(&ExternalUrlItem::new(ExternalUrlItemKind::Movie))
-            .is_empty()
-    );
-
-    let tv_maze = TvMazeExternalUrlProvider;
-    assert_only(
-        &tv_maze,
-        &with_id(
-            ExternalUrlItemKind::Series,
-            MetadataProvider::TvMaze.as_str(),
-            "82",
-        ),
-        "https://www.tvmaze.com/shows/82",
-    );
-
-    let tvcom = TvcomExternalUrlProvider;
-    assert_only(
-        &tvcom,
-        &with_id(
-            ExternalUrlItemKind::Series,
-            MetadataProvider::Tvcom.as_str(),
-            "the-good-place",
-        ),
-        "https://www.tv.com/shows/the-good-place/",
-    );
-
-    let tvrage = TvRageExternalUrlProvider;
-    assert_only(
-        &tvrage,
-        &with_id(
-            ExternalUrlItemKind::Series,
-            MetadataProvider::TvRage.as_str(),
-            "24493",
-        ),
-        "https://www.tvrage.com/shows/id-24493",
-    );
-}
-
-#[test]
 fn zap2it_official_matrix() {
     let provider = Zap2ItExternalUrlProvider;
     assert_only(
@@ -494,16 +435,16 @@ fn zap2it_official_matrix() {
 }
 
 #[test]
-fn external_ids_are_encoded_and_blank_values_are_ignored() {
+fn external_ids_are_interpolated_verbatim_and_only_empty_values_are_ignored() {
     assert_only(
         &GoogleBooksExternalUrlProvider,
         &with_id(ExternalUrlItemKind::Book, "googlebooks", "a b&c#d"),
-        "https://books.google.com/books?id=a%20b%26c%23d",
+        "https://books.google.com/books?id=a b&c#d",
     );
     assert_only(
         &ComicVineExternalUrlProvider,
         &with_id(ExternalUrlItemKind::Book, "comicvine", "issue/4000 1?#"),
-        "https://comicvine.gamespot.com/issue/4000%201%3F%23",
+        "https://comicvine.gamespot.com/issue/4000 1?#",
     );
     assert_only(
         &AudioDbAlbumExternalUrlProvider,
@@ -512,14 +453,23 @@ fn external_ids_are_encoded_and_blank_values_are_ignored() {
             MetadataProvider::AudioDbAlbum.as_str(),
             "12/34",
         ),
-        "https://www.theaudiodb.com/album/12%2F34",
+        "https://www.theaudiodb.com/album/12/34",
+    );
+    assert_only(
+        &Zap2ItExternalUrlProvider,
+        &with_id(
+            ExternalUrlItemKind::Series,
+            MetadataProvider::Zap2It.as_str(),
+            "  ",
+        ),
+        "http://tvlistings.zap2it.com/overview.html?programSeriesId=  ",
     );
     assert!(
         Zap2ItExternalUrlProvider
             .get_external_urls(&with_id(
                 ExternalUrlItemKind::Series,
                 MetadataProvider::Zap2It.as_str(),
-                "  ",
+                "",
             ))
             .is_empty()
     );
@@ -566,4 +516,78 @@ fn provider_names_match_jellyfin() {
     for (provider, expected) in providers {
         assert_eq!(provider.name(), expected);
     }
+}
+
+#[test]
+fn official_registry_preserves_provider_manager_name_order() {
+    let registry = ExternalUrlProviderRegistry::default();
+    assert_eq!(
+        registry.provider_names(),
+        [
+            "Comic Vine",
+            "Google Books",
+            "IMDb",
+            "ISBN",
+            "MusicBrainz Album",
+            "MusicBrainz Album Artist",
+            "MusicBrainz Artist",
+            "MusicBrainz Release Group",
+            "MusicBrainz Track",
+            "TheAudioDb Album",
+            "TheAudioDb Artist",
+            "TMDB",
+            "Zap2It",
+        ]
+    );
+
+    let person = ExternalUrlItem::new(ExternalUrlItemKind::Person)
+        .with_provider_id("ComicVine", "person/1")
+        .with_provider_id(MetadataProvider::Imdb.as_str(), "nm1")
+        .with_provider_id(MetadataProvider::MusicBrainzArtist.as_str(), "mb1")
+        .with_provider_id(MetadataProvider::AudioDbArtist.as_str(), "adb1")
+        .with_provider_id(MetadataProvider::Tmdb.as_str(), "tmdb1")
+        .with_provider_id(MetadataProvider::Zap2It.as_str(), "zap1");
+    let urls = registry.get_external_urls(&person);
+    assert_eq!(
+        urls.iter()
+            .map(|url| url.name.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "Comic Vine",
+            "IMDb",
+            "MusicBrainz Artist",
+            "TheAudioDb Artist",
+            "TMDB",
+            "Zap2It",
+        ]
+    );
+    assert!(urls.iter().all(|url| url.url.is_some()));
+}
+
+#[test]
+fn official_registry_does_not_project_removed_tv_providers() {
+    let registry = ExternalUrlProviderRegistry::default();
+    let series = ExternalUrlItem::new(ExternalUrlItemKind::Series)
+        .with_provider_id(MetadataProvider::Tvdb.as_str(), "121361")
+        .with_provider_id(MetadataProvider::TvMaze.as_str(), "82")
+        .with_provider_id(MetadataProvider::Tvcom.as_str(), "show")
+        .with_provider_id(MetadataProvider::TvRage.as_str(), "24493");
+    assert!(registry.get_external_urls(&series).is_empty());
+}
+
+#[test]
+fn official_registry_uses_configured_music_brainz_server() {
+    let registry = ExternalUrlProviderRegistry::new("https://mirror.example/");
+    let audio = with_id(
+        ExternalUrlItemKind::Audio,
+        MetadataProvider::MusicBrainzTrack.as_str(),
+        MBID,
+    );
+    let urls = registry.get_external_urls(&audio);
+    assert_eq!(urls.len(), 1);
+    assert_eq!(urls[0].name.as_deref(), Some("MusicBrainz Track"));
+    assert_eq!(
+        urls[0].url.as_deref(),
+        Some("https://mirror.example/track/a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    );
 }
