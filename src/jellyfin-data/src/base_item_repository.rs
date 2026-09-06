@@ -728,7 +728,10 @@ impl BaseItemRepository {
                  (id, item_type, name, sort_name, path, is_folder, presentation_unique_key, \
                   date_created, date_modified) \
              SELECT candidate.id, candidate.item_type, candidate.name, candidate.name, \
-                    candidate.path, true, candidate.presentation_unique_key, \
+                    candidate.path, \
+                    CASE WHEN candidate.item_type IN ('MusicArtist', 'Person') \
+                         THEN false ELSE true END, \
+                    candidate.presentation_unique_key, \
                     candidate.date_created, candidate.date_modified \
              FROM candidate \
              WHERE NOT EXISTS (\

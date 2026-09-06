@@ -666,6 +666,10 @@ impl AppState {
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
+        self.metadata_refresh.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
         self.item_images = Arc::new(ItemImageService::with_storage_directories(
             Arc::clone(&self.database),
             self.image_cache_directory.as_path(),

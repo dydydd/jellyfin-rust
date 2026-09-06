@@ -10,8 +10,8 @@ use std::{
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use jellyfin_data::{
     BaseItemError, BaseItemRepository, ItemMetadataPatch, ItemUpdateRepository,
-    ItemUpdateStoreError, ItemValueError, ItemValueRepository, NewBaseItem, NewPerson,
-    NewPersonCredit, PersonError, PersonRepository,
+    ItemUpdateStoreError, ItemValueError, ItemValueRepository, NewPerson, NewPersonCredit,
+    PersonError, PersonRepository,
     entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_model::{ImageType, ProviderIdMap, RatingType, RemoteImageInfo, RemoteSearchResult};
@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::item_images::ItemImageService;
+use crate::{ItemByNameError, ItemByNameKind, ItemByNameService, item_images::ItemImageService};
 
 const TMDB_API_BASE_URL: &str = "https://api.themoviedb.org/3";
 const TMDB_PROVIDER_NAME: &str = "TheMovieDb";
@@ -48,6 +48,8 @@ pub enum MetadataProviderError {
     ItemValue(#[from] ItemValueError),
     #[error(transparent)]
     Person(#[from] PersonError),
+    #[error(transparent)]
+    ItemByName(#[from] ItemByNameError),
 }
 
 /// Minimal TMDB v3 client shared by metadata refresh, remote search, and
@@ -464,6 +466,7 @@ pub struct TmdbMetadataProvider {
     values: std::sync::Arc<ItemValueRepository>,
     people: std::sync::Arc<PersonRepository>,
     updates: std::sync::Arc<ItemUpdateRepository>,
+    item_by_name: ItemByNameService,
     images: Option<std::sync::Arc<ItemImageService>>,
 }
 
@@ -475,9 +478,20 @@ impl TmdbMetadataProvider {
         values: std::sync::Arc<ItemValueRepository>,
         people: std::sync::Arc<PersonRepository>,
         updates: std::sync::Arc<ItemUpdateRepository>,
+        item_by_name: ItemByNameService,
         images: Option<std::sync::Arc<ItemImageService>>,
     ) -> Self {
-        Self::with_locale(api_key, "en", "US", items, values, people, updates, images)
+        Self::with_locale(
+            api_key,
+            "en",
+            "US",
+            items,
+            values,
+            people,
+            updates,
+            item_by_name,
+            images,
+        )
     }
 
     #[must_use]
@@ -490,11 +504,21 @@ impl TmdbMetadataProvider {
         values: std::sync::Arc<ItemValueRepository>,
         people: std::sync::Arc<PersonRepository>,
         updates: std::sync::Arc<ItemUpdateRepository>,
+        item_by_name: ItemByNameService,
         images: Option<std::sync::Arc<ItemImageService>>,
     ) -> Self {
         let clients = TmdbClientFactory::new();
         Self::with_client_factory(
-            &clients, api_key, language, country, items, values, people, updates, images,
+            &clients,
+            api_key,
+            language,
+            country,
+            items,
+            values,
+            people,
+            updates,
+            item_by_name,
+            images,
         )
     }
 
@@ -509,6 +533,7 @@ impl TmdbMetadataProvider {
         values: std::sync::Arc<ItemValueRepository>,
         people: std::sync::Arc<PersonRepository>,
         updates: std::sync::Arc<ItemUpdateRepository>,
+        item_by_name: ItemByNameService,
         images: Option<std::sync::Arc<ItemImageService>>,
     ) -> Self {
         Self {
@@ -517,6 +542,7 @@ impl TmdbMetadataProvider {
             values,
             people,
             updates,
+            item_by_name,
             images,
         }
     }
@@ -1505,27 +1531,16 @@ impl TmdbMetadataProvider {
         tmdb_person_id: i64,
         profile_path: Option<&str>,
     ) -> Result<(), MetadataProviderError> {
+        let person_item = self
+            .item_by_name
+            .resolve_direct(ItemByNameKind::Person, name)
+            .await?;
+        let person_item = self
+            .updates
+            .fill_provider_id_if_missing(person_item.id, "Tmdb", &tmdb_person_id.to_string())
+            .await?;
         let Some(images) = self.images.as_ref() else {
             return Ok(());
-        };
-        let Some(profile_path) = profile_path.filter(|path| !path.is_empty()) else {
-            return Ok(());
-        };
-        let Some(image_url) = TmdbUtils::image_url(Some("original"), Some(profile_path)) else {
-            return Ok(());
-        };
-        let person_item = if let Some(item) = self.items.get(person_id).await? {
-            item
-        } else {
-            let mut item = NewBaseItem::new(person_id, "Person");
-            item.name = Some(name.to_owned());
-            item.sort_name = Some(name.to_owned());
-            item.is_virtual_item = true;
-            item.data = Some(json!({
-                "SourceType": "Library",
-                "ProviderIds": { "Tmdb": tmdb_person_id.to_string() }
-            }));
-            self.items.create(item).await?
         };
         if images
             .existing_types(person_item.id)
@@ -1534,6 +1549,26 @@ impl TmdbMetadataProvider {
         {
             return Ok(());
         }
+        if person_id != person_item.id {
+            match images
+                .copy_reference_if_missing(person_id, person_item.id, ImageType::Primary, 0)
+                .await
+            {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    name,
+                    %error,
+                    "legacy person image reference could not be copied"
+                ),
+            }
+        }
+        let Some(profile_path) = profile_path.filter(|path| !path.is_empty()) else {
+            return Ok(());
+        };
+        let Some(image_url) = TmdbUtils::image_url(Some("original"), Some(profile_path)) else {
+            return Ok(());
+        };
         if let Err(error) = images
             .download_remote_image(person_item.id, ImageType::Primary, &image_url)
             .await
@@ -2770,6 +2805,188 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jellyfin_data::{
+        BaseItemImageRepository, BaseItemImageType, DatabaseConfig, NewBaseItem, NewBaseItemImage,
+        ServerConfigurationRepository,
+    };
+    use sea_orm::ConnectionTrait;
+
+    const PERSON_DATABASE_PREFIX: &str = "jellyfin_tmdb_person_";
+
+    #[tokio::test]
+    async fn person_images_use_canonical_item_and_preserve_legacy_references() {
+        let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+            .await
+            .expect("local PostgreSQL must be available");
+        let database_name = format!("{PERSON_DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+        administrator
+            .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+            .await
+            .expect("temporary PostgreSQL database creation must succeed");
+
+        let task_database_name = database_name.clone();
+        let outcome = tokio::spawn(async move {
+            exercise_canonical_person_provider_write(&task_database_name).await;
+        })
+        .await;
+
+        administrator
+            .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+            .await
+            .expect("temporary PostgreSQL database cleanup must succeed");
+        if let Err(error) = outcome {
+            if error.is_panic() {
+                std::panic::resume_unwind(error.into_panic());
+            }
+            panic!("temporary database test task was cancelled: {error}");
+        }
+    }
+
+    async fn exercise_canonical_person_provider_write(database_name: &str) {
+        let database = jellyfin_data::connect(&DatabaseConfig {
+            url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
+            max_connections: 4,
+            min_connections: 1,
+        })
+        .await
+        .expect("temporary PostgreSQL database must be available");
+        jellyfin_data::migrate(&database)
+            .await
+            .expect("PostgreSQL migrations must succeed");
+
+        let storage_root =
+            std::env::temp_dir().join(format!("jellyfin-tmdb-person-{}", Uuid::new_v4().simple()));
+        let metadata_root = storage_root.join("metadata");
+        let name = "--Élodie Actor";
+        let legacy_id = Uuid::new_v4();
+        let items = Arc::new(BaseItemRepository::new(database.clone()));
+        let mut legacy = NewBaseItem::new(legacy_id, "Person");
+        legacy.name = Some(name.to_owned());
+        legacy.sort_name = Some(name.to_owned());
+        legacy.is_virtual_item = true;
+        items
+            .create(legacy)
+            .await
+            .expect("legacy person creation must succeed");
+
+        let image_path = storage_root.join("legacy-primary.jpg");
+        let images = BaseItemImageRepository::new(database.clone());
+        images
+            .set_or_append(
+                legacy_id,
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: image_path.to_string_lossy().into_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(300),
+                    height: Some(450),
+                    blurhash: Some("legacy-hash".to_owned()),
+                },
+            )
+            .await
+            .expect("legacy image creation must succeed");
+
+        let item_by_name = ItemByNameService::new(database.clone());
+        item_by_name.set_directories(&storage_root, &metadata_root);
+        let provider = TmdbMetadataProvider::with_client_factory(
+            &TmdbClientFactory::with_base_url("https://tmdb.invalid/"),
+            "test-key",
+            "en",
+            "US",
+            Arc::clone(&items),
+            Arc::new(ItemValueRepository::new(database.clone())),
+            Arc::new(PersonRepository::new(database.clone())),
+            Arc::new(ItemUpdateRepository::new(database.clone())),
+            item_by_name,
+            Some(Arc::new(ItemImageService::with_storage_directories(
+                database.clone(),
+                storage_root.join("cache"),
+                &metadata_root,
+            ))),
+        );
+
+        provider
+            .ensure_person_image(legacy_id, name, 42, None)
+            .await
+            .expect("canonical person creation must succeed");
+
+        let configuration = ServerConfigurationRepository::new(database.clone())
+            .load()
+            .await
+            .expect("server configuration must load");
+        let canonical_path = metadata_root
+            .join("People")
+            .join("É")
+            .join("--Élodie Actor");
+        let canonical_id = crate::item_by_name::official_item_by_name_id(
+            &canonical_path,
+            &storage_root,
+            "MediaBrowser.Controller.Entities.Person",
+            configuration.enable_normalized_item_by_name_ids,
+            configuration.enable_case_sensitive_item_ids,
+        );
+        assert_ne!(canonical_id, legacy_id);
+        let canonical = items
+            .get(canonical_id)
+            .await
+            .expect("canonical person lookup must succeed")
+            .expect("canonical person must exist");
+        assert_eq!(canonical.path.as_deref(), canonical_path.to_str());
+        assert_eq!(
+            canonical.presentation_unique_key.as_deref(),
+            Some("Person---Elodie Actor")
+        );
+        assert!(!canonical.is_folder);
+        assert!(!canonical.is_virtual_item);
+        assert_eq!(
+            canonical.data.as_ref().unwrap()["ProviderIds"]["Tmdb"],
+            "42"
+        );
+
+        let legacy = items
+            .get(legacy_id)
+            .await
+            .expect("legacy person lookup must succeed")
+            .expect("legacy person must remain");
+        assert!(legacy.is_virtual_item);
+        let legacy_image = images
+            .primary(legacy_id)
+            .await
+            .expect("legacy image lookup must succeed")
+            .expect("legacy image must remain");
+        let canonical_image = images
+            .primary(canonical_id)
+            .await
+            .expect("canonical image lookup must succeed")
+            .expect("canonical image reference must be copied");
+        assert_eq!(canonical_image.path, legacy_image.path);
+        assert_eq!(canonical_image.blurhash, legacy_image.blurhash);
+
+        provider
+            .ensure_person_image(legacy_id, name, 99, None)
+            .await
+            .expect("repeat canonical person resolution must succeed");
+        let canonical = items
+            .get(canonical_id)
+            .await
+            .expect("canonical person lookup must succeed")
+            .expect("canonical person must remain");
+        assert_eq!(
+            canonical.data.as_ref().unwrap()["ProviderIds"]["Tmdb"],
+            "42"
+        );
+
+        drop(provider);
+        drop(items);
+        drop(images);
+        database
+            .close()
+            .await
+            .expect("temporary database connection must close");
+        std::fs::remove_dir_all(storage_root)
+            .expect("temporary person metadata directory must be removable");
+    }
 
     #[tokio::test]
     async fn provider_http_errors_remove_credential_urls() {

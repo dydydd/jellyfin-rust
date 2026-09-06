@@ -22,6 +22,7 @@ pub enum ItemByNameKind {
     Genre,
     MusicGenre,
     MusicArtist,
+    Person,
     Studio,
     Year,
 }
@@ -33,6 +34,7 @@ impl ItemByNameKind {
             Self::Genre => "Genre",
             Self::MusicGenre => "MusicGenre",
             Self::MusicArtist => "MusicArtist",
+            Self::Person => "Person",
             Self::Studio => "Studio",
             Self::Year => "Year",
         }
@@ -43,6 +45,7 @@ impl ItemByNameKind {
             Self::Genre => "MediaBrowser.Controller.Entities.Genre",
             Self::MusicGenre => "MediaBrowser.Controller.Entities.Audio.MusicGenre",
             Self::MusicArtist => "MediaBrowser.Controller.Entities.Audio.MusicArtist",
+            Self::Person => "MediaBrowser.Controller.Entities.Person",
             Self::Studio => "MediaBrowser.Controller.Entities.Studio",
             Self::Year => "MediaBrowser.Controller.Entities.Year",
         }
@@ -51,6 +54,7 @@ impl ItemByNameKind {
     const fn directory_name(self) -> &'static str {
         match self {
             Self::MusicArtist => "artists",
+            Self::Person => "People",
             _ => self.item_type(),
         }
     }
@@ -77,8 +81,8 @@ pub enum ItemByNameError {
     FileSystem(#[from] std::io::Error),
 }
 
-/// Resolves and creates persisted Genre and MusicGenre entities with the
-/// official Jellyfin item-by-name path and identifier rules.
+/// Resolves and creates persisted named entities with Jellyfin's official
+/// item-by-name path and identifier rules.
 #[derive(Clone)]
 pub struct ItemByNameService {
     items: ItemByNameRepository,
@@ -364,9 +368,7 @@ impl ItemByNameService {
     ) -> Result<Vec<NewItemByNameEntity>, ItemByNameError> {
         let mut entities = Vec::new();
         for name in names {
-            let path = internal_metadata
-                .join(kind.directory_name())
-                .join(item_by_name_folder_name(&name));
+            let path = item_by_name_path(kind, &name, internal_metadata);
             tokio::fs::create_dir_all(&path).await?;
             let metadata = tokio::fs::metadata(&path).await?;
             let modified = metadata.modified()?;
@@ -413,9 +415,7 @@ impl ItemByNameService {
                     "MusicGenre" => ItemByNameKind::MusicGenre,
                     _ => continue,
                 };
-                let path = internal_metadata
-                    .join(kind.directory_name())
-                    .join(item_by_name_folder_name(&required.name));
+                let path = item_by_name_path(kind, &required.name, &internal_metadata);
                 tokio::fs::create_dir_all(&path).await?;
                 let metadata = tokio::fs::metadata(&path).await?;
                 let modified = metadata.modified()?;
@@ -455,9 +455,7 @@ impl ItemByNameService {
     ) -> Result<base_item::Model, ItemByNameError> {
         let configuration = self.configuration.load().await?;
         let (program_data, internal_metadata) = self.directories();
-        let path = internal_metadata
-            .join(kind.directory_name())
-            .join(item_by_name_folder_name(name));
+        let path = item_by_name_path(kind, name, &internal_metadata);
         let id = official_item_by_name_id(
             &path,
             &program_data,
@@ -506,10 +504,34 @@ impl ItemByNameService {
 
 fn hydrate_item_type(mut item: base_item::Model, kind: ItemByNameKind) -> base_item::Model {
     item.item_type = kind.item_type().to_owned();
-    if kind == ItemByNameKind::MusicArtist {
-        item.is_folder = item.parent_id.is_some();
+    match kind {
+        ItemByNameKind::MusicArtist => item.is_folder = item.parent_id.is_some(),
+        ItemByNameKind::Person => {
+            item.is_folder = false;
+            item.is_virtual_item = false;
+        }
+        _ => {}
     }
     item
+}
+
+fn item_by_name_path(kind: ItemByNameKind, name: &str, internal_metadata: &Path) -> PathBuf {
+    let folder_name = item_by_name_folder_name(name);
+    let root = internal_metadata.join(kind.directory_name());
+    if kind != ItemByNameKind::Person {
+        return root.join(folder_name);
+    }
+
+    // Person.GetPath uses the first alphanumeric character from the sanitized
+    // folder name as a fan-out directory. Preserve its casing on disk; the
+    // configured item-id flags independently control identifier casing.
+    folder_name
+        .chars()
+        .find(|character| character.is_alphanumeric())
+        .map_or_else(
+            || root.join(&folder_name),
+            |prefix| root.join(prefix.to_string()).join(&folder_name),
+        )
 }
 
 pub(crate) fn item_by_name_folder_name(name: &str) -> String {
@@ -578,4 +600,53 @@ fn official_md5_guid(value: &str) -> Uuid {
         digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14],
         digest[15],
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ItemByNameKind, item_by_name_path, official_item_by_name_id};
+    use std::path::Path;
+    use uuid::Uuid;
+
+    #[test]
+    fn person_path_uses_official_people_fanout_directory() {
+        let path = item_by_name_path(
+            ItemByNameKind::Person,
+            "--Élodie/Actor.",
+            Path::new("/var/lib/jellyfin/metadata"),
+        );
+
+        assert_eq!(
+            path,
+            Path::new("/var/lib/jellyfin/metadata/People/É/--Élodie Actor")
+        );
+    }
+
+    #[test]
+    fn person_path_without_alphanumeric_characters_has_no_fanout_directory() {
+        let path = item_by_name_path(
+            ItemByNameKind::Person,
+            "---",
+            Path::new("/var/lib/jellyfin/metadata"),
+        );
+
+        assert_eq!(path, Path::new("/var/lib/jellyfin/metadata/People/---"));
+    }
+
+    #[test]
+    fn person_id_matches_official_utf16_dotnet_guid_layout() {
+        let path = Path::new("/var/lib/jellyfin/metadata/People/É/--Élodie Actor");
+        let id = official_item_by_name_id(
+            path,
+            Path::new("/var/lib/jellyfin"),
+            "MediaBrowser.Controller.Entities.Person",
+            false,
+            false,
+        );
+
+        assert_eq!(
+            id,
+            Uuid::parse_str("fa384dec-0563-1b38-ed16-c9d0a5f63a88").unwrap()
+        );
+    }
 }

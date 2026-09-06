@@ -209,6 +209,32 @@ impl ItemImageService {
             .collect())
     }
 
+    /// Copies a legacy item's image reference into an empty canonical slot.
+    ///
+    /// No image bytes are read and the source reference and file stay intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when the reference cannot be copied.
+    pub async fn copy_reference_if_missing(
+        &self,
+        source_item_id: Uuid,
+        target_item_id: Uuid,
+        image_type: ImageType,
+        image_index: u32,
+    ) -> Result<bool, ItemImageError> {
+        Ok(self
+            .images
+            .copy_reference_if_missing(
+                source_item_id,
+                target_item_id,
+                persisted_image_type(image_type),
+                image_index,
+            )
+            .await?
+            .is_some())
+    }
+
     /// Resolves one image by its public zero-based ordinal.
     ///
     /// Remote image stubs are downloaded once, moved into the image cache, and

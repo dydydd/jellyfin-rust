@@ -154,7 +154,7 @@ impl ItemByNameRepository {
                      id, item_type, name, sort_name, path, is_folder, \
                      presentation_unique_key, date_created, date_modified\
                  ) VALUES ($1, $2, $3, $3, $4, \
-                           CASE WHEN $2 = 'MusicArtist' THEN false ELSE true END, \
+                           CASE WHEN $2 IN ('MusicArtist', 'Person') THEN false ELSE true END, \
                            $5, $6, $7) \
                  ON CONFLICT (id) DO NOTHING",
                 vec![
@@ -186,7 +186,7 @@ impl ItemByNameRepository {
 fn supported_item_types(item_type: &str) -> Result<Vec<String>, ItemByNameStoreError> {
     if !matches!(
         item_type,
-        "Genre" | "MusicGenre" | "MusicArtist" | "Studio" | "Year"
+        "Genre" | "MusicGenre" | "MusicArtist" | "Person" | "Studio" | "Year"
     ) {
         return Err(ItemByNameStoreError::UnsupportedType(item_type.to_owned()));
     }

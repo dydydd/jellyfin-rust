@@ -91,6 +91,56 @@ impl ItemUpdateRepository {
         transaction.commit().await?;
         Ok(updated)
     }
+
+    /// Adds one provider identifier only when no casing variant of its key is
+    /// already present.
+    ///
+    /// The item row is locked while its JSON object is inspected and updated,
+    /// so concurrent providers cannot lose unrelated metadata or overwrite an
+    /// established identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-metadata, or database errors.
+    pub async fn fill_provider_id_if_missing(
+        &self,
+        item_id: Uuid,
+        provider: &str,
+        value: &str,
+    ) -> Result<base_item::Model, ItemUpdateStoreError> {
+        let transaction = self.database.begin().await?;
+        let item = base_item::Entity::find_by_id(item_id)
+            .lock_exclusive()
+            .one(&transaction)
+            .await?
+            .ok_or(ItemUpdateStoreError::NotFound)?;
+        let mut object = match item.data.clone() {
+            None => Map::new(),
+            Some(Value::Object(object)) => object,
+            Some(_) => return Err(ItemUpdateStoreError::InvalidMetadata),
+        };
+        let provider_ids = match object.entry("ProviderIds".to_owned()) {
+            serde_json::map::Entry::Vacant(entry) => entry.insert(Value::Object(Map::new())),
+            serde_json::map::Entry::Occupied(entry) => entry.into_mut(),
+        };
+        let Value::Object(provider_ids) = provider_ids else {
+            return Err(ItemUpdateStoreError::InvalidMetadata);
+        };
+        if provider_ids
+            .keys()
+            .any(|stored| stored.eq_ignore_ascii_case(provider))
+        {
+            transaction.commit().await?;
+            return Ok(item);
+        }
+        provider_ids.insert(provider.to_owned(), Value::String(value.to_owned()));
+
+        let mut active = item.into_active_model();
+        active.data = Set(Some(Value::Object(object)));
+        let updated = active.update(&transaction).await?;
+        transaction.commit().await?;
+        Ok(updated)
+    }
 }
 
 fn patch_data(

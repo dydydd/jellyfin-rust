@@ -308,6 +308,56 @@ impl BaseItemImageRepository {
             .transpose()
     }
 
+    /// Copies one persisted image reference when the target slot is empty.
+    ///
+    /// The referenced file is deliberately neither moved nor deleted. This is
+    /// used while canonicalizing item identities so legacy rows remain valid,
+    /// and `ON CONFLICT DO NOTHING` prevents a concurrent refresh from being
+    /// overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, database, or corrupt-row errors.
+    pub async fn copy_reference_if_missing(
+        &self,
+        source_item_id: Uuid,
+        target_item_id: Uuid,
+        image_type: BaseItemImageType,
+        image_index: u32,
+    ) -> Result<Option<BaseItemImage>, BaseItemImageStoreError> {
+        let image_index = i32::try_from(image_index)
+            .map_err(|_| BaseItemImageStoreError::ImageIndexOutOfRange { value: image_index })?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            INSERT INTO jellyfin.base_item_images (
+                item_id, image_type, image_index, path, date_modified,
+                width, height, blurhash
+            )
+            SELECT $2, source.image_type, source.image_index, source.path,
+                   source.date_modified, source.width, source.height, source.blurhash
+            FROM jellyfin.base_item_images AS source
+            WHERE source.item_id = $1
+              AND source.image_type = $3
+              AND source.image_index = $4
+            ON CONFLICT (item_id, image_type, image_index) DO NOTHING
+            RETURNING item_id, image_type, image_index, path, date_modified,
+                      width, height, blurhash
+            ",
+            [
+                source_item_id.into(),
+                target_item_id.into(),
+                image_type.as_i16().into(),
+                image_index.into(),
+            ],
+        );
+        base_item_image::Model::find_by_statement(statement)
+            .one(self.database.as_ref())
+            .await?
+            .map(BaseItemImage::try_from)
+            .transpose()
+    }
+
     /// Loads an image by Jellyfin's zero-based ordinal within its type.
     ///
     /// Persisted image indexes can contain gaps after metadata refreshes. The

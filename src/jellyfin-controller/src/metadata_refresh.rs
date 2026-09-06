@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fmt::Display,
     future::Future,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -26,7 +26,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    ItemImageService, VirtualFolderService, VirtualFolderServiceError,
+    ItemByNameService, ItemImageService, VirtualFolderService, VirtualFolderServiceError,
     item_update::ItemUpdateService,
     metadata_providers::{
         AudioDbMetadataProvider, AudioDbMetadataProviderError, GoogleBooksMetadataProvider,
@@ -143,6 +143,7 @@ pub struct MetadataRefreshService {
     google_books: Arc<GoogleBooksMetadataProvider>,
     tv_maze: Arc<TvMazeMetadataProvider>,
     images: Arc<RwLock<Option<Arc<ItemImageService>>>>,
+    item_by_name: ItemByNameService,
     preferred_locale: Arc<RwLock<(String, String)>>,
     virtual_folders: VirtualFolderService,
 }
@@ -158,6 +159,7 @@ impl MetadataRefreshService {
         let values = Arc::new(ItemValueRepository::new(Arc::clone(&database)));
         let updates = Arc::new(ItemUpdateRepository::new(Arc::clone(&database)));
         let people = Arc::new(PersonRepository::new(Arc::clone(&database)));
+        let item_by_name = ItemByNameService::new(Arc::clone(&database));
         let audio_db = Arc::new(AudioDbMetadataProvider::new(
             Arc::clone(&items),
             Arc::clone(&updates),
@@ -187,6 +189,7 @@ impl MetadataRefreshService {
             google_books,
             tv_maze,
             images: Arc::new(RwLock::new(images)),
+            item_by_name,
             preferred_locale: Arc::new(RwLock::new(("en".to_owned(), "US".to_owned()))),
             virtual_folders: VirtualFolderService::new(database),
         }
@@ -202,6 +205,16 @@ impl MetadataRefreshService {
             .images
             .write()
             .expect("metadata refresh image service lock poisoned") = images;
+    }
+
+    /// Replaces the roots used for provider-created item-by-name entities.
+    pub fn set_item_by_name_directories(
+        &self,
+        program_data_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        self.item_by_name
+            .set_directories(program_data_directory, internal_metadata_directory);
     }
 
     /// Replaces the language and country used for online metadata requests.
@@ -541,6 +554,7 @@ impl MetadataRefreshService {
             Arc::clone(&self.values),
             Arc::clone(&self.people),
             Arc::clone(&self.updates),
+            self.item_by_name.clone(),
             images,
         )
     }

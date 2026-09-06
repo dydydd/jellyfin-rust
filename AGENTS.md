@@ -140,6 +140,11 @@
   bind only `UserId`, use default all-fields DTO projection, and let an administrator target a
   nonexistent user without attaching user data. Backfill legacy Studio values and production years
   in bounded batches, and ensure each paged Year result has a persisted entity before returning it.
+- Persist newly discovered Person items at the official `metadata/People/<first alphanumeric>/<name>`
+  path with the deterministic `MediaBrowser.Controller.Entities.Person` UTF-16LE identifier. Keep
+  `people.id` as the internal credit key, make canonical Person items non-folder and non-virtual,
+  fill missing provider ids without replacing established metadata, and reuse legacy image files
+  only by copying database references; never move or delete the source image or legacy row.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an
