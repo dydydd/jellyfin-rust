@@ -8,9 +8,10 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
-    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson, NewUserData,
-    PersonRepository, UserDataRepository,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson,
+    NewUserData, PersonRepository, UserDataRepository, entities::item_value,
 };
+use jellyfin_model::{UnratedItem, UserPolicy};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
@@ -469,6 +470,150 @@ async fn persons_list_preserves_official_signed_int32_pagination_semantics() {
 }
 
 #[tokio::test]
+async fn persons_list_applies_the_target_users_media_visibility_policy() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let people = PersonRepository::new(fixture.database.clone());
+    let values = ItemValueRepository::new(fixture.database.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+
+    let visible_folder = create_person_policy_folder(&items, "Visible", &suffix).await;
+    let hidden_folder = create_person_policy_folder(&items, "Hidden", &suffix).await;
+    let blocked_folder = create_person_policy_folder(&items, "Blocked", &suffix).await;
+
+    let visible_name = format!("Policy Visible {suffix}");
+    let visible_item = create_person_policy_movie(
+        &items,
+        &people,
+        &values,
+        visible_folder,
+        &visible_name,
+        Some("G"),
+        &["Allowed"],
+    )
+    .await;
+    let hidden_folder_name = format!("Policy Hidden Folder {suffix}");
+    let hidden_item = create_person_policy_movie(
+        &items,
+        &people,
+        &values,
+        hidden_folder,
+        &hidden_folder_name,
+        Some("G"),
+        &["Allowed"],
+    )
+    .await;
+    people
+        .link(
+            hidden_item,
+            NewPerson::new(visible_name.clone()),
+            "Actor",
+            None,
+            None,
+            1,
+        )
+        .await
+        .expect("visible person hidden secondary credit");
+    create_person_policy_movie(
+        &items,
+        &people,
+        &values,
+        blocked_folder,
+        &format!("Policy Blocked Folder {suffix}"),
+        Some("G"),
+        &["Allowed"],
+    )
+    .await;
+    create_person_policy_movie(
+        &items,
+        &people,
+        &values,
+        visible_folder,
+        &format!("Policy Blocked Tag {suffix}"),
+        Some("G"),
+        &["Allowed", "Blocked"],
+    )
+    .await;
+    create_person_policy_movie(
+        &items,
+        &people,
+        &values,
+        visible_folder,
+        &format!("Policy Missing Allowed Tag {suffix}"),
+        Some("G"),
+        &[],
+    )
+    .await;
+    create_person_policy_movie(
+        &items,
+        &people,
+        &values,
+        visible_folder,
+        &format!("Policy Parental {suffix}"),
+        Some("R"),
+        &["Allowed"],
+    )
+    .await;
+    create_person_policy_movie(
+        &items,
+        &people,
+        &values,
+        visible_folder,
+        &format!("Policy Unrated {suffix}"),
+        None,
+        &["Allowed"],
+    )
+    .await;
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.enable_all_folders = false;
+    policy.enabled_folders = vec![visible_folder, blocked_folder];
+    policy.blocked_media_folders = Some(vec![blocked_folder]);
+    policy.allowed_tags = vec!["Allowed".to_owned()];
+    policy.blocked_tags = vec!["Blocked".to_owned()];
+    policy.max_parental_rating = Some(5);
+    policy.block_unrated_items = vec![UnratedItem::Movie];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted person policy");
+
+    let search = suffix;
+    for route in [
+        format!("/Persons?searchTerm={search}"),
+        format!("/Persons?searchTerm={search}&userId={}", fixture.user_id),
+    ] {
+        let token = if route.contains("userId") {
+            &fixture.admin_token
+        } else {
+            &fixture.user_token
+        };
+        let page = body_json(fixture.request(&route, Some(token)).await).await;
+        assert_people(&page, &[&visible_name], 1, 0);
+    }
+
+    let hidden_by_name = format!(
+        "{}?userId={}",
+        person_route(&hidden_folder_name),
+        fixture.user_id
+    );
+    assert_eq!(
+        fixture
+            .request(&hidden_by_name, Some(&fixture.admin_token))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    assert_ne!(visible_item, hidden_item);
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn person_image_routes_resolve_public_base_item_ordinals() {
     let fixture = Fixture::new().await;
     assert_ne!(fixture.person_item_id, fixture.person_id);
@@ -817,6 +962,54 @@ impl Fixture {
             .expect("temporary PostgreSQL database cleanup must succeed");
         administrator.close().await.unwrap();
     }
+}
+
+async fn create_person_policy_folder(
+    items: &BaseItemRepository,
+    label: &str,
+    suffix: &str,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    let mut folder = NewBaseItem::new(id, "CollectionFolder");
+    folder.name = Some(format!("{label} person policy library {suffix}"));
+    folder.sort_name = folder.name.clone();
+    folder.is_folder = true;
+    items.create(folder).await.expect("person policy folder").id
+}
+
+async fn create_person_policy_movie(
+    items: &BaseItemRepository,
+    people: &PersonRepository,
+    values: &ItemValueRepository,
+    parent_id: Uuid,
+    person_name: &str,
+    official_rating: Option<&str>,
+    tags: &[&str],
+) -> Uuid {
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some(format!("Media for {person_name}"));
+    movie.sort_name = movie.name.clone();
+    movie.parent_id = Some(parent_id);
+    movie.official_rating = official_rating.map(str::to_owned);
+    let movie = items.create(movie).await.expect("person policy movie");
+    for tag in tags {
+        values
+            .link(movie.id, item_value::ItemValueType::Tags, tag)
+            .await
+            .expect("person policy tag");
+    }
+    people
+        .link(
+            movie.id,
+            NewPerson::new(person_name),
+            "Actor",
+            None,
+            None,
+            0,
+        )
+        .await
+        .expect("person policy credit");
+    movie.id
 }
 
 async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) -> String {

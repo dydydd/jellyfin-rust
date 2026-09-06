@@ -1,12 +1,12 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, PersonError as PersonRepositoryError, PersonQuery,
-    PersonRepository,
+    BaseItemError, BaseItemQuery, BaseItemRepository, PersonError as PersonRepositoryError,
+    PersonQuery, PersonRepository,
     entities::{base_item, person, user},
 };
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{UserError, UserService};
+use crate::{UserError, UserLibraryError, UserLibraryService, UserService};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Person {
@@ -34,6 +34,8 @@ pub enum PersonError {
     Repository(#[from] PersonRepositoryError),
     #[error(transparent)]
     BaseItem(#[from] BaseItemError),
+    #[error(transparent)]
+    UserLibrary(#[from] UserLibraryError),
 }
 
 #[derive(Clone)]
@@ -41,6 +43,7 @@ pub struct PersonService {
     users: UserService,
     items: BaseItemRepository,
     people: PersonRepository,
+    user_library: UserLibraryService,
 }
 
 impl PersonService {
@@ -50,7 +53,8 @@ impl PersonService {
         Self {
             users: UserService::new(std::sync::Arc::clone(&database)),
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
-            people: PersonRepository::new(database),
+            people: PersonRepository::new(std::sync::Arc::clone(&database)),
+            user_library: UserLibraryService::new(database),
         }
     }
 
@@ -100,10 +104,15 @@ impl PersonService {
         &self,
         authenticated_user: &user::Model,
         target_user_id: Uuid,
-        query: PersonQuery,
+        mut query: PersonQuery,
     ) -> Result<PersonPage, PersonError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        let mut access_filter = BaseItemQuery::default();
+        self.user_library
+            .apply_user_policy(&mut access_filter, target_user_id)
+            .await?;
+        query.access_filter = Some(access_filter);
         let page = self.people.query(&query).await?;
         Ok(PersonPage {
             people: page

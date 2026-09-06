@@ -10,6 +10,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
+    BaseItemQuery,
     entities::{base_item, person, person_base_item_map},
     item_types::expand_item_type_aliases,
 };
@@ -48,7 +49,7 @@ pub struct PersonCredit {
     pub list_order: i32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PersonQuery {
     pub ids: Vec<Uuid>,
     pub parent_id: Option<Uuid>,
@@ -70,6 +71,7 @@ pub struct PersonQuery {
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
     pub name_less_than: Option<String>,
+    pub access_filter: Option<BaseItemQuery>,
     pub start_index: u64,
     pub limit: Option<u64>,
 }
@@ -530,6 +532,14 @@ fn people_cte(query: &PersonQuery) -> (String, Vec<SeaValue>) {
 }
 
 fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &PersonQuery) {
+    if let Some(access_filter) = query.access_filter.as_ref()
+        && let Some(condition) =
+            crate::base_item_repository::policy_filter_sql("item", access_filter)
+    {
+        sql.push_str(" AND (");
+        sql.push_str(&condition);
+        sql.push(')');
+    }
     if !query.ids.is_empty() {
         sql.push_str(" AND item.id IN (");
         for (index, item_id) in query.ids.iter().enumerate() {
