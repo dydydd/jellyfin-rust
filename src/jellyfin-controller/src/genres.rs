@@ -269,7 +269,7 @@ impl Genre {
 
 fn generic_genre_query(mut query: ItemValueQuery) -> ItemValueQuery {
     query
-        .exclude_item_types
+        .discovery_exclude_item_types
         .extend(MUSIC_ITEM_TYPES.iter().map(ToString::to_string));
     query
 }

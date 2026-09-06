@@ -702,6 +702,24 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
         assert_eq!(body["Items"][0]["ChildCount"], 10, "{route}: {body}");
     }
 
+    let explicitly_excluded = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Genres?fields=ItemCounts&excludeItemTypes=Audio&searchTerm={}",
+                    encoded(&genre)
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(explicitly_excluded["TotalRecordCount"], 1);
+    assert_eq!(explicitly_excluded["Items"][0]["SongCount"], 0);
+    assert_eq!(explicitly_excluded["Items"][0]["AlbumCount"], 1);
+    assert_eq!(explicitly_excluded["Items"][0]["ChildCount"], 9);
+
     fixture.cleanup().await;
 }
 

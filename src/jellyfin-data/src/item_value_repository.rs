@@ -32,6 +32,12 @@ pub struct ItemValueQuery {
     pub search_term: Option<String>,
     pub include_item_types: Vec<String>,
     pub exclude_item_types: Vec<String>,
+    /// Internal source-type exclusions used only to discover item-by-name values.
+    ///
+    /// Unlike API-facing `ExcludeItemTypes`, these must not narrow the count
+    /// buckets after a value has been selected.
+    #[doc(hidden)]
+    pub discovery_exclude_item_types: Vec<String>,
     pub media_types: Vec<String>,
     pub is_movie: Option<bool>,
     pub is_series: Option<bool>,
@@ -850,6 +856,15 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
     append_string_list_filter(sql, values, "item.item_type", &include_item_types, false);
     let exclude_item_types = expand_item_type_aliases(&query.exclude_item_types);
     append_string_list_filter(sql, values, "item.item_type", &exclude_item_types, true);
+    let discovery_exclude_item_types =
+        expand_item_type_aliases(&query.discovery_exclude_item_types);
+    append_string_list_filter(
+        sql,
+        values,
+        "item.item_type",
+        &discovery_exclude_item_types,
+        true,
+    );
     append_string_list_filter(sql, values, "item.media_type", &query.media_types, false);
     append_media_class_filter(sql, query.is_movie, "IsMovie", &["Movie", "Trailer"]);
     append_media_class_filter(sql, query.is_series, "IsSeries", &["Series"]);
@@ -1314,10 +1329,11 @@ mod tests {
     use super::{ItemValueQuery, append_count_scope_filters, append_item_filters};
 
     #[test]
-    fn item_value_filters_expand_type_aliases_in_matching_and_count_scopes() {
+    fn item_value_filters_keep_discovery_only_exclusions_out_of_count_scope() {
         let query = ItemValueQuery {
             include_item_types: vec!["movie".to_owned()],
             exclude_item_types: vec!["EPISODE".to_owned()],
+            discovery_exclude_item_types: vec!["audio".to_owned()],
             ..Default::default()
         };
         let mut matching_sql = String::new();
@@ -1327,6 +1343,7 @@ mod tests {
 
         assert!(matching_sql.contains("item.item_type IN ($1, $2)"));
         assert!(matching_sql.contains("item.item_type NOT IN ($3, $4)"));
+        assert!(matching_sql.contains("item.item_type NOT IN ($5, $6)"));
         assert_eq!(
             string_values(&matching_values),
             [
@@ -1334,6 +1351,8 @@ mod tests {
                 "MediaBrowser.Controller.Entities.Movies.Movie",
                 "Episode",
                 "MediaBrowser.Controller.Entities.TV.Episode",
+                "Audio",
+                "MediaBrowser.Controller.Entities.Audio.Audio",
             ]
         );
 
@@ -1346,6 +1365,7 @@ mod tests {
             string_values(&count_values),
             ["Episode", "MediaBrowser.Controller.Entities.TV.Episode"]
         );
+        assert!(!count_sql.contains("Audio"));
     }
 
     fn string_values(values: &[SeaValue]) -> Vec<&str> {

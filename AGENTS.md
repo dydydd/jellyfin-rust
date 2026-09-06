@@ -156,7 +156,9 @@
   `PhotoAlbum` replaces its Photos only when at least two recent items share it.
 - Item-value `ItemCounts` inherit Genre and Studio links from a Series to its visible descendant
   Episodes, but do not inherit Artist or other value kinds. Count direct and inherited matches with
-  set-based PostgreSQL queries and deduplicate Episodes that carry the same value directly.
+  set-based PostgreSQL queries and deduplicate Episodes that carry the same value directly. Keep
+  internal item-by-name discovery type filters out of the count scope; only the client's explicit
+  `ExcludeItemTypes` may remove a type from the returned count buckets.
 - `IncludeItemTypes` and `ExcludeItemTypes` filters, count queries, and media-source queries must
   recognize canonical short item types and official legacy CLR-qualified persisted names, including
   case-insensitive API enum input. Preserve unknown plugin-defined types instead of discarding them.
