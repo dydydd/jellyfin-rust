@@ -524,6 +524,24 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
     .await;
     assert_eq!(non_audio.status(), StatusCode::NOT_FOUND);
 
+    for (target, label) in [
+        (Uuid::new_v4(), "missing item"),
+        (fixture.root_id, "non-audio item"),
+    ] {
+        let empty_invalid = request_post_body(
+            &fixture.app,
+            &format!("/Audio/{target}/Lyrics?fileName=uploaded.srt"),
+            &fixture.administrator_token,
+            "",
+        )
+        .await;
+        assert_eq!(
+            empty_invalid.status(),
+            StatusCode::NOT_FOUND,
+            "{label} must be resolved before validating upload contents"
+        );
+    }
+
     let uploaded = request_post_body(
         &fixture.app,
         &route,

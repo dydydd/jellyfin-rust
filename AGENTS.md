@@ -44,6 +44,9 @@
 - Read registered lyric streams in stream-index order and select parsers from each file path's actual
   extension, not its persisted codec. Continue to later streams when no parser accepts one, while
   preserving filesystem read failures instead of hiding them behind a fallback lyric.
+- For lyric uploads, resolve the authorized Audio item before validating the body or filename so
+  missing, hidden, and non-Audio targets retain the official 404 precedence over malformed uploads.
+  Parse and persist through the same service operation without loading the item twice.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API

@@ -9,8 +9,8 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
-    Artist, Genre, GenreKind, LocalizationService, LyricManager, MusicGenre, Person,
-    RelatedItemKind, Studio, TrickplayManifest, Year, decode_lyric_bytes,
+    Artist, Genre, GenreKind, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio,
+    TrickplayManifest, Year,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
@@ -648,21 +648,14 @@ pub(crate) async fn upload_lyrics(
         return Err(ApiError::Forbidden);
     }
     let file_name = query.file_name.as_deref().ok_or(ApiError::InvalidRequest)?;
-    let format = lyric_format(file_name).ok_or(ApiError::InvalidRequest)?;
-    if body.is_empty() {
-        return Err(ApiError::InvalidRequest);
-    }
-    let content = decode_lyric_bytes(&body);
-    let lyrics = LyricManager::parse_lyrics(format, &content).ok_or(ApiError::InvalidRequest)?;
     let lyrics = state
         .user_library
         .save_lyrics(
             &authenticated.user,
             authenticated.user.id,
             item_id,
-            format,
+            file_name,
             body.as_ref(),
-            lyrics,
         )
         .await?;
     Ok(Json(lyrics))
@@ -716,24 +709,6 @@ pub(crate) async fn get_remote_lyrics(
     }
     let lyrics = state.user_library.get_remote_lyrics(&lyric_id)?;
     Ok(Json(lyrics))
-}
-
-fn lyric_format(file_name: &str) -> Option<&str> {
-    if file_name.is_empty()
-        || file_name.trim() != file_name
-        || file_name.contains(['/', '\\', '\0'])
-        || file_name.chars().any(char::is_control)
-    {
-        return None;
-    }
-    let (stem, extension) = file_name.rsplit_once('.')?;
-    (!stem.is_empty()
-        && stem != "."
-        && stem != ".."
-        && !extension.is_empty()
-        && extension != "."
-        && extension != "..")
-        .then_some(extension)
 }
 
 async fn get_root_for(

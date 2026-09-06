@@ -767,23 +767,30 @@ impl UserLibraryService {
             .ok_or(UserLibraryError::LyricsNotFound)
     }
 
-    /// Saves parsed lyric metadata on an audio item.
+    /// Validates, parses, and saves uploaded lyrics on an audio item.
     ///
     /// # Errors
     ///
-    /// Returns not-found when the item is missing or is not an audio item.
+    /// Returns not-found before validating upload contents when the item is missing or is not an
+    /// audio item. Returns invalid-file when the upload is empty, malformed, or unsupported.
     pub async fn save_lyrics(
         &self,
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
-        format: &str,
+        file_name: &str,
         content: &[u8],
-        lyrics: Value,
     ) -> Result<Value, UserLibraryError> {
         let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
+        if content.is_empty() {
+            return Err(UserLibraryError::InvalidLyricFile);
+        }
+        let format = uploaded_lyric_format(file_name).ok_or(UserLibraryError::InvalidLyricFile)?;
+        let decoded = decode_lyric_bytes(content);
+        let lyrics = LyricManager::parse_lyrics(format, &decoded)
+            .ok_or(UserLibraryError::InvalidLyricFile)?;
         self.save_lyric_file(item, format, content, lyrics).await
     }
 
@@ -1092,6 +1099,24 @@ fn normalized_lyric_format(format: &str) -> Option<&'static str> {
     ["lrc", "elrc", "txt"]
         .into_iter()
         .find(|supported| format.eq_ignore_ascii_case(supported))
+}
+
+fn uploaded_lyric_format(file_name: &str) -> Option<&str> {
+    if file_name.is_empty()
+        || file_name.trim() != file_name
+        || file_name.contains(['/', '\\', '\0'])
+        || file_name.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let (stem, extension) = file_name.rsplit_once('.')?;
+    (!stem.is_empty()
+        && stem != "."
+        && stem != ".."
+        && !extension.is_empty()
+        && extension != "."
+        && extension != "..")
+        .then_some(extension)
 }
 
 fn is_safe_file_stem(stem: &str) -> bool {
