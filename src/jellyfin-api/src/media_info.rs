@@ -1037,6 +1037,15 @@ fn apply_selected_stream_metadata(
             .media_source
             .as_ref()
             .is_some_and(|source| source.supports_direct_play);
+    let supports_transcoding = options.enable_transcoding
+        && (play_method == PlayMethod::DirectStream
+            || stream
+                .media_source
+                .as_ref()
+                .is_some_and(|source| source.transcoding_container.is_some())
+            || options.profile.transcoding_profiles.iter().any(|profile| {
+                profile.profile_type == stream.media_type && profile.context == options.context
+            }));
     let transcoding = if play_method == PlayMethod::Transcode
         && options.enable_transcoding
         && stream.sub_protocol == MediaStreamProtocol::Hls
@@ -1052,7 +1061,10 @@ fn apply_selected_stream_metadata(
     if let Some(source) = stream.media_source.as_mut() {
         clear_playback_capabilities(source);
         source.supports_direct_play = supports_direct_play;
-        source.supports_transcoding = transcoding.is_some();
+        // Match MediaInfoHelper.SetDeviceSpecificData: DirectPlay can still advertise
+        // direct-stream and transcoding fallbacks supported by the device profile.
+        source.supports_direct_stream = supports_direct_play;
+        source.supports_transcoding = supports_transcoding;
         source.default_audio_stream_index = stream.audio_stream_index;
         source.default_subtitle_stream_index = stream.subtitle_stream_index;
         for subtitle in source
@@ -1441,6 +1453,78 @@ mod tests {
             sources[0].transcoding_sub_protocol,
             MediaStreamProtocol::Hls
         );
+    }
+
+    #[tokio::test]
+    async fn direct_play_keeps_official_fallback_capabilities() {
+        let item_id = Uuid::new_v4();
+        let source = MediaSourceInfo {
+            id: Some(item_id.simple().to_string()),
+            protocol: MediaProtocol::File,
+            path: Some("/media/movie.mkv".to_owned()),
+            container: Some("mkv".to_owned()),
+            bitrate: Some(1_000_000),
+            media_streams: vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    width: Some(1920),
+                    height: Some(1080),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    channels: Some(2),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+            ],
+            ..MediaSourceInfo::default()
+        };
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: "mkv".to_owned(),
+                audio_codec: Some("aac".to_owned()),
+                video_codec: Some("h264".to_owned()),
+                profile_type: DlnaProfileType::Video,
+            }],
+            transcoding_profiles: vec![TranscodingProfile {
+                container: "ts".to_owned(),
+                profile_type: DlnaProfileType::Video,
+                video_codec: "h264".to_owned(),
+                audio_codec: "aac".to_owned(),
+                protocol: MediaStreamProtocol::Hls,
+                context: EncodingContext::Streaming,
+                ..TranscodingProfile::default()
+            }],
+            ..DeviceProfile::default()
+        };
+        let mut sources = vec![source];
+
+        apply_stream_builder(
+            &mut sources,
+            &UserPolicy::default(),
+            &test_state(),
+            item_id,
+            &PlaybackOptions {
+                device_profile: Some(profile),
+                ..PlaybackOptions::default()
+            },
+            &mut None,
+            "device-id",
+            "access-token",
+            "play-session-id",
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        );
+
+        assert!(sources[0].supports_direct_play);
+        assert!(sources[0].supports_direct_stream);
+        assert!(sources[0].supports_transcoding);
+        assert!(sources[0].transcoding_url.is_none());
     }
 
     #[test]
