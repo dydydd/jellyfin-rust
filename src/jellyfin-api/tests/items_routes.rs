@@ -64,6 +64,128 @@ async fn official_items_controller_contract() {
 }
 
 #[tokio::test]
+async fn settings_fields_are_requested_for_pages_and_defaulted_for_item_details() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let configured = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("SD Settings configured {}", fixture.suffix),
+        root.id,
+        serde_json::json!({
+            "LockedFields": ["name", "OFFICIALRATING", "PluginField"],
+            "IsLocked": true,
+            "ForcedSortName": "Forced Movie",
+            "PreferredMetadataLanguage": "ja",
+            "PreferredMetadataCountryCode": "JP"
+        }),
+    )
+    .await;
+    let empty = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("SD Settings empty {}", fixture.suffix),
+        root.id,
+        serde_json::json!({}),
+    )
+    .await;
+
+    let page_route = format!("/Items?ids={},{}", configured.id, empty.id);
+    let page = body_json(
+        fixture
+            .request(&page_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    for dto in page["Items"].as_array().expect("item page") {
+        for property in [
+            "LockedFields",
+            "LockData",
+            "ForcedSortName",
+            "PreferredMetadataLanguage",
+            "PreferredMetadataCountryCode",
+        ] {
+            assert!(dto.get(property).is_none(), "unexpected {property}: {dto}");
+        }
+    }
+
+    for (query_name, field_name) in [
+        ("Fields", "Settings"),
+        ("fields", "settings"),
+        ("fields", "SETTINGS"),
+    ] {
+        let route = format!(
+            "/Items?ids={},{}&{query_name}={field_name}",
+            configured.id, empty.id
+        );
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let page = body_json(response).await;
+        let page = page["Items"].as_array().expect("settings item page");
+        let configured_dto = page
+            .iter()
+            .find(|dto| dto["Id"] == configured.id.simple().to_string())
+            .expect("configured settings dto");
+        assert_eq!(
+            configured_dto["LockedFields"],
+            serde_json::json!(["Name", "OfficialRating"]),
+            "{route}"
+        );
+        assert_eq!(configured_dto["LockData"], true, "{route}");
+        assert_eq!(configured_dto["ForcedSortName"], "Forced Movie", "{route}");
+        assert_eq!(configured_dto["PreferredMetadataLanguage"], "ja", "{route}");
+        assert_eq!(
+            configured_dto["PreferredMetadataCountryCode"], "JP",
+            "{route}"
+        );
+
+        let empty_dto = page
+            .iter()
+            .find(|dto| dto["Id"] == empty.id.simple().to_string())
+            .expect("empty settings dto");
+        assert_eq!(empty_dto["LockedFields"], serde_json::json!([]), "{route}");
+        assert_eq!(empty_dto["LockData"], false, "{route}");
+        for property in [
+            "ForcedSortName",
+            "PreferredMetadataLanguage",
+            "PreferredMetadataCountryCode",
+        ] {
+            assert!(
+                empty_dto.get(property).is_none(),
+                "unexpected {property}: {route}"
+            );
+        }
+    }
+
+    for route in [
+        format!("/Items/{}?UserId={}", configured.id, fixture.user_id),
+        format!("/Users/{}/Items/{}", fixture.user_id, configured.id),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let dto = body_json(response).await;
+        assert_eq!(
+            dto["LockedFields"],
+            serde_json::json!(["Name", "OfficialRating"])
+        );
+        assert_eq!(dto["LockData"], true);
+        assert_eq!(dto["ForcedSortName"], "Forced Movie");
+        assert_eq!(dto["PreferredMetadataLanguage"], "ja");
+        assert_eq!(dto["PreferredMetadataCountryCode"], "JP");
+    }
+
+    items.delete(empty.id).await.expect("empty item cleanup");
+    items
+        .delete(configured.id)
+        .await
+        .expect("configured item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn has_lyrics_uses_persisted_lyric_streams_for_item_and_page_dtos() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

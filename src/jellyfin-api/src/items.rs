@@ -2257,7 +2257,8 @@ async fn page_to_dto_with_fields_and_options(
     for item in page.items {
         let item_id = item.id;
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
-        let mut dto = user_library::item_to_dto(item, state.server_id());
+        let mut dto =
+            user_library::item_to_dto_with_fields(item, state.server_id(), requested_fields);
         user_library::attach_episode_hierarchy_names(
             &mut dto,
             episode_hierarchy_names.remove(&item_id).as_ref(),

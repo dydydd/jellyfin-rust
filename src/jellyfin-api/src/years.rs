@@ -197,7 +197,11 @@ async fn project_year_without_user(
     item: jellyfin_data::entities::base_item::Model,
 ) -> Result<user_library::BaseItemDto, ApiError> {
     let item_id = item.id;
-    let mut dto = user_library::item_to_dto(item, state.server_id());
+    let mut dto = user_library::item_to_dto_with_fields(
+        item,
+        state.server_id(),
+        user_library::BaseItemDtoFields::all(),
+    );
     if let Some(projection) = state
         .dto_images
         .project(

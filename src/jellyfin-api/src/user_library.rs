@@ -22,7 +22,7 @@ use jellyfin_data::{
 };
 use jellyfin_model::{
     IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream,
-    MediaStreamType, MediaUrl, NameIdPair, PersonKind, SubtitlePlaybackMode,
+    MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind, SubtitlePlaybackMode,
     TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy, Video3DFormat,
     VideoType,
 };
@@ -63,6 +63,7 @@ pub(crate) struct BaseItemDtoFields {
     recursive_item_count: bool,
     primary_image_aspect_ratio: bool,
     trickplay: bool,
+    settings: bool,
 }
 
 impl BaseItemDtoFields {
@@ -77,6 +78,7 @@ impl BaseItemDtoFields {
             recursive_item_count: true,
             primary_image_aspect_ratio: true,
             trickplay: true,
+            settings: true,
         }
     }
 
@@ -91,6 +93,7 @@ impl BaseItemDtoFields {
             recursive_item_count: false,
             primary_image_aspect_ratio: false,
             trickplay: false,
+            settings: false,
         }
     }
 
@@ -114,6 +117,8 @@ impl BaseItemDtoFields {
                 result.primary_image_aspect_ratio = true;
             } else if field.eq_ignore_ascii_case("Trickplay") {
                 result.trickplay = true;
+            } else if field.eq_ignore_ascii_case("Settings") {
+                result.settings = true;
             }
         }
         result
@@ -165,6 +170,11 @@ impl BaseItemDtoFields {
     }
 
     #[must_use]
+    pub(crate) const fn wants_settings(self) -> bool {
+        self.settings
+    }
+
+    #[must_use]
     pub(crate) const fn without_trickplay(mut self) -> Self {
         self.trickplay = false;
         self
@@ -187,6 +197,8 @@ pub struct BaseItemDto {
     pub date_created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forced_sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip)]
@@ -337,6 +349,8 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "LockData")]
     pub is_locked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked_fields: Option<Vec<MetadataField>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_number_end: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1006,6 +1020,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         etag: item.row_version.to_string(),
         date_created: Some(item.date_created.to_rfc3339()),
         sort_name: item.sort_name,
+        forced_sort_name: None,
         path: item.path,
         media_source_path,
         media_source_bitrate,
@@ -1090,17 +1105,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             &["CollectionName", "collection_name"],
         ),
         aspect_ratio: metadata_string(item.data.as_ref(), &["AspectRatio", "aspect_ratio"]),
-        preferred_metadata_language: metadata_string(
-            item.data.as_ref(),
-            &["PreferredMetadataLanguage", "preferred_metadata_language"],
-        ),
-        preferred_metadata_country_code: metadata_string(
-            item.data.as_ref(),
-            &[
-                "PreferredMetadataCountryCode",
-                "preferred_metadata_country_code",
-            ],
-        ),
+        preferred_metadata_language: None,
+        preferred_metadata_country_code: None,
         production_locations: metadata_strings(
             item.data.as_ref(),
             &["ProductionLocations", "production_locations"],
@@ -1114,7 +1120,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         video_type,
         video_3d_format,
         iso_type,
-        is_locked: metadata_bool(item.data.as_ref(), &["IsLocked", "is_locked"]),
+        is_locked: None,
+        locked_fields: None,
         index_number_end: metadata_i32(item.data.as_ref(), &["IndexNumberEnd", "index_number_end"]),
         airs_after_season_number: metadata_i32(
             item.data.as_ref(),
@@ -1143,6 +1150,105 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_sources: None,
         media_streams: None,
         trickplay: None,
+    }
+}
+
+/// Projects the base fields whose official wire shape is controlled by `ItemFields`.
+pub(crate) fn item_to_dto_with_fields(
+    item: base_item::Model,
+    server_id: &str,
+    fields: BaseItemDtoFields,
+) -> BaseItemDto {
+    let settings = fields
+        .wants_settings()
+        .then(|| item_settings(item.data.as_ref()));
+    let mut dto = item_to_dto(item, server_id);
+    if let Some(settings) = settings {
+        dto.locked_fields = Some(settings.locked_fields);
+        dto.is_locked = Some(settings.is_locked);
+        dto.forced_sort_name = settings.forced_sort_name;
+        dto.preferred_metadata_language = settings.preferred_metadata_language;
+        dto.preferred_metadata_country_code = settings.preferred_metadata_country_code;
+    }
+    dto
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ItemSettings {
+    locked_fields: Vec<MetadataField>,
+    is_locked: bool,
+    forced_sort_name: Option<String>,
+    preferred_metadata_language: Option<String>,
+    preferred_metadata_country_code: Option<String>,
+}
+
+fn item_settings(data: Option<&Value>) -> ItemSettings {
+    ItemSettings {
+        locked_fields: metadata_locked_fields(data),
+        is_locked: metadata_bool(data, &["IsLocked", "isLocked", "is_locked"]).unwrap_or(false),
+        forced_sort_name: metadata_string(
+            data,
+            &["ForcedSortName", "forcedSortName", "forced_sort_name"],
+        ),
+        preferred_metadata_language: metadata_string(
+            data,
+            &[
+                "PreferredMetadataLanguage",
+                "preferredMetadataLanguage",
+                "preferred_metadata_language",
+            ],
+        ),
+        preferred_metadata_country_code: metadata_string(
+            data,
+            &[
+                "PreferredMetadataCountryCode",
+                "preferredMetadataCountryCode",
+                "preferred_metadata_country_code",
+            ],
+        ),
+    }
+}
+
+fn metadata_locked_fields(data: Option<&Value>) -> Vec<MetadataField> {
+    let Some(value) = metadata_value(data, &["LockedFields", "lockedFields", "locked_fields"])
+    else {
+        return Vec::new();
+    };
+    let values = match value {
+        Value::Array(values) => values
+            .into_iter()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect::<Vec<_>>(),
+        Value::String(value) => value
+            .split(['|', ','])
+            .map(str::to_owned)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    let mut result = Vec::new();
+    for value in values {
+        let Some(field) = metadata_field_from_name(&value) else {
+            continue;
+        };
+        if !result.contains(&field) {
+            result.push(field);
+        }
+    }
+    result
+}
+
+fn metadata_field_from_name(value: &str) -> Option<MetadataField> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cast" => Some(MetadataField::Cast),
+        "genres" => Some(MetadataField::Genres),
+        "productionlocations" => Some(MetadataField::ProductionLocations),
+        "studios" => Some(MetadataField::Studios),
+        "tags" => Some(MetadataField::Tags),
+        "name" => Some(MetadataField::Name),
+        "overview" => Some(MetadataField::Overview),
+        "runtime" => Some(MetadataField::Runtime),
+        "officialrating" => Some(MetadataField::OfficialRating),
+        _ => None,
     }
 }
 
@@ -1186,7 +1292,7 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     };
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
-    let mut dto = item_to_dto(item, state.server_id());
+    let mut dto = item_to_dto_with_fields(item, state.server_id(), fields);
     attach_episode_hierarchy_names(&mut dto, hierarchy_names);
     if is_audio_item(&dto) {
         let lyric_item_ids = state
@@ -2992,6 +3098,16 @@ mod tests {
     }
 
     #[test]
+    fn settings_field_binding_is_case_insensitive() {
+        for name in ["Settings", "settings", "SETTINGS"] {
+            let fields = BaseItemDtoFields::from_names(&[name.to_owned()]);
+            assert!(fields.wants_settings(), "{name}");
+        }
+        assert!(!BaseItemDtoFields::media_sources().wants_settings());
+        assert!(BaseItemDtoFields::all().wants_settings());
+    }
+
+    #[test]
     fn item_to_dto_projects_persisted_metadata_json() {
         let item = base_item::Model {
             id: Uuid::new_v4(),
@@ -3006,6 +3122,10 @@ mod tests {
                 "Tagline": "Tag",
                 "Status": "Ended",
                 "IsLocked": true,
+                "LockedFields": ["name", "OFFICIALRATING", "PluginField"],
+                "ForcedSortName": "Forced Movie",
+                "PreferredMetadataLanguage": "ja",
+                "PreferredMetadataCountryCode": "JP",
                 "Width": 1920,
                 "Height": 1080,
                 "Bitrate": 5_500_000,
@@ -3057,7 +3177,14 @@ mod tests {
             row_version: 1,
         };
 
-        let dto = item_to_dto(item, "server");
+        let without_settings = item_to_dto(item.clone(), "server");
+        assert_eq!(without_settings.locked_fields, None);
+        assert_eq!(without_settings.is_locked, None);
+        assert_eq!(without_settings.forced_sort_name, None);
+        assert_eq!(without_settings.preferred_metadata_language, None);
+        assert_eq!(without_settings.preferred_metadata_country_code, None);
+
+        let dto = item_to_dto_with_fields(item.clone(), "server", BaseItemDtoFields::all());
 
         assert_eq!(dto.community_rating, Some(8.5));
         assert_eq!(dto.critic_rating, Some(7.0));
@@ -3095,6 +3222,13 @@ mod tests {
         );
         assert_eq!(dto.status.as_deref(), Some("Ended"));
         assert_eq!(dto.is_locked, Some(true));
+        assert_eq!(
+            dto.locked_fields,
+            Some(vec![MetadataField::Name, MetadataField::OfficialRating])
+        );
+        assert_eq!(dto.forced_sort_name.as_deref(), Some("Forced Movie"));
+        assert_eq!(dto.preferred_metadata_language.as_deref(), Some("ja"));
+        assert_eq!(dto.preferred_metadata_country_code.as_deref(), Some("JP"));
         assert_eq!(dto.width, Some(1920));
         assert_eq!(dto.height, Some(1080));
         assert_eq!(dto.media_type.as_deref(), Some("Video"));
@@ -3142,6 +3276,26 @@ mod tests {
             ])
         );
         assert_eq!(json["EndDate"], "2020-01-02T00:00:00.000Z");
+
+        let mut empty_item = item.clone();
+        empty_item.data = None;
+        let empty = item_to_dto_with_fields(empty_item, "server", BaseItemDtoFields::all());
+        assert_eq!(empty.locked_fields, Some(Vec::new()));
+        assert_eq!(empty.is_locked, Some(false));
+        assert_eq!(empty.forced_sort_name, None);
+        assert_eq!(empty.preferred_metadata_language, None);
+        assert_eq!(empty.preferred_metadata_country_code, None);
+
+        let mut string_item = item;
+        string_item.data = Some(json!({
+            "locked_fields": " genres | OFFICIALRATING | PluginField | genres "
+        }));
+        let string_settings =
+            item_to_dto_with_fields(string_item, "server", BaseItemDtoFields::all());
+        assert_eq!(
+            string_settings.locked_fields,
+            Some(vec![MetadataField::Genres, MetadataField::OfficialRating])
+        );
     }
 
     #[test]

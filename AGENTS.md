@@ -212,6 +212,10 @@
 - Project persisted `OriginalLanguage` unconditionally on item details and lists. When expanding
   alternate versions, use each source item's own original language for its stream defaults and
   keep an exact alternate-id detail tied to that alternate rather than the displayed primary.
+- Keep the BaseItemDto Settings field group gated by `ItemFields.Settings`: emit only canonical,
+  SDK-safe `LockedFields`, default empty locks and false `LockData`, and omit all five settings
+  properties from ordinary item pages unless requested. Single-item details use the official
+  default all-fields DTO options and therefore include the Settings group.
 - Project music `Album`, `AlbumId`, `Artists`, `ArtistItems`, `AlbumArtist`, and `AlbumArtists`
   unconditionally on item details and lists. Resolve audio albums through one batched nearest-
   ancestor lookup and preserve metadata artist order while attaching normalized relation ids.

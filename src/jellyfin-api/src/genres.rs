@@ -243,7 +243,11 @@ async fn project_genre_without_user(
     item: jellyfin_data::entities::base_item::Model,
 ) -> Result<user_library::BaseItemDto, ApiError> {
     let item_id = item.id;
-    let mut dto = user_library::item_to_dto(item, state.server_id());
+    let mut dto = user_library::item_to_dto_with_fields(
+        item,
+        state.server_id(),
+        user_library::BaseItemDtoFields::all(),
+    );
     if let Some(projection) = state
         .dto_images
         .project(
@@ -263,6 +267,8 @@ fn empty_genre_dto(server_id: &str) -> user_library::BaseItemDto {
         server_id: server_id.to_owned(),
         id: Uuid::nil().simple().to_string(),
         item_type: "Genre".to_owned(),
+        is_locked: Some(false),
+        locked_fields: Some(Vec::new()),
         // Official BaseItem.GetEtag hashes DateLastSaved.Ticks as UTF-16LE;
         // a new Genre has zero ticks and .NET Guid(byte[]) wire ordering.
         etag: "543b6ca4c9f21c87d81daf7a932499c0".to_owned(),
