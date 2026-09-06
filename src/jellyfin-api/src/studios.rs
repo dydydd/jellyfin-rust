@@ -135,6 +135,18 @@ pub(crate) async fn list(
         .user_library
         .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
         .await?;
+    if let Some(parent_id) = item_query.parent_id {
+        let parent = state
+            .base_items
+            .get(parent_id)
+            .await?
+            .ok_or(ApiError::InvalidRequest)?;
+        if !parent.is_folder {
+            item_query.parent_id = None;
+            item_query.recursive = false;
+            item_query.ids = vec![parent.id];
+        }
+    }
     let page = state
         .studios
         .list(&authenticated.user, target_user_id, item_query)

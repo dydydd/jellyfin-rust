@@ -13,6 +13,7 @@ use jellyfin_data::{
     UserDataRepository,
     entities::{base_item, item_value},
 };
+use jellyfin_model::UserPolicy;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
@@ -255,6 +256,20 @@ async fn studio_routes_match_official_studio_contract() {
     .await;
     assert_studios(&item_scoped, &[&fixture.alpha_studio], 1, 0);
 
+    for parent_id in [Uuid::new_v4(), Uuid::nil()] {
+        assert_eq!(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Studios?parentId={parent_id}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
     let audio_filtered = body_json(
         fixture
             .request(
@@ -382,6 +397,56 @@ async fn studio_routes_match_official_studio_contract() {
     )
     .await;
     assert_eq!(admin_targeted["TotalRecordCount"], 5);
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let hidden_folder_id = Uuid::new_v4();
+    let mut hidden_folder = NewBaseItem::new(hidden_folder_id, "CollectionFolder");
+    hidden_folder.name = Some("Hidden studio library".to_owned());
+    hidden_folder.is_folder = true;
+    items
+        .create(hidden_folder)
+        .await
+        .expect("hidden studio folder creation");
+    let hidden_movie = create_item(
+        &items,
+        "Movie",
+        "Hidden Studio Movie",
+        Some(hidden_folder_id),
+        false,
+    )
+    .await;
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            hidden_movie.id,
+            item_value::ItemValueType::Studios,
+            "Hidden Studio",
+        )
+        .await
+        .expect("hidden studio relation");
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.enable_all_folders = false;
+    policy.enabled_folders = vec![fixture.parent_id];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted studio policy");
+
+    let hidden_parent = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Studios?parentId={hidden_folder_id}"),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_studios(&hidden_parent, &[], 0, 0);
 
     fixture.cleanup().await;
 }
