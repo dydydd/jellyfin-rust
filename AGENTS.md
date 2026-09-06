@@ -272,6 +272,9 @@
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
 - Apply the playback `DeviceProfile` independently to every returned `MediaSource`, preserving source order and producing version-specific flags and URLs. Only apply explicit audio or subtitle indexes to the source whose id matches an explicitly requested `MediaSourceId`.
+- After applying a playback `DeviceProfile`, project the selected subtitle index back to that source's
+  `DefaultSubtitleStreamIndex`, including `-1` when subtitles are disabled; never leak an explicit
+  index to another version when no matching `MediaSourceId` was selected.
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.

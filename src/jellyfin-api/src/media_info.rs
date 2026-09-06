@@ -1052,6 +1052,7 @@ fn apply_selected_stream_metadata(
         source.supports_direct_play = supports_direct_play;
         source.supports_transcoding = transcoding.is_some();
         source.default_audio_stream_index = stream.audio_stream_index;
+        source.default_subtitle_stream_index = stream.subtitle_stream_index;
         if let Some((url, container, sub_protocol)) = transcoding {
             source.transcoding_url = Some(url);
             source.transcoding_container = container;

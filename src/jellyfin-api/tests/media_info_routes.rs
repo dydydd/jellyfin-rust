@@ -303,6 +303,7 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
                     // Official Jellyfin only applies an explicit stream index
                     // when the request also selects its MediaSourceId.
                     "AudioStreamIndex": 99,
+                    "SubtitleStreamIndex": 2,
                     "MaxStreamingBitrate": 100_000_000,
                     "DeviceProfile": flexible_video_profile(true)
                 })),
@@ -323,6 +324,7 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .iter()
         .find(|source| source["Id"] == fixture.item_id.simple().to_string())
         .expect("profiled primary source");
+    assert!(primary.get("DefaultSubtitleStreamIndex").is_none());
     assert_eq!(primary["SupportsDirectPlay"], true, "{profiled}");
     assert_eq!(primary["SupportsDirectStream"], false, "{profiled}");
     assert_eq!(primary["SupportsTranscoding"], false, "{profiled}");
@@ -331,6 +333,7 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .iter()
         .find(|source| source["Id"] == transcode_id.simple().to_string())
         .expect("profiled alternate source");
+    assert!(alternate.get("DefaultSubtitleStreamIndex").is_none());
     assert_eq!(alternate["SupportsDirectPlay"], false);
     assert_eq!(alternate["SupportsDirectStream"], false);
     assert_eq!(alternate["SupportsTranscoding"], true);
@@ -350,6 +353,7 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .iter()
         .find(|source| source["Id"] == direct_alternate_id.simple().to_string())
         .expect("direct-play alternate source");
+    assert!(direct_alternate.get("DefaultSubtitleStreamIndex").is_none());
     assert_eq!(direct_alternate["SupportsDirectPlay"], true);
     assert_eq!(direct_alternate["SupportsDirectStream"], false);
     assert_eq!(direct_alternate["SupportsTranscoding"], false);
@@ -365,6 +369,7 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
                 Some(&fixture.user_token),
                 Some(&json!({
                     "AudioStreamIndex": 1,
+                    "SubtitleStreamIndex": 2,
                     "DeviceProfile": flexible_video_profile(false)
                 })),
             )
@@ -380,12 +385,39 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         selected["MediaSources"][0]["Path"],
         format!("/media/playback-info-alternate-{transcode_id}.mkv")
     );
+    assert_eq!(selected["MediaSources"][0]["DefaultSubtitleStreamIndex"], 2);
     let selected_url = selected["MediaSources"][0]["TranscodingUrl"]
         .as_str()
         .expect("selected alternate HLS URL");
     assert!(
         selected_url.contains("AudioStreamIndex=1"),
         "{selected_url}"
+    );
+
+    let subtitles_disabled = body_json(
+        fixture
+            .post(
+                &format!("{route}?MediaSourceId={transcode_id}"),
+                Some(&fixture.user_token),
+                Some(&json!({
+                    "SubtitleStreamIndex": -1,
+                    "DeviceProfile": flexible_video_profile(false)
+                })),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        subtitles_disabled["MediaSources"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        subtitles_disabled["MediaSources"][0]["Id"],
+        transcode_id.simple().to_string()
+    );
+    assert_eq!(
+        subtitles_disabled["MediaSources"][0]["DefaultSubtitleStreamIndex"],
+        -1
     );
 
     for alternate_id in alternate_ids {
