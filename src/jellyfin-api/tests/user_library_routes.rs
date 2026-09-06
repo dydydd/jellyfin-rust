@@ -8,10 +8,10 @@ use jellyfin_controller::{
     MediaStreamService, RemoteLyricInfo, RemoteLyricResponse, UserService,
 };
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem, NewDevice,
-    NewTrickplayInfo, NewUserData, TrickplayInfoRepository, USER_ROOT_FOLDER_ID,
+    ApiKeyRepository, BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice, NewTrickplayInfo, NewUserData, TrickplayInfoRepository, USER_ROOT_FOLDER_ID,
     UserDataRepository,
-    entities::{base_item, item_value, user},
+    entities::{api_key, base_item, item_value, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{
@@ -172,6 +172,150 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
     assert_eq!(lyrics["Metadata"]["Artist"], "Test Artist");
     assert_eq!(lyrics["Lyrics"][0]["Text"], "First line");
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn item_detail_routes_bind_user_id_casing_and_nil_like_official() {
+    let fixture = UserLibraryFixture::new().await;
+
+    for route in [
+        format!("/Items/{}?UserId={}", fixture.item_id, fixture.user_id),
+        format!("/Items/{}?userId={}", fixture.item_id, fixture.user_id),
+        format!("/items/{}?userid={}", fixture.item_id, fixture.user_id),
+        format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id),
+        format!("/users/{}/items/{}", fixture.user_id, fixture.item_id),
+    ] {
+        let body = get_json(&fixture.app, &route, &fixture.user_token).await;
+        assert_base_item(&body, fixture.item_id, "Audio", "Test Song");
+    }
+
+    let nil = Uuid::nil();
+    for route in [
+        format!("/Items/{}?UserId={nil}", fixture.item_id),
+        format!("/Items/{}?userId={nil}", fixture.item_id),
+        format!("/items/{}?userid={nil}", fixture.item_id),
+        format!("/Users/{nil}/Items/{}", fixture.item_id),
+        format!("/users/{nil}/items/{}", fixture.item_id),
+    ] {
+        let body = get_json(&fixture.app, &route, &fixture.user_token).await;
+        assert_eq!(body["Id"], fixture.item_id.simple().to_string(), "{route}");
+    }
+
+    let missing_user_id = Uuid::new_v4();
+    for route in [
+        format!("/Items/{}?UserId={missing_user_id}", fixture.item_id),
+        format!("/Items/{}?userId={missing_user_id}", fixture.item_id),
+        format!("/items/{}?userid={missing_user_id}", fixture.item_id),
+        format!("/Users/{missing_user_id}/Items/{}", fixture.item_id),
+        format!("/users/{missing_user_id}/items/{}", fixture.item_id),
+    ] {
+        let response = request(&fixture.app, &route, &fixture.user_token).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route}");
+    }
+    let response = request(
+        &fixture.app,
+        &format!("/Items/{}?UserId={missing_user_id}", fixture.item_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn api_key_item_detail_uses_the_explicit_target_users_policy() {
+    let fixture = UserLibraryFixture::new().await;
+    let api_key = ApiKeyRepository::new(fixture.database.clone())
+        .create(&format!("item-detail-{}", Uuid::new_v4().simple()))
+        .await
+        .expect("item-detail API key");
+
+    let canonical = format!("/Items/{}?UserId={}", fixture.item_id, fixture.user_id);
+    let body = get_json(&fixture.app, &canonical, &api_key.access_token).await;
+    assert_eq!(body["Id"], fixture.item_id.simple().to_string());
+
+    let lowercase = format!(
+        "/items/{}?userid={}&apikey={}",
+        fixture.item_id, fixture.user_id, api_key.access_token
+    );
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(Request::get(&lowercase).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let lowercase_legacy = format!(
+        "/users/{}/items/{}?api_key={}",
+        fixture.user_id, fixture.item_id, api_key.access_token
+    );
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(Request::get(&lowercase_legacy).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = request(
+        &fixture.app,
+        &format!("/Items/{}", fixture.item_id),
+        &api_key.access_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let hidden = items
+        .create(item(
+            "Movie",
+            "API Key Policy Hidden",
+            Some(fixture.root_id),
+            false,
+        ))
+        .await
+        .expect("policy-hidden item");
+    ItemValueRepository::new(fixture.database.clone())
+        .link(hidden.id, item_value::ItemValueType::Tags, "PrivateDetail")
+        .await
+        .expect("policy-hidden tag");
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["privatedetail".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("target user policy");
+
+    let hidden_for_user = format!("/Items/{}?UserId={}", hidden.id, fixture.user_id);
+    assert_eq!(
+        request(&fixture.app, &hidden_for_user, &api_key.access_token)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let visible_for_admin = format!("/Items/{}?UserId={}", hidden.id, fixture.administrator_id);
+    assert_eq!(
+        request(&fixture.app, &visible_for_admin, &api_key.access_token)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    items
+        .delete(hidden.id)
+        .await
+        .expect("policy-hidden cleanup");
+    api_key::Entity::delete_by_id(api_key.id)
+        .exec(&fixture.database)
+        .await
+        .expect("API key cleanup");
     fixture.cleanup().await;
 }
 

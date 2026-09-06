@@ -1164,6 +1164,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_item_legacy),
         )
         .route(
+            "/users/{user_id}/items/{item_id}",
+            get(user_library::get_item_legacy),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}/Intros",
             get(user_library::get_intros_legacy),
         )
@@ -1853,6 +1857,7 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
+        .route("/items/{item_id}", get(user_library::get_item))
         .route(
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),

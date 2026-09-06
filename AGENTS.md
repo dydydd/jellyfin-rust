@@ -196,6 +196,10 @@
   is valid for a virtual-folder configuration but must be omitted from user-view item DTOs because
   the client DTO enum cannot decode it.
 - Project the official single-item detail routes with their default all-fields `DtoOptions`: clients must receive media sources, nested and top-level media streams, and trickplay without supplying a non-official `Fields` query.
+- Keep the modern and legacy single-item detail routes reachable through fully lowercase aliases,
+  and bind `UserId` case-insensitively. Treat a nil user id as omitted, authorize a regular user's
+  foreign target before looking it up, and allow an API key with an explicit valid target user while
+  still applying that target user's normal library policy.
 - Project Episode `SeriesName` and `SeasonName` from the linked Series and Season rows when legacy
   items lack the denormalized JSON fields. Resolve parent names in one bounded batch for item pages
   and show episode pages; do not add a parent lookup per episode.

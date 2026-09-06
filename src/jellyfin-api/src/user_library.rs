@@ -6,7 +6,7 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::Query;
@@ -36,7 +36,7 @@ use crate::{ApiError, AppState, authentication};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UserIdQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     pub(crate) user_id: Option<Uuid>,
     #[serde(
         default,
@@ -502,11 +502,13 @@ pub(crate) async fn get_root(
 pub(crate) async fn get_item_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
     get_item_for(
         state,
         headers,
+        uri,
         Some(user_id),
         item_id,
         BaseItemDtoFields::all(),
@@ -517,12 +519,14 @@ pub(crate) async fn get_item_legacy(
 pub(crate) async fn get_item(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
     get_item_for(
         state,
         headers,
+        uri,
         query.user_id,
         item_id,
         BaseItemDtoFields::all(),
@@ -779,16 +783,32 @@ async fn get_root_for(
 async fn get_item_for(
     state: Arc<AppState>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     requested_user_id: Option<Uuid>,
     item_id: Uuid,
     requested_fields: BaseItemDtoFields,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
-    let item = state
-        .user_library
-        .item(&authenticated.user, target_user_id, item_id)
-        .await?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    // Official RequestHelpers authorizes a non-empty target before looking it up. This both
+    // treats Guid.Empty as omitted and prevents a regular user from probing user existence.
+    let target_user_id = identity.target_user_id(requested_user_id)?;
+    let item = match identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            state
+                .user_library
+                .item(&authenticated.user, target_user_id, item_id)
+                .await?
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            // Official API keys have the Administrator role, but GetItem still resolves and
+            // projects through the explicitly targeted user's normal library policy.
+            let target_user = state.users.get(target_user_id).await?;
+            state
+                .user_library
+                .item(&target_user, target_user_id, item_id)
+                .await?
+        }
+    };
     let defaults =
         media_stream_defaults_for_user(state.as_ref(), target_user_id, requested_fields).await?;
     let remembered_user_data =
