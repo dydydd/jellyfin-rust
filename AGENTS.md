@@ -68,6 +68,11 @@
 - Build remote lyric searches from the policy-authorized Audio item and pass its original path as
   `LyricSearchRequest.MediaPath` together with the official name, album, artist, album-artist, and
   duration fields so path-aware providers receive the same request as the official server.
+- Keep lyric-provider search asynchronous and error-aware. Search all enabled providers with at
+  most four in flight, refill completed slots without waiting for earlier providers, and still
+  flatten results in configured provider order. Bound each provider by a 30-second deadline,
+  isolate provider errors and timeouts as empty results, and propagate caller cancellation by
+  dropping in-flight and queued futures rather than spawning detached tasks.
 - Keep remote lyric metadata on the official strongly typed `LyricMetadata` wire contract. Omit
   absent nullable fields and never let arbitrary provider JSON make the enclosing Swift SDK search
   result undecodable.

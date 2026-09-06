@@ -7,7 +7,9 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::{LyricProvider, LyricSearchRequest, RemoteLyricInfo, UserService};
+use jellyfin_controller::{
+    LyricProvider, LyricProviderFuture, LyricSearchRequest, RemoteLyricInfo, UserService,
+};
 use jellyfin_data::{
     ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice, ServerConfigurationRepository,
 };
@@ -282,8 +284,11 @@ impl LyricProvider for NamedLyricProvider {
         self.0
     }
 
-    fn search(&self, _request: &LyricSearchRequest) -> Vec<RemoteLyricInfo> {
-        Vec::new()
+    fn search<'a>(
+        &'a self,
+        _request: &'a LyricSearchRequest,
+    ) -> LyricProviderFuture<'a, Vec<RemoteLyricInfo>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     fn get_lyrics(&self, _id: &str) -> Option<LyricFile> {

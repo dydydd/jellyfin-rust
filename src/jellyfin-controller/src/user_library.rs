@@ -726,6 +726,7 @@ impl UserLibraryService {
         Ok(self
             .lyrics
             .search(&request)
+            .await
             .into_iter()
             .filter_map(|result| serde_json::to_value(result).ok())
             .collect())
@@ -1320,6 +1321,7 @@ fn lyric_search_request(item: &base_item::Model) -> LyricSearchRequest {
         artist_names: metadata_string_list(item.data.as_ref(), &["Artists"]),
         album_artist_names: metadata_string_list(item.data.as_ref(), &["AlbumArtists"]),
         duration_ticks: item.runtime_ticks,
+        ..LyricSearchRequest::default()
     }
 }
 
@@ -1416,6 +1418,7 @@ mod tests {
                 artist_names: vec!["First Artist".to_owned(), "Second Artist".to_owned()],
                 album_artist_names: vec!["Album Artist".to_owned()],
                 duration_ticks: Some(1_234_567),
+                ..LyricSearchRequest::default()
             }
         );
     }
