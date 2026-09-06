@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{
     HydratedBaseItem, ItemTypeRegistry, LocalizationService, LyricManager, LyricProvider,
     LyricSearchRequest, MediaStreamFilter, MediaStreamService, MediaStreamServiceError, UserError,
-    UserService,
+    UserService, decode_lyric_bytes,
 };
 
 #[derive(Debug, Error)]
@@ -617,7 +617,7 @@ impl UserLibraryService {
         if let Some(stream) = streams.into_iter().min_by_key(|stream| stream.index) {
             let path = stream.path.ok_or(UserLibraryError::LyricsNotFound)?;
             let bytes = fs::read(&path).await?;
-            let content = String::from_utf8_lossy(&bytes);
+            let content = decode_lyric_bytes(&bytes);
             let format = stream
                 .codec
                 .as_deref()

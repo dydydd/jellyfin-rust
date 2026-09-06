@@ -10,7 +10,7 @@ use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, LyricManager, MusicGenre, Person,
-    RelatedItemKind, Studio, TrickplayManifest, Year,
+    RelatedItemKind, Studio, TrickplayManifest, Year, decode_lyric_bytes,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
@@ -651,7 +651,7 @@ pub(crate) async fn upload_lyrics(
     if body.is_empty() {
         return Err(ApiError::InvalidRequest);
     }
-    let content = String::from_utf8_lossy(&body);
+    let content = decode_lyric_bytes(&body);
     let lyrics = LyricManager::parse_lyrics(format, &content).ok_or(ApiError::InvalidRequest)?;
     let lyrics = state
         .user_library

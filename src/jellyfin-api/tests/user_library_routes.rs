@@ -704,6 +704,82 @@ async fn lyric_routes_accept_lowercase_paths_and_query_names() {
 }
 
 #[tokio::test]
+async fn uploaded_lyrics_detect_boms_preserve_bytes_and_redecode_local_files() {
+    let fixture = UserLibraryFixture::new().await;
+    let item_id = fixture.item_id.simple().to_string();
+    let lyric_path = fixture
+        .storage_root
+        .join("metadata/library")
+        .join(&item_id[..2])
+        .join(&item_id)
+        .join("Test Song.txt");
+    let utf8_bom = [b"\xEF\xBB\xBF".as_slice(), "UTF-8 歌词".as_bytes()].concat();
+    let cases = [
+        (
+            format!("/audio/{}/lyrics?FileName=utf8-bom.txt", fixture.item_id),
+            utf8_bom,
+            "UTF-8 歌词",
+        ),
+        (
+            format!("/Audio/{}/Lyrics?filename=utf16-le.txt", fixture.item_id),
+            utf16_lyric_bytes("UTF-16LE 歌词", true),
+            "UTF-16LE 歌词",
+        ),
+        (
+            format!("/Audio/{}/Lyrics?fileName=utf16-be.txt", fixture.item_id),
+            utf16_lyric_bytes("UTF-16BE 歌词", false),
+            "UTF-16BE 歌词",
+        ),
+        (
+            format!("/audio/{}/lyrics?FileName=utf32-le.txt", fixture.item_id),
+            utf32_lyric_bytes("UTF-32LE 歌词", true),
+            "UTF-32LE 歌词",
+        ),
+        (
+            format!("/Audio/{}/Lyrics?filename=utf32-be.txt", fixture.item_id),
+            utf32_lyric_bytes("UTF-32BE 歌词", false),
+            "UTF-32BE 歌词",
+        ),
+        (
+            format!("/audio/{}/lyrics?filename=no-bom.txt", fixture.item_id),
+            "无 BOM 歌词".as_bytes().to_vec(),
+            "无 BOM 歌词",
+        ),
+    ];
+
+    for (route, payload, expected) in cases {
+        let uploaded = request_post_bytes(
+            &fixture.app,
+            &route,
+            &fixture.administrator_token,
+            payload.clone(),
+        )
+        .await;
+        assert_eq!(uploaded.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            body_json(uploaded).await["Lyrics"][0]["Text"],
+            expected,
+            "{route}"
+        );
+        assert_eq!(
+            tokio::fs::read(&lyric_path).await.expect("uploaded lyric"),
+            payload,
+            "{route}"
+        );
+
+        let local = get_json(
+            &fixture.app,
+            &format!("/audio/{}/lyrics", fixture.item_id),
+            &fixture.user_token,
+        )
+        .await;
+        assert_eq!(local["Lyrics"][0]["Text"], expected, "{route}");
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata() {
     let fixture = UserLibraryFixture::new().await;
     let route = format!("/Audio/{}/Lyrics", fixture.item_id);
@@ -1605,6 +1681,58 @@ async fn request_post_body(
         )
         .await
         .unwrap()
+}
+
+async fn request_post_bytes(
+    app: &axum::Router,
+    uri: &str,
+    token: &str,
+    body: Vec<u8>,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::post(uri)
+                .header(
+                    header::AUTHORIZATION,
+                    format!("{AUTHORIZATION}, Token=\"{token}\""),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+fn utf16_lyric_bytes(text: &str, little_endian: bool) -> Vec<u8> {
+    let mut bytes = if little_endian {
+        vec![0xFF, 0xFE]
+    } else {
+        vec![0xFE, 0xFF]
+    };
+    bytes.extend(text.encode_utf16().flat_map(|unit| {
+        if little_endian {
+            unit.to_le_bytes()
+        } else {
+            unit.to_be_bytes()
+        }
+    }));
+    bytes
+}
+
+fn utf32_lyric_bytes(text: &str, little_endian: bool) -> Vec<u8> {
+    let mut bytes = if little_endian {
+        vec![0xFF, 0xFE, 0x00, 0x00]
+    } else {
+        vec![0x00, 0x00, 0xFE, 0xFF]
+    };
+    bytes.extend(text.chars().map(u32::from).flat_map(|unit| {
+        if little_endian {
+            unit.to_le_bytes()
+        } else {
+            unit.to_be_bytes()
+        }
+    }));
+    bytes
 }
 
 async fn request_delete(app: &axum::Router, uri: &str, token: &str) -> axum::response::Response {

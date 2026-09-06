@@ -79,6 +79,7 @@ pub use library_scan::{LibraryScanError, LibraryScanService, LibraryScanSummary}
 pub use localization::LocalizationService;
 pub use lyrics::{
     LyricManager, LyricProvider, LyricSearchRequest, RemoteLyricInfo, RemoteLyricInfoDto,
+    decode_lyric_bytes,
 };
 pub use media_attachments::{
     MediaAttachmentFilter, MediaAttachmentMapper, MediaAttachmentService,

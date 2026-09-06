@@ -5,6 +5,67 @@ use md5::{Digest, Md5};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+/// Decodes uploaded or local lyric bytes with the BOM detection used by
+/// Jellyfin's `StreamReader`, falling back to lossy UTF-8 when no BOM exists.
+#[must_use]
+pub fn decode_lyric_bytes(bytes: &[u8]) -> String {
+    if let Some(content) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(content).into_owned();
+    }
+    // UTF-32LE starts with the UTF-16LE BOM, so detect the longer mark first.
+    if let Some(content) = bytes.strip_prefix(&[0xFF, 0xFE, 0x00, 0x00]) {
+        return decode_utf32_lossy(content, true);
+    }
+    if let Some(content) = bytes.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF]) {
+        return decode_utf32_lossy(content, false);
+    }
+    if let Some(content) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_utf16_lossy(content, true);
+    }
+    if let Some(content) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_utf16_lossy(content, false);
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn decode_utf16_lossy(bytes: &[u8], little_endian: bool) -> String {
+    let (chunks, remainder) = bytes.as_chunks::<2>();
+    let code_units = chunks
+        .iter()
+        .map(|chunk| {
+            if little_endian {
+                u16::from_le_bytes(*chunk)
+            } else {
+                u16::from_be_bytes(*chunk)
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut decoded = String::from_utf16_lossy(&code_units);
+    if !remainder.is_empty() {
+        decoded.push(char::REPLACEMENT_CHARACTER);
+    }
+    decoded
+}
+
+fn decode_utf32_lossy(bytes: &[u8], little_endian: bool) -> String {
+    let (chunks, remainder) = bytes.as_chunks::<4>();
+    let mut decoded = chunks
+        .iter()
+        .map(|chunk| {
+            let code_point = if little_endian {
+                u32::from_le_bytes(*chunk)
+            } else {
+                u32::from_be_bytes(*chunk)
+            };
+            char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER)
+        })
+        .collect::<String>();
+    if !remainder.is_empty() {
+        decoded.push(char::REPLACEMENT_CHARACTER);
+    }
+    decoded
+}
+
 /// Raw remote lyric search result returned by a provider.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteLyricInfo {
@@ -209,6 +270,57 @@ mod tests {
     #[test]
     fn rejects_unknown_formats() {
         assert!(LyricManager::parse_lyrics("srt", "1\n00:00:01,000 --> 00:00:02,000").is_none());
+    }
+
+    #[test]
+    fn decodes_stream_reader_byte_order_marks() {
+        assert_eq!(
+            decode_lyric_bytes(b"\xEF\xBB\xBFUTF-8 lyrics"),
+            "UTF-8 lyrics"
+        );
+
+        let text = "UTF-16 歌词";
+        let utf16 = text.encode_utf16().collect::<Vec<_>>();
+        let mut little_endian = vec![0xFF, 0xFE];
+        little_endian.extend(utf16.iter().flat_map(|unit| unit.to_le_bytes()));
+        assert_eq!(decode_lyric_bytes(&little_endian), text);
+
+        let mut big_endian = vec![0xFE, 0xFF];
+        big_endian.extend(utf16.iter().flat_map(|unit| unit.to_be_bytes()));
+        assert_eq!(decode_lyric_bytes(&big_endian), text);
+
+        let utf32 = text.chars().map(u32::from).collect::<Vec<_>>();
+        let mut utf32_little_endian = vec![0xFF, 0xFE, 0x00, 0x00];
+        utf32_little_endian.extend(utf32.iter().flat_map(|unit| unit.to_le_bytes()));
+        assert_eq!(decode_lyric_bytes(&utf32_little_endian), text);
+
+        let mut utf32_big_endian = vec![0x00, 0x00, 0xFE, 0xFF];
+        utf32_big_endian.extend(utf32.iter().flat_map(|unit| unit.to_be_bytes()));
+        assert_eq!(decode_lyric_bytes(&utf32_big_endian), text);
+    }
+
+    #[test]
+    fn decoding_without_a_bom_uses_lossy_utf8() {
+        assert_eq!(decode_lyric_bytes("无 BOM 歌词".as_bytes()), "无 BOM 歌词");
+        assert_eq!(decode_lyric_bytes(b"invalid \xFF utf-8"), "invalid � utf-8");
+    }
+
+    #[test]
+    fn malformed_utf16_uses_replacement_characters() {
+        assert_eq!(decode_lyric_bytes(&[0xFF, 0xFE, b'A', 0, 0x00]), "A�");
+        assert_eq!(decode_lyric_bytes(&[0xFE, 0xFF, 0xD8, 0x00]), "�");
+    }
+
+    #[test]
+    fn malformed_utf32_uses_replacement_characters() {
+        assert_eq!(
+            decode_lyric_bytes(&[0xFF, 0xFE, 0x00, 0x00, b'A', 0, 0, 0, 0x00]),
+            "A�"
+        );
+        assert_eq!(
+            decode_lyric_bytes(&[0x00, 0x00, 0xFE, 0xFF, 0x00, 0x11, 0x00, 0x00]),
+            "�"
+        );
     }
 
     #[test]
