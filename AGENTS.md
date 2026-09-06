@@ -107,6 +107,10 @@
 - Project `ExternalUrls` only for `ItemFields.ExternalUrls`, with an empty array when requested but
   no provider matches. Resolve Season and Episode Series/Season context from real relational rows
   in one batched page lookup, and keep provider names, URL strings, and provider order SDK-safe.
+- Project only the current item's persisted `RemoteTrailers` when `ItemFields.RemoteTrailers` is
+  requested. Preserve stored `NamedURL`/legacy-string order, emit an empty array when requested but
+  absent, and include it through the default all-fields single-item contract without inheriting or
+  merging trailers from parents or alternate versions.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
   clients. Keep accepting the official image query surface for compatibility, but stream the

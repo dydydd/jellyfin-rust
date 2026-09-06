@@ -71,6 +71,7 @@ pub(crate) struct BaseItemDtoFields {
     trickplay: bool,
     settings: bool,
     external_urls: bool,
+    remote_trailers: bool,
 }
 
 impl BaseItemDtoFields {
@@ -90,6 +91,7 @@ impl BaseItemDtoFields {
             trickplay: true,
             settings: true,
             external_urls: true,
+            remote_trailers: true,
         }
     }
 
@@ -109,6 +111,7 @@ impl BaseItemDtoFields {
             trickplay: false,
             settings: false,
             external_urls: false,
+            remote_trailers: false,
         }
     }
 
@@ -142,6 +145,8 @@ impl BaseItemDtoFields {
                 result.settings = true;
             } else if field.eq_ignore_ascii_case("ExternalUrls") || field.trim() == "13" {
                 result.external_urls = true;
+            } else if field.eq_ignore_ascii_case("RemoteTrailers") || field.trim() == "35" {
+                result.remote_trailers = true;
             }
         }
         result
@@ -220,6 +225,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_external_urls(self) -> bool {
         self.external_urls
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_remote_trailers(self) -> bool {
+        self.remote_trailers
     }
 
     #[must_use]
@@ -393,8 +403,8 @@ pub struct BaseItemDto {
     pub preferred_metadata_country_code: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub production_locations: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub remote_trailers: Vec<MediaUrl>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_trailers: Option<Vec<MediaUrl>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub air_days: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1185,7 +1195,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             item.data.as_ref(),
             &["ProductionLocations", "production_locations"],
         ),
-        remote_trailers: metadata_remote_trailers(item.data.as_ref()),
+        remote_trailers: None,
         air_days: metadata_enum_strings(item.data.as_ref(), &["AirDays", "air_days"], AIR_DAYS),
         end_date: metadata_api_datetime(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
@@ -1241,10 +1251,14 @@ pub(crate) fn item_to_dto_with_fields(
     let settings = fields
         .wants_settings()
         .then(|| item_settings(item.data.as_ref()));
+    let remote_trailers = fields
+        .wants_remote_trailers()
+        .then(|| metadata_remote_trailers(item.data.as_ref()));
     let mut dto = item_to_dto(item, server_id);
     dto.can_download = can_download;
     dto.chapters = fields.wants_chapters().then(Vec::new);
     dto.external_urls = fields.wants_external_urls().then(Vec::new);
+    dto.remote_trailers = remote_trailers;
     if let Some(settings) = settings {
         dto.locked_fields = Some(settings.locked_fields);
         dto.is_locked = Some(settings.is_locked);
@@ -3465,6 +3479,53 @@ mod tests {
     }
 
     #[test]
+    fn remote_trailer_field_binding_and_wire_shape_match_official_contract() {
+        for name in ["RemoteTrailers", "remotetrailers", "REMOTETRAILERS", "35"] {
+            let fields = BaseItemDtoFields::from_names(&[name.to_owned()]);
+            assert!(fields.wants_remote_trailers(), "{name}");
+        }
+        for obsolete_name in ["HomePageUrl", "TrailerUrls"] {
+            let fields = BaseItemDtoFields::from_names(&[obsolete_name.to_owned()]);
+            assert!(!fields.wants_remote_trailers(), "{obsolete_name}");
+        }
+        assert!(!BaseItemDtoFields::default().wants_remote_trailers());
+        assert!(!BaseItemDtoFields::media_sources().wants_remote_trailers());
+        assert!(BaseItemDtoFields::all().wants_remote_trailers());
+
+        let omitted = serde_json::to_value(BaseItemDto::default()).unwrap();
+        assert!(omitted.get("RemoteTrailers").is_none());
+        let empty = serde_json::to_value(BaseItemDto {
+            remote_trailers: Some(Vec::new()),
+            ..BaseItemDto::default()
+        })
+        .unwrap();
+        assert_eq!(empty["RemoteTrailers"], json!([]));
+        let populated = serde_json::to_value(BaseItemDto {
+            remote_trailers: Some(vec![
+                MediaUrl {
+                    url: Some("https://trailers.example/legacy".to_owned()),
+                    name: None,
+                },
+                MediaUrl {
+                    url: Some("https://trailers.example/named".to_owned()),
+                    name: Some("Official Trailer".to_owned()),
+                },
+            ]),
+            ..BaseItemDto::default()
+        })
+        .unwrap();
+        assert_eq!(
+            populated["RemoteTrailers"],
+            json!([
+                {"Url": "https://trailers.example/legacy"},
+                {"Url": "https://trailers.example/named", "Name": "Official Trailer"}
+            ])
+        );
+        assert!(populated.get("HomePageUrl").is_none());
+        assert!(populated.get("TrailerUrls").is_none());
+    }
+
+    #[test]
     fn chapter_field_binding_and_projection_match_official_wire_contract() {
         for name in ["Chapters", "chapters", "CHAPTERS", "4"] {
             let fields = BaseItemDtoFields::from_names(&[name.to_owned()]);
@@ -3652,6 +3713,7 @@ mod tests {
         assert_eq!(without_settings.preferred_metadata_language, None);
         assert_eq!(without_settings.preferred_metadata_country_code, None);
         assert_eq!(without_settings.chapters, None);
+        assert_eq!(without_settings.remote_trailers, None);
 
         let dto = item_to_dto_with_fields(item.clone(), "server", BaseItemDtoFields::all());
         assert_eq!(dto.chapters, Some(Vec::new()));
@@ -3679,7 +3741,7 @@ mod tests {
         );
         assert_eq!(
             dto.remote_trailers,
-            [
+            Some(vec![
                 MediaUrl {
                     url: Some("https://trailers.example/legacy".to_owned()),
                     name: None,
@@ -3688,7 +3750,7 @@ mod tests {
                     url: Some("https://trailers.example/official".to_owned()),
                     name: Some("Official Trailer".to_owned()),
                 }
-            ]
+            ])
         );
         assert_eq!(dto.status.as_deref(), Some("Ended"));
         assert_eq!(dto.is_locked, Some(true));
@@ -3755,6 +3817,11 @@ mod tests {
         assert_eq!(empty.forced_sort_name, None);
         assert_eq!(empty.preferred_metadata_language, None);
         assert_eq!(empty.preferred_metadata_country_code, None);
+        assert_eq!(empty.remote_trailers, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap()["RemoteTrailers"],
+            json!([])
+        );
 
         let mut string_item = item;
         string_item.data = Some(json!({

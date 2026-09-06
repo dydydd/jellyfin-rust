@@ -394,6 +394,131 @@ async fn external_urls_follow_official_field_and_tv_hierarchy_contract() {
 }
 
 #[tokio::test]
+async fn remote_trailers_follow_official_field_and_single_item_contract() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let populated = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("SD Remote trailers populated {}", fixture.suffix),
+        root.id,
+        serde_json::json!({
+            "HomePageUrl": "https://homepage.example/must-not-project",
+            "RemoteTrailers": [
+                "https://trailers.example/legacy-first",
+                {
+                    "Name": "Named second",
+                    "Url": "https://trailers.example/named-second"
+                }
+            ]
+        }),
+    )
+    .await;
+    let empty = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("SD Remote trailers empty {}", fixture.suffix),
+        root.id,
+        serde_json::json!({}),
+    )
+    .await;
+    let expected = serde_json::json!([
+        {"Url": "https://trailers.example/legacy-first"},
+        {
+            "Name": "Named second",
+            "Url": "https://trailers.example/named-second"
+        }
+    ]);
+
+    let unrequested_route = format!("/Items?Ids={},{}", populated.id, empty.id);
+    let unrequested = body_json(
+        fixture
+            .request(&unrequested_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    for dto in unrequested["Items"]
+        .as_array()
+        .expect("unrequested item page")
+    {
+        assert!(
+            dto.get("RemoteTrailers").is_none(),
+            "RemoteTrailers must be omitted unless requested: {dto}"
+        );
+        assert!(dto.get("HomePageUrl").is_none(), "{dto}");
+        assert!(dto.get("TrailerUrls").is_none(), "{dto}");
+    }
+
+    for (query_name, field_name) in [
+        ("Fields", "RemoteTrailers"),
+        ("fields", "remotetrailers"),
+        ("fields", "REMOTETRAILERS"),
+        ("Fields", "35"),
+    ] {
+        let route = format!(
+            "/Items?Ids={},{}&{query_name}={field_name}",
+            populated.id, empty.id
+        );
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let body = body_json(response).await;
+        let page = body["Items"].as_array().expect("remote trailer item page");
+        let populated_dto = page
+            .iter()
+            .find(|dto| dto["Id"] == populated.id.simple().to_string())
+            .expect("populated remote trailer dto");
+        let empty_dto = page
+            .iter()
+            .find(|dto| dto["Id"] == empty.id.simple().to_string())
+            .expect("empty remote trailer dto");
+        assert_eq!(populated_dto["RemoteTrailers"], expected, "{route}");
+        assert_eq!(
+            empty_dto["RemoteTrailers"],
+            serde_json::json!([]),
+            "{route}"
+        );
+        assert!(populated_dto.get("HomePageUrl").is_none(), "{route}");
+        assert!(populated_dto.get("TrailerUrls").is_none(), "{route}");
+    }
+
+    for (route, expected_trailers) in [
+        (
+            format!("/Items/{}?UserId={}", populated.id, fixture.user_id),
+            expected.clone(),
+        ),
+        (
+            format!("/Users/{}/Items/{}", fixture.user_id, populated.id),
+            expected,
+        ),
+        (
+            format!("/Items/{}?UserId={}", empty.id, fixture.user_id),
+            serde_json::json!([]),
+        ),
+        (
+            format!("/Users/{}/Items/{}", fixture.user_id, empty.id),
+            serde_json::json!([]),
+        ),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let dto = body_json(response).await;
+        assert_eq!(dto["RemoteTrailers"], expected_trailers, "{route}");
+        assert!(dto.get("HomePageUrl").is_none(), "{route}");
+        assert!(dto.get("TrailerUrls").is_none(), "{route}");
+    }
+
+    items.delete(empty.id).await.expect("empty item cleanup");
+    items
+        .delete(populated.id)
+        .await
+        .expect("populated item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn chapters_follow_official_field_order_image_and_version_contract() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
@@ -1193,7 +1318,7 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     let body = body_json(
         fixture
             .request(
-                &format!("/Items?ids={}", movie.id),
+                &format!("/Items?ids={}&Fields=RemoteTrailers", movie.id),
                 Some(&fixture.user_token),
             )
             .await,
