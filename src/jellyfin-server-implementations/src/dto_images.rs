@@ -21,6 +21,14 @@ pub struct DtoImage {
     pub date_modified: DateTime<Utc>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub blur_hash: Option<String>,
+}
+
+/// Stable primary-image metadata used by batched relation DTO projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DtoPrimaryImageMetadata {
+    pub tag: String,
+    pub blur_hash: Option<String>,
 }
 
 /// Item kinds with distinct primary-image inheritance behavior.
@@ -99,6 +107,7 @@ pub struct DtoImageProjection {
     pub backdrop_image_tags: Vec<String>,
     pub parent_backdrop_image_item_id: Option<Uuid>,
     pub parent_backdrop_image_tags: Vec<String>,
+    pub image_blur_hashes: HashMap<ImageType, HashMap<String, String>>,
 }
 
 /// Item lookup boundary used when resolving display-parent, season, and series images.
@@ -249,6 +258,24 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
         &self,
         item_ids: &[Uuid],
     ) -> Result<HashMap<Uuid, String>, PersistedDtoImageProjectionError> {
+        Ok(self
+            .primary_image_metadata(item_ids)
+            .await?
+            .into_iter()
+            .map(|(item_id, metadata)| (item_id, metadata.tag))
+            .collect())
+    }
+
+    /// Loads stable primary-image cache tags and persisted BlurHash values for
+    /// several concrete item IDs with one item query and one image query.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database or corrupt-image-row error.
+    pub async fn primary_image_metadata(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, DtoPrimaryImageMetadata>, PersistedDtoImageProjectionError> {
         if item_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -259,7 +286,7 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
             .into_iter()
             .map(|item| (item.id, item.path))
             .collect::<HashMap<_, _>>();
-        let mut tags = HashMap::new();
+        let mut metadata = HashMap::new();
         for image in self.images.list_many(item_ids).await? {
             if image.image_type != BaseItemImageType::Primary || image.image_index != 0 {
                 continue;
@@ -276,10 +303,16 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
             };
             let image = persisted_image(image);
             if let Some(tag) = self.cache_tags.get_image_cache_tag(&item, &image) {
-                tags.insert(item.id, tag);
+                metadata.insert(
+                    item.id,
+                    DtoPrimaryImageMetadata {
+                        tag,
+                        blur_hash: image.blur_hash.filter(|value| !value.is_empty()),
+                    },
+                );
             }
         }
-        Ok(tags)
+        Ok(metadata)
     }
 
     /// Loads an item and the parent candidates required by Jellyfin's primary
@@ -386,6 +419,7 @@ fn persisted_image(image: BaseItemImage) -> DtoImage {
         date_modified: image.date_modified,
         width: image.width,
         height: image.height,
+        blur_hash: image.blurhash,
     }
 }
 
@@ -452,27 +486,39 @@ impl<L, C> DtoImageProjectionService<L, C> {
 impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, C> {
     /// Projects image tags and the optional primary-image aspect ratio for one item.
     pub fn project(&self, item: &DtoImageItem, options: DtoImageOptions) -> DtoImageProjection {
-        let primary_image_tag = options
+        let primary_image = options
             .includes_primary_images()
-            .then(|| self.primary_image_tag(item))
+            .then(|| self.primary_image_metadata(item))
             .flatten();
+        let primary_image_tag = primary_image.as_ref().map(|image| image.tag.clone());
         let primary_image_aspect_ratio = options
             .include_primary_image_aspect_ratio
             .then_some(item.default_primary_image_aspect_ratio)
             .flatten();
         let mut image_tags = HashMap::new();
         let mut backdrop_image_tags = Vec::new();
+        let mut image_blur_hashes = HashMap::new();
         if let Some(tag) = primary_image_tag.as_deref() {
             image_tags.insert("Primary".to_owned(), tag.to_owned());
         }
+        if let Some(image) = primary_image.as_ref() {
+            record_blur_hash(&mut image_blur_hashes, ImageType::Primary, image);
+        }
         if options.enable_images {
-            self.attach_image_tags(item, options, &mut image_tags, &mut backdrop_image_tags);
+            self.attach_image_tags(
+                item,
+                options,
+                &mut image_tags,
+                &mut backdrop_image_tags,
+                &mut image_blur_hashes,
+            );
         }
         let mut projection = DtoImageProjection {
             primary_image_tag,
             primary_image_aspect_ratio,
             image_tags,
             backdrop_image_tags,
+            image_blur_hashes,
             ..DtoImageProjection::default()
         };
 
@@ -504,25 +550,44 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         _options: DtoImageOptions,
         image_tags: &mut HashMap<String, String>,
         backdrop_image_tags: &mut Vec<String>,
+        image_blur_hashes: &mut HashMap<ImageType, HashMap<String, String>>,
     ) {
         for image in &item.images {
             if image.image_type == ImageType::Primary {
                 continue;
             }
-            let Some(tag) = self.cache_tags.get_image_cache_tag(item, image) else {
+            let Some(metadata) = self.tagged_image(item, image) else {
                 continue;
             };
             if image.image_type == ImageType::Backdrop {
-                backdrop_image_tags.push(tag);
+                backdrop_image_tags.push(metadata.tag.clone());
             } else {
-                image_tags.insert(image_type_name(image.image_type).to_owned(), tag);
+                image_tags.insert(
+                    image_type_name(image.image_type).to_owned(),
+                    metadata.tag.clone(),
+                );
+                image_blur_hashes.remove(&image.image_type);
             }
+            record_blur_hash(image_blur_hashes, image.image_type, &metadata);
         }
     }
 
-    fn primary_image_tag(&self, item: &DtoImageItem) -> Option<String> {
+    fn primary_image_metadata(&self, item: &DtoImageItem) -> Option<DtoPrimaryImageMetadata> {
         item.primary_image()
-            .and_then(|image| self.cache_tags.get_image_cache_tag(item, image))
+            .and_then(|image| self.tagged_image(item, image))
+    }
+
+    fn tagged_image(
+        &self,
+        item: &DtoImageItem,
+        image: &DtoImage,
+    ) -> Option<DtoPrimaryImageMetadata> {
+        self.cache_tags
+            .get_image_cache_tag(item, image)
+            .map(|tag| DtoPrimaryImageMetadata {
+                tag,
+                blur_hash: image.blur_hash.clone().filter(|value| !value.is_empty()),
+            })
     }
 
     fn attach_playlist_display_parent(
@@ -533,14 +598,21 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         let Some(parent) = self.library.get_item_by_id(display_parent_id) else {
             return;
         };
-        let Some(tag) = self.primary_image_tag(&parent) else {
+        let Some(metadata) = self.primary_image_metadata(&parent) else {
             return;
         };
 
-        projection.primary_image_tag = None;
+        if let Some(tag) = projection.primary_image_tag.take() {
+            remove_blur_hash(&mut projection.image_blur_hashes, ImageType::Primary, &tag);
+        }
         projection.image_tags.remove("Primary");
         projection.parent_primary_image_item_id = Some(parent.id);
-        projection.parent_primary_image_tag = Some(tag);
+        projection.parent_primary_image_tag = Some(metadata.tag.clone());
+        record_blur_hash(
+            &mut projection.image_blur_hashes,
+            ImageType::Primary,
+            &metadata,
+        );
     }
 
     fn attach_episode_images(
@@ -552,11 +624,15 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
     ) {
         let series = series_id.and_then(|id| self.library.get_item_by_id(id));
         let season = season_id.and_then(|id| self.library.get_item_by_id(id));
-        let series_tag = series
+        let series_image = series
             .as_ref()
-            .and_then(|series| self.primary_image_tag(series));
+            .and_then(|series| self.primary_image_metadata(series));
+        let series_tag = series_image.as_ref().map(|image| image.tag.clone());
 
         projection.series_primary_image_tag.clone_from(&series_tag);
+        if let Some(image) = series_image.as_ref() {
+            record_blur_hash(&mut projection.image_blur_hashes, ImageType::Primary, image);
+        }
         if options.include_primary_image_aspect_ratio
             && projection.primary_image_tag.is_none()
             && series_tag.is_some()
@@ -567,13 +643,18 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         }
 
         if options.includes_primary_images() {
-            let season_tag = season
+            let season_image = season
                 .as_ref()
-                .and_then(|season| self.primary_image_tag(season));
+                .and_then(|season| self.primary_image_metadata(season));
 
-            if let (Some(season), Some(tag)) = (season.as_ref(), season_tag) {
+            if let (Some(season), Some(image)) = (season.as_ref(), season_image) {
                 projection.parent_primary_image_item_id = Some(season.id);
-                projection.parent_primary_image_tag = Some(tag);
+                projection.parent_primary_image_tag = Some(image.tag.clone());
+                record_blur_hash(
+                    &mut projection.image_blur_hashes,
+                    ImageType::Primary,
+                    &image,
+                );
             } else if let (Some(series), Some(tag)) = (series.as_ref(), series_tag) {
                 projection.parent_primary_image_item_id = Some(series.id);
                 projection.parent_primary_image_tag = Some(tag);
@@ -595,11 +676,15 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         options: DtoImageOptions,
     ) {
         let series = series_id.and_then(|id| self.library.get_item_by_id(id));
-        let series_tag = series
+        let series_image = series
             .as_ref()
-            .and_then(|series| self.primary_image_tag(series));
+            .and_then(|series| self.primary_image_metadata(series));
+        let series_tag = series_image.as_ref().map(|image| image.tag.clone());
 
         projection.series_primary_image_tag = series_tag;
+        if let Some(image) = series_image.as_ref() {
+            record_blur_hash(&mut projection.image_blur_hashes, ImageType::Primary, image);
+        }
         if options.include_primary_image_aspect_ratio
             && projection.primary_image_tag.is_none()
             && projection.series_primary_image_tag.is_some()
@@ -626,42 +711,90 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         for parent in parents {
             if inherits_logo
                 && projection.parent_logo_item_id.is_none()
-                && let Some(tag) = self.image_tag(parent, ImageType::Logo)
+                && let Some(image) = self.image_metadata(parent, ImageType::Logo)
             {
                 projection.parent_logo_item_id = Some(parent.id);
-                projection.parent_logo_image_tag = Some(tag);
+                projection.parent_logo_image_tag = Some(image.tag.clone());
+                record_blur_hash(&mut projection.image_blur_hashes, ImageType::Logo, &image);
             }
 
             // Jellyfin deliberately lets a Series thumb replace a Season thumb. Iterating
             // Season then Series and keeping the last tagged parent preserves that behavior.
-            if inherits_thumb && let Some(tag) = self.image_tag(parent, ImageType::Thumb) {
+            if inherits_thumb && let Some(image) = self.image_metadata(parent, ImageType::Thumb) {
+                if let Some(tag) = projection.parent_thumb_image_tag.take() {
+                    remove_blur_hash(&mut projection.image_blur_hashes, ImageType::Thumb, &tag);
+                }
                 projection.parent_thumb_item_id = Some(parent.id);
-                projection.parent_thumb_image_tag = Some(tag);
+                projection.parent_thumb_image_tag = Some(image.tag.clone());
+                record_blur_hash(&mut projection.image_blur_hashes, ImageType::Thumb, &image);
             }
 
             if inherits_backdrop && projection.parent_backdrop_image_item_id.is_none() {
-                let tags = self.image_tags(parent, ImageType::Backdrop);
-                if !tags.is_empty() {
+                let images = self.image_metadata_many(parent, ImageType::Backdrop);
+                if !images.is_empty() {
                     projection.parent_backdrop_image_item_id = Some(parent.id);
-                    projection.parent_backdrop_image_tags = tags;
+                    projection.parent_backdrop_image_tags =
+                        images.iter().map(|image| image.tag.clone()).collect();
+                    for image in &images {
+                        record_blur_hash(
+                            &mut projection.image_blur_hashes,
+                            ImageType::Backdrop,
+                            image,
+                        );
+                    }
                 }
             }
         }
     }
 
-    fn image_tag(&self, item: &DtoImageItem, image_type: ImageType) -> Option<String> {
+    fn image_metadata(
+        &self,
+        item: &DtoImageItem,
+        image_type: ImageType,
+    ) -> Option<DtoPrimaryImageMetadata> {
         item.images
             .iter()
             .find(|image| image.image_type == image_type)
-            .and_then(|image| self.cache_tags.get_image_cache_tag(item, image))
+            .and_then(|image| self.tagged_image(item, image))
     }
 
-    fn image_tags(&self, item: &DtoImageItem, image_type: ImageType) -> Vec<String> {
+    fn image_metadata_many(
+        &self,
+        item: &DtoImageItem,
+        image_type: ImageType,
+    ) -> Vec<DtoPrimaryImageMetadata> {
         item.images
             .iter()
             .filter(|image| image.image_type == image_type)
-            .filter_map(|image| self.cache_tags.get_image_cache_tag(item, image))
+            .filter_map(|image| self.tagged_image(item, image))
             .collect()
+    }
+}
+
+fn record_blur_hash(
+    image_blur_hashes: &mut HashMap<ImageType, HashMap<String, String>>,
+    image_type: ImageType,
+    image: &DtoPrimaryImageMetadata,
+) {
+    if let Some(blur_hash) = image.blur_hash.as_ref() {
+        image_blur_hashes
+            .entry(image_type)
+            .or_default()
+            .insert(image.tag.clone(), blur_hash.clone());
+    }
+}
+
+fn remove_blur_hash(
+    image_blur_hashes: &mut HashMap<ImageType, HashMap<String, String>>,
+    image_type: ImageType,
+    tag: &str,
+) {
+    let Some(hashes) = image_blur_hashes.get_mut(&image_type) else {
+        return;
+    };
+    hashes.remove(tag);
+    if hashes.is_empty() {
+        image_blur_hashes.remove(&image_type);
     }
 }
 

@@ -66,6 +66,7 @@ async fn exercise_persisted_dto_images(database_name: &str) {
     assert_season_inherits_series_images_from_relations(&items, &images, &service).await;
     assert_playlist_uses_display_parent(&items, &images, &service).await;
     assert_playlist_keeps_own_without_parent_image(&items, &images, &service).await;
+    assert_persisted_blur_hashes(&items, &images, &service).await;
     assert_eq!(
         service
             .project(Uuid::new_v4(), DtoImageOptions::default())
@@ -81,6 +82,67 @@ async fn exercise_persisted_dto_images(database_name: &str) {
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_persisted_blur_hashes(
+    items: &BaseItemRepository,
+    images: &BaseItemImageRepository,
+    service: &PersistedDtoImageProjectionService<PathCacheTags>,
+) {
+    let item = create_item(items, "Movie", None, None, None).await;
+    images
+        .replace(
+            item,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: "blurhash-primary.jpg".to_owned(),
+                    date_modified: timestamp(),
+                    width: None,
+                    height: None,
+                    blurhash: Some("primary-hash".to_owned()),
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 0,
+                    path: "blurhash-backdrop.jpg".to_owned(),
+                    date_modified: timestamp(),
+                    width: None,
+                    height: None,
+                    blurhash: Some("backdrop-hash".to_owned()),
+                },
+            ],
+        )
+        .await
+        .expect("BlurHash images must persist");
+
+    let projection = service
+        .project(item, DtoImageOptions::default())
+        .await
+        .expect("BlurHash projection must succeed")
+        .expect("BlurHash item must exist");
+    assert_eq!(
+        projection.image_blur_hashes[&jellyfin_model::ImageType::Primary],
+        std::collections::HashMap::from([(
+            "tag:blurhash-primary.jpg".to_owned(),
+            "primary-hash".to_owned()
+        )])
+    );
+    assert_eq!(
+        projection.image_blur_hashes[&jellyfin_model::ImageType::Backdrop],
+        std::collections::HashMap::from([(
+            "tag:blurhash-backdrop.jpg".to_owned(),
+            "backdrop-hash".to_owned()
+        )])
+    );
+
+    let metadata = service
+        .primary_image_metadata(&[item])
+        .await
+        .expect("batched primary-image metadata must load");
+    assert_eq!(metadata[&item].tag, "tag:blurhash-primary.jpg");
+    assert_eq!(metadata[&item].blur_hash.as_deref(), Some("primary-hash"));
 }
 
 async fn assert_episode_uses_season(

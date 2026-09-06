@@ -33,8 +33,8 @@ pub use cryptography::{
 pub use dot_ignore::{DotIgnoreFileSystemEntry, DotIgnoreIgnoreRule};
 pub use dto_images::{
     DtoImage, DtoImageItem, DtoImageItemKind, DtoImageLibrary, DtoImageOptions, DtoImageProjection,
-    DtoImageProjectionService, ImageCacheTagProvider, PersistedDtoImageProjectionError,
-    PersistedDtoImageProjectionService,
+    DtoImageProjectionService, DtoPrimaryImageMetadata, ImageCacheTagProvider,
+    PersistedDtoImageProjectionError, PersistedDtoImageProjectionService,
 };
 pub use ignore_patterns::IgnorePatterns;
 pub use library_extras::{

@@ -667,7 +667,7 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
                 date_modified: Utc::now(),
                 width: Some(300),
                 height: Some(450),
-                blurhash: None,
+                blurhash: Some("canonical-person-blurhash".to_owned()),
             }],
         )
         .await
@@ -701,7 +701,16 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         canonical_people[1].id.simple().to_string()
     );
     assert!(item["People"][0]["PrimaryImageTag"].is_string());
+    let person_tag = item["People"][0]["PrimaryImageTag"]
+        .as_str()
+        .expect("canonical Person image tag");
+    assert_eq!(
+        item["People"][0]["ImageBlurHashes"]["Primary"][person_tag],
+        "canonical-person-blurhash"
+    );
     assert!(item["People"][1].get("PrimaryImageTag").is_none());
+    assert!(item["People"][1].get("ImageBlurHashes").is_none());
+    assert_eq!(item["ImageBlurHashes"], serde_json::json!({}));
     assert_eq!(
         item["Studios"],
         serde_json::json!([{
@@ -793,7 +802,10 @@ async fn item_pages_preserve_image_tags_with_batched_projection() {
         root.id,
     )
     .await;
-    for (item, name) in [(&first, "first.jpg"), (&second, "second.jpg")] {
+    for (item, name, blurhash) in [
+        (&first, "first.jpg", Some("first-blurhash")),
+        (&second, "second.jpg", None),
+    ] {
         images
             .replace(
                 item.id,
@@ -804,7 +816,7 @@ async fn item_pages_preserve_image_tags_with_batched_projection() {
                     date_modified: Utc::now(),
                     width: Some(600),
                     height: Some(900),
-                    blurhash: None,
+                    blurhash: blurhash.map(str::to_owned),
                 }],
             )
             .await
@@ -824,11 +836,20 @@ async fn item_pages_preserve_image_tags_with_batched_projection() {
     assert_eq!(returned.len(), 2);
     for item in returned {
         assert!(item["ImageTags"]["Primary"].is_string());
+        assert!(item["ImageBlurHashes"].is_object());
     }
     assert_ne!(
         returned[0]["ImageTags"]["Primary"],
         returned[1]["ImageTags"]["Primary"]
     );
+    let first_tag = returned[0]["ImageTags"]["Primary"]
+        .as_str()
+        .expect("first image tag");
+    assert_eq!(
+        returned[0]["ImageBlurHashes"]["Primary"][first_tag],
+        "first-blurhash"
+    );
+    assert_eq!(returned[1]["ImageBlurHashes"], serde_json::json!({}));
 
     items.delete(first.id).await.expect("first cleanup");
     items.delete(second.id).await.expect("second cleanup");

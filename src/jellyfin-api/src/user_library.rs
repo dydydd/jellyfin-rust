@@ -21,10 +21,10 @@ use jellyfin_data::{
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
-    IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream,
-    MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind, SubtitlePlaybackMode,
-    TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy, Video3DFormat,
-    VideoType,
+    ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType,
+    MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind,
+    SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy,
+    Video3DFormat, VideoType,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use md5::{Digest, Md5};
@@ -384,6 +384,7 @@ pub struct BaseItemDto {
     pub parent_backdrop_image_item_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parent_backdrop_image_tags: Vec<String>,
+    pub image_blur_hashes: HashMap<ImageType, HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_sources: Option<Vec<jellyfin_model::MediaSourceInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -402,6 +403,8 @@ pub struct BaseItemPerson {
     pub person_type: PersonKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_blur_hashes: Option<HashMap<ImageType, HashMap<String, String>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1147,6 +1150,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
         parent_backdrop_image_tags: Vec::new(),
+        image_blur_hashes: HashMap::new(),
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -1635,6 +1639,7 @@ pub(crate) fn attach_dto_image_projection(
         .parent_backdrop_image_item_id
         .map(|id| id.simple().to_string());
     dto.parent_backdrop_image_tags = projection.parent_backdrop_image_tags;
+    dto.image_blur_hashes = projection.image_blur_hashes;
 }
 
 #[derive(Debug, Default)]
@@ -1699,9 +1704,9 @@ pub(crate) async fn load_relation_metadata(
         .values()
         .map(|item| item.id)
         .collect::<Vec<_>>();
-    let person_image_tags = state
+    let person_images = state
         .dto_images
-        .primary_image_tags(&person_ids)
+        .primary_image_metadata(&person_ids)
         .await
         .map_err(|_| ApiError::Internal)?;
 
@@ -1729,12 +1734,22 @@ pub(crate) async fn load_relation_metadata(
                 .into_iter()
                 .filter_map(|credit| {
                     let canonical = canonical_people.get(&credit.person.id)?;
+                    let image = person_images.get(&canonical.id);
+                    let image_blur_hashes = image
+                        .and_then(|image| image.blur_hash.as_ref().map(|hash| (image, hash)))
+                        .map(|(image, hash)| {
+                            HashMap::from([(
+                                ImageType::Primary,
+                                HashMap::from([(image.tag.clone(), hash.clone())]),
+                            )])
+                        });
                     Some(BaseItemPerson {
                         name: credit.person.name,
                         id: canonical.id.simple().to_string(),
                         role: credit.role,
                         person_type: person_kind_from_name(&credit.person_type),
-                        primary_image_tag: person_image_tags.get(&canonical.id).cloned(),
+                        primary_image_tag: image.map(|image| image.tag.clone()),
+                        image_blur_hashes,
                     })
                 })
                 .collect(),
@@ -3046,6 +3061,10 @@ mod tests {
             role: "Lead".to_owned(),
             person_type: PersonKind::Actor,
             primary_image_tag: Some("image-tag".to_owned()),
+            image_blur_hashes: Some(HashMap::from([(
+                ImageType::Primary,
+                HashMap::from([("image-tag".to_owned(), "image-blurhash".to_owned())]),
+            )])),
         };
 
         assert_eq!(
@@ -3055,9 +3074,29 @@ mod tests {
                 "Id": "person-id",
                 "Role": "Lead",
                 "Type": "Actor",
-                "PrimaryImageTag": "image-tag"
+                "PrimaryImageTag": "image-tag",
+                "ImageBlurHashes": {
+                    "Primary": {
+                        "image-tag": "image-blurhash"
+                    }
+                }
             })
         );
+    }
+
+    #[test]
+    fn person_serialization_omits_missing_image_blur_hashes() {
+        let person = BaseItemPerson {
+            name: "Actor".to_owned(),
+            id: "person-id".to_owned(),
+            role: "Lead".to_owned(),
+            person_type: PersonKind::Actor,
+            primary_image_tag: Some("image-tag".to_owned()),
+            image_blur_hashes: None,
+        };
+
+        let value = serde_json::to_value(person).unwrap();
+        assert!(value.get("ImageBlurHashes").is_none());
     }
 
     #[test]

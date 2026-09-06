@@ -12,7 +12,7 @@ use axum_extra::extract::Query;
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{SearchProviderQuery, UserError};
 use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item};
-use jellyfin_model::{SortOrder, UserConfiguration};
+use jellyfin_model::{ImageType, SortOrder, UserConfiguration};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -2381,11 +2381,143 @@ fn constrain_image_projection(
             .parent_backdrop_image_tags
             .truncate(image_type_limit);
     }
+
+    let mut visible_tags = HashMap::<ImageType, HashSet<String>>::new();
+    for (image_type, tag) in &projection.image_tags {
+        if let Some(image_type) = image_type_from_name(image_type) {
+            visible_tags
+                .entry(image_type)
+                .or_default()
+                .insert(tag.clone());
+        }
+    }
+    for tag in [
+        projection.primary_image_tag.as_ref(),
+        projection.series_primary_image_tag.as_ref(),
+        projection.parent_primary_image_tag.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        visible_tags
+            .entry(ImageType::Primary)
+            .or_default()
+            .insert(tag.clone());
+    }
+    if let Some(tag) = projection.parent_logo_image_tag.as_ref() {
+        visible_tags
+            .entry(ImageType::Logo)
+            .or_default()
+            .insert(tag.clone());
+    }
+    if let Some(tag) = projection.parent_thumb_image_tag.as_ref() {
+        visible_tags
+            .entry(ImageType::Thumb)
+            .or_default()
+            .insert(tag.clone());
+    }
+    for tag in projection
+        .backdrop_image_tags
+        .iter()
+        .chain(&projection.parent_backdrop_image_tags)
+    {
+        visible_tags
+            .entry(ImageType::Backdrop)
+            .or_default()
+            .insert(tag.clone());
+    }
+    projection.image_blur_hashes.retain(|image_type, hashes| {
+        let Some(tags) = visible_tags.get(image_type) else {
+            return false;
+        };
+        hashes.retain(|tag, _| tags.contains(tag));
+        !hashes.is_empty()
+    });
+}
+
+fn image_type_from_name(name: &str) -> Option<ImageType> {
+    match image_type_code(name)? {
+        0 => Some(ImageType::Primary),
+        1 => Some(ImageType::Art),
+        2 => Some(ImageType::Backdrop),
+        3 => Some(ImageType::Banner),
+        4 => Some(ImageType::Logo),
+        5 => Some(ImageType::Thumb),
+        6 => Some(ImageType::Disc),
+        7 => Some(ImageType::Box),
+        8 => Some(ImageType::Screenshot),
+        9 => Some(ImageType::Menu),
+        10 => Some(ImageType::Chapter),
+        11 => Some(ImageType::BoxRear),
+        12 => Some(ImageType::Profile),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_constraints_prune_blur_hashes_to_exposed_tags() {
+        let mut projection = jellyfin_server_implementations::DtoImageProjection {
+            primary_image_tag: Some("item-primary".to_owned()),
+            series_primary_image_tag: Some("series-primary".to_owned()),
+            parent_primary_image_tag: Some("season-primary".to_owned()),
+            parent_primary_image_item_id: Some(Uuid::new_v4()),
+            image_tags: HashMap::from([
+                ("Primary".to_owned(), "item-primary".to_owned()),
+                ("Logo".to_owned(), "item-logo".to_owned()),
+            ]),
+            backdrop_image_tags: vec!["backdrop-1".to_owned(), "backdrop-2".to_owned()],
+            image_blur_hashes: HashMap::from([
+                (
+                    ImageType::Primary,
+                    HashMap::from([
+                        ("item-primary".to_owned(), "item-hash".to_owned()),
+                        ("series-primary".to_owned(), "series-hash".to_owned()),
+                        ("season-primary".to_owned(), "season-hash".to_owned()),
+                    ]),
+                ),
+                (
+                    ImageType::Logo,
+                    HashMap::from([("item-logo".to_owned(), "logo-hash".to_owned())]),
+                ),
+                (
+                    ImageType::Backdrop,
+                    HashMap::from([
+                        ("backdrop-1".to_owned(), "backdrop-hash-1".to_owned()),
+                        ("backdrop-2".to_owned(), "backdrop-hash-2".to_owned()),
+                    ]),
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        constrain_image_projection(&mut projection, &[2, 4], 1);
+
+        assert_eq!(projection.image_tags.len(), 1);
+        assert_eq!(projection.image_tags["Logo"], "item-logo");
+        assert_eq!(projection.primary_image_tag, None);
+        assert_eq!(projection.parent_primary_image_tag, None);
+        assert_eq!(
+            projection.series_primary_image_tag.as_deref(),
+            Some("series-primary")
+        );
+        assert_eq!(projection.backdrop_image_tags, ["backdrop-1"]);
+        assert_eq!(
+            projection.image_blur_hashes[&ImageType::Primary],
+            HashMap::from([("series-primary".to_owned(), "series-hash".to_owned())])
+        );
+        assert_eq!(
+            projection.image_blur_hashes[&ImageType::Logo],
+            HashMap::from([("item-logo".to_owned(), "logo-hash".to_owned())])
+        );
+        assert_eq!(
+            projection.image_blur_hashes[&ImageType::Backdrop],
+            HashMap::from([("backdrop-1".to_owned(), "backdrop-hash-1".to_owned())])
+        );
+    }
 
     #[test]
     fn suggestion_enums_bind_every_official_name_and_integer() {

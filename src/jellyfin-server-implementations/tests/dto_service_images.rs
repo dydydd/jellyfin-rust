@@ -395,6 +395,61 @@ fn projection_exposes_all_image_tags_and_backdrop_tags() {
     );
 }
 
+#[test]
+fn projection_exposes_only_nonempty_blur_hashes_for_tagged_images() {
+    let mut item = item(DtoImageItemKind::Other, None, None);
+    item.images = vec![
+        image_with_hash(ImageType::Primary, "poster.jpg", Some("poster-hash")),
+        image_with_hash(ImageType::Logo, "logo.png", Some("logo-hash")),
+        image_with_hash(ImageType::Backdrop, "backdrop.jpg", Some("backdrop-hash")),
+        image_with_hash(ImageType::Thumb, "thumb.jpg", Some("")),
+    ];
+    let service = service([], []);
+
+    let projection = service.project(&item, DtoImageOptions::default());
+
+    assert_eq!(
+        projection.image_blur_hashes[&ImageType::Primary],
+        HashMap::from([("tag:poster.jpg".to_owned(), "poster-hash".to_owned())])
+    );
+    assert_eq!(
+        projection.image_blur_hashes[&ImageType::Logo],
+        HashMap::from([("tag:logo.png".to_owned(), "logo-hash".to_owned())])
+    );
+    assert_eq!(
+        projection.image_blur_hashes[&ImageType::Backdrop],
+        HashMap::from([("tag:backdrop.jpg".to_owned(), "backdrop-hash".to_owned())])
+    );
+    assert!(!projection.image_blur_hashes.contains_key(&ImageType::Thumb));
+}
+
+#[test]
+fn inherited_and_series_primary_blur_hashes_follow_exposed_tags() {
+    let mut series = item(DtoImageItemKind::Other, None, None);
+    series.images = vec![
+        image_with_hash(ImageType::Primary, "series.jpg", Some("series-hash")),
+        image_with_hash(ImageType::Logo, "series-logo.png", Some("logo-hash")),
+    ];
+    let season = season(&series, None, None);
+    let episode = episode(&season, &series, None, None);
+    let service = service([season, series], []);
+
+    let projection = service.project(
+        &episode,
+        DtoImageOptions {
+            enable_images: false,
+            primary_image_limit: 0,
+            include_primary_image_aspect_ratio: false,
+        },
+    );
+
+    assert_eq!(
+        projection.image_blur_hashes[&ImageType::Primary],
+        HashMap::from([("tag:series.jpg".to_owned(), "series-hash".to_owned())])
+    );
+    assert!(!projection.image_blur_hashes.contains_key(&ImageType::Logo));
+}
+
 fn item(
     kind: DtoImageItemKind,
     primary_path: Option<&str>,
@@ -444,12 +499,17 @@ fn primary_image(path: &str) -> DtoImage {
 }
 
 fn image(image_type: ImageType, path: &str) -> DtoImage {
+    image_with_hash(image_type, path, None)
+}
+
+fn image_with_hash(image_type: ImageType, path: &str, blur_hash: Option<&str>) -> DtoImage {
     DtoImage {
         image_type,
         path: path.to_owned(),
         date_modified: Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap(),
         width: None,
         height: None,
+        blur_hash: blur_hash.map(str::to_owned),
     }
 }
 

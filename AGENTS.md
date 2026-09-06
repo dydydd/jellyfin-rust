@@ -21,6 +21,9 @@
 - Avoid N+1 queries. Use set-based queries or bounded batches, and add migrations for indexes or constraints required by new query patterns.
 - Build playback-aware queries from the target user's `user_data` rows and reverse hierarchy lookups rather than correlated scans over all `base_items`. Materialize shared candidate sets when count and page queries would otherwise repeat expensive work.
 - Project inherited images for an item page with one batched DTO-image lookup. Do not call the image projector once per item.
+- Project `ImageBlurHashes` only from persisted image metadata in the same batched DTO-image lookup
+  that produces the exposed image tags. Keep the top-level map present when empty, include hashes
+  for inherited and Series primary tags, and never decode images or issue per-item lookups to fill it.
 - Match official TV hierarchy image inheritance from relational Series/Season links: Episode and
   Season DTOs always derive `SeriesPrimaryImageTag`; Episode parent Primary prefers Season then
   Series; parent Logo prefers the nearest parent, parent Thumb prefers Series over Season, and
