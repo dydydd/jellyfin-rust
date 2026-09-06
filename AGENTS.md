@@ -283,6 +283,10 @@
 - Keep `Shows/NextUp` pagination on its distinct signed 32-bit contract. Preserve a negative
   `StartIndex` in the response while treating it as no skip, treat every non-positive `Limit` as
   unlimited, and reject values outside the official `Int32` range.
+- Resolve `Shows/NextUp` target-user authorization before its Series filter. Treat an empty,
+  unknown, or non-Series `SeriesId` as absent and fall back to `ParentId` or the user's root; a
+  valid Series wins over `ParentId` and scopes episodes by its `PresentationUniqueKey`. Keep that
+  candidate set subject to the target user's tag, rating, parental, and folder policy.
 - `Items/Latest` defaults `GroupItems` to true. For TV, select the top Series groups from the
   complete policy-filtered Episode set before applying the result limit, then analyze each Series'
   inclusive 24-hour window in PostgreSQL. Return Series for cross-season additions; for one Season

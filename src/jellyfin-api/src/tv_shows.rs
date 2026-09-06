@@ -313,19 +313,26 @@ pub(crate) async fn next_up(
     Query(query): Query<NextUpQuery>,
 ) -> Result<Json<NextUpResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
+    if target_user_id != authenticated.user.id && !authenticated.user.is_administrator {
+        return Err(ApiError::Forbidden);
+    }
+    state.users.get(target_user_id).await?;
     let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
-    let parent_id = if let Some(series_id) = query.series_id {
-        validate_series(
-            state.as_ref(),
-            &authenticated.user,
-            target_user_id,
-            series_id,
-        )
-        .await?;
+    let parent_id = match query.series_id.filter(|series_id| !series_id.is_nil()) {
         Some(series_id)
-    } else {
-        query.parent_id
+            if state
+                .base_items
+                .get(series_id)
+                .await?
+                .is_some_and(|item| is_series_item_type(&item.item_type)) =>
+        {
+            Some(series_id)
+        }
+        _ => query.parent_id,
     };
 
     let _ = (
@@ -370,6 +377,11 @@ pub(crate) async fn next_up(
         total_record_count,
         start_index: query.start_index.unwrap_or_default(),
     }))
+}
+
+fn is_series_item_type(item_type: &str) -> bool {
+    item_type.eq_ignore_ascii_case("Series")
+        || item_type.eq_ignore_ascii_case("MediaBrowser.Controller.Entities.TV.Series")
 }
 
 fn parse_next_up_date_cutoff(value: &str) -> Result<DateTime<Utc>, ApiError> {

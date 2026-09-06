@@ -2621,12 +2621,23 @@ impl BaseItemRepository {
         }
         if let Some(parent_id) = query.parent_id {
             values.push(parent_id.into());
+            let series_types =
+                quoted_string_list(&expand_item_type_aliases(&["Series".to_owned()]));
             let _ = write!(
                 sql,
-                " AND episode.id IN (\
-                SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
-                WHERE closure.parent_item_id = ${}\
-            )",
+                " AND (episode.id IN (\
+                     SELECT closure.item_id FROM jellyfin.ancestor_ids AS closure \
+                     WHERE closure.parent_item_id = ${}\
+                 ) OR EXISTS (\
+                     SELECT 1 FROM jellyfin.base_items AS series_scope \
+                     WHERE series_scope.id = ${} \
+                       AND series_scope.item_type IN ({series_types}) \
+                       AND episode.series_presentation_unique_key IN (\
+                           NULLIF(series_scope.presentation_unique_key, ''), \
+                           replace(series_scope.id::text, '-', '')\
+                       )\
+                 ))",
+                values.len(),
                 values.len()
             );
         }

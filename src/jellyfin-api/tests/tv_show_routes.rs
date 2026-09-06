@@ -7,9 +7,10 @@ use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
-    UserDataRepository,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice, NewUserData, UserDataRepository, entities::item_value,
 };
+use jellyfin_model::UserPolicy;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -558,6 +559,7 @@ async fn assert_episodes_route(fixture: &Fixture) {
 }
 
 async fn assert_next_up_route(fixture: &Fixture) {
+    let unknown_series_id = Uuid::new_v4();
     assert_eq!(
         fixture.get("/Shows/NextUp", None).await.status(),
         StatusCode::UNAUTHORIZED
@@ -578,7 +580,7 @@ async fn assert_next_up_route(fixture: &Fixture) {
     assert_eq!(
         fixture
             .get(
-                &format!("/Shows/NextUp?seriesId={}", Uuid::new_v4()),
+                &format!("/Shows/NextUp?userId={}", Uuid::new_v4()),
                 Some(&fixture.admin_token),
             )
             .await
@@ -634,17 +636,6 @@ async fn assert_next_up_route(fixture: &Fixture) {
         .upsert(older_watched)
         .await
         .expect("older series playback state");
-    assert_eq!(
-        fixture
-            .get(
-                &format!("/Shows/NextUp?seriesId={}", fixture.movie_id),
-                Some(&fixture.admin_token),
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-
     let next_up = body_json(
         fixture
             .get(
@@ -695,6 +686,39 @@ async fn assert_next_up_route(fixture: &Fixture) {
             fixture.second_episode_id.simple().to_string(),
             older_second.id.simple().to_string(),
         ]
+    );
+
+    for series_id in [unknown_series_id, fixture.movie_id, Uuid::nil()] {
+        let fallback = body_json(
+            fixture
+                .get(
+                    &format!("/Shows/NextUp?seriesId={series_id}"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(fallback, all_series, "SeriesId {series_id} must fall back");
+    }
+    let empty_user_id = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?userId={}", Uuid::nil()),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(empty_user_id, all_series);
+    assert_eq!(
+        fixture
+            .get(
+                "/Shows/NextUp?seriesId=not-a-guid",
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
     );
 
     let pascal_limit = body_json(
@@ -798,6 +822,37 @@ async fn assert_next_up_route(fixture: &Fixture) {
         item_ids(&parent_scoped),
         vec![fixture.second_episode_id.simple().to_string()]
     );
+    for series_id in [unknown_series_id, fixture.movie_id, Uuid::nil()] {
+        let fallback = body_json(
+            fixture
+                .get(
+                    &format!(
+                        "/Shows/NextUp?seriesId={series_id}&parentId={}&limit=1&enableTotalRecordCount=false",
+                        fixture.first_season_id
+                    ),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(
+            fallback, parent_scoped,
+            "invalid SeriesId {series_id} must retain ParentId"
+        );
+    }
+    let series_wins = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&parentId={}",
+                    fixture.series_id, older_season.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(series_wins, next_up);
 
     let yesterday = (Utc::now().date_naive() - Duration::days(1))
         .format("%Y-%m-%d")
@@ -1367,6 +1422,136 @@ async fn assert_next_up_route(fixture: &Fixture) {
         item_ids(&without_resumable_rewatch),
         vec![rewatch_fourth.id.simple().to_string()]
     );
+
+    let shared_series_key = format!("next-up-series-{}", Uuid::new_v4().simple());
+    let mut grouped_series = create_item(
+        &items,
+        "Series",
+        "Presentation key target",
+        Some(root.id),
+        None,
+        None,
+    )
+    .await;
+    grouped_series.presentation_unique_key = Some(shared_series_key.clone());
+    let grouped_series = items
+        .update(grouped_series)
+        .await
+        .expect("grouped series presentation key");
+    let grouped_source_series = create_item(
+        &items,
+        "Series",
+        "Presentation key source",
+        Some(root.id),
+        None,
+        None,
+    )
+    .await;
+    let grouped_source_season = create_item(
+        &items,
+        "Season",
+        "Presentation key season",
+        Some(grouped_source_series.id),
+        Some(1),
+        None,
+    )
+    .await;
+    let mut grouped_watched = create_episode(
+        &items,
+        "Presentation key watched",
+        grouped_source_season.id,
+        grouped_source_series.id,
+        1,
+        1,
+        None,
+    )
+    .await;
+    grouped_watched.series_presentation_unique_key = Some(shared_series_key.clone());
+    let grouped_watched = items
+        .update(grouped_watched)
+        .await
+        .expect("grouped watched episode key");
+    let mut grouped_next = create_episode(
+        &items,
+        "Presentation key next",
+        grouped_source_season.id,
+        grouped_source_series.id,
+        1,
+        2,
+        None,
+    )
+    .await;
+    grouped_next.series_presentation_unique_key = Some(shared_series_key);
+    let grouped_next = items
+        .update(grouped_next)
+        .await
+        .expect("grouped next episode key");
+    let mut grouped_playback = NewUserData::new(
+        grouped_watched.id,
+        fixture.user_id,
+        grouped_watched.id.to_string(),
+    );
+    grouped_playback.played = true;
+    grouped_playback.last_played_date = Some(Utc::now());
+    user_data
+        .upsert(grouped_playback)
+        .await
+        .expect("grouped series playback state");
+
+    let grouped = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/NextUp?seriesId={}&parentId={}",
+                    grouped_series.id, fixture.first_season_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&grouped),
+        vec![grouped_next.id.simple().to_string()]
+    );
+
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            grouped_next.id,
+            item_value::ItemValueType::Tags,
+            "BlockedNextUp",
+        )
+        .await
+        .expect("blocked next-up tag");
+    let users = UserService::new(fixture.database.clone());
+    let original_policy: UserPolicy = serde_json::from_value(
+        users
+            .get(fixture.user_id)
+            .await
+            .expect("next-up user")
+            .policy,
+    )
+    .expect("next-up user policy");
+    let mut blocked_policy = original_policy.clone();
+    blocked_policy.blocked_tags = vec!["BlockedNextUp".to_owned()];
+    users
+        .update_policy(fixture.user_id, &blocked_policy)
+        .await
+        .expect("blocked next-up policy");
+    let policy_filtered = body_json(
+        fixture
+            .get(
+                &format!("/Shows/NextUp?seriesId={}", grouped_series.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(policy_filtered["Items"].as_array().unwrap().is_empty());
+    users
+        .update_policy(fixture.user_id, &original_policy)
+        .await
+        .expect("restore next-up policy");
 }
 
 async fn assert_upcoming_route(fixture: &Fixture) {
