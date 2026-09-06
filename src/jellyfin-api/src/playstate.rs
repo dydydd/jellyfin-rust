@@ -1144,11 +1144,18 @@ where
     T: PlaybackSessionState,
 {
     let item_id = info.item_id();
-    let now_playing_item = session_now_playing_item(state, item_id, info.take_item()).await?;
     let media_source_id = info
         .take_media_source_id()
         .filter(|value| !value.is_empty())
         .or_else(|| (!item_id.is_nil()).then(|| item_id.simple().to_string()));
+    let now_playing_item = session_now_playing_item(
+        state,
+        session,
+        item_id,
+        media_source_id.as_deref(),
+        info.take_item(),
+    )
+    .await?;
     let play_state = PlayerStateInfo {
         position_ticks: info.position_ticks(),
         can_seek: info.can_seek(),
@@ -1188,7 +1195,9 @@ where
 
 async fn session_now_playing_item(
     state: &AppState,
+    session: &AuthenticatedSession,
     item_id: Uuid,
+    media_source_id: Option<&str>,
     reported_item: Option<Value>,
 ) -> Result<Option<Value>, ApiError> {
     if let Some(item) = reported_item.filter(|value| value.is_object()) {
@@ -1197,13 +1206,70 @@ async fn session_now_playing_item(
     if item_id.is_nil() {
         return Ok(None);
     }
+    if session
+        .device
+        .now_playing_item
+        .as_ref()
+        .and_then(session_item_id)
+        == Some(item_id)
+    {
+        return Ok(session.device.now_playing_item.clone());
+    }
+
     let Some(item) = state.base_items.get(item_id).await? else {
         return Ok(None);
     };
-    let item = user_library::item_to_dto(item, state.server_id());
+    let selected_item =
+        selected_session_media_item(state, session.user.id, &item, media_source_id).await?;
+    let mut streams = state
+        .media_streams
+        .get_media_streams_for_items(&[selected_item.id])
+        .await?;
+    let mut item = user_library::item_to_dto(item, state.server_id());
+    item.run_time_ticks = selected_item.runtime_ticks;
+    item.media_streams = Some(streams.remove(&selected_item.id).unwrap_or_default());
     Ok(Some(
         serde_json::to_value(item).map_err(|_| ApiError::Internal)?,
     ))
+}
+
+fn session_item_id(item: &Value) -> Option<Uuid> {
+    item.as_object()?
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("Id"))
+        .and_then(|(_, value)| value.as_str())
+        .and_then(|value| Uuid::parse_str(value).ok())
+}
+
+async fn selected_session_media_item(
+    state: &AppState,
+    user_id: Uuid,
+    displayed_item: &jellyfin_data::entities::base_item::Model,
+    media_source_id: Option<&str>,
+) -> Result<jellyfin_data::entities::base_item::Model, ApiError> {
+    let Some(source_id) = media_source_id.and_then(|value| Uuid::parse_str(value.trim()).ok())
+    else {
+        return Ok(displayed_item.clone());
+    };
+    if source_id == displayed_item.id {
+        return Ok(displayed_item.clone());
+    }
+    let Some(source) = state
+        .base_items
+        .alternate_video_version(displayed_item.id, source_id)
+        .await?
+    else {
+        return Ok(displayed_item.clone());
+    };
+    if !state
+        .user_library
+        .visible_item_ids(user_id, &[source.id])
+        .await?
+        .contains(&source.id)
+    {
+        return Ok(displayed_item.clone());
+    }
+    Ok(source)
 }
 
 trait PlaybackSessionState {

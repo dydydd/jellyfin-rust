@@ -4,13 +4,13 @@ use axum::{
 };
 use chrono::Utc;
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
     NewUserData, UserDataRepository,
     entities::{api_key, device, server_configuration, user},
 };
-use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, UserPolicy};
+use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
     Set,
@@ -669,6 +669,129 @@ async fn playback_reports_update_session_state_projection() {
     assert_eq!(session["NowPlayingQueue"][0]["Name"], "Queued Item");
     assert_eq!(session["PlaylistItemId"], "playlist-after-stop");
     assert!(session["LastPausedDate"].is_null());
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn playback_session_uses_selected_version_streams_and_preserves_item_snapshot() {
+    let fixture = PlaystateFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut alternate = items
+        .get(fixture.alternate_item_id)
+        .await
+        .expect("alternate lookup")
+        .expect("alternate item");
+    alternate.runtime_ticks = Some(ticks(900));
+    items.update(alternate).await.expect("alternate update");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            fixture.alternate_item_id,
+            vec![
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    language: Some("fre".to_owned()),
+                    bit_rate: Some(192_000),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 2,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("ass".to_owned()),
+                    language: Some("ger".to_owned()),
+                    ..MediaStream::default()
+                },
+            ],
+        )
+        .await
+        .expect("alternate streams");
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "MediaSourceId": fixture.alternate_item_id
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let session_item = current_now_playing_item(&fixture).await;
+    assert_eq!(
+        session_item["Id"],
+        fixture.runtime_item_id.simple().to_string()
+    );
+    assert_eq!(session_item["RunTimeTicks"], ticks(900));
+    assert_eq!(session_item["MediaStreams"][0]["Type"], "Audio");
+    assert_eq!(session_item["MediaStreams"][0]["Language"], "fra");
+    assert_eq!(
+        session_item["MediaStreams"][0]["LocalizedLanguage"],
+        "French"
+    );
+    assert_eq!(session_item["MediaStreams"][1]["Type"], "Subtitle");
+    assert_eq!(session_item["MediaStreams"][1]["Language"], "deu");
+    assert_eq!(
+        session_item["MediaStreams"][1]["LocalizedLanguage"],
+        "German"
+    );
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "MediaSourceId": fixture.alternate_item_id,
+            "PositionTicks": ticks(30)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(current_now_playing_item(&fixture).await, session_item);
+
+    let client_snapshot = json!({
+        "Id": fixture.runtime_item_id.simple().to_string(),
+        "Name": "Client supplied snapshot",
+        "Type": "Movie",
+        "RunTimeTicks": ticks(777),
+        "MediaStreams": [{
+            "Index": 7,
+            "Type": "Audio",
+            "Language": "spa",
+            "DisplayTitle": "Client audio"
+        }]
+    });
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "Item": client_snapshot
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PositionTicks": ticks(31)
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(current_now_playing_item(&fixture).await, client_snapshot);
 
     fixture.cleanup().await;
 }
@@ -2053,6 +2176,20 @@ async fn current_play_state(fixture: &PlaystateFixture) -> Value {
     )
     .await;
     sessions.as_array().expect("sessions array")[0]["PlayState"].clone()
+}
+
+async fn current_now_playing_item(fixture: &PlaystateFixture) -> Value {
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    sessions.as_array().expect("sessions array")[0]["NowPlayingItem"].clone()
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

@@ -272,6 +272,10 @@
 - Normalize playback start and progress reports against the active transcoding-job registry. Treat
   an omitted method as `Transcode`, downgrade it to `DirectPlay` when `PlaySessionId` is blank or
   unknown, and preserve `Transcode` only while that playback session has a registered job.
+- Build a playback session's `NowPlayingItem` from the displayed item and the authorized selected
+  `MediaSourceId`: project the selected version's runtime and localized media streams, then reuse
+  that same-item snapshot on later progress reports that omit `Item` instead of replacing it with
+  a shallow DTO.
 - Apply static media-source capability flags from the target user's policy, including when an
   administrator requests another user's item or `PlaybackInfo`: audio transcoding controls audio
   sources, while video transcoding and playback remuxing independently control video sources.
