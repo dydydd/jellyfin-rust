@@ -105,6 +105,14 @@ async fn genre_routes_match_official_generic_genre_contract() {
     )
     .await;
     assert_genres(&searched, &[&fixture.drama_genre], 1, 0);
+    assert_eq!(
+        searched["Items"][0]["Id"],
+        fixture.drama_persisted_genre_id.simple().to_string()
+    );
+    assert_ne!(
+        searched["Items"][0]["Id"],
+        fixture.drama_genre_id.simple().to_string()
+    );
     assert!(searched["Items"][0].get("MovieCount").is_none());
     assert!(searched["Items"][0].get("ChildCount").is_none());
 
@@ -404,6 +412,16 @@ async fn genre_routes_match_official_generic_genre_contract() {
         )
         .await
         .expect("blocked policy genre");
+    for name in [&allowed_genre, &blocked_genre] {
+        create_item_by_name(
+            &items,
+            Uuid::new_v4(),
+            "Genre",
+            name,
+            &format!("Genre-{name}"),
+        )
+        .await;
+    }
     let mut policy = UserPolicy {
         authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
         password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
@@ -679,6 +697,14 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
             .await
             .expect("alternate legacy movie item value");
     }
+    create_item_by_name(
+        &items,
+        Uuid::new_v4(),
+        "Genre",
+        &genre,
+        &format!("Genre-{genre}"),
+    )
+    .await;
 
     for route in [
         format!("/Genres?fields=ItemCounts&searchTerm={}", encoded(&genre)),
@@ -870,6 +896,7 @@ struct Fixture {
     user_token: String,
     admin_token: String,
     drama_genre_id: Uuid,
+    drama_persisted_genre_id: Uuid,
     drama_genre: String,
     comedy_genre: String,
     parent_genre: String,
@@ -1015,7 +1042,47 @@ impl Fixture {
             .expect("slug genre");
         let slug_route_name = slug_genre_name.replace('/', "-");
 
-        let genre_item = create_item(&items, "Genre", &drama_genre, None, true).await;
+        let mut drama_entity_ids = [Uuid::new_v4(), Uuid::new_v4()];
+        drama_entity_ids.sort_unstable();
+        let genre_item = create_item_by_name(
+            &items,
+            drama_entity_ids[0],
+            "Genre",
+            &drama_genre,
+            &format!("Genre-{drama_genre}"),
+        )
+        .await;
+        create_item_by_name(
+            &items,
+            drama_entity_ids[1],
+            "MediaBrowser.Controller.Entities.Genre",
+            &drama_genre,
+            &format!("Genre-{drama_genre}"),
+        )
+        .await;
+        for name in [
+            &comedy_genre,
+            &parent_genre,
+            &nested_genre,
+            &slug_genre_name,
+        ] {
+            create_item_by_name(
+                &items,
+                Uuid::new_v4(),
+                "Genre",
+                name,
+                &format!("Genre-{name}"),
+            )
+            .await;
+        }
+        create_item_by_name(
+            &items,
+            Uuid::new_v4(),
+            "MusicGenre",
+            &music_collection_genre,
+            &format!("MusicGenre-{music_collection_genre}"),
+        )
+        .await;
         let user_data = UserDataRepository::new(database.clone());
         let mut linked_item_favorite = NewUserData::new(trailer.id, user.id, "LinkedGenreFavorite");
         linked_item_favorite.is_favorite = true;
@@ -1048,6 +1115,7 @@ impl Fixture {
             user_token,
             admin_token,
             drama_genre_id: drama.item_value_id,
+            drama_persisted_genre_id: genre_item.id,
             drama_genre,
             comedy_genre,
             parent_genre,
@@ -1112,6 +1180,24 @@ async fn create_item(
     item.parent_id = parent_id;
     item.is_folder = is_folder;
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_item_by_name(
+    repository: &BaseItemRepository,
+    id: Uuid,
+    item_type: &str,
+    name: &str,
+    presentation_unique_key: &str,
+) -> base_item::Model {
+    let mut item = NewBaseItem::new(id, item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.is_folder = true;
+    item.presentation_unique_key = Some(presentation_unique_key.to_owned());
+    repository
+        .create(item)
+        .await
+        .expect("item-by-name creation")
 }
 
 async fn create_music_collection(repository: &BaseItemRepository, name: &str) -> base_item::Model {

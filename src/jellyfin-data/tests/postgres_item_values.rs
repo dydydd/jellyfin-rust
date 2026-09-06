@@ -1,9 +1,222 @@
 use chrono::Utc;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, ItemValueError, ItemValueRepository, NewBaseItem,
-    NewItemByNameEntity,
+    BaseItemRepository, DatabaseConfig, ItemValueError, ItemValueQuery, ItemValueRepository,
+    NewBaseItem, NewItemByNameEntity,
     entities::{item_value, item_value_map},
 };
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn persisted_item_by_name_values_fold_before_counting_and_paging() {
+    let database = prepare_database().await;
+    let items = BaseItemRepository::new(database.clone());
+    let values = ItemValueRepository::new(database.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let first_name = format!("A Folded Genre {suffix}");
+    let second_name = format!("B Paged Genre {suffix}");
+    let movie = create_item(&items, "Movie", &format!("Fold Movie {suffix}")).await;
+    let first_value = values
+        .link(movie.id, item_value::ItemValueType::Genre, &first_name)
+        .await
+        .expect("first genre link");
+    values
+        .link(movie.id, item_value::ItemValueType::Genre, &second_name)
+        .await
+        .expect("second genre link");
+
+    let mut first_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    first_ids.sort_unstable();
+    let shared_key = format!("Genre-Folded-{suffix}");
+    create_item_by_name(&items, first_ids[0], "Genre", &first_name, &shared_key).await;
+    create_item_by_name(
+        &items,
+        first_ids[1],
+        "MediaBrowser.Controller.Entities.Genre",
+        &first_name,
+        &shared_key,
+    )
+    .await;
+    let second_id = Uuid::new_v4();
+    create_item_by_name(
+        &items,
+        second_id,
+        "MediaBrowser.Controller.Entities.Genre",
+        &second_name,
+        &format!("Genre-Paged-{suffix}"),
+    )
+    .await;
+
+    let first_page = values
+        .query_persisted_item_by_name_values(
+            item_value::ItemValueType::Genre,
+            "Genre",
+            &ItemValueQuery {
+                by_name_item_type: Some("Genre".to_owned()),
+                limit: Some(1),
+                ..ItemValueQuery::default()
+            },
+        )
+        .await
+        .expect("first persisted genre page");
+    assert_eq!(first_page.total_record_count, 2);
+    assert_eq!(first_page.values.len(), 1);
+    assert_eq!(first_page.values[0].id, first_ids[0]);
+    assert_ne!(first_page.values[0].id, first_value.item_value_id);
+
+    let second_page = values
+        .query_persisted_item_by_name_values(
+            item_value::ItemValueType::Genre,
+            "Genre",
+            &ItemValueQuery {
+                by_name_item_type: Some("Genre".to_owned()),
+                start_index: 1,
+                limit: Some(1),
+                ..ItemValueQuery::default()
+            },
+        )
+        .await
+        .expect("second persisted genre page");
+    assert_eq!(second_page.total_record_count, 2);
+    assert_eq!(second_page.values.len(), 1);
+    assert_eq!(second_page.values[0].id, second_id);
+
+    let candidate_tag = format!("Only Larger Candidate {suffix}");
+    let candidate_genre = format!("Candidate Metadata Genre {suffix}");
+    let candidate_studio = format!("Candidate Metadata Studio {suffix}");
+    values
+        .link(
+            first_ids[1],
+            item_value::ItemValueType::Tags,
+            &candidate_tag,
+        )
+        .await
+        .expect("candidate metadata tag");
+    values
+        .link(
+            first_ids[1],
+            item_value::ItemValueType::Genre,
+            &candidate_genre,
+        )
+        .await
+        .expect("candidate metadata genre");
+    values
+        .link(
+            first_ids[1],
+            item_value::ItemValueType::Studios,
+            &candidate_studio,
+        )
+        .await
+        .expect("candidate metadata studio");
+    let genre_reference = create_item(
+        &items,
+        "Folder",
+        &format!("Candidate Metadata Genre {suffix}"),
+    )
+    .await;
+    let studio_reference = create_item(
+        &items,
+        "Folder",
+        &format!("Candidate Metadata Studio {suffix}"),
+    )
+    .await;
+    let mut larger_candidate = items
+        .get(first_ids[1])
+        .await
+        .expect("larger candidate lookup")
+        .expect("larger candidate");
+    larger_candidate.production_year = Some(2026);
+    larger_candidate.official_rating = Some("PG-13".to_owned());
+    items
+        .update(larger_candidate)
+        .await
+        .expect("candidate metadata update");
+
+    for mut query in [
+        ItemValueQuery {
+            tags: vec![candidate_tag],
+            ..ItemValueQuery::default()
+        },
+        ItemValueQuery {
+            genres: vec![candidate_genre],
+            ..ItemValueQuery::default()
+        },
+        ItemValueQuery {
+            genre_ids: vec![genre_reference.id],
+            ..ItemValueQuery::default()
+        },
+        ItemValueQuery {
+            studios: vec![candidate_studio],
+            ..ItemValueQuery::default()
+        },
+        ItemValueQuery {
+            studio_ids: vec![studio_reference.id],
+            ..ItemValueQuery::default()
+        },
+        ItemValueQuery {
+            years: vec![2026],
+            ..ItemValueQuery::default()
+        },
+        ItemValueQuery {
+            official_ratings: vec!["PG-13".to_owned()],
+            ..ItemValueQuery::default()
+        },
+    ] {
+        query.by_name_item_type = Some("Genre".to_owned());
+        let metadata_filtered = values
+            .query_persisted_item_by_name_values(item_value::ItemValueType::Genre, "Genre", &query)
+            .await
+            .expect("candidate-filtered persisted genre page");
+        assert_eq!(metadata_filtered.total_record_count, 1);
+        assert_eq!(metadata_filtered.values.len(), 1);
+        assert_eq!(metadata_filtered.values[0].id, first_ids[1]);
+    }
+
+    let null_key_name = format!("C Null Key Genre {suffix}");
+    values
+        .link(movie.id, item_value::ItemValueType::Genre, &null_key_name)
+        .await
+        .expect("null-key genre link");
+    let mut null_key_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    null_key_ids.sort_unstable();
+    for id in null_key_ids {
+        let mut item = NewBaseItem::new(id, "Genre");
+        item.name = Some(null_key_name.clone());
+        item.sort_name = Some(null_key_name.clone());
+        item.is_folder = true;
+        items
+            .create(item)
+            .await
+            .expect("null presentation-key genre");
+    }
+    let null_key_page = values
+        .query_persisted_item_by_name_values(
+            item_value::ItemValueType::Genre,
+            "Genre",
+            &ItemValueQuery {
+                by_name_item_type: Some("Genre".to_owned()),
+                search_term: Some(null_key_name),
+                ..ItemValueQuery::default()
+            },
+        )
+        .await
+        .expect("null presentation-key page");
+    assert_eq!(null_key_page.total_record_count, 1);
+    assert_eq!(null_key_page.values[0].id, null_key_ids[0]);
+
+    items
+        .delete_many(&[
+            movie.id,
+            first_ids[0],
+            first_ids[1],
+            second_id,
+            genre_reference.id,
+            studio_reference.id,
+            null_key_ids[0],
+            null_key_ids[1],
+        ])
+        .await
+        .expect("fixture cleanup");
+}
 
 #[tokio::test]
 async fn genre_entity_reconciliation_is_set_based_and_preserves_existing_rows() {
@@ -458,6 +671,24 @@ async fn create_item(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_item_by_name(
+    repository: &BaseItemRepository,
+    id: Uuid,
+    item_type: &str,
+    name: &str,
+    presentation_unique_key: &str,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(id, item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.is_folder = true;
+    item.presentation_unique_key = Some(presentation_unique_key.to_owned());
+    repository
+        .create(item)
+        .await
+        .expect("item-by-name creation")
 }
 
 async fn catalog_names(database: &DatabaseConnection, sql: &str) -> Vec<String> {

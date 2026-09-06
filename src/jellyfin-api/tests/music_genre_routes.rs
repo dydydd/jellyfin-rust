@@ -268,6 +268,14 @@ async fn music_genre_list_matches_official_music_genre_contract() {
     )
     .await;
     assert_genres(&searched, &[&fixture.genre_name], 1, 0);
+    assert_eq!(
+        searched["Items"][0]["Id"],
+        fixture.persisted_genre_id.simple().to_string()
+    );
+    assert_ne!(
+        searched["Items"][0]["Id"],
+        fixture.genre_id.simple().to_string()
+    );
 
     let lowercase_searched = body_json(
         request(
@@ -444,7 +452,11 @@ async fn music_genre_list_matches_official_music_genre_contract() {
 async fn music_genre_image_routes_resolve_public_ordinals() {
     let fixture = MusicGenreFixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
-    let owner = create_item(&items, "MusicGenre", &fixture.genre_name).await;
+    let owner = items
+        .get(fixture.persisted_genre_id)
+        .await
+        .expect("persisted music genre lookup")
+        .expect("persisted music genre");
     assert_ne!(owner.id, fixture.genre_id);
 
     let first_path =
@@ -617,6 +629,7 @@ struct MusicGenreFixture {
     audio_id: Uuid,
     parent_id: Uuid,
     genre_id: Uuid,
+    persisted_genre_id: Uuid,
     genre_name: String,
     nested_genre_name: String,
     slug_genre_id: Uuid,
@@ -718,7 +731,40 @@ impl MusicGenreFixture {
             .link(book.id, item_value::ItemValueType::Genre, &book_only_genre)
             .await
             .expect("book-only genre link");
-        let music_genre_item = create_item(&items, "MusicGenre", &slug_genre_name).await;
+        let mut genre_entity_ids = [Uuid::new_v4(), Uuid::new_v4()];
+        genre_entity_ids.sort_unstable();
+        let persisted_genre = create_item_by_name(
+            &items,
+            genre_entity_ids[0],
+            "MusicGenre",
+            &genre_name,
+            &format!("MusicGenre-{genre_name}"),
+        )
+        .await;
+        create_item_by_name(
+            &items,
+            genre_entity_ids[1],
+            "MediaBrowser.Controller.Entities.Audio.MusicGenre",
+            &genre_name,
+            &format!("MusicGenre-{genre_name}"),
+        )
+        .await;
+        create_item_by_name(
+            &items,
+            Uuid::new_v4(),
+            "MusicGenre",
+            &nested_genre_name,
+            &format!("MusicGenre-{nested_genre_name}"),
+        )
+        .await;
+        let music_genre_item = create_item_by_name(
+            &items,
+            Uuid::new_v4(),
+            "MusicGenre",
+            &slug_genre_name,
+            &format!("MusicGenre-{slug_genre_name}"),
+        )
+        .await;
         let user_data = UserDataRepository::new(database.clone());
         let mut linked_item_favorite =
             NewUserData::new(audio.id, user.id, "LinkedMusicGenreFavorite");
@@ -751,6 +797,7 @@ impl MusicGenreFixture {
             audio_id: audio.id,
             parent_id: parent.id,
             genre_id: genre.item_value_id,
+            persisted_genre_id: persisted_genre.id,
             genre_name,
             nested_genre_name,
             slug_genre_id: slug_genre.item_value_id,
@@ -789,6 +836,24 @@ async fn create_item(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_item_by_name(
+    repository: &BaseItemRepository,
+    id: Uuid,
+    item_type: &str,
+    name: &str,
+    presentation_unique_key: &str,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(id, item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.is_folder = true;
+    item.presentation_unique_key = Some(presentation_unique_key.to_owned());
+    repository
+        .create(item)
+        .await
+        .expect("item-by-name creation")
 }
 
 async fn create_child_item(

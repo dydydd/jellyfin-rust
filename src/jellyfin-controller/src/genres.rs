@@ -161,7 +161,14 @@ impl GenreService {
         };
         let page = self
             .item_values
-            .query_values(item_value::ItemValueType::Genre, &query)
+            .query_persisted_item_by_name_values(
+                item_value::ItemValueType::Genre,
+                match kind {
+                    GenreKind::Genre => "Genre",
+                    GenreKind::MusicGenre => "MusicGenre",
+                },
+                &query,
+            )
             .await?;
         Ok(GenrePage {
             genres: page

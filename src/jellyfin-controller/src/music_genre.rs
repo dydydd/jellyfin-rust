@@ -124,7 +124,11 @@ impl MusicGenreService {
         query.by_name_item_type = Some("MusicGenre".to_owned());
         let page = self
             .item_values
-            .query_values(item_value::ItemValueType::Genre, &query)
+            .query_persisted_item_by_name_values(
+                item_value::ItemValueType::Genre,
+                "MusicGenre",
+                &query,
+            )
             .await?;
         Ok(MusicGenrePage {
             genres: page.values.into_iter().map(MusicGenre::from).collect(),

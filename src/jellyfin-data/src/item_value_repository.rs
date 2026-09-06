@@ -626,12 +626,80 @@ impl ItemValueRepository {
         query: &ItemValueQuery,
     ) -> Result<ItemValuePage, ItemValueError> {
         let (cte, values) = item_values_cte(value_type, query);
+        self.query_value_page(cte, values, "values", query).await
+    }
+
+    /// Lists persisted item-by-name entities attached to the filtered values.
+    ///
+    /// Entities sharing a presentation key are folded before counting,
+    /// ordering, and paging, with the smallest UUID representing the group.
+    /// This mirrors Jellyfin's item-by-name repository while retaining the
+    /// already set-based value-count aggregation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the entity or value query fails.
+    pub async fn query_persisted_item_by_name_values(
+        &self,
+        value_type: item_value::ItemValueType,
+        item_type: &str,
+        query: &ItemValueQuery,
+    ) -> Result<ItemValuePage, ItemValueError> {
+        let (mut cte, mut values) = item_values_cte(value_type, query);
+        cte.push_str(
+            ", by_name_candidates AS (\
+                 SELECT by_name.id AS item_value_id, \
+                        COALESCE(by_name.name, value.value) AS value, \
+                        COALESCE(\
+                            by_name.clean_name, by_name.sort_name, by_name.name, value.clean_value\
+                        ) AS clean_value, \
+                        by_name.presentation_unique_key, \
+                        value.item_count, value.album_count, value.artist_count, \
+                        value.episode_count, value.movie_count, value.music_video_count, \
+                        value.program_count, value.series_count, value.song_count, \
+                        value.trailer_count \
+                 FROM values AS value \
+                 JOIN jellyfin.base_items AS by_name \
+                   ON by_name.clean_name = value.clean_value \
+                 WHERE TRUE",
+        );
+        let item_types = expand_item_type_aliases(&[item_type.to_owned()]);
+        append_string_list_filter(
+            &mut cte,
+            &mut values,
+            "by_name.item_type",
+            &item_types,
+            false,
+        );
+        append_persisted_by_name_user_data_filters(&mut cte, &mut values, query, "by_name");
+        append_persisted_by_name_metadata_filters(&mut cte, &mut values, query, "by_name");
+        cte.push_str(
+            "), representatives AS (\
+                 SELECT DISTINCT ON (presentation_unique_key) \
+                        item_value_id, value, clean_value, item_count, album_count, \
+                        artist_count, episode_count, movie_count, music_video_count, \
+                        program_count, series_count, song_count, trailer_count \
+                 FROM by_name_candidates \
+                 ORDER BY presentation_unique_key, item_value_id\
+             )",
+        );
+        self.query_value_page(cte, values, "representatives", query)
+            .await
+    }
+
+    async fn query_value_page(
+        &self,
+        cte: String,
+        values: Vec<SeaValue>,
+        source: &str,
+        query: &ItemValueQuery,
+    ) -> Result<ItemValuePage, ItemValueError> {
         let count = if total_count_enabled(query) {
             Some(
                 self.database
                     .query_one(Statement::from_sql_and_values(
                         DbBackend::Postgres,
-                        format!("{cte} SELECT COUNT(*) AS total_record_count FROM values"),
+                        format!("{cte} SELECT COUNT(*) AS total_record_count FROM {source}"),
                         values.clone(),
                     ))
                     .await?
@@ -654,7 +722,7 @@ impl ItemValueRepository {
             "{cte} SELECT item_value_id, value, item_count, album_count, artist_count, \
                     episode_count, movie_count, music_video_count, program_count, \
                     series_count, song_count, trailer_count \
-             FROM values ORDER BY {order}"
+             FROM {source} ORDER BY {order}"
         );
         push_bind(
             &mut page_sql,
@@ -1087,14 +1155,12 @@ fn append_value_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &It
         && let (Some(item_type), Some(user_id)) =
             (query.by_name_item_type.as_deref(), query.user_id)
     {
-        push_bind(
-            sql,
-            values,
-            item_type.to_owned(),
+        sql.push_str(
             " AND EXISTS (
                 SELECT 1 FROM jellyfin.base_items AS by_name
-                WHERE by_name.item_type = ",
+                WHERE TRUE",
         );
+        append_by_name_item_type_filter(sql, values, item_type, "by_name");
         sql.push_str(" AND by_name.clean_name = value.clean_value AND");
         append_is_played_filter(sql, values, user_id, "by_name", is_played);
         sql.push(')');
@@ -1168,69 +1234,94 @@ fn append_by_name_metadata_filters(
         return;
     }
 
-    push_bind(
-        sql,
-        values,
-        item_type.to_owned(),
+    sql.push_str(
         " AND EXISTS (\
             SELECT 1 FROM jellyfin.base_items AS by_name \
-            WHERE by_name.item_type = ",
+            WHERE TRUE",
     );
+    append_by_name_item_type_filter(sql, values, item_type, "by_name");
     sql.push_str(" AND by_name.clean_name = value.clean_value");
-    append_by_name_item_value_names(sql, values, item_value::ItemValueType::Genre, &query.genres);
-    append_by_name_item_value_reference_ids(
-        sql,
-        values,
-        item_value::ItemValueType::Genre,
-        &query.genre_ids,
-    );
-    append_by_name_item_value_names(sql, values, item_value::ItemValueType::Tags, &query.tags);
+    append_persisted_by_name_metadata_filters(sql, values, query, "by_name");
+    sql.push(')');
+}
+
+fn append_persisted_by_name_metadata_filters(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    query: &ItemValueQuery,
+    table: &str,
+) {
     append_by_name_item_value_names(
         sql,
         values,
+        table,
+        item_value::ItemValueType::Genre,
+        &query.genres,
+    );
+    append_by_name_item_value_reference_ids(
+        sql,
+        values,
+        table,
+        item_value::ItemValueType::Genre,
+        &query.genre_ids,
+    );
+    append_by_name_item_value_names(
+        sql,
+        values,
+        table,
+        item_value::ItemValueType::Tags,
+        &query.tags,
+    );
+    append_by_name_item_value_names(
+        sql,
+        values,
+        table,
         item_value::ItemValueType::Studios,
         &query.studios,
     );
     append_by_name_item_value_reference_ids(
         sql,
         values,
+        table,
         item_value::ItemValueType::Studios,
         &query.studio_ids,
     );
     if !query.years.is_empty() {
-        sql.push_str(" AND by_name.production_year IN (");
+        let _ = write!(sql, " AND {table}.production_year IN (");
         append_bind_values(sql, values, query.years.iter().copied());
         sql.push(')');
     }
     if !query.official_ratings.is_empty() {
-        sql.push_str(" AND (by_name.official_rating IN (");
+        let _ = write!(sql, " AND ({table}.official_rating IN (");
         append_bind_values(sql, values, query.official_ratings.iter().cloned());
-        sql.push_str(
+        let _ = write!(
+            sql,
             ") OR EXISTS (\
                 SELECT 1 FROM jellyfin.ancestor_ids AS rating_closure \
                 JOIN jellyfin.base_items AS rating_descendant \
                   ON rating_descendant.id = rating_closure.item_id \
-                WHERE rating_closure.parent_item_id = by_name.id \
-                  AND rating_descendant.official_rating IN (",
+                WHERE rating_closure.parent_item_id = {table}.id \
+                  AND rating_descendant.official_rating IN ("
         );
         append_bind_values(sql, values, query.official_ratings.iter().cloned());
-        sql.push_str(
+        let _ = write!(
+            sql,
             ")) OR EXISTS (\
                 SELECT 1 FROM jellyfin.linked_children AS rating_link \
                 JOIN jellyfin.base_items AS rating_child \
                   ON rating_child.id = rating_link.child_id \
-                WHERE rating_link.parent_id = by_name.id \
-                  AND rating_child.official_rating IN (",
+                WHERE rating_link.parent_id = {table}.id \
+                  AND rating_child.official_rating IN ("
         );
         append_bind_values(sql, values, query.official_ratings.iter().cloned());
         sql.push_str(")))");
     }
-    sql.push(')');
 }
 
 fn append_by_name_item_value_names(
     sql: &mut String,
     values: &mut Vec<SeaValue>,
+    table: &str,
     value_type: item_value::ItemValueType,
     names: &[String],
 ) {
@@ -1244,7 +1335,7 @@ fn append_by_name_item_value_names(
             SELECT 1 FROM jellyfin.item_value_map AS metadata_map \
             JOIN jellyfin.item_values AS metadata_value \
               ON metadata_value.item_value_id = metadata_map.item_value_id \
-            WHERE metadata_map.item_id = by_name.id \
+            WHERE metadata_map.item_id = {table}.id \
               AND metadata_value.type = {} \
               AND metadata_value.clean_value IN (",
         item_value_type_code(value_type)
@@ -1256,6 +1347,7 @@ fn append_by_name_item_value_names(
 fn append_by_name_item_value_reference_ids(
     sql: &mut String,
     values: &mut Vec<SeaValue>,
+    table: &str,
     value_type: item_value::ItemValueType,
     reference_ids: &[Uuid],
 ) {
@@ -1268,7 +1360,7 @@ fn append_by_name_item_value_reference_ids(
             SELECT 1 FROM jellyfin.item_value_map AS metadata_map \
             JOIN jellyfin.item_values AS metadata_value \
               ON metadata_value.item_value_id = metadata_map.item_value_id \
-            WHERE metadata_map.item_id = by_name.id \
+            WHERE metadata_map.item_id = {table}.id \
               AND metadata_value.type = {} \
               AND metadata_value.clean_value IN (\
                   SELECT referenced.clean_name FROM jellyfin.base_items AS referenced \
@@ -1307,14 +1399,12 @@ fn append_by_name_user_data_filter(
     else {
         return;
     };
-    push_bind(
-        sql,
-        values,
-        item_type.to_owned(),
+    sql.push_str(
         " AND EXISTS (
             SELECT 1 FROM jellyfin.base_items AS by_name
-            WHERE by_name.item_type = ",
+            WHERE TRUE",
     );
+    append_by_name_item_type_filter(sql, values, item_type, "by_name");
     sql.push_str(" AND by_name.clean_name = value.clean_value AND (EXISTS (");
     push_bind(
         sql,
@@ -1330,6 +1420,60 @@ fn append_by_name_user_data_filter(
     sql.push('$');
     sql.push_str(&values.len().to_string());
     sql.push(')');
+}
+
+fn append_persisted_by_name_user_data_filters(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    query: &ItemValueQuery,
+    table: &str,
+) {
+    let Some(user_id) = query.user_id else {
+        return;
+    };
+    for (expected, predicate) in [
+        (query.is_favorite, "data.is_favorite = true"),
+        // Official Jellyfin currently treats `IsFavoriteOrLiked` as the
+        // favorite flag for item-by-name queries.
+        (query.is_favorite_or_liked, "data.is_favorite = true"),
+        (query.is_liked, "data.likes = true"),
+    ] {
+        let Some(expected) = expected else {
+            continue;
+        };
+        let _ = write!(
+            sql,
+            " AND (EXISTS (\
+                 SELECT 1 FROM jellyfin.user_data AS data \
+                 WHERE data.item_id = {table}.id AND data.user_id = "
+        );
+        push_bind(sql, values, user_id, "");
+        sql.push_str(" AND ");
+        sql.push_str(predicate);
+        sql.push_str(") = ");
+        push_bind(sql, values, expected, "");
+        sql.push(')');
+    }
+    if let Some(is_played) = query.is_played {
+        sql.push_str(" AND");
+        append_is_played_filter(sql, values, user_id, table, is_played);
+    }
+}
+
+fn append_by_name_item_type_filter(
+    sql: &mut String,
+    values: &mut Vec<SeaValue>,
+    item_type: &str,
+    table: &str,
+) {
+    let item_types = expand_item_type_aliases(&[item_type.to_owned()]);
+    append_string_list_filter(
+        sql,
+        values,
+        &format!("{table}.item_type"),
+        &item_types,
+        false,
+    );
 }
 
 fn append_string_list_filter(

@@ -869,7 +869,7 @@ impl Fixture {
             .await
             .expect("music genre");
         let nested_genre = format!("Nested {suffix}");
-        let nested = values
+        values
             .link(
                 nested_movie.id,
                 item_value::ItemValueType::Genre,
@@ -878,12 +878,12 @@ impl Fixture {
             .await
             .expect("nested genre");
         let trailer_genre = format!("Trailer {suffix}");
-        let trailer_value = values
+        values
             .link(trailer.id, item_value::ItemValueType::Genre, &trailer_genre)
             .await
             .expect("trailer genre");
         let visible_genre = format!("Visible {suffix}");
-        let visible_value = values
+        values
             .link(
                 visible_movie.id,
                 item_value::ItemValueType::Genre,
@@ -929,7 +929,7 @@ impl Fixture {
         )
         .await;
         let classifier_match_genre = format!("Classifier Match {suffix}");
-        let classifier_match_value = values
+        values
             .link(
                 classifier_match.id,
                 item_value::ItemValueType::Genre,
@@ -944,7 +944,7 @@ impl Fixture {
                 .expect("classifier tag");
         }
         let classifier_other_genre = format!("Classifier Other {suffix}");
-        let classifier_other_value = values
+        values
             .link(
                 classifier_other.id,
                 item_value::ItemValueType::Genre,
@@ -981,6 +981,18 @@ impl Fixture {
         )
         .await;
 
+        let drama_entity = create_item_by_name(&items, "Genre", &drama_genre).await;
+        let music_entity = create_item_by_name(&items, "MusicGenre", &music_genre).await;
+        let nested_entity = create_item_by_name(&items, "Genre", &nested_genre).await;
+        let trailer_entity = create_item_by_name(&items, "Genre", &trailer_genre).await;
+        let visible_entity = create_item_by_name(&items, "Genre", &visible_genre).await;
+        let classifier_match_entity =
+            create_item_by_name(&items, "Genre", &classifier_match_genre).await;
+        let classifier_other_entity =
+            create_item_by_name(&items, "Genre", &classifier_other_genre).await;
+        assert_ne!(drama_entity.id, drama.item_value_id);
+        assert_ne!(music_entity.id, music.item_value_id);
+
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
             "Filters Test Server".to_owned(),
@@ -1001,24 +1013,24 @@ impl Fixture {
             user_token,
             admin_token,
             drama_genre,
-            drama_genre_id: drama.item_value_id,
+            drama_genre_id: drama_entity.id,
             music_genre,
-            music_genre_id: music.item_value_id,
+            music_genre_id: music_entity.id,
             nested_genre,
-            nested_genre_id: nested.item_value_id,
+            nested_genre_id: nested_entity.id,
             trailer_genre,
-            trailer_genre_id: trailer_value.item_value_id,
+            trailer_genre_id: trailer_entity.id,
             visible_genre,
-            visible_genre_id: visible_value.item_value_id,
+            visible_genre_id: visible_entity.id,
             root_tag,
             featured_tag,
             music_tag,
             visible_tag,
             blocked_tag,
             classifier_match_genre,
-            classifier_match_genre_id: classifier_match_value.item_value_id,
+            classifier_match_genre_id: classifier_match_entity.id,
             classifier_other_genre,
-            classifier_other_genre_id: classifier_other_value.item_value_id,
+            classifier_other_genre_id: classifier_other_entity.id,
         }
     }
 
@@ -1141,6 +1153,22 @@ async fn create_item(
     item.parent_id = parent_id;
     item.is_folder = is_folder;
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_item_by_name(
+    repository: &BaseItemRepository,
+    item_type: &str,
+    name: &str,
+) -> base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.is_folder = true;
+    item.presentation_unique_key = Some(format!("{item_type}-{name}"));
+    repository
+        .create(item)
+        .await
+        .expect("item-by-name creation")
 }
 
 async fn insert_media_stream(

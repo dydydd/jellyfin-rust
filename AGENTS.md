@@ -194,6 +194,10 @@
   scans. Create their official metadata paths before insertion, derive IDs with the configured
   official UTF-16LE/.NET `Guid(byte[])` semantics, process deterministic keyset pages in bounded
   PostgreSQL batches, and never replace or delete existing entities, images, or metadata.
+- Return persisted `Genre` and `MusicGenre` `BaseItem` identifiers from their list routes and from
+  Filters2 rather than exposing normalized item-value identifiers. Collapse equal persisted
+  `PresentationUniqueKey` groups to their smallest UUID before total counting, ordering, and
+  pagination, and keep the media-value discovery and count aggregation set-based.
 - Persist and round-trip both `EnableNormalizedItemByNameIds` and `EnableCaseSensitiveItemIds`
   (default true). Lowercase item-by-name ID keys when normalization is forced or case-sensitive IDs
   are disabled; only preserve path casing when normalization is disabled and case sensitivity is enabled.
