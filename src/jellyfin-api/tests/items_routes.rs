@@ -519,6 +519,8 @@ async fn item_pages_hide_policy_blocked_alternate_media_sources() {
         ..UserPolicy::default()
     };
     policy.blocked_tags = vec!["privateversion".to_owned()];
+    policy.enable_video_playback_transcoding = false;
+    policy.enable_playback_remuxing = false;
     UserService::new(fixture.database.clone())
         .update_policy(fixture.user_id, &policy)
         .await
@@ -534,6 +536,9 @@ async fn item_pages_hide_policy_blocked_alternate_media_sources() {
     let sources = dto["MediaSources"].as_array().expect("media sources");
     assert_eq!(sources.len(), 1);
     assert_eq!(sources[0]["Id"], primary.id.simple().to_string());
+    assert_eq!(sources[0]["SupportsDirectPlay"], true);
+    assert_eq!(sources[0]["SupportsDirectStream"], false);
+    assert_eq!(sources[0]["SupportsTranscoding"], false);
     assert!(dto.get("MediaSourceCount").is_none());
     let serialized = serde_json::to_string(dto).unwrap();
     assert!(!serialized.contains(&alternate.id.simple().to_string()));

@@ -20,7 +20,8 @@ use jellyfin_data::{
 use jellyfin_model::{
     IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream,
     MediaStreamType, MediaUrl, NameIdPair, PersonKind, SubtitlePlaybackMode,
-    TransportStreamTimestamp, UserConfiguration, UserItemDataDto, Video3DFormat, VideoType,
+    TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy, Video3DFormat,
+    VideoType,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use md5::{Digest, Md5};
@@ -1103,6 +1104,11 @@ pub(crate) async fn project_item_to_dto(
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
+    let media_source_policy = if fields.wants_media_sources() {
+        Some(media_source_policy_for_user(state, target_user_id).await?)
+    } else {
+        None
+    };
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let mut dto = item_to_dto(item, state.server_id());
@@ -1167,6 +1173,9 @@ pub(crate) async fn project_item_to_dto(
                 remembered_user_data,
             )
             .await?;
+            if let Some(policy) = media_source_policy.as_ref() {
+                apply_media_source_policy(&mut dto, policy);
+            }
             return Ok(dto);
         }
     }
@@ -1196,7 +1205,40 @@ pub(crate) async fn project_item_to_dto(
         remembered_user_data,
         original_language.as_deref(),
     );
+    if let Some(policy) = media_source_policy.as_ref() {
+        apply_media_source_policy(&mut dto, policy);
+    }
     Ok(dto)
+}
+
+pub(crate) async fn media_source_policy_for_user(
+    state: &AppState,
+    target_user_id: Uuid,
+) -> Result<UserPolicy, ApiError> {
+    let user = state.users.get(target_user_id).await?;
+    serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)
+}
+
+/// Applies the official static-media-source capability flags for the target user.
+///
+/// Device-profile selection may narrow these flags further. It must never widen them using the
+/// authenticated administrator's policy when the request targets another user.
+pub(crate) fn apply_media_source_policy(dto: &mut BaseItemDto, policy: &UserPolicy) {
+    let is_audio = is_audio_item(dto);
+    let is_video = is_video_item(dto);
+    let Some(sources) = dto.media_sources.as_mut() else {
+        return;
+    };
+    if is_audio {
+        for source in sources {
+            source.supports_transcoding = policy.enable_audio_playback_transcoding;
+        }
+    } else if is_video {
+        for source in sources {
+            source.supports_transcoding = policy.enable_video_playback_transcoding;
+            source.supports_direct_stream = policy.enable_playback_remuxing;
+        }
+    }
 }
 
 pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) {

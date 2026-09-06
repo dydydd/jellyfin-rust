@@ -142,6 +142,102 @@ async fn playback_info_routes_return_postgres_media_sources_with_official_auth_s
 }
 
 #[tokio::test]
+async fn item_details_apply_target_user_media_source_capabilities() {
+    let fixture = Fixture::new().await;
+    let audio_id = Uuid::new_v4();
+    let mut audio = NewBaseItem::new(audio_id, "Audio");
+    audio.name = Some("playback-info-audio".to_owned());
+    audio.media_type = Some("Audio".to_owned());
+    audio.path = Some(format!("/media/playback-info-audio-{audio_id}.flac"));
+    BaseItemRepository::new(fixture.database.clone())
+        .create(audio)
+        .await
+        .expect("audio item creation");
+
+    let users = UserService::new(fixture.database.clone());
+    let stored_user = users.get(fixture.user_id).await.expect("target user");
+    let mut policy: UserPolicy =
+        serde_json::from_value(stored_user.policy).expect("stored target-user policy");
+    policy.enable_audio_playback_transcoding = true;
+    policy.enable_video_playback_transcoding = false;
+    policy.enable_playback_remuxing = true;
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("first target-user policy");
+
+    let video = body_json(
+        fixture
+            .get(
+                &format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    let video_source = &video["MediaSources"][0];
+    assert_eq!(video_source["SupportsDirectPlay"], true);
+    assert_eq!(video_source["SupportsDirectStream"], true);
+    assert_eq!(video_source["SupportsTranscoding"], false);
+
+    let audio = body_json(
+        fixture
+            .get(
+                &format!("/Users/{}/Items/{audio_id}", fixture.user_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    let audio_source = &audio["MediaSources"][0];
+    assert_eq!(audio_source["SupportsDirectPlay"], true);
+    assert_eq!(audio_source["SupportsDirectStream"], true);
+    assert_eq!(audio_source["SupportsTranscoding"], true);
+
+    policy.enable_audio_playback_transcoding = false;
+    policy.enable_video_playback_transcoding = true;
+    policy.enable_playback_remuxing = false;
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("second target-user policy");
+
+    let video = body_json(
+        fixture
+            .get(
+                &format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    let video_source = &video["MediaSources"][0];
+    assert_eq!(video_source["SupportsDirectPlay"], true);
+    assert_eq!(video_source["SupportsDirectStream"], false);
+    assert_eq!(video_source["SupportsTranscoding"], true);
+
+    let audio = body_json(
+        fixture
+            .get(
+                &format!("/Users/{}/Items/{audio_id}", fixture.user_id),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    let audio_source = &audio["MediaSources"][0];
+    assert_eq!(audio_source["SupportsDirectPlay"], true);
+    assert_eq!(audio_source["SupportsDirectStream"], true);
+    assert_eq!(audio_source["SupportsTranscoding"], false);
+
+    base_item::Entity::delete_by_id(audio_id)
+        .exec(&fixture.database)
+        .await
+        .expect("audio item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn playback_info_exposes_and_selects_grouped_video_versions() {
     let fixture = Fixture::new().await;
     let alternate_ids = [Uuid::new_v4(), Uuid::new_v4()];
@@ -412,6 +508,18 @@ async fn playback_capabilities_require_an_implemented_method_and_user_policy() {
     )
     .await;
     assert_no_playback_capabilities(&policy_blocked["MediaSources"][0]);
+
+    let admin_for_restricted_user = body_json(
+        fixture
+            .post(
+                &format!("{route}?UserId={}", fixture.user_id),
+                Some(&fixture.admin_token),
+                Some(&json!({ "DeviceProfile": flexible_video_profile(false) })),
+            )
+            .await,
+    )
+    .await;
+    assert_no_playback_capabilities(&admin_for_restricted_user["MediaSources"][0]);
 
     fixture.cleanup().await;
 }

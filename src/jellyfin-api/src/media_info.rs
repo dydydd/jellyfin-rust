@@ -16,7 +16,7 @@ use axum::{
 };
 use jellyfin_model::{
     DeviceProfile, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo,
-    MediaStreamProtocol, PlayMethod, PlaybackErrorCode, StreamBuilder,
+    MediaStreamProtocol, PlayMethod, PlaybackErrorCode, StreamBuilder, UserPolicy,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -765,10 +765,12 @@ async fn playback_info(
             error_code: Some(PlaybackErrorCode::NoCompatibleStream),
         });
     }
+    let target_user_policy =
+        user_library::media_source_policy_for_user(state, target_user_id).await?;
     let play_session_id = Uuid::new_v4().simple().to_string();
     apply_stream_builder(
         &mut media_sources,
-        authenticated_user,
+        &target_user_policy,
         state,
         item_id,
         &options,
@@ -890,7 +892,7 @@ async fn selected_playback_source_id(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn apply_stream_builder(
     media_sources: &mut Vec<MediaSourceInfo>,
-    authenticated_user: &jellyfin_data::entities::user::Model,
+    policy: &UserPolicy,
     state: &AppState,
     item_id: Uuid,
     playback_options: &PlaybackOptions,
@@ -906,8 +908,6 @@ fn apply_stream_builder(
         }
         return;
     };
-    let policy =
-        jellyfin_model::UserPolicy::deserialize(&authenticated_user.policy).unwrap_or_default();
     let remote_client_bitrate_limit = policy.remote_client_bitrate_limit;
     if !state.network_manager.is_in_local_network(remote_ip) && remote_client_bitrate_limit > 0 {
         *max_streaming_bitrate = Some(
@@ -935,7 +935,7 @@ fn apply_stream_builder(
         });
         let selected_source_id = source_is_selected.then(|| source.id.clone()).flatten();
         let can_transcode = playback_options.enable_transcoding
-            && policy_can_transcode(&policy, !is_video)
+            && policy_can_transcode(policy, !is_video)
             && source.path.as_deref().is_some_and(|path| !path.is_empty());
         source.supports_direct_play &= playback_options.enable_direct_play
             && source.path.as_deref().is_some_and(|path| !path.is_empty())
@@ -1150,7 +1150,7 @@ mod tests {
 
     use jellyfin_model::{
         DeviceProfile, DirectPlayProfile, DlnaProfileType, EncodingContext, MediaStream,
-        MediaStreamProtocol, MediaStreamType, TranscodingProfile,
+        MediaStreamProtocol, MediaStreamType, TranscodingProfile, UserPolicy,
     };
 
     use super::{MediaProtocol, MediaSourceInfo, PlaybackOptions, apply_stream_builder};
@@ -1167,7 +1167,7 @@ mod tests {
 
         apply_stream_builder(
             &mut sources,
-            &test_user(),
+            &UserPolicy::default(),
             &test_state(),
             first_id,
             &PlaybackOptions::default(),
@@ -1245,7 +1245,7 @@ mod tests {
 
         apply_stream_builder(
             &mut sources,
-            &test_user(),
+            &UserPolicy::default(),
             &test_state(),
             item_id,
             &PlaybackOptions {
@@ -1331,7 +1331,7 @@ mod tests {
 
         apply_stream_builder(
             &mut sources,
-            &test_user(),
+            &UserPolicy::default(),
             &test_state(),
             item_id,
             &PlaybackOptions {
@@ -1372,32 +1372,6 @@ mod tests {
             supports_direct_stream: true,
             supports_transcoding: true,
             ..MediaSourceInfo::default()
-        }
-    }
-
-    fn test_user() -> jellyfin_data::entities::user::Model {
-        jellyfin_data::entities::user::Model {
-            id: Uuid::new_v4(),
-            username: "Playback Test".to_owned(),
-            normalized_username: "playback test".to_owned(),
-            password_hash: None,
-            must_update_password: false,
-            enable_local_password: false,
-            is_administrator: true,
-            is_hidden: false,
-            is_disabled: false,
-            enable_auto_login: false,
-            last_login_date: None,
-            last_activity_date: None,
-            invalid_login_attempt_count: 0,
-            login_attempts_before_lockout: 0,
-            authentication_provider_id: "Default".to_owned(),
-            password_reset_provider_id: "Default".to_owned(),
-            policy: serde_json::json!({}),
-            preferences: serde_json::json!({}),
-            row_version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
         }
     }
 

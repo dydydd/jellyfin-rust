@@ -2083,6 +2083,12 @@ async fn page_to_dto_with_fields_and_options(
         } else {
             HashMap::new()
         };
+    let media_source_policy = match target_user_id {
+        Some(target_user_id) if requested_fields.wants_media_sources() => {
+            Some(user_library::media_source_policy_for_user(state, target_user_id).await?)
+        }
+        _ => None,
+    };
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -2156,6 +2162,9 @@ async fn page_to_dto_with_fields_and_options(
             requested_fields,
             trickplay_manifests.remove(&item_id).unwrap_or_default(),
         );
+        if let Some(policy) = media_source_policy.as_ref() {
+            user_library::apply_media_source_policy(&mut dto, policy);
+        }
         items.push(dto);
     }
 
