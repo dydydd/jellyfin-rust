@@ -111,8 +111,9 @@ pub use music_genre::{
 };
 pub use packages::{PackageError, PackageService};
 pub use persons::{
-    Person, PersonCanonicalCoverageSummary, PersonError, PersonPage, PersonReconciliationError,
-    PersonReconciliationService, PersonReconciliationSummary, PersonService,
+    Person, PersonCanonicalCoverageSummary, PersonDetail, PersonError, PersonPage,
+    PersonReconciliationError, PersonReconciliationService, PersonReconciliationSummary,
+    PersonService,
 };
 pub use playlists::{PlaylistError, PlaylistService};
 pub use playstate::{

@@ -226,14 +226,42 @@ pub(crate) async fn get(
     let mut result = crate::items::page_to_dto_all_fields(
         state.as_ref(),
         BaseItemPage {
-            items: vec![person.model],
+            items: vec![person.item],
             total_record_count: 1,
             start_index: 0,
         },
         target_user_id,
     )
     .await?;
-    Ok(Json(result.items.pop().ok_or(ApiError::Internal)?))
+    let mut dto = result.items.pop().ok_or(ApiError::Internal)?;
+    apply_person_counts(&mut dto, person.counts);
+    Ok(Json(dto))
+}
+
+fn apply_person_counts(dto: &mut user_library::BaseItemDto, counts: jellyfin_data::BaseItemCounts) {
+    let count = |value| u64::try_from(value).unwrap_or_default();
+    dto.album_count = Some(count(counts.album_count));
+    dto.artist_count = Some(count(counts.artist_count));
+    dto.episode_count = Some(count(counts.episode_count));
+    dto.movie_count = Some(count(counts.movie_count));
+    dto.music_video_count = Some(count(counts.music_video_count));
+    dto.program_count = Some(count(counts.program_count));
+    dto.series_count = Some(count(counts.series_count));
+    dto.song_count = Some(count(counts.song_count));
+    dto.trailer_count = Some(count(counts.trailer_count));
+    dto.child_count = Some(
+        count(counts.album_count)
+            .saturating_add(count(counts.artist_count))
+            .saturating_add(count(counts.episode_count))
+            .saturating_add(count(counts.movie_count))
+            .saturating_add(count(counts.music_video_count))
+            .saturating_add(count(counts.program_count))
+            .saturating_add(count(counts.series_count))
+            .saturating_add(count(counts.song_count))
+            .saturating_add(count(counts.trailer_count))
+            .saturating_add(count(counts.box_set_count))
+            .saturating_add(count(counts.book_count)),
+    );
 }
 
 pub(crate) async fn get_image(

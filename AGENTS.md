@@ -378,6 +378,9 @@
   `ExcludeItemTypes` may remove a type from the returned count buckets. Derive `ChildCount` from the
   item-count fields supported by `BaseItemDto`; Book, BoxSet, folder, and plugin links may discover
   an item-by-name value but must not inflate its unrepresentable child total.
+- Project exact Person DTO `ItemCounts` from the target user's policy-visible credited primary
+  items. Keep alternate-only credits discoverable on `/Persons`, but do not let alternate versions
+  inflate Person detail counts, and recognize canonical and legacy CLR item types in every bucket.
 - Filter MediaSegments by registered provider ids and the owning virtual library's
   `DisabledMediaSegmentProviders`, matching provider names case-insensitively. Derive provider ids
   from the invariant-lowercase name with UTF-16LE MD5 and `.NET Guid(byte[])` ordering; when no

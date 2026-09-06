@@ -5,8 +5,8 @@ use std::{
 };
 
 use jellyfin_data::{
-    BaseItemQuery, CanonicalPersonEntity, PersonError as PersonRepositoryError, PersonQuery,
-    PersonRepository,
+    BaseItemCounts, BaseItemError, BaseItemQuery, BaseItemRepository, CanonicalPersonEntity,
+    PersonError as PersonRepositoryError, PersonQuery, PersonRepository,
     entities::{base_item, person, user},
 };
 use thiserror::Error;
@@ -22,6 +22,12 @@ const PERSON_RECONCILIATION_BATCH_SIZE: usize = 128;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Person {
     pub model: base_item::Model,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersonDetail {
+    pub item: base_item::Model,
+    pub counts: BaseItemCounts,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +49,8 @@ pub enum PersonError {
     User(#[from] UserError),
     #[error(transparent)]
     Repository(#[from] PersonRepositoryError),
+    #[error(transparent)]
+    BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     ItemByName(#[from] ItemByNameError),
     #[error(transparent)]
@@ -270,6 +278,7 @@ impl PersonReconciliationService {
 pub struct PersonService {
     users: UserService,
     people: PersonRepository,
+    items: BaseItemRepository,
     user_library: UserLibraryService,
     item_by_name: ItemByNameService,
 }
@@ -291,6 +300,7 @@ impl PersonService {
         Self {
             users: UserService::new(std::sync::Arc::clone(&database)),
             people: PersonRepository::new(std::sync::Arc::clone(&database)),
+            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             user_library: UserLibraryService::new(database),
             item_by_name,
         }
@@ -315,7 +325,7 @@ impl PersonService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         name: &str,
-    ) -> Result<Person, PersonError> {
+    ) -> Result<PersonDetail, PersonError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
         let person = self.catalog_person(name).await?;
@@ -325,7 +335,33 @@ impl PersonService {
             .pop()
             .flatten()
             .ok_or(PersonError::NotFound)?;
-        Ok(Person { model: canonical })
+        let mut query = BaseItemQuery {
+            person_ids: vec![canonical.id],
+            include_item_types: [
+                "Audio",
+                "AudioBook",
+                "Book",
+                "Episode",
+                "Movie",
+                "MusicAlbum",
+                "MusicArtist",
+                "MusicVideo",
+                "Series",
+                "Trailer",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            ..BaseItemQuery::default()
+        };
+        self.user_library
+            .apply_user_policy(&mut query, target_user_id)
+            .await?;
+        let counts = self.items.item_counts(&query).await?;
+        Ok(PersonDetail {
+            item: canonical,
+            counts,
+        })
     }
 
     /// Resolves the persisted `Person` item that owns image metadata.

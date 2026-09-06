@@ -65,6 +65,21 @@ async fn person_returns_pascal_case_base_item_dto_for_unicode_clean_name() {
     assert!(dto["Etag"].is_string());
     assert!(dto["ImageTags"]["Primary"].is_string());
     assert_eq!(dto["UserData"]["IsFavorite"], true);
+    assert_eq!(dto["MovieCount"], 1);
+    assert_eq!(dto["EpisodeCount"], 0);
+    assert_eq!(dto["ChildCount"], 1);
+    for field in [
+        "AlbumCount",
+        "ArtistCount",
+        "MusicVideoCount",
+        "ProgramCount",
+        "SeriesCount",
+        "SongCount",
+        "TrailerCount",
+    ] {
+        assert_eq!(dto[field], 0, "{field}");
+        assert!(dto[field].is_number(), "{field}");
+    }
     assert!(dto.get("item_type").is_none());
     assert!(dto.get("provider_ids").is_none());
 
@@ -76,6 +91,176 @@ async fn person_returns_pascal_case_base_item_dto_for_unicode_clean_name() {
         .await;
     assert_eq!(exact.status(), StatusCode::OK);
     assert_eq!(body_json(exact).await["Id"], dto["Id"]);
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn person_detail_counts_visible_primary_items_and_legacy_types_once() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let people = PersonRepository::new(fixture.database.clone());
+
+    let mut legacy_episode = NewBaseItem::new(
+        Uuid::new_v4(),
+        "MediaBrowser.Controller.Entities.TV.Episode",
+    );
+    legacy_episode.name = Some("Legacy credited episode".to_owned());
+    let legacy_episode = items
+        .create(legacy_episode)
+        .await
+        .expect("legacy episode creation");
+    people
+        .link(
+            legacy_episode.id,
+            NewPerson::new(fixture.person_name.clone()),
+            "Actor",
+            None,
+            None,
+            1,
+        )
+        .await
+        .expect("legacy episode credit");
+
+    let mut legacy_book = NewBaseItem::new(Uuid::new_v4(), "MediaBrowser.Controller.Entities.Book");
+    legacy_book.name = Some("Legacy credited book".to_owned());
+    let legacy_book = items
+        .create(legacy_book)
+        .await
+        .expect("legacy book creation");
+    people
+        .link(
+            legacy_book.id,
+            NewPerson::new(fixture.person_name.clone()),
+            "Author",
+            None,
+            None,
+            2,
+        )
+        .await
+        .expect("legacy book credit");
+
+    let mut alternate_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate_movie.name = Some("Credited alternate movie".to_owned());
+    alternate_movie.primary_version_id = Some(fixture.item_id);
+    let alternate_movie = items
+        .create(alternate_movie)
+        .await
+        .expect("alternate movie creation");
+    people
+        .link(
+            alternate_movie.id,
+            NewPerson::new(fixture.person_name.clone()),
+            "Actor",
+            None,
+            None,
+            3,
+        )
+        .await
+        .expect("alternate movie credit");
+
+    let mut alternate_episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    alternate_episode.name = Some("Credited alternate episode".to_owned());
+    alternate_episode.primary_version_id = Some(legacy_episode.id);
+    let alternate_episode = items
+        .create(alternate_episode)
+        .await
+        .expect("alternate episode creation");
+    people
+        .link(
+            alternate_episode.id,
+            NewPerson::new(fixture.person_name.clone()),
+            "Actor",
+            None,
+            None,
+            4,
+        )
+        .await
+        .expect("alternate episode credit");
+
+    let alternate_only_name = format!("Alternate Only {}", Uuid::new_v4().simple());
+    let mut uncredited_primary = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    uncredited_primary.name = Some("Uncredited primary movie".to_owned());
+    let uncredited_primary = items
+        .create(uncredited_primary)
+        .await
+        .expect("uncredited primary creation");
+    let mut credited_alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    credited_alternate.name = Some("Alternate-only credited movie".to_owned());
+    credited_alternate.primary_version_id = Some(uncredited_primary.id);
+    let credited_alternate = items
+        .create(credited_alternate)
+        .await
+        .expect("alternate-only item creation");
+    people
+        .link(
+            credited_alternate.id,
+            NewPerson::new(alternate_only_name.clone()),
+            "Actor",
+            None,
+            None,
+            0,
+        )
+        .await
+        .expect("alternate-only credit");
+
+    let reconciliation = PersonReconciliationService::new(fixture.database.clone());
+    reconciliation.set_item_by_name_directories(
+        fixture.storage_root.join("programdata"),
+        fixture.storage_root.join("metadata"),
+    );
+    reconciliation
+        .reconcile(&AtomicBool::new(false))
+        .await
+        .expect("alternate-only Person reconciliation");
+
+    let detail = body_json(
+        fixture
+            .request(
+                &person_route(&fixture.person_name),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(detail["MovieCount"], 1);
+    assert_eq!(detail["EpisodeCount"], 1);
+    assert_eq!(detail["ChildCount"], 3);
+
+    let discovered = body_json(
+        fixture
+            .request(
+                &format!("/Persons?searchTerm={}", encoded(&alternate_only_name)),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_people(&discovered, &[&alternate_only_name], 1, 0);
+
+    let alternate_only = body_json(
+        fixture
+            .request(
+                &person_route(&alternate_only_name),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    for field in [
+        "AlbumCount",
+        "ArtistCount",
+        "EpisodeCount",
+        "MovieCount",
+        "MusicVideoCount",
+        "ProgramCount",
+        "SeriesCount",
+        "SongCount",
+        "TrailerCount",
+        "ChildCount",
+    ] {
+        assert_eq!(alternate_only[field], 0, "{field}");
+    }
+
     fixture.cleanup().await;
 }
 
@@ -733,18 +918,35 @@ async fn persons_list_applies_the_target_users_media_visibility_policy() {
         assert_people(&page, &[&visible_name], 1, 0);
     }
 
+    for user_id_name in ["userId", "UserId", "userid"] {
+        let visible_by_name = format!(
+            "{}?{user_id_name}={}",
+            person_route(&visible_name),
+            fixture.user_id
+        );
+        let detail = body_json(
+            fixture
+                .request(&visible_by_name, Some(&fixture.admin_token))
+                .await,
+        )
+        .await;
+        assert_eq!(detail["MovieCount"], 1, "{user_id_name}");
+        assert_eq!(detail["ChildCount"], 1, "{user_id_name}");
+    }
+
     let hidden_by_name = format!(
         "{}?userId={}",
         person_route(&hidden_folder_name),
         fixture.user_id
     );
-    assert_eq!(
+    let hidden_detail = body_json(
         fixture
             .request(&hidden_by_name, Some(&fixture.admin_token))
-            .await
-            .status(),
-        StatusCode::OK
-    );
+            .await,
+    )
+    .await;
+    assert_eq!(hidden_detail["MovieCount"], 0);
+    assert_eq!(hidden_detail["ChildCount"], 0);
 
     assert_ne!(visible_item, hidden_item);
     fixture.cleanup().await;
