@@ -178,16 +178,25 @@ async fn suggestions_routes_match_official_auth_filters_and_count_contract() {
         format!("Nested Movie {}", fixture.suffix),
         format!("Root Movie {}", fixture.suffix),
     ]);
-    for route in [
-        "/Items/Suggestions?mediaType=invalid&type=invalid&enableTotalRecordCount=true".to_owned(),
-        format!(
-            "/Users/{}/Suggestions?MediaType=99&Type=99&EnableTotalRecordCount=true",
-            fixture.user_id
+    let mut expected_global = expected_all.clone();
+    expected_global.insert("Root".to_owned());
+    for (route, expected) in [
+        (
+            "/Items/Suggestions?mediaType=invalid&type=invalid&enableTotalRecordCount=true"
+                .to_owned(),
+            &expected_global,
+        ),
+        (
+            format!(
+                "/Users/{}/Suggestions?MediaType=99&Type=99&EnableTotalRecordCount=true",
+                fixture.user_id
+            ),
+            &expected_all,
         ),
     ] {
         let page = body_json(fixture.get(&route, Some(&fixture.admin_token)).await).await;
-        assert_eq!(page["TotalRecordCount"], 5);
-        assert_eq!(item_names(&page), expected_all);
+        assert_eq!(page["TotalRecordCount"], expected.len());
+        assert_eq!(&item_names(&page), expected);
     }
 
     let comma_delimited = body_json(
@@ -320,6 +329,156 @@ async fn suggestions_routes_match_official_auth_filters_and_count_contract() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn suggestions_optional_user_matches_global_lookup_and_authorization_semantics() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let global_only_name = format!("Global Movie {}", fixture.suffix);
+    create_item(
+        &items,
+        "Movie",
+        &global_only_name,
+        None,
+        Some("Video"),
+        false,
+    )
+    .await;
+
+    let grouped_name = format!("Grouped Movie {}", fixture.suffix);
+    let presentation_key = format!("suggestions-group-{}", fixture.suffix);
+    for _ in 0..2 {
+        let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        item.name = Some(grouped_name.clone());
+        item.sort_name = Some(grouped_name.clone());
+        item.parent_id = Some(root.id);
+        item.media_type = Some("Video".to_owned());
+        item.presentation_unique_key = Some(presentation_key.clone());
+        items.create(item).await.expect("grouped suggestion");
+    }
+
+    let omitted = body_json(
+        fixture
+            .get(
+                "/Items/Suggestions?MediaType=Video&Type=Movie&EnableTotalRecordCount=true",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(item_names(&omitted).contains(&global_only_name));
+    assert_eq!(named_item_count(&omitted, &grouped_name), 2);
+    assert_no_user_data(&omitted);
+
+    let empty = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/items/suggestions?userid={}&mediatype=Video&type=Movie&enabletotalrecordcount=true",
+                    Uuid::nil()
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_names(&empty), item_names(&omitted));
+    assert_eq!(named_item_count(&empty, &grouped_name), 2);
+    assert_no_user_data(&empty);
+
+    let explicit_user = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Items/Suggestions?userId={}&mediaType=Video&type=Movie&enableTotalRecordCount=true",
+                    fixture.user_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(!item_names(&explicit_user).contains(&global_only_name));
+    assert_eq!(named_item_count(&explicit_user, &grouped_name), 1);
+    assert!(
+        explicit_user["Items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .all(|item| item["UserData"].is_object())
+    );
+
+    let unknown_user_id = Uuid::new_v4();
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Items/Suggestions?userid={unknown_user_id}&mediaType=Video&type=Movie"),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .get(
+                &format!("/Users/{unknown_user_id}/Suggestions?MediaType=Video&Type=Movie"),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let admin_unknown = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Items/Suggestions?UserId={unknown_user_id}&MediaType=Video&Type=Movie&EnableTotalRecordCount=true"
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(item_names(&admin_unknown).contains(&global_only_name));
+    assert_eq!(named_item_count(&admin_unknown, &grouped_name), 2);
+    assert_no_user_data(&admin_unknown);
+
+    let legacy_empty = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/users/{}/suggestions?mediatype=Video&type=Movie&enabletotalrecordcount=true",
+                    Uuid::nil()
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(item_names(&legacy_empty).contains(&global_only_name));
+    assert_eq!(named_item_count(&legacy_empty, &grouped_name), 2);
+    assert_no_user_data(&legacy_empty);
+
+    let legacy_admin_unknown = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/users/{unknown_user_id}/suggestions?mediatype=Video&type=Movie&enabletotalrecordcount=true"
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(item_names(&legacy_admin_unknown).contains(&global_only_name));
+    assert_eq!(named_item_count(&legacy_admin_unknown, &grouped_name), 2);
+    assert_no_user_data(&legacy_admin_unknown);
+
+    fixture.cleanup().await;
+}
+
 fn item_names(response: &Value) -> BTreeSet<String> {
     response["Items"]
         .as_array()
@@ -327,6 +486,25 @@ fn item_names(response: &Value) -> BTreeSet<String> {
         .iter()
         .map(|item| item["Name"].as_str().expect("name").to_owned())
         .collect()
+}
+
+fn named_item_count(response: &Value, name: &str) -> usize {
+    response["Items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter(|item| item["Name"] == name)
+        .count()
+}
+
+fn assert_no_user_data(response: &Value) {
+    assert!(
+        response["Items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .all(|item| item.get("UserData").is_none())
+    );
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

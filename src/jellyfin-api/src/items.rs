@@ -7,7 +7,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use chrono::{DateTime, Utc};
-use jellyfin_controller::SearchProviderQuery;
+use jellyfin_controller::{SearchProviderQuery, UserError};
 use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item};
 use jellyfin_model::{SortOrder, UserConfiguration};
 use serde::{Deserialize, Serialize};
@@ -973,41 +973,92 @@ async fn suggestions_for(
     query: SuggestionsQuery,
 ) -> Result<Json<SuggestionsResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = match requested_user_id.filter(|user_id| !user_id.is_nil()) {
+        None => None,
+        Some(user_id) => {
+            // Official RequestHelpers authorizes cross-user access before UserManager performs its
+            // nullable lookup. Consequently a normal user gets 403 for an unknown foreign id,
+            // while an administrator's unknown id becomes a user-less global query.
+            if user_id != authenticated.user.id && !authenticated.user.is_administrator {
+                return Err(ApiError::Forbidden);
+            }
+            match state.users.get(user_id).await {
+                Ok(_) => Some(user_id),
+                Err(UserError::NotFound) => None,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    };
     let requested_start_index = query.start_index.unwrap_or_default();
     let enable_total_record_count = query.enable_total_record_count;
-    let page = state
-        .user_library
-        .query_items(
-            &authenticated.user,
-            target_user_id,
-            BaseItemQuery {
-                recursive: true,
-                include_item_types: query
-                    .item_types
-                    .into_iter()
-                    .map(|item_type| item_type.as_str().to_owned())
-                    .collect(),
-                media_types: query
-                    .media_types
-                    .into_iter()
-                    .map(|media_type| media_type.as_str().to_owned())
-                    .collect(),
-                is_virtual_item: Some(false),
-                order: BaseItemOrder::Random,
-                start_index: u64::try_from(requested_start_index).unwrap_or_default(),
-                limit: query
-                    .limit
-                    .filter(|limit| *limit >= 0)
-                    .map(|limit| u64::try_from(limit).unwrap_or_default()),
-                enable_total_record_count: Some(enable_total_record_count),
-                ..BaseItemQuery::default()
-            },
-        )
-        .await?;
-    let result = page_to_dto(state.as_ref(), page, Vec::new(), target_user_id).await?;
+    let include_item_types = query
+        .item_types
+        .into_iter()
+        .map(|item_type| item_type.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let group_versions_by_presentation_key = target_user_id.is_some()
+        && (include_item_types.is_empty()
+            || include_item_types.iter().any(|item_type| {
+                [
+                    "Episode",
+                    "Video",
+                    "Movie",
+                    "MusicVideo",
+                    "Series",
+                    "Season",
+                ]
+                .iter()
+                .any(|candidate| item_type.eq_ignore_ascii_case(candidate))
+            }));
+    let database_query = BaseItemQuery {
+        recursive: true,
+        include_item_types,
+        media_types: query
+            .media_types
+            .into_iter()
+            .map(|media_type| media_type.as_str().to_owned())
+            .collect(),
+        is_virtual_item: Some(false),
+        group_versions_by_presentation_key,
+        order: BaseItemOrder::Random,
+        start_index: u64::try_from(requested_start_index).unwrap_or_default(),
+        limit: query
+            .limit
+            .filter(|limit| *limit >= 0)
+            .map(|limit| u64::try_from(limit).unwrap_or_default()),
+        enable_total_record_count: Some(enable_total_record_count),
+        ..BaseItemQuery::default()
+    };
+    let page = match target_user_id {
+        Some(target_user_id) => {
+            state
+                .user_library
+                .query_items(&authenticated.user, target_user_id, database_query)
+                .await?
+        }
+        None => {
+            state
+                .user_library
+                .query_items_without_user(database_query)
+                .await?
+        }
+    };
+    let dto_options = PageDtoOptions {
+        enable_user_data: target_user_id.is_some(),
+        ..PageDtoOptions::default()
+    };
+    // The current Suggestions projection intentionally keeps its existing field set in this
+    // compatibility slice. Passing the authenticated id here is harmless for a user-less query:
+    // empty fields skip user stream preferences and dto_options disables user data entirely.
+    let projection_user_id = target_user_id.unwrap_or(authenticated.user.id);
+    let result = page_to_dto_with_options(
+        state.as_ref(),
+        page,
+        Vec::new(),
+        projection_user_id,
+        &dto_options,
+    )
+    .await?;
     Ok(Json(SuggestionsResult {
         items: result.items,
         total_record_count: result.total_record_count,

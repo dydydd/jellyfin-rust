@@ -61,6 +61,11 @@
 - Bind Suggestions `MediaType` and `Type` as the official enum collections: accept case-insensitive
   names and defined integer values, discard invalid elements, split commas only for one query value,
   and do not re-split comma-containing values when the SDK sends repeated keys.
+- Treat an omitted or empty Suggestions `UserId` as an official user-less global query: do not
+  apply the authenticated user's library root, policy, user data, or stream preferences. Authorize
+  an explicit non-empty id before its nullable lookup, so a normal user's unknown foreign id is
+  forbidden while an administrator's unknown id falls back to the same global query. Only group
+  presentation keys when that lookup resolves a user, matching `InternalItemsQuery(User?)`.
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.

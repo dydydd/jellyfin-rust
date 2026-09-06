@@ -189,6 +189,22 @@ impl UserLibraryService {
         Ok(self.hydrate_page(self.items.query(&query).await?))
     }
 
+    /// Queries the persisted library without a user context.
+    ///
+    /// Jellyfin's optional-user endpoints use this path when their user id is omitted, empty, or
+    /// resolves to no persisted user. Unlike [`Self::query_items`], this intentionally applies no
+    /// user policy, user-data joins, or implicit user-root scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence errors unchanged.
+    pub async fn query_items_without_user(
+        &self,
+        query: BaseItemQuery,
+    ) -> Result<BaseItemPage, UserLibraryError> {
+        Ok(self.hydrate_page(self.items.query(&query).await?))
+    }
+
     /// Computes latest-TV grouping for the top series under the target user's policy.
     ///
     /// # Errors
