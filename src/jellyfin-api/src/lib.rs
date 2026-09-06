@@ -11,8 +11,8 @@ use axum::{
 use jellyfin_controller::{
     ArtistError, ArtistService, ChapterImageService, CollectionError, CollectionService,
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
-    GenreError, GenreService, InstalledPlugin, ItemImageError, ItemImageService, ItemLookupError,
-    ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
+    GenreError, GenreService, InstalledPlugin, ItemByNameService, ItemImageError, ItemImageService,
+    ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
     LibraryControllerService, LibraryScanError, LibraryScanService, LocalizationService,
     MediaAttachmentService, MediaAttachmentServiceError, MediaSegmentError,
     MediaSegmentManagerService, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
@@ -245,6 +245,7 @@ impl AppState {
         let web_sockets = Arc::new(websocket::WebSocketHub::new());
         let quick_connect_capability = Arc::new(SystemQuickConnectCapability::new(true));
         let user_library = UserLibraryService::new(Arc::clone(&database));
+        let item_by_name = ItemByNameService::new(Arc::clone(&database));
         let search = SearchManager::with_default_database(Arc::clone(&database));
         let session_store = PostgresSessionStore::new(
             UserService::new(Arc::clone(&database)),
@@ -272,9 +273,15 @@ impl AppState {
             collections: CollectionService::new(Arc::clone(&database)),
             user_data: UserDataService::new(Arc::clone(&database)),
             artists: ArtistService::new(Arc::clone(&database)),
-            genres: GenreService::new(Arc::clone(&database)),
+            genres: GenreService::with_item_by_name_service(
+                Arc::clone(&database),
+                item_by_name.clone(),
+            ),
             studios: StudioService::new(Arc::clone(&database)),
-            music_genres: MusicGenreService::new(Arc::clone(&database)),
+            music_genres: MusicGenreService::with_item_by_name_service(
+                Arc::clone(&database),
+                item_by_name,
+            ),
             persons: PersonService::new(Arc::clone(&database)),
             dto_images: PersistedDtoImageProjectionService::new(
                 BaseItemRepository::new(Arc::clone(&database)),
@@ -626,6 +633,14 @@ impl AppState {
         self.library_scan
             .set_image_cache_directory(self.image_cache_directory.as_path());
         self.library_scan.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
+        self.genres.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
+        self.music_genres.set_item_by_name_directories(
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
@@ -1114,6 +1129,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route(
             "/Genres/{name}/Images/{image_type}/{image_index}",
+            get(genres::get_image_by_index),
+        )
+        .route("/genres", get(genres::list))
+        .route("/genres/{genre_name}", get(genres::get))
+        .route(
+            "/genres/{name}/images/{image_type}",
+            get(genres::get_image),
+        )
+        .route(
+            "/genres/{name}/images/{image_type}/{image_index}",
             get(genres::get_image_by_index),
         )
         .route("/Studios", get(studios::list))

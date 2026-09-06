@@ -3,10 +3,11 @@ use jellyfin_data::{
     ItemValueQuery, ItemValueRepository,
     entities::{base_item, item_value, user},
 };
+use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{UserError, UserService};
+use crate::{ItemByNameError, ItemByNameKind, ItemByNameService, UserError, UserService};
 
 #[derive(Debug, Error)]
 pub enum MusicGenreError {
@@ -22,6 +23,8 @@ pub enum MusicGenreError {
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     ItemValue(#[from] ItemValueError),
+    #[error(transparent)]
+    ItemByName(#[from] ItemByNameError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +42,13 @@ pub struct MusicGenrePage {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct MusicGenreDetail {
+    pub item: base_item::Model,
+    pub item_count: u64,
+    pub counts: ItemValueCounts,
+}
+
 /// Resolves persisted music genres and coordinates optional target-user
 /// authorization for the API.
 #[derive(Clone)]
@@ -46,20 +56,41 @@ pub struct MusicGenreService {
     users: UserService,
     items: BaseItemRepository,
     item_values: ItemValueRepository,
+    item_by_name: ItemByNameService,
 }
 
 impl MusicGenreService {
     #[must_use]
     pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         let database = database.into();
+        let item_by_name = ItemByNameService::new(std::sync::Arc::clone(&database));
+        Self::with_item_by_name_service(database, item_by_name)
+    }
+
+    #[must_use]
+    pub fn with_item_by_name_service(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        item_by_name: ItemByNameService,
+    ) -> Self {
+        let database = database.into();
         Self {
             users: UserService::new(std::sync::Arc::clone(&database)),
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
-            item_values: ItemValueRepository::new(database),
+            item_values: ItemValueRepository::new(std::sync::Arc::clone(&database)),
+            item_by_name,
         }
     }
 
-    /// Resolves a music genre by exact, legacy slug, or normalized name.
+    pub fn set_item_by_name_directories(
+        &self,
+        program_data_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        self.item_by_name
+            .set_directories(program_data_directory, internal_metadata_directory);
+    }
+
+    /// Resolves a persisted music genre by official direct-name or slug rules.
     ///
     /// # Errors
     ///
@@ -70,14 +101,32 @@ impl MusicGenreService {
         target_user_id: Uuid,
         name: &str,
         mut query: ItemValueQuery,
-    ) -> Result<MusicGenre, MusicGenreError> {
-        self.validate_user(authenticated_user, target_user_id)
-            .await?;
-        let value = self
-            .find_value(name)
+    ) -> Result<MusicGenreDetail, MusicGenreError> {
+        self.authorize_target_user(authenticated_user, target_user_id)?;
+        let item = self
+            .item_by_name
+            .resolve(ItemByNameKind::MusicGenre, name)
             .await?
             .ok_or(MusicGenreError::NotFound)?;
-        query.search_term = Some(value.value.clone());
+        let Some(name) = item.name.as_deref() else {
+            return Ok(MusicGenreDetail {
+                item,
+                item_count: 0,
+                counts: ItemValueCounts::default(),
+            });
+        };
+        let Some(value) = self
+            .item_values
+            .get_normalized(item_value::ItemValueType::Genre, name)
+            .await?
+        else {
+            return Ok(MusicGenreDetail {
+                item,
+                item_count: 0,
+                counts: ItemValueCounts::default(),
+            });
+        };
+        query.search_term = Some(value.value);
         query.include_item_types = MUSIC_ITEM_TYPES.iter().map(ToString::to_string).collect();
         let candidate = self
             .item_values
@@ -85,13 +134,11 @@ impl MusicGenreService {
             .await?
             .values
             .into_iter()
-            .find(|candidate| candidate.id == value.item_value_id)
-            .ok_or(MusicGenreError::NotFound)?;
-        Ok(MusicGenre {
-            id: value.item_value_id,
-            name: value.value,
-            item_count: candidate.item_count,
-            counts: candidate.counts,
+            .find(|candidate| candidate.id == value.item_value_id);
+        Ok(MusicGenreDetail {
+            item,
+            item_count: candidate.as_ref().map_or(0, |value| value.item_count),
+            counts: candidate.map_or_else(ItemValueCounts::default, |value| value.counts),
         })
     }
 
@@ -120,6 +167,7 @@ impl MusicGenreService {
     ) -> Result<MusicGenrePage, MusicGenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        self.item_by_name.reconcile_once().await?;
         let mut query = self.scope_music_query(query).await?;
         query.by_name_item_type = Some("MusicGenre".to_owned());
         let page = self
@@ -137,37 +185,6 @@ impl MusicGenreService {
         })
     }
 
-    async fn find_value(&self, name: &str) -> Result<Option<item_value::Model>, MusicGenreError> {
-        let mut candidates = vec![name.to_owned()];
-        if name.contains('-') {
-            candidates
-                .extend(['&', '/', '?'].map(|separator| name.replace('-', &separator.to_string())));
-        }
-        for candidate in &candidates {
-            match self
-                .item_values
-                .get_exact(item_value::ItemValueType::Genre, candidate)
-                .await
-            {
-                Ok(Some(value)) => return Ok(Some(value)),
-                Ok(None) | Err(ItemValueError::InvalidValue) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        for candidate in candidates {
-            match self
-                .item_values
-                .get_normalized(item_value::ItemValueType::Genre, &candidate)
-                .await
-            {
-                Ok(Some(value)) => return Ok(Some(value)),
-                Ok(None) | Err(ItemValueError::InvalidValue) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(None)
-    }
-
     async fn validate_user(
         &self,
         authenticated_user: &user::Model,
@@ -178,6 +195,17 @@ impl MusicGenreService {
             Err(UserError::NotFound) => return Err(MusicGenreError::UserNotFound),
             Err(error) => return Err(error.into()),
         }
+        if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
+            return Err(MusicGenreError::Forbidden);
+        }
+        Ok(())
+    }
+
+    fn authorize_target_user(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+    ) -> Result<(), MusicGenreError> {
         if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
             return Err(MusicGenreError::Forbidden);
         }

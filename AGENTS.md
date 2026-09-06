@@ -99,6 +99,15 @@
   segment, including compound segments such as `ActiveEncodings`.
 - Follow the official `JsonDefaults` value semantics. Where it permits them, accept numeric strings and case-insensitive or integer enum representations, and mirror the full official parameter set when implementing a legacy endpoint.
 - Bind the eight official virtual-folder `CollectionTypeOptions` values case-insensitively and persist/project their canonical lowercase wire names. Keep `mixed` valid for virtual-folder management but omit it from `BaseItemDto.CollectionType`, and tolerate legacy mixed-case persisted view metadata.
+- Resolve direct Genre and MusicGenre detail names through their official deterministic item-by-name
+  path and UTF-16LE identifier, creating the persisted entity idempotently. Hyphenated slug names
+  only search persisted entities in `&`, `/`, then `?` substitution order; a miss returns an empty
+  Genre DTO but a MusicGenre 404. These detail routes bind only `UserId`, and an administrator's
+  nonexistent target user still receives the item without user data.
+- Upgrade databases that have genre item values but no item-by-name rows on the first authorized
+  Genre, MusicGenre, or Filters2 list. Share one process-local single-flight across both kinds,
+  keyset-page required values, create official metadata directories before persistence, and batch
+  inserts; do not require a full library scan or repeat the reconciliation after success.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an

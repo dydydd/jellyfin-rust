@@ -8,6 +8,7 @@ mod environment;
 mod episode_parser;
 mod genres;
 mod google_books;
+mod item_by_name;
 mod item_images;
 mod item_lookup;
 mod item_types;
@@ -66,8 +67,9 @@ pub use chapter_images::{ChapterImageError, ChapterImageService};
 pub use collections::{CollectionError, CollectionService};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
-pub use genres::{Genre, GenreError, GenreKind, GenrePage, GenreService};
+pub use genres::{Genre, GenreDetail, GenreError, GenreKind, GenrePage, GenreService};
 pub use google_books::{GoogleBooksMetadataProvider, GoogleBooksProviderError};
+pub use item_by_name::{ItemByNameError, ItemByNameKind, ItemByNameService};
 pub use item_images::{ItemImageError, ItemImageResource, ItemImageService, image_cache_tag};
 pub use item_lookup::{ItemLookupError, ItemLookupService, RemoteSearchInfo, RemoteSearchRequest};
 pub use item_types::{
@@ -96,7 +98,9 @@ pub use metadata_refresh::{
     MissingMetadataRefreshSummary,
 };
 pub use music_brainz::{MusicBrainzMetadataProvider, MusicBrainzProviderError};
-pub use music_genre::{MusicGenre, MusicGenreError, MusicGenrePage, MusicGenreService};
+pub use music_genre::{
+    MusicGenre, MusicGenreDetail, MusicGenreError, MusicGenrePage, MusicGenreService,
+};
 pub use packages::{PackageError, PackageService};
 pub use persons::{Person, PersonError, PersonPage, PersonService};
 pub use playlists::{PlaylistError, PlaylistService};

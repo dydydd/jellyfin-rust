@@ -11,6 +11,7 @@ use jellyfin_data::{
     DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData,
     UserDataRepository, entities::item_value,
 };
+use md5::{Digest, Md5};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
@@ -59,7 +60,7 @@ async fn music_genre_returns_pascal_case_base_item_dto() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let dto = body_json(response).await;
-    assert_eq!(dto["Id"], fixture.genre_id.simple().to_string());
+    assert_eq!(dto["Id"], fixture.persisted_genre_id.simple().to_string());
     assert_eq!(dto["Name"], fixture.genre_name);
     assert_eq!(dto["Type"], "MusicGenre");
     assert_eq!(dto["IsFolder"], true);
@@ -69,6 +70,9 @@ async fn music_genre_returns_pascal_case_base_item_dto() {
     assert_eq!(dto["MusicVideoCount"], 1);
     assert_eq!(dto["AlbumCount"], 0);
     assert_eq!(dto["ArtistCount"], 0);
+    assert_eq!(dto["UserData"]["IsFavorite"], true);
+    assert!(dto["Path"].as_str().is_some());
+    assert!(dto["DateCreated"].as_str().is_some());
     assert!(dto.get("MovieCount").is_none());
     assert_eq!(dto["ServerId"].as_str().unwrap().len(), 32);
     assert!(dto["Etag"].is_string());
@@ -102,7 +106,7 @@ async fn music_genre_returns_pascal_case_base_item_dto() {
 }
 
 #[tokio::test]
-async fn unicode_and_case_normalization_reuse_one_genre() {
+async fn direct_names_use_their_official_deterministic_entities() {
     let fixture = MusicGenreFixture::new().await;
     let variant = fixture.genre_name.replace('É', "e").to_uppercase();
     let response = request(
@@ -113,8 +117,18 @@ async fn unicode_and_case_normalization_reuse_one_genre() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let dto = body_json(response).await;
-    assert_eq!(dto["Id"], fixture.genre_id.simple().to_string());
-    assert_eq!(dto["Name"], fixture.genre_name);
+    assert_ne!(dto["Id"], fixture.persisted_genre_id.simple().to_string());
+    assert_eq!(dto["Name"], variant);
+    let repeated = body_json(
+        request(
+            &fixture.app,
+            &genre_route(&variant),
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(repeated["Id"], dto["Id"]);
 
     let values = ItemValueRepository::new(fixture.database.clone());
     let normalized = values
@@ -130,7 +144,8 @@ async fn unicode_and_case_normalization_reuse_one_genre() {
         Some(&fixture.user_token),
     )
     .await;
-    assert_eq!(book_only.status(), StatusCode::NOT_FOUND);
+    assert_eq!(book_only.status(), StatusCode::OK);
+    assert_eq!(body_json(book_only).await["ChildCount"], 0);
 
     fixture.cleanup().await;
 }
@@ -163,7 +178,8 @@ async fn authentication_and_target_user_permissions_are_enforced() {
             Some(&fixture.administrator_token),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_json(response).await.get("UserData").is_none());
     }
 
     let empty_user = format!("{route}?userId={}", Uuid::nil());
@@ -301,7 +317,7 @@ async fn music_genre_list_matches_official_music_genre_contract() {
         .await,
     )
     .await;
-    assert_genres(&favorite, &[&fixture.slug_genre_name], 1, 0);
+    assert_genres(&favorite, &[&fixture.genre_name], 1, 0);
 
     let parent_scoped = body_json(
         request(
@@ -708,7 +724,7 @@ impl MusicGenreFixture {
         );
 
         let slug_genre_name = format!("Left/Right{suffix}");
-        let slug_genre = values
+        values
             .link(
                 slug_audio.id,
                 item_value::ItemValueType::Genre,
@@ -731,11 +747,10 @@ impl MusicGenreFixture {
             .link(book.id, item_value::ItemValueType::Genre, &book_only_genre)
             .await
             .expect("book-only genre link");
-        let mut genre_entity_ids = [Uuid::new_v4(), Uuid::new_v4()];
-        genre_entity_ids.sort_unstable();
+        let genre_entity_id = official_item_by_name_id("MusicGenre", &genre_name);
         let persisted_genre = create_item_by_name(
             &items,
-            genre_entity_ids[0],
+            genre_entity_id,
             "MusicGenre",
             &genre_name,
             &format!("MusicGenre-{genre_name}"),
@@ -743,7 +758,7 @@ impl MusicGenreFixture {
         .await;
         create_item_by_name(
             &items,
-            genre_entity_ids[1],
+            Uuid::max(),
             "MediaBrowser.Controller.Entities.Audio.MusicGenre",
             &genre_name,
             &format!("MusicGenre-{genre_name}"),
@@ -774,7 +789,7 @@ impl MusicGenreFixture {
             .await
             .expect("linked item favorite user data");
         let mut music_genre_favorite =
-            NewUserData::new(music_genre_item.id, user.id, "MusicGenreFavorite");
+            NewUserData::new(persisted_genre.id, user.id, "MusicGenreFavorite");
         music_genre_favorite.is_favorite = true;
         user_data
             .upsert(music_genre_favorite)
@@ -800,7 +815,7 @@ impl MusicGenreFixture {
             persisted_genre_id: persisted_genre.id,
             genre_name,
             nested_genre_name,
-            slug_genre_id: slug_genre.item_value_id,
+            slug_genre_id: music_genre_item.id,
             slug_genre_name,
             slug_name,
             book_only_genre,
@@ -838,6 +853,34 @@ async fn create_item(
     repository.create(item).await.expect("base item creation")
 }
 
+fn canonical_by_name_type(item_type: &str) -> &'static str {
+    if item_type.ends_with("MusicGenre") {
+        "MusicGenre"
+    } else {
+        "Genre"
+    }
+}
+
+fn official_item_by_name_id(item_type: &str, name: &str) -> Uuid {
+    let clr_type = match item_type {
+        "Genre" => "MediaBrowser.Controller.Entities.Genre",
+        "MusicGenre" => "MediaBrowser.Controller.Entities.Audio.MusicGenre",
+        _ => panic!("unsupported test item-by-name type"),
+    };
+    let path = format!("metadata/{item_type}/{name}").to_lowercase();
+    let value = format!("{clr_type}{path}");
+    let utf16_le = value
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let digest = Md5::digest(utf16_le);
+    Uuid::from_bytes([
+        digest[3], digest[2], digest[1], digest[0], digest[5], digest[4], digest[7], digest[6],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14],
+        digest[15],
+    ])
+}
+
 async fn create_item_by_name(
     repository: &BaseItemRepository,
     id: Uuid,
@@ -848,6 +891,10 @@ async fn create_item_by_name(
     let mut item = NewBaseItem::new(id, item_type);
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
+    item.path = Some(format!(
+        "metadata/{}/{name}",
+        canonical_by_name_type(item_type)
+    ));
     item.is_folder = true;
     item.presentation_unique_key = Some(presentation_unique_key.to_owned());
     repository

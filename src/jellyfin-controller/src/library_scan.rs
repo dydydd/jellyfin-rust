@@ -56,7 +56,10 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    LocalizationService, episode_parser::parse_season_directory, media_streams::MediaStreamMapper,
+    LocalizationService,
+    episode_parser::parse_season_directory,
+    item_by_name::{item_by_name_folder_name, official_item_by_name_id},
+    media_streams::MediaStreamMapper,
 };
 
 const SCAN_PATH_QUERY_BATCH_SIZE: usize = 256;
@@ -4541,77 +4544,6 @@ fn stable_item_id(path: &str, item_type: &str) -> Uuid {
     bytes[6] = (bytes[6] & 0x0f) | 0x30;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Uuid::from_bytes(bytes)
-}
-
-fn item_by_name_folder_name(name: &str) -> String {
-    const MAX_BYTES: usize = 128;
-    let mut valid_name = name
-        .chars()
-        .map(|character| {
-            if character <= '\u{1f}'
-                || matches!(
-                    character,
-                    '"' | '<' | '>' | '|' | ':' | '*' | '?' | '\\' | '/'
-                )
-            {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
-    valid_name = valid_name.trim().trim_end_matches('.').to_owned();
-    if valid_name.len() <= MAX_BYTES {
-        return valid_name;
-    }
-
-    let suffix = format!("-{}", official_md5_guid(&valid_name).simple());
-    let prefix_budget = MAX_BYTES.saturating_sub(suffix.len());
-    let prefix_end = valid_name
-        .char_indices()
-        .map(|(index, _)| index)
-        .chain(std::iter::once(valid_name.len()))
-        .take_while(|index| *index <= prefix_budget)
-        .last()
-        .unwrap_or_default();
-    let prefix = valid_name[..prefix_end].trim_end().trim_end_matches('.');
-    format!("{prefix}{suffix}")
-}
-
-fn official_item_by_name_id(
-    path: &Path,
-    program_data: &Path,
-    clr_type: &str,
-    force_case_insensitive: bool,
-    enable_case_sensitive_item_ids: bool,
-) -> Uuid {
-    let path = path.to_string_lossy();
-    let program_data = program_data.to_string_lossy();
-    let mut path_key = if let Some(relative) = path.strip_prefix(program_data.as_ref()) {
-        relative.trim_start_matches(['/', '\\']).replace('/', "\\")
-    } else {
-        path.into_owned()
-    };
-    if force_case_insensitive || !enable_case_sensitive_item_ids {
-        path_key = path_key.to_lowercase();
-    }
-    official_md5_guid(&format!("{clr_type}{path_key}"))
-}
-
-fn official_md5_guid(value: &str) -> Uuid {
-    let utf16_le = value
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect::<Vec<_>>();
-    let digest = Md5::digest(utf16_le);
-    // `new Guid(byte[])` interprets the first three fields as little-endian,
-    // while `uuid::Uuid` stores the RFC/network byte order used in its string
-    // representation. Reorder those fields to preserve Jellyfin's Guid text.
-    Uuid::from_bytes([
-        digest[3], digest[2], digest[1], digest[0], digest[5], digest[4], digest[7], digest[6],
-        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14],
-        digest[15],
-    ])
 }
 
 fn is_extras_directory(path: &Path) -> bool {

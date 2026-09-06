@@ -3,11 +3,11 @@ use jellyfin_data::{
     ItemValueQuery, ItemValueRepository,
     entities::{base_item, item_value, user},
 };
-use md5::{Digest, Md5};
+use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{UserError, UserService};
+use crate::{ItemByNameError, ItemByNameKind, ItemByNameService, UserError, UserService};
 
 const MUSIC_ITEM_TYPES: [&str; 4] = ["Audio", "MusicVideo", "MusicAlbum", "MusicArtist"];
 
@@ -33,6 +33,13 @@ pub struct GenrePage {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenreDetail {
+    pub item: base_item::Model,
+    pub item_count: u64,
+    pub counts: ItemValueCounts,
+}
+
 #[derive(Debug, Error)]
 pub enum GenreError {
     #[error("genre was not found")]
@@ -47,6 +54,8 @@ pub enum GenreError {
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     ItemValue(#[from] ItemValueError),
+    #[error(transparent)]
+    ItemByName(#[from] ItemByNameError),
 }
 
 #[derive(Clone)]
@@ -54,23 +63,45 @@ pub struct GenreService {
     users: UserService,
     items: BaseItemRepository,
     item_values: ItemValueRepository,
+    item_by_name: ItemByNameService,
 }
 
 impl GenreService {
     #[must_use]
     pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         let database = database.into();
+        let item_by_name = ItemByNameService::new(std::sync::Arc::clone(&database));
+        Self::with_item_by_name_service(database, item_by_name)
+    }
+
+    #[must_use]
+    pub fn with_item_by_name_service(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        item_by_name: ItemByNameService,
+    ) -> Self {
+        let database = database.into();
         Self {
             users: UserService::new(std::sync::Arc::clone(&database)),
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
-            item_values: ItemValueRepository::new(database),
+            item_values: ItemValueRepository::new(std::sync::Arc::clone(&database)),
+            item_by_name,
         }
+    }
+
+    pub fn set_item_by_name_directories(
+        &self,
+        program_data_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        self.item_by_name
+            .set_directories(program_data_directory, internal_metadata_directory);
     }
 
     /// Resolves a generic Jellyfin genre by display or slug name.
     ///
-    /// Missing, non-empty names are returned as virtual item-by-name genres to
-    /// match Jellyfin's current `GenresController.GetGenre` behavior.
+    /// Ordinary names create their deterministic persisted entity. Slug names
+    /// only resolve existing persisted entities; a miss is returned to the API
+    /// so it can emit Jellyfin's empty Genre DTO.
     ///
     /// # Errors
     ///
@@ -81,20 +112,35 @@ impl GenreService {
         target_user_id: Uuid,
         name: &str,
         mut query: ItemValueQuery,
-    ) -> Result<Genre, GenreError> {
-        self.validate_user(authenticated_user, target_user_id)
-            .await?;
-        let requested_name = name.trim();
-        if requested_name.is_empty() {
-            return Err(GenreError::NotFound);
-        }
-        let value = self.find_value(requested_name).await?;
-        let Some(value) = value else {
-            return Ok(virtual_genre(requested_name));
+    ) -> Result<Option<GenreDetail>, GenreError> {
+        self.authorize_target_user(authenticated_user, target_user_id)?;
+        let Some(item) = self
+            .item_by_name
+            .resolve(ItemByNameKind::Genre, name)
+            .await?
+        else {
+            return Ok(None);
         };
-        let value_id = value.item_value_id;
+        let Some(name) = item.name.as_deref() else {
+            return Ok(Some(GenreDetail {
+                item,
+                item_count: 0,
+                counts: ItemValueCounts::default(),
+            }));
+        };
+        let Some(value) = self
+            .item_values
+            .get_normalized(item_value::ItemValueType::Genre, name)
+            .await?
+        else {
+            return Ok(Some(GenreDetail {
+                item,
+                item_count: 0,
+                counts: ItemValueCounts::default(),
+            }));
+        };
         query.search_term = Some(value.value);
-        let mut query = generic_genre_query(query);
+        let query = generic_genre_query(query);
         let page = self
             .item_values
             .query_values(item_value::ItemValueType::Genre, &query)
@@ -102,27 +148,18 @@ impl GenreService {
         let item_count = page
             .values
             .iter()
-            .find(|candidate| candidate.id == value_id)
+            .find(|candidate| candidate.id == value.item_value_id)
             .map_or(0, |candidate| candidate.item_count);
         let counts = page
             .values
             .into_iter()
-            .find(|candidate| candidate.id == value_id)
+            .find(|candidate| candidate.id == value.item_value_id)
             .map_or_else(ItemValueCounts::default, |candidate| candidate.counts);
-        let value = query
-            .search_term
-            .take()
-            .expect("genre lookup always includes its normalized value");
-        if item_count == 0 {
-            return Ok(virtual_genre(&value));
-        }
-        Ok(Genre {
-            id: value_id,
-            name: value,
+        Ok(Some(GenreDetail {
+            item,
             item_count,
             counts,
-            kind: GenreKind::Genre,
-        })
+        }))
     }
 
     /// Resolves the persisted `Genre` item that owns image metadata.
@@ -147,6 +184,7 @@ impl GenreService {
     ) -> Result<GenrePage, GenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        self.item_by_name.reconcile_once().await?;
         let (mut query, kind) = self.scope_parent(query).await?;
         query.by_name_item_type = Some(
             match kind {
@@ -208,37 +246,6 @@ impl GenreService {
         Ok((query, kind))
     }
 
-    async fn find_value(&self, name: &str) -> Result<Option<item_value::Model>, GenreError> {
-        let mut candidates = vec![name.to_owned()];
-        if name.contains('-') {
-            candidates
-                .extend(['&', '/', '?'].map(|separator| name.replace('-', &separator.to_string())));
-        }
-        for candidate in &candidates {
-            match self
-                .item_values
-                .get_exact(item_value::ItemValueType::Genre, candidate)
-                .await
-            {
-                Ok(Some(value)) => return Ok(Some(value)),
-                Ok(None) | Err(ItemValueError::InvalidValue) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        for candidate in candidates {
-            match self
-                .item_values
-                .get_normalized(item_value::ItemValueType::Genre, &candidate)
-                .await
-            {
-                Ok(Some(value)) => return Ok(Some(value)),
-                Ok(None) | Err(ItemValueError::InvalidValue) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(None)
-    }
-
     async fn validate_user(
         &self,
         authenticated_user: &user::Model,
@@ -249,6 +256,17 @@ impl GenreService {
             Err(UserError::NotFound) => return Err(GenreError::UserNotFound),
             Err(error) => return Err(error.into()),
         }
+        if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
+            return Err(GenreError::Forbidden);
+        }
+        Ok(())
+    }
+
+    fn authorize_target_user(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+    ) -> Result<(), GenreError> {
         if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
             return Err(GenreError::Forbidden);
         }
@@ -323,33 +341,4 @@ fn is_music_item_type(candidate: &str) -> bool {
     MUSIC_ITEM_TYPES.iter().any(|item_type| {
         candidate.eq_ignore_ascii_case(item_type) || candidate.ends_with(&format!(".{item_type}"))
     })
-}
-
-fn virtual_genre(name: &str) -> Genre {
-    Genre {
-        id: jellyfin_genre_id(name),
-        name: name.to_owned(),
-        item_count: 0,
-        counts: ItemValueCounts::default(),
-        kind: GenreKind::Genre,
-    }
-}
-
-fn jellyfin_genre_id(name: &str) -> Uuid {
-    let mut hasher = Md5::new();
-    hasher.update(format!("Genre-{name}").as_bytes());
-    Uuid::from_bytes_le(hasher.finalize().into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::jellyfin_genre_id;
-
-    #[test]
-    fn virtual_genre_ids_are_stable_jellyfin_style_md5_guids() {
-        assert_eq!(
-            jellyfin_genre_id("Drama").simple().to_string(),
-            "7ddf95d8ffa3c974f9c81b4c7d6c4f54"
-        );
-    }
 }

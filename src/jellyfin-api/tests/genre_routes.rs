@@ -14,15 +14,77 @@ use jellyfin_data::{
     entities::{base_item, item_value},
 };
 use jellyfin_model::UserPolicy;
+use md5::{Digest, Md5};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Genre Tests\", DeviceId=\"genre-tests\", Device=\"Test\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_genre_routes_";
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
+
+#[tokio::test]
+async fn first_genre_query_backfills_upgrade_databases_without_a_scan() {
+    let fixture = Fixture::new().await;
+    fixture
+        .database
+        .execute_unprepared(
+            "DELETE FROM jellyfin.base_items WHERE item_type IN (\
+                 'Genre', 'MediaBrowser.Controller.Entities.Genre', \
+                 'MusicGenre', 'MediaBrowser.Controller.Entities.Audio.MusicGenre')",
+        )
+        .await
+        .expect("remove persisted item-by-name rows to simulate an upgraded database");
+
+    let filters = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Items/Filters2?IncludeItemTypes=Movie",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let genre = filters["Genres"]
+        .as_array()
+        .expect("genre filters")
+        .iter()
+        .find(|genre| genre["Name"] == fixture.drama_genre)
+        .expect("backfilled generic genre");
+    let genre_id = Uuid::parse_str(genre["Id"].as_str().expect("genre id")).unwrap();
+    let backfilled = BaseItemRepository::new(fixture.database.clone())
+        .get(genre_id)
+        .await
+        .expect("backfilled genre lookup")
+        .expect("persisted backfilled genre");
+    let path = PathBuf::from(backfilled.path.expect("backfilled genre path"));
+    assert!(path.starts_with(fixture.storage_directory.join("programdata/metadata")));
+    assert!(tokio::fs::metadata(path).await.unwrap().is_dir());
+
+    let music_genres = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/MusicGenres",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        music_genres["Items"]
+            .as_array()
+            .expect("music genres")
+            .iter()
+            .any(|genre| genre["Name"] == fixture.music_collection_genre)
+    );
+
+    fixture.cleanup().await;
+}
 
 #[tokio::test]
 async fn genre_routes_match_official_generic_genre_contract() {
@@ -302,11 +364,17 @@ async fn genre_routes_match_official_generic_genre_contract() {
             .await,
     )
     .await;
-    assert_eq!(drama["Id"], fixture.drama_genre_id.simple().to_string());
+    assert_eq!(
+        drama["Id"],
+        fixture.drama_persisted_genre_id.simple().to_string()
+    );
     assert_eq!(drama["Name"], fixture.drama_genre);
     assert_eq!(drama["Type"], "Genre");
     assert_eq!(drama["MovieCount"], 1);
     assert_eq!(drama["ChildCount"], 1);
+    assert_eq!(drama["UserData"]["IsFavorite"], true);
+    assert!(drama["Path"].as_str().is_some());
+    assert!(drama["DateCreated"].as_str().is_some());
     assert_eq!(
         drama["PresentationUniqueKey"],
         format!("Genre-{}", fixture.drama_genre)
@@ -339,6 +407,32 @@ async fn genre_routes_match_official_generic_genre_contract() {
     assert_eq!(missing["Name"], "Missing Genre");
     assert_eq!(missing["Type"], "Genre");
     assert_ne!(missing["Id"], fixture.drama_genre_id.simple().to_string());
+
+    let repeated_missing = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/genres/Missing%20Genre?limit=invalid",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(repeated_missing["Id"], missing["Id"]);
+
+    let missing_slug = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Genres/Never-Seen",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(missing_slug["Id"], Uuid::nil().simple().to_string());
+    assert_eq!(missing_slug["Type"], "Genre");
+    assert!(missing_slug["Name"].is_null());
 
     assert_eq!(
         fixture
@@ -888,6 +982,7 @@ struct Fixture {
     database_name: String,
     database: DatabaseConnection,
     app: Router,
+    storage_directory: PathBuf,
     user_id: Uuid,
     other_user_id: Uuid,
     movie_id: Uuid,
@@ -1032,7 +1127,7 @@ impl Fixture {
             .expect("duplicate genre link");
 
         let slug_genre_name = format!("Left/Right {suffix}");
-        let slug_genre = values
+        values
             .link(
                 slug_movie.id,
                 item_value::ItemValueType::Genre,
@@ -1042,11 +1137,10 @@ impl Fixture {
             .expect("slug genre");
         let slug_route_name = slug_genre_name.replace('/', "-");
 
-        let mut drama_entity_ids = [Uuid::new_v4(), Uuid::new_v4()];
-        drama_entity_ids.sort_unstable();
+        let drama_entity_id = official_item_by_name_id("Genre", &drama_genre);
         let genre_item = create_item_by_name(
             &items,
-            drama_entity_ids[0],
+            drama_entity_id,
             "Genre",
             &drama_genre,
             &format!("Genre-{drama_genre}"),
@@ -1054,18 +1148,13 @@ impl Fixture {
         .await;
         create_item_by_name(
             &items,
-            drama_entity_ids[1],
+            Uuid::max(),
             "MediaBrowser.Controller.Entities.Genre",
             &drama_genre,
             &format!("Genre-{drama_genre}"),
         )
         .await;
-        for name in [
-            &comedy_genre,
-            &parent_genre,
-            &nested_genre,
-            &slug_genre_name,
-        ] {
+        for name in [&comedy_genre, &parent_genre, &nested_genre] {
             create_item_by_name(
                 &items,
                 Uuid::new_v4(),
@@ -1075,6 +1164,14 @@ impl Fixture {
             )
             .await;
         }
+        let slug_genre_item = create_item_by_name(
+            &items,
+            Uuid::new_v4(),
+            "Genre",
+            &slug_genre_name,
+            &format!("Genre-{slug_genre_name}"),
+        )
+        .await;
         create_item_by_name(
             &items,
             Uuid::new_v4(),
@@ -1097,16 +1194,29 @@ impl Fixture {
             .await
             .expect("genre favorite user data");
 
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Genre Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        ));
+        let storage_directory =
+            std::env::temp_dir().join(format!("jellyfin-genre-routes-{suffix}"));
+        let program_data = storage_directory.join("programdata");
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Genre Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                &program_data,
+                storage_directory.join("web"),
+                storage_directory.join("cache/images"),
+                storage_directory.join("cache"),
+                program_data.join("metadata"),
+            ),
+        );
 
         Self {
             database_name,
             database,
             app,
+            storage_directory,
             user_id: user.id,
             other_user_id: other_user.id,
             movie_id: movie.id,
@@ -1121,7 +1231,7 @@ impl Fixture {
             parent_genre,
             nested_genre,
             music_collection_genre,
-            slug_genre_id: slug_genre.item_value_id,
+            slug_genre_id: slug_genre_item.id,
             slug_genre_name,
             slug_route_name,
         }
@@ -1152,9 +1262,18 @@ impl Fixture {
             database_name,
             database,
             app,
+            storage_directory,
             ..
         } = self;
         drop(app);
+        if tokio::fs::try_exists(&storage_directory)
+            .await
+            .unwrap_or(false)
+        {
+            tokio::fs::remove_dir_all(&storage_directory)
+                .await
+                .expect("temporary genre storage cleanup");
+        }
         database.close().await.unwrap();
         let administrator = jellyfin_data::connect(&DatabaseConfig::default())
             .await
@@ -1192,12 +1311,44 @@ async fn create_item_by_name(
     let mut item = NewBaseItem::new(id, item_type);
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
+    item.path = Some(format!(
+        "metadata/{}/{name}",
+        canonical_by_name_type(item_type)
+    ));
     item.is_folder = true;
     item.presentation_unique_key = Some(presentation_unique_key.to_owned());
     repository
         .create(item)
         .await
         .expect("item-by-name creation")
+}
+
+fn canonical_by_name_type(item_type: &str) -> &'static str {
+    if item_type.ends_with("MusicGenre") {
+        "MusicGenre"
+    } else {
+        "Genre"
+    }
+}
+
+fn official_item_by_name_id(item_type: &str, name: &str) -> Uuid {
+    let clr_type = match item_type {
+        "Genre" => "MediaBrowser.Controller.Entities.Genre",
+        "MusicGenre" => "MediaBrowser.Controller.Entities.Audio.MusicGenre",
+        _ => panic!("unsupported test item-by-name type"),
+    };
+    let path = format!("metadata\\{item_type}\\{name}").to_lowercase();
+    let value = format!("{clr_type}{path}");
+    let utf16_le = value
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let digest = Md5::digest(utf16_le);
+    Uuid::from_bytes([
+        digest[3], digest[2], digest[1], digest[0], digest[5], digest[4], digest[7], digest[6],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14],
+        digest[15],
+    ])
 }
 
 async fn create_music_collection(repository: &BaseItemRepository, name: &str) -> base_item::Model {
