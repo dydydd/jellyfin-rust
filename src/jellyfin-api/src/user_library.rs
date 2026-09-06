@@ -1034,7 +1034,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         end_date: metadata_api_datetime(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
-        has_subtitles: metadata_bool(item.data.as_ref(), &["HasSubtitles", "has_subtitles"]),
+        has_subtitles: None,
         video_3d_format,
         iso_type,
         is_locked: metadata_bool(item.data.as_ref(), &["IsLocked", "is_locked"]),
@@ -1088,6 +1088,13 @@ pub(crate) async fn project_item_to_dto(
             .item_ids_with_stream_type(&[item_id], MediaStreamType::Lyric)
             .await?;
         attach_has_lyrics(&mut dto, lyric_item_ids.contains(&item_id));
+    }
+    if is_video_item(&dto) {
+        let subtitle_item_ids = state
+            .media_streams
+            .item_ids_with_stream_type(&[item_id], MediaStreamType::Subtitle)
+            .await?;
+        attach_has_subtitles(&mut dto, subtitle_item_ids.contains(&item_id));
     }
     let original_language = dto.original_language.clone();
     attach_relation_metadata(&mut dto, relations.remove(&item_id).unwrap_or_default());
@@ -1224,6 +1231,10 @@ pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) {
 
 pub(crate) fn attach_has_lyrics(dto: &mut BaseItemDto, has_lyrics: bool) {
     dto.has_lyrics = is_audio_item(dto).then_some(has_lyrics);
+}
+
+pub(crate) fn attach_has_subtitles(dto: &mut BaseItemDto, has_subtitles: bool) {
+    dto.has_subtitles = (is_video_item(dto) && has_subtitles).then_some(true);
 }
 
 async fn attach_versioned_media_sources(
@@ -2004,6 +2015,13 @@ pub(crate) fn is_audio_base_item(item: &base_item::Model) -> bool {
         || is_audio_item_type(&item.item_type)
 }
 
+pub(crate) fn is_video_base_item(item: &base_item::Model) -> bool {
+    item.media_type
+        .as_deref()
+        .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Video"))
+        || is_video_item_type(&item.item_type)
+}
+
 fn is_audio_item(dto: &BaseItemDto) -> bool {
     dto.media_type
         .as_deref()
@@ -2026,10 +2044,24 @@ fn is_video_item(dto: &BaseItemDto) -> bool {
     dto.media_type
         .as_deref()
         .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Video"))
-        || matches!(
-            dto.item_type.as_str(),
-            "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
-        )
+        || is_video_item_type(&dto.item_type)
+}
+
+fn is_video_item_type(item_type: &str) -> bool {
+    [
+        "Video",
+        "Movie",
+        "Episode",
+        "MusicVideo",
+        "Trailer",
+        "MediaBrowser.Controller.Entities.Video",
+        "MediaBrowser.Controller.Entities.Movies.Movie",
+        "MediaBrowser.Controller.Entities.TV.Episode",
+        "MediaBrowser.Controller.Entities.MusicVideo",
+        "MediaBrowser.Controller.Entities.Trailer",
+    ]
+    .iter()
+    .any(|candidate| item_type.eq_ignore_ascii_case(candidate))
 }
 
 fn normalize_language(language: Option<&str>) -> Vec<String> {

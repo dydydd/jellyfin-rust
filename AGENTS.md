@@ -48,6 +48,9 @@
   existence. Use one set-based PostgreSQL query for item and playlist pages; stale JSON lyric caches
   must not produce a true value, and non-Audio DTOs must omit the property even if they own a Lyric
   stream.
+- Project `HasSubtitles` only for Video items with at least one persisted Subtitle media stream.
+  Omit false and non-Video values, ignore stale item JSON, and use one set-based existence query for
+  item and playlist pages instead of maintaining a second scan-time boolean.
 - For lyric uploads, resolve the authorized Audio item before validating the body or filename so
   missing, hidden, and non-Audio targets retain the official 404 precedence over malformed uploads.
   Parse and persist through the same service operation without loading the item twice.

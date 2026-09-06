@@ -90,6 +90,7 @@ async fn exercise(database_name: &str) {
     assert_items_projection_and_reordering(&fixture, playlist_id).await;
     assert_item_type_hydration(&fixture).await;
     assert_has_lyrics_projection(&fixture).await;
+    assert_has_subtitles_projection(&fixture).await;
     assert_update_and_share_routes(&fixture, playlist_id).await;
     assert_user_deletion_lifecycle(&fixture).await;
     assert_invalid_creation_rolls_back(&fixture).await;
@@ -179,6 +180,91 @@ async fn assert_has_lyrics_projection(fixture: &Fixture) {
             .find(|item| item["Id"] == movie.id.simple().to_string())
             .unwrap();
         assert!(movie_dto.get("HasLyrics").is_none(), "{route}");
+    }
+}
+
+async fn assert_has_subtitles_projection(fixture: &Fixture) {
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.unwrap();
+
+    let mut with_subtitles = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    with_subtitles.parent_id = Some(root.id);
+    with_subtitles.name = Some("Playlist Video With Subtitles".to_owned());
+    with_subtitles.sort_name = with_subtitles.name.clone();
+    with_subtitles.media_type = Some("Video".to_owned());
+    with_subtitles.data = Some(json!({ "HasSubtitles": false }));
+    let with_subtitles = items.create(with_subtitles).await.unwrap();
+
+    let mut stale_video = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    stale_video.parent_id = Some(root.id);
+    stale_video.name = Some("Playlist Video With Stale Subtitle State".to_owned());
+    stale_video.sort_name = stale_video.name.clone();
+    stale_video.media_type = Some("Video".to_owned());
+    stale_video.data = Some(json!({ "HasSubtitles": true }));
+    let stale_video = items.create(stale_video).await.unwrap();
+
+    let mut audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    audio.parent_id = Some(root.id);
+    audio.name = Some("Playlist Non-Video With Subtitle Stream".to_owned());
+    audio.sort_name = audio.name.clone();
+    audio.media_type = Some("Audio".to_owned());
+    let audio = items.create(audio).await.unwrap();
+
+    let streams = MediaStreamService::new(fixture.database.clone());
+    for item_id in [with_subtitles.id, audio.id] {
+        streams
+            .save_media_streams(
+                item_id,
+                vec![MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("srt".to_owned()),
+                    ..MediaStream::default()
+                }],
+            )
+            .await
+            .unwrap();
+    }
+
+    let playlist_id = Uuid::new_v4();
+    PlaylistRepository::new(fixture.database.clone())
+        .create(
+            playlist_id,
+            "Subtitle Projection".to_owned(),
+            root.id,
+            fixture.owner_id,
+            false,
+            None,
+            &[],
+            &[with_subtitles.id, stale_video.id, audio.id],
+        )
+        .await
+        .unwrap();
+
+    for suffix in ["", "?fields=PrimaryImageAspectRatio"] {
+        let route = format!("/Playlists/{playlist_id}/Items{suffix}");
+        let page = body_json(
+            fixture
+                .request(Method::GET, &route, Some(&fixture.owner_token), None)
+                .await,
+        )
+        .await;
+        let response_items = page["Items"].as_array().unwrap();
+        let with_subtitles_dto = response_items
+            .iter()
+            .find(|item| item["Id"] == with_subtitles.id.simple().to_string())
+            .unwrap();
+        assert_eq!(with_subtitles_dto["HasSubtitles"], true, "{route}");
+        let stale_video_dto = response_items
+            .iter()
+            .find(|item| item["Id"] == stale_video.id.simple().to_string())
+            .unwrap();
+        assert!(stale_video_dto.get("HasSubtitles").is_none(), "{route}");
+        let audio_dto = response_items
+            .iter()
+            .find(|item| item["Id"] == audio.id.simple().to_string())
+            .unwrap();
+        assert!(audio_dto.get("HasSubtitles").is_none(), "{route}");
     }
 }
 

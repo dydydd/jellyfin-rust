@@ -176,6 +176,128 @@ async fn has_lyrics_uses_persisted_lyric_streams_for_item_and_page_dtos() {
 }
 
 #[tokio::test]
+async fn has_subtitles_uses_persisted_subtitle_streams_for_item_and_page_dtos() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut video = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    video.name = Some(format!("Has subtitles video {}", fixture.suffix));
+    video.sort_name = video.name.clone();
+    video.parent_id = Some(root.id);
+    video.media_type = Some("Video".to_owned());
+    video.path = Some(format!("/media/has-subtitles-{}.mkv", fixture.suffix));
+    video.data = Some(serde_json::json!({ "HasSubtitles": false }));
+    let video = items.create(video).await.expect("video item");
+
+    let mut stale_video = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    stale_video.name = Some(format!("Stale subtitles video {}", fixture.suffix));
+    stale_video.sort_name = stale_video.name.clone();
+    stale_video.parent_id = Some(root.id);
+    stale_video.media_type = Some("Video".to_owned());
+    stale_video.path = Some(format!("/media/stale-subtitles-{}.mkv", fixture.suffix));
+    stale_video.data = Some(serde_json::json!({ "HasSubtitles": true }));
+    let stale_video = items.create(stale_video).await.expect("stale video item");
+
+    let mut audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    audio.name = Some(format!("Subtitle stream audio {}", fixture.suffix));
+    audio.sort_name = audio.name.clone();
+    audio.parent_id = Some(root.id);
+    audio.media_type = Some("Audio".to_owned());
+    audio.path = Some(format!("/media/subtitle-stream-{}.flac", fixture.suffix));
+    let audio = items.create(audio).await.expect("audio item");
+
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            audio.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Subtitle,
+                codec: Some("srt".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("non-video subtitle stream");
+
+    let page_route = format!("/Items?ids={},{},{}", video.id, stale_video.id, audio.id);
+    let page = body_json(
+        fixture
+            .request(&page_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    for dto in page["Items"].as_array().unwrap() {
+        assert!(dto.get("HasSubtitles").is_none(), "{dto}");
+    }
+
+    for route in [
+        format!("/Users/{}/Items/{}", fixture.user_id, stale_video.id),
+        format!("/Items/{}?UserId={}", stale_video.id, fixture.user_id),
+    ] {
+        let dto = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert!(dto.get("HasSubtitles").is_none(), "{route}: {dto}");
+    }
+
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            video.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Subtitle,
+                codec: Some("ass".to_owned()),
+                language: Some("jpn".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("video subtitle stream");
+
+    let page = body_json(
+        fixture
+            .request(&page_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    let video_dto = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == video.id.simple().to_string())
+        .expect("video page dto with subtitles");
+    assert_eq!(video_dto["HasSubtitles"], true);
+    let stale_video_dto = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == stale_video.id.simple().to_string())
+        .expect("stale video page dto");
+    assert!(stale_video_dto.get("HasSubtitles").is_none());
+    let audio_dto = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == audio.id.simple().to_string())
+        .expect("audio page dto");
+    assert!(audio_dto.get("HasSubtitles").is_none());
+
+    for route in [
+        format!("/Users/{}/Items/{}", fixture.user_id, video.id),
+        format!("/Items/{}?UserId={}", video.id, fixture.user_id),
+    ] {
+        let dto = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(dto["HasSubtitles"], true, "{route}");
+    }
+
+    items
+        .delete_many(&[video.id, stale_video.id, audio.id])
+        .await
+        .expect("subtitle DTO cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn legacy_item_collection_accepts_empty_trailing_path_segments() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
