@@ -63,7 +63,7 @@ pub(crate) struct BaseItemDtoFields {
 
 impl BaseItemDtoFields {
     #[must_use]
-    const fn all() -> Self {
+    pub(crate) const fn all() -> Self {
         Self {
             media_sources: true,
             media_streams: true,

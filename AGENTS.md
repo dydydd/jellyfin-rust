@@ -66,6 +66,13 @@
   an explicit non-empty id before its nullable lookup, so a normal user's unknown foreign id is
   forbidden while an administrator's unknown id falls back to the same global query. Only group
   presentation keys when that lookup resolves a user, matching `InternalItemsQuery(User?)`.
+  Explicitly enable all folders for the user-less query so the default policy struct cannot hide
+  media nested below a `CollectionFolder`.
+- Project Suggestions with the official default all-fields `DtoOptions`, including every alternate
+  media source and its streams, per-source bitrate/container/size, top-level streams, source count,
+  trickplay, and image metadata. Keep the page projection user context optional: a user-less global
+  response must not load UserData, remembered stream selections, language preferences, or
+  user-policy-aware child aggregates.
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.

@@ -1043,20 +1043,12 @@ async fn suggestions_for(
                 .await?
         }
     };
-    let dto_options = PageDtoOptions {
-        enable_user_data: target_user_id.is_some(),
-        ..PageDtoOptions::default()
-    };
-    // The current Suggestions projection intentionally keeps its existing field set in this
-    // compatibility slice. Passing the authenticated id here is harmless for a user-less query:
-    // empty fields skip user stream preferences and dto_options disables user data entirely.
-    let projection_user_id = target_user_id.unwrap_or(authenticated.user.id);
-    let result = page_to_dto_with_options(
+    let result = page_to_dto_with_fields_and_options(
         state.as_ref(),
         page,
-        Vec::new(),
-        projection_user_id,
-        &dto_options,
+        user_library::BaseItemDtoFields::all(),
+        target_user_id,
+        &PageDtoOptions::default(),
     )
     .await?;
     Ok(Json(SuggestionsResult {
@@ -1901,11 +1893,11 @@ pub(crate) async fn page_to_dto(
     fields: Vec<String>,
     target_user_id: Uuid,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
-    page_to_dto_with_options(
+    page_to_dto_with_fields_and_options(
         state,
         page,
-        fields,
-        target_user_id,
+        user_library::BaseItemDtoFields::from_names(&fields),
+        Some(target_user_id),
         &PageDtoOptions::default(),
     )
     .await
@@ -1919,18 +1911,42 @@ pub(crate) async fn page_to_dto_with_options(
     target_user_id: Uuid,
     dto_options: &PageDtoOptions,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
-    let requested_fields = user_library::BaseItemDtoFields::from_names(&fields);
-    let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let mut child_counts =
-        user_library::child_counts_for_items(state, &page.items, requested_fields, target_user_id)
-            .await?;
-    let mut recursive_item_counts = user_library::recursive_item_counts_for_items(
+    page_to_dto_with_fields_and_options(
         state,
-        &page.items,
-        requested_fields,
-        target_user_id,
+        page,
+        user_library::BaseItemDtoFields::from_names(&fields),
+        Some(target_user_id),
+        dto_options,
     )
-    .await?;
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn page_to_dto_with_fields_and_options(
+    state: &AppState,
+    page: BaseItemPage,
+    requested_fields: user_library::BaseItemDtoFields,
+    target_user_id: Option<Uuid>,
+    dto_options: &PageDtoOptions,
+) -> Result<user_library::BaseItemQueryResult, ApiError> {
+    let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut child_counts = if let Some(target_user_id) = target_user_id {
+        user_library::child_counts_for_items(state, &page.items, requested_fields, target_user_id)
+            .await?
+    } else {
+        HashMap::new()
+    };
+    let mut recursive_item_counts = if let Some(target_user_id) = target_user_id {
+        user_library::recursive_item_counts_for_items(
+            state,
+            &page.items,
+            requested_fields,
+            target_user_id,
+        )
+        .await?
+    } else {
+        HashMap::new()
+    };
     let mut media_source_groups = if requested_fields.wants_media_sources() {
         let sources = state
             .base_items
@@ -1964,16 +1980,20 @@ pub(crate) async fn page_to_dto_with_options(
     } else {
         std::collections::HashMap::new()
     };
-    let defaults =
+    let defaults = if let Some(target_user_id) = target_user_id {
         user_library::media_stream_defaults_for_user(state, target_user_id, requested_fields)
-            .await?;
-    let mut remembered_user_data = if requested_fields.wants_media_streams() {
-        state
-            .user_data
-            .get_preferred_for_items(target_user_id, &page.items)
             .await?
     } else {
-        std::collections::HashMap::new()
+        None
+    };
+    let mut remembered_user_data = match target_user_id {
+        Some(target_user_id) if requested_fields.wants_media_streams() => {
+            state
+                .user_data
+                .get_preferred_for_items(target_user_id, &page.items)
+                .await?
+        }
+        _ => HashMap::new(),
     };
     let mut media_streams = if requested_fields.wants_media_streams() {
         state
@@ -1998,13 +2018,14 @@ pub(crate) async fn page_to_dto_with_options(
     };
     let mut trickplay_manifests =
         user_library::trickplay_manifests_for_items(state, &page.items, requested_fields).await?;
-    let mut user_dtos = if dto_options.enable_user_data {
-        state
-            .user_data
-            .preferred_dto_map(target_user_id, &page.items)
-            .await?
-    } else {
-        HashMap::new()
+    let mut user_dtos = match target_user_id {
+        Some(target_user_id) if dto_options.enable_user_data => {
+            state
+                .user_data
+                .preferred_dto_map(target_user_id, &page.items)
+                .await?
+        }
+        _ => HashMap::new(),
     };
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
     let mut image_projections =

@@ -200,8 +200,17 @@ impl UserLibraryService {
     /// Returns persistence errors unchanged.
     pub async fn query_items_without_user(
         &self,
-        query: BaseItemQuery,
+        mut query: BaseItemQuery,
     ) -> Result<BaseItemPage, UserLibraryError> {
+        query.user_id = None;
+        query.allowed_official_ratings.clear();
+        query.allowed_parental_ratings.clear();
+        query.block_unrated_items.clear();
+        query.blocked_tags.clear();
+        query.allowed_tags.clear();
+        query.enabled_folders.clear();
+        query.enable_all_folders = true;
+        query.blocked_media_folders = None;
         Ok(self.hydrate_page(self.items.query(&query).await?))
     }
 

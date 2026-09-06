@@ -6,9 +6,15 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
-use jellyfin_data::{BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice};
+use jellyfin_controller::{MediaStreamService, UserService};
+use jellyfin_data::{
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewTrickplayInfo, NewUserData,
+    TrickplayInfoRepository, UserDataRepository,
+};
+use jellyfin_model::{MediaStream, MediaStreamType};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -334,6 +340,34 @@ async fn suggestions_optional_user_matches_global_lookup_and_authorization_seman
     let fixture = Fixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
     let root = items.ensure_user_root().await.expect("user root");
+    let collection = create_item(
+        &items,
+        "CollectionFolder",
+        &format!("Collection {}", fixture.suffix),
+        Some(root.id),
+        None,
+        false,
+    )
+    .await;
+    let nested_folder = create_item(
+        &items,
+        "Folder",
+        &format!("Nested Folder {}", fixture.suffix),
+        Some(collection.id),
+        None,
+        false,
+    )
+    .await;
+    let nested_global_name = format!("Nested Global Movie {}", fixture.suffix);
+    create_item(
+        &items,
+        "Movie",
+        &nested_global_name,
+        Some(nested_folder.id),
+        Some("Video"),
+        false,
+    )
+    .await;
     let global_only_name = format!("Global Movie {}", fixture.suffix);
     create_item(
         &items,
@@ -367,6 +401,7 @@ async fn suggestions_optional_user_matches_global_lookup_and_authorization_seman
     )
     .await;
     assert!(item_names(&omitted).contains(&global_only_name));
+    assert!(item_names(&omitted).contains(&nested_global_name));
     assert_eq!(named_item_count(&omitted, &grouped_name), 2);
     assert_no_user_data(&omitted);
 
@@ -399,6 +434,7 @@ async fn suggestions_optional_user_matches_global_lookup_and_authorization_seman
     )
     .await;
     assert!(!item_names(&explicit_user).contains(&global_only_name));
+    assert!(item_names(&explicit_user).contains(&nested_global_name));
     assert_eq!(named_item_count(&explicit_user, &grouped_name), 1);
     assert!(
         explicit_user["Items"]
@@ -442,6 +478,7 @@ async fn suggestions_optional_user_matches_global_lookup_and_authorization_seman
     )
     .await;
     assert!(item_names(&admin_unknown).contains(&global_only_name));
+    assert!(item_names(&admin_unknown).contains(&nested_global_name));
     assert_eq!(named_item_count(&admin_unknown, &grouped_name), 2);
     assert_no_user_data(&admin_unknown);
 
@@ -458,6 +495,7 @@ async fn suggestions_optional_user_matches_global_lookup_and_authorization_seman
     )
     .await;
     assert!(item_names(&legacy_empty).contains(&global_only_name));
+    assert!(item_names(&legacy_empty).contains(&nested_global_name));
     assert_eq!(named_item_count(&legacy_empty, &grouped_name), 2);
     assert_no_user_data(&legacy_empty);
 
@@ -473,8 +511,169 @@ async fn suggestions_optional_user_matches_global_lookup_and_authorization_seman
     )
     .await;
     assert!(item_names(&legacy_admin_unknown).contains(&global_only_name));
+    assert!(item_names(&legacy_admin_unknown).contains(&nested_global_name));
     assert_eq!(named_item_count(&legacy_admin_unknown, &grouped_name), 2);
     assert_no_user_data(&legacy_admin_unknown);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn suggestions_default_to_all_fields_with_optional_user_projection() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let (movie, movie_alternate) = create_versioned_suggestion(
+        &fixture,
+        &items,
+        root.id,
+        "Movie",
+        "Suggested Movie",
+        10_000_000,
+        20_000_000,
+    )
+    .await;
+    let (episode, episode_alternate) = create_versioned_suggestion(
+        &fixture,
+        &items,
+        root.id,
+        "Episode",
+        "Suggested Episode",
+        6_000_000,
+        12_000_000,
+    )
+    .await;
+
+    let mut remembered = NewUserData::new(movie.id, fixture.user_id, movie.id.to_string());
+    remembered.audio_stream_index = Some(2);
+    remembered.subtitle_stream_index = Some(-1);
+    UserDataRepository::new(fixture.database.clone())
+        .upsert(remembered)
+        .await
+        .expect("remembered stream selection");
+
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            movie.id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: format!("/media/suggested-{}-poster.jpg", fixture.suffix),
+                date_modified: Utc::now(),
+                width: Some(800),
+                height: Some(1_200),
+                blurhash: None,
+            }],
+        )
+        .await
+        .expect("suggestion image metadata");
+
+    let trickplay = TrickplayInfoRepository::new(fixture.database.clone());
+    for (item_id, width, bandwidth) in [(movie.id, 320, 40_000), (episode.id, 640, 80_000)] {
+        trickplay
+            .upsert(
+                item_id,
+                NewTrickplayInfo {
+                    width,
+                    height: width * 9 / 16,
+                    tile_width: 4,
+                    tile_height: 3,
+                    thumbnail_count: 24,
+                    interval: 1_000,
+                    bandwidth,
+                },
+            )
+            .await
+            .expect("suggestion trickplay metadata");
+    }
+
+    let explicit = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Items/Suggestions?userId={}&mediaType=Video&type=Movie,Episode&enableTotalRecordCount=true",
+                    fixture.user_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let explicit_movie = item_by_id(&explicit, movie.id);
+    assert_versioned_suggestion(
+        explicit_movie,
+        &movie,
+        &movie_alternate,
+        10_000_000,
+        20_000_000,
+    );
+    assert_eq!(
+        explicit_movie["MediaSources"][0]["DefaultAudioStreamIndex"],
+        2
+    );
+    assert_eq!(
+        explicit_movie["MediaSources"][0]["DefaultSubtitleStreamIndex"],
+        -1
+    );
+    assert!(explicit_movie["UserData"].is_object());
+    assert!(explicit_movie["ImageTags"]["Primary"].is_string());
+    assert_eq!(explicit_movie["PrimaryImageAspectRatio"], 2.0 / 3.0);
+    assert_eq!(
+        explicit_movie["Trickplay"][movie.id.simple().to_string()]["320"]["Bandwidth"],
+        40_000
+    );
+
+    let explicit_episode = item_by_id(&explicit, episode.id);
+    assert_versioned_suggestion(
+        explicit_episode,
+        &episode,
+        &episode_alternate,
+        6_000_000,
+        12_000_000,
+    );
+    assert_eq!(
+        explicit_episode["Trickplay"][episode.id.simple().to_string()]["640"]["Bandwidth"],
+        80_000
+    );
+
+    let global = body_json(
+        fixture
+            .get(
+                "/items/suggestions?mediatype=Video&type=Movie,Episode&enabletotalrecordcount=true",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let global_movie = item_by_id(&global, movie.id);
+    assert_versioned_suggestion(
+        global_movie,
+        &movie,
+        &movie_alternate,
+        10_000_000,
+        20_000_000,
+    );
+    assert!(global_movie.get("UserData").is_none());
+    assert!(
+        global_movie["MediaSources"][0]
+            .get("DefaultAudioStreamIndex")
+            .is_none()
+    );
+    assert!(
+        global_movie["MediaSources"][0]
+            .get("DefaultSubtitleStreamIndex")
+            .is_none()
+    );
+
+    let global_episode = item_by_id(&global, episode.id);
+    assert_versioned_suggestion(
+        global_episode,
+        &episode,
+        &episode_alternate,
+        6_000_000,
+        12_000_000,
+    );
+    assert!(global_episode.get("UserData").is_none());
 
     fixture.cleanup().await;
 }
@@ -495,6 +694,45 @@ fn named_item_count(response: &Value, name: &str) -> usize {
         .iter()
         .filter(|item| item["Name"] == name)
         .count()
+}
+
+fn item_by_id(response: &Value, item_id: Uuid) -> &Value {
+    response["Items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["Id"] == item_id.simple().to_string())
+        .expect("suggested item")
+}
+
+fn assert_versioned_suggestion(
+    item: &Value,
+    primary: &jellyfin_data::entities::base_item::Model,
+    alternate: &jellyfin_data::entities::base_item::Model,
+    primary_bitrate: i32,
+    alternate_bitrate: i32,
+) {
+    assert_eq!(item["MediaSourceCount"], 2);
+    let sources = item["MediaSources"].as_array().expect("media sources");
+    assert_eq!(sources.len(), 2);
+    let primary_source = sources
+        .iter()
+        .find(|source| source["Id"] == primary.id.simple().to_string())
+        .expect("primary source");
+    let alternate_source = sources
+        .iter()
+        .find(|source| source["Id"] == alternate.id.simple().to_string())
+        .expect("alternate source");
+    assert_eq!(primary_source["Bitrate"], primary_bitrate);
+    assert_eq!(primary_source["Container"], "matroska");
+    assert_eq!(primary_source["Size"], 1_000);
+    assert_eq!(alternate_source["Bitrate"], alternate_bitrate);
+    assert_eq!(alternate_source["Container"], "mp4");
+    assert_eq!(alternate_source["Size"], 2_000);
+    assert_eq!(primary_source["MediaStreams"][1]["Language"], "eng");
+    assert_eq!(primary_source["MediaStreams"][2]["Language"], "jpn");
+    assert_eq!(primary_source["MediaStreams"][3]["Language"], "spa");
+    assert_eq!(item["MediaStreams"], primary_source["MediaStreams"]);
 }
 
 fn assert_no_user_data(response: &Value) {
@@ -675,6 +913,108 @@ impl Fixture {
             .expect("temporary PostgreSQL database cleanup must succeed");
         administrator.close().await.unwrap();
     }
+}
+
+async fn create_versioned_suggestion(
+    fixture: &Fixture,
+    repository: &BaseItemRepository,
+    parent_id: Uuid,
+    item_type: &str,
+    label: &str,
+    primary_bitrate: i32,
+    alternate_bitrate: i32,
+) -> (
+    jellyfin_data::entities::base_item::Model,
+    jellyfin_data::entities::base_item::Model,
+) {
+    let name = format!("{label} {}", fixture.suffix);
+    let presentation_key = format!("{item_type}-suggestion-{}", fixture.suffix);
+    let primary_path = format!("/media/{presentation_key}-1080p.mkv");
+    let mut primary = NewBaseItem::new(Uuid::new_v4(), item_type);
+    primary.name = Some(name.clone());
+    primary.sort_name = Some(name.clone());
+    primary.parent_id = Some(parent_id);
+    primary.media_type = Some("Video".to_owned());
+    primary.path = Some(primary_path.clone());
+    primary.presentation_unique_key = Some(presentation_key.clone());
+    primary.data = Some(serde_json::json!({
+        "Bitrate": primary_bitrate,
+        "Container": "matroska,webm",
+        "Size": 1_000,
+        "DefaultPrimaryImageAspectRatio": 2.0 / 3.0
+    }));
+    let primary = repository
+        .create(primary)
+        .await
+        .expect("primary suggestion");
+
+    let alternate_path = format!("/media/{presentation_key}-2160p.mp4");
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), item_type);
+    alternate.name = Some(name);
+    alternate.sort_name = alternate.name.clone();
+    alternate.parent_id = Some(parent_id);
+    alternate.media_type = Some("Video".to_owned());
+    alternate.path = Some(alternate_path.clone());
+    alternate.presentation_unique_key = Some(presentation_key);
+    alternate.primary_version_id = Some(primary.id);
+    alternate.data = Some(serde_json::json!({
+        "Bitrate": alternate_bitrate,
+        "Container": "mov,mp4",
+        "Size": 2_000
+    }));
+    let alternate = repository
+        .create(alternate)
+        .await
+        .expect("alternate suggestion");
+
+    let streams = MediaStreamService::new(fixture.database.clone());
+    for (source, path, codec) in [
+        (&primary, primary_path, "h264"),
+        (&alternate, alternate_path, "hevc"),
+    ] {
+        streams
+            .save_media_streams(
+                source.id,
+                vec![
+                    MediaStream {
+                        index: 0,
+                        stream_type: MediaStreamType::Video,
+                        codec: Some(codec.to_owned()),
+                        path: Some(path.clone()),
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 1,
+                        stream_type: MediaStreamType::Audio,
+                        codec: Some("aac".to_owned()),
+                        language: Some("eng".to_owned()),
+                        path: Some(path.clone()),
+                        is_default: true,
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 2,
+                        stream_type: MediaStreamType::Audio,
+                        codec: Some("aac".to_owned()),
+                        language: Some("jpn".to_owned()),
+                        path: Some(path.clone()),
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 3,
+                        stream_type: MediaStreamType::Subtitle,
+                        codec: Some("srt".to_owned()),
+                        language: Some("spa".to_owned()),
+                        path: Some(path),
+                        ..MediaStream::default()
+                    },
+                ],
+            )
+            .await
+            .expect("suggestion media streams");
+    }
+
+    (primary, alternate)
 }
 
 async fn create_item(
