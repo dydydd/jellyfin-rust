@@ -277,10 +277,13 @@ impl AppState {
                 Arc::clone(&database),
                 item_by_name.clone(),
             ),
-            studios: StudioService::new(Arc::clone(&database)),
+            studios: StudioService::with_item_by_name_service(
+                Arc::clone(&database),
+                item_by_name.clone(),
+            ),
             music_genres: MusicGenreService::with_item_by_name_service(
                 Arc::clone(&database),
-                item_by_name,
+                item_by_name.clone(),
             ),
             persons: PersonService::new(Arc::clone(&database)),
             dto_images: PersistedDtoImageProjectionService::new(
@@ -309,7 +312,7 @@ impl AppState {
             media_streams: MediaStreamService::new(Arc::clone(&database)),
             subtitles: SubtitleManager::default(),
             videos: VideoService::new(Arc::clone(&database)),
-            years: YearService::new(Arc::clone(&database)),
+            years: YearService::with_item_by_name_service(Arc::clone(&database), item_by_name),
             tuner_hosts: TunerHostManager::new(Arc::clone(&database)),
             live_tv_guide: None,
             virtual_folders: Arc::new(VirtualFolderService::new(Arc::clone(&database))),
@@ -640,7 +643,15 @@ impl AppState {
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
+        self.studios.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
         self.music_genres.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
+        self.years.set_item_by_name_directories(
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
@@ -3102,7 +3113,7 @@ fn year_error_response(error: &YearError) -> (StatusCode, &'static str) {
             (StatusCode::NOT_FOUND, "Year or user not found")
         }
         YearError::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
-        YearError::BaseItem(_) | YearError::User(_) => {
+        YearError::BaseItem(_) | YearError::User(_) | YearError::ItemByName(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "Year persistence failed")
         }
     }

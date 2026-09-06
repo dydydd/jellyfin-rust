@@ -72,6 +72,32 @@ impl ItemByNameRepository {
             .await?)
     }
 
+    /// Loads persisted entities for a bounded set of normalized names.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn get_by_names(
+        &self,
+        item_type: &str,
+        names: &[String],
+    ) -> Result<Vec<base_item::Model>, ItemByNameStoreError> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let item_types = supported_item_types(item_type)?;
+        let clean_names = names
+            .iter()
+            .map(|name| name.clean_value())
+            .collect::<Vec<_>>();
+        Ok(base_item::Entity::find()
+            .filter(base_item::Column::ItemType.is_in(item_types))
+            .filter(base_item::Column::CleanName.is_in(clean_names))
+            .order_by_asc(base_item::Column::Id)
+            .all(self.database.as_ref())
+            .await?)
+    }
+
     /// Inserts the exact deterministic entity id, or returns the row inserted
     /// by a concurrent resolver. Unlike scan reconciliation, an unrelated
     /// legacy row with the same clean name does not replace this official id.
@@ -121,7 +147,7 @@ impl ItemByNameRepository {
 }
 
 fn supported_item_types(item_type: &str) -> Result<Vec<String>, ItemByNameStoreError> {
-    if !matches!(item_type, "Genre" | "MusicGenre") {
+    if !matches!(item_type, "Genre" | "MusicGenre" | "Studio" | "Year") {
         return Err(ItemByNameStoreError::UnsupportedType(item_type.to_owned()));
     }
     Ok(expand_item_type_aliases(&[item_type.to_owned()]))

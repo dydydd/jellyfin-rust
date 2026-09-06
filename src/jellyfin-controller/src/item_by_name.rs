@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
@@ -20,6 +21,8 @@ const RECONCILIATION_BATCH_SIZE: usize = 256;
 pub enum ItemByNameKind {
     Genre,
     MusicGenre,
+    Studio,
+    Year,
 }
 
 impl ItemByNameKind {
@@ -28,6 +31,8 @@ impl ItemByNameKind {
         match self {
             Self::Genre => "Genre",
             Self::MusicGenre => "MusicGenre",
+            Self::Studio => "Studio",
+            Self::Year => "Year",
         }
     }
 
@@ -35,6 +40,8 @@ impl ItemByNameKind {
         match self {
             Self::Genre => "MediaBrowser.Controller.Entities.Genre",
             Self::MusicGenre => "MediaBrowser.Controller.Entities.Audio.MusicGenre",
+            Self::Studio => "MediaBrowser.Controller.Entities.Studio",
+            Self::Year => "MediaBrowser.Controller.Entities.Year",
         }
     }
 }
@@ -63,6 +70,7 @@ pub struct ItemByNameService {
     configuration: ServerConfigurationRepository,
     directories: Arc<RwLock<ItemByNameDirectories>>,
     reconciled: Arc<OnceCell<()>>,
+    studio_year_reconciled: Arc<OnceCell<()>>,
 }
 
 #[derive(Debug)]
@@ -85,6 +93,7 @@ impl ItemByNameService {
                 internal_metadata: Arc::new(PathBuf::from("metadata")),
             })),
             reconciled: Arc::new(OnceCell::new()),
+            studio_year_reconciled: Arc::new(OnceCell::new()),
         }
     }
 
@@ -131,6 +140,81 @@ impl ItemByNameService {
         self.get_or_create(kind, name).await.map(Some)
     }
 
+    /// Resolves or creates one direct item-by-name entity, including names
+    /// containing the Genre slug separator.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration, filesystem, or persistence errors.
+    pub async fn resolve_direct(
+        &self,
+        kind: ItemByNameKind,
+        name: &str,
+    ) -> Result<base_item::Model, ItemByNameError> {
+        self.get_or_create(kind, name).await
+    }
+
+    /// Loads existing persisted entities for a bounded set of names.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when the lookup fails.
+    pub async fn existing_many(
+        &self,
+        kind: ItemByNameKind,
+        names: &[String],
+    ) -> Result<HashMap<String, base_item::Model>, ItemByNameError> {
+        let mut result = HashMap::new();
+        for item in self.items.get_by_names(kind.item_type(), names).await? {
+            if let Some(name) = item.name.clone() {
+                result
+                    .entry(name)
+                    .or_insert_with(|| hydrate_item_type(item, kind));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Ensures a bounded set of direct-name entities with one existence read
+    /// and one batched insert, then returns the persisted representatives.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration, filesystem, or persistence errors.
+    pub async fn ensure_many_direct(
+        &self,
+        kind: ItemByNameKind,
+        names: &[String],
+    ) -> Result<HashMap<String, base_item::Model>, ItemByNameError> {
+        let existing = self.existing_many(kind, names).await?;
+        let existing_clean_names = existing
+            .keys()
+            .map(|name| name.clean_value())
+            .collect::<std::collections::HashSet<_>>();
+        let missing = names
+            .iter()
+            .filter(|name| !existing_clean_names.contains(&name.clean_value()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            let configuration = self.configuration.load().await?;
+            let (program_data, internal_metadata) = self.directories();
+            let entities = self
+                .entities_for_names(
+                    kind,
+                    missing,
+                    &program_data,
+                    &internal_metadata,
+                    &configuration,
+                )
+                .await?;
+            self.base_items
+                .create_missing_item_by_name_entities(&entities)
+                .await?;
+        }
+        self.existing_many(kind, names).await
+    }
+
     /// Backfills persisted genre entities once for this server process.
     ///
     /// The source values are keyset-paged, directories are prepared in bounded
@@ -145,6 +229,135 @@ impl ItemByNameService {
             .get_or_try_init(|| async { self.reconcile().await })
             .await?;
         Ok(())
+    }
+
+    /// Backfills Studio and Year entities once for this server process.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration, filesystem, or persistence errors.
+    pub async fn reconcile_studios_and_years_once(&self) -> Result<(), ItemByNameError> {
+        self.studio_year_reconciled
+            .get_or_try_init(|| async { self.reconcile_studios_and_years().await })
+            .await?;
+        Ok(())
+    }
+
+    async fn reconcile_studios_and_years(&self) -> Result<(), ItemByNameError> {
+        let configuration = self.configuration.load().await?;
+        let (program_data, internal_metadata) = self.directories();
+
+        let mut start_index = 0_u64;
+        loop {
+            let page = self
+                .values
+                .query_values(
+                    jellyfin_data::entities::item_value::ItemValueType::Studios,
+                    &jellyfin_data::ItemValueQuery {
+                        start_index,
+                        limit: Some(RECONCILIATION_BATCH_SIZE as u64),
+                        enable_total_record_count: Some(false),
+                        ..jellyfin_data::ItemValueQuery::default()
+                    },
+                )
+                .await?;
+            if page.values.is_empty() {
+                break;
+            }
+            let count = page.values.len();
+            let entities = self
+                .entities_for_names(
+                    ItemByNameKind::Studio,
+                    page.values.into_iter().map(|value| value.value),
+                    &program_data,
+                    &internal_metadata,
+                    &configuration,
+                )
+                .await?;
+            self.base_items
+                .create_missing_item_by_name_entities(&entities)
+                .await?;
+            start_index = start_index.saturating_add(count as u64);
+            if count < RECONCILIATION_BATCH_SIZE {
+                break;
+            }
+        }
+
+        let mut start_index = 0_u64;
+        loop {
+            let page = self
+                .base_items
+                .production_years(
+                    &jellyfin_data::BaseItemQuery {
+                        start_index,
+                        limit: Some(RECONCILIATION_BATCH_SIZE as u64),
+                        ..jellyfin_data::BaseItemQuery::default()
+                    },
+                    jellyfin_data::ProductionYearOrder::Ascending,
+                )
+                .await?;
+            if page.years.is_empty() {
+                break;
+            }
+            let count = page.years.len();
+            let entities = self
+                .entities_for_names(
+                    ItemByNameKind::Year,
+                    page.years.into_iter().map(|year| year.to_string()),
+                    &program_data,
+                    &internal_metadata,
+                    &configuration,
+                )
+                .await?;
+            self.base_items
+                .create_missing_item_by_name_entities(&entities)
+                .await?;
+            start_index = start_index.saturating_add(count as u64);
+            if count < RECONCILIATION_BATCH_SIZE {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn entities_for_names(
+        &self,
+        kind: ItemByNameKind,
+        names: impl IntoIterator<Item = String>,
+        program_data: &Path,
+        internal_metadata: &Path,
+        configuration: &jellyfin_data::entities::server_configuration::Model,
+    ) -> Result<Vec<NewItemByNameEntity>, ItemByNameError> {
+        let mut entities = Vec::new();
+        for name in names {
+            let path = internal_metadata
+                .join(kind.item_type())
+                .join(item_by_name_folder_name(&name));
+            tokio::fs::create_dir_all(&path).await?;
+            let metadata = tokio::fs::metadata(&path).await?;
+            let modified = metadata.modified()?;
+            let created = metadata.created().unwrap_or(modified);
+            entities.push(NewItemByNameEntity {
+                id: official_item_by_name_id(
+                    &path,
+                    program_data,
+                    kind.clr_type(),
+                    configuration.enable_normalized_item_by_name_ids,
+                    configuration.enable_case_sensitive_item_ids,
+                ),
+                item_type: kind.item_type().to_owned(),
+                name: name.clone(),
+                path: path.to_string_lossy().into_owned(),
+                presentation_unique_key: format!(
+                    "{}-{}",
+                    kind.item_type(),
+                    name.remove_diacritics()
+                ),
+                date_created: chrono::DateTime::<chrono::Utc>::from(created),
+                date_modified: chrono::DateTime::<chrono::Utc>::from(modified),
+            });
+        }
+        Ok(entities)
     }
 
     async fn reconcile(&self) -> Result<(), ItemByNameError> {

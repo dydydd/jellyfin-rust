@@ -114,7 +114,7 @@ pub use search::{
     DatabaseSearchProvider, SearchManager, SearchProvider, SearchProviderQuery, SearchResult,
 };
 pub use sessions::{PostgresAuthenticationResult, PostgresSessionStore, PostgresSessionStoreError};
-pub use studios::{Studio, StudioError, StudioPage, StudioService};
+pub use studios::{Studio, StudioDetail, StudioError, StudioPage, StudioService};
 pub use subtitles::{SubtitleManager, SubtitleProvider, SubtitleResponse, SubtitleSearchRequest};
 pub use system_logs::{OpenedSystemLog, SystemLogError, SystemLogFile, SystemLogService};
 pub use system_storage::SystemStorageService;

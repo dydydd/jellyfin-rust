@@ -14,9 +14,11 @@ use jellyfin_data::{
     entities::{base_item, item_value},
 };
 use jellyfin_model::UserPolicy;
+use md5::{Digest, Md5};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
+use std::path::PathBuf;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -321,12 +323,18 @@ async fn studio_routes_match_official_studio_contract() {
             .await,
     )
     .await;
-    assert_eq!(studio["Id"], fixture.alpha_studio_id.simple().to_string());
+    assert_eq!(
+        studio["Id"],
+        fixture.alpha_studio_item_id.simple().to_string()
+    );
     assert_eq!(studio["Name"], fixture.alpha_studio);
     assert_eq!(studio["Type"], "Studio");
     assert_eq!(studio["ChildCount"], 1);
     assert_eq!(studio["MovieCount"], 1);
     assert_eq!(studio["EpisodeCount"], 0);
+    assert_eq!(studio["UserData"]["IsFavorite"], true);
+    assert!(studio["Path"].as_str().is_some());
+    assert!(studio["DateCreated"].as_str().is_some());
     assert_eq!(
         studio["PresentationUniqueKey"],
         format!("Studio-{}", fixture.alpha_studio)
@@ -345,7 +353,7 @@ async fn studio_routes_match_official_studio_contract() {
     .await;
     assert_eq!(
         lowercase_studio["Id"],
-        fixture.alpha_studio_id.simple().to_string()
+        fixture.alpha_studio_item_id.simple().to_string()
     );
     assert_eq!(lowercase_studio["Name"], fixture.alpha_studio);
 
@@ -397,17 +405,21 @@ async fn studio_routes_match_official_studio_contract() {
             .status(),
         StatusCode::FORBIDDEN
     );
-    assert_eq!(
+    let unknown_user = body_json(
         fixture
             .request(
                 Method::GET,
                 &format!("{studio_route}?userId={}", Uuid::new_v4()),
                 Credential::Device(&fixture.admin_token),
             )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
+            .await,
+    )
+    .await;
+    assert_eq!(
+        unknown_user["Id"],
+        fixture.alpha_studio_item_id.simple().to_string()
     );
+    assert!(unknown_user.get("UserData").is_none());
 
     let missing = body_json(
         fixture
@@ -423,6 +435,34 @@ async fn studio_routes_match_official_studio_contract() {
     assert_eq!(missing["Type"], "Studio");
     assert_eq!(missing["PresentationUniqueKey"], "Studio-Missing Studio");
     assert_ne!(missing["Id"], fixture.alpha_studio_id.simple().to_string());
+    let hyphenated = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Studios/Missing-Studio",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(hyphenated["Name"], "Missing-Studio");
+    assert_ne!(hyphenated["Id"], Uuid::nil().simple().to_string());
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let beta_entity = items
+        .get_by_type_and_name("Studio", &fixture.beta_studio)
+        .await
+        .expect("backfilled Studio lookup")
+        .expect("backfilled Studio");
+    let beta_path = PathBuf::from(beta_entity.path.expect("backfilled Studio path"));
+    assert!(
+        beta_path.starts_with(
+            fixture
+                .storage_directory
+                .join("programdata/metadata/Studio")
+        )
+    );
+    assert!(tokio::fs::metadata(beta_path).await.unwrap().is_dir());
 
     assert_eq!(
         fixture
@@ -680,6 +720,7 @@ struct Fixture {
     database_name: String,
     database: DatabaseConnection,
     app: Router,
+    storage_directory: PathBuf,
     user_id: Uuid,
     other_user_id: Uuid,
     movie_id: Uuid,
@@ -790,7 +831,15 @@ impl Fixture {
             .await
             .expect("duplicate studio link");
 
-        let studio_item = create_item(&items, "Studio", &alpha_studio, None, true).await;
+        let alpha_studio_item_id = official_item_by_name_id("Studio", &alpha_studio);
+        let studio_item = create_item_by_name(
+            &items,
+            alpha_studio_item_id,
+            "Studio",
+            &alpha_studio,
+            &format!("Studio-{alpha_studio}"),
+        )
+        .await;
         let user_data = UserDataRepository::new(database.clone());
         let mut linked_item_favorite =
             NewUserData::new(trailer.id, user.id, "LinkedStudioFavorite");
@@ -806,16 +855,29 @@ impl Fixture {
             .await
             .expect("studio favorite user data");
 
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Studio Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        ));
+        let storage_directory =
+            std::env::temp_dir().join(format!("jellyfin-studio-routes-{suffix}"));
+        let program_data = storage_directory.join("programdata");
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Studio Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                &program_data,
+                storage_directory.join("web"),
+                storage_directory.join("cache/images"),
+                storage_directory.join("cache"),
+                program_data.join("metadata"),
+            ),
+        );
 
         Self {
             database_name,
             database,
             app,
+            storage_directory,
             user_id: user.id,
             other_user_id: other_user.id,
             movie_id: movie.id,
@@ -856,9 +918,18 @@ impl Fixture {
             database_name,
             database,
             app,
+            storage_directory,
             ..
         } = self;
         drop(app);
+        if tokio::fs::try_exists(&storage_directory)
+            .await
+            .unwrap_or(false)
+        {
+            tokio::fs::remove_dir_all(&storage_directory)
+                .await
+                .expect("temporary Studio storage cleanup");
+        }
         database.close().await.unwrap();
         let administrator = jellyfin_data::connect(&DatabaseConfig::default())
             .await
@@ -884,6 +955,46 @@ async fn create_item(
     item.parent_id = parent_id;
     item.is_folder = is_folder;
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_item_by_name(
+    repository: &BaseItemRepository,
+    id: Uuid,
+    item_type: &str,
+    name: &str,
+    presentation_unique_key: &str,
+) -> base_item::Model {
+    let mut item = NewBaseItem::new(id, item_type);
+    item.name = Some(name.to_owned());
+    item.sort_name = Some(name.to_owned());
+    item.path = Some(format!("metadata/{item_type}/{name}"));
+    item.is_folder = true;
+    item.presentation_unique_key = Some(presentation_unique_key.to_owned());
+    repository
+        .create(item)
+        .await
+        .expect("item-by-name creation")
+}
+
+fn official_item_by_name_id(item_type: &str, name: &str) -> Uuid {
+    let clr_type = match item_type {
+        "Studio" => "MediaBrowser.Controller.Entities.Studio",
+        "Year" => "MediaBrowser.Controller.Entities.Year",
+        _ => panic!("unsupported test item-by-name type"),
+    };
+    let path = format!("metadata\\{item_type}\\{name}").to_lowercase();
+    let value = format!("{clr_type}{path}");
+    let digest = Md5::digest(
+        value
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    Uuid::from_bytes([
+        digest[3], digest[2], digest[1], digest[0], digest[5], digest[4], digest[7], digest[6],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14],
+        digest[15],
+    ])
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

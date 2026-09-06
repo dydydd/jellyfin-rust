@@ -8,11 +8,13 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, entities::item_value,
+    NewDevice, NewUserData, UserDataRepository, entities::item_value,
 };
 use jellyfin_model::UserPolicy;
+use md5::{Digest, Md5};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
+use std::path::PathBuf;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -51,6 +53,20 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     )
     .await;
     assert_years(&years, &["2024", "2001"], 4, 0);
+    let listed_2024_id = years["Items"][0]["Id"].clone();
+
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let backfilled_2024 = items
+        .get_by_type_and_name("Year", "2024")
+        .await
+        .expect("backfilled Year lookup")
+        .expect("backfilled Year");
+    assert_eq!(listed_2024_id, backfilled_2024.id.simple().to_string());
+    let backfilled_path = PathBuf::from(backfilled_2024.path.expect("backfilled Year path"));
+    assert!(
+        backfilled_path.starts_with(fixture.storage_directory.join("programdata/metadata/Year"))
+    );
+    assert!(tokio::fs::metadata(backfilled_path).await.unwrap().is_dir());
 
     let lowercase_years = body_json(
         fixture
@@ -386,6 +402,34 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     )
     .await;
     assert_eq!(admin_targeted["Name"], "2024");
+    assert_eq!(admin_targeted["Id"], listed_2024_id);
+    assert!(admin_targeted["Path"].as_str().is_some());
+    assert!(admin_targeted["DateCreated"].as_str().is_some());
+
+    let unknown_user = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years/2024?UserId={}", Uuid::new_v4()),
+                Credential::Device(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(unknown_user["Id"], listed_2024_id);
+    assert!(unknown_user.get("UserData").is_none());
+
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                "/Years/2024?limit=invalid&parentId=invalid&recursive=invalid",
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::OK
+    );
 
     let persisted_year = body_json(
         fixture
@@ -403,6 +447,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
         persisted_year["Id"],
         fixture.persisted_year_id.simple().to_string()
     );
+    assert_eq!(persisted_year["UserData"]["IsFavorite"], true);
 
     let items = BaseItemRepository::new(fixture.database.clone());
     let visible_folder_id = Uuid::new_v4();
@@ -531,6 +576,7 @@ struct Fixture {
     database_name: String,
     database: DatabaseConnection,
     app: Router,
+    storage_directory: PathBuf,
     user_id: Uuid,
     other_user_id: Uuid,
     parent_id: Uuid,
@@ -632,23 +678,42 @@ impl Fixture {
         audio.production_year = Some(1977);
         items.create(audio).await.expect("audio creation");
 
-        let persisted_year_id = Uuid::new_v4();
+        let persisted_year_id = official_item_by_name_id("Year", "1984");
         let mut year = NewBaseItem::new(persisted_year_id, "Year");
         year.name = Some("1984".to_owned());
         year.sort_name = Some("1984".to_owned());
+        year.path = Some("metadata/Year/1984".to_owned());
         year.is_folder = true;
         items.create(year).await.expect("year item creation");
+        let mut year_favorite = NewUserData::new(persisted_year_id, user.id, "YearFavorite");
+        year_favorite.is_favorite = true;
+        UserDataRepository::new(database.clone())
+            .upsert(year_favorite)
+            .await
+            .expect("year user data");
 
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Year Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        ));
+        let storage_directory = std::env::temp_dir().join(format!("jellyfin-year-routes-{suffix}"));
+        let program_data = storage_directory.join("programdata");
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Year Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                &program_data,
+                storage_directory.join("web"),
+                storage_directory.join("cache/images"),
+                storage_directory.join("cache"),
+                program_data.join("metadata"),
+            ),
+        );
 
         Self {
             database_name,
             database,
             app,
+            storage_directory,
             user_id: user.id,
             other_user_id: other_user.id,
             parent_id,
@@ -684,9 +749,18 @@ impl Fixture {
             database_name,
             database,
             app,
+            storage_directory,
             ..
         } = self;
         drop(app);
+        if tokio::fs::try_exists(&storage_directory)
+            .await
+            .unwrap_or(false)
+        {
+            tokio::fs::remove_dir_all(&storage_directory)
+                .await
+                .expect("temporary Year storage cleanup");
+        }
         database.close().await.unwrap();
         let administrator = jellyfin_data::connect(&DatabaseConfig::default())
             .await
@@ -697,6 +771,27 @@ impl Fixture {
             .expect("temporary PostgreSQL database cleanup must succeed");
         administrator.close().await.unwrap();
     }
+}
+
+fn official_item_by_name_id(item_type: &str, name: &str) -> Uuid {
+    let clr_type = match item_type {
+        "Studio" => "MediaBrowser.Controller.Entities.Studio",
+        "Year" => "MediaBrowser.Controller.Entities.Year",
+        _ => panic!("unsupported test item-by-name type"),
+    };
+    let path = format!("metadata\\{item_type}\\{name}").to_lowercase();
+    let value = format!("{clr_type}{path}");
+    let digest = Md5::digest(
+        value
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    Uuid::from_bytes([
+        digest[3], digest[2], digest[1], digest[0], digest[5], digest[4], digest[7], digest[6],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14],
+        digest[15],
+    ])
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

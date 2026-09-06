@@ -117,6 +117,11 @@
   Genre, MusicGenre, or Filters2 list. Share one process-local single-flight across both kinds,
   keyset-page required values, create official metadata directories before persistence, and batch
   inserts; do not require a full library scan or repeat the reconciliation after success.
+- Resolve every Studio detail name directly, including names containing hyphens, and every positive
+  Year through its official persisted item-by-name path and UTF-16LE identifier. Their detail routes
+  bind only `UserId`, use default all-fields DTO projection, and let an administrator target a
+  nonexistent user without attaching user data. Backfill legacy Studio values and production years
+  in bounded batches, and ensure each paged Year result has a persisted entity before returning it.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an

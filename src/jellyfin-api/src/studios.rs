@@ -6,6 +6,7 @@ use axum::{
     http::HeaderMap,
     response::Response,
 };
+use jellyfin_controller::UserError;
 use jellyfin_data::ItemValueQuery;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -185,20 +186,77 @@ pub(crate) async fn get(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    if target_user_id != authenticated.user.id && !authenticated.user.is_administrator {
+        return Err(ApiError::Forbidden);
+    }
+    let target_user_exists = match state.users.get(target_user_id).await {
+        Ok(_) => true,
+        Err(UserError::NotFound) if authenticated.user.is_administrator => false,
+        Err(error) => return Err(error.into()),
+    };
     let mut item_query = ItemValueQuery::default();
-    state
-        .user_library
-        .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
-        .await?;
+    if target_user_exists {
+        state
+            .user_library
+            .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
+            .await?;
+    }
     let studio = state
         .studios
         .get(&authenticated.user, target_user_id, &name, item_query)
         .await?;
-    Ok(Json(user_library::studio_to_dto(
-        studio,
-        state.server_id(),
-        true,
-    )))
+    let mut dto = if target_user_exists {
+        user_library::project_item_to_dto(
+            &state,
+            studio.item,
+            target_user_id,
+            user_library::BaseItemDtoFields::all(),
+            None,
+            None,
+        )
+        .await?
+    } else {
+        project_studio_without_user(&state, studio.item).await?
+    };
+    apply_studio_counts(&mut dto, studio.item_count, studio.counts);
+    Ok(Json(dto))
+}
+
+async fn project_studio_without_user(
+    state: &AppState,
+    item: jellyfin_data::entities::base_item::Model,
+) -> Result<user_library::BaseItemDto, ApiError> {
+    let item_id = item.id;
+    let mut dto = user_library::item_to_dto(item, state.server_id());
+    if let Some(projection) = state
+        .dto_images
+        .project(
+            item_id,
+            jellyfin_server_implementations::DtoImageOptions::default(),
+        )
+        .await
+        .map_err(|_| ApiError::Internal)?
+    {
+        user_library::attach_dto_image_projection(&mut dto, projection);
+    }
+    Ok(dto)
+}
+
+fn apply_studio_counts(
+    dto: &mut user_library::BaseItemDto,
+    item_count: u64,
+    counts: jellyfin_data::ItemValueCounts,
+) {
+    dto.child_count = Some(item_count);
+    dto.album_count = Some(counts.album_count);
+    dto.artist_count = Some(counts.artist_count);
+    dto.episode_count = Some(counts.episode_count);
+    dto.movie_count = Some(counts.movie_count);
+    dto.music_video_count = Some(counts.music_video_count);
+    dto.program_count = Some(counts.program_count);
+    dto.series_count = Some(counts.series_count);
+    dto.song_count = Some(counts.song_count);
+    dto.trailer_count = Some(counts.trailer_count);
 }
 
 pub(crate) async fn get_image(

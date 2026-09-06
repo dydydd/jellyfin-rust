@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
 };
-use jellyfin_controller::YearItem;
+use jellyfin_controller::{UserError, YearItem};
 use jellyfin_data::{BaseItemQuery, ProductionYearOrder};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -73,6 +73,12 @@ pub(crate) struct YearsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct YearByNameQuery {
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -148,21 +154,62 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(year): Path<i32>,
-    Query(query): Query<YearsQuery>,
+    Query(query): Query<YearByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    if target_user_id != authenticated.user.id && !authenticated.user.is_administrator {
+        return Err(ApiError::Forbidden);
+    }
+    let target_user_exists = match state.users.get(target_user_id).await {
+        Ok(_) => true,
+        Err(UserError::NotFound) if authenticated.user.is_administrator => false,
+        Err(error) => return Err(error.into()),
+    };
     let year = state
         .years
         .get(&authenticated.user, target_user_id, year)
         .await?;
-    Ok(Json(match year {
-        YearItem::Persisted(item) => user_library::item_to_dto(item, state.server_id()),
-        YearItem::Virtual(year) => user_library::year_to_dto(year, state.server_id()),
-    }))
+    let YearItem::Persisted(item) = year else {
+        return Err(ApiError::Internal);
+    };
+    let dto = if target_user_exists {
+        user_library::project_item_to_dto(
+            &state,
+            item,
+            target_user_id,
+            user_library::BaseItemDtoFields::all(),
+            None,
+            None,
+        )
+        .await?
+    } else {
+        project_year_without_user(&state, item).await?
+    };
+    Ok(Json(dto))
+}
+
+async fn project_year_without_user(
+    state: &AppState,
+    item: jellyfin_data::entities::base_item::Model,
+) -> Result<user_library::BaseItemDto, ApiError> {
+    let item_id = item.id;
+    let mut dto = user_library::item_to_dto(item, state.server_id());
+    if let Some(projection) = state
+        .dto_images
+        .project(
+            item_id,
+            jellyfin_server_implementations::DtoImageOptions::default(),
+        )
+        .await
+        .map_err(|_| ApiError::Internal)?
+    {
+        user_library::attach_dto_image_projection(&mut dto, projection);
+    }
+    Ok(dto)
 }
 
 fn descending(sort_order: &[String]) -> Result<bool, ApiError> {
