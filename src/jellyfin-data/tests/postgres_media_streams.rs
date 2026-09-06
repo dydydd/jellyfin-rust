@@ -222,6 +222,7 @@ async fn assert_batch_query_for_items(items: &BaseItemRepository, streams: &Medi
     let first_values = vec![
         minimal_stream(1, PersistedMediaStreamType::Audio),
         minimal_stream(3, PersistedMediaStreamType::Subtitle),
+        minimal_stream(5, PersistedMediaStreamType::Lyric),
     ];
     let second_values = vec![minimal_stream(-1, PersistedMediaStreamType::Video)];
     streams.replace(first.id, &first_values).await.unwrap();
@@ -234,6 +235,23 @@ async fn assert_batch_query_for_items(items: &BaseItemRepository, streams: &Medi
     assert_eq!(batch.get(&first.id).cloned().unwrap(), first_values);
     assert_eq!(batch.get(&second.id).cloned().unwrap(), second_values);
     assert!(!batch.contains_key(&Uuid::new_v4()));
+
+    let lyric_item_ids = streams
+        .item_ids_with_stream_type(
+            &[second.id, first.id, Uuid::new_v4()],
+            PersistedMediaStreamType::Lyric,
+        )
+        .await
+        .unwrap();
+    assert_eq!(lyric_item_ids.len(), 1);
+    assert!(lyric_item_ids.contains(&first.id));
+    assert!(
+        streams
+            .item_ids_with_stream_type(&[], PersistedMediaStreamType::Lyric)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 async fn assert_languages(

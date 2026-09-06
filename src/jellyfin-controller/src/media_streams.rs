@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use jellyfin_data::{
     MediaStreamQuery as PersistedMediaStreamQuery, MediaStreamRepository, MediaStreamStoreError,
@@ -306,6 +306,22 @@ where
                 )
             })
             .collect())
+    }
+
+    /// Returns the requested item identifiers that have a persisted stream of `stream_type`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PostgreSQL` persistence errors.
+    pub async fn item_ids_with_stream_type(
+        &self,
+        item_ids: &[Uuid],
+        stream_type: MediaStreamType,
+    ) -> Result<HashSet<Uuid>, MediaStreamServiceError> {
+        Ok(self
+            .repository
+            .item_ids_with_stream_type(item_ids, model_type_to_persisted(stream_type))
+            .await?)
     }
 
     /// Returns distinct language codes for a persisted stream type.

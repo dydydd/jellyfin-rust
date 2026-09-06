@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryFilter,
-    QueryOrder, Statement, TransactionTrait,
+    QueryOrder, QuerySelect, Statement, TransactionTrait,
 };
 use serde_json::{Number, Value, json};
 use thiserror::Error;
@@ -314,6 +314,36 @@ impl MediaStreamRepository {
                 .push(PersistedMediaStream::try_from(row)?);
         }
         Ok(grouped)
+    }
+
+    /// Returns the requested item identifiers that own at least one stream of `stream_type`.
+    ///
+    /// The distinct identifier projection keeps DTO existence checks set-based and avoids loading
+    /// complete media-stream rows merely to compute a boolean.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the query fails.
+    pub async fn item_ids_with_stream_type(
+        &self,
+        item_ids: &[Uuid],
+        stream_type: PersistedMediaStreamType,
+    ) -> Result<HashSet<Uuid>, MediaStreamStoreError> {
+        if item_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        Ok(media_stream::Entity::find()
+            .select_only()
+            .column(media_stream::Column::ItemId)
+            .filter(media_stream::Column::ItemId.is_in(item_ids.iter().copied()))
+            .filter(media_stream::Column::StreamType.eq(stream_type.as_i16()))
+            .distinct()
+            .into_tuple::<Uuid>()
+            .all(self.database.as_ref())
+            .await?
+            .into_iter()
+            .collect())
     }
 
     /// Returns the distinct languages stored for one stream type.

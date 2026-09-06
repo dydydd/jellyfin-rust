@@ -1933,6 +1933,16 @@ async fn page_to_dto_with_fields_and_options(
     dto_options: &PageDtoOptions,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let audio_item_ids = page
+        .items
+        .iter()
+        .filter(|item| user_library::is_audio_base_item(item))
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    let lyric_item_ids = state
+        .media_streams
+        .item_ids_with_stream_type(&audio_item_ids, jellyfin_model::MediaStreamType::Lyric)
+        .await?;
     let mut child_counts = if let Some(target_user_id) = target_user_id {
         user_library::child_counts_for_items(state, &page.items, requested_fields, target_user_id)
             .await?
@@ -2095,6 +2105,7 @@ async fn page_to_dto_with_fields_and_options(
         let item_id = item.id;
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let mut dto = user_library::item_to_dto(item, state.server_id());
+        user_library::attach_has_lyrics(&mut dto, lyric_item_ids.contains(&item_id));
         let original_language = dto.original_language.clone();
         user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
         user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));

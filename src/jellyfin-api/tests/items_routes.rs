@@ -64,6 +64,118 @@ async fn official_items_controller_contract() {
 }
 
 #[tokio::test]
+async fn has_lyrics_uses_persisted_lyric_streams_for_item_and_page_dtos() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    audio.name = Some(format!("Has lyrics audio {}", fixture.suffix));
+    audio.sort_name = audio.name.clone();
+    audio.parent_id = Some(root.id);
+    audio.media_type = Some("Audio".to_owned());
+    audio.path = Some(format!("/media/has-lyrics-{}.flac", fixture.suffix));
+    audio.data = Some(serde_json::json!({
+        "Lyrics": { "Lyrics": [{ "Text": "stale JSON" }] }
+    }));
+    let audio = items.create(audio).await.expect("audio item");
+
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some(format!("Has lyrics movie {}", fixture.suffix));
+    movie.sort_name = movie.name.clone();
+    movie.parent_id = Some(root.id);
+    movie.media_type = Some("Video".to_owned());
+    movie.path = Some(format!("/media/has-lyrics-{}.mkv", fixture.suffix));
+    movie.data = Some(serde_json::json!({
+        "Lyrics": { "Lyrics": [{ "Text": "not an audio item" }] }
+    }));
+    let movie = items.create(movie).await.expect("movie item");
+
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            movie.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Lyric,
+                codec: Some("lrc".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("non-audio lyric stream");
+
+    let page_route = format!("/Items?ids={},{}", audio.id, movie.id);
+    let page = body_json(
+        fixture
+            .request(&page_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    let audio_dto = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == audio.id.simple().to_string())
+        .expect("audio page dto");
+    assert_eq!(audio_dto["HasLyrics"], false);
+    let movie_dto = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == movie.id.simple().to_string())
+        .expect("movie page dto");
+    assert!(movie_dto.get("HasLyrics").is_none());
+
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            audio.id,
+            vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("flac".to_owned()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Lyric,
+                    codec: Some("lrc".to_owned()),
+                    ..MediaStream::default()
+                },
+            ],
+        )
+        .await
+        .expect("audio lyric stream");
+
+    let page = body_json(
+        fixture
+            .request(&page_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    let audio_dto = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == audio.id.simple().to_string())
+        .expect("audio page dto with lyrics");
+    assert_eq!(audio_dto["HasLyrics"], true);
+
+    for route in [
+        format!("/Users/{}/Items/{}", fixture.user_id, audio.id),
+        format!("/Items/{}?UserId={}", audio.id, fixture.user_id),
+    ] {
+        let dto = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(dto["HasLyrics"], true, "{route}");
+    }
+
+    items.delete(movie.id).await.expect("movie cleanup");
+    items.delete(audio.id).await.expect("audio cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn legacy_item_collection_accepts_empty_trailing_path_segments() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

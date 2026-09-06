@@ -920,11 +920,6 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         &["IsoType", "isoType", "iso_type"],
         ISO_TYPES,
     );
-    let has_lyrics = item
-        .data
-        .as_ref()
-        .and_then(Value::as_object)
-        .map(|object| object.contains_key("Lyrics") || object.contains_key("lyrics"));
     let original_language = original_language_from_item(&item);
     BaseItemDto {
         name: item.name,
@@ -992,7 +987,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         album_artist,
         album_artists: album_artist_names.map(|_| Vec::new()),
         extra_type,
-        has_lyrics,
+        has_lyrics: None,
         provider_ids: metadata_provider_ids(item.data.as_ref()),
         user_data: None,
         genres: metadata_strings(item.data.as_ref(), &["Genres", "genres"]),
@@ -1087,6 +1082,13 @@ pub(crate) async fn project_item_to_dto(
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let mut dto = item_to_dto(item, state.server_id());
+    if is_audio_item(&dto) {
+        let lyric_item_ids = state
+            .media_streams
+            .item_ids_with_stream_type(&[item_id], MediaStreamType::Lyric)
+            .await?;
+        attach_has_lyrics(&mut dto, lyric_item_ids.contains(&item_id));
+    }
     let original_language = dto.original_language.clone();
     attach_relation_metadata(&mut dto, relations.remove(&item_id).unwrap_or_default());
     attach_user_data_dto(&mut dto, user_data);
@@ -1218,6 +1220,10 @@ pub(crate) fn apply_media_source_policy(dto: &mut BaseItemDto, policy: &UserPoli
 
 pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) {
     dto.media_source_count = (count > 1).then(|| i32::try_from(count).ok()).flatten();
+}
+
+pub(crate) fn attach_has_lyrics(dto: &mut BaseItemDto, has_lyrics: bool) {
+    dto.has_lyrics = is_audio_item(dto).then_some(has_lyrics);
 }
 
 async fn attach_versioned_media_sources(
@@ -1991,11 +1997,29 @@ fn is_valid_subtitle_stream_index(media_streams: &[MediaStream], index: i32) -> 
             .any(|stream| stream.stream_type == MediaStreamType::Subtitle && stream.index == index)
 }
 
+pub(crate) fn is_audio_base_item(item: &base_item::Model) -> bool {
+    item.media_type
+        .as_deref()
+        .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Audio"))
+        || is_audio_item_type(&item.item_type)
+}
+
 fn is_audio_item(dto: &BaseItemDto) -> bool {
     dto.media_type
         .as_deref()
         .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Audio"))
-        || dto.item_type.eq_ignore_ascii_case("Audio")
+        || is_audio_item_type(&dto.item_type)
+}
+
+fn is_audio_item_type(item_type: &str) -> bool {
+    [
+        "Audio",
+        "AudioBook",
+        "MediaBrowser.Controller.Entities.Audio.Audio",
+        "MediaBrowser.Controller.Entities.AudioBook",
+    ]
+    .iter()
+    .any(|candidate| item_type.eq_ignore_ascii_case(candidate))
 }
 
 fn is_video_item(dto: &BaseItemDto) -> bool {

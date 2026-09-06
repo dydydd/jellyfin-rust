@@ -81,7 +81,7 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
     let item_route = format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id);
     let item = get_json(&fixture.app, &item_route, &fixture.user_token).await;
     assert_base_item(&item, fixture.item_id, "Audio", "Test Song");
-    assert_eq!(item["HasLyrics"], true);
+    assert_eq!(item["HasLyrics"], false);
     assert!(item.get("item_type").is_none());
 
     let intros = get_json(
