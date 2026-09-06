@@ -1906,6 +1906,21 @@ pub(crate) async fn page_to_dto(
     .await
 }
 
+pub(crate) async fn page_to_dto_all_fields(
+    state: &AppState,
+    page: BaseItemPage,
+    target_user_id: Uuid,
+) -> Result<user_library::BaseItemQueryResult, ApiError> {
+    page_to_dto_with_fields_and_options(
+        state,
+        page,
+        user_library::BaseItemDtoFields::all(),
+        Some(target_user_id),
+        &PageDtoOptions::default(),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn page_to_dto_with_options(
     state: &AppState,

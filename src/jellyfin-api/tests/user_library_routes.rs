@@ -131,6 +131,213 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
 }
 
 #[tokio::test]
+async fn related_item_routes_batch_default_fields_and_enforce_target_user_visibility() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let marker = Uuid::new_v4().simple().to_string();
+
+    let mut intro = items
+        .get(fixture.intro_id)
+        .await
+        .expect("intro lookup")
+        .expect("intro item");
+    intro.media_type = Some("Video".to_owned());
+    intro.path = Some(format!("/media/{marker}-intro.mkv"));
+    intro.data = Some(json!({ "IsIntro": true, "HasSubtitles": false }));
+    let intro = items.update(intro).await.expect("intro update");
+
+    let mut trailer = items
+        .get(fixture.trailer_id)
+        .await
+        .expect("trailer lookup")
+        .expect("trailer item");
+    trailer.media_type = Some("Video".to_owned());
+    trailer.path = Some(format!("/media/{marker}-trailer.mkv"));
+    trailer.data = Some(json!({ "ExtraType": "Trailer", "HasSubtitles": true }));
+    let trailer = items.update(trailer).await.expect("trailer update");
+
+    let mut audio_feature = item(
+        "Audio",
+        "Audio Feature With Lyrics",
+        Some(fixture.item_id),
+        false,
+    );
+    audio_feature.media_type = Some("Audio".to_owned());
+    audio_feature.path = Some(format!("/media/{marker}-feature.flac"));
+    audio_feature.data = Some(json!({ "ExtraType": "Featurette" }));
+    let audio_feature = items
+        .create(audio_feature)
+        .await
+        .expect("audio special feature");
+
+    let streams = MediaStreamService::new(fixture.database.clone());
+    streams
+        .save_media_streams(
+            intro.id,
+            vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    path: intro.path.clone(),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("ass".to_owned()),
+                    language: Some("jpn".to_owned()),
+                    path: intro.path.clone(),
+                    ..MediaStream::default()
+                },
+            ],
+        )
+        .await
+        .expect("intro streams");
+    streams
+        .save_media_streams(
+            trailer.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("hevc".to_owned()),
+                path: trailer.path.clone(),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("trailer stream");
+    streams
+        .save_media_streams(
+            audio_feature.id,
+            vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("flac".to_owned()),
+                    path: audio_feature.path.clone(),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Lyric,
+                    codec: Some("lrc".to_owned()),
+                    path: audio_feature.path.clone(),
+                    ..MediaStream::default()
+                },
+            ],
+        )
+        .await
+        .expect("feature lyric stream");
+
+    for route in [
+        format!("/Items/{}/Intros", fixture.item_id),
+        format!(
+            "/Users/{}/Items/{}/Intros",
+            fixture.user_id, fixture.item_id
+        ),
+    ] {
+        let response = get_json(&fixture.app, &route, &fixture.user_token).await;
+        let dto = &response["Items"][0];
+        assert_eq!(response["TotalRecordCount"], 1, "{route}");
+        assert_eq!(dto["HasSubtitles"], true, "{route}");
+        assert_eq!(dto["MediaStreams"].as_array().unwrap().len(), 2, "{route}");
+        assert_eq!(dto["MediaStreams"][1]["Language"], "jpn", "{route}");
+        assert_eq!(dto["MediaSources"].as_array().unwrap().len(), 1, "{route}");
+        assert!(dto["UserData"].is_object(), "{route}");
+    }
+
+    for route in [
+        format!("/Items/{}/LocalTrailers", fixture.item_id),
+        format!(
+            "/Users/{}/Items/{}/LocalTrailers",
+            fixture.user_id, fixture.item_id
+        ),
+    ] {
+        let response = get_json(&fixture.app, &route, &fixture.user_token).await;
+        let dto = &response[0];
+        assert_eq!(response.as_array().unwrap().len(), 1, "{route}");
+        assert!(dto.get("HasSubtitles").is_none(), "{route}: {dto}");
+        assert_eq!(dto["MediaStreams"].as_array().unwrap().len(), 1, "{route}");
+        assert_eq!(dto["MediaSources"].as_array().unwrap().len(), 1, "{route}");
+        assert!(dto["UserData"].is_object(), "{route}");
+    }
+
+    for route in [
+        format!("/Items/{}/SpecialFeatures", fixture.item_id),
+        format!(
+            "/Users/{}/Items/{}/SpecialFeatures",
+            fixture.user_id, fixture.item_id
+        ),
+    ] {
+        let response = get_json(&fixture.app, &route, &fixture.user_token).await;
+        let dto = response
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|dto| dto["Id"] == audio_feature.id.simple().to_string())
+            .expect("audio feature DTO");
+        assert_eq!(dto["HasLyrics"], true, "{route}");
+    }
+
+    let values = ItemValueRepository::new(fixture.database.clone());
+    values
+        .link(
+            trailer.id,
+            item_value::ItemValueType::Tags,
+            "BlockedRelated",
+        )
+        .await
+        .expect("blocked trailer tag");
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["BlockedRelated".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("related-item user policy");
+
+    let hidden_children = get_json(
+        &fixture.app,
+        &format!("/Items/{}/LocalTrailers", fixture.item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert!(hidden_children.as_array().unwrap().is_empty());
+    let administrator_children = get_json(
+        &fixture.app,
+        &format!("/Items/{}/LocalTrailers", fixture.item_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(administrator_children.as_array().unwrap().len(), 1);
+
+    values
+        .link(
+            fixture.item_id,
+            item_value::ItemValueType::Tags,
+            "BlockedRelated",
+        )
+        .await
+        .expect("blocked related owner tag");
+    assert_eq!(
+        request(
+            &fixture.app,
+            &format!("/Items/{}/Intros", fixture.item_id),
+            &fixture.user_token,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn episode_detail_routes_project_official_series_and_season_names() {
     let fixture = UserLibraryFixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());

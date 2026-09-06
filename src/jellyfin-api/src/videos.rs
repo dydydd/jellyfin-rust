@@ -8,6 +8,7 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
+use jellyfin_data::BaseItemPage;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -238,15 +239,20 @@ pub(crate) async fn additional_parts(
     let items = state
         .user_library
         .additional_parts(&authenticated.user, target_user_id, item_id)
-        .await?
-        .into_iter()
-        .map(|item| user_library::item_to_dto(item, state.server_id()))
-        .collect::<Vec<_>>();
-    Ok(Json(user_library::BaseItemQueryResult {
-        total_record_count: items.len(),
-        start_index: 0,
-        items,
-    }))
+        .await?;
+    let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+    Ok(Json(
+        crate::items::page_to_dto_all_fields(
+            state.as_ref(),
+            BaseItemPage {
+                items,
+                total_record_count,
+                start_index: 0,
+            },
+            target_user_id,
+        )
+        .await?,
+    ))
 }
 
 #[cfg(test)]

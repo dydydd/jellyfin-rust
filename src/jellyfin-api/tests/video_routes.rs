@@ -4,11 +4,13 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, LinkedChildRepository, LinkedChildType, NewBaseItem,
-    NewDevice, entities::user,
+    BaseItemRepository, DeviceRepository, ItemValueRepository, LinkedChildRepository,
+    LinkedChildType, NewBaseItem, NewDevice,
+    entities::{item_value, user},
 };
+use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -386,6 +388,68 @@ async fn additional_parts_route_reads_official_path_metadata() {
     assert_eq!(non_video["TotalRecordCount"], 0);
     assert!(non_video["Items"].as_array().unwrap().is_empty());
 
+    let mut part_with_subtitles = fixture
+        .repository
+        .get(fixture.additional_parts[0])
+        .await
+        .expect("additional part lookup")
+        .expect("additional part");
+    part_with_subtitles.data = Some(json!({ "HasSubtitles": false }));
+    let part_with_subtitles = fixture
+        .repository
+        .update(part_with_subtitles)
+        .await
+        .expect("additional part update");
+    let mut stale_part = fixture
+        .repository
+        .get(fixture.additional_parts[1])
+        .await
+        .expect("stale additional part lookup")
+        .expect("stale additional part");
+    stale_part.data = Some(json!({ "HasSubtitles": true }));
+    let stale_part = fixture
+        .repository
+        .update(stale_part)
+        .await
+        .expect("stale additional part update");
+    let streams = MediaStreamService::new(fixture.database.clone());
+    streams
+        .save_media_streams(
+            part_with_subtitles.id,
+            vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    path: part_with_subtitles.path.clone(),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Subtitle,
+                    codec: Some("srt".to_owned()),
+                    language: Some("eng".to_owned()),
+                    path: part_with_subtitles.path.clone(),
+                    ..MediaStream::default()
+                },
+            ],
+        )
+        .await
+        .expect("additional-part subtitle streams");
+    streams
+        .save_media_streams(
+            stale_part.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("hevc".to_owned()),
+                path: stale_part.path.clone(),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("stale additional-part stream");
+
     let body = body_json(
         fixture
             .send(Method::GET, &route, Some(&fixture.user_token))
@@ -401,12 +465,82 @@ async fn additional_parts_route_reads_official_path_metadata() {
     );
     assert_eq!(body["Items"][0]["Name"], "A Additional Part");
     assert_eq!(body["Items"][0]["Type"], "Video");
+    assert_eq!(body["Items"][0]["HasSubtitles"], true);
+    assert_eq!(
+        body["Items"][0]["MediaStreams"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(body["Items"][0]["MediaStreams"][1]["Language"], "eng");
+    assert_eq!(
+        body["Items"][0]["MediaSources"].as_array().unwrap().len(),
+        1
+    );
+    assert!(body["Items"][0]["UserData"].is_object());
     assert_eq!(
         body["Items"][1]["Id"],
         fixture.additional_parts[1].simple().to_string()
     );
     assert_eq!(body["Items"][1]["Name"], "B Additional Part");
     assert_eq!(body["Items"][1]["Type"], "Movie");
+    assert!(body["Items"][1].get("HasSubtitles").is_none());
+    assert_eq!(
+        body["Items"][1]["MediaStreams"].as_array().unwrap().len(),
+        1
+    );
+
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            stale_part.id,
+            item_value::ItemValueType::Tags,
+            "BlockedAdditionalPart",
+        )
+        .await
+        .expect("blocked additional-part tag");
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["BlockedAdditionalPart".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("additional-part user policy");
+    let visible_parts = body_json(
+        fixture
+            .send(Method::GET, &route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(visible_parts["TotalRecordCount"], 1);
+    assert_eq!(visible_parts["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        visible_parts["Items"][0]["Id"],
+        part_with_subtitles.id.simple().to_string()
+    );
+    let administrator_parts = body_json(
+        fixture
+            .send(Method::GET, &route, Some(&fixture.admin_token))
+            .await,
+    )
+    .await;
+    assert_eq!(administrator_parts["TotalRecordCount"], 2);
+
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            fixture.additional_main_id,
+            item_value::ItemValueType::Tags,
+            "BlockedAdditionalPart",
+        )
+        .await
+        .expect("blocked additional-part owner tag");
+    assert_eq!(
+        fixture
+            .send(Method::GET, &route, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 
     fixture.cleanup().await;
 }

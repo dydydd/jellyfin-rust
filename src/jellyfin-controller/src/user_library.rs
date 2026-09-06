@@ -538,16 +538,25 @@ impl UserLibraryService {
         item_id: Uuid,
         kind: RelatedItemKind,
     ) -> Result<Vec<base_item::Model>, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        let item = self
+            .item(authenticated_user, target_user_id, item_id)
             .await?;
-        let item = self.load_item(item_id).await?;
         let descendants = self.items.descendants(item.id).await?;
-        Ok(descendants
+        let mut candidates = descendants
             .into_iter()
             .filter_map(|entry| self.item_types.hydrate(entry.item))
             .map(HydratedBaseItem::into_model)
             .filter(|candidate| related_item_matches(candidate, kind))
-            .collect())
+            .collect::<Vec<_>>();
+        let candidate_ids = candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let visible_ids = self
+            .visible_item_ids(target_user_id, &candidate_ids)
+            .await?;
+        candidates.retain(|candidate| visible_ids.contains(&candidate.id));
+        Ok(candidates)
     }
 
     /// Loads theme extras for several possible owners in one policy-aware query.
@@ -621,9 +630,9 @@ impl UserLibraryService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<Vec<base_item::Model>, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        let item = self
+            .item(authenticated_user, target_user_id, item_id)
             .await?;
-        let item = self.load_item(item_id).await?;
         let Some(item_type) = self.item_types.resolve(&item.item_type) else {
             return Ok(Vec::new());
         };
@@ -632,7 +641,7 @@ impl UserLibraryService {
         }
 
         let paths = additional_part_paths(item.data.as_ref());
-        Ok(self
+        let mut candidates = self
             .items
             .by_paths(&paths)
             .await?
@@ -640,7 +649,16 @@ impl UserLibraryService {
             .filter_map(|item| self.item_types.hydrate(item))
             .filter(|item| is_video_item_type(item.item_type().name()))
             .map(HydratedBaseItem::into_model)
-            .collect())
+            .collect::<Vec<_>>();
+        let candidate_ids = candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let visible_ids = self
+            .visible_item_ids(target_user_id, &candidate_ids)
+            .await?;
+        candidates.retain(|candidate| visible_ids.contains(&candidate.id));
+        Ok(candidates)
     }
 
     /// Loads embedded lyric data after validating the user and item.
@@ -1076,18 +1094,6 @@ impl UserLibraryService {
         query.enable_all_folders = policy.enable_all_folders;
         query.blocked_media_folders = policy.blocked_media_folders;
         Ok(())
-    }
-
-    async fn load_item(&self, item_id: Uuid) -> Result<base_item::Model, UserLibraryError> {
-        if item_id.is_nil() {
-            return self.ensure_user_root().await;
-        }
-        self.items
-            .get(item_id)
-            .await?
-            .and_then(|item| self.item_types.hydrate(item))
-            .map(HydratedBaseItem::into_model)
-            .ok_or(UserLibraryError::ItemNotFound)
     }
 
     fn hydrate_page(&self, mut page: BaseItemPage) -> BaseItemPage {

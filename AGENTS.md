@@ -51,6 +51,9 @@
 - Project `HasSubtitles` only for Video items with at least one persisted Subtitle media stream.
   Omit false and non-Video values, ignore stale item JSON, and use one set-based existence query for
   item and playlist pages instead of maintaining a second scan-time boolean.
+- Project intros, local trailers, special features, and video additional parts with the official
+  default all-fields DTO options through one batched projector. Apply the target user's policy to
+  both the requested owner and every resolved child before returning the original response shape.
 - For lyric uploads, resolve the authorized Audio item before validating the body or filename so
   missing, hidden, and non-Audio targets retain the official 404 precedence over malformed uploads.
   Parse and persist through the same service operation without loading the item twice.

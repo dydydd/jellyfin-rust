@@ -14,7 +14,7 @@ use jellyfin_controller::{
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
-    ItemValueCounts,
+    BaseItemPage, ItemValueCounts,
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
@@ -811,17 +811,17 @@ async fn get_related_query_for(
     item_id: Uuid,
     kind: RelatedItemKind,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    let server_id = state.server_id().to_owned();
-    let items = related_items(state, headers, requested_user_id, item_id, kind).await?;
-    let items = items
-        .into_iter()
-        .map(|item| item_to_dto(item, &server_id))
-        .collect::<Vec<_>>();
-    Ok(Json(BaseItemQueryResult {
-        total_record_count: items.len(),
-        start_index: 0,
-        items,
-    }))
+    let (items, target_user_id) = related_items(
+        Arc::clone(&state),
+        headers,
+        requested_user_id,
+        item_id,
+        kind,
+    )
+    .await?;
+    Ok(Json(
+        project_related_items(state.as_ref(), items, target_user_id).await?,
+    ))
 }
 
 async fn get_related_for(
@@ -831,13 +831,18 @@ async fn get_related_for(
     item_id: Uuid,
     kind: RelatedItemKind,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    let server_id = state.server_id().to_owned();
-    let items = related_items(state, headers, requested_user_id, item_id, kind).await?;
+    let (items, target_user_id) = related_items(
+        Arc::clone(&state),
+        headers,
+        requested_user_id,
+        item_id,
+        kind,
+    )
+    .await?;
     Ok(Json(
-        items
-            .into_iter()
-            .map(|item| item_to_dto(item, &server_id))
-            .collect(),
+        project_related_items(state.as_ref(), items, target_user_id)
+            .await?
+            .items,
     ))
 }
 
@@ -847,13 +852,32 @@ async fn related_items(
     requested_user_id: Option<Uuid>,
     item_id: Uuid,
     kind: RelatedItemKind,
-) -> Result<Vec<base_item::Model>, ApiError> {
+) -> Result<(Vec<base_item::Model>, Uuid), ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
-    Ok(state
+    let items = state
         .user_library
         .related_items(&authenticated.user, target_user_id, item_id, kind)
-        .await?)
+        .await?;
+    Ok((items, target_user_id))
+}
+
+async fn project_related_items(
+    state: &AppState,
+    items: Vec<base_item::Model>,
+    target_user_id: Uuid,
+) -> Result<BaseItemQueryResult, ApiError> {
+    let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+    crate::items::page_to_dto_all_fields(
+        state,
+        BaseItemPage {
+            items,
+            total_record_count,
+            start_index: 0,
+        },
+        target_user_id,
+    )
+    .await
 }
 
 async fn get_lyrics_for(
