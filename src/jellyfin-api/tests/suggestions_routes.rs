@@ -139,6 +139,105 @@ async fn suggestions_routes_match_official_auth_filters_and_count_contract() {
     assert_eq!(item_names(&lowercase_legacy), item_names(&legacy));
 
     let legacy_route = format!("/Users/{}/Suggestions", fixture.user_id);
+    let enum_routes = [
+        ("/Items/Suggestions".to_owned(), fixture.user_token.as_str()),
+        (legacy_route.clone(), fixture.admin_token.as_str()),
+    ];
+    let expected_movies = BTreeSet::from([
+        format!("Nested Movie {}", fixture.suffix),
+        format!("Root Movie {}", fixture.suffix),
+    ]);
+    for (route, token) in &enum_routes {
+        for query in [
+            "MediaType=video&Type=movie&EnableTotalRecordCount=true",
+            "mediaType=VIDEO&type=MOVIE&enableTotalRecordCount=true",
+            "mediatype=video&type=movie&enabletotalrecordcount=true",
+        ] {
+            let page = body_json(fixture.get(&format!("{route}?{query}"), Some(token)).await).await;
+            assert_eq!(page["TotalRecordCount"], 2);
+            assert_eq!(item_names(&page), expected_movies);
+        }
+
+        let numeric = body_json(
+            fixture
+                .get(
+                    &format!("{route}?mediaType=1&type=13&enableTotalRecordCount=true"),
+                    Some(token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(numeric["TotalRecordCount"], 2);
+        assert_eq!(item_names(&numeric), expected_movies);
+    }
+
+    let expected_all = BTreeSet::from([
+        format!("Audio {}", fixture.suffix),
+        format!("Episode {}", fixture.suffix),
+        format!("Folder {}", fixture.suffix),
+        format!("Nested Movie {}", fixture.suffix),
+        format!("Root Movie {}", fixture.suffix),
+    ]);
+    for route in [
+        "/Items/Suggestions?mediaType=invalid&type=invalid&enableTotalRecordCount=true".to_owned(),
+        format!(
+            "/Users/{}/Suggestions?MediaType=99&Type=99&EnableTotalRecordCount=true",
+            fixture.user_id
+        ),
+    ] {
+        let page = body_json(fixture.get(&route, Some(&fixture.admin_token)).await).await;
+        assert_eq!(page["TotalRecordCount"], 5);
+        assert_eq!(item_names(&page), expected_all);
+    }
+
+    let comma_delimited = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Users/{}/Suggestions?MediaType=Video%2CAudio&Type=Movie%2CAudio&EnableTotalRecordCount=true",
+                    fixture.user_id
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(comma_delimited["TotalRecordCount"], 3);
+    assert_eq!(
+        item_names(&comma_delimited),
+        BTreeSet::from([
+            format!("Audio {}", fixture.suffix),
+            format!("Nested Movie {}", fixture.suffix),
+            format!("Root Movie {}", fixture.suffix),
+        ])
+    );
+
+    let repeated_boundary = body_json(
+        fixture
+            .get(
+                "/Items/Suggestions?mediaType=Video%2CAudio&mediaType=Audio&type=Movie%2CAudio&type=Audio&enableTotalRecordCount=true",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(repeated_boundary["TotalRecordCount"], 1);
+    assert_eq!(
+        item_names(&repeated_boundary),
+        BTreeSet::from([format!("Audio {}", fixture.suffix)])
+    );
+
+    let sdk_repeated = body_json(
+        fixture
+            .get(
+                "/Items/Suggestions?mediaType=Video&mediaType=Audio&type=Movie&type=Audio&enableTotalRecordCount=true",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(sdk_repeated["TotalRecordCount"], 3);
+
     for route in ["/Items/Suggestions", &legacy_route] {
         for query in [
             "MediaType=Video&Type=Movie&StartIndex=-2&Limit=1&EnableTotalRecordCount=true",

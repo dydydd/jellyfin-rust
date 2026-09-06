@@ -58,6 +58,9 @@
   `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative `Limit` follows the
   official SQLite unlimited-limit behavior, and out-of-range values fail binding. Preserve the
   endpoint's default disabled-total behavior, which reports the returned page length.
+- Bind Suggestions `MediaType` and `Type` as the official enum collections: accept case-insensitive
+  names and defined integer values, discard invalid elements, split commas only for one query value,
+  and do not re-split comma-containing values when the SDK sends repeated keys.
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.

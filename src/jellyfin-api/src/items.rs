@@ -640,6 +640,100 @@ pub(crate) struct LatestItemsQuery {
     group_items: bool,
 }
 
+const SUGGESTION_MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];
+
+const SUGGESTION_ITEM_TYPES: &[&str] = &[
+    "AggregateFolder",
+    "Audio",
+    "AudioBook",
+    "BasePluginFolder",
+    "Book",
+    "BoxSet",
+    "Channel",
+    "ChannelFolderItem",
+    "CollectionFolder",
+    "Episode",
+    "Folder",
+    "Genre",
+    "ManualPlaylistsFolder",
+    "Movie",
+    "LiveTvChannel",
+    "LiveTvProgram",
+    "MusicAlbum",
+    "MusicArtist",
+    "MusicGenre",
+    "MusicVideo",
+    "Person",
+    "Photo",
+    "PhotoAlbum",
+    "Playlist",
+    "PlaylistsFolder",
+    "Program",
+    "Recording",
+    "Season",
+    "Series",
+    "Studio",
+    "Trailer",
+    "TvChannel",
+    "TvProgram",
+    "UserRootFolder",
+    "UserView",
+    "Video",
+    "Year",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SuggestionMediaType(&'static str);
+
+impl SuggestionMediaType {
+    const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl FromStr for SuggestionMediaType {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_suggestion_enum(value, SUGGESTION_MEDIA_TYPES).map(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SuggestionItemType(&'static str);
+
+impl SuggestionItemType {
+    const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl FromStr for SuggestionItemType {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_suggestion_enum(value, SUGGESTION_ITEM_TYPES).map(Self)
+    }
+}
+
+fn parse_suggestion_enum(
+    value: &str,
+    variants: &'static [&'static str],
+) -> Result<&'static str, ()> {
+    let value = value.trim();
+    if let Ok(index) = value.parse::<i32>() {
+        return usize::try_from(index)
+            .ok()
+            .and_then(|index| variants.get(index).copied())
+            .ok_or(());
+    }
+    variants
+        .iter()
+        .copied()
+        .find(|variant| variant.eq_ignore_ascii_case(value))
+        .ok_or(())
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct SuggestionsQuery {
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
@@ -649,16 +743,16 @@ pub(crate) struct SuggestionsQuery {
         rename = "mediaType",
         alias = "MediaType",
         alias = "mediatype",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
-    media_types: Vec<String>,
+    media_types: Vec<SuggestionMediaType>,
     #[serde(
         default,
         rename = "type",
         alias = "Type",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
-    item_types: Vec<String>,
+    item_types: Vec<SuggestionItemType>,
     #[serde(
         default,
         rename = "startIndex",
@@ -891,8 +985,16 @@ async fn suggestions_for(
             target_user_id,
             BaseItemQuery {
                 recursive: true,
-                include_item_types: query.item_types,
-                media_types: query.media_types,
+                include_item_types: query
+                    .item_types
+                    .into_iter()
+                    .map(|item_type| item_type.as_str().to_owned())
+                    .collect(),
+                media_types: query
+                    .media_types
+                    .into_iter()
+                    .map(|media_type| media_type.as_str().to_owned())
+                    .collect(),
                 is_virtual_item: Some(false),
                 order: BaseItemOrder::Random,
                 start_index: u64::try_from(requested_start_index).unwrap_or_default(),
@@ -1986,6 +2088,38 @@ fn constrain_image_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggestion_enums_bind_every_official_name_and_integer() {
+        for (index, expected) in SUGGESTION_MEDIA_TYPES.iter().copied().enumerate() {
+            assert_eq!(
+                expected.to_ascii_lowercase().parse::<SuggestionMediaType>(),
+                Ok(SuggestionMediaType(expected))
+            );
+            assert_eq!(
+                index.to_string().parse::<SuggestionMediaType>(),
+                Ok(SuggestionMediaType(expected))
+            );
+        }
+        for (index, expected) in SUGGESTION_ITEM_TYPES.iter().copied().enumerate() {
+            assert_eq!(
+                expected.to_ascii_lowercase().parse::<SuggestionItemType>(),
+                Ok(SuggestionItemType(expected))
+            );
+            assert_eq!(
+                index.to_string().parse::<SuggestionItemType>(),
+                Ok(SuggestionItemType(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn suggestion_enums_drop_undefined_names_and_integers() {
+        assert!("Stream".parse::<SuggestionMediaType>().is_err());
+        assert!("99".parse::<SuggestionMediaType>().is_err());
+        assert!("PluginItem".parse::<SuggestionItemType>().is_err());
+        assert!("99".parse::<SuggestionItemType>().is_err());
+    }
 
     #[test]
     fn filters_parse_official_names_case_insensitively() {

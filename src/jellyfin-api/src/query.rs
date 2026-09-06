@@ -25,6 +25,24 @@ pub mod comma {
     {
         super::deserialize_delimited::<D, T, ',', true>(deserializer)
     }
+
+    /// Deserializes the official `CommaDelimitedCollectionModelBinder` shape.
+    ///
+    /// A single query value is comma-delimited, while repeated keys are
+    /// converted one value at a time without splitting commas inside each
+    /// repeated value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying serde deserializer cannot read the
+    /// query value or sequence.
+    pub fn deserialize_model_binder<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: std::str::FromStr,
+    {
+        super::deserialize_delimited::<D, T, ',', false>(deserializer)
+    }
 }
 
 pub mod pipe {
@@ -223,6 +241,18 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize)]
+    struct ModelBinderCommaStrings {
+        #[serde(default, deserialize_with = "comma::deserialize_model_binder")]
+        test: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ModelBinderCommaEnums {
+        #[serde(default, deserialize_with = "comma::deserialize_model_binder")]
+        test: Vec<TestType>,
+    }
+
+    #[derive(Debug, Deserialize)]
     struct PipeStrings {
         #[serde(default, deserialize_with = "pipe::deserialize")]
         test: Vec<String>,
@@ -305,6 +335,22 @@ mod tests {
         assert_eq!(
             query::<CommaStrings>("test=lol%2Cxd&test=separate").test,
             ["lol", "xd", "separate"]
+        );
+    }
+
+    #[test]
+    fn model_binder_comma_splits_one_value_but_not_repeated_values() {
+        assert_eq!(
+            query::<ModelBinderCommaEnums>("test=How%2CMuch").test,
+            [TestType::How, TestType::Much]
+        );
+        assert_eq!(
+            query::<ModelBinderCommaStrings>("test=lol%2Cxd&test=separate").test,
+            ["lol,xd", "separate"]
+        );
+        assert_eq!(
+            query::<ModelBinderCommaEnums>("test=How%2CMuch&test=How").test,
+            [TestType::How]
         );
     }
 
