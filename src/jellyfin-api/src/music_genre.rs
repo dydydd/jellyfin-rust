@@ -106,6 +106,12 @@ pub(crate) struct MusicGenreQuery {
     enable_total_record_count: bool,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct MusicGenreByNameQuery {
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct MusicGenresResult {
@@ -186,10 +192,13 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(genre_name): Path<String>,
-    Query(query): Query<MusicGenreQuery>,
+    Query(query): Query<MusicGenreByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let mut item_query = ItemValueQuery::default();
     state
         .user_library

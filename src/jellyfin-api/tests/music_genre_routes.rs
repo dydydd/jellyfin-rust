@@ -147,22 +147,39 @@ async fn authentication_and_target_user_permissions_are_enforced() {
     let response = request(&fixture.app, &lowercase_route, Some(&fixture.user_token)).await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let for_administrator = format!("{route}?userId={}", fixture.administrator_id);
-    let response = request(&fixture.app, &for_administrator, Some(&fixture.user_token)).await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    for user_id_key in ["userId", "UserId", "userid"] {
+        let for_administrator = format!("{route}?{user_id_key}={}", fixture.administrator_id);
+        let response = request(&fixture.app, &for_administrator, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let for_user = format!("{route}?userId={}", fixture.user_id);
-    let response = request(&fixture.app, &for_user, Some(&fixture.administrator_token)).await;
+        let for_user = format!("{route}?{user_id_key}={}", fixture.user_id);
+        let response = request(&fixture.app, &for_user, Some(&fixture.administrator_token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let missing_user = format!("{route}?{user_id_key}={}", Uuid::new_v4());
+        let response = request(
+            &fixture.app,
+            &missing_user,
+            Some(&fixture.administrator_token),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    let empty_user = format!("{route}?userId={}", Uuid::nil());
+    let response = request(&fixture.app, &empty_user, Some(&fixture.user_token)).await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let missing_user = format!("{route}?userId={}", Uuid::new_v4());
+    let invalid_list_parameters = format!(
+        "{route}?startIndex=invalid&limit=invalid&parentId=invalid&isFavorite=invalid&sortOrder=sideways"
+    );
     let response = request(
         &fixture.app,
-        &missing_user,
-        Some(&fixture.administrator_token),
+        &invalid_list_parameters,
+        Some(&fixture.user_token),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
 
     fixture.cleanup().await;
 }
