@@ -260,7 +260,8 @@
   virtual-item, and favorite filters before grouping by item type. Evaluate favorite state on the
   visible primary only; user data on an alternate version must not change `/Items/Counts`. When an
   administrator requests a nonexistent target user, preserve the official nullable-user fallback
-  and return global counts rather than a missing-user response.
+  and return global counts rather than a missing-user response. Explicitly enable all folders for
+  that user-less query so media below real `CollectionFolder` roots remains in the aggregate.
 - Project requested folder ChildCount values in one batch. Count episodes by SeasonId, prefer linked
   children, deduplicate merged folder children by PresentationUniqueKey, and honor the user's
   DisplayMissingEpisodes preference without issuing per-folder queries.

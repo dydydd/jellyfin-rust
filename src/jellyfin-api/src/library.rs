@@ -508,6 +508,7 @@ pub(crate) async fn item_counts(
         recursive: true,
         is_virtual_item: Some(false),
         is_favorite: query.is_favorite,
+        enable_all_folders: true,
         ..BaseItemQuery::default()
     };
     let counts = if target_user_id.is_nil() {

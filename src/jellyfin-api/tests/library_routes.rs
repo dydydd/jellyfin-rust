@@ -1531,8 +1531,106 @@ async fn assert_item_counts(fixture: &Fixture) {
         })
     );
 
+    let root = items.ensure_user_root().await.expect("user root");
+    let mut nested_library = create_item(
+        &items,
+        "CollectionFolder",
+        "Count nested library",
+        root.id,
+        None,
+    )
+    .await;
+    nested_library.is_folder = true;
+    let nested_library = items
+        .update(nested_library)
+        .await
+        .expect("nested collection folder");
+    let mut nested_series = create_item(
+        &items,
+        "Series",
+        "Count nested series",
+        nested_library.id,
+        None,
+    )
+    .await;
+    nested_series.is_folder = true;
+    let nested_series = items.update(nested_series).await.expect("nested series");
+    let mut nested_season = create_item(
+        &items,
+        "Season",
+        "Count nested season",
+        nested_series.id,
+        None,
+    )
+    .await;
+    nested_season.is_folder = true;
+    let nested_season = items.update(nested_season).await.expect("nested season");
+    let nested_movie = create_item(
+        &items,
+        "Movie",
+        "Count nested movie",
+        nested_library.id,
+        None,
+    )
+    .await;
+    let nested_episode = create_item(
+        &items,
+        "Episode",
+        "Count nested episode",
+        nested_season.id,
+        None,
+    )
+    .await;
+    let mut nested_movie_alternate = create_item(
+        &items,
+        "Movie",
+        "Count nested movie alternate",
+        nested_library.id,
+        None,
+    )
+    .await;
+    nested_movie_alternate.primary_version_id = Some(nested_movie.id);
+    let nested_movie_alternate = items
+        .update(nested_movie_alternate)
+        .await
+        .expect("nested movie alternate");
+    let mut nested_episode_alternate = create_item(
+        &items,
+        "Episode",
+        "Count nested episode alternate",
+        nested_season.id,
+        None,
+    )
+    .await;
+    nested_episode_alternate.primary_version_id = Some(nested_episode.id);
+    let nested_episode_alternate = items
+        .update(nested_episode_alternate)
+        .await
+        .expect("nested episode alternate");
+
+    let hierarchical_counts = fixture
+        .json("GET", "/Items/Counts", &fixture.user_token)
+        .await;
+    assert_eq!(
+        hierarchical_counts["MovieCount"],
+        all_counts["MovieCount"].as_i64().unwrap() + 1
+    );
+    assert_eq!(
+        hierarchical_counts["SeriesCount"],
+        all_counts["SeriesCount"].as_i64().unwrap() + 1
+    );
+    assert_eq!(
+        hierarchical_counts["EpisodeCount"],
+        all_counts["EpisodeCount"].as_i64().unwrap() + 1
+    );
+    assert_eq!(
+        hierarchical_counts["ItemCount"],
+        all_counts["ItemCount"].as_i64().unwrap() + 5
+    );
+
     // Official GetUserById returns null here, so an administrator's missing
-    // target falls back to the same user-less global count rather than 404.
+    // target uses a user-less global query. That query must span real media
+    // library descendants while continuing to fold alternate-version rows.
     let missing_user_counts = fixture
         .json(
             "GET",
@@ -1540,7 +1638,26 @@ async fn assert_item_counts(fixture: &Fixture) {
             &fixture.admin_token,
         )
         .await;
-    assert_eq!(missing_user_counts, all_counts);
+    assert_eq!(missing_user_counts, hierarchical_counts);
+
+    items
+        .delete_many(&[
+            nested_episode_alternate.id,
+            nested_movie_alternate.id,
+            nested_episode.id,
+            nested_movie.id,
+            nested_season.id,
+            nested_series.id,
+            nested_library.id,
+        ])
+        .await
+        .expect("nested count hierarchy cleanup");
+    assert_eq!(
+        fixture
+            .json("GET", "/Items/Counts", &fixture.user_token)
+            .await,
+        all_counts
+    );
 
     let counts = fixture
         .json("GET", "/Items/Counts?isfavorite=true", &fixture.user_token)
