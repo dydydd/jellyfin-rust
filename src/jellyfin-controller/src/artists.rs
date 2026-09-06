@@ -3,11 +3,11 @@ use jellyfin_data::{
     ItemValueQuery, ItemValueRepository,
     entities::{base_item, item_value, user},
 };
-use md5::{Digest, Md5};
+use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{UserError, UserService};
+use crate::{ItemByNameError, ItemByNameService, UserError, UserService};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtistValueKind {
@@ -30,6 +30,13 @@ pub struct ArtistPage {
     pub start_index: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArtistDetail {
+    pub item: base_item::Model,
+    pub item_count: u64,
+    pub counts: ItemValueCounts,
+}
+
 #[derive(Debug, Error)]
 pub enum ArtistError {
     #[error("artist was not found")]
@@ -44,6 +51,8 @@ pub enum ArtistError {
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     ItemValue(#[from] ItemValueError),
+    #[error(transparent)]
+    ItemByName(#[from] ItemByNameError),
 }
 
 #[derive(Clone)]
@@ -51,6 +60,7 @@ pub struct ArtistService {
     users: UserService,
     items: BaseItemRepository,
     item_values: ItemValueRepository,
+    item_by_name: ItemByNameService,
 }
 
 impl ArtistService {
@@ -60,14 +70,24 @@ impl ArtistService {
         Self {
             users: UserService::new(std::sync::Arc::clone(&database)),
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
-            item_values: ItemValueRepository::new(database),
+            item_values: ItemValueRepository::new(std::sync::Arc::clone(&database)),
+            item_by_name: ItemByNameService::new(database),
         }
+    }
+
+    pub fn set_item_by_name_directories(
+        &self,
+        program_data_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        self.item_by_name
+            .set_directories(program_data_directory, internal_metadata_directory);
     }
 
     /// Resolves a Jellyfin music artist by display name.
     ///
-    /// Missing, non-empty names are returned as virtual item-by-name artists to
-    /// match Jellyfin's current `ArtistsController.GetArtistByName` behavior.
+    /// A persisted exact raw-name `MusicArtist` is preferred; otherwise the
+    /// official deterministic accessed-by-name item is created and persisted.
     ///
     /// # Errors
     ///
@@ -78,36 +98,25 @@ impl ArtistService {
         target_user_id: Uuid,
         name: &str,
         query: ItemValueQuery,
-    ) -> Result<Artist, ArtistError> {
-        self.validate_user(authenticated_user, target_user_id)
-            .await?;
+    ) -> Result<ArtistDetail, ArtistError> {
+        Self::authorize_target_user(authenticated_user, target_user_id)?;
         let requested_name = name.trim();
         if requested_name.is_empty() {
             return Err(ArtistError::NotFound);
         }
-        for kind in [ArtistValueKind::Artist, ArtistValueKind::AlbumArtist] {
-            let Some(value) = self.find_value(kind, requested_name).await? else {
-                continue;
-            };
-            let mut candidate_query = query.clone();
-            candidate_query.search_term = Some(value.value.clone());
-            let candidate = self
-                .item_values
-                .query_values(kind.value_type(), &candidate_query)
-                .await?
-                .values
-                .into_iter()
-                .find(|candidate| candidate.id == value.item_value_id);
-            if let Some(candidate) = candidate {
-                return Ok(Artist {
-                    id: value.item_value_id,
-                    name: value.value,
-                    item_count: candidate.item_count,
-                    counts: candidate.counts,
-                });
-            }
-        }
-        Ok(virtual_artist(requested_name))
+        let item = self
+            .item_by_name
+            .resolve_music_artist(requested_name)
+            .await?;
+        let (item_count, counts) = match item.name.as_deref() {
+            Some(name) => self.item_values.music_artist_counts(name, &query).await?,
+            None => (0, ItemValueCounts::default()),
+        };
+        Ok(ArtistDetail {
+            item,
+            item_count,
+            counts,
+        })
     }
 
     /// Resolves the persisted `MusicArtist` item that owns image metadata.
@@ -149,27 +158,6 @@ impl ArtistService {
         })
     }
 
-    async fn find_value(
-        &self,
-        kind: ArtistValueKind,
-        name: &str,
-    ) -> Result<Option<item_value::Model>, ArtistError> {
-        match self.item_values.get_exact(kind.value_type(), name).await {
-            Ok(Some(value)) => return Ok(Some(value)),
-            Ok(None) | Err(ItemValueError::InvalidValue) => {}
-            Err(error) => return Err(error.into()),
-        }
-        match self
-            .item_values
-            .get_normalized(kind.value_type(), name)
-            .await
-        {
-            Ok(value) => Ok(value),
-            Err(ItemValueError::InvalidValue) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
-    }
-
     async fn scope_parent(&self, mut query: ItemValueQuery) -> Result<ItemValueQuery, ArtistError> {
         let Some(parent_id) = query.parent_id else {
             return Ok(query);
@@ -204,6 +192,16 @@ impl ArtistService {
         }
         Ok(())
     }
+
+    fn authorize_target_user(
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+    ) -> Result<(), ArtistError> {
+        if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
+            return Err(ArtistError::Forbidden);
+        }
+        Ok(())
+    }
 }
 
 impl ArtistValueKind {
@@ -223,33 +221,5 @@ impl From<ItemValueInfo> for Artist {
             item_count: value.item_count,
             counts: value.counts,
         }
-    }
-}
-
-fn virtual_artist(name: &str) -> Artist {
-    Artist {
-        id: jellyfin_artist_id(name),
-        name: name.to_owned(),
-        item_count: 0,
-        counts: ItemValueCounts::default(),
-    }
-}
-
-fn jellyfin_artist_id(name: &str) -> Uuid {
-    let mut hasher = Md5::new();
-    hasher.update(format!("Artist-{name}").as_bytes());
-    Uuid::from_bytes_le(hasher.finalize().into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::jellyfin_artist_id;
-
-    #[test]
-    fn virtual_artist_ids_are_stable_jellyfin_style_md5_guids() {
-        assert_eq!(
-            jellyfin_artist_id("ABBA").simple().to_string(),
-            "cd831fa4290d5e825421e1f4e8da1fb6"
-        );
     }
 }

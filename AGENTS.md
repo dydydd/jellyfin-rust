@@ -169,6 +169,12 @@
   `PersonTypes` with official casing, binding, and validation semantics, but do not apply them to
   results: the official ByName repository currently drops all four when it constructs its inner
   and outer item-value queries.
+- Resolve `GET /Artists/{name}` from an exact raw-name persisted `MusicArtist` first, preferring a
+  physical artist over an accessed-by-name row; otherwise persist the official deterministic
+  lowercase `artists` path fallback with `Artist-` presentation key and `IsFolder = false`.
+  Project details with default all-fields DTO options, merge Artist and AlbumArtist links into
+  distinct Audio, MusicAlbum, and MusicVideo counts, and omit `UserData` when an administrator
+  targets a nonexistent user.
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
 - Apply the playback `DeviceProfile` independently to every returned `MediaSource`, preserving source order and producing version-specific flags and URLs. Only apply explicit audio or subtitle indexes to the source whose id matches an explicitly requested `MediaSourceId`.

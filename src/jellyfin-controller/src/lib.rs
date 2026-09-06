@@ -62,7 +62,7 @@ mod videos;
 mod virtual_folders;
 mod years;
 
-pub use artists::{Artist, ArtistError, ArtistPage, ArtistService, ArtistValueKind};
+pub use artists::{Artist, ArtistDetail, ArtistError, ArtistPage, ArtistService, ArtistValueKind};
 pub use chapter_images::{ChapterImageError, ChapterImageService};
 pub use collections::{CollectionError, CollectionService};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};

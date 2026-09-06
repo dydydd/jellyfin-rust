@@ -650,6 +650,10 @@ impl AppState {
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
+        self.artists.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
         self.studios.set_item_by_name_directories(
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),

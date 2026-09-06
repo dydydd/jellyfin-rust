@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
-use jellyfin_controller::ArtistValueKind;
+use jellyfin_controller::{ArtistValueKind, UserError};
 use jellyfin_data::ItemValueQuery;
 use serde::Deserialize;
 use std::str::FromStr;
@@ -198,6 +198,12 @@ pub(crate) struct ArtistsQuery {
     enable_total_record_count: bool,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ArtistByNameQuery {
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -290,27 +296,62 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(name): Path<String>,
-    Query(query): Query<ArtistsQuery>,
+    Query(query): Query<ArtistByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    if target_user_id != authenticated.user.id && !authenticated.user.is_administrator {
+        return Err(ApiError::Forbidden);
+    }
+    let target_user_exists = match state.users.get(target_user_id).await {
+        Ok(_) => true,
+        Err(UserError::NotFound) if authenticated.user.is_administrator => false,
+        Err(error) => return Err(error.into()),
+    };
     let mut item_query = ItemValueQuery::default();
-    state
-        .user_library
-        .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
-        .await?;
-    let artist = state
+    if target_user_exists {
+        state
+            .user_library
+            .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
+            .await?;
+    }
+    let detail = state
         .artists
         .get(&authenticated.user, target_user_id, &name, item_query)
         .await?;
-    Ok(Json(user_library::artist_to_dto(
-        artist,
-        state.server_id(),
-        true,
-    )))
+    let projection_user_id = if target_user_exists {
+        target_user_id
+    } else {
+        authenticated.user.id
+    };
+    let mut dto = user_library::project_item_to_dto(
+        &state,
+        detail.item,
+        projection_user_id,
+        user_library::BaseItemDtoFields::all(),
+        None,
+        None,
+    )
+    .await?;
+    if !target_user_exists {
+        dto.user_data = None;
+    }
+    apply_artist_counts(&mut dto, detail.item_count, detail.counts);
+    Ok(Json(dto))
+}
+
+fn apply_artist_counts(
+    dto: &mut user_library::BaseItemDto,
+    item_count: u64,
+    counts: jellyfin_data::ItemValueCounts,
+) {
+    dto.child_count = Some(item_count);
+    dto.album_count = Some(counts.album_count);
+    dto.music_video_count = Some(counts.music_video_count);
+    dto.song_count = Some(counts.song_count);
 }
 
 pub(crate) async fn get_image(

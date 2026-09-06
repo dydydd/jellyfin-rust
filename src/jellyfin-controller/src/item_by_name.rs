@@ -21,6 +21,7 @@ const RECONCILIATION_BATCH_SIZE: usize = 256;
 pub enum ItemByNameKind {
     Genre,
     MusicGenre,
+    MusicArtist,
     Studio,
     Year,
 }
@@ -31,6 +32,7 @@ impl ItemByNameKind {
         match self {
             Self::Genre => "Genre",
             Self::MusicGenre => "MusicGenre",
+            Self::MusicArtist => "MusicArtist",
             Self::Studio => "Studio",
             Self::Year => "Year",
         }
@@ -40,8 +42,23 @@ impl ItemByNameKind {
         match self {
             Self::Genre => "MediaBrowser.Controller.Entities.Genre",
             Self::MusicGenre => "MediaBrowser.Controller.Entities.Audio.MusicGenre",
+            Self::MusicArtist => "MediaBrowser.Controller.Entities.Audio.MusicArtist",
             Self::Studio => "MediaBrowser.Controller.Entities.Studio",
             Self::Year => "MediaBrowser.Controller.Entities.Year",
+        }
+    }
+
+    const fn directory_name(self) -> &'static str {
+        match self {
+            Self::MusicArtist => "artists",
+            _ => self.item_type(),
+        }
+    }
+
+    const fn presentation_prefix(self) -> &'static str {
+        match self {
+            Self::MusicArtist => "Artist",
+            _ => self.item_type(),
         }
     }
 }
@@ -151,6 +168,23 @@ impl ItemByNameService {
         kind: ItemByNameKind,
         name: &str,
     ) -> Result<base_item::Model, ItemByNameError> {
+        self.get_or_create(kind, name).await
+    }
+
+    /// Resolves an exact persisted `MusicArtist` first, preferring a physical
+    /// library artist, then creates the official accessed-by-name fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration, filesystem, or persistence errors.
+    pub async fn resolve_music_artist(
+        &self,
+        name: &str,
+    ) -> Result<base_item::Model, ItemByNameError> {
+        let kind = ItemByNameKind::MusicArtist;
+        if let Some(item) = self.items.get_music_artist_by_raw_name(name).await? {
+            return Ok(hydrate_item_type(item, kind));
+        }
         self.get_or_create(kind, name).await
     }
 
@@ -331,7 +365,7 @@ impl ItemByNameService {
         let mut entities = Vec::new();
         for name in names {
             let path = internal_metadata
-                .join(kind.item_type())
+                .join(kind.directory_name())
                 .join(item_by_name_folder_name(&name));
             tokio::fs::create_dir_all(&path).await?;
             let metadata = tokio::fs::metadata(&path).await?;
@@ -350,7 +384,7 @@ impl ItemByNameService {
                 path: path.to_string_lossy().into_owned(),
                 presentation_unique_key: format!(
                     "{}-{}",
-                    kind.item_type(),
+                    kind.presentation_prefix(),
                     name.remove_diacritics()
                 ),
                 date_created: chrono::DateTime::<chrono::Utc>::from(created),
@@ -380,7 +414,7 @@ impl ItemByNameService {
                     _ => continue,
                 };
                 let path = internal_metadata
-                    .join(kind.item_type())
+                    .join(kind.directory_name())
                     .join(item_by_name_folder_name(&required.name));
                 tokio::fs::create_dir_all(&path).await?;
                 let metadata = tokio::fs::metadata(&path).await?;
@@ -399,7 +433,7 @@ impl ItemByNameService {
                     path: path.to_string_lossy().into_owned(),
                     presentation_unique_key: format!(
                         "{}-{}",
-                        kind.item_type(),
+                        kind.presentation_prefix(),
                         required.name.remove_diacritics()
                     ),
                     date_created: chrono::DateTime::<chrono::Utc>::from(created),
@@ -422,7 +456,7 @@ impl ItemByNameService {
         let configuration = self.configuration.load().await?;
         let (program_data, internal_metadata) = self.directories();
         let path = internal_metadata
-            .join(kind.item_type())
+            .join(kind.directory_name())
             .join(item_by_name_folder_name(name));
         let id = official_item_by_name_id(
             &path,
@@ -448,7 +482,7 @@ impl ItemByNameService {
                 path: path.to_string_lossy().into_owned(),
                 presentation_unique_key: format!(
                     "{}-{}",
-                    kind.item_type(),
+                    kind.presentation_prefix(),
                     name.remove_diacritics()
                 ),
                 date_created: chrono::DateTime::<chrono::Utc>::from(created),
@@ -472,6 +506,9 @@ impl ItemByNameService {
 
 fn hydrate_item_type(mut item: base_item::Model, kind: ItemByNameKind) -> base_item::Model {
     item.item_type = kind.item_type().to_owned();
+    if kind == ItemByNameKind::MusicArtist {
+        item.is_folder = item.parent_id.is_some();
+    }
     item
 }
 

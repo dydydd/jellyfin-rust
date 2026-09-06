@@ -687,6 +687,83 @@ impl ItemValueRepository {
         self.query_value_page(cte, values, "values", query).await
     }
 
+    /// Counts visible music items linked to an artist name through either the
+    /// Artist or `AlbumArtist` value. One item linked through both value kinds is
+    /// counted once, matching Jellyfin's `MusicArtist` item-count service.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the set-based count query fails.
+    pub async fn music_artist_counts(
+        &self,
+        name: &str,
+        query: &ItemValueQuery,
+    ) -> Result<(u64, ItemValueCounts), ItemValueError> {
+        let name = validate_value(name)?;
+        let mut values = vec![name.clean_value().into()];
+        let mut sql = String::from(
+            "WITH counted AS (\
+                 SELECT DISTINCT item.id AS item_id, item.item_type \
+                 FROM jellyfin.item_values AS value \
+                 JOIN jellyfin.item_value_map AS map \
+                   ON map.item_value_id = value.item_value_id \
+                 JOIN jellyfin.base_items AS item ON item.id = map.item_id \
+                 WHERE value.type IN (0, 1) \
+                   AND value.clean_value = $1::text \
+                   AND item.item_type IN (\
+                       'Audio', 'MediaBrowser.Controller.Entities.Audio.Audio', \
+                       'MusicAlbum', 'MediaBrowser.Controller.Entities.Audio.MusicAlbum', \
+                       'MusicVideo', 'MediaBrowser.Controller.Entities.MusicVideo'\
+                   ) \
+                   AND item.primary_version_id IS NULL \
+                   AND item.is_virtual_item = false \
+                   AND (item.data ->> 'OwnerId' IS NULL \
+                        OR item.data ->> 'ExtraType' IS NOT NULL)",
+        );
+        append_count_scope_filters(&mut sql, &mut values, query, "item");
+        if let Some(condition) = policy_filter_sql("item", &query.access_policy) {
+            sql.push_str(" AND (");
+            sql.push_str(&condition);
+            sql.push(')');
+        }
+        sql.push_str(
+            ") SELECT COUNT(*)::bigint AS item_count, \
+                    COUNT(*) FILTER (WHERE item_type IN (\
+                        'MusicAlbum', 'MediaBrowser.Controller.Entities.Audio.MusicAlbum'\
+                    ))::bigint AS album_count, \
+                    COUNT(*) FILTER (WHERE item_type IN (\
+                        'MusicVideo', 'MediaBrowser.Controller.Entities.MusicVideo'\
+                    ))::bigint AS music_video_count, \
+                    COUNT(*) FILTER (WHERE item_type IN (\
+                        'Audio', 'MediaBrowser.Controller.Entities.Audio.Audio'\
+                    ))::bigint AS song_count \
+             FROM counted",
+        );
+        let row = self
+            .database
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("music artist count returned no row".to_owned())
+            })?;
+        let count = |column| -> Result<u64, DbErr> {
+            Ok(u64::try_from(row.try_get::<i64>("", column)?).unwrap_or_default())
+        };
+        Ok((
+            count("item_count")?,
+            ItemValueCounts {
+                album_count: count("album_count")?,
+                music_video_count: count("music_video_count")?,
+                song_count: count("song_count")?,
+                ..ItemValueCounts::default()
+            },
+        ))
+    }
+
     /// Lists persisted item-by-name entities attached to the filtered values.
     ///
     /// Entities sharing a presentation key are folded before counting,

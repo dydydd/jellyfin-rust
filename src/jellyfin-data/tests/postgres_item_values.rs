@@ -6,6 +6,74 @@ use jellyfin_data::{
 };
 
 #[tokio::test]
+async fn music_artist_counts_merge_artist_kinds_and_deduplicate_items() {
+    let database = prepare_database().await;
+    let items = BaseItemRepository::new(database.clone());
+    let values = ItemValueRepository::new(database);
+    let suffix = Uuid::new_v4().simple().to_string();
+    let artist = format!("Combined Artist {suffix}");
+    let audio = create_item(&items, "Audio", &format!("Combined Audio {suffix}")).await;
+    let album = create_item(
+        &items,
+        "MediaBrowser.Controller.Entities.Audio.MusicAlbum",
+        &format!("Combined Album {suffix}"),
+    )
+    .await;
+    let video = create_item(&items, "MusicVideo", &format!("Combined Video {suffix}")).await;
+    let movie = create_item(&items, "Movie", &format!("Ignored Movie {suffix}")).await;
+
+    for value_type in [
+        item_value::ItemValueType::Artist,
+        item_value::ItemValueType::AlbumArtist,
+    ] {
+        values
+            .link(audio.id, value_type, &artist)
+            .await
+            .expect("dual audio artist link");
+    }
+    values
+        .link(album.id, item_value::ItemValueType::AlbumArtist, &artist)
+        .await
+        .expect("album artist link");
+    values
+        .link(video.id, item_value::ItemValueType::Artist, &artist)
+        .await
+        .expect("music video artist link");
+    values
+        .link(movie.id, item_value::ItemValueType::Artist, &artist)
+        .await
+        .expect("unrelated movie artist link");
+
+    let (item_count, counts) = values
+        .music_artist_counts(&artist.to_uppercase(), &ItemValueQuery::default())
+        .await
+        .expect("combined music artist counts");
+    assert_eq!(item_count, 3);
+    assert_eq!(counts.song_count, 1);
+    assert_eq!(counts.album_count, 1);
+    assert_eq!(counts.music_video_count, 1);
+
+    let (scoped_count, scoped_counts) = values
+        .music_artist_counts(
+            &artist,
+            &ItemValueQuery {
+                ids: vec![audio.id],
+                ..ItemValueQuery::default()
+            },
+        )
+        .await
+        .expect("scoped music artist counts");
+    assert_eq!(scoped_count, 1);
+    assert_eq!(scoped_counts.song_count, 1);
+    assert_eq!(scoped_counts.album_count, 0);
+    assert_eq!(scoped_counts.music_video_count, 0);
+
+    for item in [audio, album, video, movie] {
+        items.delete(item.id).await.expect("artist count cleanup");
+    }
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn persisted_item_by_name_values_fold_before_counting_and_paging() {
     let database = prepare_database().await;

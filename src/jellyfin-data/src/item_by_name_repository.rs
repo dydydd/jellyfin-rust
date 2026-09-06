@@ -1,7 +1,7 @@
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    Statement, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryFilter,
+    QueryOrder, Statement, TransactionTrait,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -72,6 +72,41 @@ impl ItemByNameRepository {
             .await?)
     }
 
+    /// Resolves the exact raw-name `MusicArtist` preferred by official Jellyfin.
+    /// Physical library artists win over accessed-by-name rows, with the id as
+    /// a deterministic tie breaker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn get_music_artist_by_raw_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<base_item::Model>, ItemByNameStoreError> {
+        let item_types = supported_item_types("MusicArtist")?;
+        let mut values = vec![name.to_owned().into()];
+        let placeholders = (2..=item_types.len() + 1)
+            .map(|index| format!("${index}::text"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        values.extend(item_types.into_iter().map(Into::into));
+        Ok(
+            base_item::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "SELECT item.* FROM jellyfin.base_items AS item \
+                 WHERE item.name = $1::text \
+                   AND item.item_type IN ({placeholders}) \
+                 ORDER BY CASE WHEN item.parent_id IS NULL THEN 1 ELSE 0 END, item.id \
+                 LIMIT 1"
+                ),
+                values,
+            ))
+            .one(self.database.as_ref())
+            .await?,
+        )
+    }
+
     /// Loads persisted entities for a bounded set of normalized names.
     ///
     /// # Errors
@@ -118,7 +153,9 @@ impl ItemByNameRepository {
                 "INSERT INTO jellyfin.base_items (\
                      id, item_type, name, sort_name, path, is_folder, \
                      presentation_unique_key, date_created, date_modified\
-                 ) VALUES ($1, $2, $3, $3, $4, true, $5, $6, $7) \
+                 ) VALUES ($1, $2, $3, $3, $4, \
+                           CASE WHEN $2 = 'MusicArtist' THEN false ELSE true END, \
+                           $5, $6, $7) \
                  ON CONFLICT (id) DO NOTHING",
                 vec![
                     entity.id.into(),
@@ -147,7 +184,10 @@ impl ItemByNameRepository {
 }
 
 fn supported_item_types(item_type: &str) -> Result<Vec<String>, ItemByNameStoreError> {
-    if !matches!(item_type, "Genre" | "MusicGenre" | "Studio" | "Year") {
+    if !matches!(
+        item_type,
+        "Genre" | "MusicGenre" | "MusicArtist" | "Studio" | "Year"
+    ) {
         return Err(ItemByNameStoreError::UnsupportedType(item_type.to_owned()));
     }
     Ok(expand_item_type_aliases(&[item_type.to_owned()]))

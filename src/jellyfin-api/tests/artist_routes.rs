@@ -15,7 +15,8 @@ use jellyfin_data::{
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::path::PathBuf;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -545,6 +546,33 @@ async fn artist_routes_match_official_artist_contract() {
         StatusCode::BAD_REQUEST
     );
 
+    let detail_album = create_item(
+        &BaseItemRepository::new(fixture.database.clone()),
+        "MusicAlbum",
+        "Detail Album",
+        None,
+        true,
+        "Audio",
+    )
+    .await;
+    let detail_values = ItemValueRepository::new(fixture.database.clone());
+    detail_values
+        .link(
+            fixture.audio_id,
+            item_value::ItemValueType::AlbumArtist,
+            &fixture.alpha_artist,
+        )
+        .await
+        .expect("dual artist relation");
+    detail_values
+        .link(
+            detail_album.id,
+            item_value::ItemValueType::AlbumArtist,
+            &fixture.alpha_artist,
+        )
+        .await
+        .expect("album artist-only relation");
+
     let artist = body_json(
         fixture
             .request(
@@ -558,9 +586,15 @@ async fn artist_routes_match_official_artist_contract() {
     assert_eq!(artist["Id"], fixture.alpha_artist_id.simple().to_string());
     assert_eq!(artist["Name"], fixture.alpha_artist);
     assert_eq!(artist["Type"], "MusicArtist");
-    assert_eq!(artist["ChildCount"], 1);
+    assert_eq!(artist["IsFolder"], false);
+    assert_eq!(artist["ProductionYear"], 1999);
+    assert_eq!(artist["OfficialRating"], "PG");
+    assert_eq!(artist["ProviderIds"]["MusicBrainzArtist"], "alpha-mbid");
+    assert_eq!(artist["Etag"], fixture.alpha_artist_etag);
+    assert!(artist.get("UserData").is_some());
+    assert_eq!(artist["ChildCount"], 2);
     assert_eq!(artist["SongCount"], 1);
-    assert_eq!(artist["AlbumCount"], 0);
+    assert_eq!(artist["AlbumCount"], 1);
     assert_eq!(artist["MusicVideoCount"], 0);
     assert!(artist.get("ArtistCount").is_none());
     assert_eq!(
@@ -581,8 +615,58 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_eq!(missing["Name"], "Missing Artist");
     assert_eq!(missing["Type"], "MusicArtist");
+    assert_eq!(missing["IsFolder"], false);
     assert_eq!(missing["PresentationUniqueKey"], "Artist-Missing Artist");
     assert_ne!(missing["Id"], fixture.alpha_artist_id.simple().to_string());
+    let missing_id = Uuid::parse_str(missing["Id"].as_str().expect("missing artist id"))
+        .expect("missing artist UUID");
+    let missing_item = BaseItemRepository::new(fixture.database.clone())
+        .get(missing_id)
+        .await
+        .unwrap()
+        .expect("missing artist must be persisted");
+    assert_eq!(missing_item.item_type, "MusicArtist");
+    assert!(!missing_item.is_folder);
+    assert_eq!(
+        missing_item.presentation_unique_key.as_deref(),
+        Some("Artist-Missing Artist")
+    );
+    let expected_missing_path = fixture
+        .storage_root
+        .join("metadata/artists/Missing Artist")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        missing_item.path.as_deref(),
+        Some(expected_missing_path.as_str())
+    );
+    let missing_again = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Artists/Missing%20Artist",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(missing_again["Id"], missing["Id"]);
+
+    let physical = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &artist_route(&fixture.physical_artist),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        physical["Id"],
+        fixture.physical_artist_id.simple().to_string()
+    );
+    assert_eq!(physical["IsFolder"], true);
 
     assert_eq!(
         fixture
@@ -617,6 +701,41 @@ async fn artist_routes_match_official_artist_contract() {
     )
     .await;
     assert_eq!(admin_targeted["TotalRecordCount"], 4);
+
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "{}?UserId={}",
+                    artist_route(&fixture.alpha_artist),
+                    fixture.other_user_id
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let unknown_user = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "{}?userid={}",
+                    artist_route(&fixture.alpha_artist),
+                    Uuid::new_v4()
+                ),
+                Credential::Device(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        unknown_user["Id"],
+        fixture.alpha_artist_id.simple().to_string()
+    );
+    assert!(unknown_user.get("UserData").is_none());
 
     fixture.cleanup().await;
 }
@@ -770,7 +889,9 @@ struct Fixture {
     parent_id: Uuid,
     user_token: String,
     admin_token: String,
+    storage_root: PathBuf,
     alpha_artist_id: Uuid,
+    alpha_artist_etag: String,
     alpha_artist: String,
     beta_artist: String,
     gamma_artist: String,
@@ -784,6 +905,8 @@ struct Fixture {
     artist_studio: String,
     artist_studio_id: Uuid,
     second_artist_studio_id: Uuid,
+    physical_artist: String,
+    physical_artist_id: Uuid,
 }
 
 impl Fixture {
@@ -850,7 +973,7 @@ impl Fixture {
         let movie_artist = format!("Movie {suffix}");
         let album_artist = format!("Album {suffix}");
         let second_album_artist = format!("Second Album {suffix}");
-        let alpha = values
+        values
             .link(audio.id, item_value::ItemValueType::Artist, &alpha_artist)
             .await
             .expect("alpha artist");
@@ -895,6 +1018,10 @@ impl Fixture {
             create_item(&items, "MusicArtist", &alpha_artist, None, true, "").await;
         alpha_artist_item.production_year = Some(1999);
         alpha_artist_item.official_rating = Some("PG".to_owned());
+        alpha_artist_item.presentation_unique_key = Some(format!("Artist-{alpha_artist}"));
+        alpha_artist_item.data = Some(json!({
+            "ProviderIds": { "MusicBrainzArtist": "alpha-mbid" }
+        }));
         let alpha_artist_item = items
             .update(alpha_artist_item)
             .await
@@ -908,6 +1035,17 @@ impl Fixture {
             .update(album_artist_item)
             .await
             .expect("album artist metadata");
+        let physical_artist = format!("Physical {suffix}");
+        create_item(&items, "MusicArtist", &physical_artist, None, true, "").await;
+        let physical_artist_item = create_item(
+            &items,
+            "MusicArtist",
+            &physical_artist,
+            Some(parent.id),
+            true,
+            "",
+        )
+        .await;
 
         let artist_genre = format!("Synth Pop {suffix}");
         let genre_item = create_item(&items, "Genre", &artist_genre, None, true, "").await;
@@ -966,6 +1104,14 @@ impl Fixture {
         video.official_rating = Some("R".to_owned());
         items.update(video).await.expect("video artist parent");
         let user_data = UserDataRepository::new(database.clone());
+        user_data
+            .upsert(NewUserData::new(
+                alpha_artist_item.id,
+                user.id,
+                "ArtistDetail",
+            ))
+            .await
+            .expect("artist detail user data");
         let mut audio_played = NewUserData::new(audio.id, user.id, "ArtistPlayed");
         audio_played.played = true;
         user_data
@@ -993,11 +1139,24 @@ impl Fixture {
             .await
             .expect("album artist favorite user data");
 
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Artist Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
+        let storage_root = std::env::temp_dir().join(format!(
+            "jellyfin-artist-routes-{}",
+            Uuid::new_v4().simple()
         ));
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Artist Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                storage_root.join("programdata"),
+                storage_root.join("web"),
+                storage_root.join("images"),
+                storage_root.join("cache"),
+                storage_root.join("metadata"),
+            ),
+        );
 
         Self {
             database_name,
@@ -1009,7 +1168,9 @@ impl Fixture {
             parent_id: parent.id,
             user_token,
             admin_token,
-            alpha_artist_id: alpha.item_value_id,
+            storage_root,
+            alpha_artist_id: alpha_artist_item.id,
+            alpha_artist_etag: alpha_artist_item.row_version.to_string(),
             alpha_artist,
             beta_artist,
             gamma_artist,
@@ -1023,6 +1184,8 @@ impl Fixture {
             artist_studio,
             artist_studio_id: studio_item.id,
             second_artist_studio_id: second_studio_item.id,
+            physical_artist,
+            physical_artist_id: physical_artist_item.id,
         }
     }
 
@@ -1051,6 +1214,7 @@ impl Fixture {
             database_name,
             database,
             app,
+            storage_root,
             ..
         } = self;
         drop(app);
@@ -1063,6 +1227,9 @@ impl Fixture {
             .await
             .expect("temporary PostgreSQL database cleanup must succeed");
         administrator.close().await.unwrap();
+        if storage_root.exists() {
+            std::fs::remove_dir_all(storage_root).expect("artist storage cleanup must succeed");
+        }
     }
 }
 
