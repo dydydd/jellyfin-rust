@@ -352,6 +352,14 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_primary_image_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_logo_item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_logo_image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_thumb_item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_thumb_image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_image_aspect_ratio: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series_primary_image_tag: Option<String>,
@@ -1088,6 +1096,10 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
         primary_image_aspect_ratio: None,
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
@@ -1467,6 +1479,14 @@ pub(crate) fn attach_dto_image_projection(
         .parent_primary_image_item_id
         .map(|id| id.simple().to_string());
     dto.parent_primary_image_tag = projection.parent_primary_image_tag;
+    dto.parent_logo_item_id = projection
+        .parent_logo_item_id
+        .map(|id| id.simple().to_string());
+    dto.parent_logo_image_tag = projection.parent_logo_image_tag;
+    dto.parent_thumb_item_id = projection
+        .parent_thumb_item_id
+        .map(|id| id.simple().to_string());
+    dto.parent_thumb_image_tag = projection.parent_thumb_image_tag;
     dto.primary_image_aspect_ratio = projection.primary_image_aspect_ratio;
     dto.series_primary_image_tag = projection.series_primary_image_tag;
     dto.parent_backdrop_image_item_id = projection
@@ -2302,6 +2322,10 @@ pub(crate) fn music_genre_to_dto(
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
         primary_image_aspect_ratio: None,
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
@@ -2366,6 +2390,10 @@ pub(crate) fn genre_to_dto(
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
         primary_image_aspect_ratio: None,
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
@@ -2420,6 +2448,10 @@ pub(crate) fn studio_to_dto(
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
         primary_image_aspect_ratio: None,
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
@@ -2474,6 +2506,10 @@ pub(crate) fn artist_to_dto(
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
         primary_image_aspect_ratio: None,
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
@@ -2558,6 +2594,10 @@ pub(crate) fn person_to_dto(person: Person, server_id: &str) -> BaseItemDto {
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
         primary_image_aspect_ratio: None,
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
@@ -2604,6 +2644,10 @@ pub(crate) fn year_to_dto(year: Year, server_id: &str) -> BaseItemDto {
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
         primary_image_aspect_ratio: None,
         series_primary_image_tag: None,
         parent_backdrop_image_item_id: None,
@@ -2922,6 +2966,10 @@ mod tests {
             iso_type: Some(IsoType::BluRay),
             is_locked: Some(true),
             parent_backdrop_image_item_id: Some("parent".to_owned()),
+            parent_logo_item_id: Some("logo-parent".to_owned()),
+            parent_logo_image_tag: Some("logo-tag".to_owned()),
+            parent_thumb_item_id: Some("thumb-parent".to_owned()),
+            parent_thumb_image_tag: Some("thumb-tag".to_owned()),
             ..BaseItemDto::default()
         };
         let value = serde_json::to_value(dto).unwrap();
@@ -2930,6 +2978,10 @@ mod tests {
         assert_eq!(value["IsoType"], "BluRay");
         assert_eq!(value["LockData"], true);
         assert_eq!(value["ParentBackdropItemId"], "parent");
+        assert_eq!(value["ParentLogoItemId"], "logo-parent");
+        assert_eq!(value["ParentLogoImageTag"], "logo-tag");
+        assert_eq!(value["ParentThumbItemId"], "thumb-parent");
+        assert_eq!(value["ParentThumbImageTag"], "thumb-tag");
         assert!(value.get("Video3dFormat").is_none());
         assert!(value.get("IsLocked").is_none());
         assert!(value.get("ParentBackdropImageItemId").is_none());

@@ -63,6 +63,7 @@ async fn exercise_persisted_dto_images(database_name: &str) {
     assert_episode_uses_season(&items, &images, &service).await;
     assert_episode_falls_back_to_series(&items, &images, &service).await;
     assert_episode_keeps_own_without_parent_images(&items, &images, &service).await;
+    assert_season_inherits_series_images_from_relations(&items, &images, &service).await;
     assert_playlist_uses_display_parent(&items, &images, &service).await;
     assert_playlist_keeps_own_without_parent_image(&items, &images, &service).await;
     assert_eq!(
@@ -200,6 +201,62 @@ async fn assert_episode_keeps_own_without_parent_images(
     assert_eq!(projection.parent_primary_image_tag, None);
 }
 
+async fn assert_season_inherits_series_images_from_relations(
+    items: &BaseItemRepository,
+    images: &BaseItemImageRepository,
+    service: &PersistedDtoImageProjectionService<PathCacheTags>,
+) {
+    let series = create_item(items, "Series", Some(ratio(2.0 / 3.0)), None, None).await;
+    // Keep the Season JSON empty to cover rows written before hierarchy image metadata was
+    // redundantly persisted. The relational SeriesId remains authoritative.
+    let season = create_item(items, "Season", None, None, Some(series)).await;
+    set_images(
+        images,
+        series,
+        &[
+            (BaseItemImageType::Primary, "series-season-primary.jpg"),
+            (BaseItemImageType::Logo, "series-season-logo.png"),
+            (BaseItemImageType::Thumb, "series-season-thumb.jpg"),
+            (BaseItemImageType::Backdrop, "series-season-backdrop.jpg"),
+        ],
+    )
+    .await;
+
+    let projection = service
+        .project(
+            season,
+            DtoImageOptions {
+                include_primary_image_aspect_ratio: true,
+                ..DtoImageOptions::default()
+            },
+        )
+        .await
+        .expect("persisted season projection must succeed")
+        .expect("season must exist");
+
+    assert_eq!(
+        projection.series_primary_image_tag.as_deref(),
+        Some("tag:series-season-primary.jpg")
+    );
+    assert_eq!(projection.parent_primary_image_item_id, None);
+    assert_eq!(projection.primary_image_aspect_ratio, Some(2.0 / 3.0));
+    assert_eq!(projection.parent_logo_item_id, Some(series));
+    assert_eq!(
+        projection.parent_logo_image_tag.as_deref(),
+        Some("tag:series-season-logo.png")
+    );
+    assert_eq!(projection.parent_thumb_item_id, Some(series));
+    assert_eq!(
+        projection.parent_thumb_image_tag.as_deref(),
+        Some("tag:series-season-thumb.jpg")
+    );
+    assert_eq!(projection.parent_backdrop_image_item_id, Some(series));
+    assert_eq!(
+        projection.parent_backdrop_image_tags,
+        ["tag:series-season-backdrop.jpg"]
+    );
+}
+
 async fn assert_playlist_uses_display_parent(
     items: &BaseItemRepository,
     images: &BaseItemImageRepository,
@@ -295,21 +352,32 @@ async fn create_item(
 }
 
 async fn set_primary(repository: &BaseItemImageRepository, item_id: Uuid, path: &str) {
+    set_images(repository, item_id, &[(BaseItemImageType::Primary, path)]).await;
+}
+
+async fn set_images(
+    repository: &BaseItemImageRepository,
+    item_id: Uuid,
+    images: &[(BaseItemImageType, &str)],
+) {
     repository
         .replace(
             item_id,
-            &[NewBaseItemImage {
-                image_type: BaseItemImageType::Primary,
-                image_index: 0,
-                path: path.to_owned(),
-                date_modified: timestamp(),
-                width: None,
-                height: None,
-                blurhash: None,
-            }],
+            &images
+                .iter()
+                .map(|(image_type, path)| NewBaseItemImage {
+                    image_type: *image_type,
+                    image_index: 0,
+                    path: (*path).to_owned(),
+                    date_modified: timestamp(),
+                    width: None,
+                    height: None,
+                    blurhash: None,
+                })
+                .collect::<Vec<_>>(),
         )
         .await
-        .expect("primary image must persist");
+        .expect("images must persist");
 }
 
 fn ratio(value: f64) -> Value {

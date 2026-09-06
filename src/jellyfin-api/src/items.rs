@@ -519,6 +519,32 @@ pub(crate) struct ItemsQuery {
     )]
     fields: Vec<String>,
     #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
+    #[serde(
         default,
         rename = "sortBy",
         alias = "SortBy",
@@ -868,6 +894,7 @@ async fn get_for(
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
+    let dto_options = page_dto_options(&query);
     let parent_scope = resolve_user_view_parent_scope(
         &state,
         &authenticated.user,
@@ -953,7 +980,14 @@ async fn get_for(
             page.total_record_count = u64::try_from(total_record_count).unwrap_or(u64::MAX);
             page.start_index = requested_start_index;
             return Ok(Json(
-                page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
+                page_to_dto_with_options(
+                    state.as_ref(),
+                    page,
+                    fields,
+                    target_user_id,
+                    &dto_options,
+                )
+                .await?,
             ));
         }
     }
@@ -965,7 +999,8 @@ async fn get_for(
         .query_items(&authenticated.user, target_user_id, database_query)
         .await?;
     Ok(Json(
-        page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
+        page_to_dto_with_options(state.as_ref(), page, fields, target_user_id, &dto_options)
+            .await?,
     ))
 }
 
@@ -1168,6 +1203,7 @@ async fn resume_for(
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
+    let dto_options = page_dto_options(&query);
     let parent_scope = resolve_user_view_parent_scope(
         &state,
         &authenticated.user,
@@ -1207,8 +1243,20 @@ async fn resume_for(
         .resume_items(&authenticated.user, target_user_id, database_query)
         .await?;
     Ok(Json(
-        page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
+        page_to_dto_with_options(state.as_ref(), page, fields, target_user_id, &dto_options)
+            .await?,
     ))
+}
+
+fn page_dto_options(query: &ItemsQuery) -> PageDtoOptions {
+    PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2152,6 +2200,15 @@ async fn page_to_dto_with_fields_and_options(
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
     let mut episode_hierarchy_names =
         user_library::episode_hierarchy_names(state, &page.items).await?;
+    let series_image_item_ids = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.item_type.eq_ignore_ascii_case("Episode")
+                || item.item_type.eq_ignore_ascii_case("Season")
+        })
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
     let mut image_projections =
         if dto_options.enable_images || requested_fields.wants_primary_image_aspect_ratio() {
             state
@@ -2167,6 +2224,21 @@ async fn page_to_dto_with_fields_and_options(
                         },
                         include_primary_image_aspect_ratio: requested_fields
                             .wants_primary_image_aspect_ratio(),
+                    },
+                )
+                .await
+                .map_err(|_| ApiError::Internal)?
+        } else if !series_image_item_ids.is_empty() {
+            // Official Jellyfin derives SeriesPrimaryImageTag for Episode and Season DTOs
+            // independently of EnableImages and the requested image-type set.
+            state
+                .dto_images
+                .project_many(
+                    &series_image_item_ids,
+                    jellyfin_server_implementations::DtoImageOptions {
+                        enable_images: false,
+                        primary_image_limit: 0,
+                        include_primary_image_aspect_ratio: false,
                     },
                 )
                 .await
@@ -2287,9 +2359,16 @@ fn constrain_image_projection(
         .retain(|image_type, _| includes(image_type) && image_type_limit > 0);
     if !includes("Primary") || image_type_limit == 0 {
         projection.primary_image_tag = None;
-        projection.series_primary_image_tag = None;
         projection.parent_primary_image_item_id = None;
         projection.parent_primary_image_tag = None;
+    }
+    if !includes("Logo") || image_type_limit == 0 {
+        projection.parent_logo_item_id = None;
+        projection.parent_logo_image_tag = None;
+    }
+    if !includes("Thumb") || image_type_limit == 0 {
+        projection.parent_thumb_item_id = None;
+        projection.parent_thumb_image_tag = None;
     }
     if !includes("Backdrop") || image_type_limit == 0 {
         projection.backdrop_image_tags.clear();

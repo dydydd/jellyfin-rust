@@ -166,6 +166,141 @@ fn episode_without_parent_primaries_keeps_only_own_primary() {
 }
 
 #[test]
+fn episode_inherits_logo_thumb_and_backdrop_with_official_parent_priority() {
+    let mut series = item(DtoImageItemKind::Other, Some("series.jpg"), Some(2.0 / 3.0));
+    series.images.extend([
+        image(ImageType::Logo, "series-logo.png"),
+        image(ImageType::Thumb, "series-thumb.jpg"),
+        image(ImageType::Backdrop, "series-backdrop.jpg"),
+    ]);
+    let mut season = item(DtoImageItemKind::Other, Some("season.jpg"), Some(2.0 / 3.0));
+    season.images.extend([
+        image(ImageType::Logo, "season-logo.png"),
+        image(ImageType::Thumb, "season-thumb.jpg"),
+        image(ImageType::Backdrop, "season-backdrop.jpg"),
+    ]);
+    let episode = episode(&season, &series, None, None);
+    let service = service([season.clone(), series.clone()], []);
+
+    let projection = service.project(&episode, DtoImageOptions::default());
+
+    assert_eq!(projection.parent_logo_item_id, Some(season.id));
+    assert_eq!(
+        projection.parent_logo_image_tag.as_deref(),
+        Some("tag:season-logo.png")
+    );
+    assert_eq!(projection.parent_thumb_item_id, Some(series.id));
+    assert_eq!(
+        projection.parent_thumb_image_tag.as_deref(),
+        Some("tag:series-thumb.jpg")
+    );
+    assert_eq!(projection.parent_backdrop_image_item_id, Some(season.id));
+    assert_eq!(
+        projection.parent_backdrop_image_tags,
+        ["tag:season-backdrop.jpg"]
+    );
+}
+
+#[test]
+fn local_episode_images_suppress_inherited_logo_thumb_and_backdrop() {
+    let mut series = item(DtoImageItemKind::Other, None, None);
+    series.images.extend([
+        image(ImageType::Logo, "series-logo.png"),
+        image(ImageType::Thumb, "series-thumb.jpg"),
+        image(ImageType::Backdrop, "series-backdrop.jpg"),
+    ]);
+    let season = item(DtoImageItemKind::Other, None, None);
+    let mut episode = episode(&season, &series, None, None);
+    episode.images.extend([
+        image(ImageType::Logo, "episode-logo.png"),
+        image(ImageType::Thumb, "episode-thumb.jpg"),
+        image(ImageType::Backdrop, "episode-backdrop.jpg"),
+    ]);
+    let service = service([season.clone(), series], []);
+
+    let projection = service.project(&episode, DtoImageOptions::default());
+
+    assert_eq!(projection.image_tags["Logo"], "tag:episode-logo.png");
+    assert_eq!(projection.image_tags["Thumb"], "tag:episode-thumb.jpg");
+    assert_eq!(projection.backdrop_image_tags, ["tag:episode-backdrop.jpg"]);
+    assert_eq!(projection.parent_logo_item_id, None);
+    assert_eq!(projection.parent_thumb_item_id, None);
+    assert_eq!(projection.parent_backdrop_image_item_id, None);
+}
+
+#[test]
+fn season_uses_series_primary_and_inherited_images_without_parent_primary() {
+    let mut series = item(DtoImageItemKind::Other, Some("series.jpg"), Some(2.0 / 3.0));
+    series.images.extend([
+        image(ImageType::Logo, "series-logo.png"),
+        image(ImageType::Thumb, "series-thumb.jpg"),
+        image(ImageType::Backdrop, "series-backdrop.jpg"),
+    ]);
+    let season = season(&series, None, None);
+    let service = service([series.clone()], []);
+
+    let projection = service.project(
+        &season,
+        DtoImageOptions {
+            include_primary_image_aspect_ratio: true,
+            ..DtoImageOptions::default()
+        },
+    );
+
+    assert_eq!(
+        projection.series_primary_image_tag.as_deref(),
+        Some("tag:series.jpg")
+    );
+    assert_eq!(projection.parent_primary_image_item_id, None);
+    assert_eq!(projection.parent_primary_image_tag, None);
+    assert_eq!(projection.primary_image_aspect_ratio, Some(2.0 / 3.0));
+    assert_eq!(projection.parent_logo_item_id, Some(series.id));
+    assert_eq!(
+        projection.parent_logo_image_tag.as_deref(),
+        Some("tag:series-logo.png")
+    );
+    assert_eq!(projection.parent_thumb_item_id, Some(series.id));
+    assert_eq!(
+        projection.parent_thumb_image_tag.as_deref(),
+        Some("tag:series-thumb.jpg")
+    );
+    assert_eq!(projection.parent_backdrop_image_item_id, Some(series.id));
+    assert_eq!(
+        projection.parent_backdrop_image_tags,
+        ["tag:series-backdrop.jpg"]
+    );
+}
+
+#[test]
+fn disabling_images_keeps_series_primary_without_inherited_parent_fields() {
+    let mut series = item(DtoImageItemKind::Other, Some("series.jpg"), None);
+    series
+        .images
+        .push(image(ImageType::Logo, "series-logo.png"));
+    let season = season(&series, None, None);
+    let episode = episode(&season, &series, None, None);
+    let service = service([season.clone(), series], []);
+    let options = DtoImageOptions {
+        enable_images: false,
+        primary_image_limit: 0,
+        include_primary_image_aspect_ratio: false,
+    };
+
+    for item in [&episode, &season] {
+        let projection = service.project(item, options);
+        assert_eq!(
+            projection.series_primary_image_tag.as_deref(),
+            Some("tag:series.jpg")
+        );
+        assert!(projection.image_tags.is_empty());
+        assert_eq!(projection.parent_primary_image_item_id, None);
+        assert_eq!(projection.parent_logo_item_id, None);
+        assert_eq!(projection.parent_thumb_item_id, None);
+        assert_eq!(projection.parent_backdrop_image_item_id, None);
+    }
+}
+
+#[test]
 fn unavailable_cache_tags_do_not_replace_own_image_and_series_ratio_is_fallback() {
     let display_parent = item(DtoImageItemKind::Other, Some("parent.jpg"), Some(2.0 / 3.0));
     let user_view = item(
@@ -283,6 +418,20 @@ fn episode(
     item(
         DtoImageItemKind::Episode {
             season_id: Some(season.id),
+            series_id: Some(series.id),
+        },
+        primary_path,
+        default_primary_image_aspect_ratio,
+    )
+}
+
+fn season(
+    series: &DtoImageItem,
+    primary_path: Option<&str>,
+    default_primary_image_aspect_ratio: Option<f64>,
+) -> DtoImageItem {
+    item(
+        DtoImageItemKind::Season {
             series_id: Some(series.id),
         },
         primary_path,

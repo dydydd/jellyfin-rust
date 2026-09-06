@@ -617,6 +617,191 @@ async fn item_pages_preserve_image_tags_with_batched_projection() {
 }
 
 #[tokio::test]
+async fn tv_hierarchy_images_match_official_parent_fields_and_image_options() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let images = BaseItemImageRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut series = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series.name = Some(format!("Image Series {}", fixture.suffix));
+    series.parent_id = Some(root.id);
+    series.is_folder = true;
+    let series = items.create(series).await.expect("series");
+
+    let mut season = NewBaseItem::new(Uuid::new_v4(), "Season");
+    season.name = Some(format!("Image Season {}", fixture.suffix));
+    season.parent_id = Some(series.id);
+    season.series_id = Some(series.id);
+    season.is_folder = true;
+    let season = items.create(season).await.expect("season");
+
+    let mut inherited_season = NewBaseItem::new(Uuid::new_v4(), "Season");
+    inherited_season.name = Some(format!("Inherited Image Season {}", fixture.suffix));
+    inherited_season.parent_id = Some(series.id);
+    inherited_season.series_id = Some(series.id);
+    inherited_season.is_folder = true;
+    let inherited_season = items
+        .create(inherited_season)
+        .await
+        .expect("inherited image season");
+
+    let mut episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    episode.name = Some(format!("Image Episode {}", fixture.suffix));
+    episode.parent_id = Some(season.id);
+    episode.season_id = Some(season.id);
+    episode.series_id = Some(series.id);
+    episode.media_type = Some("Video".to_owned());
+    let episode = items.create(episode).await.expect("episode");
+
+    replace_images(
+        &images,
+        series.id,
+        &[
+            (BaseItemImageType::Primary, "series-primary.jpg"),
+            (BaseItemImageType::Logo, "series-logo.png"),
+            (BaseItemImageType::Thumb, "series-thumb.jpg"),
+            (BaseItemImageType::Backdrop, "series-backdrop.jpg"),
+        ],
+    )
+    .await;
+    replace_images(
+        &images,
+        season.id,
+        &[
+            (BaseItemImageType::Primary, "season-primary.jpg"),
+            (BaseItemImageType::Logo, "season-logo.png"),
+            (BaseItemImageType::Thumb, "season-thumb.jpg"),
+            (BaseItemImageType::Backdrop, "season-backdrop.jpg"),
+        ],
+    )
+    .await;
+
+    let episode_detail = body_json(
+        fixture
+            .request(
+                &format!("/Users/{}/Items/{}", fixture.user_id, episode.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(episode_detail["SeriesPrimaryImageTag"].is_string());
+    assert_eq!(
+        episode_detail["ParentPrimaryImageItemId"],
+        season.id.simple().to_string()
+    );
+    assert_eq!(
+        episode_detail["ParentLogoItemId"],
+        season.id.simple().to_string()
+    );
+    assert_eq!(
+        episode_detail["ParentThumbItemId"],
+        series.id.simple().to_string()
+    );
+    assert_eq!(
+        episode_detail["ParentBackdropItemId"],
+        season.id.simple().to_string()
+    );
+
+    let season_detail = body_json(
+        fixture
+            .request(
+                &format!("/Users/{}/Items/{}", fixture.user_id, season.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(season_detail["SeriesPrimaryImageTag"].is_string());
+    assert!(season_detail.get("ParentPrimaryImageItemId").is_none());
+    assert!(season_detail.get("ParentLogoItemId").is_none());
+    assert!(season_detail.get("ParentThumbItemId").is_none());
+    assert!(season_detail.get("ParentBackdropItemId").is_none());
+
+    let inherited_season_detail = body_json(
+        fixture
+            .request(
+                &format!("/Users/{}/Items/{}", fixture.user_id, inherited_season.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(inherited_season_detail["SeriesPrimaryImageTag"].is_string());
+    assert!(
+        inherited_season_detail
+            .get("ParentPrimaryImageItemId")
+            .is_none()
+    );
+    assert_eq!(
+        inherited_season_detail["ParentLogoItemId"],
+        series.id.simple().to_string()
+    );
+    assert_eq!(
+        inherited_season_detail["ParentThumbItemId"],
+        series.id.simple().to_string()
+    );
+    assert_eq!(
+        inherited_season_detail["ParentBackdropItemId"],
+        series.id.simple().to_string()
+    );
+
+    let images_disabled = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?Ids={},{}&EnableImages=false",
+                    episode.id, inherited_season.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    for item in images_disabled["Items"].as_array().expect("disabled items") {
+        assert!(item["SeriesPrimaryImageTag"].is_string(), "{item}");
+        assert!(item.get("ImageTags").is_none(), "{item}");
+        assert!(item.get("ParentPrimaryImageItemId").is_none(), "{item}");
+        assert!(item.get("ParentLogoItemId").is_none(), "{item}");
+        assert!(item.get("ParentThumbItemId").is_none(), "{item}");
+        assert!(item.get("ParentBackdropItemId").is_none(), "{item}");
+    }
+
+    let logo_only = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?Ids={}&EnableImageTypes=Logo&ImageTypeLimit=1",
+                    episode.id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let logo_only = &logo_only["Items"][0];
+    assert!(logo_only["SeriesPrimaryImageTag"].is_string());
+    assert_eq!(
+        logo_only["ParentLogoItemId"],
+        season.id.simple().to_string()
+    );
+    assert!(logo_only.get("ParentPrimaryImageItemId").is_none());
+    assert!(logo_only.get("ParentThumbItemId").is_none());
+    assert!(logo_only.get("ParentBackdropItemId").is_none());
+
+    items.delete(episode.id).await.expect("episode cleanup");
+    items
+        .delete(inherited_season.id)
+        .await
+        .expect("inherited season cleanup");
+    items.delete(season.id).await.expect("season cleanup");
+    items.delete(series.id).await.expect("series cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn media_stream_fields_are_projected_for_item_pages() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
@@ -1981,6 +2166,31 @@ async fn create_item_with_data(
     item.parent_id = Some(parent_id);
     item.data = (!data.is_null()).then_some(data);
     repository.create(item).await.expect("item creation")
+}
+
+async fn replace_images(
+    repository: &BaseItemImageRepository,
+    item_id: Uuid,
+    images: &[(BaseItemImageType, &str)],
+) {
+    repository
+        .replace(
+            item_id,
+            &images
+                .iter()
+                .map(|(image_type, path)| NewBaseItemImage {
+                    image_type: *image_type,
+                    image_index: 0,
+                    path: (*path).to_owned(),
+                    date_modified: Utc::now(),
+                    width: None,
+                    height: None,
+                    blurhash: None,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("images must persist");
 }
 
 async fn upsert_resume(

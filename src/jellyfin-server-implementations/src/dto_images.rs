@@ -34,6 +34,9 @@ pub enum DtoImageItemKind {
         season_id: Option<Uuid>,
         series_id: Option<Uuid>,
     },
+    Season {
+        series_id: Option<Uuid>,
+    },
     Other,
 }
 
@@ -87,6 +90,10 @@ pub struct DtoImageProjection {
     pub series_primary_image_tag: Option<String>,
     pub parent_primary_image_item_id: Option<Uuid>,
     pub parent_primary_image_tag: Option<String>,
+    pub parent_logo_item_id: Option<Uuid>,
+    pub parent_logo_image_tag: Option<String>,
+    pub parent_thumb_item_id: Option<Uuid>,
+    pub parent_thumb_image_tag: Option<String>,
     pub primary_image_aspect_ratio: Option<f64>,
     pub image_tags: HashMap<String, String>,
     pub backdrop_image_tags: Vec<String>,
@@ -343,6 +350,10 @@ fn persisted_item_kind(
             season_id: item.season_id,
             series_id: item.series_id,
         }
+    } else if item.item_type.eq_ignore_ascii_case("Season") {
+        DtoImageItemKind::Season {
+            series_id: item.series_id,
+        }
     } else if item.item_type.eq_ignore_ascii_case("UserView") {
         DtoImageItemKind::UserView {
             view_type: metadata.view_type.unwrap_or(CollectionType::Unknown),
@@ -362,6 +373,7 @@ fn related_item_ids(kind: DtoImageItemKind) -> impl Iterator<Item = Uuid> {
             season_id,
             series_id,
         } => [series_id, season_id],
+        DtoImageItemKind::Season { series_id } => [series_id, None],
         DtoImageItemKind::Other => [None, None],
     };
     ids.into_iter().flatten()
@@ -477,6 +489,9 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
             } => {
                 self.attach_episode_images(&mut projection, season_id, series_id, options);
             }
+            DtoImageItemKind::Season { series_id } => {
+                self.attach_season_images(&mut projection, series_id, options);
+            }
             DtoImageItemKind::UserView { .. } | DtoImageItemKind::Other => {}
         }
 
@@ -536,6 +551,7 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         options: DtoImageOptions,
     ) {
         let series = series_id.and_then(|id| self.library.get_item_by_id(id));
+        let season = season_id.and_then(|id| self.library.get_item_by_id(id));
         let series_tag = series
             .as_ref()
             .and_then(|series| self.primary_image_tag(series));
@@ -550,41 +566,101 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
                 .and_then(|series| series.default_primary_image_aspect_ratio);
         }
 
-        if !options.includes_primary_images() {
-            return;
+        if options.includes_primary_images() {
+            let season_tag = season
+                .as_ref()
+                .and_then(|season| self.primary_image_tag(season));
+
+            if let (Some(season), Some(tag)) = (season.as_ref(), season_tag) {
+                projection.parent_primary_image_item_id = Some(season.id);
+                projection.parent_primary_image_tag = Some(tag);
+            } else if let (Some(series), Some(tag)) = (series.as_ref(), series_tag) {
+                projection.parent_primary_image_item_id = Some(series.id);
+                projection.parent_primary_image_tag = Some(tag);
+            }
         }
 
-        let season = season_id.and_then(|id| self.library.get_item_by_id(id));
-        let season_tag = season
-            .as_ref()
-            .and_then(|season| self.primary_image_tag(season));
-
-        if let (Some(season), Some(tag)) = (season.as_ref(), season_tag) {
-            projection.parent_primary_image_item_id = Some(season.id);
-            projection.parent_primary_image_tag = Some(tag);
-        } else if let (Some(series), Some(tag)) = (series.as_ref(), series_tag) {
-            projection.parent_primary_image_item_id = Some(series.id);
-            projection.parent_primary_image_tag = Some(tag);
-        }
-
-        let backdrop_parent = season
-            .as_ref()
-            .filter(|season| !self.backdrop_image_tags(season).is_empty())
-            .or_else(|| {
-                series
-                    .as_ref()
-                    .filter(|series| !self.backdrop_image_tags(series).is_empty())
-            });
-        if let Some(parent) = backdrop_parent {
-            projection.parent_backdrop_image_item_id = Some(parent.id);
-            projection.parent_backdrop_image_tags = self.backdrop_image_tags(parent);
+        if options.enable_images {
+            self.attach_inherited_images(
+                projection,
+                [season.as_ref(), series.as_ref()].into_iter().flatten(),
+            );
         }
     }
 
-    fn backdrop_image_tags(&self, item: &DtoImageItem) -> Vec<String> {
+    fn attach_season_images(
+        &self,
+        projection: &mut DtoImageProjection,
+        series_id: Option<Uuid>,
+        options: DtoImageOptions,
+    ) {
+        let series = series_id.and_then(|id| self.library.get_item_by_id(id));
+        let series_tag = series
+            .as_ref()
+            .and_then(|series| self.primary_image_tag(series));
+
+        projection.series_primary_image_tag = series_tag;
+        if options.include_primary_image_aspect_ratio
+            && projection.primary_image_tag.is_none()
+            && projection.series_primary_image_tag.is_some()
+        {
+            projection.primary_image_aspect_ratio = series
+                .as_ref()
+                .and_then(|series| series.default_primary_image_aspect_ratio);
+        }
+
+        if options.enable_images {
+            self.attach_inherited_images(projection, series.as_ref());
+        }
+    }
+
+    fn attach_inherited_images<'a>(
+        &self,
+        projection: &mut DtoImageProjection,
+        parents: impl IntoIterator<Item = &'a DtoImageItem>,
+    ) {
+        let inherits_logo = !projection.image_tags.contains_key("Logo");
+        let inherits_thumb = !projection.image_tags.contains_key("Thumb");
+        let inherits_backdrop = projection.backdrop_image_tags.is_empty();
+
+        for parent in parents {
+            if inherits_logo && projection.parent_logo_item_id.is_none() {
+                if let Some(tag) = self.image_tag(parent, ImageType::Logo) {
+                    projection.parent_logo_item_id = Some(parent.id);
+                    projection.parent_logo_image_tag = Some(tag);
+                }
+            }
+
+            // Jellyfin deliberately lets a Series thumb replace a Season thumb. Iterating
+            // Season then Series and keeping the last tagged parent preserves that behavior.
+            if inherits_thumb {
+                if let Some(tag) = self.image_tag(parent, ImageType::Thumb) {
+                    projection.parent_thumb_item_id = Some(parent.id);
+                    projection.parent_thumb_image_tag = Some(tag);
+                }
+            }
+
+            if inherits_backdrop && projection.parent_backdrop_image_item_id.is_none() {
+                let tags = self.image_tags(parent, ImageType::Backdrop);
+                if !tags.is_empty() {
+                    projection.parent_backdrop_image_item_id = Some(parent.id);
+                    projection.parent_backdrop_image_tags = tags;
+                }
+            }
+        }
+    }
+
+    fn image_tag(&self, item: &DtoImageItem, image_type: ImageType) -> Option<String> {
         item.images
             .iter()
-            .filter(|image| image.image_type == ImageType::Backdrop)
+            .find(|image| image.image_type == image_type)
+            .and_then(|image| self.cache_tags.get_image_cache_tag(item, image))
+    }
+
+    fn image_tags(&self, item: &DtoImageItem, image_type: ImageType) -> Vec<String> {
+        item.images
+            .iter()
+            .filter(|image| image.image_type == image_type)
             .filter_map(|image| self.cache_tags.get_image_cache_tag(item, image))
             .collect()
     }
