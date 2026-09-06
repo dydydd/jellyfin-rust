@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Stdio,
     str::FromStr,
     sync::{Arc, Mutex, RwLock, Weak},
@@ -67,6 +67,9 @@ const ITEM_BY_NAME_RECONCILIATION_BATCH_SIZE: usize = 512;
 const STRM_PLAYBACK_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const STRM_PROBE_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_STRM_PROBE_COORDINATION_ENTRIES: usize = 1_024;
+const MEDIA_INFO_PROBE_SCHEMA_VERSION: u64 = 1;
+const LOCAL_MEDIA_PROBE_FAILURE_BACKOFF: Duration = Duration::from_secs(15 * 60);
+const MAX_LOCAL_MEDIA_PROBE_FAILURE_ENTRIES: usize = 1_024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -81,6 +84,87 @@ pub struct LibraryScanSummary {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ScannedPathFingerprint(Uuid);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MediaInfoProbeFingerprint {
+    path: String,
+    size: u64,
+    modified_utc: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LocalMediaProbeKey {
+    item_id: Uuid,
+    source: ScannedPathFingerprint,
+}
+
+impl LocalMediaProbeKey {
+    fn new(item_id: Uuid, fingerprint: &MediaInfoProbeFingerprint) -> Self {
+        let source = format!(
+            "{}\0{}\0{}\0{}",
+            MEDIA_INFO_PROBE_SCHEMA_VERSION,
+            fingerprint.path,
+            fingerprint.size,
+            fingerprint.modified_utc
+        );
+        Self {
+            item_id,
+            source: ScannedPathFingerprint(stable_item_id(&source, "LocalMediaProbe")),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LocalMediaProbeFailures {
+    entries: Mutex<HashMap<LocalMediaProbeKey, Instant>>,
+    failure_backoff: Duration,
+    max_entries: usize,
+}
+
+impl LocalMediaProbeFailures {
+    fn new(failure_backoff: Duration, max_entries: usize) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            failure_backoff,
+            max_entries,
+        }
+    }
+
+    fn is_backed_off(&self, key: LocalMediaProbeKey, now: Instant) -> bool {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("local media probe failure lock poisoned");
+        entries.retain(|_, deadline| *deadline > now);
+        entries.get(&key).is_some_and(|deadline| *deadline > now)
+    }
+
+    fn record_failure(&self, key: LocalMediaProbeKey, now: Instant) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("local media probe failure lock poisoned");
+        entries.retain(|_, deadline| *deadline > now);
+        if entries.len() >= self.max_entries
+            && let Some(expiring) = entries
+                .iter()
+                .min_by_key(|(_, deadline)| **deadline)
+                .map(|(key, _)| *key)
+        {
+            entries.remove(&expiring);
+        }
+        if entries.len() < self.max_entries {
+            entries.insert(key, now + self.failure_backoff);
+        }
+    }
+
+    fn clear(&self, key: LocalMediaProbeKey) {
+        self.entries
+            .lock()
+            .expect("local media probe failure lock poisoned")
+            .remove(&key);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct StrmProbeKey {
@@ -269,6 +353,17 @@ impl ScanDirectorySnapshot {
     fn file_size(&self, path: &str) -> Option<u64> {
         self.sizes.get(path).copied()
     }
+
+    fn media_info_probe_fingerprint(&self, path: &str) -> Option<MediaInfoProbeFingerprint> {
+        Some(MediaInfoProbeFingerprint {
+            path: normalized_absolute_path(Path::new(path))?,
+            size: self.sizes.get(path).copied()?,
+            modified_utc: self
+                .modified
+                .get(path)?
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        })
+    }
 }
 
 impl MediaItemScanOutcome {
@@ -342,6 +437,7 @@ pub struct LibraryScanService {
     server_configuration: ServerConfigurationRepository,
     probe_path: RwLock<Arc<PathBuf>>,
     strm_probes: StrmProbeCoordinator,
+    local_probe_failures: LocalMediaProbeFailures,
     ffmpeg_path: RwLock<Arc<PathBuf>>,
     image_cache_directory: RwLock<Arc<PathBuf>>,
     program_data_directory: RwLock<Arc<PathBuf>>,
@@ -471,6 +567,10 @@ impl LibraryScanService {
             strm_probes: StrmProbeCoordinator::new(
                 STRM_PROBE_FAILURE_BACKOFF,
                 MAX_STRM_PROBE_COORDINATION_ENTRIES,
+            ),
+            local_probe_failures: LocalMediaProbeFailures::new(
+                LOCAL_MEDIA_PROBE_FAILURE_BACKOFF,
+                MAX_LOCAL_MEDIA_PROBE_FAILURE_ENTRIES,
             ),
             ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
             image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
@@ -743,7 +843,8 @@ impl LibraryScanService {
     /// # Errors
     ///
     /// Returns persistence or local filesystem errors. Probe failures are
-    /// best-effort and retain a lightweight stream placeholder.
+    /// best-effort: structural repairs retain a lightweight placeholder, while
+    /// schema upgrades preserve every existing media-info row.
     pub async fn repair_item_media_info(&self, item_id: Uuid) -> Result<bool, LibraryScanError> {
         let mut items = self.items.media_source_versions(item_id).await?;
         if items.is_empty() {
@@ -778,12 +879,6 @@ impl LibraryScanService {
             let existing = streams_by_item
                 .remove(&candidate.item.id)
                 .unwrap_or_default();
-            if !streams_need_probe(
-                &existing,
-                &default_stream(&source_path, candidate.media_kind),
-            ) {
-                continue;
-            }
             let parent = candidate
                 .path
                 .parent()
@@ -811,14 +906,19 @@ impl LibraryScanService {
                     &source_path,
                     candidate.media_kind,
                     true,
+                    candidate.item.data.as_ref(),
                     snapshot,
                     &preloaded,
                 )
                 .await?;
-            changed |= existing.is_empty();
-            if let Some(mut media_info) = media_info {
+            if let Some((mut media_info, fingerprint)) = media_info {
                 changed = true;
-                if apply_probed_item_metadata(&mut candidate.item, &source_path, &mut media_info) {
+                if apply_probed_item_metadata(
+                    &mut candidate.item,
+                    &source_path,
+                    &mut media_info,
+                    &fingerprint,
+                ) {
                     self.items.update(candidate.item).await?;
                 }
             }
@@ -2266,11 +2366,17 @@ impl LibraryScanService {
                             path_str,
                             media_kind,
                             !is_strm,
+                            existing.data.as_ref(),
                             directory_snapshot,
                             &preloaded,
                         )
                         .await?
-                    && apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info)
+                    && apply_probed_item_metadata(
+                        &mut existing,
+                        media_source_path,
+                        &mut media_info.0,
+                        &media_info.1,
+                    )
                 {
                     changed = true;
                 }
@@ -2351,11 +2457,17 @@ impl LibraryScanService {
                     path_str,
                     media_kind,
                     !is_strm,
+                    item.data.as_ref(),
                     directory_snapshot,
                     &preloaded,
                 )
                 .await?
-            && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
+            && apply_probed_item_metadata(
+                &mut item,
+                media_source_path,
+                &mut media_info.0,
+                &media_info.1,
+            )
         {
             item = self.items.update(item).await?;
         }
@@ -2475,12 +2587,18 @@ impl LibraryScanService {
                     path_str,
                     media_kind,
                     !is_strm,
+                    existing.data.as_ref(),
                     directory_snapshot,
                     preloaded,
                 )
                 .await?
             {
-                apply_probed_item_metadata(&mut existing, media_source_path, &mut media_info);
+                apply_probed_item_metadata(
+                    &mut existing,
+                    media_source_path,
+                    &mut media_info.0,
+                    &media_info.1,
+                );
             }
             let changed = existing != original;
             if changed {
@@ -2523,11 +2641,17 @@ impl LibraryScanService {
                 path_str,
                 media_kind,
                 !is_strm,
+                item.data.as_ref(),
                 directory_snapshot,
                 preloaded,
             )
             .await?
-            && apply_probed_item_metadata(&mut item, media_source_path, &mut media_info)
+            && apply_probed_item_metadata(
+                &mut item,
+                media_source_path,
+                &mut media_info.0,
+                &media_info.1,
+            )
         {
             let item_id = item.id;
             self.items.update(item).await?;
@@ -2682,12 +2806,33 @@ impl LibraryScanService {
         sidecar_path: &str,
         media_kind: MediaKind,
         should_probe: bool,
+        item_data: Option<&Value>,
         directory_snapshot: &ScanDirectorySnapshot,
         preloaded: &PreloadedMediaState,
-    ) -> Result<Option<MediaInfo>, LibraryScanError> {
+    ) -> Result<Option<(MediaInfo, MediaInfoProbeFingerprint)>, LibraryScanError> {
         let existing = &preloaded.streams;
         let default_stream = default_stream(media_source_path, media_kind);
-        if !streams_need_probe(existing, &default_stream) {
+        let structural_probe_needed = streams_need_probe(existing, &default_stream);
+        let fingerprint = should_probe
+            .then(|| directory_snapshot.media_info_probe_fingerprint(media_source_path))
+            .flatten();
+        let schema_probe_needed = should_probe
+            && fingerprint.as_ref().is_none_or(|fingerprint| {
+                !media_info_probe_marker_is_current(item_data, fingerprint)
+            });
+        // A current marker is authoritative even when a legitimate single-stream
+        // probe happens to normalize to the same shape as the fallback stream.
+        // Placeholder shape remains the only scan-time signal for lazy sources,
+        // which never receive this local-file marker.
+        if (should_probe && !schema_probe_needed) || (!should_probe && !structural_probe_needed) {
+            return Ok(None);
+        }
+        let local_probe_key = fingerprint
+            .as_ref()
+            .map(|fingerprint| LocalMediaProbeKey::new(item_id, fingerprint));
+        if local_probe_key
+            .is_some_and(|key| self.local_probe_failures.is_backed_off(key, Instant::now()))
+        {
             return Ok(None);
         }
         let mut media_info = if should_probe {
@@ -2696,6 +2841,15 @@ impl LibraryScanService {
         } else {
             None
         };
+        if should_probe && media_info.is_none() {
+            if let Some(key) = local_probe_key {
+                self.local_probe_failures
+                    .record_failure(key, Instant::now());
+            }
+            if !structural_probe_needed {
+                return Ok(None);
+            }
+        }
         let mut streams = Vec::new();
         if let Some(media_info) = media_info.as_mut() {
             let attachment_images = media_info
@@ -2739,7 +2893,16 @@ impl LibraryScanService {
         );
         streams.extend(external_subtitles);
         self.streams.replace(item_id, &streams).await?;
-        Ok(media_info)
+        let Some(media_info) = media_info else {
+            return Ok(None);
+        };
+        let Some(fingerprint) = fingerprint else {
+            return Ok(None);
+        };
+        if let Some(key) = local_probe_key {
+            self.local_probe_failures.clear(key);
+        }
+        Ok(Some((media_info, fingerprint)))
     }
 
     async fn discover_local_images(
@@ -3486,9 +3649,11 @@ fn apply_probed_item_metadata(
     item: &mut jellyfin_data::entities::base_item::Model,
     path: &str,
     media_info: &mut MediaInfo,
+    fingerprint: &MediaInfoProbeFingerprint,
 ) -> bool {
     let mut changed = false;
-    let data = merged_media_item_data(item.data.as_ref(), path, Some(media_info));
+    let mut data = merged_media_item_data(item.data.as_ref(), path, Some(media_info));
+    write_media_info_probe_marker(&mut data, fingerprint);
     if item.data.as_ref() != Some(&data) {
         item.data = Some(data);
         changed = true;
@@ -4179,6 +4344,62 @@ fn merged_media_item_data(
     Value::Object(object)
 }
 
+fn media_info_probe_marker_is_current(
+    data: Option<&Value>,
+    fingerprint: &MediaInfoProbeFingerprint,
+) -> bool {
+    let Some(marker) = data
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("MediaInfoProbe"))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    marker.get("Version").and_then(Value::as_u64) == Some(MEDIA_INFO_PROBE_SCHEMA_VERSION)
+        && marker.get("SourceFingerprint") == Some(&media_info_probe_fingerprint_value(fingerprint))
+}
+
+fn write_media_info_probe_marker(data: &mut Value, fingerprint: &MediaInfoProbeFingerprint) {
+    data.as_object_mut()
+        .expect("media item data is always an object")
+        .insert(
+            "MediaInfoProbe".to_owned(),
+            json!({
+                "Version": MEDIA_INFO_PROBE_SCHEMA_VERSION,
+                "SourceFingerprint": media_info_probe_fingerprint_value(fingerprint),
+            }),
+        );
+}
+
+fn media_info_probe_fingerprint_value(fingerprint: &MediaInfoProbeFingerprint) -> Value {
+    json!({
+        "Path": fingerprint.path,
+        "Size": fingerprint.size,
+        "ModifiedUtc": fingerprint.modified_utc,
+    })
+}
+
+fn normalized_absolute_path(path: &Path) -> Option<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(segment) => normalized.push(segment),
+        }
+    }
+    Some(normalized.to_string_lossy().into_owned())
+}
+
 fn path_extension(path: &str) -> Option<String> {
     Path::new(path)
         .extension()
@@ -4645,18 +4866,20 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 #[cfg(test)]
 mod tests {
     use super::{
-        LibraryScanGuard, LibraryScanService, MediaKind, ScanLibraryKind, ScannedPathFingerprint,
-        SeenPaths, StrmProbeCoordinator, StrmProbeKey, StrmProbeLease, apply_episode_nfo,
-        apply_non_movie_nfo, apply_probed_item_metadata, apply_scanned_file_size,
-        apply_scanned_group_name, apply_strm_metadata, attachment_image_type,
-        attachments_from_media_info, codec_from_extension, default_fanout_concurrency,
-        default_stream, display_name, extra_type_name, image_extraction_command_succeeded,
-        is_extras_directory, is_placeholder_stream, item_by_name_folder_name, local_image_type,
+        LibraryScanGuard, LibraryScanService, MediaInfoProbeFingerprint, MediaKind,
+        ScanLibraryKind, ScannedPathFingerprint, SeenPaths, StrmProbeCoordinator, StrmProbeKey,
+        StrmProbeLease, apply_episode_nfo, apply_non_movie_nfo, apply_probed_item_metadata,
+        apply_scanned_file_size, apply_scanned_group_name, apply_strm_metadata,
+        attachment_image_type, attachments_from_media_info, codec_from_extension,
+        default_fanout_concurrency, default_stream, display_name, extra_type_name,
+        image_extraction_command_succeeded, is_extras_directory, is_placeholder_stream,
+        item_by_name_folder_name, local_image_type, media_info_probe_marker_is_current,
         media_item_data, media_kind, merge_scan_summary, metadata_movie_version_groups,
         next_stream_index, official_item_by_name_id, read_strm_target, relations_from_movie_nfo,
         relations_from_nfo_metadata, resolve_external_subtitle_streams_from_entries,
         resolve_scanned_video_groups, scan_file_batches, scan_nfo_person, set_additional_parts,
         stable_item_id, streams_from_media_info, streams_need_probe, track_group_change,
+        write_media_info_probe_marker,
     };
 
     #[test]
@@ -5898,7 +6121,12 @@ mod tests {
         assert!(apply_probed_item_metadata(
             &mut item,
             "/media/Movie.mkv",
-            &mut media_info
+            &mut media_info,
+            &MediaInfoProbeFingerprint {
+                path: "/media/Movie.mkv".to_owned(),
+                size: 123,
+                modified_utc: "2026-09-06T00:00:00Z".to_owned(),
+            }
         ));
 
         assert_eq!(item.runtime_ticks, Some(3_000_000_000));
@@ -5909,9 +6137,63 @@ mod tests {
             item.data,
             Some(json!({
                 "Container": "mkv,webm",
-                "OriginalLanguage": "eng"
+                "OriginalLanguage": "eng",
+                "MediaInfoProbe": {
+                    "Version": 1,
+                    "SourceFingerprint": {
+                        "Path": "/media/Movie.mkv",
+                        "Size": 123,
+                        "ModifiedUtc": "2026-09-06T00:00:00Z"
+                    }
+                }
             }))
         );
+    }
+
+    #[test]
+    fn media_info_probe_marker_requires_current_schema_and_exact_source() {
+        let fingerprint = MediaInfoProbeFingerprint {
+            path: "/media/Movie.mkv".to_owned(),
+            size: 123,
+            modified_utc: "2026-09-06T00:00:00Z".to_owned(),
+        };
+        let mut data = json!({ "ProviderIds": { "Tmdb": "42" } });
+
+        assert!(!media_info_probe_marker_is_current(
+            Some(&data),
+            &fingerprint
+        ));
+        write_media_info_probe_marker(&mut data, &fingerprint);
+        assert!(media_info_probe_marker_is_current(
+            Some(&data),
+            &fingerprint
+        ));
+        assert_eq!(data["ProviderIds"]["Tmdb"], "42");
+
+        let mut old_version = data.clone();
+        old_version["MediaInfoProbe"]["Version"] = json!(0);
+        assert!(!media_info_probe_marker_is_current(
+            Some(&old_version),
+            &fingerprint
+        ));
+
+        let mut changed_source = fingerprint.clone();
+        changed_source.size += 1;
+        assert!(!media_info_probe_marker_is_current(
+            Some(&data),
+            &changed_source
+        ));
+
+        let malformed = json!({
+            "MediaInfoProbe": {
+                "Version": "1",
+                "SourceFingerprint": []
+            }
+        });
+        assert!(!media_info_probe_marker_is_current(
+            Some(&malformed),
+            &fingerprint
+        ));
     }
 
     #[test]
