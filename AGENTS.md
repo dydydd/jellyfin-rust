@@ -125,6 +125,9 @@
 - Build `Items/Filters2` audio and subtitle language options with one target-user-policy-aware
   set query. Include alternate versions, add Episode to Series or Season stream searches, map
   missing language values to `und`, and sort the localized `NameValuePair` values by display name.
+- Build every `Items/Filters` and `Items/Filters2` bucket from one shared target-user policy
+  snapshot. Apply enabled and blocked folders, allowed and blocked tags, parental ratings, and
+  blocked unrated kinds consistently to item values, years, ratings, and stream languages.
 - Project `MediaSourceCount` for item pages with one batched alternate-version query. Preserve the
   official nullable-single-source behavior, and include episode groups so the web client can show
   merged episode versions without loading every `MediaSource`.

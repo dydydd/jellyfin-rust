@@ -11,7 +11,7 @@ use jellyfin_data::{
     NewDevice,
     entities::{base_item, item_value},
 };
-use jellyfin_model::UserPolicy;
+use jellyfin_model::{UnratedItem, UserPolicy};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -78,7 +78,7 @@ async fn lowercase_filter_routes_match_canonical_routes() {
 #[tokio::test]
 async fn filters2_returns_official_query_filter_shape() {
     let fixture = Fixture::new().await;
-    fixture.apply_blocked_library_policy().await;
+    fixture.apply_restricted_library_policy().await;
 
     assert_eq!(
         fixture
@@ -102,6 +102,7 @@ async fn filters2_returns_official_query_filter_shape() {
         &[
             (&fixture.drama_genre, fixture.drama_genre_id),
             (&fixture.nested_genre, fixture.nested_genre_id),
+            (&fixture.visible_genre, fixture.visible_genre_id),
         ],
     );
     assert_eq!(movie_filters["Tags"], Value::Array(Vec::new()));
@@ -255,6 +256,7 @@ async fn filters2_returns_official_query_filter_shape() {
         &[
             (&fixture.drama_genre, fixture.drama_genre_id),
             (&fixture.nested_genre, fixture.nested_genre_id),
+            (&fixture.visible_genre, fixture.visible_genre_id),
         ],
     );
 
@@ -264,6 +266,7 @@ async fn filters2_returns_official_query_filter_shape() {
 #[tokio::test]
 async fn filters_legacy_returns_distinct_library_filters() {
     let fixture = Fixture::new().await;
+    fixture.apply_restricted_library_policy().await;
 
     assert_eq!(
         fixture
@@ -284,14 +287,22 @@ async fn filters_legacy_returns_distinct_library_filters() {
     .await;
     assert_string_array(
         &movie_filters["Genres"],
-        &[&fixture.drama_genre, &fixture.nested_genre],
+        &[
+            &fixture.drama_genre,
+            &fixture.nested_genre,
+            &fixture.visible_genre,
+        ],
     );
     assert_string_array(
         &movie_filters["Tags"],
-        &[&fixture.featured_tag, &fixture.root_tag],
+        &[
+            &fixture.featured_tag,
+            &fixture.root_tag,
+            &fixture.visible_tag,
+        ],
     );
     assert_string_array(&movie_filters["OfficialRatings"], &["PG", "PG-13"]);
-    assert_i32_array(&movie_filters["Years"], &[1984, 1999, 2001]);
+    assert_i32_array(&movie_filters["Years"], &[1984, 1999, 2001, 2022]);
     assert!(movie_filters.get("genres").is_none());
 
     let audio_filters = body_json(
@@ -357,6 +368,16 @@ async fn filters_legacy_returns_distinct_library_filters() {
         fixture
             .request(
                 &format!("/Items/Filters?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                &format!("/Items/Filters?userId={}", Uuid::new_v4()),
                 Credential::Device(&fixture.user_token),
             )
             .await
@@ -448,6 +469,7 @@ struct Fixture {
     movie_id: Uuid,
     parent_id: Uuid,
     blocked_library_id: Uuid,
+    visible_library_id: Uuid,
     user_token: String,
     admin_token: String,
     drama_genre: String,
@@ -458,9 +480,13 @@ struct Fixture {
     nested_genre_id: Uuid,
     trailer_genre: String,
     trailer_genre_id: Uuid,
+    visible_genre: String,
+    visible_genre_id: Uuid,
     root_tag: String,
     featured_tag: String,
     music_tag: String,
+    visible_tag: String,
+    blocked_tag: String,
 }
 
 impl Fixture {
@@ -534,7 +560,7 @@ impl Fixture {
             Some(root.id),
             "Video",
             2020,
-            "R",
+            "PG",
         )
         .await;
         let parent = create_item(&items, "Folder", "Filter Parent", Some(root.id), true).await;
@@ -602,7 +628,7 @@ impl Fixture {
             Some(blocked_library.id),
             "Video",
             2023,
-            "R",
+            "PG",
         )
         .await;
         let visible_library = create_item(
@@ -623,6 +649,54 @@ impl Fixture {
             "PG",
         )
         .await;
+        let disabled_library = create_item(
+            &items,
+            "CollectionFolder",
+            "Disabled Filter Library",
+            Some(root.id),
+            true,
+        )
+        .await;
+        let disabled_movie = create_media_item(
+            &items,
+            "Movie",
+            "Disabled Filter Movie",
+            Some(disabled_library.id),
+            "Video",
+            2021,
+            "PG",
+        )
+        .await;
+        let blocked_tag_movie = create_media_item(
+            &items,
+            "Movie",
+            "Blocked Tag Filter Movie",
+            Some(root.id),
+            "Video",
+            2020,
+            "PG",
+        )
+        .await;
+        let parental_movie = create_media_item(
+            &items,
+            "Movie",
+            "Parental Filter Movie",
+            Some(root.id),
+            "Video",
+            2019,
+            "R",
+        )
+        .await;
+        let unrated_movie = create_media_item(
+            &items,
+            "Movie",
+            "Unrated Filter Movie",
+            Some(root.id),
+            "Video",
+            2018,
+            "",
+        )
+        .await;
 
         insert_media_stream(&database, movie.id, 0, 0, Some("eng")).await;
         insert_media_stream(&database, movie.id, 1, 0, None).await;
@@ -640,6 +714,10 @@ impl Fixture {
         insert_media_stream(&database, blocked_movie.id, 0, 0, Some("ita")).await;
         insert_media_stream(&database, blocked_movie.id, 1, 2, Some("ita")).await;
         insert_media_stream(&database, visible_movie.id, 0, 0, Some("por")).await;
+        insert_media_stream(&database, disabled_movie.id, 0, 0, Some("dan")).await;
+        insert_media_stream(&database, blocked_tag_movie.id, 0, 0, Some("ces")).await;
+        insert_media_stream(&database, parental_movie.id, 0, 0, Some("pol")).await;
+        insert_media_stream(&database, unrated_movie.id, 0, 0, Some("ron")).await;
 
         let values = ItemValueRepository::new(database.clone());
         let drama_genre = format!("Drama {suffix}");
@@ -666,6 +744,15 @@ impl Fixture {
             .link(trailer.id, item_value::ItemValueType::Genre, &trailer_genre)
             .await
             .expect("trailer genre");
+        let visible_genre = format!("Visible {suffix}");
+        let visible_value = values
+            .link(
+                visible_movie.id,
+                item_value::ItemValueType::Genre,
+                &visible_genre,
+            )
+            .await
+            .expect("visible-library movie genre");
         let root_tag = format!("Root Tag {suffix}");
         values
             .link(movie.id, item_value::ItemValueType::Tags, &root_tag)
@@ -685,6 +772,52 @@ impl Fixture {
             .link(audio.id, item_value::ItemValueType::Tags, &music_tag)
             .await
             .expect("audio tag");
+        let visible_tag = format!("Visible Tag {suffix}");
+        values
+            .link(
+                visible_movie.id,
+                item_value::ItemValueType::Tags,
+                &visible_tag,
+            )
+            .await
+            .expect("visible-library movie tag");
+
+        let blocked_tag = format!("Blocked Policy Tag {suffix}");
+        link_restricted_values(
+            &values,
+            blocked_movie.id,
+            &format!("Blocked Folder Genre {suffix}"),
+            &format!("Blocked Folder Tag {suffix}"),
+        )
+        .await;
+        link_restricted_values(
+            &values,
+            disabled_movie.id,
+            &format!("Disabled Folder Genre {suffix}"),
+            &format!("Disabled Folder Tag {suffix}"),
+        )
+        .await;
+        link_restricted_values(
+            &values,
+            blocked_tag_movie.id,
+            &format!("Blocked Tag Genre {suffix}"),
+            &blocked_tag,
+        )
+        .await;
+        link_restricted_values(
+            &values,
+            parental_movie.id,
+            &format!("Parental Genre {suffix}"),
+            &format!("Parental Tag {suffix}"),
+        )
+        .await;
+        link_restricted_values(
+            &values,
+            unrated_movie.id,
+            &format!("Unrated Genre {suffix}"),
+            &format!("Unrated Tag {suffix}"),
+        )
+        .await;
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -701,6 +834,7 @@ impl Fixture {
             movie_id: movie.id,
             parent_id: parent.id,
             blocked_library_id: blocked_library.id,
+            visible_library_id: visible_library.id,
             user_token,
             admin_token,
             drama_genre,
@@ -711,9 +845,13 @@ impl Fixture {
             nested_genre_id: nested.item_value_id,
             trailer_genre,
             trailer_genre_id: trailer_value.item_value_id,
+            visible_genre,
+            visible_genre_id: visible_value.item_value_id,
             root_tag,
             featured_tag,
             music_tag,
+            visible_tag,
+            blocked_tag,
         }
     }
 
@@ -732,12 +870,17 @@ impl Fixture {
             .unwrap()
     }
 
-    async fn apply_blocked_library_policy(&self) {
+    async fn apply_restricted_library_policy(&self) {
         let users = UserService::new(self.database.clone());
         let user = users.get(self.user_id).await.expect("filter user");
         let mut policy: UserPolicy =
             serde_json::from_value(user.policy).expect("stored user policy");
         policy.blocked_media_folders = Some(vec![self.blocked_library_id]);
+        policy.enable_all_folders = false;
+        policy.enabled_folders = vec![self.visible_library_id, self.blocked_library_id];
+        policy.blocked_tags = vec![self.blocked_tag.clone()];
+        policy.max_parental_rating = Some(13);
+        policy.block_unrated_items = vec![UnratedItem::Movie];
         users
             .update_policy(self.user_id, &policy)
             .await
@@ -762,6 +905,22 @@ impl Fixture {
             .expect("temporary PostgreSQL database cleanup must succeed");
         administrator.close().await.unwrap();
     }
+}
+
+async fn link_restricted_values(
+    repository: &ItemValueRepository,
+    item_id: Uuid,
+    genre: &str,
+    tag: &str,
+) {
+    repository
+        .link(item_id, item_value::ItemValueType::Genre, genre)
+        .await
+        .expect("restricted movie genre");
+    repository
+        .link(item_id, item_value::ItemValueType::Tags, tag)
+        .await
+        .expect("restricted movie tag");
 }
 
 async fn create_media_item(

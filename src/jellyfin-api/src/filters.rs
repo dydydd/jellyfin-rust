@@ -79,6 +79,10 @@ pub(crate) async fn filters2(
         .user_id
         .filter(|user_id| !user_id.is_nil())
         .unwrap_or(authenticated.user.id);
+    let access_policy = state
+        .user_library
+        .filter_access_policy(&authenticated.user, target_user_id)
+        .await?;
     let recursive = query.recursive.unwrap_or(true);
     let parent_id = scoped_parent_id(&query);
     let is_music_filter = is_music_filter(&query.include_item_types);
@@ -88,6 +92,7 @@ pub(crate) async fn filters2(
         recursive,
         include_item_types: query.include_item_types,
         user_id: Some(target_user_id),
+        access_policy: access_policy.clone(),
         ..ItemValueQuery::default()
     };
     let genres = if is_music_filter {
@@ -117,17 +122,12 @@ pub(crate) async fn filters2(
     };
     let (audio_languages, subtitle_languages) =
         if let Some(include_item_types) = stream_language_item_types {
-            let mut stream_query = BaseItemQuery {
+            let stream_query = BaseItemQuery {
                 parent_id,
                 recursive,
                 include_item_types,
-                user_id: Some(target_user_id),
-                ..BaseItemQuery::default()
+                ..access_policy
             };
-            state
-                .user_library
-                .apply_user_policy(&mut stream_query, target_user_id)
-                .await?;
             let languages = state
                 .base_items
                 .media_stream_languages_including_owned(&stream_query)
@@ -153,7 +153,14 @@ pub(crate) async fn filters_legacy(
     Query(query): Query<FiltersQuery>,
 ) -> Result<Json<QueryFiltersLegacy>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = target_user_id(&state, &authenticated.user, query.user_id).await?;
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
+    let access_policy = state
+        .user_library
+        .filter_access_policy(&authenticated.user, target_user_id)
+        .await?;
     let Some(parent_id) = legacy_parent_id(&state, &query).await? else {
         return Ok(Json(QueryFiltersLegacy::default()));
     };
@@ -163,8 +170,7 @@ pub(crate) async fn filters_legacy(
         recursive: true,
         include_item_types: query.include_item_types,
         media_types: query.media_types,
-        user_id: Some(target_user_id),
-        ..BaseItemQuery::default()
+        ..access_policy.clone()
     };
 
     let years = state
@@ -179,6 +185,7 @@ pub(crate) async fn filters_legacy(
         include_item_types: item_query.include_item_types,
         media_types: item_query.media_types,
         user_id: Some(target_user_id),
+        access_policy,
         ..ItemValueQuery::default()
     };
     let tags = state
@@ -239,25 +246,6 @@ async fn legacy_parent_id(
         Some(items.ensure_user_root().await?)
     };
     Ok(parent.filter(|item| item.is_folder).map(|folder| folder.id))
-}
-
-async fn target_user_id(
-    state: &AppState,
-    authenticated_user: &jellyfin_data::entities::user::Model,
-    requested: Option<Uuid>,
-) -> Result<Uuid, ApiError> {
-    let requested = requested.filter(|user_id| !user_id.is_nil());
-    let target_user_id = match requested {
-        Some(user_id)
-            if user_id != authenticated_user.id && !authenticated_user.is_administrator =>
-        {
-            return Err(ApiError::Forbidden);
-        }
-        Some(user_id) => user_id,
-        None => authenticated_user.id,
-    };
-    state.users.get(target_user_id).await?;
-    Ok(target_user_id)
 }
 
 fn is_music_filter(include_item_types: &[String]) -> bool {

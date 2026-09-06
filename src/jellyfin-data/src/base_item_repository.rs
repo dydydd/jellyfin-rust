@@ -1392,14 +1392,46 @@ impl BaseItemRepository {
         &self,
         query: &BaseItemQuery,
     ) -> Result<MediaStreamLanguageLists, BaseItemError> {
+        // Select stream-bearing rows with the requested item scope, but evaluate
+        // access against the displayed owner. Alternate rows commonly omit
+        // ratings and tags that live on their primary, so applying policy to the
+        // alternate itself would silently drop its languages.
+        let mut candidate_query = query.clone();
+        candidate_query.allowed_official_ratings.clear();
+        candidate_query.allowed_parental_ratings.clear();
+        candidate_query.block_unrated_items.clear();
+        candidate_query.blocked_tags.clear();
+        candidate_query.allowed_tags.clear();
+        candidate_query.enabled_folders.clear();
+        candidate_query.enable_all_folders = true;
+        candidate_query.blocked_media_folders = None;
+
         let mut values = Vec::new();
         let mut sql = String::from(
-            "WITH filtered AS (\
-                 SELECT item.id \
+            "WITH candidates AS (\
+                 SELECT item.id, item.primary_version_id, item.data \
                  FROM jellyfin.base_items AS item \
                  WHERE item.item_type <> 'PLACEHOLDER'",
         );
-        append_raw_item_filters(&mut sql, &mut values, query, true);
+        append_raw_item_filters(&mut sql, &mut values, &candidate_query, true);
+        if let Some(condition) = policy_filter_sql("access_item", query) {
+            sql.push_str(
+                "), filtered AS (\
+                     SELECT candidate.id \
+                     FROM candidates AS candidate \
+                     LEFT JOIN jellyfin.base_items AS owner \
+                       ON candidate.data ->> 'OwnerId' = owner.id::text \
+                     JOIN jellyfin.base_items AS access_item \
+                       ON access_item.id = COALESCE(\
+                           candidate.primary_version_id, owner.id, candidate.id\
+                       ) \
+                     WHERE (",
+            );
+            sql.push_str(&condition);
+            sql.push(')');
+        } else {
+            sql.push_str("), filtered AS (SELECT candidate.id FROM candidates AS candidate");
+        }
         sql.push_str(
             ") \
              SELECT stream.stream_type, \

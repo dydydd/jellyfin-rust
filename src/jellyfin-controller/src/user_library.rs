@@ -316,6 +316,36 @@ impl UserLibraryService {
         Ok(())
     }
 
+    /// Loads one authorized target user's library policy as a reusable query template.
+    ///
+    /// Filter endpoints clone this template into their base-item, item-value,
+    /// and media-stream queries so every bucket uses one policy snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns forbidden, not-found, stored-policy, or persistence errors.
+    pub async fn filter_access_policy(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+    ) -> Result<BaseItemQuery, UserLibraryError> {
+        if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
+            return Err(UserLibraryError::Forbidden);
+        }
+        let user = match self.users.get(target_user_id).await {
+            Ok(user) => user,
+            Err(UserError::NotFound) => return Err(UserLibraryError::UserNotFound),
+            Err(error) => return Err(error.into()),
+        };
+        let mut query = BaseItemQuery {
+            user_id: Some(target_user_id),
+            ..BaseItemQuery::default()
+        };
+        self.apply_stored_user_policy(&mut query, user.policy)
+            .await?;
+        Ok(query)
+    }
+
     /// Searches a target user's library with official score ordering.
     ///
     /// # Errors
@@ -926,8 +956,16 @@ impl UserLibraryService {
         target_user_id: Uuid,
     ) -> Result<(), UserLibraryError> {
         let user = self.users.get(target_user_id).await?;
+        self.apply_stored_user_policy(query, user.policy).await
+    }
+
+    async fn apply_stored_user_policy(
+        &self,
+        query: &mut BaseItemQuery,
+        stored_policy: Value,
+    ) -> Result<(), UserLibraryError> {
         let policy: UserPolicy =
-            serde_json::from_value(user.policy).map_err(UserLibraryError::InvalidPolicy)?;
+            serde_json::from_value(stored_policy).map_err(UserLibraryError::InvalidPolicy)?;
         query.blocked_tags = normalized_tags(&policy.blocked_tags);
         query.allowed_tags = normalized_tags(&policy.allowed_tags);
         query.block_unrated_items = policy
