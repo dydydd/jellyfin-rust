@@ -150,6 +150,12 @@
   `people.id` as the internal credit key, make canonical Person items non-folder and non-virtual,
   fill missing provider ids without replacing established metadata, and reuse legacy image files
   only by copying database references; never move or delete the source image or legacy row.
+- Reconcile referenced Person names in fixed 128-item clean-name keyset pages. Prepare directories
+  before each PostgreSQL batch, then atomically create canonical rows, fill only missing metadata,
+  merge ProviderIds without replacing case-insensitive existing keys, and copy missing image database
+  references from the best locked/metadata/image/newest legacy candidate. Cancellation must stop new
+  batches; never load the full people catalog, issue per-credit queries, refresh remote metadata, or
+  delete people, legacy Person rows, image rows, or image files during this reconciliation phase.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an

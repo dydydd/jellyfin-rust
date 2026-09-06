@@ -78,8 +78,8 @@ pub use named_configuration_repository::{
     NamedConfigurationRepository, NamedConfigurationStoreError,
 };
 pub use person_repository::{
-    NewPerson, NewPersonCredit, PersonCredit, PersonError, PersonPage, PersonQuery,
-    PersonRepository,
+    CanonicalPersonEntity, NewPerson, NewPersonCredit, PersonCredit, PersonError, PersonPage,
+    PersonQuery, PersonReconciliationBatchResult, PersonRepository,
 };
 pub use playlist_repository::{
     PlaylistRecord, PlaylistRepository, PlaylistStoreError, PlaylistUserPermission,

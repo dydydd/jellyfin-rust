@@ -5,12 +5,12 @@ use sea_orm::{
     ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryFilter,
     QueryOrder, SqlErr, Statement, TransactionTrait, Value as SeaValue, sea_query::OnConflict,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    BaseItemQuery,
+    BaseItemQuery, NewItemByNameEntity,
     entities::{base_item, person, person_base_item_map},
     item_types::expand_item_type_aliases,
 };
@@ -81,6 +81,22 @@ pub struct PersonPage {
     pub people: Vec<person::Model>,
     pub total_record_count: u64,
     pub start_index: u64,
+}
+
+/// One canonical Person item prepared from a referenced people row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalPersonEntity {
+    pub person_id: Uuid,
+    pub provider_ids: Value,
+    pub entity: NewItemByNameEntity,
+}
+
+/// Set-based changes committed for one Person reconciliation batch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PersonReconciliationBatchResult {
+    pub created_items: u64,
+    pub updated_items: u64,
+    pub copied_images: u64,
 }
 
 #[derive(Debug, Error)]
@@ -484,6 +500,372 @@ impl PersonRepository {
             .await?,
             total_record_count: u64::try_from(count).unwrap_or_default(),
             start_index: query.start_index,
+        })
+    }
+
+    /// Keyset-pages distinct people that are still referenced by at least one
+    /// base-item credit.
+    ///
+    /// The map foreign keys already prevent dangling credit rows. Unreferenced
+    /// people are conservatively ignored rather than deleted by reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the page cannot be loaded.
+    pub async fn referenced_page_after(
+        &self,
+        after_clean_name: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<person::Model>, PersonError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(
+            person::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+            SELECT person.id, person.name, person.clean_name, person.provider_ids,
+                   person.date_created, person.date_modified, person.row_version
+            FROM jellyfin.people AS person
+            WHERE ($1::text IS NULL OR person.clean_name > $1)
+              AND EXISTS (
+                  SELECT 1
+                  FROM jellyfin.people_base_item_map AS credit
+                  WHERE credit.person_id = person.id
+              )
+            ORDER BY person.clean_name, person.id
+            LIMIT $2
+            ",
+                [
+                    after_clean_name.map(str::to_owned).into(),
+                    i64::try_from(limit).unwrap_or(i64::MAX).into(),
+                ],
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
+    }
+
+    /// Ensures and conservatively hydrates one bounded batch of canonical
+    /// Person items in a single transaction.
+    ///
+    /// Canonical values always win. For empty fields only, the best legacy row
+    /// is chosen by locked state, metadata, image presence, modification time,
+    /// and id. Provider IDs merge without replacing existing keys, while image
+    /// rows copy by reference with no source-row or file mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-provider or database errors. No partial batch is
+    /// committed when any statement fails.
+    #[allow(clippy::too_many_lines)]
+    pub async fn reconcile_canonical_batch(
+        &self,
+        entries: &[CanonicalPersonEntity],
+    ) -> Result<PersonReconciliationBatchResult, PersonError> {
+        if entries.is_empty() {
+            return Ok(PersonReconciliationBatchResult::default());
+        }
+        if entries.iter().any(|entry| !entry.provider_ids.is_object()) {
+            return Err(PersonError::InvalidProviderIds);
+        }
+        let payload = Value::Array(
+            entries
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "person_id": entry.person_id,
+                        "canonical_id": entry.entity.id,
+                        "name": entry.entity.name,
+                        "path": entry.entity.path,
+                        "presentation_unique_key": entry.entity.presentation_unique_key,
+                        "date_created": entry.entity.date_created,
+                        "date_modified": entry.entity.date_modified,
+                        "provider_ids": entry.provider_ids,
+                    })
+                })
+                .collect(),
+        );
+        let transaction = self.database.begin().await?;
+        let created_items = transaction
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                WITH input AS (
+                    SELECT *
+                    FROM jsonb_to_recordset($1::jsonb) AS entry(
+                        person_id uuid,
+                        canonical_id uuid,
+                        name text,
+                        path text,
+                        presentation_unique_key text,
+                        date_created timestamptz,
+                        date_modified timestamptz,
+                        provider_ids jsonb
+                    )
+                ), referenced_input AS (
+                    SELECT input.*
+                    FROM input
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM jellyfin.people_base_item_map AS credit
+                        WHERE credit.person_id = input.person_id
+                    )
+                )
+                INSERT INTO jellyfin.base_items (
+                    id, item_type, data, path, name, sort_name, is_folder,
+                    is_virtual_item, presentation_unique_key, date_created, date_modified
+                )
+                SELECT canonical_id, 'Person',
+                       CASE WHEN provider_ids = '{}'::jsonb THEN NULL
+                            ELSE jsonb_build_object('ProviderIds', provider_ids) END,
+                       path, name, name, false, false, presentation_unique_key,
+                       date_created, date_modified
+                FROM referenced_input
+                ON CONFLICT (id) DO NOTHING
+                ",
+                [payload.clone().into()],
+            ))
+            .await?
+            .rows_affected();
+
+        let updated_items = transaction
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                WITH input AS (
+                    SELECT *
+                    FROM jsonb_to_recordset($1::jsonb) AS entry(
+                        person_id uuid,
+                        canonical_id uuid,
+                        name text,
+                        path text,
+                        presentation_unique_key text,
+                        date_created timestamptz,
+                        date_modified timestamptz,
+                        provider_ids jsonb
+                    )
+                ), referenced_input AS (
+                    SELECT input.*
+                    FROM input
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM jellyfin.people_base_item_map AS credit
+                        WHERE credit.person_id = input.person_id
+                    )
+                ),
+                candidate AS (
+                    SELECT input.*,
+                           legacy.data AS legacy_data,
+                           legacy.name AS legacy_name,
+                           legacy.sort_name AS legacy_sort_name,
+                           legacy.overview AS legacy_overview,
+                           legacy.official_rating AS legacy_official_rating,
+                           legacy.production_year AS legacy_production_year,
+                           legacy.premiere_date AS legacy_premiere_date
+                    FROM referenced_input AS input
+                    LEFT JOIN LATERAL (
+                        SELECT legacy.*
+                        FROM jellyfin.base_items AS legacy
+                        WHERE legacy.id <> input.canonical_id
+                          AND legacy.item_type IN (
+                              'Person', 'MediaBrowser.Controller.Entities.Person'
+                          )
+                          AND legacy.clean_name = jellyfin.normalize_search_text(input.name)
+                        ORDER BY
+                            CASE WHEN lower(COALESCE(legacy.data->>'IsLocked', 'false'))
+                                      IN ('true', '1') THEN 1 ELSE 0 END DESC,
+                            CASE WHEN legacy.data IS NOT NULL
+                                      AND legacy.data <> '{}'::jsonb THEN 1 ELSE 0 END DESC,
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM jellyfin.base_item_images AS image
+                                WHERE image.item_id = legacy.id
+                            ) THEN 1 ELSE 0 END DESC,
+                            legacy.date_modified DESC,
+                            legacy.id
+                        LIMIT 1
+                    ) AS legacy ON true
+                ),
+                desired AS (
+                    SELECT target.id,
+                           'Person'::text AS item_type,
+                           CASE
+                               WHEN target.data IS NOT NULL
+                                    AND jsonb_typeof(target.data) <> 'object'
+                               THEN target.data
+                               ELSE jsonb_set(
+                                   (CASE WHEN jsonb_typeof(candidate.legacy_data) = 'object'
+                                         THEN candidate.legacy_data ELSE '{}'::jsonb END)
+                                   || COALESCE(target.data, '{}'::jsonb),
+                                   '{ProviderIds}',
+                                   merged_provider_ids.value,
+                                   true
+                               )
+                           END AS data,
+                           CASE WHEN NULLIF(btrim(target.path), '') IS NULL
+                                THEN candidate.path ELSE target.path END AS path,
+                           COALESCE(NULLIF(btrim(target.name), ''),
+                                    NULLIF(btrim(candidate.legacy_name), ''),
+                                    candidate.name) AS name,
+                           COALESCE(NULLIF(btrim(target.sort_name), ''),
+                                    NULLIF(btrim(candidate.legacy_sort_name), ''),
+                                    candidate.name) AS sort_name,
+                           COALESCE(NULLIF(btrim(target.overview), ''),
+                                    NULLIF(btrim(candidate.legacy_overview), '')) AS overview,
+                           COALESCE(NULLIF(btrim(target.official_rating), ''),
+                                    NULLIF(btrim(candidate.legacy_official_rating), ''))
+                               AS official_rating,
+                           COALESCE(target.production_year, candidate.legacy_production_year)
+                               AS production_year,
+                           COALESCE(target.premiere_date, candidate.legacy_premiere_date)
+                               AS premiere_date,
+                           false AS is_folder,
+                           false AS is_virtual_item,
+                           COALESCE(NULLIF(btrim(target.presentation_unique_key), ''),
+                                    candidate.presentation_unique_key)
+                               AS presentation_unique_key
+                    FROM candidate
+                    JOIN jellyfin.base_items AS target
+                      ON target.id = candidate.canonical_id
+                    CROSS JOIN LATERAL (
+                        SELECT COALESCE(
+                            jsonb_object_agg(selected.key, selected.value),
+                            '{}'::jsonb
+                        ) AS value
+                        FROM (
+                            SELECT DISTINCT ON (lower(provider.key))
+                                   provider.key, provider.value
+                            FROM (
+                                SELECT entry.key, entry.value, 1 AS priority
+                                FROM jsonb_each(
+                                    CASE
+                                        WHEN jsonb_typeof(
+                                            candidate.legacy_data->'ProviderIds'
+                                        ) = 'object'
+                                        THEN candidate.legacy_data->'ProviderIds'
+                                        ELSE '{}'::jsonb
+                                    END
+                                ) AS entry
+                                UNION ALL
+                                SELECT entry.key, entry.value, 2 AS priority
+                                FROM jsonb_each(candidate.provider_ids) AS entry
+                                UNION ALL
+                                SELECT entry.key, entry.value, 3 AS priority
+                                FROM jsonb_each(
+                                    CASE
+                                        WHEN jsonb_typeof(target.data->'ProviderIds') = 'object'
+                                        THEN target.data->'ProviderIds'
+                                        ELSE '{}'::jsonb
+                                    END
+                                ) AS entry
+                            ) AS provider
+                            ORDER BY lower(provider.key), provider.priority DESC
+                        ) AS selected
+                    ) AS merged_provider_ids
+                )
+                UPDATE jellyfin.base_items AS target
+                SET item_type = desired.item_type,
+                    data = desired.data,
+                    path = desired.path,
+                    name = desired.name,
+                    sort_name = desired.sort_name,
+                    overview = desired.overview,
+                    official_rating = desired.official_rating,
+                    production_year = desired.production_year,
+                    premiere_date = desired.premiere_date,
+                    is_folder = desired.is_folder,
+                    is_virtual_item = desired.is_virtual_item,
+                    presentation_unique_key = desired.presentation_unique_key
+                FROM desired
+                WHERE target.id = desired.id
+                  AND ROW(
+                      target.item_type, target.data, target.path, target.name, target.sort_name,
+                      target.overview, target.official_rating, target.production_year,
+                      target.premiere_date, target.is_folder, target.is_virtual_item,
+                      target.presentation_unique_key
+                  ) IS DISTINCT FROM ROW(
+                      desired.item_type, desired.data, desired.path, desired.name,
+                      desired.sort_name, desired.overview, desired.official_rating,
+                      desired.production_year, desired.premiere_date, desired.is_folder,
+                      desired.is_virtual_item, desired.presentation_unique_key
+                  )
+                ",
+                [payload.clone().into()],
+            ))
+            .await?
+            .rows_affected();
+
+        let copied_images = transaction
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r"
+                WITH input AS (
+                    SELECT *
+                    FROM jsonb_to_recordset($1::jsonb) AS entry(
+                        person_id uuid,
+                        canonical_id uuid,
+                        name text,
+                        path text,
+                        presentation_unique_key text,
+                        date_created timestamptz,
+                        date_modified timestamptz,
+                        provider_ids jsonb
+                    )
+                ), referenced_input AS (
+                    SELECT input.*
+                    FROM input
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM jellyfin.people_base_item_map AS credit
+                        WHERE credit.person_id = input.person_id
+                    )
+                ),
+                candidate AS (
+                    SELECT input.canonical_id, legacy.id AS legacy_id
+                    FROM referenced_input AS input
+                    JOIN LATERAL (
+                        SELECT legacy.id
+                        FROM jellyfin.base_items AS legacy
+                        WHERE legacy.id <> input.canonical_id
+                          AND legacy.item_type IN (
+                              'Person', 'MediaBrowser.Controller.Entities.Person'
+                          )
+                          AND legacy.clean_name = jellyfin.normalize_search_text(input.name)
+                        ORDER BY
+                            CASE WHEN lower(COALESCE(legacy.data->>'IsLocked', 'false'))
+                                      IN ('true', '1') THEN 1 ELSE 0 END DESC,
+                            CASE WHEN legacy.data IS NOT NULL
+                                      AND legacy.data <> '{}'::jsonb THEN 1 ELSE 0 END DESC,
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM jellyfin.base_item_images AS image
+                                WHERE image.item_id = legacy.id
+                            ) THEN 1 ELSE 0 END DESC,
+                            legacy.date_modified DESC,
+                            legacy.id
+                        LIMIT 1
+                    ) AS legacy ON true
+                )
+                INSERT INTO jellyfin.base_item_images (
+                    item_id, image_type, image_index, path, date_modified,
+                    width, height, blurhash
+                )
+                SELECT candidate.canonical_id, image.image_type, image.image_index,
+                       image.path, image.date_modified, image.width, image.height, image.blurhash
+                FROM candidate
+                JOIN jellyfin.base_item_images AS image
+                  ON image.item_id = candidate.legacy_id
+                ON CONFLICT (item_id, image_type, image_index) DO NOTHING
+                ",
+                [payload.into()],
+            ))
+            .await?
+            .rows_affected();
+
+        transaction.commit().await?;
+        Ok(PersonReconciliationBatchResult {
+            created_items,
+            updated_items,
+            copied_images,
         })
     }
 

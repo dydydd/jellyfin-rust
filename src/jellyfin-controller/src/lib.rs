@@ -104,7 +104,10 @@ pub use music_genre::{
     MusicGenre, MusicGenreDetail, MusicGenreError, MusicGenrePage, MusicGenreService,
 };
 pub use packages::{PackageError, PackageService};
-pub use persons::{Person, PersonError, PersonPage, PersonService};
+pub use persons::{
+    Person, PersonError, PersonPage, PersonReconciliationError, PersonReconciliationService,
+    PersonReconciliationSummary, PersonService,
+};
 pub use playlists::{PlaylistError, PlaylistService};
 pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,

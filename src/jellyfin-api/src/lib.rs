@@ -394,7 +394,6 @@ impl AppState {
         state.scheduled_tasks.with_maintenance_executors(
             Arc::clone(&state.database),
             ActivityLogRepository::new(Arc::clone(&state.database)),
-            PersonRepository::new(Arc::clone(&state.database)),
             UserDataRepository::new(Arc::clone(&state.database)),
             KeyframeDataRepository::new(Arc::clone(&state.database)),
             Arc::clone(&state.trickplay),
@@ -667,6 +666,10 @@ impl AppState {
             self.internal_metadata_directory.as_path(),
         );
         self.metadata_refresh.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
+        self.scheduled_tasks.set_item_by_name_directories(
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );

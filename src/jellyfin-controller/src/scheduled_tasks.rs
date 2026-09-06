@@ -10,8 +10,8 @@ use std::{
 
 use chrono::{DateTime, Datelike, Duration, Utc};
 use jellyfin_data::{
-    ActivityLogRepository, KeyframeDataRepository, PersonQuery, PersonRepository,
-    ServerConfigurationRepository, UserDataRepository,
+    ActivityLogRepository, KeyframeDataRepository, ServerConfigurationRepository,
+    UserDataRepository,
 };
 use jellyfin_live_tv::listings::GuideRefreshService;
 use jellyfin_model::{
@@ -24,8 +24,8 @@ use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use crate::{
-    ChapterImageService, LibraryScanService, MetadataRefreshService, SystemLogService,
-    TrickplayService,
+    ChapterImageService, LibraryScanService, MetadataRefreshService, PersonReconciliationService,
+    SystemLogService, TrickplayService,
 };
 
 const TICKS_PER_HOUR: i64 = 36_000_000_000;
@@ -82,6 +82,8 @@ pub struct ScheduledTaskPaths {
     pub transcode_directory: Arc<PathBuf>,
     pub trickplay_directory: Arc<PathBuf>,
     pub chapter_images_directory: Arc<PathBuf>,
+    pub program_data_directory: Arc<PathBuf>,
+    pub internal_metadata_directory: Arc<PathBuf>,
     pub ffmpeg_path: Arc<PathBuf>,
     pub trickplay_options: Arc<TrickplayOptions>,
     pub log_file_retention_days: i32,
@@ -101,6 +103,8 @@ impl Default for ScheduledTaskPaths {
             ),
             trickplay_directory: Arc::new(PathBuf::from("programdata").join("trickplay")),
             chapter_images_directory: Arc::new(PathBuf::from("programdata").join("chapter-images")),
+            program_data_directory: Arc::new(PathBuf::from("programdata")),
+            internal_metadata_directory: Arc::new(PathBuf::from("metadata")),
             ffmpeg_path: Arc::new(PathBuf::from("ffmpeg")),
             trickplay_options: Arc::new(TrickplayOptions::default()),
             log_file_retention_days: 3,
@@ -234,28 +238,28 @@ impl ScheduledTaskService {
         &self,
         database: impl Into<jellyfin_data::SharedDatabase>,
         activity_logs: ActivityLogRepository,
-        people: PersonRepository,
         user_data: UserDataRepository,
         keyframes: KeyframeDataRepository,
         trickplay: Arc<TrickplayService>,
         chapter_images: ChapterImageService,
         guide: Option<Arc<GuideRefreshService>>,
     ) {
+        let database = database.into();
         self.register_executor(
             "CleanActivityLog",
             clean_activity_log_handler(activity_logs),
         );
         self.register_executor("CleanupUserData", cleanup_user_data_handler(user_data));
-        self.register_executor("RefreshPeople", refresh_people_handler(people));
+        self.register_executor(
+            "RefreshPeople",
+            refresh_people_handler(PersonReconciliationService::new(Arc::clone(&database))),
+        );
         self.register_executor("KeyframeExtraction", keyframe_extraction_handler(keyframes));
         self.register_executor("TrickplayImages", trickplay_images_handler(trickplay));
         if let Some(guide) = guide {
             self.register_executor("RefreshGuide", refresh_guide_handler(guide));
         }
-        self.register_executor(
-            "OptimizeDatabaseTask",
-            optimize_database_handler(database.into()),
-        );
+        self.register_executor("OptimizeDatabaseTask", optimize_database_handler(database));
         self.register_executor("DeleteTranscodeFiles", delete_transcode_files_handler());
         self.register_executor(
             "RefreshChapterImages",
@@ -368,6 +372,25 @@ impl ScheduledTaskService {
                 .expect("scheduled task paths lock poisoned"),
         )
         .chapter_images_directory = Arc::new(path.into());
+    }
+
+    /// Updates the roots used by item-by-name maintenance tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal path lock is poisoned.
+    pub fn set_item_by_name_directories(
+        &self,
+        program_data_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        let mut paths = self
+            .paths
+            .write()
+            .expect("scheduled task paths lock poisoned");
+        let paths = Arc::make_mut(&mut paths);
+        paths.program_data_directory = Arc::new(program_data_directory.into());
+        paths.internal_metadata_directory = Arc::new(internal_metadata_directory.into());
     }
 
     /// Updates the `FFmpeg` binary used by media-generation tasks.
@@ -1193,17 +1216,28 @@ fn cleanup_user_data_handler(
 }
 
 fn refresh_people_handler(
-    repository: PersonRepository,
+    service: PersonReconciliationService,
 ) -> impl Fn(ScheduledTaskRunContext) -> ScheduledTaskFuture + Send + Sync {
-    let repository = Arc::new(repository);
+    let service = Arc::new(service);
     move |context| {
-        let repository = Arc::clone(&repository);
+        let service = Arc::clone(&service);
         Box::pin(async move {
-            context.report_progress(10.0).await;
-            match repository.query(&PersonQuery::default()).await {
-                Ok(page) => {
-                    tracing::debug!(count = page.total_record_count, "validated people catalog");
-                }
+            context.report_progress(0.0).await;
+            let paths = context.paths();
+            service.set_item_by_name_directories(
+                paths.program_data_directory.as_path(),
+                paths.internal_metadata_directory.as_path(),
+            );
+            let cancellation = AtomicBool::new(false);
+            match service.reconcile(&cancellation).await {
+                Ok(summary) => tracing::info!(
+                    people = summary.people_considered,
+                    batches = summary.batches_committed,
+                    created = summary.created_items,
+                    updated = summary.updated_items,
+                    copied_images = summary.copied_images,
+                    "reconciled canonical person items"
+                ),
                 Err(error) => {
                     tracing::error!(%error, "people validation task failed");
                     context.fail().await;

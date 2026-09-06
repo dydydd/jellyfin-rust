@@ -253,6 +253,32 @@ impl ItemByNameService {
         self.existing_many(kind, names).await
     }
 
+    /// Prepares deterministic direct-name entities and their directories
+    /// without writing item rows.
+    ///
+    /// This lets bounded validators combine one filesystem-preparation pass
+    /// with their own set-based transactional persistence.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration or filesystem errors.
+    pub(crate) async fn prepare_many_direct(
+        &self,
+        kind: ItemByNameKind,
+        names: impl IntoIterator<Item = String>,
+    ) -> Result<Vec<NewItemByNameEntity>, ItemByNameError> {
+        let configuration = self.configuration.load().await?;
+        let (program_data, internal_metadata) = self.directories();
+        self.entities_for_names(
+            kind,
+            names,
+            &program_data,
+            &internal_metadata,
+            &configuration,
+        )
+        .await
+    }
+
     /// Backfills persisted genre entities once for this server process.
     ///
     /// The source values are keyset-paged, directories are prepared in bounded
