@@ -263,6 +263,9 @@
   do not inflate either a typed bucket or `ItemCount`.
 - After scanning a movie directory, supplement the official filename-based version resolver with a conservative metadata match: same directory, non-empty case-insensitive title, and the same non-empty year, while rejecting the whole candidate group when TMDb, IMDb, or TVDb identifiers conflict. Never use collection identifiers as movie identity.
 - Do not advertise a playback method unless the returned URL really implements it. In particular, never label unchanged container bytes as an MP4 direct stream; derive `SupportsDirectPlay`, `SupportsDirectStream`, and `SupportsTranscoding` from the final selected method and device policy.
+- Normalize playback start and progress reports against the active transcoding-job registry. Treat
+  an omitted method as `Transcode`, downgrade it to `DirectPlay` when `PlaySessionId` is blank or
+  unknown, and preserve `Transcode` only while that playback session has a registered job.
 - Apply static media-source capability flags from the target user's policy, including when an
   administrator requests another user's item or `PlaybackInfo`: audio transcoding controls audio
   sources, while video transcoding and playback remuxing independently control video sources.

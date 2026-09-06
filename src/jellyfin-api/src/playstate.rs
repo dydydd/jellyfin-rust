@@ -910,10 +910,15 @@ async fn report_playback_progress_for_current_session(
     state: Arc<AppState>,
     uri: &axum::http::Uri,
     headers: HeaderMap,
-    info: PlaybackProgressInfo,
+    mut info: PlaybackProgressInfo,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
+        info.play_method = Some(normalize_play_method(
+            &state.transcode_jobs,
+            info.play_method,
+            info.play_session_id.as_deref(),
+        ));
         tracing::info!(
             device_id = %session.device.device_id,
             item_id = %info.item_id,
@@ -932,10 +937,15 @@ async fn report_playback_start_for_current_session(
     state: Arc<AppState>,
     uri: &axum::http::Uri,
     headers: HeaderMap,
-    info: PlaybackStartInfo,
+    mut info: PlaybackStartInfo,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
+        info.play_method = Some(normalize_play_method(
+            &state.transcode_jobs,
+            info.play_method,
+            info.play_session_id.as_deref(),
+        ));
         tracing::info!(
             device_id = %session.device.device_id,
             item_id = %info.item_id,
@@ -947,6 +957,26 @@ async fn report_playback_start_for_current_session(
         crate::websocket::broadcast_sessions(&state).await;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn normalize_play_method(
+    transcode_jobs: &jellyfin_controller::TranscodeJobRegistry,
+    play_method: Option<PlayMethod>,
+    play_session_id: Option<&str>,
+) -> PlayMethod {
+    let play_method = play_method.unwrap_or_default();
+    if play_method != PlayMethod::Transcode {
+        return play_method;
+    }
+
+    let has_transcoding_job = play_session_id
+        .filter(|play_session_id| !play_session_id.trim().is_empty())
+        .is_some_and(|play_session_id| transcode_jobs.get(play_session_id).is_some());
+    if has_transcoding_job {
+        PlayMethod::Transcode
+    } else {
+        PlayMethod::DirectPlay
+    }
 }
 
 async fn report_playback_stop_for_current_session(
@@ -1340,5 +1370,47 @@ impl From<&PlaybackStartInfo> for PlaybackStartUpdate {
             item_id: info.item_id,
             media_source_id: info.media_source_id.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jellyfin_controller::TranscodeJobRegistry;
+    use jellyfin_model::PlayMethod;
+
+    use super::normalize_play_method;
+
+    #[test]
+    fn play_method_requires_a_registered_transcoding_session() {
+        let jobs = TranscodeJobRegistry::new();
+
+        for play_session_id in [None, Some(""), Some("   "), Some("missing-session")] {
+            assert_eq!(
+                normalize_play_method(&jobs, None, play_session_id),
+                PlayMethod::DirectPlay
+            );
+            assert_eq!(
+                normalize_play_method(&jobs, Some(PlayMethod::Transcode), play_session_id),
+                PlayMethod::DirectPlay
+            );
+        }
+
+        let _job = jobs.register_for_session("job-1", "device-1", "active-session");
+        assert_eq!(
+            normalize_play_method(&jobs, Some(PlayMethod::Transcode), Some("ACTIVE-SESSION")),
+            PlayMethod::Transcode
+        );
+        assert_eq!(
+            normalize_play_method(
+                &jobs,
+                Some(PlayMethod::DirectStream),
+                Some("missing-session")
+            ),
+            PlayMethod::DirectStream
+        );
+        assert_eq!(
+            normalize_play_method(&jobs, Some(PlayMethod::DirectPlay), None),
+            PlayMethod::DirectPlay
+        );
     }
 }

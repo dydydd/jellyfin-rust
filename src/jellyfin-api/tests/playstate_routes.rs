@@ -349,6 +349,85 @@ async fn playback_json_accepts_number_strings_and_compatible_enums() {
 }
 
 #[tokio::test]
+async fn playback_start_and_progress_normalize_play_method_without_a_transcode_job() {
+    let fixture = PlaystateFixture::new().await;
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PlayMethod": "Transcode",
+            "PlaySessionId": "missing-modern-start"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        current_play_state(&fixture).await["PlayMethod"],
+        "DirectPlay"
+    );
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({ "ItemId": fixture.runtime_item_id }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        current_play_state(&fixture).await["PlayMethod"],
+        "DirectPlay"
+    );
+
+    let legacy_start = format!(
+        "/PlayingItems/{}?playMethod=Transcode&playSessionId=missing-legacy-start",
+        fixture.runtime_item_id
+    );
+    let response = request(&fixture.app, "POST", &legacy_start, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        current_play_state(&fixture).await["PlayMethod"],
+        "DirectPlay"
+    );
+
+    let legacy_progress = format!(
+        "/PlayingItems/{}/Progress?playSessionId=missing-legacy-progress",
+        fixture.runtime_item_id
+    );
+    let response = request(&fixture.app, "POST", &legacy_progress, &fixture.user_token).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        current_play_state(&fixture).await["PlayMethod"],
+        "DirectPlay"
+    );
+
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Progress",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "PlayMethod": "DirectStream",
+            "PlaySessionId": "missing-but-irrelevant"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        current_play_state(&fixture).await["PlayMethod"],
+        "DirectStream"
+    );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn legacy_playback_query_preserves_official_session_fields() {
     let fixture = PlaystateFixture::new().await;
     let repository = UserDataRepository::new(fixture.database.clone());
