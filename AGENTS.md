@@ -217,6 +217,9 @@
 - Project each source's persisted, probed container before considering its path extension. When a
   persisted container lists alternatives, select the path-matching value or the first value, and
   strip URL query/fragment components before any extension fallback.
+- Preserve the displayed item's persisted raw `Container` on the top-level DTO, while normalizing
+  each nested media source independently against that version's path. Do not derive the top-level
+  value from a path or reuse another version's container.
 - Project each video's actual `VideoType` on both the top-level item DTO and its media source.
   Resolve the official string or integer enum representation independently for every alternate
   version; never report disc or ISO versions as the displayed primary's `VideoFile` type.

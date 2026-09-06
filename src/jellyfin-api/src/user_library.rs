@@ -193,7 +193,7 @@ pub struct BaseItemDto {
     pub(crate) media_source_path: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_bitrate: Option<i32>,
-    #[serde(skip)]
+    #[serde(rename = "Container", skip_serializing_if = "Option::is_none")]
     pub(crate) media_source_container: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_size: Option<i64>,
@@ -3149,6 +3149,7 @@ mod tests {
                 .is_none()
         );
         let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["Container"], "mkv,webm");
         assert!(json.get("Tagline").is_none());
         assert_eq!(json["Taglines"], json!(["Tag"]));
         assert_eq!(
@@ -3264,6 +3265,12 @@ mod tests {
         assert_eq!(source.container.as_deref(), Some("mp4"));
         assert_eq!(source.name.as_deref(), Some("Cloud Movie"));
         assert_eq!(source.etag, None);
+        assert!(
+            serde_json::to_value(dto)
+                .unwrap()
+                .get("Container")
+                .is_none()
+        );
     }
 
     #[test]
@@ -3291,6 +3298,10 @@ mod tests {
         let source =
             media_source_from_dto(&dto, Vec::new(), Vec::new(), None, None, false, None).unwrap();
         assert_eq!(source.container.as_deref(), Some("webm"));
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap()["Container"],
+            "mkv, WEBM"
+        );
 
         let dto = BaseItemDto {
             path: Some("/media/Movie.unknown".to_owned()),

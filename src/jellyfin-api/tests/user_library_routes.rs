@@ -1436,6 +1436,7 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     primary.media_type = Some("Video".to_owned());
     primary.path = Some("/media/versioned-movie-1080p.mkv".to_owned());
     primary.data = Some(json!({
+        "Container": "mkv,webm",
         "OriginalLanguage": "English",
         "VideoType": "Dvd"
     }));
@@ -1445,6 +1446,7 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     alternate.path = Some("/media/versioned-movie-2160p.mkv".to_owned());
     alternate.primary_version_id = Some(primary.id);
     alternate.data = Some(json!({
+        "Container": "mov,mkv",
         "OriginalLanguage": "French",
         "VideoType": "3"
     }));
@@ -1501,15 +1503,18 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     );
     let dto = get_json(&fixture.app, &route, &fixture.user_token).await;
     assert_eq!(dto["OriginalLanguage"], "English");
+    assert_eq!(dto["Container"], "mkv,webm");
     let sources = dto["MediaSources"].as_array().expect("media sources");
     assert_eq!(sources.len(), 2);
     assert_eq!(dto["VideoType"], "Dvd");
     assert_eq!(sources[0]["Id"], primary.id.simple().to_string());
     assert_eq!(sources[0]["VideoType"], "Dvd");
+    assert_eq!(sources[0]["Container"], "mkv");
     assert_eq!(sources[0]["Name"], "1080p");
     assert_eq!(sources[0]["DefaultAudioStreamIndex"], 1);
     assert_eq!(sources[1]["Name"], "2160p");
     assert_eq!(sources[1]["VideoType"], "BluRay");
+    assert_eq!(sources[1]["Container"], "mkv");
     assert_eq!(sources[1]["DefaultAudioStreamIndex"], 2);
     assert_eq!(
         stream_by_index(&sources[0]["MediaStreams"], 3)["SupportsExternalStream"],
@@ -1552,6 +1557,7 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     )
     .await;
     assert_eq!(alternate_dto["OriginalLanguage"], "French");
+    assert_eq!(alternate_dto["Container"], "mov,mkv");
     assert_eq!(alternate_dto["VideoType"], "BluRay");
     assert_eq!(
         alternate_dto["MediaSources"][0]["Id"],
@@ -1559,6 +1565,8 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     );
     assert_eq!(alternate_dto["MediaSources"][0]["VideoType"], "BluRay");
     assert_eq!(alternate_dto["MediaSources"][1]["VideoType"], "Dvd");
+    assert_eq!(alternate_dto["MediaSources"][0]["Container"], "mkv");
+    assert_eq!(alternate_dto["MediaSources"][1]["Container"], "mkv");
     assert_eq!(
         alternate_dto["MediaSources"][0]["DefaultAudioStreamIndex"],
         2

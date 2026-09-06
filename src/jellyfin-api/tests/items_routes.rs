@@ -188,6 +188,7 @@ async fn audio_page_dtos_project_requested_stream_and_source_fields() {
     audio.parent_id = Some(root.id);
     audio.media_type = Some("Audio".to_owned());
     audio.path = Some(format!("/media/audio-streams-{}.flac", fixture.suffix));
+    audio.data = Some(serde_json::json!({"Container": "flac,mp3"}));
     let audio = items.create(audio).await.expect("audio item");
 
     // Legacy rows can identify an AudioBook only by item type. Official AudioBook inherits Audio
@@ -247,6 +248,12 @@ async fn audio_page_dtos_project_requested_stream_and_source_fields() {
                 .find(|dto| dto["Id"] == item.id.simple().to_string())
                 .expect("audio DTO");
 
+            if item.id == audio.id {
+                assert_eq!(dto["Container"], "flac,mp3", "{route}: {dto}");
+            } else {
+                assert!(dto.get("Container").is_none(), "{route}: {dto}");
+            }
+
             if expect_top_level {
                 assert_audio_stream_fields(&dto["MediaStreams"], &route);
             } else {
@@ -258,7 +265,9 @@ async fn audio_page_dtos_project_requested_stream_and_source_fields() {
                 assert_eq!(sources.len(), 1, "{route}: {dto}");
                 assert_eq!(sources[0]["Bitrate"], 256_000, "{route}: {dto}");
                 assert_audio_stream_fields(&sources[0]["MediaStreams"], &route);
-                if item.id == audio_book.id {
+                if item.id == audio.id {
+                    assert_eq!(sources[0]["Container"], "flac", "{route}: {dto}");
+                } else {
                     assert_eq!(sources[0]["Type"], "Placeholder", "{route}: {dto}");
                 }
             } else {
@@ -816,6 +825,7 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     media.media_type = Some("Video".to_owned());
     media.path = Some(path.clone());
     media.data = Some(serde_json::json!({
+        "Container": "mkv,webm",
         "IsoType": "dvd",
         "Video3DFormat": "mvc",
         "Timestamp": 1
@@ -929,6 +939,8 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0]["Id"], media.id.simple().to_string());
     assert_eq!(sources[1]["Id"], alternate.id.simple().to_string());
+    assert_eq!(item["Container"], "mkv,webm");
+    assert_eq!(sources[0]["Container"], "mkv");
     assert_eq!(item["VideoType"], "VideoFile");
     assert_eq!(sources[0]["VideoType"], "VideoFile");
     assert_eq!(sources[1]["VideoType"], "BluRay");
@@ -966,6 +978,24 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         item["MediaSources"][0]["MediaStreams"][3]["DisplayTitle"],
         "English - SRT"
     );
+
+    let page_without_media_sources = body_json(
+        fixture
+            .request(
+                &format!("/Items?recursive=true&searchTerm={}", fixture.suffix),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let item_without_media_sources = page_without_media_sources["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Id"] == media.id.simple().to_string())
+        .expect("projected item without media sources");
+    assert_eq!(item_without_media_sources["Container"], "mkv,webm");
+    assert!(item_without_media_sources.get("MediaSources").is_none());
 
     items
         .delete(alternate.id)
