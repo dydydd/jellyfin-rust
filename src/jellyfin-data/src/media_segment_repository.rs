@@ -146,6 +146,37 @@ impl MediaSegmentRepository {
             .collect())
     }
 
+    /// Lists segments emitted by one of the enabled providers for an item.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when lookup fails.
+    pub async fn list_for_item_by_providers(
+        &self,
+        item_id: Uuid,
+        include_types: Option<&[i32]>,
+        provider_ids: &[String],
+    ) -> Result<Vec<MediaSegmentRecord>, MediaSegmentStoreError> {
+        if provider_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = media_segment::Entity::find()
+            .filter(media_segment::Column::ItemId.eq(item_id))
+            .filter(media_segment::Column::SegmentProviderId.is_in(provider_ids.iter().cloned()));
+        if let Some(include_types) = include_types.filter(|types| !types.is_empty()) {
+            query = query
+                .filter(media_segment::Column::SegmentType.is_in(include_types.iter().copied()));
+        }
+        Ok(query
+            .order_by_asc(media_segment::Column::StartTicks)
+            .order_by_asc(media_segment::Column::Id)
+            .all(self.database.as_ref())
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     /// Deletes all segments for one item.
     ///
     /// # Errors

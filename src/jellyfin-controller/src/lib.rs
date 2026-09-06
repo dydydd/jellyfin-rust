@@ -87,7 +87,9 @@ pub use media_attachments::{
     MediaAttachmentFilter, MediaAttachmentMapper, MediaAttachmentService,
     MediaAttachmentServiceError,
 };
-pub use media_segments::{MediaSegmentError, MediaSegmentManagerService};
+pub use media_segments::{
+    MediaSegmentError, MediaSegmentManagerService, media_segment_provider_id,
+};
 pub use media_streams::{
     IdentityMediaStreamPathMapper, MediaStreamFilter, MediaStreamMapper, MediaStreamPathMapper,
     MediaStreamService, MediaStreamServiceError,

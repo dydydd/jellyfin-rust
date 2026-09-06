@@ -235,6 +235,10 @@
   set-based PostgreSQL queries and deduplicate Episodes that carry the same value directly. Keep
   internal item-by-name discovery type filters out of the count scope; only the client's explicit
   `ExcludeItemTypes` may remove a type from the returned count buckets.
+- Filter MediaSegments by registered provider ids and the owning virtual library's
+  `DisabledMediaSegmentProviders`, matching provider names case-insensitively. Derive provider ids
+  from the invariant-lowercase name with UTF-16LE MD5 and `.NET Guid(byte[])` ordering; when no
+  provider is registered or enabled, return an empty result instead of exposing stale persisted rows.
 - Reconcile persisted `Genre`, `MusicGenre`, and `Studio` item-by-name entities after full and
   single-library scans. Create their official metadata paths before insertion, derive IDs with the configured
   official UTF-16LE/.NET `Guid(byte[])` semantics, process deterministic keyset pages in bounded

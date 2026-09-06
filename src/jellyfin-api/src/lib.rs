@@ -538,6 +538,13 @@ impl AppState {
         self
     }
 
+    /// Replaces the registered media-segment provider names used by API filtering.
+    #[must_use]
+    pub fn with_media_segment_provider_names(mut self, provider_names: Vec<String>) -> Self {
+        self.media_segments = self.media_segments.with_provider_names(provider_names);
+        self
+    }
+
     /// Adds external search providers to the `/Items` search pipeline.
     #[must_use]
     pub fn with_search_providers(mut self, providers: Vec<Arc<dyn SearchProvider>>) -> Self {

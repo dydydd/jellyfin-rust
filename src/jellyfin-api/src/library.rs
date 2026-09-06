@@ -599,7 +599,16 @@ pub(crate) async fn available_options(
     } else {
         Vec::new()
     };
-    let media_segment_providers = Vec::new();
+    let media_segment_providers = if item_types.iter().any(|item_type| {
+        matches!(
+            *item_type,
+            "Audio" | "AudioBook" | "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+        )
+    }) {
+        distinct_option_infos(state.media_segments.provider_names())
+    } else {
+        Vec::new()
+    };
     Ok(Json(LibraryOptionsResultDto {
         metadata_savers,
         metadata_readers,
