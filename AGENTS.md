@@ -58,7 +58,8 @@
   `Limit` is unlimited, while a non-positive `StartIndex` skips nothing and is still echoed.
 - Keep item-by-name pagination such as `/Genres`, `/MusicGenres`, and `/Studios` signed: a negative
   `StartIndex` skips nothing but is echoed, `Limit=0` is empty, and a negative `Limit` follows the
-  official SQLite unlimited-limit behavior.
+  official SQLite unlimited-limit behavior. When `EnableTotalRecordCount` is false, return zero
+  rather than the current page length.
 - Filter `/Persons` through the media items visible to the target user: a person remains visible
   when at least one credited item passes enabled/blocked folder, allowed/blocked tag, parental-
   rating, and unrated-item policy. Keep this set-based, and do not apply the related-media filter

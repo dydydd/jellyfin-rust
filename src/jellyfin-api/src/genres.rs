@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_data::ItemValueQuery;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -26,9 +26,9 @@ pub(crate) struct GenresQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: Option<i32>,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
     #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
@@ -106,11 +106,19 @@ pub(crate) struct GenresQuery {
     enable_total_record_count: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct GenresResult {
+    items: Vec<user_library::BaseItemDto>,
+    total_record_count: usize,
+    start_index: i32,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<GenresQuery>,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+) -> Result<Json<GenresResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
@@ -118,6 +126,7 @@ pub(crate) async fn list(
         .unwrap_or(authenticated.user.id);
     let order = crate::query::item_value_order(&query.sort_by)?;
     let descending = descending(&query.sort_order)?;
+    let requested_start_index = query.start_index.unwrap_or_default();
     let enable_total_record_count = query.enable_total_record_count;
     let include_item_counts = user_library::BaseItemDtoFields::from_names(&query.fields)
         .wants_item_counts()
@@ -133,8 +142,15 @@ pub(crate) async fn list(
         name_starts_with_or_greater: query.name_starts_with_or_greater,
         name_starts_with: query.name_starts_with,
         name_less_than: query.name_less_than,
-        start_index: query.start_index,
-        limit: query.limit,
+        // Official item-by-name queries do not skip for a non-positive
+        // StartIndex, while the response preserves the signed request value.
+        start_index: u64::try_from(requested_start_index).unwrap_or_default(),
+        // Jellyfin's SQLite item-by-name query treats a negative LIMIT as
+        // unlimited. LIMIT 0 still returns an empty page.
+        limit: query
+            .limit
+            .filter(|limit| *limit >= 0)
+            .map(|limit| u64::try_from(limit).unwrap_or_default()),
         order,
         descending,
         enable_total_record_count: Some(enable_total_record_count),
@@ -156,12 +172,12 @@ pub(crate) async fn list(
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
-        items.len()
+        0
     };
-    Ok(Json(user_library::BaseItemQueryResult {
+    Ok(Json(GenresResult {
         items,
         total_record_count,
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: requested_start_index,
     }))
 }
 

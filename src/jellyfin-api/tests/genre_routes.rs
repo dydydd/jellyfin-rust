@@ -121,7 +121,7 @@ async fn genre_routes_match_official_generic_genre_contract() {
             .await,
     )
     .await;
-    assert_genres(&lowercase_searched, &[&fixture.drama_genre], 1, 0);
+    assert_genres(&lowercase_searched, &[&fixture.drama_genre], 0, 0);
     assert_eq!(lowercase_searched["Items"][0]["MovieCount"], 1);
 
     let with_item_counts = body_json(
@@ -259,7 +259,7 @@ async fn genre_routes_match_official_generic_genre_contract() {
     )
     .await;
     assert_eq!(no_total["Items"].as_array().expect("items").len(), 1);
-    assert_eq!(no_total["TotalRecordCount"], 1);
+    assert_eq!(no_total["TotalRecordCount"], 0);
 
     assert_eq!(
         fixture
@@ -438,6 +438,125 @@ async fn genre_routes_match_official_generic_genre_contract() {
     )
     .await;
     assert_genres(&blocked, &[], 0, 0);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn genres_list_preserves_official_signed_int32_pagination_semantics() {
+    let fixture = Fixture::new().await;
+
+    for route in [
+        "/Genres?startIndex=-2&limit=1",
+        "/Genres?StartIndex=-2&Limit=1",
+        "/Genres?startindex=-2&limit=1",
+    ] {
+        let page = body_json(
+            fixture
+                .request(Method::GET, route, Credential::Device(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_genres(&page, &[&fixture.comedy_genre], 5, -2);
+    }
+
+    for route in [
+        "/Genres?startIndex=1&limit=1&enableTotalRecordCount=false",
+        "/Genres?StartIndex=1&Limit=1&EnableTotalRecordCount=false",
+        "/Genres?startindex=1&limit=1&enabletotalrecordcount=false",
+    ] {
+        let page = body_json(
+            fixture
+                .request(Method::GET, route, Credential::Device(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_genres(&page, &[&fixture.drama_genre], 0, 1);
+    }
+
+    let minimum_start = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Genres?startIndex=-2147483648&limit=1",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(&minimum_start, &[&fixture.comedy_genre], 5, i32::MIN);
+
+    let maximum_start = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Genres?startIndex=2147483647&limit=1",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(&maximum_start, &[], 5, i32::MAX);
+
+    let zero_limit = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Genres?limit=0",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_genres(&zero_limit, &[], 5, 0);
+
+    for limit in [-1, i32::MIN] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Genres?limit={limit}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(page["Items"].as_array().expect("items").len(), 5);
+        assert_eq!(page["TotalRecordCount"], 5);
+        assert_eq!(page["StartIndex"], 0);
+    }
+
+    let maximum_limit = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Genres?limit=2147483647",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(maximum_limit["Items"].as_array().expect("items").len(), 5);
+
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Genres?{query}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{query}"
+        );
+    }
 
     fixture.cleanup().await;
 }
@@ -673,7 +792,7 @@ fn assert_genres(
     body: &Value,
     expected_names: &[&str],
     expected_total: usize,
-    expected_start: usize,
+    expected_start: i32,
 ) {
     assert_genres_with_type(
         body,
@@ -689,7 +808,7 @@ fn assert_genres_with_type(
     expected_names: &[&str],
     expected_type: &str,
     expected_total: usize,
-    expected_start: usize,
+    expected_start: i32,
 ) {
     assert_eq!(body["TotalRecordCount"], expected_total);
     assert_eq!(body["StartIndex"], expected_start);
