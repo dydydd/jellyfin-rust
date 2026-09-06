@@ -1435,13 +1435,19 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     let mut primary = item("Movie", "Versioned Movie", Some(fixture.root_id), false);
     primary.media_type = Some("Video".to_owned());
     primary.path = Some("/media/versioned-movie-1080p.mkv".to_owned());
-    primary.data = Some(json!({ "OriginalLanguage": "English" }));
+    primary.data = Some(json!({
+        "OriginalLanguage": "English",
+        "VideoType": "Dvd"
+    }));
     let primary = items.create(primary).await.expect("primary version");
     let mut alternate = item("Movie", "Versioned Movie", Some(fixture.root_id), false);
     alternate.media_type = Some("Video".to_owned());
     alternate.path = Some("/media/versioned-movie-2160p.mkv".to_owned());
     alternate.primary_version_id = Some(primary.id);
-    alternate.data = Some(json!({ "OriginalLanguage": "French" }));
+    alternate.data = Some(json!({
+        "OriginalLanguage": "French",
+        "VideoType": "3"
+    }));
     let alternate = items.create(alternate).await.expect("alternate version");
 
     for (source, codec, subtitle_codec) in [
@@ -1497,10 +1503,13 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     assert_eq!(dto["OriginalLanguage"], "English");
     let sources = dto["MediaSources"].as_array().expect("media sources");
     assert_eq!(sources.len(), 2);
+    assert_eq!(dto["VideoType"], "Dvd");
     assert_eq!(sources[0]["Id"], primary.id.simple().to_string());
+    assert_eq!(sources[0]["VideoType"], "Dvd");
     assert_eq!(sources[0]["Name"], "1080p");
     assert_eq!(sources[0]["DefaultAudioStreamIndex"], 1);
     assert_eq!(sources[1]["Name"], "2160p");
+    assert_eq!(sources[1]["VideoType"], "BluRay");
     assert_eq!(sources[1]["DefaultAudioStreamIndex"], 2);
     assert_eq!(
         stream_by_index(&sources[0]["MediaStreams"], 3)["SupportsExternalStream"],
@@ -1543,10 +1552,13 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     )
     .await;
     assert_eq!(alternate_dto["OriginalLanguage"], "French");
+    assert_eq!(alternate_dto["VideoType"], "BluRay");
     assert_eq!(
         alternate_dto["MediaSources"][0]["Id"],
         alternate.id.simple().to_string()
     );
+    assert_eq!(alternate_dto["MediaSources"][0]["VideoType"], "BluRay");
+    assert_eq!(alternate_dto["MediaSources"][1]["VideoType"], "Dvd");
     assert_eq!(
         alternate_dto["MediaSources"][0]["DefaultAudioStreamIndex"],
         2

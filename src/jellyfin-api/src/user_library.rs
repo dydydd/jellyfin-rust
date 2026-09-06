@@ -328,6 +328,8 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_subtitles: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_type: Option<VideoType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "Video3DFormat")]
     pub video_3d_format: Option<Video3DFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -946,6 +948,19 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
     let media_source_container = metadata_string(item.data.as_ref(), &["Container", "container"]);
     let media_source_size = metadata_i64(item.data.as_ref(), &["Size", "size"]);
     let media_source_etag = media_source_etag(item.date_modified);
+    let video_type = (item
+        .media_type
+        .as_deref()
+        .is_some_and(|media_type| media_type.eq_ignore_ascii_case("Video"))
+        || is_video_item_type(&item.item_type))
+    .then(|| {
+        metadata_enum(
+            item.data.as_ref(),
+            &["VideoType", "videoType", "video_type"],
+            VIDEO_TYPES,
+        )
+        .unwrap_or_default()
+    });
     let media_source_timestamp = metadata_enum(
         item.data.as_ref(),
         &["Timestamp", "timestamp"],
@@ -1076,6 +1091,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
         has_subtitles: None,
+        video_type,
         video_3d_format,
         iso_type,
         is_locked: metadata_bool(item.data.as_ref(), &["IsLocked", "is_locked"]),
@@ -1934,7 +1950,7 @@ fn media_source_from_dto(
         source_type,
         is_remote: protocol != MediaProtocol::File,
         run_time_ticks: dto.run_time_ticks,
-        video_type: is_video_item(dto).then_some(VideoType::VideoFile),
+        video_type: is_video_item(dto).then_some(dto.video_type.unwrap_or_default()),
         iso_type: dto.iso_type,
         video_3d_format: dto.video_3d_format,
         timestamp: dto.media_source_timestamp,
@@ -2799,6 +2815,12 @@ const AIR_DAYS: &[&str] = &[
     "Saturday",
 ];
 const ISO_TYPES: &[(&str, IsoType)] = &[("Dvd", IsoType::Dvd), ("BluRay", IsoType::BluRay)];
+const VIDEO_TYPES: &[(&str, VideoType)] = &[
+    ("VideoFile", VideoType::VideoFile),
+    ("Iso", VideoType::Iso),
+    ("Dvd", VideoType::Dvd),
+    ("BluRay", VideoType::BluRay),
+];
 const VIDEO_3D_FORMATS: &[(&str, Video3DFormat)] = &[
     ("HalfSideBySide", Video3DFormat::HalfSideBySide),
     ("FullSideBySide", Video3DFormat::FullSideBySide),
@@ -3010,6 +3032,7 @@ mod tests {
                 "ExtraType": "behindthescenes",
                 "AirDays": ["monday", "Funday", "Friday"],
                 "EndDate": "2020-01-02",
+                "VideoType": 3,
                 "Video3DFormat": "mvc",
                 "IsoType": 1,
                 "Timestamp": "2",
@@ -3096,6 +3119,7 @@ mod tests {
         assert_eq!(dto.extra_type.as_deref(), Some("BehindTheScenes"));
         assert_eq!(dto.air_days, ["Monday", "Friday"]);
         assert_eq!(dto.end_date.as_deref(), Some("2020-01-02T00:00:00.000Z"));
+        assert_eq!(dto.video_type, Some(VideoType::BluRay));
         assert_eq!(dto.video_3d_format, Some(Video3DFormat::MVC));
         assert_eq!(dto.iso_type, Some(IsoType::BluRay));
         assert_eq!(dto.production_locations, ["Los Angeles"]);
@@ -3108,7 +3132,7 @@ mod tests {
         assert_eq!(source.bitrate, Some(5_500_000));
         assert_eq!(source.container.as_deref(), Some("mkv"));
         assert_eq!(source.size, Some(12_345));
-        assert_eq!(source.video_type, Some(VideoType::VideoFile));
+        assert_eq!(source.video_type, Some(VideoType::BluRay));
         assert_eq!(source.iso_type, Some(IsoType::BluRay));
         assert_eq!(source.video_3d_format, Some(Video3DFormat::MVC));
         assert_eq!(source.timestamp, Some(TransportStreamTimestamp::Valid));
@@ -3141,6 +3165,7 @@ mod tests {
     fn persisted_media_enums_accept_names_numbers_and_numeric_strings() {
         let data = json!({
             "IsoType": "dvd",
+            "VideoType": "iso",
             "Video3DFormat": 3,
             "Timestamp": "1"
         });
@@ -3148,6 +3173,10 @@ mod tests {
         assert_eq!(
             metadata_enum(Some(&data), &["IsoType"], ISO_TYPES),
             Some(IsoType::Dvd)
+        );
+        assert_eq!(
+            metadata_enum(Some(&data), &["VideoType"], VIDEO_TYPES),
+            Some(VideoType::Iso)
         );
         assert_eq!(
             metadata_enum(Some(&data), &["Video3DFormat"], VIDEO_3D_FORMATS),

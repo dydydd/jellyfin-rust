@@ -833,6 +833,7 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         "Bitrate": 25_000_000,
         "Container": "mpegts",
         "Size": 987_654_321,
+        "VideoType": "BluRay",
         "IsoType": 1,
         "Video3DFormat": "3",
         "Timestamp": "valid"
@@ -928,6 +929,9 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0]["Id"], media.id.simple().to_string());
     assert_eq!(sources[1]["Id"], alternate.id.simple().to_string());
+    assert_eq!(item["VideoType"], "VideoFile");
+    assert_eq!(sources[0]["VideoType"], "VideoFile");
+    assert_eq!(sources[1]["VideoType"], "BluRay");
     assert_eq!(item["IsoType"], "Dvd");
     assert_eq!(item["Video3DFormat"], "MVC");
     assert!(item.get("Timestamp").is_none());
@@ -940,7 +944,6 @@ async fn media_stream_fields_are_projected_for_item_pages() {
     assert_eq!(sources[1]["Bitrate"], 25_000_000);
     assert_eq!(sources[1]["Container"], "mpegts");
     assert_eq!(sources[1]["Size"], 987_654_321);
-    assert_eq!(sources[1]["VideoType"], "VideoFile");
     assert_eq!(sources[1]["ETag"].as_str().unwrap().len(), 32);
     assert_eq!(sources[1]["Name"], "2160p");
     assert_eq!(sources[1]["MediaStreams"][0]["Codec"], "hevc");
