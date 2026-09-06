@@ -516,10 +516,7 @@ async fn music_genre_image_routes_resolve_public_ordinals() {
         "/MusicGenres/{}/Images/Backdrop",
         encoded(&fixture.genre_name)
     );
-    let lowercase_base = format!(
-        "/musicgenres/{}/images/Backdrop",
-        encoded(&fixture.genre_name)
-    );
+    let lowercase_base = format!("/musicgenres/{}/images/2", encoded(&fixture.genre_name));
     for route in [format!("{base}?imageIndex=1"), format!("{base}/1")] {
         let response = request(&fixture.app, &route, None).await;
         assert_eq!(response.status(), StatusCode::OK);

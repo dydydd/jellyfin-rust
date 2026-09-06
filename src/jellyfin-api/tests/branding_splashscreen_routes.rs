@@ -167,7 +167,7 @@ async fn splashscreen_routes_match_official_persistence_and_authorization_contra
     let response = fixture
         .request(
             Method::GET,
-            "/branding/splashscreen?tag=splash-tag&format=jpg",
+            "/branding/splashscreen?tag=splash-tag&format=2",
             Credential::None,
             None,
             None,

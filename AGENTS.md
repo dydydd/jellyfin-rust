@@ -103,6 +103,10 @@
   user, branding, by-name, and plugin image responses must not advertise byte ranges unless the
   handler actually implements Range semantics; trickplay tile routes remain the range-aware
   exception.
+- Bind image `ImageType` and `ImageFormat` parameters from case-insensitive official names or their
+  defined integer values. Reject unknown names and integer values as bad requests before resource
+  lookup, including legacy user-image route parameters whose controller action otherwise ignores
+  the value.
 - Stream trickplay tile files with bounded chunks and preserve HEAD and byte-range semantics; never
   read an entire tile into a response buffer.
 

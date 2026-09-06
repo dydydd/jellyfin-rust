@@ -823,7 +823,7 @@ async fn person_image_routes_resolve_public_base_item_ordinals() {
             .unwrap();
         assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
     }
-    let lowercase_base = format!("/persons/{}/images/Backdrop", encoded(&fixture.person_name));
+    let lowercase_base = format!("/persons/{}/images/2", encoded(&fixture.person_name));
     for route in [
         format!("{lowercase_base}?imageIndex=1"),
         format!("{lowercase_base}/1"),

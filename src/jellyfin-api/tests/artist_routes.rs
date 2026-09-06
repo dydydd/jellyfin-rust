@@ -777,7 +777,7 @@ async fn artist_image_route_resolves_public_base_item_owner() {
         .await
         .unwrap();
     let route = format!(
-        "/artists/{}/images/Primary/0?tag=artist-tag",
+        "/artists/{}/images/0/0?tag=artist-tag&format=3",
         encoded(&image_name)
     );
     assert_eq!(
@@ -838,6 +838,17 @@ async fn artist_image_route_resolves_public_base_item_owner() {
             .await
             .status(),
         StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Artists/{}/Images/13/0", encoded("missing artist")),
+                Credential::None,
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
     );
     let _ = std::fs::remove_file(path);
     fixture.cleanup().await;

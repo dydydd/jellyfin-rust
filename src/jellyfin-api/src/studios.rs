@@ -290,20 +290,13 @@ async fn get_image_for(
     image_index: i32,
     query: GetItemImageQuery,
 ) -> Result<Response, ApiError> {
+    let image_type = parse_image_type(image_type)?;
     let item = state
         .studios
         .image_item(name)
         .await?
         .ok_or(jellyfin_controller::StudioError::NotFound)?;
-    render_item_image(
-        state,
-        headers,
-        item.id,
-        parse_image_type(image_type)?,
-        image_index,
-        query,
-    )
-    .await
+    render_item_image(state, headers, item.id, image_type, image_index, query).await
 }
 
 const fn default_total_record_count() -> bool {

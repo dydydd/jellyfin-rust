@@ -336,6 +336,7 @@ async fn delete_internal(
 }
 
 pub(crate) fn parse_image_type(value: &str) -> Result<ImageType, ApiError> {
+    let numeric = value.parse::<i32>().ok();
     [
         ImageType::Primary,
         ImageType::Art,
@@ -352,7 +353,10 @@ pub(crate) fn parse_image_type(value: &str) -> Result<ImageType, ApiError> {
         ImageType::Profile,
     ]
     .into_iter()
-    .find(|image_type| image_type_name(*image_type).eq_ignore_ascii_case(value))
+    .find(|image_type| {
+        image_type_name(*image_type).eq_ignore_ascii_case(value)
+            || numeric == Some(*image_type as i32)
+    })
     .ok_or(ApiError::InvalidRequest)
 }
 
@@ -484,9 +488,12 @@ async fn ensure_visible_item(
 }
 
 fn parse_image_format(value: &str) -> Result<ImageFormat, ApiError> {
+    let numeric = value.parse::<i32>().ok();
     ImageFormat::ALL
         .into_iter()
-        .find(|format| format_name(*format).eq_ignore_ascii_case(value))
+        .find(|format| {
+            format_name(*format).eq_ignore_ascii_case(value) || numeric == Some(*format as i32)
+        })
         .ok_or(ApiError::InvalidRequest)
 }
 
@@ -644,6 +651,67 @@ mod query_tests {
     use axum_extra::extract::Query;
 
     use super::{DeleteItemImageQuery, GetItemImageQuery, UpdateItemImageIndexQuery};
+
+    #[test]
+    fn image_enum_parsers_accept_official_names_and_integer_values() {
+        for (number, name) in [
+            (0, "Primary"),
+            (1, "Art"),
+            (2, "Backdrop"),
+            (3, "Banner"),
+            (4, "Logo"),
+            (5, "Thumb"),
+            (6, "Disc"),
+            (7, "Box"),
+            (8, "Screenshot"),
+            (9, "Menu"),
+            (10, "Chapter"),
+            (11, "BoxRear"),
+            (12, "Profile"),
+        ] {
+            assert_eq!(
+                super::parse_image_type(name).unwrap() as i32,
+                number,
+                "name {name}"
+            );
+            assert_eq!(
+                super::parse_image_type(&name.to_ascii_lowercase()).unwrap() as i32,
+                number,
+                "lowercase name {name}"
+            );
+            assert_eq!(
+                super::parse_image_type(&number.to_string()).unwrap() as i32,
+                number,
+                "integer {number}"
+            );
+        }
+        for value in ["", "13", "-1", "not-an-image"] {
+            assert!(super::parse_image_type(value).is_err(), "value {value}");
+        }
+
+        for (number, name) in [
+            (0, "Bmp"),
+            (1, "Gif"),
+            (2, "Jpg"),
+            (3, "Png"),
+            (4, "Webp"),
+            (5, "Svg"),
+        ] {
+            assert_eq!(
+                super::parse_image_format(name).unwrap() as i32,
+                number,
+                "name {name}"
+            );
+            assert_eq!(
+                super::parse_image_format(&number.to_string()).unwrap() as i32,
+                number,
+                "integer {number}"
+            );
+        }
+        for value in ["", "6", "-1", "not-an-image"] {
+            assert!(super::parse_image_format(value).is_err(), "value {value}");
+        }
+    }
 
     #[test]
     fn image_queries_bind_all_lowercase_compound_names() {

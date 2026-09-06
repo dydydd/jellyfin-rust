@@ -362,20 +362,13 @@ pub(crate) async fn get_image(
     Query(query): Query<GetItemImageQuery>,
 ) -> Result<Response, ApiError> {
     authentication::optional_authenticated_user_id(&state, &headers, &uri).await?;
+    let image_type = parse_image_type(&image_type)?;
     let item = state
         .artists
         .image_item(&name)
         .await?
         .ok_or(jellyfin_controller::ArtistError::NotFound)?;
-    render_item_image(
-        &state,
-        &headers,
-        item.id,
-        parse_image_type(&image_type)?,
-        image_index,
-        query,
-    )
-    .await
+    render_item_image(&state, &headers, item.id, image_type, image_index, query).await
 }
 
 fn descending(sort_order: &[String]) -> Result<bool, ApiError> {

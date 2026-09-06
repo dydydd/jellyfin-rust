@@ -21,6 +21,7 @@ use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::item_images::parse_image_type;
 use crate::{
     ApiError, AppState, authentication, authorization, startup, user_to_dto_with_server_id,
     users_to_dtos_with_server_id,
@@ -240,9 +241,10 @@ pub(crate) async fn get_user_image(
 pub(crate) async fn get_user_image_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((user_id, _image_type)): Path<(Uuid, String)>,
+    Path((user_id, image_type)): Path<(Uuid, String)>,
     Query(query): Query<GetUserImageQuery>,
 ) -> Result<Response, ApiError> {
+    parse_image_type(&image_type)?;
     get_user_image_for(
         &state,
         &headers,
@@ -256,9 +258,10 @@ pub(crate) async fn get_user_image_legacy(
 pub(crate) async fn get_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((user_id, _image_type, _index)): Path<(Uuid, String, i32)>,
+    Path((user_id, image_type, _index)): Path<(Uuid, String, i32)>,
     Query(query): Query<GetUserImageQuery>,
 ) -> Result<Response, ApiError> {
+    parse_image_type(&image_type)?;
     get_user_image_for(
         &state,
         &headers,
@@ -310,20 +313,22 @@ pub(crate) async fn post_user_image(
 pub(crate) async fn post_user_image_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, _image_type)): Path<(Uuid, String)>,
+    Path((target_id, image_type)): Path<(Uuid, String)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    parse_image_type(&image_type)?;
     post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
 pub(crate) async fn post_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, _image_type, _index)): Path<(Uuid, String, u32)>,
+    Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    parse_image_type(&image_type)?;
     post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
@@ -400,18 +405,20 @@ pub(crate) async fn delete_user_image(
 pub(crate) async fn delete_user_image_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, _image_type)): Path<(Uuid, String)>,
+    Path((target_id, image_type)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    parse_image_type(&image_type)?;
     delete_user_image_for(&state, authenticated.user, target_id).await
 }
 
 pub(crate) async fn delete_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, _image_type, _index)): Path<(Uuid, String, u32)>,
+    Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    parse_image_type(&image_type)?;
     delete_user_image_for(&state, authenticated.user, target_id).await
 }
 

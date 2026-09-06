@@ -600,10 +600,7 @@ async fn studio_image_routes_resolve_public_base_item_ordinals() {
             .unwrap();
         assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
     }
-    let lowercase_base = format!(
-        "/studios/{}/images/Backdrop",
-        encoded(&fixture.alpha_studio)
-    );
+    let lowercase_base = format!("/studios/{}/images/2", encoded(&fixture.alpha_studio));
     for route in [
         format!("{lowercase_base}?imageIndex=1"),
         format!("{lowercase_base}/1"),

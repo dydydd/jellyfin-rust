@@ -82,7 +82,7 @@ async fn exercise_remote_image_routes(database_name: &str) {
     let lowercase_query = fixture
         .get(
             &format!(
-                "/items/{}/remoteimages?type=Primary&startindex=10&limit=5&providername=Example&includealllanguages=true",
+                "/items/{}/remoteimages?type=0&startindex=10&limit=5&providername=Example&includealllanguages=true",
                 fixture.item_id
             ),
             &fixture.user_token,
@@ -90,6 +90,14 @@ async fn exercise_remote_image_routes(database_name: &str) {
         .await;
     assert_eq!(lowercase_query.status(), StatusCode::OK);
     assert_eq!(body_json(lowercase_query).await, empty_result);
+
+    let invalid_image_type = fixture
+        .get(
+            &format!("/Items/{}/RemoteImages?type=13", Uuid::new_v4()),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(invalid_image_type.status(), StatusCode::BAD_REQUEST);
 
     let lowercase_providers = fixture
         .get(
@@ -135,13 +143,24 @@ async fn exercise_remote_image_routes(database_name: &str) {
     let lowercase_download = fixture
         .post(
             &format!(
-                "/items/{}/remoteimages/download?type=Primary&imageurl=https%3A%2F%2Fexample.invalid%2Fposter.jpg",
+                "/items/{}/remoteimages/download?type=0&imageurl=https%3A%2F%2Fexample.invalid%2Fposter.jpg",
                 fixture.item_id
             ),
             &fixture.admin_token,
         )
         .await;
     assert_eq!(lowercase_download.status(), StatusCode::NOT_FOUND);
+
+    let invalid_download_type = fixture
+        .post(
+            &format!(
+                "/Items/{}/RemoteImages/Download?type=13&imageUrl=https%3A%2F%2Fexample.invalid%2Fposter.jpg",
+                fixture.item_id
+            ),
+            &fixture.admin_token,
+        )
+        .await;
+    assert_eq!(invalid_download_type.status(), StatusCode::BAD_REQUEST);
 
     fixture.cleanup().await;
 }

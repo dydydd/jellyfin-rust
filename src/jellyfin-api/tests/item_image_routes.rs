@@ -964,7 +964,7 @@ async fn exercise_item_image_files(database_name: &str) {
     let selected_by_query = fixture
         .request(
             Method::GET,
-            &format!("/Items/{}/Images/Backdrop?imageIndex=1", fixture.item_id),
+            &format!("/Items/{}/Images/2?imageIndex=1&format=3", fixture.item_id),
             &[],
         )
         .await;

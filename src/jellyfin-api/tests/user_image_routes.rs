@@ -320,7 +320,7 @@ async fn exercise_user_image_routes(database_name: &str) {
         &app,
         axum::http::Method::GET,
         &format!(
-            "/Users/{}/Images/not-a-real-type/-999?format=jpg&width=1&quality=1",
+            "/Users/{}/Images/12/-999?format=2&width=1&quality=1",
             user.id
         ),
         None,
@@ -343,6 +343,18 @@ async fn exercise_user_image_routes(database_name: &str) {
         .await
         .unwrap(),
         png.as_slice()
+    );
+    assert_eq!(
+        get_image(
+            &app,
+            axum::http::Method::GET,
+            &format!("/Users/{}/Images/not-a-real-type/-999", user.id),
+            None,
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
     );
 
     let tagged = get_image(
@@ -381,7 +393,7 @@ async fn exercise_user_image_routes(database_name: &str) {
 
     let response = post_image(
         &app,
-        &format!("/Users/{}/Images/Primary/0", user.id),
+        &format!("/Users/{}/Images/12/0", user.id),
         Some(&user_token),
         "image/jpeg",
         "c2Vjb25k",
@@ -466,7 +478,7 @@ async fn exercise_user_image_routes(database_name: &str) {
     assert_eq!(
         delete(
             &app,
-            &format!("/Users/{}/Images/Primary", user.id),
+            &format!("/Users/{}/Images/12", user.id),
             Some(&admin_token)
         )
         .await

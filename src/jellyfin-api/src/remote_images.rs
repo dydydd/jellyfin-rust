@@ -7,16 +7,16 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_data::BaseItemError;
-use jellyfin_model::{ImageProviderInfo, ImageType, RemoteImageResult};
+use jellyfin_model::{ImageProviderInfo, RemoteImageResult};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, authorization};
+use crate::{ApiError, AppState, authentication, authorization, item_images::parse_image_type};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct RemoteImagesQuery {
     #[serde(default, rename = "type", alias = "Type")]
-    image_type: Option<ImageType>,
+    image_type: Option<String>,
     #[serde(
         default,
         rename = "startIndex",
@@ -45,7 +45,7 @@ pub(crate) struct RemoteImagesQuery {
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DownloadRemoteImageQuery {
     #[serde(default, rename = "type", alias = "Type")]
-    image_type: Option<ImageType>,
+    image_type: Option<String>,
     #[serde(default, rename = "imageUrl", alias = "ImageUrl", alias = "imageurl")]
     image_url: Option<String>,
 }
@@ -57,6 +57,11 @@ pub(crate) async fn images(
     Query(query): Query<RemoteImagesQuery>,
 ) -> Result<Json<RemoteImageResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let image_type = query
+        .image_type
+        .as_deref()
+        .map(parse_image_type)
+        .transpose()?;
     state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
@@ -68,7 +73,7 @@ pub(crate) async fn images(
         .item_lookup
         .remote_images(
             item_id,
-            query.image_type,
+            image_type,
             query.provider_name.as_deref(),
             query.include_all_languages,
             query.start_index.unwrap_or(0),
@@ -119,7 +124,11 @@ pub(crate) async fn download(
     authorization::require_default(&state, &headers, &uri)
         .await?
         .require_administrator()?;
-    let image_type = query.image_type.ok_or(ApiError::InvalidRequest)?;
+    let image_type = query
+        .image_type
+        .as_deref()
+        .ok_or(ApiError::InvalidRequest)
+        .and_then(parse_image_type)?;
     let image_url = query.image_url.ok_or(ApiError::NotFound)?;
     ensure_item_exists(&state, item_id).await?;
 
@@ -150,10 +159,12 @@ mod query_tests {
 
     #[test]
     fn remote_image_queries_bind_all_lowercase_compound_names() {
-        let uri = "http://localhost/?startindex=10&providername=Example&includealllanguages=true"
-            .parse()
-            .unwrap();
+        let uri =
+            "http://localhost/?type=2&startindex=10&providername=Example&includealllanguages=true"
+                .parse()
+                .unwrap();
         let query = Query::<RemoteImagesQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.image_type.as_deref(), Some("2"));
         assert_eq!(query.start_index, Some(10));
         assert_eq!(query.provider_name.as_deref(), Some("Example"));
         assert!(query.include_all_languages);
