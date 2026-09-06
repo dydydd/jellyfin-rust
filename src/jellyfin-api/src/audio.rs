@@ -25,6 +25,38 @@ pub(crate) struct StreamQuery {
         alias = "mediasourceid"
     )]
     media_source_id: Option<String>,
+    #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
+    audio_codec: Option<String>,
+    #[serde(
+        rename = "audioBitRate",
+        alias = "AudioBitRate",
+        alias = "audiobitrate"
+    )]
+    audio_bitrate: Option<i64>,
+    #[serde(
+        rename = "audioSampleRate",
+        alias = "AudioSampleRate",
+        alias = "audiosamplerate"
+    )]
+    audio_sample_rate: Option<i32>,
+    #[serde(
+        rename = "audioChannels",
+        alias = "AudioChannels",
+        alias = "audiochannels"
+    )]
+    audio_channels: Option<i32>,
+    #[serde(
+        rename = "maxAudioChannels",
+        alias = "MaxAudioChannels",
+        alias = "maxaudiochannels"
+    )]
+    max_audio_channels: Option<i32>,
+    #[serde(
+        rename = "startTimeTicks",
+        alias = "StartTimeTicks",
+        alias = "starttimeticks"
+    )]
+    start_time_ticks: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -165,6 +197,18 @@ fn audio_container(codec: &str) -> &str {
     }
 }
 
+fn codec_for_container(container: &str) -> &str {
+    match container.to_ascii_lowercase().as_str() {
+        "mp3" => "mp3",
+        "flac" => "flac",
+        "opus" | "ogg" => "opus",
+        "ac3" => "ac3",
+        "eac3" => "eac3",
+        "wav" | "wave" => "pcm_s16le",
+        _ => "aac",
+    }
+}
+
 async fn stream_file(
     state: Arc<AppState>,
     headers: HeaderMap,
@@ -207,10 +251,39 @@ async fn stream_file(
             return Err(ApiError::UnsupportedMediaType);
         }
     }
-    if !query.static_stream.unwrap_or(true) {
-        return Err(ApiError::UnsupportedMediaType);
+    if query.static_stream.unwrap_or(false) {
+        return serve_path(headers, &path, request).await;
     }
-    serve_path(headers, &path, request).await
+
+    let codec = query
+        .audio_codec
+        .as_deref()
+        .unwrap_or_else(|| codec_for_container(requested_container.unwrap_or("m4a")));
+    let container = requested_container
+        .filter(|container| !container.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| audio_container(codec).to_owned());
+    let output = state
+        .transcode_directory
+        .join(format!("{item_id}-{codec}.{container}"));
+    tokio::fs::create_dir_all(&state.transcode_directory)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    let command = audio_command(
+        &state.ffmpeg_path,
+        std::path::Path::new(&path),
+        &output,
+        codec,
+        query.audio_bitrate,
+        query.audio_channels.or(query.max_audio_channels),
+        query.audio_sample_rate,
+        query.start_time_ticks,
+    );
+    let job = state.transcode_jobs.register(output.to_string_lossy());
+    run_ffmpeg(&command, &job)
+        .await
+        .map_err(|_| ApiError::UnsupportedMediaType)?;
+    serve_path(headers, &output.to_string_lossy(), request).await
 }
 
 #[cfg(test)]
@@ -229,6 +302,20 @@ mod tests {
             let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
             assert_eq!(query.media_source_id.as_deref(), Some("alternate"));
         }
+    }
+
+    #[test]
+    fn audio_stream_binds_android_transcoding_parameters() {
+        let uri: Uri = "/Audio/item/stream?static=false&audioCodec=mp3&audioBitRate=192000&audioSampleRate=44100&maxAudioChannels=2&startTimeTicks=10000"
+            .parse()
+            .unwrap();
+        let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+        assert!(!query.static_stream.unwrap());
+        assert_eq!(query.audio_codec.as_deref(), Some("mp3"));
+        assert_eq!(query.audio_bitrate, Some(192000));
+        assert_eq!(query.audio_sample_rate, Some(44100));
+        assert_eq!(query.max_audio_channels, Some(2));
+        assert_eq!(query.start_time_ticks, Some(10000));
     }
 }
 

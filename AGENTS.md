@@ -298,6 +298,9 @@
 - Bind audio stream `MediaSourceId` case-insensitively and resolve it inside the requested item's
   authorized alternate-version group before serving static audio bytes, matching the video
   route and the Android SDK's alternate-audio playback contract.
+- Keep the Android audio stream route's progressive contract: omitted or false `static` requests
+  must honor `audioCodec`, bitrate, sample-rate, channel-count, and `startTimeTicks` through the
+  bounded FFmpeg path, while explicit `static=true` serves the selected source unchanged.
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.
