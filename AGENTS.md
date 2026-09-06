@@ -54,6 +54,10 @@
 - Keep both the modern `/Items/Suggestions` route and legacy `/Users/{userId}/Suggestions`
   route reachable through fully lowercase aliases, with equivalent authorization and filtered
   results.
+- Keep both Suggestions routes on the official signed `Int32` pagination contract: a negative
+  `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative `Limit` follows the
+  official SQLite unlimited-limit behavior, and out-of-range values fail binding. Preserve the
+  endpoint's default disabled-total behavior, which reports the returned page length.
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.

@@ -138,6 +138,75 @@ async fn suggestions_routes_match_official_auth_filters_and_count_contract() {
     );
     assert_eq!(item_names(&lowercase_legacy), item_names(&legacy));
 
+    let legacy_route = format!("/Users/{}/Suggestions", fixture.user_id);
+    for route in ["/Items/Suggestions", &legacy_route] {
+        for query in [
+            "MediaType=Video&Type=Movie&StartIndex=-2&Limit=1&EnableTotalRecordCount=true",
+            "mediaType=Video&type=Movie&startIndex=-2&limit=1&enableTotalRecordCount=true",
+            "mediatype=Video&type=Movie&startindex=-2&limit=1&enabletotalrecordcount=true",
+        ] {
+            let page = body_json(
+                fixture
+                    .get(&format!("{route}?{query}"), Some(&fixture.admin_token))
+                    .await,
+            )
+            .await;
+            assert_eq!(page["StartIndex"], -2);
+            assert_eq!(page["TotalRecordCount"], 2);
+            assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+        }
+    }
+
+    let zero_limit = body_json(
+        fixture
+            .get(
+                "/Items/Suggestions?mediaType=Video&type=Movie&limit=0&enableTotalRecordCount=true",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(zero_limit["Items"].as_array().unwrap().len(), 0);
+    assert_eq!(zero_limit["TotalRecordCount"], 2);
+    assert_eq!(zero_limit["StartIndex"], 0);
+
+    let negative_limit = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Users/{}/Suggestions?MediaType=Video&Type=Movie&Limit=-1",
+                    fixture.user_id
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(negative_limit["Items"].as_array().unwrap().len(), 2);
+    assert_eq!(negative_limit["TotalRecordCount"], 2);
+    assert_eq!(negative_limit["StartIndex"], 0);
+
+    for route in [
+        "/Items/Suggestions?startIndex=2147483648",
+        "/Items/Suggestions?startIndex=-2147483649",
+        "/Items/Suggestions?limit=2147483648",
+        "/Items/Suggestions?limit=-2147483649",
+        &format!(
+            "/Users/{}/Suggestions?StartIndex=2147483648",
+            fixture.user_id
+        ),
+        &format!("/Users/{}/Suggestions?Limit=-2147483649", fixture.user_id),
+    ] {
+        assert_eq!(
+            fixture
+                .get(route, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "route {route} must reject values outside Int32"
+        );
+    }
+
     assert_eq!(
         fixture
             .get(
