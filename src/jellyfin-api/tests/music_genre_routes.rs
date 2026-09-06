@@ -264,7 +264,7 @@ async fn music_genre_list_matches_official_music_genre_contract() {
         .await,
     )
     .await;
-    assert_genres(&lowercase_searched, &[&fixture.genre_name], 1, 0);
+    assert_genres(&lowercase_searched, &[&fixture.genre_name], 0, 0);
     assert_eq!(lowercase_searched["Items"][0]["SongCount"], 1);
 
     let favorite = body_json(
@@ -311,17 +311,15 @@ async fn music_genre_list_matches_official_music_genre_contract() {
     .await;
     assert_genres(&book_filtered, &[], 0, 0);
 
-    let no_total = body_json(
-        request(
-            &fixture.app,
-            "/MusicGenres?limit=1&enableTotalRecordCount=false",
-            Some(&fixture.user_token),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(no_total["Items"].as_array().expect("items").len(), 1);
-    assert_eq!(no_total["TotalRecordCount"], 1);
+    for route in [
+        "/MusicGenres?startIndex=1&limit=1&enableTotalRecordCount=false",
+        "/MusicGenres?StartIndex=1&Limit=1&EnableTotalRecordCount=false",
+        "/musicgenres?startindex=1&limit=1&enabletotalrecordcount=false",
+    ] {
+        let no_total =
+            body_json(request(&fixture.app, route, Some(&fixture.user_token)).await).await;
+        assert_genres(&no_total, &[&fixture.genre_name], 0, 1);
+    }
 
     assert_eq!(
         request(
