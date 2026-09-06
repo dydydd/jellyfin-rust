@@ -759,6 +759,24 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
         .update(movie_alternate)
         .await
         .expect("legacy movie alternate grouping");
+    let unsupported_bucket_items = [
+        create_item(
+            &items,
+            "MediaBrowser.Controller.Entities.Book",
+            &format!("Book {suffix}"),
+            None,
+            false,
+        )
+        .await,
+        create_item(
+            &items,
+            "MediaBrowser.Controller.Entities.Movies.BoxSet",
+            &format!("Box Set {suffix}"),
+            None,
+            true,
+        )
+        .await,
+    ];
 
     let values = ItemValueRepository::new(fixture.database.clone());
     let genre = format!("Series Genre {suffix}");
@@ -790,6 +808,12 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
             .link(movie_alternate.id, value_type, value)
             .await
             .expect("alternate legacy movie item value");
+        for item in &unsupported_bucket_items {
+            values
+                .link(item.id, value_type, value)
+                .await
+                .expect("unsupported DTO count-bucket item value");
+        }
     }
     create_item_by_name(
         &items,
@@ -819,6 +843,8 @@ async fn genre_and_studio_counts_roll_up_episodes_from_tagged_series() {
         assert_eq!(body["Items"][0]["MusicVideoCount"], 1, "{route}: {body}");
         assert_eq!(body["Items"][0]["SongCount"], 1, "{route}: {body}");
         assert_eq!(body["Items"][0]["TrailerCount"], 1, "{route}: {body}");
+        // Official BaseItemDto item-value counts have no BookCount or BoxSetCount
+        // fields, so those links can discover the value but cannot inflate ChildCount.
         assert_eq!(body["Items"][0]["ChildCount"], 10, "{route}: {body}");
     }
 

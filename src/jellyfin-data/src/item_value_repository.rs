@@ -1026,7 +1026,17 @@ fn append_item_value_count_buckets_cte(sql: &mut String) {
     sql.push_str(
         ", values AS (\
              SELECT item_value_id, value, clean_value, \
-                    COUNT(DISTINCT item_id)::bigint AS item_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'Audio', 'MediaBrowser.Controller.Entities.Audio.Audio', \
+                        'Episode', 'MediaBrowser.Controller.Entities.TV.Episode', \
+                        'Movie', 'MediaBrowser.Controller.Entities.Movies.Movie', \
+                        'MusicAlbum', 'MediaBrowser.Controller.Entities.Audio.MusicAlbum', \
+                        'MusicArtist', 'MediaBrowser.Controller.Entities.Audio.MusicArtist', \
+                        'MusicVideo', 'MediaBrowser.Controller.Entities.MusicVideo', \
+                        'Program', \
+                        'Series', 'MediaBrowser.Controller.Entities.TV.Series', \
+                        'Trailer', 'MediaBrowser.Controller.Entities.Trailer'\
+                    ))::bigint AS item_count, \
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
                         'MusicAlbum', 'MediaBrowser.Controller.Entities.Audio.MusicAlbum'\
                     ))::bigint AS album_count, \
