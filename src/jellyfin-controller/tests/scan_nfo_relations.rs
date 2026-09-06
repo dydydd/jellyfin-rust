@@ -166,6 +166,17 @@ async fn exercise_scan(database_name: &str) {
         studios.iter().any(|value| value.value == "Example Studio"),
         "NFO studio must be linked"
     );
+    let studio = items
+        .get_by_type_and_name("Studio", "Example Studio")
+        .await
+        .expect("studio entity lookup")
+        .expect("full scan must reconcile the persisted Studio entity");
+    assert!(studio.is_folder);
+    assert_eq!(
+        studio.presentation_unique_key.as_deref(),
+        Some("Studio-Example Studio")
+    );
+    assert!(metadata_root.join("Studio").join("Example Studio").is_dir());
 
     let people = PersonRepository::new(database.clone())
         .people_for_item(movie.id)
@@ -185,10 +196,11 @@ async fn exercise_scan(database_name: &str) {
     );
 
     let incremental_genre = format!("Incremental Genre {}", Uuid::new_v4().simple());
+    let incremental_studio = format!("Incremental Studio {}", Uuid::new_v4().simple());
     std::fs::write(
         library_root.join("Scan Movie.nfo"),
         format!(
-            "<movie><title>Scan Movie</title><genre>Drama</genre><genre>{incremental_genre}</genre></movie>"
+            "<movie><title>Scan Movie</title><genre>Drama</genre><genre>{incremental_genre}</genre><studio>{incremental_studio}</studio></movie>"
         ),
     )
     .expect("tag-free movie NFO write");
@@ -209,6 +221,21 @@ async fn exercise_scan(database_name: &str) {
             .join(&incremental_genre)
             .is_dir(),
         "single-library reconciliation must create the item-by-name directory"
+    );
+    assert!(
+        items
+            .get_by_type_and_name("Studio", &incremental_studio)
+            .await
+            .expect("incremental Studio entity lookup")
+            .is_some(),
+        "single-library scans must reconcile newly linked Studio values"
+    );
+    assert!(
+        metadata_root
+            .join("Studio")
+            .join(&incremental_studio)
+            .is_dir(),
+        "single-library Studio reconciliation must create the item-by-name directory"
     );
     let movie = items
         .get(movie.id)

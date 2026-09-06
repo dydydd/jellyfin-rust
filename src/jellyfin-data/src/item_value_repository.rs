@@ -615,6 +615,64 @@ impl ItemValueRepository {
             .await?)
     }
 
+    /// Lists one keyset page of persisted Studio entities required after a library scan.
+    ///
+    /// The source is the normalized set of Studio values still attached to a
+    /// base item. Existing canonical or legacy CLR Studio rows suppress a new
+    /// entity, preserving any metadata or images already stored on that row.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the set-based query fails.
+    pub async fn required_studio_entities_page(
+        &self,
+        after: Option<&ItemByNameValue>,
+        limit: usize,
+    ) -> Result<Vec<ItemByNameValue>, ItemValueError> {
+        const MAX_PAGE_SIZE: usize = 512;
+        let mut sql = String::from(
+            "WITH names AS (\
+                 SELECT value.clean_value, MIN(value.value) AS name \
+                 FROM jellyfin.item_values AS value \
+                 JOIN jellyfin.item_value_map AS map \
+                   ON map.item_value_id = value.item_value_id \
+                 JOIN jellyfin.base_items AS item ON item.id = map.item_id \
+                 WHERE value.type = 3 \
+                 GROUP BY value.clean_value\
+             ), required AS (\
+                 SELECT 'Studio'::text AS item_type, names.name FROM names \
+                 WHERE NOT EXISTS (\
+                     SELECT 1 FROM jellyfin.base_items AS existing \
+                     WHERE existing.clean_name = names.clean_value \
+                       AND existing.item_type IN (\
+                           'Studio', 'MediaBrowser.Controller.Entities.Studio'))\
+             ) \
+             SELECT item_type, name FROM required",
+        );
+        let mut values = Vec::with_capacity(3);
+        if let Some(after) = after {
+            push_bind(
+                &mut sql,
+                &mut values,
+                after.item_type.clone(),
+                " WHERE (item_type, name) > (",
+            );
+            push_bind(&mut sql, &mut values, after.name.clone(), ", ");
+            sql.push(')');
+        }
+        sql.push_str(" ORDER BY item_type, name LIMIT ");
+        push_bind(
+            &mut sql,
+            &mut values,
+            i64::try_from(limit.clamp(1, MAX_PAGE_SIZE)).unwrap_or(512),
+            "",
+        );
+        let statement = Statement::from_sql_and_values(DbBackend::Postgres, sql, values);
+        Ok(ItemByNameValue::find_by_statement(statement)
+            .all(self.database.as_ref())
+            .await?)
+    }
+
     /// Lists item-by-name values that are attached to filtered base items.
     ///
     /// # Errors

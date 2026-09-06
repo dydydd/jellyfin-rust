@@ -892,6 +892,7 @@ impl LibraryScanService {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
         }
         self.reconcile_genre_entities().await?;
+        self.reconcile_studio_entities().await?;
         if let Some(on_progress) = on_progress {
             on_progress(100.0);
         }
@@ -932,6 +933,7 @@ impl LibraryScanService {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
         }
         self.reconcile_genre_entities().await?;
+        self.reconcile_studio_entities().await?;
         Ok(summary)
     }
 
@@ -1008,6 +1010,72 @@ impl LibraryScanService {
             required = required_total,
             inserted,
             "post-scan genre entities reconciled"
+        );
+        Ok(())
+    }
+
+    async fn reconcile_studio_entities(&self) -> Result<(), LibraryScanError> {
+        let (force_case_insensitive, enable_case_sensitive_item_ids) = {
+            let configuration = self.server_configuration.load().await?;
+            (
+                configuration.enable_normalized_item_by_name_ids,
+                configuration.enable_case_sensitive_item_ids,
+            )
+        };
+        let (program_data, internal_metadata) = self.item_by_name_directories();
+        let mut after = None;
+        let mut required_total = 0;
+        let mut inserted = 0;
+        loop {
+            let required = self
+                .values
+                .required_studio_entities_page(
+                    after.as_ref(),
+                    ITEM_BY_NAME_RECONCILIATION_BATCH_SIZE,
+                )
+                .await?;
+            let Some(next_after) = required.last().cloned() else {
+                break;
+            };
+            let mut entities = Vec::with_capacity(required.len());
+            for required in required {
+                let path = internal_metadata
+                    .join("Studio")
+                    .join(item_by_name_folder_name(&required.name));
+                tokio::fs::create_dir_all(&path).await?;
+                let metadata = tokio::fs::metadata(&path).await?;
+                let modified = metadata.modified()?;
+                let created = metadata.created().unwrap_or(modified);
+                entities.push(NewItemByNameEntity {
+                    id: official_item_by_name_id(
+                        &path,
+                        &program_data,
+                        "MediaBrowser.Controller.Entities.Studio",
+                        force_case_insensitive,
+                        enable_case_sensitive_item_ids,
+                    ),
+                    presentation_unique_key: format!(
+                        "Studio-{}",
+                        required.name.remove_diacritics()
+                    ),
+                    item_type: required.item_type,
+                    name: required.name,
+                    path: path.to_string_lossy().into_owned(),
+                    date_created: chrono::DateTime::<chrono::Utc>::from(created),
+                    date_modified: chrono::DateTime::<chrono::Utc>::from(modified),
+                });
+            }
+            required_total += entities.len();
+            inserted += self
+                .items
+                .create_missing_item_by_name_entities(&entities)
+                .await?;
+            after = Some(next_after);
+        }
+        tracing::debug!(
+            required = required_total,
+            inserted,
+            "post-scan Studio entities reconciled"
         );
         Ok(())
     }

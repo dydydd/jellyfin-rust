@@ -317,6 +317,53 @@ async fn genre_entity_reconciliation_is_set_based_and_preserves_existing_rows() 
         .expect("fixture cleanup");
 }
 
+#[tokio::test]
+async fn studio_entity_reconciliation_reports_only_missing_attached_names() {
+    let database = prepare_database().await;
+    let items = BaseItemRepository::new(database.clone());
+    let values = ItemValueRepository::new(database);
+    let suffix = Uuid::new_v4().simple().to_string();
+    let name = format!("Required Studio {suffix}");
+    let movie = create_item(&items, "Movie", &format!("Studio Movie {suffix}")).await;
+    values
+        .link(movie.id, item_value::ItemValueType::Studios, &name)
+        .await
+        .expect("studio link");
+
+    let required = values
+        .required_studio_entities_page(None, 512)
+        .await
+        .expect("required Studio entities");
+    assert!(
+        required
+            .iter()
+            .any(|entry| entry.item_type == "Studio" && entry.name == name)
+    );
+
+    let studio = create_item_by_name(
+        &items,
+        Uuid::new_v4(),
+        "MediaBrowser.Controller.Entities.Studio",
+        &name,
+        &format!("Studio-{name}"),
+    )
+    .await;
+    assert!(
+        values
+            .required_studio_entities_page(None, 512)
+            .await
+            .expect("post-reconciliation Studio requirements")
+            .iter()
+            .all(|entry| entry.name != name),
+        "an existing legacy CLR Studio row must suppress duplicate creation"
+    );
+
+    items
+        .delete_many(&[movie.id, studio.id])
+        .await
+        .expect("Studio reconciliation fixture cleanup");
+}
+
 async fn assert_genre_no_longer_required(values: &ItemValueRepository, name: &str) {
     assert!(
         values
