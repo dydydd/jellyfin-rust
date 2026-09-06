@@ -295,6 +295,9 @@
   also expose `SupportsDirectStream`, and `SupportsTranscoding` reflects an enabled compatible
   device transcoding profile (or an existing transcoding container), even when the current
   request selected DirectPlay and therefore has no `TranscodingUrl`.
+- Bind audio stream `MediaSourceId` case-insensitively and resolve it inside the requested item's
+  authorized alternate-version group before serving static audio bytes, matching the video
+  route and the Android SDK's alternate-audio playback contract.
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.

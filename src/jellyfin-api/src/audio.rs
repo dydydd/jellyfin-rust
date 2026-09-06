@@ -19,6 +19,12 @@ use crate::{ApiError, AppState, authentication};
 pub(crate) struct StreamQuery {
     #[serde(rename = "static", alias = "Static")]
     static_stream: Option<bool>,
+    #[serde(
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid"
+    )]
+    media_source_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -168,10 +174,23 @@ async fn stream_file(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let item = state
+    let requested_item = state
         .library_controller
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
+    if requested_item.item_type != "Audio" {
+        return Err(ApiError::NotFound);
+    }
+    let item = if let Some(media_source_id) = query
+        .media_source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        crate::media_source::resolve_static_item(&state, requested_item, media_source_id).await?
+    } else {
+        requested_item
+    };
     if item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
@@ -192,6 +211,25 @@ async fn stream_file(
         return Err(ApiError::UnsupportedMediaType);
     }
     serve_path(headers, &path, request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Uri;
+    use axum_extra::extract::Query;
+
+    use super::StreamQuery;
+
+    #[test]
+    fn audio_stream_binds_alternate_media_source_id_case_insensitively() {
+        for key in ["MediaSourceId", "mediaSourceId", "mediasourceid"] {
+            let uri: Uri = format!("/Audio/item/stream?{key}=alternate")
+                .parse()
+                .unwrap();
+            let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(query.media_source_id.as_deref(), Some("alternate"));
+        }
+    }
 }
 
 pub(crate) async fn serve_path(
