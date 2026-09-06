@@ -23,6 +23,8 @@ pub enum LibraryControllerError {
     Forbidden,
     #[error("library item has no downloadable file")]
     FileNotFound,
+    #[error("library item does not support downloading")]
+    NotDownloadable,
     #[error(transparent)]
     User(#[from] UserError),
     #[error(transparent)]
@@ -35,23 +37,26 @@ pub enum LibraryControllerError {
     UserLibrary(#[from] UserLibraryError),
 }
 
-fn item_can_download(item: &base_item::Model) -> bool {
-    if item.is_folder || item.is_virtual_item || item.path.as_deref().is_none_or(str::is_empty) {
-        return false;
+/// Returns the item-intrinsic download capability used by both DTO projection
+/// and the download endpoint.
+///
+/// This mirrors the official `CanDownload()` overrides: photos are always
+/// downloadable, file-backed audio and books are downloadable, and file-backed
+/// videos are downloadable unless they are DVD or Blu-ray folder structures.
+#[must_use]
+pub fn item_can_download(item: &base_item::Model) -> bool {
+    if item.item_type.eq_ignore_ascii_case("Photo") {
+        return true;
     }
     if !matches!(
         item.item_type.as_str(),
-        "Audio"
-            | "AudioBook"
-            | "Book"
-            | "Episode"
-            | "Movie"
-            | "MusicVideo"
-            | "Photo"
-            | "Trailer"
-            | "Video"
-    ) {
+        "Audio" | "AudioBook" | "Book" | "Episode" | "Movie" | "MusicVideo" | "Trailer" | "Video"
+    ) || !item.path.as_deref().is_some_and(path_uses_file_protocol)
+    {
         return false;
+    }
+    if matches!(item.item_type.as_str(), "Audio" | "AudioBook" | "Book") {
+        return true;
     }
     let video_type = item
         .data
@@ -60,6 +65,22 @@ fn item_can_download(item: &base_item::Model) -> bool {
         .and_then(|object| object.get("VideoType").or_else(|| object.get("video_type")));
     !matches!(video_type, Some(Value::String(value)) if value.eq_ignore_ascii_case("Dvd") || value.eq_ignore_ascii_case("BluRay"))
         && !matches!(video_type, Some(Value::Number(value)) if value.as_i64().is_some_and(|value| value == 2 || value == 3))
+}
+
+fn path_uses_file_protocol(path: &str) -> bool {
+    if ["rtsp", "rtmp", "http", "rtp", "udp", "ftp"]
+        .iter()
+        .any(|prefix| {
+            path.get(..prefix.len())
+                .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+        })
+    {
+        return false;
+    }
+    !path.contains("://")
+        || path
+            .get(.."file://".len())
+            .is_some_and(|value| value.eq_ignore_ascii_case("file://"))
 }
 
 /// Returns the playable media path, resolving a persisted `.strm` pointer when present.
@@ -153,6 +174,21 @@ mod tests {
         assert!(item_can_download(&item("Movie", Some("/movie.mkv"), None)));
         assert!(!item_can_download(&item("Movie", None, None)));
         assert!(!item_can_download(&item("Folder", Some("/folder"), None)));
+        assert!(item_can_download(&item("Photo", None, None)));
+        assert!(item_can_download(&item(
+            "Audio",
+            Some("file:///music.flac"),
+            None
+        )));
+        for path in [
+            "HTTP://example.test/movie.mkv",
+            "rtsp://example.test/movie",
+            "udp://example.test/movie",
+            "ftp://example.test/movie",
+            "s3://bucket/movie.flac",
+        ] {
+            assert!(!item_can_download(&item("Audio", Some(path), None)));
+        }
         assert!(!item_can_download(&item(
             "Movie",
             Some("/disc"),
@@ -295,17 +331,80 @@ impl LibraryControllerService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<String, LibraryControllerError> {
-        let item = self
-            .item(authenticated_user, target_user_id, item_id)
-            .await?;
         let policy: UserPolicy = serde_json::from_value(authenticated_user.policy.clone())
             .map_err(UserError::PolicySerialization)?;
-        if !policy.enable_content_downloading || !item_can_download(&item) {
+        if !policy.enable_content_downloading {
             return Err(LibraryControllerError::Forbidden);
         }
-        media_source_path(&item)
-            .map(str::to_owned)
+        let item = self
+            .user_library
+            .item(authenticated_user, target_user_id, item_id)
+            .await?;
+        if !item_can_download(&item) {
+            return Err(LibraryControllerError::NotDownloadable);
+        }
+        item.path.ok_or(LibraryControllerError::FileNotFound)
+    }
+
+    /// Resolves a globally visible download path for API-key authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or unsupported-download errors.
+    pub async fn download_path_without_user(
+        &self,
+        item_id: Uuid,
+    ) -> Result<String, LibraryControllerError> {
+        let item = self.item_without_user(item_id).await?;
+        if !item_can_download(&item) {
+            return Err(LibraryControllerError::NotDownloadable);
+        }
+        item.path.ok_or(LibraryControllerError::FileNotFound)
+    }
+
+    /// Resolves the original item path without applying download permissions.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, missing-file, or persistence errors.
+    pub async fn file_path(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<String, LibraryControllerError> {
+        self.user_library
+            .item(authenticated_user, target_user_id, item_id)
+            .await?
+            .path
             .ok_or(LibraryControllerError::FileNotFound)
+    }
+
+    /// Resolves the original item path without a user context.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, missing-file, or persistence errors.
+    pub async fn file_path_without_user(
+        &self,
+        item_id: Uuid,
+    ) -> Result<String, LibraryControllerError> {
+        self.item_without_user(item_id)
+            .await?
+            .path
+            .ok_or(LibraryControllerError::FileNotFound)
+    }
+
+    async fn item_without_user(
+        &self,
+        item_id: Uuid,
+    ) -> Result<base_item::Model, LibraryControllerError> {
+        self.items
+            .get(item_id)
+            .await?
+            .and_then(|item| self.item_types.hydrate(item))
+            .map(HydratedBaseItem::into_model)
+            .ok_or(LibraryControllerError::ItemNotFound)
     }
 
     /// Finds persisted non-virtual items with the same item and media types.

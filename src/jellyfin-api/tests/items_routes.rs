@@ -8,9 +8,10 @@ use jellyfin_controller::{
     ItemByNameKind, ItemByNameService, MediaAttachmentService, MediaStreamService, UserService,
 };
 use jellyfin_data::{
-    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DeviceRepository,
-    ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson, NewPersonCredit,
-    NewTrickplayInfo, NewUserData, PersonRepository, TrickplayInfoRepository, UserDataRepository,
+    ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson,
+    NewPersonCredit, NewTrickplayInfo, NewUserData, PersonRepository, TrickplayInfoRepository,
+    UserDataRepository,
     entities::{base_item, item_value, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType, UserPolicy};
@@ -182,6 +183,128 @@ async fn settings_fields_are_requested_for_pages_and_defaulted_for_item_details(
         .delete(configured.id)
         .await
         .expect("configured item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn download_and_play_access_fields_follow_official_field_and_user_policy_rules() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some(format!("Access movie {}", fixture.suffix));
+    movie.sort_name = movie.name.clone();
+    movie.parent_id = Some(root.id);
+    movie.path = Some(format!("/media/access-{}.mkv", fixture.suffix));
+    let movie = items.create(movie).await.expect("access movie");
+
+    let mut photo = NewBaseItem::new(Uuid::new_v4(), "Photo");
+    photo.name = Some(format!("Access photo {}", fixture.suffix));
+    photo.sort_name = photo.name.clone();
+    photo.parent_id = Some(root.id);
+    let photo = items.create(photo).await.expect("access photo");
+
+    let route = format!("/Items?ids={},{}", movie.id, photo.id);
+    let page = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+    for dto in page["Items"].as_array().expect("access page") {
+        assert!(dto.get("CanDownload").is_none(), "{dto}");
+        assert!(dto.get("PlayAccess").is_none(), "{dto}");
+    }
+
+    for fields in [
+        "CanDownload,PlayAccess",
+        "candownload,playaccess",
+        "CANDOWNLOAD,PLAYACCESS",
+        "2,23",
+    ] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("{route}&fields={fields}"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        for dto in page["Items"].as_array().expect("requested access page") {
+            assert_eq!(dto["CanDownload"], true, "{fields}: {dto}");
+            assert_eq!(dto["PlayAccess"], "Full", "{fields}: {dto}");
+        }
+    }
+
+    let users = UserService::new(fixture.database.clone());
+    let original_policy: UserPolicy = serde_json::from_value(
+        users
+            .get(fixture.user_id)
+            .await
+            .expect("access user")
+            .policy,
+    )
+    .expect("access user policy");
+    let mut blocked_policy = original_policy.clone();
+    blocked_policy.enable_content_downloading = false;
+    blocked_policy.enable_media_playback = false;
+    users
+        .update_policy(fixture.user_id, &blocked_policy)
+        .await
+        .expect("blocked access policy");
+
+    for route in [
+        format!("/Items?ids={}&fields=CanDownload,PlayAccess", movie.id),
+        format!("/Items/{}?UserId={}", movie.id, fixture.user_id),
+        format!("/Users/{}/Items/{}", fixture.user_id, movie.id),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let body = body_json(response).await;
+        let dto = body
+            .get("Items")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .unwrap_or(&body);
+        assert_eq!(dto["CanDownload"], false, "{route}: {dto}");
+        assert_eq!(dto["PlayAccess"], "None", "{route}: {dto}");
+    }
+
+    let global = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?ids={}&fields=2,23&api_key={}",
+                    movie.id, fixture.api_key_token
+                ),
+                None,
+            )
+            .await,
+    )
+    .await;
+    let global = &global["Items"][0];
+    assert_eq!(global["CanDownload"], true);
+    assert!(global.get("PlayAccess").is_none(), "{global}");
+
+    let targeted = body_json(
+        fixture
+            .request(
+                &format!(
+                    "/Items?ids={}&UserId={}&Fields=CanDownload,PlayAccess&api_key={}",
+                    movie.id, fixture.user_id, fixture.api_key_token
+                ),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(targeted["Items"][0]["CanDownload"], false);
+    assert_eq!(targeted["Items"][0]["PlayAccess"], "None");
+
+    users
+        .update_policy(fixture.user_id, &original_policy)
+        .await
+        .expect("restore access policy");
+    items.delete(photo.id).await.expect("access photo cleanup");
+    items.delete(movie.id).await.expect("access movie cleanup");
     fixture.cleanup().await;
 }
 
@@ -2278,6 +2401,7 @@ struct Fixture {
     admin_token: String,
     user_id: Uuid,
     user_token: String,
+    api_key_token: String,
     item_ids: Vec<Uuid>,
     storage_root: std::path::PathBuf,
 }
@@ -2327,6 +2451,11 @@ impl Fixture {
         let devices = DeviceRepository::new(database.clone());
         let admin_token = session(&devices, admin.id, &format!("items-admin-{suffix}")).await;
         let user_token = session(&devices, user.id, &format!("items-user-{suffix}")).await;
+        let api_key_token = ApiKeyRepository::new(database.clone())
+            .create(&format!("items-key-{suffix}"))
+            .await
+            .expect("items API key")
+            .access_token;
 
         let items = BaseItemRepository::new(database.clone());
         let root = items.ensure_user_root().await.expect("user root");
@@ -2380,6 +2509,7 @@ impl Fixture {
             admin_token,
             user_id: user.id,
             user_token,
+            api_key_token,
             item_ids: vec![first.id, second.id, third.id, nested.id],
             storage_root,
         }
@@ -2401,6 +2531,10 @@ impl Fixture {
     }
 
     async fn cleanup(self) {
+        ApiKeyRepository::new(self.database.clone())
+            .revoke(&self.api_key_token)
+            .await
+            .expect("items API key cleanup");
         let items = BaseItemRepository::new(self.database.clone());
         for item_id in self.item_ids.into_iter().take(3) {
             items.delete(item_id).await.expect("item cleanup");

@@ -1817,11 +1817,13 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         )
         .route("/Items/Counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
+        .route("/items/{item_id}/file", get(library::file))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
         .route("/Items/{item_id}/ThemeVideos", get(library::theme_videos))
         .route("/Items/{item_id}/ThemeMedia", get(library::theme_media))
         .route("/Items/{item_id}/Ancestors", get(library::ancestors))
         .route("/Items/{item_id}/Download", get(library::download))
+        .route("/items/{item_id}/download", get(library::download))
         .route("/Items/{item_id}/Collections", get(library::collections))
         .route("/Library/Refresh", post(library::refresh))
         .route("/Library/PhysicalPaths", get(library::physical_paths))
@@ -3225,6 +3227,9 @@ fn library_controller_error_response(error: &LibraryControllerError) -> (StatusC
         | LibraryControllerError::UserLibrary(
             UserLibraryError::Forbidden | UserLibraryError::BaseItem(BaseItemError::ProtectedItem),
         ) => (StatusCode::FORBIDDEN, "Forbidden"),
+        LibraryControllerError::NotDownloadable => {
+            (StatusCode::BAD_REQUEST, "Item does not support downloading")
+        }
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Library persistence failed",

@@ -8,7 +8,7 @@ use axum::{
         rejection::{JsonRejection, QueryRejection},
     },
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
-    response::{IntoResponse, Redirect, Response},
+    response::Response,
 };
 use axum_extra::extract::Query as RepeatedQuery;
 use jellyfin_controller::{RelatedItemKind, UserError, UserLibraryError};
@@ -933,21 +933,33 @@ async fn file_response(
     item_id: Uuid,
     attachment: bool,
 ) -> Result<Response, ApiError> {
-    let authenticated =
-        authentication::authenticated_session_for_uri(&state, &headers, uri).await?;
-    let path = state
-        .library_controller
-        .download_path(&authenticated.user, authenticated.user.id, item_id)
-        .await?;
-    if path
-        .get(..7)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
-        || path
-            .get(..8)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
-    {
-        return Ok(Redirect::temporary(&path).into_response());
-    }
+    let identity = authentication::authenticated_identity(&state, &headers, Some(uri)).await?;
+    let path = match (&identity, attachment) {
+        (authentication::AuthenticatedIdentity::Device(authenticated), true) => {
+            state
+                .library_controller
+                .download_path(&authenticated.user, authenticated.user.id, item_id)
+                .await?
+        }
+        (authentication::AuthenticatedIdentity::Device(authenticated), false) => {
+            state
+                .library_controller
+                .file_path(&authenticated.user, authenticated.user.id, item_id)
+                .await?
+        }
+        (authentication::AuthenticatedIdentity::ApiKey(_), true) => {
+            state
+                .library_controller
+                .download_path_without_user(item_id)
+                .await?
+        }
+        (authentication::AuthenticatedIdentity::ApiKey(_), false) => {
+            state
+                .library_controller
+                .file_path_without_user(item_id)
+                .await?
+        }
+    };
     let mut file_request = Request::builder()
         .method("GET")
         .body(Body::empty())

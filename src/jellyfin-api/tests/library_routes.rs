@@ -7,9 +7,9 @@ use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
-    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
-    DeviceRepository, ItemValueRepository, LinkedChildRepository, NewBaseItem, NewBaseItemImage,
-    NewDevice, NewUserData, PlaylistRepository, UserDataRepository,
+    ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
+    DatabaseConfig, DeviceRepository, ItemValueRepository, LinkedChildRepository, NewBaseItem,
+    NewBaseItemImage, NewDevice, NewUserData, PlaylistRepository, UserDataRepository,
     entities::item_value,
     entities::{user, user_data},
 };
@@ -837,6 +837,8 @@ async fn assert_streamed_downloads(fixture: &Fixture) {
     for (route, attachment) in [
         (format!("/Items/{}/File", fixture.child_id), false),
         (format!("/Items/{}/Download", fixture.child_id), true),
+        (format!("/items/{}/file", fixture.child_id), false),
+        (format!("/items/{}/download", fixture.child_id), true),
     ] {
         let response = fixture
             .request("GET", &route, Some(&fixture.user_token))
@@ -878,8 +880,72 @@ async fn assert_streamed_downloads(fixture: &Fixture) {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-        media_bytes
+        format!("{}\n", fixture.media_path)
     );
+    let route = format!("/Items/{}/File", fixture.strm_id);
+    let response = fixture
+        .request("GET", &route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "{route}");
+    let route = format!(
+        "/Items/{}/Download?api_key={}",
+        fixture.child_id, fixture.api_key_token
+    );
+    let response = fixture.request("GET", &route, None).await;
+    assert_eq!(response.status(), StatusCode::OK, "{route}");
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Items/{}/Download", fixture.parent_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let users = UserService::new(fixture.database.clone());
+    let original_policy: UserPolicy = serde_json::from_value(
+        users
+            .get(fixture.user_id)
+            .await
+            .expect("download user")
+            .policy,
+    )
+    .expect("download user policy");
+    let mut blocked_policy = original_policy.clone();
+    blocked_policy.enable_content_downloading = false;
+    users
+        .update_policy(fixture.user_id, &blocked_policy)
+        .await
+        .expect("disable downloads");
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Items/{}/Download", fixture.child_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Items/{}/File", fixture.child_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    users
+        .update_policy(fixture.user_id, &original_policy)
+        .await
+        .expect("restore downloads");
     let range_start = 65_530;
     let range_end = 65_550;
     let response = fixture
@@ -1893,6 +1959,7 @@ struct Fixture {
     admin_token: String,
     user_id: Uuid,
     user_token: String,
+    api_key_token: String,
     parent_id: Uuid,
     child_id: Uuid,
     grandchild_id: Uuid,
@@ -1961,6 +2028,11 @@ impl Fixture {
         let devices = DeviceRepository::new(database.clone());
         let admin_token = session(&devices, admin.id, &format!("library-admin-{suffix}")).await;
         let user_token = session(&devices, user.id, &format!("library-user-{suffix}")).await;
+        let api_key_token = ApiKeyRepository::new(database.clone())
+            .create(&format!("library-key-{suffix}"))
+            .await
+            .expect("library API key")
+            .access_token;
 
         let media_path = format!("/tmp/jellyfin-rust-library-{suffix}.mkv");
         tokio::fs::write(&media_path, Self::media_bytes())
@@ -2105,6 +2177,7 @@ impl Fixture {
             admin_token,
             user_id: user.id,
             user_token,
+            api_key_token,
             parent_id: parent.id,
             child_id: child.id,
             grandchild_id: grandchild.id,

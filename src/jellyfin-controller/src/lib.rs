@@ -78,7 +78,9 @@ pub use item_types::{
     HydratedBaseItem, ItemTypeRegistrationError, ItemTypeRegistry, KnownItemType,
 };
 pub use item_update::{ItemUpdateError, ItemUpdateInput, ItemUpdateService};
-pub use library_controller::{LibraryControllerError, LibraryControllerService, media_source_path};
+pub use library_controller::{
+    LibraryControllerError, LibraryControllerService, item_can_download, media_source_path,
+};
 pub use library_scan::{LibraryScanError, LibraryScanService, LibraryScanSummary};
 pub use localization::LocalizationService;
 pub use lyrics::{

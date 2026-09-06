@@ -13,7 +13,7 @@ use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, MusicGenre, RelatedItemKind, Studio,
-    TrickplayManifest, Year,
+    TrickplayManifest, Year, item_can_download,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
@@ -22,7 +22,7 @@ use jellyfin_data::{
 };
 use jellyfin_model::{
     ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType,
-    MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind,
+    MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind, PlayAccess,
     SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy,
     Video3DFormat, VideoType,
 };
@@ -55,6 +55,8 @@ pub(crate) struct UploadLyricsQuery {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct BaseItemDtoFields {
+    can_download: bool,
+    play_access: bool,
     media_sources: bool,
     media_streams: bool,
     media_source_count: bool,
@@ -70,6 +72,8 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn all() -> Self {
         Self {
+            can_download: true,
+            play_access: true,
             media_sources: true,
             media_streams: true,
             media_source_count: true,
@@ -85,6 +89,8 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn media_sources() -> Self {
         Self {
+            can_download: false,
+            play_access: false,
             media_sources: true,
             media_streams: false,
             media_source_count: false,
@@ -101,7 +107,11 @@ impl BaseItemDtoFields {
     pub(crate) fn from_names(fields: &[String]) -> Self {
         let mut result = Self::default();
         for field in fields {
-            if field.eq_ignore_ascii_case("MediaSources") {
+            if field.eq_ignore_ascii_case("CanDownload") || field.trim() == "2" {
+                result.can_download = true;
+            } else if field.eq_ignore_ascii_case("PlayAccess") || field.trim() == "23" {
+                result.play_access = true;
+            } else if field.eq_ignore_ascii_case("MediaSources") {
                 result.media_sources = true;
             } else if field.eq_ignore_ascii_case("MediaStreams") {
                 result.media_streams = true;
@@ -127,6 +137,21 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_media_streams(self) -> bool {
         self.media_sources || self.media_streams
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_can_download(self) -> bool {
+        self.can_download
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_play_access(self) -> bool {
+        self.play_access
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_item_access_policy(self) -> bool {
+        self.can_download || self.play_access
     }
 
     #[must_use]
@@ -193,6 +218,10 @@ pub struct BaseItemDto {
     #[serde(rename = "Type")]
     pub item_type: String,
     pub etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_download: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub play_access: Option<PlayAccess>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1021,6 +1050,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         playlist_item_id: None,
         item_type: item.item_type,
         etag: item.row_version.to_string(),
+        can_download: None,
+        play_access: None,
         date_created: Some(item.date_created.to_rfc3339()),
         sort_name: item.sort_name,
         forced_sort_name: None,
@@ -1163,10 +1194,14 @@ pub(crate) fn item_to_dto_with_fields(
     server_id: &str,
     fields: BaseItemDtoFields,
 ) -> BaseItemDto {
+    let can_download = fields
+        .wants_can_download()
+        .then(|| item_can_download(&item));
     let settings = fields
         .wants_settings()
         .then(|| item_settings(item.data.as_ref()));
     let mut dto = item_to_dto(item, server_id);
+    dto.can_download = can_download;
     if let Some(settings) = settings {
         dto.locked_fields = Some(settings.locked_fields);
         dto.is_locked = Some(settings.is_locked);
@@ -1175,6 +1210,42 @@ pub(crate) fn item_to_dto_with_fields(
         dto.preferred_metadata_country_code = settings.preferred_metadata_country_code;
     }
     dto
+}
+
+pub(crate) async fn item_access_policy_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    fields: BaseItemDtoFields,
+) -> Result<Option<UserPolicy>, ApiError> {
+    if !fields.wants_item_access_policy() {
+        return Ok(None);
+    }
+    let user = state.users.get(user_id).await?;
+    serde_json::from_value(user.policy)
+        .map(Some)
+        .map_err(|_| ApiError::Internal)
+}
+
+pub(crate) fn attach_item_access_fields(
+    dto: &mut BaseItemDto,
+    fields: BaseItemDtoFields,
+    policy: Option<&UserPolicy>,
+) {
+    if fields.wants_can_download()
+        && let Some(policy) = policy
+    {
+        dto.can_download =
+            Some(dto.can_download.unwrap_or_default() && policy.enable_content_downloading);
+    }
+    if fields.wants_play_access()
+        && let Some(policy) = policy
+    {
+        dto.play_access = Some(if policy.enable_media_playback {
+            PlayAccess::Full
+        } else {
+            PlayAccess::None
+        });
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1296,7 +1367,9 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     };
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
+    let item_access_policy = item_access_policy_for_user(state, target_user_id, fields).await?;
     let mut dto = item_to_dto_with_fields(item, state.server_id(), fields);
+    attach_item_access_fields(&mut dto, fields, item_access_policy.as_ref());
     attach_episode_hierarchy_names(&mut dto, hierarchy_names);
     if is_audio_item(&dto) {
         let lyric_item_ids = state
@@ -3144,6 +3217,47 @@ mod tests {
         }
         assert!(!BaseItemDtoFields::media_sources().wants_settings());
         assert!(BaseItemDtoFields::all().wants_settings());
+    }
+
+    #[test]
+    fn access_field_binding_and_projection_match_user_context() {
+        for (name, can_download, play_access) in [
+            ("CanDownload", true, false),
+            ("candownload", true, false),
+            ("2", true, false),
+            ("PLAYACCESS", false, true),
+            ("23", false, true),
+        ] {
+            let fields = BaseItemDtoFields::from_names(&[name.to_owned()]);
+            assert_eq!(fields.wants_can_download(), can_download, "{name}");
+            assert_eq!(fields.wants_play_access(), play_access, "{name}");
+        }
+
+        let fields = BaseItemDtoFields::all();
+        let mut dto = BaseItemDto {
+            can_download: Some(true),
+            ..BaseItemDto::default()
+        };
+        let mut policy = UserPolicy {
+            enable_content_downloading: false,
+            enable_media_playback: false,
+            ..UserPolicy::default()
+        };
+        attach_item_access_fields(&mut dto, fields, Some(&policy));
+        assert_eq!(dto.can_download, Some(false));
+        assert_eq!(dto.play_access, Some(PlayAccess::None));
+
+        policy.enable_content_downloading = true;
+        policy.enable_media_playback = true;
+        dto.can_download = Some(true);
+        attach_item_access_fields(&mut dto, fields, Some(&policy));
+        assert_eq!(dto.can_download, Some(true));
+        assert_eq!(dto.play_access, Some(PlayAccess::Full));
+
+        dto.play_access = None;
+        attach_item_access_fields(&mut dto, fields, None);
+        assert_eq!(dto.can_download, Some(true));
+        assert_eq!(dto.play_access, None);
     }
 
     #[test]

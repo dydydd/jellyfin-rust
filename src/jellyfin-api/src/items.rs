@@ -5,7 +5,7 @@ use std::{
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
@@ -811,18 +811,20 @@ pub(crate) struct SuggestionsResult {
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    query_items(state, headers, query).await
+    get_for(state, headers, Some(&uri), query.user_id, query).await
 }
 
 pub(crate) async fn get_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    get_for(state, headers, Some(user_id), query).await
+    get_for(state, headers, Some(&uri), Some(user_id), query).await
 }
 
 pub(crate) async fn query_items(
@@ -830,7 +832,7 @@ pub(crate) async fn query_items(
     headers: HeaderMap,
     query: ItemsQuery,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    get_for(state, headers, query.user_id, query).await
+    get_for(state, headers, None, query.user_id, query).await
 }
 
 pub(crate) async fn resume(
@@ -887,23 +889,54 @@ pub(crate) async fn suggestions_legacy(
 async fn get_for(
     state: Arc<AppState>,
     headers: HeaderMap,
+    uri: Option<&axum::http::Uri>,
     requested_user_id: Option<Uuid>,
     query: ItemsQuery,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let identity = authentication::authenticated_identity(&state, &headers, uri).await?;
+    let authorized_target_user_id = identity.target_user_id(requested_user_id)?;
+    let (authenticated_user, target_user_id) = match identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            (Some(authenticated.user), Some(authorized_target_user_id))
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) if authorized_target_user_id.is_nil() => {
+            (None, None)
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            let target = state.users.get(authorized_target_user_id).await?;
+            (Some(target), Some(authorized_target_user_id))
+        }
+    };
     let mut query = query;
     let fields = std::mem::take(&mut query.fields);
     let dto_options = page_dto_options(&query);
+    let Some(target_user_id) = target_user_id else {
+        resolve_official_rating_filters(&state, &mut query).await?;
+        let page = state
+            .user_library
+            .query_items_without_user(query.try_into()?)
+            .await?;
+        return Ok(Json(
+            page_to_dto_with_fields_and_options(
+                state.as_ref(),
+                page,
+                user_library::BaseItemDtoFields::from_names(&fields),
+                None,
+                &dto_options,
+            )
+            .await?,
+        ));
+    };
+    let authenticated_user = authenticated_user.expect("user context accompanies a target id");
     let parent_scope = resolve_user_view_parent_scope(
         &state,
-        &authenticated.user,
+        &authenticated_user,
         target_user_id,
         query.parent_id,
     )
     .await?;
     query.parent_id = parent_scope.parent_id;
-    apply_items_controller_defaults(&state, &authenticated.user, target_user_id, &mut query)
+    apply_items_controller_defaults(&state, &authenticated_user, target_user_id, &mut query)
         .await?;
     resolve_official_rating_filters(&state, &mut query).await?;
 
@@ -918,7 +951,7 @@ async fn get_for(
         let search_results = state
             .search
             .search_results(
-                &authenticated.user,
+                &authenticated_user,
                 target_user_id,
                 &SearchProviderQuery {
                     search_term,
@@ -950,7 +983,7 @@ async fn get_for(
             database_query.parent_ids = parent_scope.parent_ids;
             let mut page = state
                 .user_library
-                .query_items(&authenticated.user, target_user_id, database_query)
+                .query_items(&authenticated_user, target_user_id, database_query)
                 .await?;
             let total_record_count = page.items.len();
             page.items.sort_by(|left, right| {
@@ -996,7 +1029,7 @@ async fn get_for(
     database_query.parent_ids = parent_scope.parent_ids;
     let page = state
         .user_library
-        .query_items(&authenticated.user, target_user_id, database_query)
+        .query_items(&authenticated_user, target_user_id, database_query)
         .await?;
     Ok(Json(
         page_to_dto_with_options(state.as_ref(), page, fields, target_user_id, &dto_options)
@@ -2252,6 +2285,13 @@ async fn page_to_dto_with_fields_and_options(
         }
         _ => None,
     };
+    let item_access_policy = match target_user_id {
+        Some(target_user_id) => {
+            user_library::item_access_policy_for_user(state, target_user_id, requested_fields)
+                .await?
+        }
+        None => None,
+    };
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -2259,6 +2299,11 @@ async fn page_to_dto_with_fields_and_options(
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let mut dto =
             user_library::item_to_dto_with_fields(item, state.server_id(), requested_fields);
+        user_library::attach_item_access_fields(
+            &mut dto,
+            requested_fields,
+            item_access_policy.as_ref(),
+        );
         user_library::attach_episode_hierarchy_names(
             &mut dto,
             episode_hierarchy_names.remove(&item_id).as_ref(),

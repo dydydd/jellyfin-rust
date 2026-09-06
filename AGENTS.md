@@ -380,6 +380,11 @@
 - Apply static media-source capability flags from the target user's policy, including when an
   administrator requests another user's item or `PlaybackInfo`: audio transcoding controls audio
   sources, while video transcoding and playback remuxing independently control video sources.
+- Project `CanDownload` and `PlayAccess` only when their `ItemFields` are requested (single-item
+  details request all fields by default). Compute intrinsic download capability from the official
+  item-type overrides, then apply the target user's download and playback policy once per page;
+  user-less API-key projections keep intrinsic `CanDownload` and omit `PlayAccess`. Downloading a
+  `.strm` item returns its local sidecar path, never the resolved remote target.
 - Proxy static HTTP media sources through the server like official Jellyfin instead of redirecting clients to private or signed upstream URLs. Forward byte ranges, preserve upstream status and content headers, stream without whole-file buffering, and keep signed URLs out of logs.
 - A client may register its `DeviceProfile` once through session capabilities and omit it from later `PlaybackInfo` calls. Follow the official query-over-body precedence and fall back to the authenticated session profile before choosing a stream.
 - Resolve an explicit `MediaSourceId` inside the authorized alternate-version group before lazy `.strm` probing, and hydrate that selected source rather than the displayed primary. Probe diagnostics must identify the item without logging a target path or signed URL.
