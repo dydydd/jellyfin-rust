@@ -8,7 +8,7 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
-use jellyfin_controller::{run_ffmpeg, video_command};
+use jellyfin_controller::video_command;
 use jellyfin_data::BaseItemPage;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -231,11 +231,12 @@ async fn stream_file(
         query.video_stream_index,
         query.start_time_ticks,
     );
-    let job = state.transcode_jobs.register(output.to_string_lossy());
-    run_ffmpeg(&command, &job)
-        .await
-        .map_err(|_| ApiError::UnsupportedMediaType)?;
-    crate::audio::serve_path(headers, &output.to_string_lossy(), request).await
+    crate::audio::serve_transcoded_path(
+        command,
+        &output.to_string_lossy(),
+        request.method() == axum::http::Method::HEAD,
+    )
+    .await
 }
 
 fn video_codec_for_container(container: &str) -> &str {

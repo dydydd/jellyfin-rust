@@ -10,8 +10,10 @@ aide.workspace = true
 axum.workspace = true
 axum-extra = { version = "0.10", features = ["query"] }
 base64 = "0.22"
+bytes = "1"
 chrono.workspace = true
 form_urlencoded = "1.2"
+futures-util = "0.3"
 indexmap.workspace = true
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }

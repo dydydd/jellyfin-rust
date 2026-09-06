@@ -314,6 +314,9 @@
   `static` requests must transcode with the requested video/audio codecs, stream indexes,
   bitrate, dimensions, and start position; explicit `static=true` remains byte-for-byte static
   playback with remote Range forwarding.
+- Progressive audio/video stream responses must start FFmpeg and read the growing output file
+  immediately, matching the official `ProgressiveFileStream` behavior; never await complete
+  FFmpeg termination before returning the response, or Android playback of long media can stall.
 - Project `SupportsExternalStream` on every persisted media stream using the official rule: true
   for external streams and for text, PGS, or VobSub subtitles. Keep the value consistent between
   top-level streams and every single- or alternate-version media source.

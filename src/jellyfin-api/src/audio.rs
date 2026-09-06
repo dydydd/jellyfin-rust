@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io, path::PathBuf, sync::Arc};
 
 use axum::{
     body::Body,
@@ -6,12 +6,15 @@ use axum::{
     http::{HeaderMap, Request},
     response::Response,
 };
+use bytes::Bytes;
+use futures_util::stream;
 use serde::Deserialize;
+use tokio::{io::AsyncReadExt, process::Command};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use jellyfin_controller::{audio_command, run_ffmpeg};
+use jellyfin_controller::{FfmpegCommand, audio_command};
 
 use crate::{ApiError, AppState, authentication};
 
@@ -198,11 +201,12 @@ pub(crate) async fn universal(
         query.audio_stream_index,
         query.start_time_ticks,
     );
-    let job = state.transcode_jobs.register(output.to_string_lossy());
-    run_ffmpeg(&command, &job)
-        .await
-        .map_err(|_| ApiError::UnsupportedMediaType)?;
-    serve_path(headers, &output.to_string_lossy(), request).await
+    serve_transcoded_path(
+        command,
+        &output.to_string_lossy(),
+        request.method() == axum::http::Method::HEAD,
+    )
+    .await
 }
 
 fn audio_container(codec: &str) -> &str {
@@ -303,11 +307,12 @@ async fn stream_file(
         query.audio_stream_index,
         query.start_time_ticks,
     );
-    let job = state.transcode_jobs.register(output.to_string_lossy());
-    run_ffmpeg(&command, &job)
-        .await
-        .map_err(|_| ApiError::UnsupportedMediaType)?;
-    serve_path(headers, &output.to_string_lossy(), request).await
+    serve_transcoded_path(
+        command,
+        &output.to_string_lossy(),
+        request.method() == axum::http::Method::HEAD,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -369,4 +374,100 @@ pub(crate) async fn serve_path(
         Err(error) => match error {},
     };
     Ok(response.map(Body::new))
+}
+
+/// Starts a progressive FFmpeg job and streams the output as it grows.
+///
+/// Jellyfin's progressive endpoints return the response before FFmpeg has
+/// completed. Android's ExoPlayer relies on that behavior for long files.
+pub(crate) async fn serve_transcoded_path(
+    command: FfmpegCommand,
+    output_path: &str,
+    is_head: bool,
+) -> Result<Response, ApiError> {
+    let content_type = jellyfin_model::MimeTypes::get_mime_type(output_path)
+        .unwrap_or_else(|_| "application/octet-stream".to_owned());
+    let response = Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(axum::http::header::ACCEPT_RANGES, "none");
+    if is_head {
+        return response.body(Body::empty()).map_err(|_| ApiError::Internal);
+    }
+
+    let child = Command::new(&command.program)
+        .args(&command.arguments)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ApiError::Internal)?;
+    let state = ProgressiveTranscodeState {
+        child,
+        output_path: PathBuf::from(output_path),
+        file: None,
+    };
+    let body = Body::from_stream(stream::unfold(state, next_transcode_chunk));
+    response.body(body).map_err(|_| ApiError::Internal)
+}
+
+struct ProgressiveTranscodeState {
+    child: tokio::process::Child,
+    output_path: PathBuf,
+    file: Option<tokio::fs::File>,
+}
+
+async fn next_transcode_chunk(
+    mut state: ProgressiveTranscodeState,
+) -> Option<(Result<Bytes, io::Error>, ProgressiveTranscodeState)> {
+    loop {
+        if state.file.is_none() {
+            match tokio::fs::File::open(&state.output_path).await {
+                Ok(file) => state.file = Some(file),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    if let Some(status) = state.child.try_wait().ok().flatten() {
+                        return Some((
+                            Err(if status.success() {
+                                io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "FFmpeg exited without producing output",
+                                )
+                            } else {
+                                io::Error::other(format!("FFmpeg exited with {status}"))
+                            }),
+                            state,
+                        ));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    continue;
+                }
+                Err(error) => return Some((Err(error), state)),
+            }
+        }
+
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let read = state
+            .file
+            .as_mut()
+            .expect("progressive output file is open")
+            .read(&mut buffer)
+            .await;
+        match read {
+            Ok(length) if length > 0 => {
+                buffer.truncate(length);
+                return Some((Ok(Bytes::from(buffer)), state));
+            }
+            Ok(_) => match state.child.try_wait() {
+                Ok(Some(status)) if status.success() => return None,
+                Ok(Some(status)) => {
+                    return Some((
+                        Err(io::Error::other(format!("FFmpeg exited with {status}"))),
+                        state,
+                    ));
+                }
+                Ok(None) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                Err(error) => return Some((Err(error), state)),
+            },
+            Err(error) => return Some((Err(error), state)),
+        }
+    }
 }
