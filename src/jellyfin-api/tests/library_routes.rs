@@ -1531,6 +1531,17 @@ async fn assert_item_counts(fixture: &Fixture) {
         })
     );
 
+    // Official GetUserById returns null here, so an administrator's missing
+    // target falls back to the same user-less global count rather than 404.
+    let missing_user_counts = fixture
+        .json(
+            "GET",
+            &format!("/Items/Counts?UserId={}", Uuid::new_v4()),
+            &fixture.admin_token,
+        )
+        .await;
+    assert_eq!(missing_user_counts, all_counts);
+
     let counts = fixture
         .json("GET", "/Items/Counts?isfavorite=true", &fixture.user_token)
         .await;

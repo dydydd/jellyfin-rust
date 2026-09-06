@@ -11,7 +11,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use axum_extra::extract::Query as RepeatedQuery;
-use jellyfin_controller::RelatedItemKind;
+use jellyfin_controller::{RelatedItemKind, UserError, UserLibraryError};
 use jellyfin_data::{BaseItemCounts, BaseItemPage, BaseItemQuery};
 use jellyfin_model::{
     CollectionType, ImageOption, ImageType, ItemCounts, LibraryOptionInfoDto,
@@ -504,21 +504,26 @@ pub(crate) async fn item_counts(
 ) -> Result<Json<ItemCounts>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, None).await?;
     let target_user_id = identity.target_user_id(query.user_id)?;
+    let global_query = || BaseItemQuery {
+        recursive: true,
+        is_virtual_item: Some(false),
+        is_favorite: query.is_favorite,
+        ..BaseItemQuery::default()
+    };
     let counts = if target_user_id.is_nil() {
-        state
-            .base_items
-            .item_counts(&BaseItemQuery {
-                recursive: true,
-                is_virtual_item: Some(false),
-                is_favorite: query.is_favorite,
-                ..BaseItemQuery::default()
-            })
-            .await?
+        state.base_items.item_counts(&global_query()).await?
     } else {
-        state
+        match state
             .user_library
             .item_counts(target_user_id, query.is_favorite)
-            .await?
+            .await
+        {
+            Ok(counts) => counts,
+            Err(UserLibraryError::UserNotFound | UserLibraryError::User(UserError::NotFound)) => {
+                state.base_items.item_counts(&global_query()).await?
+            }
+            Err(error) => return Err(error.into()),
+        }
     };
     Ok(Json(counts_to_dto(counts)))
 }

@@ -230,7 +230,9 @@
 - Build item-count aggregates from the same filtered candidate set as item pages: exclude alternate
   versions and owned non-extra rows by default, and apply the target user's folder, tag, parental,
   virtual-item, and favorite filters before grouping by item type. Evaluate favorite state on the
-  visible primary only; user data on an alternate version must not change `/Items/Counts`.
+  visible primary only; user data on an alternate version must not change `/Items/Counts`. When an
+  administrator requests a nonexistent target user, preserve the official nullable-user fallback
+  and return global counts rather than a missing-user response.
 - Project requested folder ChildCount values in one batch. Count episodes by SeasonId, prefer linked
   children, deduplicate merged folder children by PresentationUniqueKey, and honor the user's
   DisplayMissingEpisodes preference without issuing per-folder queries.
