@@ -274,6 +274,7 @@ pub struct BaseItemQuery {
     pub is_news: Option<bool>,
     pub is_kids: Option<bool>,
     pub is_sports: Option<bool>,
+    pub is_airing: Option<bool>,
     pub is_virtual_item: Option<bool>,
     pub group_versions_by_presentation_key: bool,
     /// Includes alternate-version rows that ordinary item pages fold into their primary.
@@ -1635,6 +1636,9 @@ impl BaseItemRepository {
         }
         if let Some(is_kids) = query.is_kids {
             select = select.filter(tag_class_condition(is_kids, "kids"));
+        }
+        if let Some(is_airing) = query.is_airing {
+            select = select.filter(Expr::cust(airing_expression("", is_airing)));
         }
         if let Some(is_virtual_item) = query.is_virtual_item {
             select = select.filter(base_item::Column::IsVirtualItem.eq(is_virtual_item));
@@ -4798,6 +4802,7 @@ fn append_raw_item_filters(
     append_tag_class_filter(sql, query.is_sports, "sports");
     append_tag_class_filter(sql, query.is_news, "news");
     append_tag_class_filter(sql, query.is_kids, "kids");
+    append_airing_filter(sql, query.is_airing);
     if let Some(is_virtual_item) = query.is_virtual_item {
         push_bind(sql, values, is_virtual_item, " AND item.is_virtual_item = ");
     }
@@ -5837,6 +5842,25 @@ fn append_tag_class_filter(sql: &mut String, expected: Option<bool>, clean_tag: 
     } else {
         sql.push_str(" AND NOT ");
         sql.push_str(&expression);
+    }
+}
+
+fn append_airing_filter(sql: &mut String, expected: Option<bool>) {
+    let Some(expected) = expected else {
+        return;
+    };
+    sql.push_str(" AND (");
+    sql.push_str(&airing_expression("item.", expected));
+    sql.push(')');
+}
+
+fn airing_expression(prefix: &str, expected: bool) -> String {
+    let start_date = format!("NULLIF({prefix}data ->> 'StartDate', '')::timestamptz");
+    let end_date = format!("NULLIF({prefix}data ->> 'EndDate', '')::timestamptz");
+    if expected {
+        format!("{start_date} <= CURRENT_TIMESTAMP AND {end_date} >= CURRENT_TIMESTAMP")
+    } else {
+        format!("{start_date} > CURRENT_TIMESTAMP OR {end_date} < CURRENT_TIMESTAMP")
     }
 }
 

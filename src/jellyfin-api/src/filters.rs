@@ -28,6 +28,18 @@ pub(crate) struct FiltersQuery {
     include_item_types: Vec<String>,
     #[serde(rename = "recursive", alias = "Recursive")]
     recursive: Option<bool>,
+    #[serde(rename = "isAiring", alias = "IsAiring", alias = "isairing")]
+    is_airing: Option<bool>,
+    #[serde(rename = "isMovie", alias = "IsMovie", alias = "ismovie")]
+    is_movie: Option<bool>,
+    #[serde(rename = "isSports", alias = "IsSports", alias = "issports")]
+    is_sports: Option<bool>,
+    #[serde(rename = "isKids", alias = "IsKids", alias = "iskids")]
+    is_kids: Option<bool>,
+    #[serde(rename = "isNews", alias = "IsNews", alias = "isnews")]
+    is_news: Option<bool>,
+    #[serde(rename = "isSeries", alias = "IsSeries", alias = "isseries")]
+    is_series: Option<bool>,
     #[serde(
         default,
         rename = "mediaTypes",
@@ -91,6 +103,12 @@ pub(crate) async fn filters2(
         parent_id,
         recursive,
         include_item_types: query.include_item_types,
+        is_airing: query.is_airing,
+        is_movie: query.is_movie,
+        is_sports: query.is_sports,
+        is_kids: query.is_kids,
+        is_news: query.is_news,
+        is_series: query.is_series,
         user_id: Some(target_user_id),
         access_policy: access_policy.clone(),
         ..ItemValueQuery::default()
@@ -126,6 +144,12 @@ pub(crate) async fn filters2(
                 parent_id,
                 recursive,
                 include_item_types,
+                is_airing: query.is_airing,
+                is_movie: query.is_movie,
+                is_sports: query.is_sports,
+                is_kids: query.is_kids,
+                is_news: query.is_news,
+                is_series: query.is_series,
                 ..access_policy
             };
             let languages = state

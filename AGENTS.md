@@ -131,6 +131,9 @@
 - Build every `Items/Filters` and `Items/Filters2` bucket from one shared target-user policy
   snapshot. Apply enabled and blocked folders, allowed and blocked tags, parental ratings, and
   blocked unrated kinds consistently to item values, years, ratings, and stream languages.
+- Bind all six nullable `Items/Filters2` classifiers (`IsAiring`, `IsMovie`, `IsSports`, `IsKids`,
+  `IsNews`, and `IsSeries`) case-insensitively and apply each one to both genre discovery and
+  audio/subtitle language discovery. Reject malformed boolean values instead of ignoring them.
 - Project `MediaSourceCount` for item pages with one batched alternate-version query. Preserve the
   official nullable-single-source behavior, and include episode groups so the web client can show
   merged episode versions without loading every `MediaSource`.

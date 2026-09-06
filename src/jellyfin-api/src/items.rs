@@ -1629,6 +1629,7 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             is_news: query.is_news,
             is_kids: query.is_kids,
             is_sports: query.is_sports,
+            is_airing: None,
             is_virtual_item: None,
             group_versions_by_presentation_key: false,
             include_alternate_versions: false,

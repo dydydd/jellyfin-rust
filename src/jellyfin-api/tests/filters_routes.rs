@@ -264,6 +264,98 @@ async fn filters2_returns_official_query_filter_shape() {
 }
 
 #[tokio::test]
+async fn filters2_applies_nullable_classifiers_with_official_query_casing() {
+    let fixture = Fixture::new().await;
+
+    #[derive(Clone, Copy)]
+    enum Expected {
+        Match,
+        Other,
+        Both,
+        Empty,
+    }
+
+    for (parameter, expected) in [
+        ("isAiring=true", Expected::Match),
+        ("isairing=false", Expected::Other),
+        ("IsMovie=true", Expected::Both),
+        ("ismovie=false", Expected::Empty),
+        ("isSports=true", Expected::Match),
+        ("IsSports=false", Expected::Other),
+        ("iskids=true", Expected::Match),
+        ("isKids=false", Expected::Other),
+        ("IsNews=true", Expected::Match),
+        ("isnews=false", Expected::Other),
+        ("isSeries=true", Expected::Match),
+        ("IsSeries=false", Expected::Other),
+    ] {
+        let filters = body_json(
+            fixture
+                .request(
+                    &format!(
+                        "/Items/Filters2?parentId={}&includeItemTypes=Movie&{parameter}",
+                        fixture.classifier_library_id
+                    ),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let (genres, languages): (Vec<(&str, Uuid)>, &[&str]) = match expected {
+            Expected::Match => (
+                vec![(
+                    &fixture.classifier_match_genre,
+                    fixture.classifier_match_genre_id,
+                )],
+                &["fin"],
+            ),
+            Expected::Other => (
+                vec![(
+                    &fixture.classifier_other_genre,
+                    fixture.classifier_other_genre_id,
+                )],
+                &["hun"],
+            ),
+            Expected::Both => (
+                vec![
+                    (
+                        &fixture.classifier_match_genre,
+                        fixture.classifier_match_genre_id,
+                    ),
+                    (
+                        &fixture.classifier_other_genre,
+                        fixture.classifier_other_genre_id,
+                    ),
+                ],
+                &["fin", "hun"],
+            ),
+            Expected::Empty => (Vec::new(), &[]),
+        };
+        assert_pairs(&filters["Genres"], &genres);
+        assert_language_values(&filters["AudioLanguages"], languages);
+        assert_language_values(&filters["SubtitleLanguages"], &[]);
+    }
+
+    for parameter in [
+        "isAiring", "isMovie", "isSports", "isKids", "isNews", "isSeries",
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    &format!("/Items/Filters2?{parameter}=not-a-bool"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{parameter} must reject invalid booleans"
+        );
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn filters_legacy_returns_distinct_library_filters() {
     let fixture = Fixture::new().await;
     fixture.apply_restricted_library_policy().await;
@@ -422,6 +514,16 @@ fn assert_name_value_pairs(value: &Value, expected: &[(&str, &str)]) {
     assert_eq!(actual, expected);
 }
 
+fn assert_language_values(value: &Value, expected: &[&str]) {
+    let actual = value
+        .as_array()
+        .expect("name-value pairs")
+        .iter()
+        .map(|item| item["Value"].as_str().expect("language value"))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
 fn assert_string_array(value: &Value, expected: &[&str]) {
     let actual = value
         .as_array()
@@ -470,6 +572,7 @@ struct Fixture {
     parent_id: Uuid,
     blocked_library_id: Uuid,
     visible_library_id: Uuid,
+    classifier_library_id: Uuid,
     user_token: String,
     admin_token: String,
     drama_genre: String,
@@ -487,6 +590,10 @@ struct Fixture {
     music_tag: String,
     visible_tag: String,
     blocked_tag: String,
+    classifier_match_genre: String,
+    classifier_match_genre_id: Uuid,
+    classifier_other_genre: String,
+    classifier_other_genre_id: Uuid,
 }
 
 impl Fixture {
@@ -697,6 +804,35 @@ impl Fixture {
             "",
         )
         .await;
+        let classifier_library = create_item(
+            &items,
+            "CollectionFolder",
+            "Classifier Filter Library",
+            Some(root.id),
+            true,
+        )
+        .await;
+        let classifier_match = create_classifier_movie(
+            &items,
+            "Classifier Match Movie",
+            classifier_library.id,
+            serde_json::json!({
+                "StartDate": "2000-01-01T00:00:00Z",
+                "EndDate": "2999-01-01T00:00:00Z",
+                "IsSeries": true
+            }),
+        )
+        .await;
+        let classifier_other = create_classifier_movie(
+            &items,
+            "Classifier Other Movie",
+            classifier_library.id,
+            serde_json::json!({
+                "StartDate": "1990-01-01T00:00:00Z",
+                "EndDate": "1991-01-01T00:00:00Z"
+            }),
+        )
+        .await;
 
         insert_media_stream(&database, movie.id, 0, 0, Some("eng")).await;
         insert_media_stream(&database, movie.id, 1, 0, None).await;
@@ -718,6 +854,8 @@ impl Fixture {
         insert_media_stream(&database, blocked_tag_movie.id, 0, 0, Some("ces")).await;
         insert_media_stream(&database, parental_movie.id, 0, 0, Some("pol")).await;
         insert_media_stream(&database, unrated_movie.id, 0, 0, Some("ron")).await;
+        insert_media_stream(&database, classifier_match.id, 0, 0, Some("fin")).await;
+        insert_media_stream(&database, classifier_other.id, 0, 0, Some("hun")).await;
 
         let values = ItemValueRepository::new(database.clone());
         let drama_genre = format!("Drama {suffix}");
@@ -790,6 +928,30 @@ impl Fixture {
             &format!("Blocked Folder Tag {suffix}"),
         )
         .await;
+        let classifier_match_genre = format!("Classifier Match {suffix}");
+        let classifier_match_value = values
+            .link(
+                classifier_match.id,
+                item_value::ItemValueType::Genre,
+                &classifier_match_genre,
+            )
+            .await
+            .expect("classifier match genre");
+        for tag in ["sports", "kids", "news"] {
+            values
+                .link(classifier_match.id, item_value::ItemValueType::Tags, tag)
+                .await
+                .expect("classifier tag");
+        }
+        let classifier_other_genre = format!("Classifier Other {suffix}");
+        let classifier_other_value = values
+            .link(
+                classifier_other.id,
+                item_value::ItemValueType::Genre,
+                &classifier_other_genre,
+            )
+            .await
+            .expect("classifier other genre");
         link_restricted_values(
             &values,
             disabled_movie.id,
@@ -835,6 +997,7 @@ impl Fixture {
             parent_id: parent.id,
             blocked_library_id: blocked_library.id,
             visible_library_id: visible_library.id,
+            classifier_library_id: classifier_library.id,
             user_token,
             admin_token,
             drama_genre,
@@ -852,6 +1015,10 @@ impl Fixture {
             music_tag,
             visible_tag,
             blocked_tag,
+            classifier_match_genre,
+            classifier_match_genre_id: classifier_match_value.item_value_id,
+            classifier_other_genre,
+            classifier_other_genre_id: classifier_other_value.item_value_id,
         }
     }
 
@@ -940,6 +1107,25 @@ async fn create_media_item(
     item.production_year = Some(production_year);
     item.official_rating = Some(official_rating.to_owned());
     repository.create(item).await.expect("base item creation")
+}
+
+async fn create_classifier_movie(
+    repository: &BaseItemRepository,
+    name: &str,
+    parent_id: Uuid,
+    data: Value,
+) -> base_item::Model {
+    let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    item.name = Some(name.to_owned());
+    item.sort_name = item.name.clone();
+    item.parent_id = Some(parent_id);
+    item.media_type = Some("Video".to_owned());
+    item.official_rating = Some("PG".to_owned());
+    item.data = Some(data);
+    repository
+        .create(item)
+        .await
+        .expect("classifier movie creation")
 }
 
 async fn create_item(

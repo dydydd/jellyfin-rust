@@ -44,6 +44,7 @@ pub struct ItemValueQuery {
     pub is_news: Option<bool>,
     pub is_kids: Option<bool>,
     pub is_sports: Option<bool>,
+    pub is_airing: Option<bool>,
     pub is_favorite: Option<bool>,
     pub is_liked: Option<bool>,
     pub is_favorite_or_liked: Option<bool>,
@@ -871,6 +872,7 @@ fn append_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, query: &Ite
     append_tag_class_filter(sql, query.is_sports, "sports");
     append_tag_class_filter(sql, query.is_news, "news");
     append_tag_class_filter(sql, query.is_kids, "kids");
+    append_airing_filter(sql, query.is_airing);
     if let Some(is_favorite) = query.is_favorite
         && query.by_name_item_type.is_none()
     {
@@ -912,6 +914,27 @@ fn append_tag_class_filter(sql: &mut String, expected: Option<bool>, clean_tag: 
         sql.push_str(" AND NOT ");
         sql.push_str(&expression);
     }
+}
+
+fn append_airing_filter(sql: &mut String, expected: Option<bool>) {
+    let Some(expected) = expected else {
+        return;
+    };
+    let start_date = "NULLIF(item.data ->> 'StartDate', '')::timestamptz";
+    let end_date = "NULLIF(item.data ->> 'EndDate', '')::timestamptz";
+    sql.push_str(" AND (");
+    if expected {
+        let _ = write!(
+            sql,
+            "{start_date} <= CURRENT_TIMESTAMP AND {end_date} >= CURRENT_TIMESTAMP"
+        );
+    } else {
+        let _ = write!(
+            sql,
+            "{start_date} > CURRENT_TIMESTAMP OR {end_date} < CURRENT_TIMESTAMP"
+        );
+    }
+    sql.push(')');
 }
 
 fn tag_class_expression(clean_tag: &'static str) -> String {
