@@ -321,6 +321,21 @@ async fn assert_episodes_route(fixture: &Fixture) {
     );
     assert_eq!(items[1]["ParentIndexNumber"], 1);
 
+    for sort_by in ["NotAnItemSort", "Random,NotAnItemSort", "999"] {
+        let response = fixture
+            .get(
+                &format!("/Shows/{}/Episodes?SortBy={sort_by}", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{sort_by}");
+        assert_eq!(
+            item_ids(&body_json(response).await),
+            item_ids(&episodes),
+            "nullable enum values that do not bind to Random preserve default ordering: {sort_by}"
+        );
+    }
+
     let first_season = body_json(
         fixture
             .get(

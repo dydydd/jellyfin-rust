@@ -260,6 +260,9 @@
 - Bind `Shows/{SeriesId}/Episodes` pagination as signed 32-bit values. Preserve a negative
   `StartIndex` in the response while treating it as no skip, let a negative `Limit` return an empty
   page, and reject values outside the official `Int32` range.
+- Bind the nullable Episodes `SortBy` through the official enum-converter semantics: accept
+  case-insensitive names, signed `Int32` values, and comma-delimited values combined bitwise. Only
+  a final value equal to `ItemSortBy.Random` randomizes; malformed input behaves as unset.
 - `Items/Latest` defaults `GroupItems` to true. For TV, select the top Series groups from the
   complete policy-filtered Episode set before applying the result limit, then analyze each Series'
   inclusive 24-hour window in PostgreSQL. Return Series for cross-season additions; for one Season

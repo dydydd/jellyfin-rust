@@ -386,7 +386,8 @@ pub(crate) async fn episodes(
     let requested_random_order = query
         .sort_by
         .as_deref()
-        .is_some_and(|sort| sort.eq_ignore_ascii_case("Random"));
+        .and_then(parse_item_sort_by)
+        .is_some_and(|sort| sort == ITEM_SORT_BY_RANDOM);
 
     let _ = (
         query.enable_images,
@@ -526,6 +527,59 @@ fn episode_query_order(random: bool) -> BaseItemOrder {
     } else {
         BaseItemOrder::SortName
     }
+}
+
+const ITEM_SORT_BY_RANDOM: i32 = 12;
+
+const ITEM_SORT_BY_NAMES: [&str; 30] = [
+    "Default",
+    "AiredEpisodeOrder",
+    "Album",
+    "AlbumArtist",
+    "Artist",
+    "DateCreated",
+    "OfficialRating",
+    "DatePlayed",
+    "PremiereDate",
+    "StartDate",
+    "SortName",
+    "Name",
+    "Random",
+    "Runtime",
+    "CommunityRating",
+    "ProductionYear",
+    "PlayCount",
+    "CriticRating",
+    "IsFolder",
+    "IsUnplayed",
+    "IsPlayed",
+    "SeriesSortName",
+    "VideoBitRate",
+    "AirTime",
+    "Studio",
+    "IsFavoriteOrLiked",
+    "DateLastContentAdded",
+    "SeriesDatePlayed",
+    "ParentIndexNumber",
+    "IndexNumber",
+];
+
+fn parse_item_sort_by(value: &str) -> Option<i32> {
+    // Official Jellyfin's nullable-enum binder delegates to EnumConverter,
+    // which combines comma-delimited values bitwise even though ItemSortBy
+    // is not a flags enum. A malformed part leaves the nullable value unset.
+    value.split(',').try_fold(0, |combined, part| {
+        parse_item_sort_by_part(part).map(|value| combined | value)
+    })
+}
+
+fn parse_item_sort_by_part(value: &str) -> Option<i32> {
+    let value = value.trim();
+    ITEM_SORT_BY_NAMES
+        .iter()
+        .position(|candidate| candidate.eq_ignore_ascii_case(value))
+        .and_then(|index| i32::try_from(index).ok())
+        .or_else(|| value.parse().ok())
 }
 
 fn compare_aired_episode_order(left: &base_item::Model, right: &base_item::Model) -> Ordering {
@@ -819,4 +873,31 @@ const fn default_enable_total_record_count() -> bool {
 
 const fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ITEM_SORT_BY_RANDOM, parse_item_sort_by};
+
+    #[test]
+    fn episode_sort_by_matches_nullable_enum_converter() {
+        for (value, expected) in [
+            ("Random", Some(12)),
+            ("rAnDoM", Some(12)),
+            ("12", Some(12)),
+            ("  Random  ", Some(12)),
+            ("Random,Default", Some(12)),
+            ("Artist,PremiereDate", Some(12)),
+            ("Random,Album", Some(14)),
+            ("NotAnItemSort", None),
+            ("Random,NotAnItemSort", None),
+            ("", None),
+            ("2147483648", None),
+            ("999", Some(999)),
+        ] {
+            assert_eq!(parse_item_sort_by(value), expected, "{value}");
+        }
+
+        assert_eq!(ITEM_SORT_BY_RANDOM, 12);
+    }
 }
