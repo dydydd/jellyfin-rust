@@ -266,7 +266,7 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
             .collect())
     }
 
-    /// Loads stable primary-image cache tags and persisted BlurHash values for
+    /// Loads stable primary-image cache tags and persisted `BlurHash` values for
     /// several concrete item IDs with one item query and one image query.
     ///
     /// # Errors
