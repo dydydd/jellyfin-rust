@@ -38,6 +38,13 @@ async fn official_fake_music_genre_is_not_found() {
     )
     .await;
     assert_eq!(punctuation.status(), StatusCode::NOT_FOUND);
+    let lowercase = request(
+        &fixture.app,
+        "/musicgenres/Fake-MusicGenre",
+        Some(&fixture.administrator_token),
+    )
+    .await;
+    assert_eq!(lowercase.status(), StatusCode::NOT_FOUND);
     fixture.cleanup().await;
 }
 
@@ -78,6 +85,18 @@ async fn music_genre_returns_pascal_case_base_item_dto() {
     let slug_dto = body_json(slug_response).await;
     assert_eq!(slug_dto["Id"], fixture.slug_genre_id.simple().to_string());
     assert_eq!(slug_dto["Name"], fixture.slug_genre_name);
+
+    let lowercase_response = request(
+        &fixture.app,
+        &genre_route_with_prefix("/musicgenres", &fixture.genre_name),
+        Some(&fixture.user_token),
+    )
+    .await;
+    assert_eq!(lowercase_response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(lowercase_response).await["Name"],
+        fixture.genre_name
+    );
 
     fixture.cleanup().await;
 }
@@ -120,8 +139,13 @@ async fn unicode_and_case_normalization_reuse_one_genre() {
 async fn authentication_and_target_user_permissions_are_enforced() {
     let fixture = MusicGenreFixture::new().await;
     let route = genre_route(&fixture.genre_name);
+    let lowercase_route = genre_route_with_prefix("/musicgenres", &fixture.genre_name);
     let response = request(&fixture.app, &route, None).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = request(&fixture.app, &lowercase_route, None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = request(&fixture.app, &lowercase_route, Some(&fixture.user_token)).await;
+    assert_eq!(response.status(), StatusCode::OK);
 
     let for_administrator = format!("{route}?userId={}", fixture.administrator_id);
     let response = request(&fixture.app, &for_administrator, Some(&fixture.user_token)).await;
@@ -149,6 +173,19 @@ async fn music_genre_list_matches_official_music_genre_contract() {
 
     let unauthenticated = request(&fixture.app, "/MusicGenres", None).await;
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    let lowercase_unauthenticated = request(&fixture.app, "/musicgenres", None).await;
+    assert_eq!(lowercase_unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let lowercase_listed = body_json(
+        request(
+            &fixture.app,
+            "/musicgenres?limit=1",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&lowercase_listed, &[&fixture.nested_genre_name], 3, 0);
 
     let listed = body_json(
         request(
@@ -375,7 +412,23 @@ async fn music_genre_image_routes_resolve_public_ordinals() {
         "/MusicGenres/{}/Images/Backdrop",
         encoded(&fixture.genre_name)
     );
+    let lowercase_base = format!(
+        "/musicgenres/{}/images/Backdrop",
+        encoded(&fixture.genre_name)
+    );
     for route in [format!("{base}?imageIndex=1"), format!("{base}/1")] {
+        let response = request(&fixture.app, &route, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), std::fs::read(&second_path).unwrap());
+    }
+    for route in [
+        format!("{lowercase_base}?imageIndex=1"),
+        format!("{lowercase_base}/1"),
+    ] {
         let response = request(&fixture.app, &route, None).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
@@ -414,6 +467,39 @@ async fn music_genre_image_routes_resolve_public_ordinals() {
     );
     assert_eq!(
         request(&fixture.app, &base, Some("invalid-token"))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let lowercase_head = request_method(
+        &fixture.app,
+        Method::HEAD,
+        &format!("{lowercase_base}/0"),
+        None,
+    )
+    .await;
+    assert_eq!(lowercase_head.status(), StatusCode::OK);
+    assert!(
+        to_bytes(lowercase_head.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        request(
+            &fixture.app,
+            &format!(
+                "/musicgenres/{}/images/Backdrop/0",
+                encoded("missing music genre")
+            ),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&fixture.app, &lowercase_base, Some("invalid-token"))
             .await
             .status(),
         StatusCode::UNAUTHORIZED
@@ -658,10 +744,11 @@ fn encoded(value: &str) -> String {
 }
 
 fn genre_route(name: &str) -> String {
-    format!(
-        "/MusicGenres/{}",
-        utf8_percent_encode(name, NON_ALPHANUMERIC)
-    )
+    genre_route_with_prefix("/MusicGenres", name)
+}
+
+fn genre_route_with_prefix(prefix: &str, name: &str) -> String {
+    format!("{prefix}/{}", utf8_percent_encode(name, NON_ALPHANUMERIC))
 }
 
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::response::Response {
