@@ -69,7 +69,9 @@ pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
 pub use genres::{Genre, GenreDetail, GenreError, GenreKind, GenrePage, GenreService};
 pub use google_books::{GoogleBooksMetadataProvider, GoogleBooksProviderError};
-pub use item_by_name::{ItemByNameError, ItemByNameKind, ItemByNameService};
+pub use item_by_name::{
+    CanonicalItemByNameLookup, ItemByNameError, ItemByNameKind, ItemByNameService,
+};
 pub use item_images::{ItemImageError, ItemImageResource, ItemImageService, image_cache_tag};
 pub use item_lookup::{ItemLookupError, ItemLookupService, RemoteSearchInfo, RemoteSearchRequest};
 pub use item_types::{
@@ -106,8 +108,8 @@ pub use music_genre::{
 };
 pub use packages::{PackageError, PackageService};
 pub use persons::{
-    Person, PersonError, PersonPage, PersonReconciliationError, PersonReconciliationService,
-    PersonReconciliationSummary, PersonService,
+    Person, PersonCanonicalCoverageSummary, PersonError, PersonPage, PersonReconciliationError,
+    PersonReconciliationService, PersonReconciliationSummary, PersonService,
 };
 pub use playlists::{PlaylistError, PlaylistService};
 pub use playstate::{

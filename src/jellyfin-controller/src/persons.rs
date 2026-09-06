@@ -67,6 +67,23 @@ pub struct PersonReconciliationSummary {
     pub cancelled: bool,
 }
 
+/// Read-only coverage of referenced people by exact canonical Person items.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PersonCanonicalCoverageSummary {
+    pub people_considered: u64,
+    pub batches_checked: u64,
+    pub present_items: u64,
+    pub missing_items: u64,
+    pub cancelled: bool,
+}
+
+impl PersonCanonicalCoverageSummary {
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        !self.cancelled && self.missing_items == 0
+    }
+}
+
 /// Creates canonical Person item rows for referenced credit names without
 /// rewriting the internal people catalog or deleting legacy rows.
 #[derive(Clone)]
@@ -116,7 +133,7 @@ impl PersonReconciliationService {
         mut on_batch: impl FnMut(PersonReconciliationSummary),
     ) -> Result<PersonReconciliationSummary, PersonReconciliationError> {
         let mut summary = PersonReconciliationSummary::default();
-        let mut after_clean_name = None::<String>;
+        let mut after = None::<(String, Uuid)>;
         loop {
             if cancellation.load(Ordering::Acquire) {
                 summary.cancelled = true;
@@ -125,14 +142,16 @@ impl PersonReconciliationService {
             let people = self
                 .people
                 .referenced_page_after(
-                    after_clean_name.as_deref(),
+                    after
+                        .as_ref()
+                        .map(|(clean_name, id)| (clean_name.as_str(), *id)),
                     PERSON_RECONCILIATION_BATCH_SIZE,
                 )
                 .await?;
             let Some(last_person) = people.last() else {
                 break;
             };
-            let next_after = last_person.clean_name.clone();
+            let next_after = (last_person.clean_name.clone(), last_person.id);
             let page_len = people.len();
             let names = people
                 .iter()
@@ -160,7 +179,83 @@ impl PersonReconciliationService {
             summary.updated_items = summary.updated_items.saturating_add(batch.updated_items);
             summary.copied_images = summary.copied_images.saturating_add(batch.copied_images);
             on_batch(summary);
-            after_clean_name = Some(next_after);
+            after = Some(next_after);
+            if page_len < PERSON_RECONCILIATION_BATCH_SIZE {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        Ok(summary)
+    }
+
+    /// Checks every referenced person against its exact deterministic item id.
+    ///
+    /// The verifier is bounded and read-only: each page performs one
+    /// configuration read and one batch item query, without creating metadata
+    /// directories or falling back to normalized-name matches. Cancellation is
+    /// checked before every page.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration or persistence errors.
+    pub async fn verify_canonical_coverage(
+        &self,
+        cancellation: &AtomicBool,
+    ) -> Result<PersonCanonicalCoverageSummary, PersonReconciliationError> {
+        self.verify_canonical_coverage_with_observer(cancellation, |_| {})
+            .await
+    }
+
+    async fn verify_canonical_coverage_with_observer(
+        &self,
+        cancellation: &AtomicBool,
+        mut on_batch: impl FnMut(PersonCanonicalCoverageSummary),
+    ) -> Result<PersonCanonicalCoverageSummary, PersonReconciliationError> {
+        let mut summary = PersonCanonicalCoverageSummary::default();
+        let mut after = None::<(String, Uuid)>;
+        loop {
+            if cancellation.load(Ordering::Acquire) {
+                summary.cancelled = true;
+                break;
+            }
+            let people = self
+                .people
+                .referenced_page_after(
+                    after
+                        .as_ref()
+                        .map(|(clean_name, id)| (clean_name.as_str(), *id)),
+                    PERSON_RECONCILIATION_BATCH_SIZE,
+                )
+                .await?;
+            let Some(last_person) = people.last() else {
+                break;
+            };
+            let next_after = (last_person.clean_name.clone(), last_person.id);
+            let page_len = people.len();
+            let names = people
+                .into_iter()
+                .map(|person| person.name)
+                .collect::<Vec<_>>();
+            let lookups = self
+                .item_by_name
+                .existing_canonical_many_direct(ItemByNameKind::Person, &names)
+                .await?;
+            let present = lookups
+                .iter()
+                .filter(|lookup| lookup.item.is_some())
+                .count();
+            summary.people_considered = summary
+                .people_considered
+                .saturating_add(u64::try_from(page_len).unwrap_or(u64::MAX));
+            summary.batches_checked = summary.batches_checked.saturating_add(1);
+            summary.present_items = summary
+                .present_items
+                .saturating_add(u64::try_from(present).unwrap_or(u64::MAX));
+            summary.missing_items = summary.missing_items.saturating_add(
+                u64::try_from(page_len.saturating_sub(present)).unwrap_or(u64::MAX),
+            );
+            on_batch(summary);
+            after = Some(next_after);
             if page_len < PERSON_RECONCILIATION_BATCH_SIZE {
                 break;
             }
@@ -276,19 +371,40 @@ impl PersonService {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, sync::atomic::AtomicBool};
+    use std::{collections::HashSet, future::Future, sync::atomic::AtomicBool};
 
     use chrono::Utc;
     use jellyfin_data::{
         BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
         NewBaseItem, NewBaseItemImage, NewPerson, PersonRepository, entities::base_item,
     };
-    use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    use sea_orm::{
+        ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, Statement,
+    };
     use serde_json::json;
 
     use super::*;
 
     const DATABASE_PREFIX: &str = "jellyfin_person_reconciliation_";
+
+    #[test]
+    fn canonical_coverage_is_complete_only_after_an_uncancelled_full_check() {
+        assert!(PersonCanonicalCoverageSummary::default().is_complete());
+        assert!(
+            !PersonCanonicalCoverageSummary {
+                missing_items: 1,
+                ..PersonCanonicalCoverageSummary::default()
+            }
+            .is_complete()
+        );
+        assert!(
+            !PersonCanonicalCoverageSummary {
+                cancelled: true,
+                ..PersonCanonicalCoverageSummary::default()
+            }
+            .is_complete()
+        );
+    }
 
     #[tokio::test]
     async fn reconciliation_merges_legacy_data_and_images_without_overwriting_or_deleting() {
@@ -298,6 +414,16 @@ mod tests {
     #[tokio::test]
     async fn cancellation_stops_before_the_next_fixed_keyset_batch() {
         run_database_test(exercise_cancellation).await;
+    }
+
+    #[tokio::test]
+    async fn exact_coverage_ignores_legacy_name_matches_without_writing_directories() {
+        run_database_test(exercise_exact_coverage).await;
+    }
+
+    #[tokio::test]
+    async fn referenced_people_keyset_keeps_equal_clean_names_at_a_page_boundary() {
+        run_database_test(exercise_equal_clean_name_keyset).await;
     }
 
     async fn run_database_test<F, Fut>(exercise: F)
@@ -545,8 +671,158 @@ mod tests {
         assert_eq!(resumed.created_items, 1);
         assert_eq!(person_item_count(&database).await, 129);
 
+        cancellation.store(false, Ordering::Release);
+        let partial_coverage = service
+            .verify_canonical_coverage_with_observer(&cancellation, |_| {
+                cancellation.store(true, Ordering::Release);
+            })
+            .await
+            .expect("cancelled coverage verification must preserve its completed batch");
+        assert!(partial_coverage.cancelled);
+        assert_eq!(
+            partial_coverage.people_considered,
+            PERSON_RECONCILIATION_BATCH_SIZE as u64
+        );
+        assert_eq!(partial_coverage.batches_checked, 1);
+        assert_eq!(partial_coverage.present_items, 128);
+        assert_eq!(partial_coverage.missing_items, 0);
+
+        cancellation.store(false, Ordering::Release);
+        let full_coverage = service
+            .verify_canonical_coverage(&cancellation)
+            .await
+            .expect("resumed coverage verification must succeed");
+        assert!(full_coverage.is_complete());
+        assert_eq!(full_coverage.people_considered, 129);
+        assert_eq!(full_coverage.batches_checked, 2);
+        assert_eq!(full_coverage.present_items, 129);
+
         std::fs::remove_dir_all(storage_root)
             .expect("temporary person metadata directory must be removable");
+    }
+
+    async fn exercise_exact_coverage(database_name: String) {
+        let database = test_database(&database_name).await;
+        let storage_root = std::env::temp_dir().join(format!(
+            "jellyfin-person-exact-coverage-{}",
+            Uuid::new_v4().simple()
+        ));
+        let metadata_root = storage_root.join("metadata");
+        let items = BaseItemRepository::new(std::sync::Arc::clone(&database));
+        let people = PersonRepository::new(std::sync::Arc::clone(&database));
+        let media_id = create_item(&items, "Movie", "Exact coverage owner").await;
+        let name = "--Élodie/Actor.";
+        people
+            .link(media_id, NewPerson::new(name), "Actor", None, Some(0), 0)
+            .await
+            .expect("person credit must persist");
+        let legacy_id = create_legacy_person(&items, name, json!({}), None).await;
+        let service = PersonReconciliationService::new(std::sync::Arc::clone(&database));
+        service.set_item_by_name_directories(&storage_root, &metadata_root);
+
+        let names = vec![name.to_owned(), name.to_owned()];
+        let missing = service
+            .item_by_name
+            .existing_canonical_many_direct(ItemByNameKind::Person, &names)
+            .await
+            .expect("exact missing lookup must succeed");
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing[0].expected_id, missing[1].expected_id);
+        assert_ne!(missing[0].expected_id, legacy_id);
+        assert!(missing.iter().all(|lookup| lookup.item.is_none()));
+        assert!(!storage_root.exists());
+
+        let cancellation = AtomicBool::new(false);
+        let before = service
+            .verify_canonical_coverage(&cancellation)
+            .await
+            .expect("missing coverage verification must succeed");
+        assert_eq!(before.people_considered, 1);
+        assert_eq!(before.present_items, 0);
+        assert_eq!(before.missing_items, 1);
+        assert!(!before.is_complete());
+        assert!(!storage_root.exists());
+
+        let canonical = service
+            .item_by_name
+            .resolve_direct(ItemByNameKind::Person, name)
+            .await
+            .expect("canonical fixture must be creatable");
+        assert_eq!(canonical.id, missing[0].expected_id);
+        std::fs::remove_dir_all(&storage_root)
+            .expect("canonical fixture directory must be removable");
+
+        let exact = service
+            .item_by_name
+            .existing_canonical_many_direct(ItemByNameKind::Person, &names)
+            .await
+            .expect("exact canonical lookup must succeed");
+        assert!(
+            exact
+                .iter()
+                .all(|lookup| lookup.item.as_ref().map(|item| item.id) == Some(canonical.id))
+        );
+        assert!(!storage_root.exists());
+        let after = service
+            .verify_canonical_coverage(&cancellation)
+            .await
+            .expect("complete coverage verification must succeed");
+        assert!(after.is_complete());
+        assert_eq!(after.present_items, 1);
+        assert!(!storage_root.exists());
+    }
+
+    async fn exercise_equal_clean_name_keyset(database_name: String) {
+        let database = test_database(&database_name).await;
+        let items = BaseItemRepository::new(std::sync::Arc::clone(&database));
+        let people = PersonRepository::new(std::sync::Arc::clone(&database));
+        let media_id = create_item(&items, "Movie", "Equal clean-name owner").await;
+        let seed = Uuid::new_v4().simple().to_string();
+        database
+            .execute_unprepared("DROP INDEX jellyfin.people_clean_name_key")
+            .await
+            .expect("temporary legacy duplicate fixture must allow equal clean names");
+        database
+            .execute(Statement::from_sql_and_values(
+                sea_orm::DbBackend::Postgres,
+                r"
+                WITH inserted AS (
+                    INSERT INTO jellyfin.people (id, name, clean_name)
+                    SELECT md5($2::text || value::text)::uuid,
+                           'Boundary Person ' || value::text,
+                           'equal boundary clean name'
+                    FROM generate_series(1, 129) AS value
+                    RETURNING id
+                )
+                INSERT INTO jellyfin.people_base_item_map (
+                    item_id, person_id, person_type, role, sort_order, list_order
+                )
+                SELECT $1, id, 'Actor', '', NULL,
+                       (row_number() OVER (ORDER BY id) - 1)::integer
+                FROM inserted
+                ",
+                [media_id.into(), seed.into()],
+            ))
+            .await
+            .expect("equal clean-name people fixture must persist");
+
+        let first = people
+            .referenced_page_after(None, PERSON_RECONCILIATION_BATCH_SIZE)
+            .await
+            .expect("first keyset page must load");
+        assert_eq!(first.len(), PERSON_RECONCILIATION_BATCH_SIZE);
+        let first_ids = first.iter().map(|person| person.id).collect::<HashSet<_>>();
+        let cursor = first.last().expect("first page cursor");
+        let second = people
+            .referenced_page_after(
+                Some((cursor.clean_name.as_str(), cursor.id)),
+                PERSON_RECONCILIATION_BATCH_SIZE,
+            )
+            .await
+            .expect("second keyset page must load");
+        assert_eq!(second.len(), 1);
+        assert!(!first_ids.contains(&second[0].id));
+        assert_eq!(second[0].clean_name, cursor.clean_name);
     }
 
     async fn create_item(items: &BaseItemRepository, item_type: &str, name: &str) -> Uuid {

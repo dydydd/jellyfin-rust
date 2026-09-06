@@ -52,6 +52,28 @@ impl ItemByNameRepository {
             .await?)
     }
 
+    /// Loads deterministic items by identifier only when their persisted type
+    /// matches the canonical or legacy CLR name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn get_many(
+        &self,
+        ids: &[Uuid],
+        item_type: &str,
+    ) -> Result<Vec<base_item::Model>, ItemByNameStoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let item_types = supported_item_types(item_type)?;
+        Ok(base_item::Entity::find()
+            .filter(base_item::Column::Id.is_in(ids.iter().copied()))
+            .filter(base_item::Column::ItemType.is_in(item_types))
+            .all(self.database.as_ref())
+            .await?)
+    }
+
     /// Resolves one persisted entity using Jellyfin's normalized `Name`
     /// predicate. The caller controls the official slug-substitution order.
     ///

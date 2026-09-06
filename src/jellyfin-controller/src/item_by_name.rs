@@ -81,6 +81,13 @@ pub enum ItemByNameError {
     FileSystem(#[from] std::io::Error),
 }
 
+/// Exact deterministic item-by-name lookup aligned with one input name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalItemByNameLookup {
+    pub expected_id: Uuid,
+    pub item: Option<base_item::Model>,
+}
+
 /// Resolves and creates persisted named entities with Jellyfin's official
 /// item-by-name path and identifier rules.
 #[derive(Clone)]
@@ -211,6 +218,59 @@ impl ItemByNameService {
             }
         }
         Ok(result)
+    }
+
+    /// Loads exact deterministic entities for a bounded set of direct names.
+    ///
+    /// Unlike [`Self::existing_many`], this method never matches by normalized
+    /// name. It computes the official id from the current server configuration
+    /// and storage roots, then loads all matching rows with one batch query.
+    /// The result remains aligned with `names`, including duplicates and
+    /// missing rows. It performs no filesystem writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration or persistence error when the lookup fails.
+    pub async fn existing_canonical_many_direct(
+        &self,
+        kind: ItemByNameKind,
+        names: &[String],
+    ) -> Result<Vec<CanonicalItemByNameLookup>, ItemByNameError> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let configuration = self.configuration.load().await?;
+        let (program_data, internal_metadata) = self.directories();
+        let expected_ids = names
+            .iter()
+            .map(|name| {
+                let path = item_by_name_path(kind, name, &internal_metadata);
+                official_item_by_name_id(
+                    &path,
+                    &program_data,
+                    kind.clr_type(),
+                    configuration.enable_normalized_item_by_name_ids,
+                    configuration.enable_case_sensitive_item_ids,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut unique_ids = expected_ids.clone();
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+        let existing = self
+            .items
+            .get_many(&unique_ids, kind.item_type())
+            .await?
+            .into_iter()
+            .map(|item| (item.id, hydrate_item_type(item, kind)))
+            .collect::<HashMap<_, _>>();
+        Ok(expected_ids
+            .into_iter()
+            .map(|expected_id| CanonicalItemByNameLookup {
+                expected_id,
+                item: existing.get(&expected_id).cloned(),
+            })
+            .collect())
     }
 
     /// Ensures a bounded set of direct-name entities with one existence read

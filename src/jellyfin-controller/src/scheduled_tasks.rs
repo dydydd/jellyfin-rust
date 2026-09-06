@@ -144,6 +144,14 @@ impl ScheduledTaskRunContext {
         let _ = self.tasks.stop(&self.task_id).await;
     }
 
+    async fn cancel(&self) {
+        let _ = self
+            .tasks
+            .record_completion(&self.task_id, TaskCompletionStatus::Cancelled)
+            .await;
+        let _ = self.tasks.stop(&self.task_id).await;
+    }
+
     fn paths(&self) -> Arc<ScheduledTaskPaths> {
         Arc::clone(
             &self
@@ -1229,21 +1237,57 @@ fn refresh_people_handler(
                 paths.internal_metadata_directory.as_path(),
             );
             let cancellation = AtomicBool::new(false);
-            match service.reconcile(&cancellation).await {
-                Ok(summary) => tracing::info!(
-                    people = summary.people_considered,
-                    batches = summary.batches_committed,
-                    created = summary.created_items,
-                    updated = summary.updated_items,
-                    copied_images = summary.copied_images,
-                    "reconciled canonical person items"
-                ),
+            let reconciliation = match service.reconcile(&cancellation).await {
+                Ok(summary) => {
+                    tracing::info!(
+                        people = summary.people_considered,
+                        batches = summary.batches_committed,
+                        created = summary.created_items,
+                        updated = summary.updated_items,
+                        copied_images = summary.copied_images,
+                        "reconciled canonical person items"
+                    );
+                    summary
+                }
                 Err(error) => {
                     tracing::error!(%error, "people validation task failed");
                     context.fail().await;
                     return;
                 }
+            };
+            if reconciliation.cancelled {
+                context.cancel().await;
+                return;
             }
+            let coverage = match service.verify_canonical_coverage(&cancellation).await {
+                Ok(summary) => summary,
+                Err(error) => {
+                    tracing::error!(%error, "canonical person coverage verification failed");
+                    context.fail().await;
+                    return;
+                }
+            };
+            if coverage.cancelled {
+                context.cancel().await;
+                return;
+            }
+            if !coverage.is_complete() {
+                tracing::error!(
+                    people = coverage.people_considered,
+                    batches = coverage.batches_checked,
+                    present = coverage.present_items,
+                    missing = coverage.missing_items,
+                    "canonical person coverage is incomplete"
+                );
+                context.fail().await;
+                return;
+            }
+            tracing::info!(
+                people = coverage.people_considered,
+                batches = coverage.batches_checked,
+                present = coverage.present_items,
+                "verified exact canonical person coverage"
+            );
             context.report_progress(100.0).await;
             context.complete().await;
         })

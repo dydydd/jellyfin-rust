@@ -514,7 +514,7 @@ impl PersonRepository {
     /// Returns a database error when the page cannot be loaded.
     pub async fn referenced_page_after(
         &self,
-        after_clean_name: Option<&str>,
+        after: Option<(&str, Uuid)>,
         limit: usize,
     ) -> Result<Vec<person::Model>, PersonError> {
         if limit == 0 {
@@ -527,17 +527,18 @@ impl PersonRepository {
             SELECT person.id, person.name, person.clean_name, person.provider_ids,
                    person.date_created, person.date_modified, person.row_version
             FROM jellyfin.people AS person
-            WHERE ($1::text IS NULL OR person.clean_name > $1)
+            WHERE ($1::text IS NULL OR (person.clean_name, person.id) > ($1, $2))
               AND EXISTS (
                   SELECT 1
                   FROM jellyfin.people_base_item_map AS credit
                   WHERE credit.person_id = person.id
               )
             ORDER BY person.clean_name, person.id
-            LIMIT $2
+            LIMIT $3
             ",
                 [
-                    after_clean_name.map(str::to_owned).into(),
+                    after.map(|(clean_name, _)| clean_name.to_owned()).into(),
+                    after.map_or(Uuid::nil(), |(_, id)| id).into(),
                     i64::try_from(limit).unwrap_or(i64::MAX).into(),
                 ],
             ))
