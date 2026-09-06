@@ -169,6 +169,13 @@ pub(crate) async fn get(
         Err(UserError::NotFound) if authenticated.user.is_administrator => false,
         Err(error) => return Err(error.into()),
     };
+    let mut count_query = year_item_count_query(year);
+    if target_user_exists {
+        state
+            .user_library
+            .apply_user_policy(&mut count_query, target_user_id)
+            .await?;
+    }
     let year = state
         .years
         .get(&authenticated.user, target_user_id, year)
@@ -176,7 +183,7 @@ pub(crate) async fn get(
     let YearItem::Persisted(item) = year else {
         return Err(ApiError::Internal);
     };
-    let dto = if target_user_exists {
+    let mut dto = if target_user_exists {
         user_library::project_item_to_dto(
             &state,
             item,
@@ -189,7 +196,52 @@ pub(crate) async fn get(
     } else {
         project_year_without_user(&state, item).await?
     };
+    apply_year_counts(&mut dto, state.base_items.item_counts(&count_query).await?);
     Ok(Json(dto))
+}
+
+fn year_item_count_query(year: i32) -> BaseItemQuery {
+    BaseItemQuery {
+        years: vec![year],
+        include_item_types: [
+            "Audio",
+            "Episode",
+            "Movie",
+            "MusicAlbum",
+            "MusicArtist",
+            "MusicVideo",
+            "Series",
+            "Trailer",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        ..BaseItemQuery::default()
+    }
+}
+
+fn apply_year_counts(dto: &mut user_library::BaseItemDto, counts: jellyfin_data::BaseItemCounts) {
+    let count = |value| u64::try_from(value).unwrap_or_default();
+    dto.album_count = Some(count(counts.album_count));
+    dto.artist_count = Some(count(counts.artist_count));
+    dto.episode_count = Some(count(counts.episode_count));
+    dto.movie_count = Some(count(counts.movie_count));
+    dto.music_video_count = Some(count(counts.music_video_count));
+    dto.program_count = Some(count(counts.program_count));
+    dto.series_count = Some(count(counts.series_count));
+    dto.song_count = Some(count(counts.song_count));
+    dto.trailer_count = Some(count(counts.trailer_count));
+    dto.child_count = Some(
+        count(counts.album_count)
+            .saturating_add(count(counts.artist_count))
+            .saturating_add(count(counts.episode_count))
+            .saturating_add(count(counts.movie_count))
+            .saturating_add(count(counts.music_video_count))
+            .saturating_add(count(counts.program_count))
+            .saturating_add(count(counts.series_count))
+            .saturating_add(count(counts.song_count))
+            .saturating_add(count(counts.trailer_count)),
+    );
 }
 
 async fn project_year_without_user(

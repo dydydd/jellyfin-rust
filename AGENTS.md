@@ -381,6 +381,9 @@
 - Project exact Person DTO `ItemCounts` from the target user's policy-visible credited primary
   items. Keep alternate-only credits discoverable on `/Persons`, but do not let alternate versions
   inflate Person detail counts, and recognize canonical and legacy CLR item types in every bucket.
+- Project exact Year DTO `ItemCounts` from the target user's policy-visible primary items for that
+  production year. Emit every supported numeric bucket and `ChildCount`, recognize canonical and
+  legacy CLR item types, and do not let alternate versions inflate the totals.
 - Filter MediaSegments by registered provider ids and the owning virtual library's
   `DisabledMediaSegmentProviders`, matching provider names case-insensitively. Derive provider ids
   from the invariant-lowercase name with UTF-16LE MD5 and `.NET Guid(byte[])` ordering; when no

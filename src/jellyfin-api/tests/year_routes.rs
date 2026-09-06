@@ -324,6 +324,21 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     assert_eq!(virtual_year["Type"], "Year");
     assert_eq!(virtual_year["IsFolder"], true);
     assert_eq!(virtual_year["PresentationUniqueKey"], "Year-2024");
+    assert_eq!(virtual_year["MovieCount"], 1);
+    assert_eq!(virtual_year["ChildCount"], 1);
+    for field in [
+        "AlbumCount",
+        "ArtistCount",
+        "EpisodeCount",
+        "MusicVideoCount",
+        "ProgramCount",
+        "SeriesCount",
+        "SongCount",
+        "TrailerCount",
+    ] {
+        assert_eq!(virtual_year[field], 0, "{field}");
+        assert!(virtual_year[field].is_number(), "{field}");
+    }
     assert_eq!(
         virtual_year["Id"].as_str().expect("virtual year id").len(),
         32
@@ -357,6 +372,20 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     assert_eq!(unused_year["Type"], "Year");
     assert_eq!(unused_year["IsFolder"], true);
     assert_eq!(unused_year["PresentationUniqueKey"], "Year-1901");
+    for field in [
+        "AlbumCount",
+        "ArtistCount",
+        "EpisodeCount",
+        "MovieCount",
+        "MusicVideoCount",
+        "ProgramCount",
+        "SeriesCount",
+        "SongCount",
+        "TrailerCount",
+        "ChildCount",
+    ] {
+        assert_eq!(unused_year[field], 0, "{field}");
+    }
     assert_eq!(
         fixture
             .request(
@@ -475,6 +504,14 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
         .link(blocked_video.id, item_value::ItemValueType::Tags, "Blocked")
         .await
         .expect("blocked policy tag");
+    create_policy_movie(&items, visible_folder_id, "Visible", 1967, "G").await;
+    create_policy_movie(&items, hidden_folder_id, "Hidden", 1967, "G").await;
+    let blocked_movie = create_policy_movie(&items, visible_folder_id, "Blocked", 1967, "G").await;
+    create_policy_movie(&items, visible_folder_id, "Rated", 1967, "R").await;
+    ItemValueRepository::new(fixture.database.clone())
+        .link(blocked_movie.id, item_value::ItemValueType::Tags, "Blocked")
+        .await
+        .expect("blocked policy movie tag");
 
     let mut policy = UserPolicy {
         authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
@@ -522,6 +559,119 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     .await;
     assert_years(&hidden_parent_years, &[], 0, 0);
 
+    for user_id_name in ["userId", "UserId", "userid"] {
+        let visible_detail = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Years/1967?{user_id_name}={}", fixture.user_id),
+                    Credential::Device(&fixture.admin_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(visible_detail["MovieCount"], 1, "{user_id_name}");
+        assert_eq!(visible_detail["ChildCount"], 1, "{user_id_name}");
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn exact_year_counts_primary_versions_and_legacy_types_once() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+
+    let mut primary_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    primary_movie.name = Some("Second 2024 movie".to_owned());
+    primary_movie.production_year = Some(2024);
+    let primary_movie = items
+        .create(primary_movie)
+        .await
+        .expect("primary movie creation");
+    let mut alternate_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate_movie.name = Some("Alternate 2024 movie".to_owned());
+    alternate_movie.production_year = Some(2024);
+    alternate_movie.primary_version_id = Some(primary_movie.id);
+    items
+        .create(alternate_movie)
+        .await
+        .expect("alternate movie creation");
+
+    let mut legacy_episode = NewBaseItem::new(
+        Uuid::new_v4(),
+        "MediaBrowser.Controller.Entities.TV.Episode",
+    );
+    legacy_episode.name = Some("Legacy 2024 episode".to_owned());
+    legacy_episode.production_year = Some(2024);
+    let legacy_episode = items
+        .create(legacy_episode)
+        .await
+        .expect("legacy episode creation");
+    let mut alternate_episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    alternate_episode.name = Some("Alternate 2024 episode".to_owned());
+    alternate_episode.production_year = Some(2024);
+    alternate_episode.primary_version_id = Some(legacy_episode.id);
+    items
+        .create(alternate_episode)
+        .await
+        .expect("alternate episode creation");
+
+    let mut legacy_album = NewBaseItem::new(
+        Uuid::new_v4(),
+        "MediaBrowser.Controller.Entities.Audio.MusicAlbum",
+    );
+    legacy_album.name = Some("Legacy 2024 album".to_owned());
+    legacy_album.production_year = Some(2024);
+    items
+        .create(legacy_album)
+        .await
+        .expect("legacy album creation");
+
+    let detail = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years/2024",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(detail["MovieCount"], 2);
+    assert_eq!(detail["EpisodeCount"], 1);
+    assert_eq!(detail["AlbumCount"], 1);
+    assert_eq!(detail["ChildCount"], 4);
+
+    let mut other_year_primary = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    other_year_primary.name = Some("Primary other-year movie".to_owned());
+    other_year_primary.production_year = Some(1887);
+    let other_year_primary = items
+        .create(other_year_primary)
+        .await
+        .expect("other-year primary creation");
+    let mut alternate_only_year = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate_only_year.name = Some("Alternate-only year movie".to_owned());
+    alternate_only_year.production_year = Some(1888);
+    alternate_only_year.primary_version_id = Some(other_year_primary.id);
+    items
+        .create(alternate_only_year)
+        .await
+        .expect("alternate-only year creation");
+
+    let alternate_only = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/Years/1888",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(alternate_only["MovieCount"], 0);
+    assert_eq!(alternate_only["ChildCount"], 0);
+
     fixture.cleanup().await;
 }
 
@@ -539,6 +689,22 @@ async fn create_policy_video(
     video.official_rating = Some(rating.to_owned());
     video.parent_id = Some(parent_id);
     items.create(video).await.expect("policy video creation")
+}
+
+async fn create_policy_movie(
+    items: &BaseItemRepository,
+    parent_id: Uuid,
+    name: &str,
+    year: i32,
+    rating: &str,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some(format!("{name} policy movie"));
+    movie.media_type = Some("Video".to_owned());
+    movie.production_year = Some(year);
+    movie.official_rating = Some(rating.to_owned());
+    movie.parent_id = Some(parent_id);
+    items.create(movie).await.expect("policy movie creation")
 }
 
 fn assert_years(body: &Value, expected_names: &[&str], expected_total: usize, expected_start: i32) {
