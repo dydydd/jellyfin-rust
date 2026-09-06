@@ -137,9 +137,9 @@ pub(crate) struct NextUpQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: Option<i32>,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(
         default,
         rename = "fields",
@@ -204,6 +204,14 @@ pub(crate) struct NextUpQuery {
         alias = "enablerewatching"
     )]
     enable_rewatching: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct NextUpResult {
+    items: Vec<user_library::BaseItemDto>,
+    total_record_count: usize,
+    start_index: i32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -303,7 +311,7 @@ pub(crate) async fn next_up(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<NextUpQuery>,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+) -> Result<Json<NextUpResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
@@ -347,18 +355,20 @@ pub(crate) async fn next_up(
             query.enable_resumable,
             display_specials_within_seasons,
             next_up_date_cutoff,
-            query.start_index,
-            query.limit,
+            query
+                .start_index
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or_default(),
+            query.limit.and_then(|value| u64::try_from(value).ok()),
             query.enable_total_record_count,
         )
         .await?;
     let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
-    let start_index = usize::try_from(page.start_index).unwrap_or(usize::MAX);
     let items = project_items_to_dtos(state.as_ref(), page.items, fields, target_user_id).await?;
-    Ok(Json(user_library::BaseItemQueryResult {
+    Ok(Json(NextUpResult {
         items,
         total_record_count,
-        start_index,
+        start_index: query.start_index.unwrap_or_default(),
     }))
 }
 

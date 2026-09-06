@@ -738,6 +738,48 @@ async fn assert_next_up_route(fixture: &Fixture) {
         vec![fixture.second_episode_id.simple().to_string()]
     );
 
+    let negative_start = body_json(
+        fixture
+            .get(
+                "/Shows/NextUp?startindex=-1&Limit=1",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(negative_start["StartIndex"], -1);
+    assert_eq!(negative_start["TotalRecordCount"], 2);
+    assert_eq!(
+        item_ids(&negative_start),
+        vec![fixture.second_episode_id.simple().to_string()]
+    );
+
+    let negative_limit = body_json(
+        fixture
+            .get("/Shows/NextUp?limit=-1", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(negative_limit["StartIndex"], 0);
+    assert_eq!(negative_limit["TotalRecordCount"], 2);
+    assert_eq!(item_ids(&negative_limit), item_ids(&all_series));
+
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture
+                .get(&format!("/Shows/NextUp?{query}"), Some(&fixture.user_token),)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{query}"
+        );
+    }
+
     let parent_scoped = body_json(
         fixture
             .get(
