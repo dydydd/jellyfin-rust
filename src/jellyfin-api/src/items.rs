@@ -2023,11 +2023,18 @@ async fn page_to_dto_with_fields_and_options(
         }
     }
     let stream_item_ids = if requested_fields.wants_media_sources() {
-        media_source_groups
+        let mut stream_item_ids = media_source_groups
             .values()
             .flatten()
             .map(|item| item.id)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        // Audio and AudioBook items have one static media source rather than a video version
+        // group. Keep them in the same bounded stream and attachment batch so page DTOs match
+        // `IHasMediaSources` without adding a query per audio item.
+        stream_item_ids.extend(audio_item_ids.iter().copied());
+        stream_item_ids.sort_unstable();
+        stream_item_ids.dedup();
+        stream_item_ids
     } else {
         item_ids.clone()
     };

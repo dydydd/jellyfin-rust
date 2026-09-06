@@ -54,6 +54,9 @@
 - Project intros, local trailers, special features, and video additional parts with the official
   default all-fields DTO options through one batched projector. Apply the target user's policy to
   both the requested owner and every resolved child before returning the original response shape.
+- When page DTOs request media sources, batch Audio and AudioBook stream and attachment loading
+  alongside expanded video versions. `MediaSources` alone nests the streams, `MediaStreams` alone
+  projects them at the top level, and requesting both exposes the item's streams in both locations.
 - For lyric uploads, resolve the authorized Audio item before validating the body or filename so
   missing, hidden, and non-Audio targets retain the official 404 precedence over malformed uploads.
   Parse and persist through the same service operation without loading the item twice.

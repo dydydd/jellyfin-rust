@@ -278,6 +278,26 @@ async fn related_item_routes_batch_default_fields_and_enforce_target_user_visibi
             .find(|dto| dto["Id"] == audio_feature.id.simple().to_string())
             .expect("audio feature DTO");
         assert_eq!(dto["HasLyrics"], true, "{route}");
+        assert_eq!(dto["MediaStreams"].as_array().unwrap().len(), 2, "{route}");
+        assert_eq!(dto["MediaStreams"][0]["Type"], "Audio", "{route}");
+        assert_eq!(dto["MediaStreams"][1]["Type"], "Lyric", "{route}");
+        assert_eq!(dto["MediaSources"].as_array().unwrap().len(), 1, "{route}");
+        assert_eq!(
+            dto["MediaSources"][0]["MediaStreams"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2,
+            "{route}"
+        );
+        assert_eq!(
+            dto["MediaSources"][0]["MediaStreams"][0]["Type"], "Audio",
+            "{route}"
+        );
+        assert_eq!(
+            dto["MediaSources"][0]["MediaStreams"][1]["Type"], "Lyric",
+            "{route}"
+        );
     }
 
     let values = ItemValueRepository::new(fixture.database.clone());

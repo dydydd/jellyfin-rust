@@ -176,6 +176,106 @@ async fn has_lyrics_uses_persisted_lyric_streams_for_item_and_page_dtos() {
 }
 
 #[tokio::test]
+async fn audio_page_dtos_project_requested_stream_and_source_fields() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    audio.name = Some(format!("Audio stream fields {}", fixture.suffix));
+    audio.sort_name = audio.name.clone();
+    audio.parent_id = Some(root.id);
+    audio.media_type = Some("Audio".to_owned());
+    audio.path = Some(format!("/media/audio-streams-{}.flac", fixture.suffix));
+    let audio = items.create(audio).await.expect("audio item");
+
+    // Legacy rows can identify an AudioBook only by item type. Official AudioBook inherits Audio
+    // and therefore still exposes one placeholder media source when it has no persisted path.
+    let mut audio_book = NewBaseItem::new(Uuid::new_v4(), "AudioBook");
+    audio_book.name = Some(format!("AudioBook stream fields {}", fixture.suffix));
+    audio_book.sort_name = audio_book.name.clone();
+    audio_book.parent_id = Some(root.id);
+    let audio_book = items.create(audio_book).await.expect("audio book item");
+
+    let streams = MediaStreamService::new(fixture.database.clone());
+    for item_id in [audio.id, audio_book.id] {
+        streams
+            .save_media_streams(
+                item_id,
+                vec![
+                    MediaStream {
+                        index: 0,
+                        stream_type: MediaStreamType::Audio,
+                        codec: Some("flac".to_owned()),
+                        language: Some("deu".to_owned()),
+                        bit_rate: Some(256_000),
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 1,
+                        stream_type: MediaStreamType::Subtitle,
+                        codec: Some("srt".to_owned()),
+                        language: Some("eng".to_owned()),
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        index: 2,
+                        stream_type: MediaStreamType::Lyric,
+                        codec: Some("lrc".to_owned()),
+                        language: Some("jpn".to_owned()),
+                        ..MediaStream::default()
+                    },
+                ],
+            )
+            .await
+            .expect("audio streams");
+    }
+
+    for (fields, expect_top_level, expect_sources) in [
+        ("MediaSources", false, true),
+        ("MediaStreams", true, false),
+        ("MediaSources,MediaStreams", true, true),
+    ] {
+        let route = format!("/Items?ids={},{}&Fields={fields}", audio.id, audio_book.id);
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        for item in [&audio, &audio_book] {
+            let dto = body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|dto| dto["Id"] == item.id.simple().to_string())
+                .expect("audio DTO");
+
+            if expect_top_level {
+                assert_audio_stream_fields(&dto["MediaStreams"], &route);
+            } else {
+                assert!(dto.get("MediaStreams").is_none(), "{route}: {dto}");
+            }
+
+            if expect_sources {
+                let sources = dto["MediaSources"].as_array().expect("media sources");
+                assert_eq!(sources.len(), 1, "{route}: {dto}");
+                assert_eq!(sources[0]["Bitrate"], 256_000, "{route}: {dto}");
+                assert_audio_stream_fields(&sources[0]["MediaStreams"], &route);
+                if item.id == audio_book.id {
+                    assert_eq!(sources[0]["Type"], "Placeholder", "{route}: {dto}");
+                }
+            } else {
+                assert!(dto.get("MediaSources").is_none(), "{route}: {dto}");
+            }
+        }
+    }
+
+    items
+        .delete(audio_book.id)
+        .await
+        .expect("audio book cleanup");
+    items.delete(audio.id).await.expect("audio cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn has_subtitles_uses_persisted_subtitle_streams_for_item_and_page_dtos() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
@@ -1962,4 +2062,16 @@ async fn body_json(response: axum::response::Response) -> Value {
             .expect("response body"),
     )
     .expect("JSON response")
+}
+
+fn assert_audio_stream_fields(streams: &Value, route: &str) {
+    let streams = streams.as_array().expect("media streams");
+    assert_eq!(streams.len(), 3, "{route}: {streams:?}");
+    for (stream_type, language) in [("Audio", "deu"), ("Subtitle", "eng"), ("Lyric", "jpn")] {
+        let stream = streams
+            .iter()
+            .find(|stream| stream["Type"] == stream_type)
+            .expect("requested stream type");
+        assert_eq!(stream["Language"], language, "{route}: {stream}");
+    }
 }

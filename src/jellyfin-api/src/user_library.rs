@@ -2121,7 +2121,15 @@ fn is_media_source_item(dto: &BaseItemDto) -> bool {
         || dto.media_type.is_some()
         || matches!(
             dto.item_type.as_str(),
-            "Audio" | "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
+            "Audio"
+                | "AudioBook"
+                | "Video"
+                | "Movie"
+                | "Episode"
+                | "MusicVideo"
+                | "Trailer"
+                | "MediaBrowser.Controller.Entities.Audio.Audio"
+                | "MediaBrowser.Controller.Entities.AudioBook"
         )
 }
 
