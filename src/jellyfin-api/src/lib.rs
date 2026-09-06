@@ -1748,6 +1748,7 @@ fn user_data_routes() -> Router<Arc<AppState>> {
 fn item_query_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items", get(items::get).delete(library::delete_items))
+        .route("/items", get(items::get).delete(library::delete_items))
         .route("/Items/Suggestions", get(items::suggestions))
         .route("/items/suggestions", get(items::suggestions))
         .route("/Items/Latest", get(items::latest))
@@ -1861,7 +1862,10 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
-        .route("/items/{item_id}", get(user_library::get_item))
+        .route(
+            "/items/{item_id}",
+            get(user_library::get_item).delete(library::delete_item),
+        )
         .route(
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),
@@ -3213,6 +3217,7 @@ fn year_error_response(error: &YearError) -> (StatusCode, &'static str) {
 
 fn library_controller_error_response(error: &LibraryControllerError) -> (StatusCode, &'static str) {
     match error {
+        LibraryControllerError::InvalidRequest => (StatusCode::BAD_REQUEST, "Invalid request"),
         LibraryControllerError::UserNotFound
         | LibraryControllerError::ItemNotFound
         | LibraryControllerError::FileNotFound
@@ -3224,6 +3229,7 @@ fn library_controller_error_response(error: &LibraryControllerError) -> (StatusC
             | UserLibraryError::User(UserError::NotFound)
             | UserLibraryError::BaseItem(BaseItemError::NotFound),
         ) => (StatusCode::NOT_FOUND, "User, item, or file not found"),
+        LibraryControllerError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
         LibraryControllerError::Forbidden
         | LibraryControllerError::BaseItem(BaseItemError::ProtectedItem)
         | LibraryControllerError::UserLibrary(

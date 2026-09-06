@@ -14,9 +14,7 @@ use jellyfin_data::{
     entities::{user, user_data},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
-use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -67,6 +65,19 @@ async fn official_library_controller_missing_item_contract() {
                 .await
                 .status(),
             StatusCode::NOT_FOUND,
+            "{route}"
+        );
+    }
+    for route in [
+        format!("/Items/{}", Uuid::nil()),
+        format!("/Items?ids={}", Uuid::nil()),
+    ] {
+        assert_eq!(
+            fixture
+                .request("DELETE", &route, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
             "{route}"
         );
     }
@@ -1884,69 +1895,429 @@ async fn assert_item_counts(fixture: &Fixture) {
 }
 
 #[tokio::test]
-async fn administrator_single_and_batch_deletion_are_atomic_and_database_only() {
+async fn item_deletion_authorization_visibility_and_api_keys_match_official_behavior() {
     let _guard = LIBRARY_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
+    let items = fixture.items();
+    let denied = create_deletable_item(
+        &fixture,
+        "User denied deletion",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
     assert_eq!(
         fixture
             .request(
                 "DELETE",
-                &format!("/Items/{}", fixture.parent_id),
+                &format!("/Items/{}", denied.id),
                 Some(&fixture.user_token),
             )
             .await
             .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::UNAUTHORIZED
     );
-
-    let missing = Uuid::new_v4();
-    let atomic_route = format!("/Items?ids={},{}", fixture.parent_id, missing);
-    assert_eq!(
-        fixture
-            .request("DELETE", &atomic_route, Some(&fixture.admin_token))
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    assert!(fixture.items().exists(fixture.parent_id).await.unwrap());
+    assert!(items.exists(denied.id).await.unwrap());
 
     assert_eq!(
         fixture
             .request(
                 "DELETE",
-                &format!("/Items/{}", fixture.single_delete_id),
+                &format!("/Items/{}", denied.id),
+                Some(&fixture.api_key_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!items.exists(denied.id).await.unwrap());
+
+    let pathless = create_item(
+        &items,
+        "Studio",
+        "API key unrestricted deletion",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+        None,
+    )
+    .await;
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/items/{}?api_key={}", pathless.id, fixture.api_key_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!items.exists(pathless.id).await.unwrap());
+
+    let root = items.ensure_user_root().await.expect("user root");
+    let playlists = PlaylistRepository::new(fixture.database.clone());
+    let owned_playlist = playlists
+        .create(
+            Uuid::new_v4(),
+            "Owned deletion playlist".to_owned(),
+            root.id,
+            fixture.user_id,
+            false,
+            Some("Video".to_owned()),
+            &[],
+            &[],
+        )
+        .await
+        .expect("owned deletion playlist");
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", owned_playlist.item.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!items.exists(owned_playlist.item.id).await.unwrap());
+
+    let foreign_playlist = playlists
+        .create(
+            Uuid::new_v4(),
+            "Foreign public deletion playlist".to_owned(),
+            root.id,
+            fixture.admin_id,
+            true,
+            Some("Video".to_owned()),
+            &[],
+            &[],
+        )
+        .await
+        .expect("foreign deletion playlist");
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", foreign_playlist.item.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(items.exists(foreign_playlist.item.id).await.unwrap());
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", foreign_playlist.item.id),
                 Some(&fixture.admin_token),
             )
             .await
             .status(),
         StatusCode::NO_CONTENT
     );
-    let batch_route = format!("/Items?ids={},{}", fixture.parent_id, fixture.similar_id);
+    assert!(!items.exists(foreign_playlist.item.id).await.unwrap());
+
+    let denied_box_set =
+        create_deletable_item_of_type(&fixture, "BoxSet", "Denied deletion box set", root.id).await;
     assert_eq!(
         fixture
-            .request("DELETE", &batch_route, Some(&fixture.admin_token))
+            .request(
+                "DELETE",
+                &format!("/Items/{}", denied_box_set.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(items.exists(denied_box_set.id).await.unwrap());
+
+    let allowed_box_set =
+        create_deletable_item_of_type(&fixture, "BoxSet", "Allowed deletion box set", root.id)
+            .await;
+    let users = UserService::new(fixture.database.clone());
+    let mut policy: UserPolicy = serde_json::from_value(
+        users
+            .get(fixture.user_id)
+            .await
+            .expect("deletion user")
+            .policy,
+    )
+    .expect("deletion user policy");
+    policy.enable_collection_management = true;
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("collection-management deletion policy");
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", allowed_box_set.id),
+                Some(&fixture.user_token),
+            )
             .await
             .status(),
         StatusCode::NO_CONTENT
     );
-    for id in [
-        fixture.parent_id,
-        fixture.child_id,
-        fixture.grandchild_id,
-        fixture.similar_id,
-        fixture.single_delete_id,
-    ] {
-        assert!(!fixture.items().exists(id).await.unwrap());
-    }
+    assert!(!items.exists(allowed_box_set.id).await.unwrap());
+
+    let hidden_folder = create_item(
+        &items,
+        "CollectionFolder",
+        "Hidden deletion library",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+        None,
+    )
+    .await;
+    let visible_folder = create_item(
+        &items,
+        "CollectionFolder",
+        "Visible deletion library",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+        None,
+    )
+    .await;
+    let hidden = create_deletable_item(&fixture, "Hidden deletion item", hidden_folder.id).await;
+    let visible = create_deletable_item(&fixture, "Visible deletion item", visible_folder.id).await;
+    let scoped = create_deletable_item(&fixture, "Scoped deletion item", visible_folder.id).await;
+    let ordinary_folder = create_item(
+        &items,
+        "Folder",
+        "Ordinary scoped deletion folder",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+        None,
+    )
+    .await;
+    let ordinary_child =
+        create_deletable_item(&fixture, "Ordinary scoped child", ordinary_folder.id).await;
+    policy.enable_collection_management = false;
+    policy.enable_content_deletion = false;
+    policy.enable_all_folders = true;
+    policy.enable_content_deletion_from_folders = vec![ordinary_folder.id.to_string()];
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("ordinary scoped deletion policy");
     assert_eq!(
-        user_data::Entity::find()
-            .filter(user_data::Column::UserId.eq(fixture.user_id))
-            .count(&fixture.database)
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", ordinary_child.id),
+                Some(&fixture.user_token),
+            )
             .await
-            .unwrap(),
-        0
+            .status(),
+        StatusCode::UNAUTHORIZED
     );
-    assert!(!tokio::fs::try_exists(&fixture.media_path).await.unwrap());
+    assert!(items.exists(ordinary_child.id).await.unwrap());
+
+    policy.enable_content_deletion_from_folders = vec![visible_folder.id.to_string()];
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("collection-folder scoped deletion policy");
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", scoped.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!items.exists(scoped.id).await.unwrap());
+
+    policy.enable_content_deletion = true;
+    policy.enable_all_folders = false;
+    policy.enabled_folders = vec![visible_folder.id];
+    policy.enable_content_deletion_from_folders.clear();
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted deletion policy");
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", hidden.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(items.exists(hidden.id).await.unwrap());
+    assert_eq!(
+        fixture
+            .request(
+                "DELETE",
+                &format!("/Items/{}", visible.id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!items.exists(visible.id).await.unwrap());
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn batch_deletion_preserves_official_binding_order_and_partial_results() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = fixture.items();
+
+    for route in ["/Items", "/items?IDS=invalid"] {
+        assert_eq!(
+            fixture
+                .request("DELETE", route, Some(&fixture.api_key_token))
+                .await
+                .status(),
+            StatusCode::NO_CONTENT,
+            "{route}"
+        );
+    }
+
+    let repeated_first = create_deletable_item(
+        &fixture,
+        "Repeated first",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let repeated_second = create_deletable_item(
+        &fixture,
+        "Repeated second",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let repeated_route = format!(
+        "/items?Ids={}&IDS={}",
+        repeated_first.id, repeated_second.id
+    );
+    assert_eq!(
+        fixture
+            .request("DELETE", &repeated_route, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!items.exists(repeated_first.id).await.unwrap());
+    assert!(!items.exists(repeated_second.id).await.unwrap());
+
+    let comma_first =
+        create_deletable_item(&fixture, "Comma first", jellyfin_data::USER_ROOT_FOLDER_ID).await;
+    let comma_second =
+        create_deletable_item(&fixture, "Comma second", jellyfin_data::USER_ROOT_FOLDER_ID).await;
+    let comma_route = format!("/Items?iDs={},,bad,{}", comma_first.id, comma_second.id);
+    assert_eq!(
+        fixture
+            .request("DELETE", &comma_route, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!items.exists(comma_first.id).await.unwrap());
+    assert!(!items.exists(comma_second.id).await.unwrap());
+
+    let unsplit_first = create_deletable_item(
+        &fixture,
+        "Unsplit first",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let unsplit_second = create_deletable_item(
+        &fixture,
+        "Unsplit second",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let multi_value_target = create_deletable_item(
+        &fixture,
+        "Multi value target",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let unsplit_route = format!(
+        "/Items?ids={},{}&ids={}",
+        unsplit_first.id, unsplit_second.id, multi_value_target.id
+    );
+    assert_eq!(
+        fixture
+            .request("DELETE", &unsplit_route, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(items.exists(unsplit_first.id).await.unwrap());
+    assert!(items.exists(unsplit_second.id).await.unwrap());
+    assert!(!items.exists(multi_value_target.id).await.unwrap());
+
+    let deleted_before_missing = create_deletable_item(
+        &fixture,
+        "Deleted before missing",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let missing = Uuid::new_v4();
+    let partial_route = format!("/Items?ids={},{missing}", deleted_before_missing.id);
+    assert_eq!(
+        fixture
+            .request("DELETE", &partial_route, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(!items.exists(deleted_before_missing.id).await.unwrap());
+
+    let retained_after_missing = create_deletable_item(
+        &fixture,
+        "Retained after missing",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let stop_route = format!("/Items?ids={missing},{}", retained_after_missing.id);
+    assert_eq!(
+        fixture
+            .request("DELETE", &stop_route, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(items.exists(retained_after_missing.id).await.unwrap());
+
+    let duplicate = create_deletable_item(
+        &fixture,
+        "Duplicate deletion",
+        jellyfin_data::USER_ROOT_FOLDER_ID,
+    )
+    .await;
+    let duplicate_route = format!("/Items?ids={0}&ids={0}", duplicate.id);
+    assert_eq!(
+        fixture
+            .request("DELETE", &duplicate_route, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(!items.exists(duplicate.id).await.unwrap());
+
+    let parent_first = format!("/Items?ids={},{}", fixture.parent_id, fixture.child_id);
+    assert_eq!(
+        fixture
+            .request("DELETE", &parent_first, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    for id in [fixture.parent_id, fixture.child_id, fixture.grandchild_id] {
+        assert!(!items.exists(id).await.unwrap());
+    }
+
     fixture.cleanup().await;
 }
 
@@ -2342,6 +2713,27 @@ async fn create_item(
     item.media_type = Some("Video".to_owned());
     item.is_folder = item_type == "Folder";
     repository.create(item).await.expect("library item")
+}
+
+async fn create_deletable_item(
+    fixture: &Fixture,
+    name: &str,
+    parent_id: Uuid,
+) -> jellyfin_data::entities::base_item::Model {
+    create_deletable_item_of_type(fixture, "Video", name, parent_id).await
+}
+
+async fn create_deletable_item_of_type(
+    fixture: &Fixture,
+    item_type: &str,
+    name: &str,
+    parent_id: Uuid,
+) -> jellyfin_data::entities::base_item::Model {
+    let path = format!("{}/{}.mkv", fixture.deletion_path, Uuid::new_v4().simple());
+    tokio::fs::write(&path, Fixture::media_bytes())
+        .await
+        .expect("deletion media fixture");
+    create_item(&fixture.items(), item_type, name, parent_id, Some(&path)).await
 }
 
 async fn favorite(repository: &UserDataRepository, user_id: Uuid, item_id: Uuid) {

@@ -416,6 +416,13 @@
   MusicArtist is true independently of its path, and an accessed-by-name MusicArtist is false.
   Do not reject an otherwise local item merely because it is virtual, and keep Playlist owner/admin
   authorization separate from the user-less intrinsic capability.
+- Keep single and batch item deletion on the official authorization and binding contract. API keys
+  are unrestricted and user-less, ordinary users resolve each item through their visibility policy,
+  and an item-level deletion denial is 401 while a hidden item is 404. Bind optional `Ids`
+  case-insensitively with the official comma-or-repeated-value rules, discard malformed values, and
+  execute the surviving identifiers sequentially in request order without rolling back earlier
+  deletions when a later identifier fails. A surviving empty GUID is a bad request, not the user
+  root. Preserve fully lowercase route aliases.
 - Project `CanDownload` and `PlayAccess` only when their `ItemFields` are requested (single-item
   details request all fields by default). Compute intrinsic download capability from the official
   item-type overrides, then apply the target user's download and playback policy once per page;

@@ -15,12 +15,16 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum LibraryControllerError {
+    #[error("library item id must not be empty")]
+    InvalidRequest,
     #[error("target user was not found")]
     UserNotFound,
     #[error("library item was not found")]
     ItemNotFound,
     #[error("administrator access is required")]
     Forbidden,
+    #[error("user is not authorized to delete the library item")]
+    Unauthorized,
     #[error("library item has no downloadable file")]
     FileNotFound,
     #[error("library item does not support downloading")]
@@ -755,43 +759,61 @@ impl LibraryControllerService {
         }
     }
 
-    /// Atomically deletes complete item subtrees and their source files.
+    /// Deletes complete item subtrees and their source files in request order.
     ///
     /// # Errors
     ///
     /// Returns forbidden, not-found, protected-item, or persistence errors.
     pub async fn delete_items(
         &self,
-        authenticated_user: &user::Model,
+        authenticated_user: Option<&user::Model>,
         item_ids: &[Uuid],
     ) -> Result<(), LibraryControllerError> {
-        let policy: UserPolicy = serde_json::from_value(authenticated_user.policy.clone())
-            .map_err(UserError::PolicySerialization)?;
-        let mut paths = Vec::new();
         for &item_id in item_ids {
-            let item = self
-                .items
+            self.delete_item(authenticated_user, item_id).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn delete_item(
+        &self,
+        authenticated_user: Option<&user::Model>,
+        item_id: Uuid,
+    ) -> Result<(), LibraryControllerError> {
+        // Official LibraryManager.GetItemById rejects Guid.Empty before
+        // either the user-aware visibility lookup or the direct lookup.
+        if item_id.is_nil() {
+            return Err(LibraryControllerError::InvalidRequest);
+        }
+
+        let item = if let Some(user) = authenticated_user {
+            self.user_library.item(user, user.id, item_id).await?
+        } else {
+            self.items
                 .get(item_id)
                 .await?
-                .ok_or(LibraryControllerError::ItemNotFound)?;
-            if !item_can_delete(&item) {
-                return Err(LibraryControllerError::Forbidden);
-            }
-            if !authenticated_user.is_administrator
-                && !self.deletion_folder_allowed(item_id, &policy).await?
-            {
-                return Err(LibraryControllerError::Forbidden);
-            }
-            if let Some(path) = item.path.filter(|path| !path.is_empty()) {
+                .ok_or(LibraryControllerError::ItemNotFound)?
+        };
+
+        if let Some(user) = authenticated_user
+            && !self.item_can_delete_for_user(&item, user).await?
+        {
+            return Err(LibraryControllerError::Unauthorized);
+        }
+
+        let mut paths = item
+            .path
+            .filter(|path| !path.is_empty())
+            .into_iter()
+            .collect::<Vec<_>>();
+        for descendant in self.items.descendants(item_id).await? {
+            if let Some(path) = descendant.item.path.filter(|path| !path.is_empty()) {
                 paths.push(path);
             }
-            for descendant in self.items.descendants(item_id).await? {
-                if let Some(path) = descendant.item.path.filter(|path| !path.is_empty()) {
-                    paths.push(path);
-                }
-            }
         }
-        self.items.delete_many(item_ids).await?;
+
+        self.items.delete_many(&[item_id]).await?;
         for path in paths {
             let path = std::path::Path::new(&path);
             let result = if path.is_dir() {
@@ -808,6 +830,35 @@ impl LibraryControllerService {
         Ok(())
     }
 
+    async fn item_can_delete_for_user(
+        &self,
+        item: &base_item::Model,
+        user: &user::Model,
+    ) -> Result<bool, LibraryControllerError> {
+        let item_type = canonical_official_item_type(&item.item_type);
+        if item_type == "Playlist" {
+            let playlist = self
+                .playlists
+                .get(item.id)
+                .await?
+                .ok_or(LibraryControllerError::ItemNotFound)?;
+            return Ok(user.is_administrator || playlist.owner_user_id == Some(user.id));
+        }
+        if !item_can_delete(item) {
+            return Ok(false);
+        }
+
+        let policy: UserPolicy =
+            serde_json::from_value(user.policy.clone()).map_err(UserError::PolicySerialization)?;
+        if item_type == "BoxSet" {
+            return Ok(user.is_administrator || policy.enable_collection_management);
+        }
+        Ok(
+            policy.enable_content_deletion
+                || self.deletion_folder_allowed(item.id, &policy).await?,
+        )
+    }
+
     async fn deletion_folder_allowed(
         &self,
         item_id: Uuid,
@@ -820,19 +871,15 @@ impl LibraryControllerService {
             .enable_content_deletion_from_folders
             .iter()
             .filter_map(|id| Uuid::parse_str(id).ok())
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<Vec<_>>();
         if allowed.is_empty() {
             return Ok(false);
         }
-        if allowed.contains(&item_id) {
-            return Ok(true);
-        }
         Ok(self
             .items
-            .ancestors(item_id)
+            .item_ids_in_collection_folders(&[item_id], &allowed)
             .await?
-            .into_iter()
-            .any(|entry| allowed.contains(&entry.item.id)))
+            .contains(&item_id))
     }
 
     async fn validate_user(

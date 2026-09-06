@@ -175,12 +175,6 @@ pub(crate) struct AvailableOptionsQuery {
     is_new_library: bool,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct DeleteItemsQuery {
-    #[serde(alias = "Ids")]
-    ids: String,
-}
-
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UpdatedSeriesQuery {
     #[serde(default, rename = "tvdbId", alias = "TvdbId", alias = "tvdbid")]
@@ -781,28 +775,20 @@ fn similar_item_providers(item_type: &str) -> Vec<jellyfin_model::LibraryOptionI
 
 pub(crate) async fn delete_item(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    delete_for(state, headers, vec![item_id]).await
+    delete_for(state, headers, &uri, vec![item_id]).await
 }
 
 pub(crate) async fn delete_items(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    Query(query): Query<DeleteItemsQuery>,
 ) -> Result<StatusCode, ApiError> {
-    let ids = query
-        .ids
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.parse().map_err(|_| ApiError::InvalidRequest))
-        .collect::<Result<Vec<_>, _>>()?;
-    if ids.is_empty() {
-        return Err(ApiError::InvalidRequest);
-    }
-    delete_for(state, headers, ids).await
+    let ids = delete_item_ids(&uri);
+    delete_for(state, headers, &uri, ids).await
 }
 
 async fn theme_result(
@@ -992,14 +978,42 @@ async fn file_response(
 async fn delete_for(
     state: Arc<AppState>,
     headers: HeaderMap,
+    uri: &axum::http::Uri,
     ids: Vec<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(uri)).await?;
+    let authenticated_user = match &identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => Some(&authenticated.user),
+        authentication::AuthenticatedIdentity::ApiKey(_) => None,
+    };
     state
         .library_controller
-        .delete_items(&authenticated.user, &ids)
+        .delete_items(authenticated_user, &ids)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn delete_item_ids(uri: &axum::http::Uri) -> Vec<Uuid> {
+    let values = uri
+        .query()
+        .into_iter()
+        .flat_map(|query| form_urlencoded::parse(query.as_bytes()))
+        .filter(|(key, _)| key.eq_ignore_ascii_case("ids"))
+        .map(|(_, value)| value.into_owned())
+        .collect::<Vec<_>>();
+
+    if let [value] = values.as_slice() {
+        value
+            .split(',')
+            .filter(|value| !value.is_empty())
+            .filter_map(|value| Uuid::parse_str(value.trim()).ok())
+            .collect()
+    } else {
+        values
+            .iter()
+            .filter_map(|value| Uuid::parse_str(value.trim()).ok())
+            .collect()
+    }
 }
 
 fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQueryResult {
@@ -1163,4 +1177,50 @@ fn safe_filename(path: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Uri;
+    use uuid::Uuid;
+
+    use super::delete_item_ids;
+
+    const FIRST: &str = "00112233-4455-6677-8899-aabbccddeeff";
+    const SECOND: &str = "11223344-5566-7788-99aa-bbccddeeff00";
+    const THIRD: &str = "22334455-6677-8899-aabb-ccddeeff0011";
+
+    fn parse(uri: &str) -> Vec<Uuid> {
+        delete_item_ids(&uri.parse::<Uri>().expect("valid test URI"))
+    }
+
+    #[test]
+    fn delete_item_ids_accept_missing_empty_and_case_insensitive_names() {
+        assert!(parse("/Items").is_empty());
+        assert!(parse("/Items?ids=").is_empty());
+        assert!(parse("/Items?IDS=invalid").is_empty());
+        assert_eq!(
+            parse(&format!("/Items?iDs={FIRST},,{SECOND}")),
+            [
+                Uuid::parse_str(FIRST).unwrap(),
+                Uuid::parse_str(SECOND).unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_item_ids_preserve_repeated_value_binder_semantics() {
+        assert_eq!(
+            parse(&format!("/Items?ids={FIRST}&Ids={SECOND}&IDS={FIRST}")),
+            [
+                Uuid::parse_str(FIRST).unwrap(),
+                Uuid::parse_str(SECOND).unwrap(),
+                Uuid::parse_str(FIRST).unwrap(),
+            ]
+        );
+        assert_eq!(
+            parse(&format!("/Items?ids={FIRST},{SECOND}&ids={THIRD}")),
+            [Uuid::parse_str(THIRD).unwrap()]
+        );
+    }
 }
