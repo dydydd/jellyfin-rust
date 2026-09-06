@@ -90,6 +90,12 @@ pub(crate) struct StudiosQuery {
     enable_total_record_count: bool,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct StudioByNameQuery {
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct StudiosResult {
@@ -172,7 +178,7 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(name): Path<String>,
-    Query(query): Query<StudiosQuery>,
+    Query(query): Query<StudioByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query

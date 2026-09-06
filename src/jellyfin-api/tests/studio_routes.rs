@@ -349,6 +349,66 @@ async fn studio_routes_match_official_studio_contract() {
     );
     assert_eq!(lowercase_studio["Name"], fixture.alpha_studio);
 
+    let studio_route = studio_route(&fixture.alpha_studio);
+    for user_id_query in ["userId", "UserId", "userid"] {
+        assert_eq!(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("{studio_route}?{user_id_query}={}", fixture.user_id),
+                    Credential::Device(&fixture.admin_token),
+                )
+                .await
+                .status(),
+            StatusCode::OK,
+            "{user_id_query}"
+        );
+    }
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("{studio_route}?userId={}", Uuid::nil()),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("{studio_route}?limit=bad&parentId=bad&isFavorite=bad"),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("{studio_route}?userId={}", fixture.other_user_id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request(
+                Method::GET,
+                &format!("{studio_route}?userId={}", Uuid::new_v4()),
+                Credential::Device(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
     let missing = body_json(
         fixture
             .request(
