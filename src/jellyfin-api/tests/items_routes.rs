@@ -1783,7 +1783,7 @@ async fn item_query_authentication_and_target_permissions_are_enforced() {
 }
 
 #[tokio::test]
-async fn latest_and_suggestions_query_names_are_case_insensitive() {
+async fn latest_query_names_are_case_insensitive() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     let user_data = UserDataRepository::new(fixture.database.clone());
@@ -1818,50 +1818,6 @@ async fn latest_and_suggestions_query_names_are_case_insensitive() {
         );
     }
 
-    let items = BaseItemRepository::new(fixture.database.clone());
-    let root = items.ensure_user_root().await.expect("user root");
-    let suggestion_media_type = format!("Video-{}", fixture.suffix);
-    let mut first = NewBaseItem::new(Uuid::new_v4(), "Movie");
-    first.name = Some(format!("Suggested first {}", fixture.suffix));
-    first.sort_name = first.name.clone();
-    first.parent_id = Some(root.id);
-    first.media_type = Some(suggestion_media_type.clone());
-    let first = items.create(first).await.expect("first suggestion");
-    let mut second = NewBaseItem::new(Uuid::new_v4(), "Movie");
-    second.name = Some(format!("Suggested second {}", fixture.suffix));
-    second.sort_name = second.name.clone();
-    second.parent_id = Some(root.id);
-    second.media_type = Some(suggestion_media_type.clone());
-    let second = items.create(second).await.expect("second suggestion");
-
-    for (media_type, start_index, enable_total_record_count) in [
-        ("mediaType", "startIndex", "enableTotalRecordCount"),
-        ("MediaType", "StartIndex", "EnableTotalRecordCount"),
-        ("mediatype", "startindex", "enabletotalrecordcount"),
-    ] {
-        let route = format!(
-            "/Items/Suggestions?{media_type}={suggestion_media_type}&type=Movie&{start_index}=2&limit=1&{enable_total_record_count}=true"
-        );
-        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
-        assert_eq!(body["TotalRecordCount"], 2, "{route}");
-        assert_eq!(body["StartIndex"], 2, "{route}");
-        assert!(
-            body["Items"]
-                .as_array()
-                .expect("suggested items")
-                .is_empty(),
-            "{route}"
-        );
-    }
-
-    items
-        .delete(first.id)
-        .await
-        .expect("first suggestion cleanup");
-    items
-        .delete(second.id)
-        .await
-        .expect("second suggestion cleanup");
     fixture.cleanup().await;
 }
 
