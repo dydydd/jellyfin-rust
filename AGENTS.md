@@ -418,6 +418,7 @@
   do not inflate either a typed bucket or `ItemCount`.
 - After scanning a movie directory, supplement the official filename-based version resolver with a conservative metadata match: same directory, non-empty case-insensitive title, and the same non-empty year, while rejecting the whole candidate group when TMDb, IMDb, or TVDb identifiers conflict. Never use collection identifiers as movie identity.
 - Do not advertise a playback method unless the returned URL really implements it. In particular, never label unchanged container bytes as an MP4 direct stream; derive `SupportsDirectPlay`, `SupportsDirectStream`, and `SupportsTranscoding` from the final selected method and device policy.
+- Match the official `PlaybackInfo` fallback when no `DeviceProfile` is supplied: retain static direct-play capability for sources served by the implemented local-file (and video HTTP-proxy) routes, while leaving direct-stream and transcoding unavailable until a profile selects a real server route. Android clients may omit the profile after registration or on their first request.
 - Normalize playback start and progress reports against the active transcoding-job registry. Treat
   an omitted method as `Transcode`, downgrade it to `DirectPlay` when `PlaySessionId` is blank or
   unknown, and preserve `Transcode` only while that playback session has a registered job.

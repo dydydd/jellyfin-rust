@@ -904,7 +904,7 @@ fn apply_stream_builder(
 ) {
     let Some(profile) = playback_options.device_profile.clone() else {
         for source in media_sources {
-            clear_playback_capabilities(source);
+            apply_unprofiled_playback_capabilities(source);
         }
         return;
     };
@@ -1070,6 +1070,24 @@ fn clear_playback_capabilities(source: &mut MediaSourceInfo) {
     source.transcoding_sub_protocol = MediaStreamProtocol::Http;
 }
 
+/// Match the official PlaybackInfo behavior when no device profile is
+/// available. The server cannot select a transcode profile in that case, but
+/// it can still expose static playback when the corresponding route really
+/// serves the source bytes. In particular, do not turn a valid local file
+/// into a source with no playable method just because the client omitted its
+/// profile.
+fn apply_unprofiled_playback_capabilities(source: &mut MediaSourceInfo) {
+    let is_video = source.video_type.is_some() || source.video_stream().is_some();
+    source.supports_direct_play = source.path.as_deref().is_some_and(|path| !path.is_empty())
+        && (source.protocol == MediaProtocol::File
+            || (is_video && source.protocol == MediaProtocol::Http));
+    source.supports_direct_stream = false;
+    source.supports_transcoding = false;
+    source.transcoding_url = None;
+    source.transcoding_container = None;
+    source.transcoding_sub_protocol = MediaStreamProtocol::Http;
+}
+
 const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: bool) -> bool {
     if is_audio {
         policy.enable_audio_playback_transcoding
@@ -1158,7 +1176,7 @@ mod tests {
     use uuid::Uuid;
 
     #[tokio::test]
-    async fn playback_info_without_profile_does_not_advertise_unselected_methods() {
+    async fn playback_info_without_profile_keeps_static_playback_available() {
         let first_id = Uuid::new_v4();
         let second_id = Uuid::new_v4();
         let mut sources = vec![
@@ -1190,7 +1208,7 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| {
-            !source.supports_direct_play
+            source.supports_direct_play
                 && !source.supports_direct_stream
                 && !source.supports_transcoding
                 && source.transcoding_url.is_none()
