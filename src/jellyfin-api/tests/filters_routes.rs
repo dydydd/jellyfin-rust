@@ -21,6 +21,60 @@ const DATABASE_PREFIX: &str = "jellyfin_filters_routes_";
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 
 #[tokio::test]
+async fn lowercase_filter_routes_match_canonical_routes() {
+    let fixture = Fixture::new().await;
+
+    for path in ["/items/filters", "/items/filters2"] {
+        assert_eq!(
+            fixture.request(path, Credential::None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    let canonical_legacy = body_json(
+        fixture
+            .request(
+                "/Items/Filters?includeItemTypes=Movie",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let lowercase_legacy = body_json(
+        fixture
+            .request(
+                "/items/filters?includeItemTypes=Movie",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_legacy, canonical_legacy);
+
+    let canonical_filters2 = body_json(
+        fixture
+            .request(
+                "/Items/Filters2?includeItemTypes=Movie",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let lowercase_filters2 = body_json(
+        fixture
+            .request(
+                "/items/filters2?includeItemTypes=Movie",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_filters2, canonical_filters2);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn filters2_returns_official_query_filter_shape() {
     let fixture = Fixture::new().await;
 
