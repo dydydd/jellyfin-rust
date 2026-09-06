@@ -1189,6 +1189,118 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
 }
 
 #[tokio::test]
+async fn item_details_hide_policy_blocked_alternate_media_sources() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let marker = Uuid::new_v4().simple().to_string();
+    let primary_path = format!("/media/{marker}-primary.mkv");
+    let hidden_path = format!("/media/{marker}-private.mkv");
+
+    let mut primary = item(
+        "Movie",
+        "Policy-filtered versions",
+        Some(fixture.root_id),
+        false,
+    );
+    primary.media_type = Some("Video".to_owned());
+    primary.path = Some(primary_path.clone());
+    let primary = items.create(primary).await.expect("primary version");
+
+    let mut alternate = item(
+        "Movie",
+        "Policy-filtered versions",
+        Some(fixture.root_id),
+        false,
+    );
+    alternate.media_type = Some("Video".to_owned());
+    alternate.path = Some(hidden_path.clone());
+    alternate.primary_version_id = Some(primary.id);
+    let alternate = items.create(alternate).await.expect("private alternate");
+
+    let streams = MediaStreamService::new(fixture.database.clone());
+    for (source, path, codec) in [
+        (&primary, primary_path.as_str(), "h264"),
+        (&alternate, hidden_path.as_str(), "private-hevc"),
+    ] {
+        streams
+            .save_media_streams(
+                source.id,
+                vec![MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some(codec.to_owned()),
+                    path: Some(path.to_owned()),
+                    ..MediaStream::default()
+                }],
+            )
+            .await
+            .expect("version stream");
+    }
+    MediaAttachmentService::new(fixture.database.clone())
+        .save_media_attachments(
+            alternate.id,
+            vec![MediaAttachment {
+                index: 1,
+                file_name: Some("private-attachment.jpg".to_owned()),
+                ..MediaAttachment::default()
+            }],
+        )
+        .await
+        .expect("private alternate attachment");
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            alternate.id,
+            item_value::ItemValueType::Tags,
+            "PrivateVersion",
+        )
+        .await
+        .expect("private alternate tag");
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["privateversion".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted user policy");
+
+    for route in [
+        format!("/Users/{}/Items/{}", fixture.user_id, primary.id),
+        format!("/Items/{}?UserId={}", primary.id, fixture.user_id),
+    ] {
+        let dto = get_json(&fixture.app, &route, &fixture.user_token).await;
+        let sources = dto["MediaSources"].as_array().expect("media sources");
+        assert_eq!(sources.len(), 1, "{route}");
+        assert_eq!(sources[0]["Id"], primary.id.simple().to_string(), "{route}");
+        assert!(dto.get("MediaSourceCount").is_none(), "{route}");
+        let serialized = serde_json::to_string(&dto).unwrap();
+        assert!(
+            !serialized.contains(&alternate.id.simple().to_string()),
+            "{route}"
+        );
+        assert!(!serialized.contains(&hidden_path), "{route}");
+        assert!(!serialized.contains("private-hevc"), "{route}");
+        assert!(!serialized.contains("private-attachment.jpg"), "{route}");
+    }
+
+    let admin_dto = get_json(
+        &fixture.app,
+        &format!("/Items/{}?UserId={}", primary.id, fixture.administrator_id),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(admin_dto["MediaSources"].as_array().unwrap().len(), 2);
+    assert_eq!(admin_dto["MediaSourceCount"], 2);
+
+    items.delete(alternate.id).await.expect("alternate cleanup");
+    items.delete(primary.id).await.expect("primary cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn original_language_audio_preference_uses_item_metadata() {
     let fixture = UserLibraryFixture::new().await;
     set_original_language_preference(&fixture.database, fixture.user_id).await;

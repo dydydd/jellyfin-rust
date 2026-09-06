@@ -153,6 +153,9 @@
 - Project `MediaSourceCount` for item pages with one batched alternate-version query. Preserve the
   official nullable-single-source behavior, and include episode groups so the web client can show
   merged episode versions without loading every `MediaSource`.
+- Filter alternate `MediaSources` and their full-source `MediaSourceCount` by the target user's
+  standalone item visibility before loading streams or attachments. Always retain the explicitly
+  displayed source, while user-less global projections retain every source.
 - When item pages request `MediaSources`, expand every alternate-version group and load all streams
   and attachments for the page in bounded batches. Do not issue one version, stream, or attachment
   query per displayed item.

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, DatabaseConfig, LinkedChildRepository, LinkedChildType,
-    NewBaseItem,
+    BaseItemError, BaseItemQuery, BaseItemRepository, DatabaseConfig, ItemValueRepository,
+    LinkedChildRepository, LinkedChildType, NewBaseItem, entities::item_value,
 };
 use serde_json::json;
 use tokio::sync::Barrier;
@@ -82,6 +82,43 @@ async fn media_source_versions_load_multiple_groups_in_one_batch() {
     );
 
     cleanup(&repository, [&group_a, &group_b]).await;
+}
+
+#[tokio::test]
+async fn visible_item_ids_filter_alternate_sources_by_access_policy() {
+    let repository = repository().await;
+    let group = create_group(&repository, "visible-ids").await;
+    let values = ItemValueRepository::new(
+        jellyfin_data::connect(&DatabaseConfig::default())
+            .await
+            .expect("local PostgreSQL must be available"),
+    );
+    values
+        .link(
+            group.alternates[0],
+            item_value::ItemValueType::Tags,
+            "PrivateVersion",
+        )
+        .await
+        .expect("blocked alternate tag");
+
+    let visible = repository
+        .visible_item_ids(
+            &group.ids(),
+            &BaseItemQuery {
+                blocked_tags: vec!["privateversion".to_owned()],
+                enable_all_folders: true,
+                ..BaseItemQuery::default()
+            },
+        )
+        .await
+        .expect("policy-filtered alternate identifiers");
+
+    assert_eq!(
+        visible,
+        [group.primary, group.alternates[1]].into_iter().collect()
+    );
+    cleanup(&repository, [&group]).await;
 }
 
 #[tokio::test]

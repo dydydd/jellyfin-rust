@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum::{
     Json,
@@ -1963,6 +1966,27 @@ async fn page_to_dto_with_fields_and_options(
     } else {
         std::collections::HashMap::new()
     };
+    if requested_fields.wants_media_sources()
+        && let Some(target_user_id) = target_user_id
+    {
+        let displayed_item_ids = item_ids.iter().copied().collect::<HashSet<_>>();
+        let source_ids = media_source_groups
+            .values()
+            .flatten()
+            .map(|source| source.id)
+            .collect::<Vec<_>>();
+        let visible_source_ids = state
+            .user_library
+            .visible_item_ids(target_user_id, &source_ids)
+            .await?;
+        for sources in media_source_groups.values_mut() {
+            // Match `GetStaticMediaSources`: keep each displayed item itself and require every
+            // alternate source to be independently visible to the target user.
+            sources.retain(|source| {
+                displayed_item_ids.contains(&source.id) || visible_source_ids.contains(&source.id)
+            });
+        }
+    }
     let stream_item_ids = if requested_fields.wants_media_sources() {
         media_source_groups
             .values()
@@ -2011,11 +2035,12 @@ async fn page_to_dto_with_fields_and_options(
     } else {
         std::collections::HashMap::new()
     };
-    let mut media_source_counts = if requested_fields.wants_media_source_count() {
-        state.base_items.media_source_counts(&item_ids).await?
-    } else {
-        std::collections::HashMap::new()
-    };
+    let mut media_source_counts =
+        if requested_fields.wants_media_source_count() && !requested_fields.wants_media_sources() {
+            state.base_items.media_source_counts(&item_ids).await?
+        } else {
+            std::collections::HashMap::new()
+        };
     let mut trickplay_manifests =
         user_library::trickplay_manifests_for_items(state, &page.items, requested_fields).await?;
     let mut user_dtos = match target_user_id {
@@ -2059,7 +2084,7 @@ async fn page_to_dto_with_fields_and_options(
         let original_language = dto.original_language.clone();
         user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
         user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
-        if requested_fields.wants_media_source_count() {
+        if requested_fields.wants_media_source_count() && !requested_fields.wants_media_sources() {
             user_library::attach_media_source_count(
                 &mut dto,
                 media_source_counts.remove(&item_id).unwrap_or_default(),
@@ -2086,6 +2111,12 @@ async fn page_to_dto_with_fields_and_options(
         if requested_fields.wants_media_sources()
             && let Some(source_items) = media_source_groups.remove(&media_source_group_id)
         {
+            if requested_fields.wants_media_source_count() {
+                user_library::attach_media_source_count(
+                    &mut dto,
+                    u64::try_from(source_items.len()).unwrap_or(u64::MAX),
+                );
+            }
             let remembered = remembered_user_data.remove(&item_id);
             user_library::project_item_dto_with_versioned_sources(
                 &mut dto,

@@ -932,6 +932,39 @@ impl BaseItemRepository {
         )
     }
 
+    /// Returns the requested item identifiers that satisfy a user's library access policy.
+    ///
+    /// This deliberately selects identifiers only. Callers that already loaded alternate media
+    /// source rows can therefore discard hidden versions before loading their streams and
+    /// attachments without fetching the same base-item rows a second time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the visibility query fails.
+    pub async fn visible_item_ids(
+        &self,
+        item_ids: &[Uuid],
+        access_policy: &BaseItemQuery,
+    ) -> Result<HashSet<Uuid>, BaseItemError> {
+        if item_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let mut select = base_item::Entity::find()
+            .select_only()
+            .column(base_item::Column::Id)
+            .filter(base_item::Column::Id.is_in(item_ids.iter().copied()));
+        if let Some(condition) = policy_filter_sql("\"base_items\"", access_policy) {
+            select = select.filter(Expr::cust(condition));
+        }
+        Ok(select
+            .into_tuple::<Uuid>()
+            .all(self.database.as_ref())
+            .await?
+            .into_iter()
+            .collect())
+    }
+
     /// Counts the local media sources in each requested video's alternate-version group.
     ///
     /// The aggregate is set-based so DTO pages requesting `MediaSourceCount` never issue one

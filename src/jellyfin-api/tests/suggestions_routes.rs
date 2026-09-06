@@ -11,10 +11,11 @@ use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
-    DeviceRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewTrickplayInfo, NewUserData,
-    TrickplayInfoRepository, UserDataRepository,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice,
+    NewTrickplayInfo, NewUserData, TrickplayInfoRepository, UserDataRepository,
+    entities::item_value,
 };
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -543,6 +544,24 @@ async fn suggestions_default_to_all_fields_with_optional_user_projection() {
         12_000_000,
     )
     .await;
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            movie_alternate.id,
+            item_value::ItemValueType::Tags,
+            "PrivateVersion",
+        )
+        .await
+        .expect("private alternate tag");
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["privateversion".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("suggestion user policy");
 
     let mut remembered = NewUserData::new(movie.id, fixture.user_id, movie.id.to_string());
     remembered.audio_stream_index = Some(2);
@@ -600,13 +619,22 @@ async fn suggestions_default_to_all_fields_with_optional_user_projection() {
     )
     .await;
     let explicit_movie = item_by_id(&explicit, movie.id);
-    assert_versioned_suggestion(
-        explicit_movie,
-        &movie,
-        &movie_alternate,
-        10_000_000,
-        20_000_000,
+    assert_eq!(
+        explicit_movie["MediaSources"]
+            .as_array()
+            .expect("visible movie sources")
+            .len(),
+        1
     );
+    assert_eq!(
+        explicit_movie["MediaSources"][0]["Id"],
+        movie.id.simple().to_string()
+    );
+    assert!(explicit_movie.get("MediaSourceCount").is_none());
+    let explicit_movie_json = serde_json::to_string(explicit_movie).unwrap();
+    assert!(!explicit_movie_json.contains(&movie_alternate.id.simple().to_string()));
+    assert!(!explicit_movie_json.contains(movie_alternate.path.as_deref().unwrap()));
+    assert!(!explicit_movie_json.contains("hevc"));
     assert_eq!(
         explicit_movie["MediaSources"][0]["DefaultAudioStreamIndex"],
         2

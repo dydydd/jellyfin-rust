@@ -13,7 +13,7 @@ use jellyfin_data::{
     NewTrickplayInfo, NewUserData, PersonRepository, TrickplayInfoRepository, UserDataRepository,
     entities::{base_item, item_value, user},
 };
-use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType};
+use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -450,6 +450,99 @@ async fn media_stream_fields_are_projected_for_item_pages() {
         .await
         .expect("alternate media cleanup");
     items.delete(media.id).await.expect("media cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn item_pages_hide_policy_blocked_alternate_media_sources() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let marker = Uuid::new_v4().simple().to_string();
+    let primary_path = format!("/media/{marker}-primary.mkv");
+    let hidden_path = format!("/media/{marker}-private.mkv");
+
+    let mut primary = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    primary.name = Some(format!("Visible version {marker}"));
+    primary.sort_name = primary.name.clone();
+    primary.parent_id = Some(root.id);
+    primary.media_type = Some("Video".to_owned());
+    primary.path = Some(primary_path.clone());
+    let primary = items.create(primary).await.expect("primary version");
+
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate.name = primary.name.clone();
+    alternate.sort_name = primary.sort_name.clone();
+    alternate.parent_id = Some(root.id);
+    alternate.media_type = Some("Video".to_owned());
+    alternate.path = Some(hidden_path.clone());
+    alternate.primary_version_id = Some(primary.id);
+    let alternate = items.create(alternate).await.expect("private alternate");
+
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            alternate.id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("private-hevc".to_owned()),
+                path: Some(hidden_path.clone()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("private alternate stream");
+    MediaAttachmentService::new(fixture.database.clone())
+        .save_media_attachments(
+            alternate.id,
+            vec![MediaAttachment {
+                index: 1,
+                file_name: Some("private-attachment.jpg".to_owned()),
+                ..MediaAttachment::default()
+            }],
+        )
+        .await
+        .expect("private alternate attachment");
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            alternate.id,
+            item_value::ItemValueType::Tags,
+            "PrivateVersion",
+        )
+        .await
+        .expect("private alternate tag");
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["privateversion".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted user policy");
+
+    let route = format!(
+        "/Items?ids={}&fields=MediaSources,MediaStreams,MediaSourceCount",
+        primary.id
+    );
+    let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+    assert_eq!(body["TotalRecordCount"], 1);
+    let dto = &body["Items"][0];
+    let sources = dto["MediaSources"].as_array().expect("media sources");
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0]["Id"], primary.id.simple().to_string());
+    assert!(dto.get("MediaSourceCount").is_none());
+    let serialized = serde_json::to_string(dto).unwrap();
+    assert!(!serialized.contains(&alternate.id.simple().to_string()));
+    assert!(!serialized.contains(&hidden_path));
+    assert!(!serialized.contains("private-hevc"));
+    assert!(!serialized.contains("private-attachment.jpg"));
+
+    items.delete(alternate.id).await.expect("alternate cleanup");
+    items.delete(primary.id).await.expect("primary cleanup");
     fixture.cleanup().await;
 }
 

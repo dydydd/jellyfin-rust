@@ -371,6 +371,29 @@ impl UserLibraryService {
         Ok(query)
     }
 
+    /// Filters already-resolved item identifiers through a target user's library policy.
+    ///
+    /// Callers must first authorize access to the target user. This lightweight lookup is used
+    /// after expanding alternate media-source groups so hidden versions can be discarded without
+    /// loading their base-item rows again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-user, invalid-policy, or persistence error.
+    pub async fn visible_item_ids(
+        &self,
+        target_user_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> Result<HashSet<Uuid>, UserLibraryError> {
+        let mut access_policy = BaseItemQuery::default();
+        self.apply_user_policy(&mut access_policy, target_user_id)
+            .await?;
+        Ok(self
+            .items
+            .visible_item_ids(item_ids, &access_policy)
+            .await?)
+    }
+
     /// Searches a target user's library with official score ordering.
     ///
     /// # Errors

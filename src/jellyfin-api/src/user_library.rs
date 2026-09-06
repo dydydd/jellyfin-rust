@@ -1141,8 +1141,17 @@ pub(crate) async fn project_item_to_dto(
     }
 
     if fields.media_sources {
-        let source_items = state.base_items.media_source_versions(item_id).await?;
+        let mut source_items = state.base_items.media_source_versions(item_id).await?;
         if !source_items.is_empty() {
+            let source_ids = source_items.iter().map(|item| item.id).collect::<Vec<_>>();
+            let visible_source_ids = state
+                .user_library
+                .visible_item_ids(target_user_id, &source_ids)
+                .await?;
+            // The official source manager always retains the explicitly displayed source and
+            // applies standalone visibility checks only to its alternate versions.
+            source_items
+                .retain(|source| source.id == item_id || visible_source_ids.contains(&source.id));
             if fields.wants_media_source_count() {
                 attach_media_source_count(
                     &mut dto,
@@ -1191,9 +1200,7 @@ pub(crate) async fn project_item_to_dto(
 }
 
 pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) {
-    if count > 1 {
-        dto.media_source_count = i32::try_from(count).ok();
-    }
+    dto.media_source_count = (count > 1).then(|| i32::try_from(count).ok()).flatten();
 }
 
 async fn attach_versioned_media_sources(
