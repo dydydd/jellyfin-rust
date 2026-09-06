@@ -17,14 +17,14 @@ use jellyfin_controller::{
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
-    BaseItemPage, ItemValueCounts,
+    BaseItemPage, ChapterRecord, ItemValueCounts,
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
-    ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo, MediaSourceType,
-    MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind, PlayAccess,
-    SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy,
-    Video3DFormat, VideoType,
+    ChapterInfo, ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo,
+    MediaSourceType, MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind,
+    PlayAccess, SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto,
+    UserPolicy, Video3DFormat, VideoType,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use md5::{Digest, Md5};
@@ -64,6 +64,7 @@ pub(crate) struct BaseItemDtoFields {
     child_count: bool,
     recursive_item_count: bool,
     primary_image_aspect_ratio: bool,
+    chapters: bool,
     trickplay: bool,
     settings: bool,
 }
@@ -81,6 +82,7 @@ impl BaseItemDtoFields {
             child_count: true,
             recursive_item_count: true,
             primary_image_aspect_ratio: true,
+            chapters: true,
             trickplay: true,
             settings: true,
         }
@@ -98,6 +100,7 @@ impl BaseItemDtoFields {
             child_count: false,
             recursive_item_count: false,
             primary_image_aspect_ratio: false,
+            chapters: false,
             trickplay: false,
             settings: false,
         }
@@ -125,6 +128,8 @@ impl BaseItemDtoFields {
                 result.recursive_item_count = true;
             } else if field.eq_ignore_ascii_case("PrimaryImageAspectRatio") {
                 result.primary_image_aspect_ratio = true;
+            } else if field.eq_ignore_ascii_case("Chapters") || field.trim() == "4" {
+                result.chapters = true;
             } else if field.eq_ignore_ascii_case("Trickplay") {
                 result.trickplay = true;
             } else if field.eq_ignore_ascii_case("Settings") {
@@ -190,6 +195,11 @@ impl BaseItemDtoFields {
     }
 
     #[must_use]
+    pub(crate) const fn wants_chapters(self) -> bool {
+        self.chapters
+    }
+
+    #[must_use]
     pub(crate) const fn wants_trickplay(self) -> bool {
         self.trickplay
     }
@@ -202,6 +212,12 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn without_trickplay(mut self) -> Self {
         self.trickplay = false;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn without_chapters(mut self) -> Self {
+        self.chapters = false;
         self
     }
 }
@@ -414,6 +430,8 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parent_backdrop_image_tags: Vec<String>,
     pub image_blur_hashes: HashMap<ImageType, HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chapters: Option<Vec<ChapterInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_sources: Option<Vec<jellyfin_model::MediaSourceInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1182,6 +1200,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         parent_backdrop_image_item_id: None,
         parent_backdrop_image_tags: Vec::new(),
         image_blur_hashes: HashMap::new(),
+        chapters: None,
         media_sources: None,
         media_streams: None,
         trickplay: None,
@@ -1202,6 +1221,7 @@ pub(crate) fn item_to_dto_with_fields(
         .then(|| item_settings(item.data.as_ref()));
     let mut dto = item_to_dto(item, server_id);
     dto.can_download = can_download;
+    dto.chapters = fields.wants_chapters().then(Vec::new);
     if let Some(settings) = settings {
         dto.locked_fields = Some(settings.locked_fields);
         dto.is_locked = Some(settings.is_locked);
@@ -1360,6 +1380,7 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     hierarchy_names: Option<&EpisodeHierarchyNames>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
+    let mut chapters = chapters_for_items(state, std::slice::from_ref(&item), fields).await?;
     let media_source_policy = if fields.wants_media_sources() {
         Some(media_source_policy_for_user(state, target_user_id).await?)
     } else {
@@ -1369,6 +1390,11 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let item_access_policy = item_access_policy_for_user(state, target_user_id, fields).await?;
     let mut dto = item_to_dto_with_fields(item, state.server_id(), fields);
+    attach_chapters(
+        &mut dto,
+        fields,
+        chapters.remove(&item_id).unwrap_or_default(),
+    );
     attach_item_access_fields(&mut dto, fields, item_access_policy.as_ref());
     attach_episode_hierarchy_names(&mut dto, hierarchy_names);
     if is_audio_item(&dto) {
@@ -1482,6 +1508,62 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
         apply_media_source_policy(&mut dto, policy);
     }
     Ok(dto)
+}
+
+pub(crate) async fn chapters_for_items(
+    state: &AppState,
+    items: &[base_item::Model],
+    fields: BaseItemDtoFields,
+) -> Result<HashMap<Uuid, Vec<ChapterInfo>>, ApiError> {
+    if !fields.wants_chapters() {
+        return Ok(HashMap::new());
+    }
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut records = state
+        .chapters
+        .list_many(&item_ids)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    Ok(items
+        .iter()
+        .map(|item| {
+            let chapters = records
+                .remove(&item.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|chapter| chapter_to_dto(item.path.as_deref().unwrap_or_default(), chapter))
+                .collect();
+            (item.id, chapters)
+        })
+        .collect())
+}
+
+fn chapter_to_dto(item_path: &str, chapter: ChapterRecord) -> ChapterInfo {
+    let image_date_modified = chapter
+        .image_date_modified
+        .unwrap_or_else(|| ChapterInfo::default().image_date_modified);
+    let image_tag = chapter
+        .image_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .map(|_| jellyfin_controller::image_cache_tag(item_path, image_date_modified));
+    ChapterInfo {
+        start_position_ticks: chapter.start_position_ticks,
+        name: chapter.name,
+        image_path: chapter.image_path,
+        image_date_modified,
+        image_tag,
+    }
+}
+
+pub(crate) fn attach_chapters(
+    dto: &mut BaseItemDto,
+    fields: BaseItemDtoFields,
+    chapters: Vec<ChapterInfo>,
+) {
+    if fields.wants_chapters() {
+        dto.chapters = Some(chapters);
+    }
 }
 
 pub(crate) async fn episode_hierarchy_names(
@@ -3220,6 +3302,76 @@ mod tests {
     }
 
     #[test]
+    fn chapter_field_binding_and_projection_match_official_wire_contract() {
+        for name in ["Chapters", "chapters", "CHAPTERS", "4"] {
+            let fields = BaseItemDtoFields::from_names(&[name.to_owned()]);
+            assert!(fields.wants_chapters(), "{name}");
+        }
+        assert!(!BaseItemDtoFields::default().wants_chapters());
+        assert!(!BaseItemDtoFields::media_sources().wants_chapters());
+        assert!(BaseItemDtoFields::all().wants_chapters());
+        assert!(!BaseItemDtoFields::all().without_chapters().wants_chapters());
+
+        let modified = "2026-01-02T03:04:05Z"
+            .parse::<DateTime<Utc>>()
+            .expect("valid chapter image date");
+        let chapter = chapter_to_dto(
+            "/media/episode.mkv",
+            ChapterRecord {
+                id: Uuid::new_v4(),
+                item_id: Uuid::new_v4(),
+                index_number: 7,
+                start_position_ticks: 123,
+                end_position_ticks: 456,
+                name: Some("Opening".to_owned()),
+                image_path: Some("/metadata/chapter.jpg".to_owned()),
+                image_date_modified: Some(modified),
+            },
+        );
+        let tag = jellyfin_controller::image_cache_tag("/media/episode.mkv", modified);
+        assert_eq!(
+            serde_json::to_value(chapter).unwrap(),
+            json!({
+                "StartPositionTicks": 123,
+                "Name": "Opening",
+                "ImagePath": "/metadata/chapter.jpg",
+                "ImageDateModified": "2026-01-02T03:04:05.0000000Z",
+                "ImageTag": tag
+            })
+        );
+
+        let missing_image = chapter_to_dto(
+            "/media/episode.mkv",
+            ChapterRecord {
+                id: Uuid::new_v4(),
+                item_id: Uuid::new_v4(),
+                index_number: 8,
+                start_position_ticks: 789,
+                end_position_ticks: 999,
+                name: None,
+                image_path: None,
+                image_date_modified: None,
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(missing_image).unwrap(),
+            json!({
+                "StartPositionTicks": 789,
+                "ImageDateModified": "0001-01-01T00:00:00.0000000Z"
+            })
+        );
+
+        let omitted = serde_json::to_value(BaseItemDto::default()).unwrap();
+        assert!(omitted.get("Chapters").is_none());
+        let requested = serde_json::to_value(BaseItemDto {
+            chapters: Some(Vec::new()),
+            ..BaseItemDto::default()
+        })
+        .unwrap();
+        assert_eq!(requested["Chapters"], json!([]));
+    }
+
+    #[test]
     fn access_field_binding_and_projection_match_user_context() {
         for (name, can_download, play_access) in [
             ("CanDownload", true, false),
@@ -3336,8 +3488,10 @@ mod tests {
         assert_eq!(without_settings.forced_sort_name, None);
         assert_eq!(without_settings.preferred_metadata_language, None);
         assert_eq!(without_settings.preferred_metadata_country_code, None);
+        assert_eq!(without_settings.chapters, None);
 
         let dto = item_to_dto_with_fields(item.clone(), "server", BaseItemDtoFields::all());
+        assert_eq!(dto.chapters, Some(Vec::new()));
 
         assert_eq!(dto.community_rating, Some(8.5));
         assert_eq!(dto.critic_rating, Some(7.0));

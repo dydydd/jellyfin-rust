@@ -28,9 +28,9 @@ use jellyfin_controller::{
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
-    BaseItemError, BaseItemImageRepository, BaseItemRepository, DeviceOptionsRepository,
-    DeviceRepository, DisplayPreferenceRepository, DisplayPreferenceStoreError,
-    ItemUpdateStoreError, ItemValueRepository, KeyframeDataRepository,
+    BaseItemError, BaseItemImageRepository, BaseItemRepository, ChapterRepository,
+    DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
+    DisplayPreferenceStoreError, ItemUpdateStoreError, ItemValueRepository, KeyframeDataRepository,
     NamedConfigurationRepository, NamedConfigurationStoreError, PersonRepository,
     QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
     SessionCommandRepository, SessionCommandStoreError, UserDataRepository,
@@ -159,6 +159,7 @@ pub struct AppState {
     pub(crate) item_images: Arc<ItemImageService>,
     pub(crate) metadata_refresh: MetadataRefreshService,
     pub(crate) base_items: Arc<BaseItemRepository>,
+    pub(crate) chapters: ChapterRepository,
     pub(crate) item_values: ItemValueRepository,
     pub(crate) people: PersonRepository,
     pub(crate) dto_images: PersistedDtoImageProjectionService<Arc<ItemImageService>>,
@@ -297,6 +298,7 @@ impl AppState {
             item_images,
             metadata_refresh,
             base_items,
+            chapters: ChapterRepository::new(Arc::clone(&database)),
             item_values,
             people,
             image_processor: ImageProcessor::with_concurrency::<4>(

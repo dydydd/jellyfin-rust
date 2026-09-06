@@ -24,6 +24,10 @@
 - Project `ImageBlurHashes` only from persisted image metadata in the same batched DTO-image lookup
   that produces the exposed image tags. Keep the top-level map present when empty, include hashes
   for inherited and Series primary tags, and never decode images or issue per-item lookups to fill it.
+- Project `Chapters` only when `ItemFields.Chapters` is requested, while default all-fields item
+  details must include an empty array when none exist. Load page chapters in one PostgreSQL batch,
+  order by `StartPositionTicks`, keep alternate versions isolated, and derive chapter image tags
+  from the owning item's media path without applying DTO image enablement, selectors, or limits.
 - Match official TV hierarchy image inheritance from relational Series/Season links: Episode and
   Season DTOs always derive `SeriesPrimaryImageTag`; Episode parent Primary prefers Season then
   Series; parent Logo prefers the nearest parent, parent Thumb prefers Series over Season, and

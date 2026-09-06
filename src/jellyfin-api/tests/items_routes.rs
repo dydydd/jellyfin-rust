@@ -9,9 +9,9 @@ use jellyfin_controller::{
 };
 use jellyfin_data::{
     ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
-    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson,
-    NewPersonCredit, NewTrickplayInfo, NewUserData, PersonRepository, TrickplayInfoRepository,
-    UserDataRepository,
+    ChapterRepository, DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage,
+    NewChapter, NewDevice, NewPerson, NewPersonCredit, NewTrickplayInfo, NewUserData,
+    PersonRepository, TrickplayInfoRepository, UserDataRepository,
     entities::{base_item, item_value, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType, UserPolicy};
@@ -183,6 +183,193 @@ async fn settings_fields_are_requested_for_pages_and_defaulted_for_item_details(
         .delete(configured.id)
         .await
         .expect("configured item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn chapters_follow_official_field_order_image_and_version_contract() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let chapters = ChapterRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let marker = Uuid::new_v4().simple().to_string();
+
+    let mut primary = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    primary.name = Some(format!("SD Chapters primary {marker}"));
+    primary.sort_name = primary.name.clone();
+    primary.parent_id = Some(root.id);
+    primary.media_type = Some("Video".to_owned());
+    primary.path = Some(format!("/media/{marker}-primary.mkv"));
+    let primary = items.create(primary).await.expect("primary chapter item");
+
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate.name = Some(format!("SD Chapters alternate {marker}"));
+    alternate.sort_name = alternate.name.clone();
+    alternate.parent_id = Some(root.id);
+    alternate.media_type = Some("Video".to_owned());
+    alternate.path = Some(format!("/media/{marker}-alternate.mkv"));
+    alternate.primary_version_id = Some(primary.id);
+    let alternate = items
+        .create(alternate)
+        .await
+        .expect("alternate chapter item");
+
+    let stored = chapters
+        .replace(
+            primary.id,
+            vec![
+                NewChapter {
+                    index_number: 9,
+                    start_position_ticks: 900,
+                    end_position_ticks: 999,
+                    name: Some("Later".to_owned()),
+                },
+                NewChapter {
+                    index_number: 2,
+                    start_position_ticks: 100,
+                    end_position_ticks: 199,
+                    name: Some("Opening".to_owned()),
+                },
+            ],
+        )
+        .await
+        .expect("primary chapters");
+    let image_modified = "2026-01-02T03:04:05Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .expect("chapter image date");
+    chapters
+        .set_image_data(
+            stored[1].id,
+            format!("/metadata/{marker}-chapter.jpg"),
+            image_modified,
+        )
+        .await
+        .expect("chapter image metadata");
+    chapters
+        .replace(
+            alternate.id,
+            vec![NewChapter {
+                index_number: 0,
+                start_position_ticks: 50,
+                end_position_ticks: 99,
+                name: Some("Alternate only".to_owned()),
+            }],
+        )
+        .await
+        .expect("alternate chapters");
+
+    let without_fields = body_json(
+        fixture
+            .request(
+                &format!("/Items?Ids={}", primary.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(without_fields["Items"][0].get("Chapters").is_none());
+
+    for (query_name, fields) in [
+        ("Fields", "Chapters"),
+        ("fields", "chapters"),
+        ("fields", "4"),
+    ] {
+        let route = format!(
+            "/Items?Ids={}&{query_name}={fields}&EnableImages=false&EnableImageTypes=Primary&ImageTypeLimit=0",
+            primary.id
+        );
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let body = body_json(response).await;
+        let dto = &body["Items"][0];
+        let projected = dto["Chapters"].as_array().expect("requested chapters");
+        assert_eq!(projected.len(), 2, "{route}");
+        assert_eq!(projected[0]["StartPositionTicks"], 100, "{route}");
+        assert_eq!(projected[0]["Name"], "Opening", "{route}");
+        assert_eq!(
+            projected[0]["ImagePath"],
+            format!("/metadata/{marker}-chapter.jpg"),
+            "{route}"
+        );
+        assert_eq!(
+            projected[0]["ImageDateModified"], "2026-01-02T03:04:05.0000000Z",
+            "{route}"
+        );
+        assert_eq!(
+            projected[0]["ImageTag"],
+            jellyfin_controller::image_cache_tag(
+                primary.path.as_deref().expect("primary path"),
+                image_modified
+            ),
+            "{route}"
+        );
+        assert_eq!(projected[1]["StartPositionTicks"], 900, "{route}");
+        assert_eq!(
+            projected[1]["ImageDateModified"], "0001-01-01T00:00:00.0000000Z",
+            "{route}"
+        );
+        assert!(projected[1].get("ImagePath").is_none(), "{route}");
+        assert!(projected[1].get("ImageTag").is_none(), "{route}");
+        assert!(dto.get("ImageTags").is_none(), "{route}");
+        assert_eq!(dto["ImageBlurHashes"], serde_json::json!({}), "{route}");
+    }
+
+    for route in [
+        format!("/Items/{}?UserId={}", primary.id, fixture.user_id),
+        format!("/Users/{}/Items/{}", fixture.user_id, primary.id),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let dto = body_json(response).await;
+        assert_eq!(dto["Chapters"].as_array().unwrap().len(), 2, "{route}");
+        assert_eq!(dto["Chapters"][0]["Name"], "Opening", "{route}");
+    }
+
+    let alternate_route = format!("/Users/{}/Items/{}", fixture.user_id, alternate.id);
+    let alternate_dto = body_json(
+        fixture
+            .request(&alternate_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(alternate_dto["Id"], alternate.id.simple().to_string());
+    assert_eq!(
+        alternate_dto["Chapters"],
+        serde_json::json!([{
+            "StartPositionTicks": 50,
+            "Name": "Alternate only",
+            "ImageDateModified": "0001-01-01T00:00:00.0000000Z"
+        }])
+    );
+
+    let empty_route = format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_ids[0]);
+    let empty_dto = body_json(
+        fixture
+            .request(&empty_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(empty_dto["Chapters"], serde_json::json!([]));
+    let empty_page = body_json(
+        fixture
+            .request(
+                &format!("/Items?Ids={}&Fields=Chapters", fixture.item_ids[0]),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(empty_page["Items"][0]["Chapters"], serde_json::json!([]));
+
+    items
+        .delete(alternate.id)
+        .await
+        .expect("alternate chapter cleanup");
+    items
+        .delete(primary.id)
+        .await
+        .expect("primary chapter cleanup");
     fixture.cleanup().await;
 }
 

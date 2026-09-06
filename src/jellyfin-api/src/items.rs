@@ -2076,6 +2076,8 @@ async fn page_to_dto_with_fields_and_options(
     dto_options: &PageDtoOptions,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut chapters =
+        user_library::chapters_for_items(state, &page.items, requested_fields).await?;
     let audio_item_ids = page
         .items
         .iter()
@@ -2299,6 +2301,11 @@ async fn page_to_dto_with_fields_and_options(
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let mut dto =
             user_library::item_to_dto_with_fields(item, state.server_id(), requested_fields);
+        user_library::attach_chapters(
+            &mut dto,
+            requested_fields,
+            chapters.remove(&item_id).unwrap_or_default(),
+        );
         user_library::attach_item_access_fields(
             &mut dto,
             requested_fields,

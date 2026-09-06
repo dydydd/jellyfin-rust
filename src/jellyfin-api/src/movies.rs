@@ -128,6 +128,7 @@ async fn page_items_to_dtos(
     };
     let mut trickplay_manifests =
         user_library::trickplay_manifests_for_items(state, &page.items, fields).await?;
+    let mut chapters = user_library::chapters_for_items(state, &page.items, fields).await?;
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
@@ -137,11 +138,16 @@ async fn page_items_to_dtos(
             state,
             item,
             target_user_id,
-            fields.without_trickplay(),
+            fields.without_trickplay().without_chapters(),
             defaults.as_ref(),
             remembered.as_ref(),
         )
         .await?;
+        user_library::attach_chapters(
+            &mut dto,
+            fields,
+            chapters.remove(&item_id).unwrap_or_default(),
+        );
         user_library::attach_trickplay_manifest(
             &mut dto,
             fields,
