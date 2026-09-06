@@ -102,21 +102,31 @@ async fn visible_item_ids_filter_alternate_sources_by_access_policy() {
         .await
         .expect("blocked alternate tag");
 
+    let access_policy = BaseItemQuery {
+        blocked_tags: vec!["privateversion".to_owned()],
+        enable_all_folders: true,
+        ..BaseItemQuery::default()
+    };
     let visible = repository
-        .visible_item_ids(
-            &group.ids(),
-            &BaseItemQuery {
-                blocked_tags: vec!["privateversion".to_owned()],
-                enable_all_folders: true,
-                ..BaseItemQuery::default()
-            },
-        )
+        .visible_item_ids(&group.ids(), &access_policy)
         .await
         .expect("policy-filtered alternate identifiers");
 
     assert_eq!(
         visible,
         [group.primary, group.alternates[1]].into_iter().collect()
+    );
+
+    let visible_counts = repository
+        .visible_media_source_counts(&group.ids(), &access_policy)
+        .await
+        .expect("policy-filtered media-source counts");
+    assert_eq!(visible_counts.get(&group.primary), Some(&2));
+    assert_eq!(visible_counts.get(&group.alternates[1]), Some(&2));
+    assert_eq!(
+        visible_counts.get(&group.alternates[0]),
+        Some(&3),
+        "the explicitly displayed source remains countable even when its tag is blocked"
     );
     cleanup(&repository, [&group]).await;
 }

@@ -150,9 +150,9 @@
 - Bind all six nullable `Items/Filters2` classifiers (`IsAiring`, `IsMovie`, `IsSports`, `IsKids`,
   `IsNews`, and `IsSeries`) case-insensitively and apply each one to both genre discovery and
   audio/subtitle language discovery. Reject malformed boolean values instead of ignoring them.
-- Project `MediaSourceCount` for item pages with one batched alternate-version query. Preserve the
-  official nullable-single-source behavior, and include episode groups so the web client can show
-  merged episode versions without loading every `MediaSource`.
+- Project count-only `MediaSourceCount` for item pages with one batched, target-user-policy-aware
+  alternate-version query. Always count the displayed item, preserve the official nullable-single-
+  source behavior, and include episode groups without loading every `MediaSource`.
 - Filter alternate `MediaSources` and their full-source `MediaSourceCount` by the target user's
   standalone item visibility before loading streams or attachments. Always retain the explicitly
   displayed source, while user-less global projections retain every source.

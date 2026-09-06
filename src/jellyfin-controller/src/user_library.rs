@@ -394,6 +394,28 @@ impl UserLibraryService {
             .await?)
     }
 
+    /// Counts alternate media versions visible to an already-authorized target user.
+    ///
+    /// The repository performs one set-based aggregate for every requested displayed item and
+    /// always includes that displayed item even when evaluating its siblings' policy visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-user, invalid-policy, or persistence error.
+    pub async fn visible_media_source_counts(
+        &self,
+        target_user_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, u64>, UserLibraryError> {
+        let mut access_policy = BaseItemQuery::default();
+        self.apply_user_policy(&mut access_policy, target_user_id)
+            .await?;
+        Ok(self
+            .items
+            .visible_media_source_counts(item_ids, &access_policy)
+            .await?)
+    }
+
     /// Searches a target user's library with official score ordering.
     ///
     /// # Errors

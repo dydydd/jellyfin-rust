@@ -1129,8 +1129,8 @@ pub(crate) async fn project_item_to_dto(
     }
     if fields.wants_media_source_count() && !fields.media_sources {
         let count = state
-            .base_items
-            .media_source_counts(&[item_id])
+            .user_library
+            .visible_media_source_counts(target_user_id, &[item_id])
             .await?
             .remove(&item_id)
             .unwrap_or_default();

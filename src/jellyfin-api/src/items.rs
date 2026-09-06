@@ -2037,7 +2037,15 @@ async fn page_to_dto_with_fields_and_options(
     };
     let mut media_source_counts =
         if requested_fields.wants_media_source_count() && !requested_fields.wants_media_sources() {
-            state.base_items.media_source_counts(&item_ids).await?
+            match target_user_id {
+                Some(target_user_id) => {
+                    state
+                        .user_library
+                        .visible_media_source_counts(target_user_id, &item_ids)
+                        .await?
+                }
+                None => state.base_items.media_source_counts(&item_ids).await?,
+            }
         } else {
             std::collections::HashMap::new()
         };

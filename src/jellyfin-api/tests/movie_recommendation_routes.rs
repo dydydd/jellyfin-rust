@@ -6,9 +6,10 @@ use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
-    UserDataRepository,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice, NewUserData, UserDataRepository, entities::item_value,
 };
+use jellyfin_model::UserPolicy;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -111,9 +112,27 @@ async fn exercise_movie_recommendations_route(database_name: &str) {
     assert_eq!(items[0]["Name"], "B Recent Movie");
     assert_eq!(items[0]["Type"], "Movie");
     assert!(items[0]["MediaSources"].is_array());
+    assert_eq!(items[0]["MediaSources"].as_array().unwrap().len(), 1);
     assert_eq!(items[1]["Id"], fixture.older_movie_id.simple().to_string());
     assert_eq!(items[1]["Name"], "A Older Movie");
     assert_eq!(items[1]["Type"], "Movie");
+
+    let count_only = body_json(
+        fixture
+            .get(
+                "/Movies/Recommendations?itemLimit=1&fields=MediaSourceCount",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let count_only_item = &count_only[0]["Items"][0];
+    assert_eq!(
+        count_only_item["Id"],
+        fixture.recent_movie_id.simple().to_string()
+    );
+    assert!(count_only_item.get("MediaSources").is_none());
+    assert!(count_only_item.get("MediaSourceCount").is_none());
 
     fixture.cleanup().await;
 }
@@ -159,6 +178,40 @@ impl Fixture {
         let root = items.ensure_user_root().await.expect("user root");
         let older_movie = create_item(&items, "Movie", "A Older Movie", root.id).await;
         let recent_movie = create_item(&items, "Movie", "B Recent Movie", root.id).await;
+        let mut hidden_alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        hidden_alternate.name = recent_movie.name.clone();
+        hidden_alternate.sort_name = recent_movie.sort_name.clone();
+        hidden_alternate.parent_id = Some(root.id);
+        hidden_alternate.media_type = Some("Video".to_owned());
+        hidden_alternate.path =
+            Some("/media/movie-recommendations/B Recent Movie - private.mkv".to_owned());
+        hidden_alternate.primary_version_id = Some(recent_movie.id);
+        let hidden_alternate = items
+            .create(hidden_alternate)
+            .await
+            .expect("hidden alternate movie");
+        ItemValueRepository::new(database.clone())
+            .link(
+                hidden_alternate.id,
+                item_value::ItemValueType::Tags,
+                "PrivateVersion",
+            )
+            .await
+            .expect("hidden alternate tag");
+        let mut policy = UserPolicy {
+            authentication_provider_id: Some(
+                UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+            ),
+            password_reset_provider_id: Some(
+                UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+            ),
+            ..UserPolicy::default()
+        };
+        policy.blocked_tags = vec!["privateversion".to_owned()];
+        users
+            .update_policy(user.id, &policy)
+            .await
+            .expect("restricted recommendation policy");
         create_item(&items, "Episode", "C Ignored Episode", root.id).await;
 
         let user_data = UserDataRepository::new(database.clone());

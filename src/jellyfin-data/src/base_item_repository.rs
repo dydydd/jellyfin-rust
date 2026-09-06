@@ -977,6 +977,32 @@ impl BaseItemRepository {
         &self,
         item_ids: &[Uuid],
     ) -> Result<HashMap<Uuid, u64>, BaseItemError> {
+        self.media_source_counts_with_policy(item_ids, None).await
+    }
+
+    /// Counts the user-visible local media sources in each requested video's version group.
+    ///
+    /// The explicitly displayed version is always counted, while every sibling must satisfy the
+    /// supplied standalone-item access policy. This matches Jellyfin's nullable count projection
+    /// without materializing complete media-source rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the aggregate query fails.
+    pub async fn visible_media_source_counts(
+        &self,
+        item_ids: &[Uuid],
+        access_policy: &BaseItemQuery,
+    ) -> Result<HashMap<Uuid, u64>, BaseItemError> {
+        self.media_source_counts_with_policy(item_ids, Some(access_policy))
+            .await
+    }
+
+    async fn media_source_counts_with_policy(
+        &self,
+        item_ids: &[Uuid],
+        access_policy: Option<&BaseItemQuery>,
+    ) -> Result<HashMap<Uuid, u64>, BaseItemError> {
         if item_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -989,6 +1015,11 @@ impl BaseItemRepository {
                         AND version.item_type IN {VIDEO_ITEM_TYPES_SQL} \
                        WHERE requested.item_type IN {VIDEO_ITEM_TYPES_SQL}"
         );
+        if let Some(condition) =
+            access_policy.and_then(|policy| policy_filter_sql("version", policy))
+        {
+            let _ = write!(sql, " AND (version.id = requested.id OR ({condition}))");
+        }
         let mut values = Vec::with_capacity(item_ids.len());
         append_uuid_list_filter(&mut sql, &mut values, "requested.id", item_ids);
         sql.push_str(" GROUP BY requested.id");

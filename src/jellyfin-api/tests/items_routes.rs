@@ -571,6 +571,36 @@ async fn episode_media_source_count_is_projected_without_loading_sources() {
     alternate.primary_version_id = Some(primary.id);
     let alternate = items.create(alternate).await.expect("alternate episode");
 
+    let mut hidden_alternate = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    hidden_alternate.name = primary.name.clone();
+    hidden_alternate.sort_name = primary.sort_name.clone();
+    hidden_alternate.parent_id = Some(root.id);
+    hidden_alternate.media_type = Some("Video".to_owned());
+    hidden_alternate.path = Some(format!("/media/{marker} - private.mkv"));
+    hidden_alternate.primary_version_id = Some(primary.id);
+    let hidden_alternate = items
+        .create(hidden_alternate)
+        .await
+        .expect("hidden alternate episode");
+    ItemValueRepository::new(fixture.database.clone())
+        .link(
+            hidden_alternate.id,
+            item_value::ItemValueType::Tags,
+            "PrivateVersion",
+        )
+        .await
+        .expect("hidden alternate tag");
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["privateversion".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted user policy");
+
     let mut singleton = NewBaseItem::new(Uuid::new_v4(), "Episode");
     singleton.name = Some(format!("{marker} Singleton"));
     singleton.sort_name = singleton.name.clone();
@@ -603,6 +633,10 @@ async fn episode_media_source_count_is_projected_without_loading_sources() {
         assert!(single.get("MediaSourceCount").is_none(), "{route}");
     }
 
+    items
+        .delete(hidden_alternate.id)
+        .await
+        .expect("hidden alternate cleanup");
     items.delete(alternate.id).await.expect("alternate cleanup");
     items.delete(primary.id).await.expect("primary cleanup");
     items.delete(singleton.id).await.expect("singleton cleanup");
