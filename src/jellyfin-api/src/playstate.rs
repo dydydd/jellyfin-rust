@@ -10,7 +10,7 @@ use jellyfin_controller::{
 };
 use jellyfin_data::NewActivityLog;
 use jellyfin_model::{PlayMethod, PlaybackOrder, PlayerStateInfo, RepeatMode, UserItemDataDto};
-use serde::{Deserialize, de};
+use serde::{Deserialize, Serialize, Serializer, de};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -57,7 +57,7 @@ pub struct MarkUnplayedQuery {
 pub struct PlaybackProgressInfo {
     #[serde(alias = "canSeek", alias = "canseek")]
     pub can_seek: bool,
-    #[serde(alias = "item")]
+    #[serde(alias = "item", deserialize_with = "deserialize_optional_object")]
     pub item: Option<Value>,
     #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Uuid,
@@ -116,7 +116,7 @@ pub struct PlaybackProgressInfo {
     )]
     pub playback_order: PlaybackOrder,
     #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
-    pub now_playing_queue: Option<Vec<Value>>,
+    pub now_playing_queue: Option<Vec<PlaybackQueueItem>>,
     #[serde(alias = "playlistItemId", alias = "playlistitemid")]
     pub playlist_item_id: Option<String>,
 }
@@ -126,7 +126,7 @@ pub struct PlaybackProgressInfo {
 pub struct PlaybackStartInfo {
     #[serde(alias = "canSeek", alias = "canseek")]
     pub can_seek: bool,
-    #[serde(alias = "item")]
+    #[serde(alias = "item", deserialize_with = "deserialize_optional_object")]
     pub item: Option<Value>,
     #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Uuid,
@@ -185,7 +185,7 @@ pub struct PlaybackStartInfo {
     )]
     pub playback_order: PlaybackOrder,
     #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
-    pub now_playing_queue: Option<Vec<Value>>,
+    pub now_playing_queue: Option<Vec<PlaybackQueueItem>>,
     #[serde(alias = "playlistItemId", alias = "playlistitemid")]
     pub playlist_item_id: Option<String>,
 }
@@ -193,7 +193,7 @@ pub struct PlaybackStartInfo {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackStopInfo {
-    #[serde(alias = "item")]
+    #[serde(alias = "item", deserialize_with = "deserialize_optional_object")]
     pub item: Option<Value>,
     #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Uuid,
@@ -218,7 +218,24 @@ pub struct PlaybackStopInfo {
     #[serde(alias = "playlistItemId", alias = "playlistitemid")]
     pub playlist_item_id: Option<String>,
     #[serde(alias = "nowPlayingQueue", alias = "nowplayingqueue")]
-    pub now_playing_queue: Option<Vec<Value>>,
+    pub now_playing_queue: Option<Vec<PlaybackQueueItem>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlaybackQueueItem {
+    #[serde(
+        alias = "id",
+        deserialize_with = "deserialize_compat_guid",
+        serialize_with = "serialize_compat_guid"
+    )]
+    id: Uuid,
+    #[serde(
+        alias = "playlistItemId",
+        alias = "playlistitemid",
+        skip_serializing_if = "Option::is_none"
+    )]
+    playlist_item_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -464,6 +481,34 @@ where
     D: serde::Deserializer<'de>,
 {
     deserialize_optional_integer(deserializer)
+}
+
+fn deserialize_optional_object<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(value) if value.is_object() => Ok(Some(value)),
+        Some(_) => Err(de::Error::custom("expected an object or null")),
+    }
+}
+
+fn deserialize_compat_guid<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| Uuid::parse_str(&value).map_err(de::Error::custom))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn serialize_compat_guid<S>(value: &Uuid, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.collect_str(&value.simple())
 }
 
 trait CompatibleEnum: Default + Sized {
@@ -1200,7 +1245,7 @@ async fn session_now_playing_item(
     media_source_id: Option<&str>,
     reported_item: Option<Value>,
 ) -> Result<Option<Value>, ApiError> {
-    if let Some(item) = reported_item.filter(|value| value.is_object()) {
+    if let Some(item) = reported_item.filter(Value::is_object) {
         return Ok(Some(item));
     }
     if item_id.is_nil() {

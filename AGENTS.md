@@ -281,6 +281,9 @@
   `MediaSourceId`: project the selected version's runtime and localized media streams, then reuse
   that same-item snapshot on later progress reports that omit `Item` instead of replacing it with
   a shallow DTO.
+- Validate modern playback callback bodies before changing session state: `Item` must be an object
+  or null, and every `NowPlayingQueue` entry must be an official `QueueItem` with a valid Guid `Id`.
+  Re-serialize queue entries with canonical PascalCase fields and compact Guid values.
 - Apply static media-source capability flags from the target user's policy, including when an
   administrator requests another user's item or `PlaybackInfo`: audio transcoding controls audio
   sources, while video transcoding and playback remuxing independently control video sources.

@@ -557,7 +557,7 @@ async fn playback_reports_update_session_state_projection() {
             "RepeatMode": "RepeatAll",
             "PlaybackOrder": "Shuffle",
             "NowPlayingQueue": [{
-                "Id": "queue-item",
+                "Id": fixture.item_id,
                 "Name": "Queued Item"
             }],
             "PlaylistItemId": "playlist-entry"
@@ -669,6 +669,87 @@ async fn playback_reports_update_session_state_projection() {
     assert_eq!(session["NowPlayingQueue"][0]["Name"], "Queued Item");
     assert_eq!(session["PlaylistItemId"], "playlist-after-stop");
     assert!(session["LastPausedDate"].is_null());
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn modern_playback_bodies_validate_items_and_canonicalize_queue_items() {
+    let fixture = PlaystateFixture::new().await;
+
+    for route in [
+        "/Sessions/Playing",
+        "/Sessions/Playing/Progress",
+        "/Sessions/Playing/Stopped",
+    ] {
+        let response = request_json(
+            &fixture.app,
+            "POST",
+            route,
+            &fixture.user_token,
+            json!({
+                "ItemId": fixture.runtime_item_id,
+                "Item": "not-an-item-object"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{route} Item");
+
+        for invalid_queue in [json!([false]), json!([{ "Id": "not-a-guid" }])] {
+            let response = request_json(
+                &fixture.app,
+                "POST",
+                route,
+                &fixture.user_token,
+                json!({
+                    "ItemId": fixture.runtime_item_id,
+                    "NowPlayingQueue": invalid_queue
+                }),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{route} NowPlayingQueue"
+            );
+        }
+    }
+
+    let queue_id = Uuid::new_v4();
+    let response = request_json(
+        &fixture.app,
+        "POST",
+        "/Sessions/Playing/Stopped",
+        &fixture.user_token,
+        json!({
+            "ItemId": fixture.runtime_item_id,
+            "NowPlayingQueue": [{
+                "id": queue_id.hyphenated().to_string(),
+                "playlistItemId": "playlist-entry",
+                "Ignored": "not persisted"
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let sessions = body_json(
+        request(
+            &fixture.app,
+            "GET",
+            &format!("/Sessions?deviceId={}", fixture.user_device_id),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        sessions.as_array().expect("sessions array")[0]["NowPlayingQueue"],
+        json!([{
+            "Id": queue_id.simple().to_string(),
+            "PlaylistItemId": "playlist-entry"
+        }])
+    );
 
     fixture.cleanup().await;
 }
