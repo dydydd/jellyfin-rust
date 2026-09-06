@@ -123,18 +123,35 @@ pub(crate) async fn list(
         .user_library
         .apply_user_policy(&mut item_query, target_user_id)
         .await?;
+    let mut recursive_folder_id = None;
     if let Some(parent_id) = item_query.parent_id {
         let parent = state
             .base_items
             .get(parent_id)
             .await?
             .ok_or(ApiError::InvalidRequest)?;
-        if !parent.is_folder {
+        if parent.is_folder {
+            recursive_folder_id = item_query.recursive.then_some(parent.id);
+        } else {
             item_query.parent_id = None;
             item_query.recursive = false;
             item_query.ids = vec![parent.id];
         }
+    } else if item_query.recursive {
+        recursive_folder_id = Some(state.base_items.ensure_user_root().await?.id);
     }
+    let recursive_item_total = if let Some(parent_id) = recursive_folder_id {
+        let mut count_query = item_query.clone();
+        count_query.parent_id = Some(parent_id);
+        count_query.start_index = 0;
+        count_query.limit = None;
+        Some(
+            u64::try_from(state.base_items.item_counts(&count_query).await?.item_count)
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
     let page = state
         .years
         .list(&authenticated.user, target_user_id, item_query, order)
@@ -145,7 +162,10 @@ pub(crate) async fn list(
             .into_iter()
             .map(|year| user_library::year_to_dto(year, state.server_id()))
             .collect(),
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        total_record_count: usize::try_from(
+            recursive_item_total.unwrap_or(page.total_record_count),
+        )
+        .unwrap_or(usize::MAX),
         start_index: requested_start_index,
     }))
 }

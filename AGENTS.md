@@ -170,6 +170,9 @@
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.
+- Preserve the `/Years` recursive-folder total-count quirk: report the number of policy-visible,
+  filtered primary descendants before extracting distinct positive production years. For a
+  non-recursive folder or a non-folder parent, report the distinct-year count instead.
 - Keep `/Persons` pagination signed as well, but preserve its different limit rule: a non-positive
   `Limit` is unlimited, while a non-positive `StartIndex` skips nothing and is still echoed.
 - Keep item-by-name pagination such as `/Genres`, `/MusicGenres`, and `/Studios` signed: a negative

@@ -52,7 +52,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&years, &["2024", "2001"], 4, 0);
+    assert_years(&years, &["2024", "2001"], 6, 0);
     let listed_2024_id = years["Items"][0]["Id"].clone();
 
     let items = BaseItemRepository::new(fixture.database.clone());
@@ -78,7 +78,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&lowercase_years, &["2024"], 4, 0);
+    assert_years(&lowercase_years, &["2024"], 6, 0);
 
     let pascal_years = body_json(
         fixture
@@ -90,7 +90,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&pascal_years, &["2001", "1999"], 4, 1);
+    assert_years(&pascal_years, &["2001", "1999"], 6, 1);
 
     let paged = body_json(
         fixture
@@ -102,7 +102,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&paged, &["1999", "2001"], 4, 1);
+    assert_years(&paged, &["1999", "2001"], 6, 1);
 
     let negative_start = body_json(
         fixture
@@ -114,7 +114,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&negative_start, &["2024", "2001"], 4, -1);
+    assert_years(&negative_start, &["2024", "2001"], 6, -1);
 
     let negative_limit = body_json(
         fixture
@@ -126,7 +126,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&negative_limit, &[], 4, 0);
+    assert_years(&negative_limit, &[], 6, 0);
 
     let zero_limit = body_json(
         fixture
@@ -138,7 +138,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&zero_limit, &[], 4, 0);
+    assert_years(&zero_limit, &[], 6, 0);
 
     assert_eq!(
         fixture
@@ -197,7 +197,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&recursive_years, &["1999", "2001"], 2, 0);
+    assert_years(&recursive_years, &["1999", "2001"], 3, 0);
 
     let lowercase_recursive_years = body_json(
         fixture
@@ -212,7 +212,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
             .await,
     )
     .await;
-    assert_years(&lowercase_recursive_years, &["1999"], 2, 1);
+    assert_years(&lowercase_recursive_years, &["1999"], 3, 1);
 
     let item_year = body_json(
         fixture
@@ -479,10 +479,12 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     assert_eq!(persisted_year["UserData"]["IsFavorite"], true);
 
     let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
     let visible_folder_id = Uuid::new_v4();
     let mut visible_folder = NewBaseItem::new(visible_folder_id, "CollectionFolder");
     visible_folder.name = Some("Visible policy library".to_owned());
     visible_folder.is_folder = true;
+    visible_folder.parent_id = Some(root.id);
     items
         .create(visible_folder)
         .await
@@ -491,6 +493,7 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
     let mut hidden_folder = NewBaseItem::new(hidden_folder_id, "CollectionFolder");
     hidden_folder.name = Some("Hidden policy library".to_owned());
     hidden_folder.is_folder = true;
+    hidden_folder.parent_id = Some(root.id);
     items
         .create(hidden_folder)
         .await
@@ -573,6 +576,121 @@ async fn year_route_matches_official_authenticated_item_by_name_contract() {
         assert_eq!(visible_detail["MovieCount"], 1, "{user_id_name}");
         assert_eq!(visible_detail["ChildCount"], 1, "{user_id_name}");
     }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn recursive_year_totals_count_visible_primary_items_before_year_extraction() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let folder_id = Uuid::new_v4();
+    let mut folder = NewBaseItem::new(folder_id, "Folder");
+    folder.name = Some("Year count folder".to_owned());
+    folder.is_folder = true;
+    folder.parent_id = Some(root.id);
+    items.create(folder).await.expect("folder creation");
+
+    let mut first = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    first.name = Some("First same-year movie".to_owned());
+    first.production_year = Some(1933);
+    first.parent_id = Some(folder_id);
+    let first = items.create(first).await.expect("first movie creation");
+
+    let mut second = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    second.name = Some("Second same-year movie".to_owned());
+    second.production_year = Some(1933);
+    second.parent_id = Some(folder_id);
+    items.create(second).await.expect("second movie creation");
+
+    let mut without_year = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    without_year.name = Some("Movie without a year".to_owned());
+    without_year.parent_id = Some(folder_id);
+    items
+        .create(without_year)
+        .await
+        .expect("yearless movie creation");
+
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate.name = Some("Alternate-only year".to_owned());
+    alternate.production_year = Some(1944);
+    alternate.parent_id = Some(folder_id);
+    alternate.primary_version_id = Some(first.id);
+    items
+        .create(alternate)
+        .await
+        .expect("alternate movie creation");
+
+    let mut blocked = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    blocked.name = Some("Policy-blocked year".to_owned());
+    blocked.production_year = Some(1955);
+    blocked.parent_id = Some(folder_id);
+    let blocked = items.create(blocked).await.expect("blocked movie creation");
+    ItemValueRepository::new(fixture.database.clone())
+        .link(blocked.id, item_value::ItemValueType::Tags, "Blocked")
+        .await
+        .expect("blocked movie tag");
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.blocked_tags = vec!["Blocked".to_owned()];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("blocked-tag policy");
+
+    let recursive = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={folder_id}&recursive=true"),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&recursive, &["1933"], 3, 0);
+
+    let empty_page = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={folder_id}&recursive=true&limit=0"),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&empty_page, &[], 3, 0);
+
+    let non_recursive = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={folder_id}&recursive=false"),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&non_recursive, &["1933"], 1, 0);
+
+    let non_folder = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={}&recursive=true", first.id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_years(&non_folder, &["1933"], 1, 0);
 
     fixture.cleanup().await;
 }
@@ -792,11 +910,13 @@ impl Fixture {
         let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
 
         let items = BaseItemRepository::new(database.clone());
+        let root = items.ensure_user_root().await.expect("user root creation");
         let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
         movie.name = Some("The Future".to_owned());
         movie.sort_name = Some("Future".to_owned());
         movie.media_type = Some("Video".to_owned());
         movie.production_year = Some(2024);
+        movie.parent_id = Some(root.id);
         items.create(movie).await.expect("movie creation");
 
         let parent_id = Uuid::new_v4();
@@ -804,6 +924,7 @@ impl Fixture {
         parent.name = Some("Year Parent".to_owned());
         parent.sort_name = Some("Year Parent".to_owned());
         parent.is_folder = true;
+        parent.parent_id = Some(root.id);
         items.create(parent).await.expect("parent creation");
 
         let mut child_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
@@ -842,6 +963,7 @@ impl Fixture {
         audio.sort_name = Some("Old Song".to_owned());
         audio.media_type = Some("Audio".to_owned());
         audio.production_year = Some(1977);
+        audio.parent_id = Some(root.id);
         items.create(audio).await.expect("audio creation");
 
         let persisted_year_id = official_item_by_name_id("Year", "1984");
