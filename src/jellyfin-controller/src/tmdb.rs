@@ -1245,13 +1245,7 @@ impl TmdbMetadataProvider {
         if !episode.remote_trailers.is_empty() {
             data.insert(
                 "RemoteTrailers".to_owned(),
-                Value::Array(
-                    episode
-                        .remote_trailers
-                        .iter()
-                        .map(|url| json!({ "Name": "", "Url": url }))
-                        .collect(),
-                ),
+                Value::Array(episode_trailers(&episode.remote_trailers)),
             );
         }
         if let Some(series_name) = episode.series_name.as_deref() {
@@ -2122,22 +2116,23 @@ fn take_data_string(data: &mut serde_json::Map<String, Value>, key: &str) -> Opt
 }
 
 fn trailer_urls(videos: &TmdbVideos) -> Vec<String> {
-    videos
-        .results
-        .iter()
-        .filter(|video| {
-            video
-                .site
-                .as_deref()
-                .is_some_and(|site| site.eq_ignore_ascii_case("youtube"))
-                && video
-                    .video_type
-                    .as_deref()
-                    .is_some_and(|kind| kind.eq_ignore_ascii_case("trailer"))
-        })
-        .filter_map(|video| video.key.as_deref().filter(|key| !key.is_empty()))
-        .map(|key| format!("https://www.youtube.com/watch?v={key}"))
-        .collect()
+    let mut trailers = Vec::new();
+    for video in &videos.results {
+        if !TmdbUtils::is_trailer_type(video.site.as_deref(), video.video_type.as_deref()) {
+            continue;
+        }
+        let Some(key) = video.key.as_deref().filter(|key| !key.is_empty()) else {
+            continue;
+        };
+        let url = format!("https://www.youtube.com/watch?v={key}");
+        if !trailers
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&url))
+        {
+            trailers.push(url);
+        }
+    }
+    trailers
 }
 
 fn datetime_to_ticks(date: DateTime<Utc>) -> i64 {
@@ -2354,20 +2349,39 @@ fn set_string(object: &mut serde_json::Map<String, Value>, key: &str, value: Opt
 }
 
 fn trailers(videos: &TmdbVideos) -> Vec<Value> {
-    videos
+    let mut trailers = videos
         .results
         .iter()
         .filter(|video| {
-            video.site.as_deref().is_some_and(|site| site.eq_ignore_ascii_case("youtube"))
-                && video.video_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("trailer"))
+            TmdbUtils::is_trailer_type(video.site.as_deref(), video.video_type.as_deref())
         })
+        .collect::<Vec<_>>();
+    trailers.sort_by_key(|video| {
+        !video
+            .video_type
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("trailer"))
+    });
+    trailers
+        .into_iter()
         .map(|video| {
-            json!({
-                "Name": video.name,
-                "Url": format!("https://www.youtube.com/watch?v={}", video.key.as_deref().unwrap_or_default())
-            })
+            let mut trailer = serde_json::Map::from_iter([(
+                "Url".to_owned(),
+                json!(format!(
+                    "https://www.youtube.com/watch?v={}",
+                    video.key.as_deref().unwrap_or_default()
+                )),
+            )]);
+            if let Some(name) = video.name.as_deref() {
+                trailer.insert("Name".to_owned(), json!(name));
+            }
+            Value::Object(trailer)
         })
         .collect()
+}
+
+fn episode_trailers(trailers: &[String]) -> Vec<Value> {
+    trailers.iter().map(|url| json!({ "Url": url })).collect()
 }
 
 fn us_rating(release_dates: &TmdbReleaseDates) -> Option<String> {
@@ -3403,6 +3417,99 @@ mod tests {
         let english_only = images_to_remote_images(images, false);
         assert_eq!(english_only.len(), 1);
         assert_eq!(english_only[0].image_type, ImageType::Primary);
+    }
+
+    #[test]
+    fn trailer_mapping_matches_official_movie_series_and_episode_order() {
+        let videos = TmdbVideos {
+            results: vec![
+                TmdbVideo {
+                    key: Some("teaser-first".to_owned()),
+                    name: Some("Teaser first".to_owned()),
+                    site: Some("YouTube".to_owned()),
+                    video_type: Some("Teaser".to_owned()),
+                },
+                TmdbVideo {
+                    key: Some("trailer-first".to_owned()),
+                    name: Some("Trailer first".to_owned()),
+                    site: Some("youtube".to_owned()),
+                    video_type: Some("TRAILER".to_owned()),
+                },
+                TmdbVideo {
+                    key: Some("vimeo".to_owned()),
+                    name: Some("Wrong site".to_owned()),
+                    site: Some("Vimeo".to_owned()),
+                    video_type: Some("Trailer".to_owned()),
+                },
+                TmdbVideo {
+                    key: Some("trailer-second".to_owned()),
+                    name: None,
+                    site: Some("YouTube".to_owned()),
+                    video_type: Some("Trailer".to_owned()),
+                },
+                TmdbVideo {
+                    key: Some("teaser-second".to_owned()),
+                    name: Some("Teaser second".to_owned()),
+                    site: Some("YOUTUBE".to_owned()),
+                    video_type: Some("teaser".to_owned()),
+                },
+                TmdbVideo {
+                    key: Some("clip".to_owned()),
+                    name: Some("Wrong type".to_owned()),
+                    site: Some("YouTube".to_owned()),
+                    video_type: Some("Clip".to_owned()),
+                },
+                TmdbVideo {
+                    key: Some("TRAILER-FIRST".to_owned()),
+                    name: Some("Episode duplicate".to_owned()),
+                    site: Some("YouTube".to_owned()),
+                    video_type: Some("Teaser".to_owned()),
+                },
+            ],
+        };
+
+        assert_eq!(
+            trailers(&videos),
+            vec![
+                json!({
+                    "Name": "Trailer first",
+                    "Url": "https://www.youtube.com/watch?v=trailer-first"
+                }),
+                json!({"Url": "https://www.youtube.com/watch?v=trailer-second"}),
+                json!({
+                    "Name": "Teaser first",
+                    "Url": "https://www.youtube.com/watch?v=teaser-first"
+                }),
+                json!({
+                    "Name": "Teaser second",
+                    "Url": "https://www.youtube.com/watch?v=teaser-second"
+                }),
+                json!({
+                    "Name": "Episode duplicate",
+                    "Url": "https://www.youtube.com/watch?v=TRAILER-FIRST"
+                }),
+            ]
+        );
+
+        let episode_urls = trailer_urls(&videos);
+        assert_eq!(
+            episode_urls,
+            [
+                "https://www.youtube.com/watch?v=teaser-first",
+                "https://www.youtube.com/watch?v=trailer-first",
+                "https://www.youtube.com/watch?v=trailer-second",
+                "https://www.youtube.com/watch?v=teaser-second",
+            ]
+        );
+        assert_eq!(
+            episode_trailers(&episode_urls),
+            vec![
+                json!({"Url": "https://www.youtube.com/watch?v=teaser-first"}),
+                json!({"Url": "https://www.youtube.com/watch?v=trailer-first"}),
+                json!({"Url": "https://www.youtube.com/watch?v=trailer-second"}),
+                json!({"Url": "https://www.youtube.com/watch?v=teaser-second"}),
+            ]
+        );
     }
 
     #[test]

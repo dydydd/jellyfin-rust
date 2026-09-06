@@ -111,6 +111,10 @@
   requested. Preserve stored `NamedURL`/legacy-string order, emit an empty array when requested but
   absent, and include it through the default all-fields single-item contract without inheriting or
   merging trailers from parents or alternate versions.
+- Map TMDb remote trailers with official semantics: accept only YouTube Trailer and Teaser videos;
+  for Movies and Series place Trailer entries before Teaser entries with stable source order and
+  preserve names, while Episodes keep source order, deduplicate URLs case-insensitively like
+  `AddTrailerUrl`, and leave trailer names absent.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
   clients. Keep accepting the official image query surface for compatibility, but stream the
