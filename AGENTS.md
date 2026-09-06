@@ -56,6 +56,9 @@
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.
 - Keep `/Persons` pagination signed as well, but preserve its different limit rule: a non-positive
   `Limit` is unlimited, while a non-positive `StartIndex` skips nothing and is still echoed.
+- Keep item-by-name pagination such as `/Genres`, `/MusicGenres`, and `/Studios` signed: a negative
+  `StartIndex` skips nothing but is echoed, `Limit=0` is empty, and a negative `Limit` follows the
+  official SQLite unlimited-limit behavior.
 - Filter `/Persons` through the media items visible to the target user: a person remains visible
   when at least one credited item passes enabled/blocked folder, allowed/blocked tag, parental-
   rating, and unrated-item policy. Keep this set-based, and do not apply the related-media filter

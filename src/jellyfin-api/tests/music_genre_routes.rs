@@ -321,6 +321,67 @@ async fn music_genre_list_matches_official_music_genre_contract() {
         assert_genres(&no_total, &[&fixture.genre_name], 0, 1);
     }
 
+    for route in [
+        "/MusicGenres?startIndex=-2&limit=1",
+        "/MusicGenres?startIndex=0&limit=1",
+    ] {
+        let non_positive_start =
+            body_json(request(&fixture.app, route, Some(&fixture.user_token)).await).await;
+        let expected_start = if route.contains("-2") { -2 } else { 0 };
+        assert_genres(
+            &non_positive_start,
+            &[&fixture.nested_genre_name],
+            3,
+            expected_start,
+        );
+    }
+
+    let zero_limit = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?limit=0",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(&zero_limit, &[], 3, 0);
+
+    let negative_limit = body_json(
+        request(
+            &fixture.app,
+            "/MusicGenres?limit=-1",
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_genres(
+        &negative_limit,
+        &[
+            &fixture.nested_genre_name,
+            &fixture.genre_name,
+            &fixture.slug_genre_name,
+        ],
+        3,
+        0,
+    );
+
+    for route in [
+        "/MusicGenres?startIndex=2147483648",
+        "/MusicGenres?startIndex=-2147483649",
+        "/MusicGenres?limit=2147483648",
+        "/MusicGenres?limit=-2147483649",
+    ] {
+        assert_eq!(
+            request(&fixture.app, route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "route {route} must reject values outside Int32"
+        );
+    }
+
     assert_eq!(
         request(
             &fixture.app,
@@ -512,7 +573,7 @@ fn assert_genres(
     body: &Value,
     expected_names: &[&str],
     expected_total: usize,
-    expected_start: usize,
+    expected_start: i32,
 ) {
     assert_eq!(body["TotalRecordCount"], expected_total);
     assert_eq!(body["StartIndex"], expected_start);
