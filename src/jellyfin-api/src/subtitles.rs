@@ -144,11 +144,20 @@ pub(crate) async fn get_subtitle_playlist(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    AxumPath((item_id, _media_source_id, index)): AxumPath<(Uuid, String, i32)>,
+    AxumPath((item_id, media_source_id, _index)): AxumPath<(Uuid, String, i32)>,
     Query(query): Query<SubtitlePlaylistQuery>,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
-    let item = ensure_video_item_by_id(&state, item_id).await?;
+    let requested_item = match &identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            ensure_video_item(&state, &session.user, item_id).await?
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            ensure_video_item_by_id(&state, item_id).await?
+        }
+    };
+    let item =
+        crate::media_source::resolve_static_item(&state, requested_item, &media_source_id).await?;
     let runtime_ticks = item
         .runtime_ticks
         .filter(|runtime_ticks| *runtime_ticks > 0)
@@ -157,18 +166,6 @@ pub(crate) async fn get_subtitle_playlist(
         .segment_length
         .filter(|segment_length| *segment_length > 0)
         .ok_or(ApiError::InvalidRequest)?;
-    let _subtitle_stream = state
-        .media_streams
-        .get_media_streams(jellyfin_controller::MediaStreamFilter {
-            item_id,
-            index: Some(index),
-            stream_type: Some(MediaStreamType::Subtitle),
-        })
-        .await?
-        .into_iter()
-        .next()
-        .ok_or(BaseItemError::NotFound)?;
-
     let playlist = subtitle_playlist(
         runtime_ticks,
         segment_length_seconds,
@@ -502,7 +499,7 @@ async fn subtitle_response(
     query: SubtitleStreamQuery,
 ) -> Result<Response, ApiError> {
     let item_id = query.item_id.unwrap_or(route_item_id);
-    let _media_source_id = query.media_source_id.unwrap_or(route_media_source_id);
+    let media_source_id = query.media_source_id.unwrap_or(route_media_source_id);
     let index = query.index.unwrap_or(route_index);
     let start_position_ticks = query
         .start_position_ticks
@@ -516,11 +513,13 @@ async fn subtitle_response(
             .unwrap_or(&route_format),
     )
     .ok_or(ApiError::InvalidRequest)?;
-    ensure_video_item_by_id(state, item_id).await?;
+    let requested_item = ensure_video_item_by_id(state, item_id).await?;
+    let item =
+        crate::media_source::resolve_static_item(state, requested_item, &media_source_id).await?;
     let stream = state
         .media_streams
         .get_media_streams(jellyfin_controller::MediaStreamFilter {
-            item_id,
+            item_id: item.id,
             index: Some(index),
             stream_type: Some(MediaStreamType::Subtitle),
         })

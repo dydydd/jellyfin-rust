@@ -14,18 +14,20 @@ use crate::{ApiError, AppState};
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
-    Path((item_id, _media_source_id, index)): Path<(Uuid, String, i32)>,
+    Path((item_id, media_source_id, index)): Path<(Uuid, String, i32)>,
 ) -> Result<Response, ApiError> {
-    state
+    let requested_item = state
         .base_items
         .get(item_id)
         .await?
         .ok_or(BaseItemError::NotFound)?;
+    let item =
+        crate::media_source::resolve_static_item(&state, requested_item, &media_source_id).await?;
 
     let attachment = state
         .media_attachments
         .get_media_attachments(MediaAttachmentFilter {
-            item_id,
+            item_id: item.id,
             index: Some(index),
         })
         .await?

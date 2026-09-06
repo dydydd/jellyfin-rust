@@ -8,8 +8,9 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamFilter, MediaStreamService, UserService};
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
-    entities::{base_item, user},
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice,
+    entities::{item_value, user},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -387,6 +388,103 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         body_bytes(direct).await,
         Bytes::from_static(b"1\n00:00:01,000 --> 00:00:02,000\nHello from upload\n")
     );
+    let alternate_source = fixture
+        .alternate_id
+        .simple()
+        .to_string()
+        .to_ascii_uppercase();
+    let alternate = fixture
+        .send(
+            Method::GET,
+            &Fixture::stream_route_with_source(fixture.item_id, &alternate_source, 4, "srt"),
+            None,
+        )
+        .await;
+    assert_eq!(alternate.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(alternate).await,
+        Bytes::from_static(b"alternate subtitle bytes\n")
+    );
+    let lowercase_alternate = fixture
+        .send(
+            Method::GET,
+            &format!(
+                "/videos/{}/{alternate_source}/subtitles/4/stream.srt",
+                fixture.item_id
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(lowercase_alternate.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(lowercase_alternate).await,
+        Bytes::from_static(b"alternate subtitle bytes\n")
+    );
+    let alternate_with_ticks = fixture
+        .send(
+            Method::GET,
+            &format!(
+                "/Videos/{}/{alternate_source}/Subtitles/4/10000000/Stream.srt",
+                fixture.item_id
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(alternate_with_ticks.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(alternate_with_ticks).await,
+        Bytes::from_static(b"alternate subtitle bytes\n")
+    );
+    for query in [
+        format!(
+            "ItemId={}&MediaSourceId={alternate_source}&Index=4&Format=srt",
+            fixture.item_id
+        ),
+        format!(
+            "itemId={}&mediaSourceId={alternate_source}&index=4&format=srt",
+            fixture.item_id
+        ),
+        format!(
+            "itemid={}&mediasourceid={alternate_source}&index=4&format=srt",
+            fixture.item_id
+        ),
+    ] {
+        let response = fixture
+            .send(
+                Method::GET,
+                &format!(
+                    "/Videos/{}/{}/Subtitles/99/Stream.vtt?{query}",
+                    fixture.outsider_id,
+                    fixture.outsider_id.simple()
+                ),
+                None,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{query}");
+        assert_eq!(
+            body_bytes(response).await,
+            Bytes::from_static(b"alternate subtitle bytes\n"),
+            "{query}"
+        );
+    }
+    for source in [
+        fixture.outsider_id.simple().to_string(),
+        fixture.alternate_id.to_string(),
+        "not-a-media-source".to_owned(),
+    ] {
+        assert_eq!(
+            fixture
+                .send(
+                    Method::GET,
+                    &Fixture::stream_route_with_source(fixture.item_id, &source, 4, "srt"),
+                    None,
+                )
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{source}"
+        );
+    }
 
     for query in [
         "addVttTimeMap=true&startPositionTicks=10000000",
@@ -474,13 +572,87 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         String::from_utf8(body_bytes(playlist).await.to_vec()).expect("playlist text"),
         expected_playlist
     );
+    let alternate_playlist = fixture
+        .send(
+            Method::GET,
+            &Fixture::playlist_route_with_source(
+                fixture.item_id,
+                &fixture.alternate_id.simple().to_string(),
+                4,
+                10,
+            ),
+            Some(&fixture.manager_token),
+        )
+        .await;
+    assert_eq!(alternate_playlist.status(), StatusCode::OK);
+    let expected_alternate_playlist = format!(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:10\n\
+         #EXT-X-VERSION:3\n\
+         #EXT-X-MEDIA-SEQUENCE:0\n\
+         #EXT-X-PLAYLIST-TYPE:VOD\n\
+         #EXTINF:10,\n\
+         stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=0&EndPositionTicks=100000000&ApiKey={}\n\
+         #EXTINF:2,\n\
+         stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=100000000&EndPositionTicks=120000000&ApiKey={}\n\
+         #EXT-X-ENDLIST\n",
+        fixture.manager_token, fixture.manager_token
+    );
+    assert_eq!(
+        String::from_utf8(body_bytes(alternate_playlist).await.to_vec())
+            .expect("alternate playlist text"),
+        expected_alternate_playlist
+    );
+    for route in [
+        Fixture::playlist_route_with_source(
+            fixture.item_id,
+            &fixture.alternate_id.simple().to_string(),
+            99,
+            10,
+        ),
+        format!(
+            "/videos/{}/{}/subtitles/99/subtitles.m3u8?segmentLength=10",
+            fixture.item_id,
+            fixture.alternate_id.simple()
+        ),
+    ] {
+        let response = fixture
+            .send(Method::GET, &route, Some(&fixture.manager_token))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            String::from_utf8(body_bytes(response).await.to_vec())
+                .expect("alternate playlist text"),
+            expected_alternate_playlist,
+            "{route}"
+        );
+    }
+    for source in [
+        fixture.outsider_id.simple().to_string(),
+        fixture.alternate_id.to_string(),
+        "not-a-media-source".to_owned(),
+    ] {
+        assert_eq!(
+            fixture
+                .send(
+                    Method::GET,
+                    &Fixture::playlist_route_with_source(fixture.item_id, &source, 4, 10),
+                    Some(&fixture.manager_token),
+                )
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{source}"
+        );
+    }
     for query_name in ["SegmentLength", "segmentlength"] {
         let playlist = fixture
             .send(
                 Method::GET,
                 &format!(
                     "/Videos/{}/{}/Subtitles/4/subtitles.m3u8?{query_name}=10",
-                    fixture.item_id, fixture.item_id
+                    fixture.item_id,
+                    fixture.item_id.simple()
                 ),
                 Some(&fixture.manager_token),
             )
@@ -514,6 +686,17 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
             .status(),
         StatusCode::NOT_FOUND
     );
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &Fixture::playlist_route(fixture.outsider_id, 4, 10),
+                Some(&fixture.manager_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 
     fixture.cleanup().await;
 }
@@ -528,6 +711,8 @@ struct Fixture {
     manager_id: Uuid,
     manager_token: String,
     item_id: Uuid,
+    alternate_id: Uuid,
+    outsider_id: Uuid,
     folder_id: Uuid,
     storage_root: PathBuf,
 }
@@ -604,10 +789,38 @@ impl Fixture {
         item.media_type = Some("Video".to_owned());
         item.path = Some(format!("/media/Subtitle Movie {suffix}.mkv"));
         item.runtime_ticks = Some(25 * 10_000_000);
-        let item = BaseItemRepository::new(database.clone())
-            .create(item)
+        let items = BaseItemRepository::new(database.clone());
+        let item = items.create(item).await.expect("movie item creation");
+        let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        alternate.name = Some(format!("Subtitle Movie Alternate {suffix}"));
+        alternate.media_type = Some("Video".to_owned());
+        alternate.path = Some(format!("/media/Subtitle Movie {suffix} - 4K.mkv"));
+        alternate.runtime_ticks = Some(12 * 10_000_000);
+        let alternate = items
+            .create(alternate)
             .await
-            .expect("movie item creation");
+            .expect("alternate movie item creation");
+        let mut outsider = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        outsider.name = Some(format!("Subtitle Outsider {suffix}"));
+        outsider.media_type = Some("Video".to_owned());
+        outsider.path = Some(format!("/media/Subtitle Outsider {suffix}.mkv"));
+        outsider.runtime_ticks = Some(8 * 10_000_000);
+        let outsider = items
+            .create(outsider)
+            .await
+            .expect("outsider movie item creation");
+        ItemValueRepository::new(database.clone())
+            .link(
+                outsider.id,
+                item_value::ItemValueType::Tags,
+                "BlockedSubtitle",
+            )
+            .await
+            .expect("blocked outsider tag");
+        items
+            .assign_local_alternate_versions(&[(alternate.id, item.id)])
+            .await
+            .expect("alternate movie assignment");
         let mut folder = NewBaseItem::new(Uuid::new_v4(), "Folder");
         folder.name = Some(format!("Subtitle Folder {suffix}"));
         folder.is_folder = true;
@@ -615,7 +828,8 @@ impl Fixture {
             .create(folder)
             .await
             .expect("folder item creation");
-        MediaStreamService::new(database.clone())
+        let media_streams = MediaStreamService::new(database.clone());
+        media_streams
             .save_media_streams(
                 item.id,
                 vec![
@@ -655,6 +869,37 @@ impl Fixture {
             )
             .await
             .expect("media stream creation");
+        let alternate_subtitle_path = storage_root.join("alternate.srt");
+        tokio::fs::create_dir_all(&storage_root)
+            .await
+            .expect("subtitle fixture directory");
+        tokio::fs::write(&alternate_subtitle_path, b"alternate subtitle bytes\n")
+            .await
+            .expect("alternate subtitle fixture file");
+        let outsider_subtitle_path = storage_root.join("outsider.srt");
+        tokio::fs::write(&outsider_subtitle_path, b"outsider subtitle bytes\n")
+            .await
+            .expect("outsider subtitle fixture file");
+        for (source_id, path) in [
+            (alternate.id, alternate_subtitle_path),
+            (outsider.id, outsider_subtitle_path),
+        ] {
+            media_streams
+                .save_media_streams(
+                    source_id,
+                    vec![MediaStream {
+                        index: 4,
+                        stream_type: MediaStreamType::Subtitle,
+                        codec: Some("srt".to_owned()),
+                        language: Some("eng".to_owned()),
+                        is_external: true,
+                        path: Some(path.to_string_lossy().into_owned()),
+                        ..MediaStream::default()
+                    }],
+                )
+                .await
+                .expect("version subtitle stream creation");
+        }
 
         let app_state = AppState::new(
             database.clone(),
@@ -679,6 +924,8 @@ impl Fixture {
             manager_id: manager.id,
             manager_token,
             item_id: item.id,
+            alternate_id: alternate.id,
+            outsider_id: outsider.id,
             folder_id: folder.id,
             storage_root,
         }
@@ -701,7 +948,19 @@ impl Fixture {
     }
 
     fn stream_route(item_id: Uuid, index: i32, format: &str) -> String {
-        format!("/Videos/{item_id}/{item_id}/Subtitles/{index}/Stream.{format}")
+        format!(
+            "/Videos/{item_id}/{}/Subtitles/{index}/Stream.{format}",
+            item_id.simple()
+        )
+    }
+
+    fn stream_route_with_source(
+        item_id: Uuid,
+        media_source_id: &str,
+        index: i32,
+        format: &str,
+    ) -> String {
+        format!("/Videos/{item_id}/{media_source_id}/Subtitles/{index}/Stream.{format}")
     }
 
     fn stream_with_ticks_route(
@@ -711,13 +970,26 @@ impl Fixture {
         format: &str,
     ) -> String {
         format!(
-            "/Videos/{item_id}/{item_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}"
+            "/Videos/{item_id}/{}/Subtitles/{index}/{start_position_ticks}/Stream.{format}",
+            item_id.simple()
         )
     }
 
     fn playlist_route(item_id: Uuid, index: i32, segment_length: i64) -> String {
         format!(
-            "/Videos/{item_id}/{item_id}/Subtitles/{index}/subtitles.m3u8?segmentLength={segment_length}"
+            "/Videos/{item_id}/{}/Subtitles/{index}/subtitles.m3u8?segmentLength={segment_length}",
+            item_id.simple()
+        )
+    }
+
+    fn playlist_route_with_source(
+        item_id: Uuid,
+        media_source_id: &str,
+        index: i32,
+        segment_length: i64,
+    ) -> String {
+        format!(
+            "/Videos/{item_id}/{media_source_id}/Subtitles/{index}/subtitles.m3u8?segmentLength={segment_length}"
         )
     }
 
@@ -770,9 +1042,13 @@ impl Fixture {
     }
 
     async fn cleanup(self) {
-        base_item::Entity::delete_many()
-            .filter(base_item::Column::Id.is_in([self.item_id, self.folder_id]))
-            .exec(&self.database)
+        BaseItemRepository::new(self.database.clone())
+            .delete_many(&[
+                self.item_id,
+                self.alternate_id,
+                self.outsider_id,
+                self.folder_id,
+            ])
             .await
             .expect("item cleanup");
         user::Entity::delete_many()
@@ -803,6 +1079,7 @@ async fn body_bytes(response: axum::response::Response) -> Bytes {
 fn subtitle_manager_policy() -> UserPolicy {
     UserPolicy {
         enable_subtitle_management: true,
+        blocked_tags: vec!["BlockedSubtitle".to_owned()],
         authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
         password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
         ..UserPolicy::default()

@@ -6,12 +6,9 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::MediaAttachmentService;
-use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, NewBaseItem,
-    entities::{base_item, media_attachment},
-};
+use jellyfin_data::{BaseItemRepository, DatabaseConfig, NewBaseItem};
 use jellyfin_model::MediaAttachment;
-use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -62,6 +59,66 @@ async fn exercise_video_attachment_route(database_name: &str) {
         Bytes::from_static(b"test attachment bytes")
     );
 
+    let alternate_source = fixture
+        .alternate_id
+        .simple()
+        .to_string()
+        .to_ascii_uppercase();
+    let response = get(
+        &fixture.app,
+        &Fixture::route_with_source(fixture.item_id, &alternate_source, 4),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(response).await,
+        Bytes::from_static(b"alternate attachment bytes")
+    );
+    let lowercase_response = get(
+        &fixture.app,
+        &format!(
+            "/videos/{}/{alternate_source}/attachments/4",
+            fixture.item_id
+        ),
+    )
+    .await;
+    assert_eq!(lowercase_response.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(lowercase_response).await,
+        Bytes::from_static(b"alternate attachment bytes")
+    );
+    assert_eq!(
+        get(
+            &fixture.app,
+            &Fixture::route_with_source(
+                fixture.item_id,
+                &fixture.outsider_id.simple().to_string(),
+                4,
+            ),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(
+            &fixture.app,
+            &Fixture::route_with_source(fixture.item_id, &fixture.alternate_id.to_string(), 4,),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(
+            &fixture.app,
+            &Fixture::route_with_source(fixture.item_id, "not-a-media-source", 4),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
     assert_eq!(
         get(&fixture.app, &Fixture::route(Uuid::new_v4(), 4))
             .await
@@ -91,6 +148,8 @@ struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
     item_id: Uuid,
+    alternate_id: Uuid,
+    outsider_id: Uuid,
     attachment_path: PathBuf,
     storage_root: PathBuf,
 }
@@ -115,9 +174,17 @@ impl Fixture {
             .await
             .expect("fixture storage directory");
         let attachment_path = storage_root.join("font.ttf");
+        let alternate_attachment_path = storage_root.join("alternate-font.ttf");
+        let outsider_attachment_path = storage_root.join("outsider-font.ttf");
         tokio::fs::write(&attachment_path, b"test attachment bytes")
             .await
             .expect("attachment fixture file");
+        tokio::fs::write(&alternate_attachment_path, b"alternate attachment bytes")
+            .await
+            .expect("alternate attachment fixture file");
+        tokio::fs::write(&outsider_attachment_path, b"outsider attachment bytes")
+            .await
+            .expect("outsider attachment fixture file");
 
         let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
         item.name = Some(format!("Attachment Movie {suffix}"));
@@ -127,7 +194,29 @@ impl Fixture {
             .create(item)
             .await
             .expect("movie item creation");
-        MediaAttachmentService::new(database.clone())
+        let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        alternate.name = Some(format!("Attachment Movie Alternate {suffix}"));
+        alternate.media_type = Some("Video".to_owned());
+        alternate.path = Some(format!("/media/Attachment Movie {suffix} - 4K.mkv"));
+        let alternate = BaseItemRepository::new(database.clone())
+            .create(alternate)
+            .await
+            .expect("alternate movie item creation");
+        let mut outsider = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        outsider.name = Some(format!("Attachment Outsider {suffix}"));
+        outsider.media_type = Some("Video".to_owned());
+        outsider.path = Some(format!("/media/Attachment Outsider {suffix}.mkv"));
+        let outsider = BaseItemRepository::new(database.clone())
+            .create(outsider)
+            .await
+            .expect("outsider movie item creation");
+        let items = BaseItemRepository::new(database.clone());
+        items
+            .assign_local_alternate_versions(&[(alternate.id, item.id)])
+            .await
+            .expect("alternate movie assignment");
+        let attachments = MediaAttachmentService::new(database.clone());
+        attachments
             .save_media_attachments(
                 item.id,
                 vec![MediaAttachment {
@@ -141,6 +230,34 @@ impl Fixture {
             )
             .await
             .expect("media attachment creation");
+        attachments
+            .save_media_attachments(
+                alternate.id,
+                vec![MediaAttachment {
+                    index: 4,
+                    codec: Some("ttf".to_owned()),
+                    file_name: Some("alternate-font.ttf".to_owned()),
+                    mime_type: Some("application/x-font-ttf".to_owned()),
+                    delivery_url: Some(alternate_attachment_path.to_string_lossy().into_owned()),
+                    ..MediaAttachment::default()
+                }],
+            )
+            .await
+            .expect("alternate media attachment creation");
+        attachments
+            .save_media_attachments(
+                outsider.id,
+                vec![MediaAttachment {
+                    index: 4,
+                    codec: Some("ttf".to_owned()),
+                    file_name: Some("outsider-font.ttf".to_owned()),
+                    mime_type: Some("application/x-font-ttf".to_owned()),
+                    delivery_url: Some(outsider_attachment_path.to_string_lossy().into_owned()),
+                    ..MediaAttachment::default()
+                }],
+            )
+            .await
+            .expect("outsider media attachment creation");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -151,26 +268,26 @@ impl Fixture {
             database,
             app,
             item_id: item.id,
+            alternate_id: alternate.id,
+            outsider_id: outsider.id,
             attachment_path,
             storage_root,
         }
     }
 
     fn route(item_id: Uuid, index: i32) -> String {
-        format!("/Videos/{item_id}/{item_id}/Attachments/{index}")
+        format!("/Videos/{item_id}/{}/Attachments/{index}", item_id.simple())
+    }
+
+    fn route_with_source(item_id: Uuid, media_source_id: &str, index: i32) -> String {
+        format!("/Videos/{item_id}/{media_source_id}/Attachments/{index}")
     }
 
     async fn cleanup(self) {
-        base_item::Entity::delete_many()
-            .filter(base_item::Column::Id.eq(self.item_id))
-            .exec(&self.database)
+        BaseItemRepository::new(self.database.clone())
+            .delete_many(&[self.item_id, self.alternate_id, self.outsider_id])
             .await
             .expect("item cleanup");
-        media_attachment::Entity::delete_many()
-            .filter(media_attachment::Column::ItemId.eq(self.item_id))
-            .exec(&self.database)
-            .await
-            .expect("attachment cleanup");
         let _ = tokio::fs::remove_dir_all(&self.storage_root).await;
         self.database.close().await.unwrap();
     }

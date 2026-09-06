@@ -90,6 +90,7 @@ mod live_tv;
 mod localization;
 mod media_info;
 mod media_segments;
+mod media_source;
 mod movies;
 mod music_genre;
 mod openapi;
@@ -1995,7 +1996,15 @@ fn video_routes() -> Router<Arc<AppState>> {
             get(subtitles::get_subtitle),
         )
         .route(
+            "/videos/{item_id}/{media_source_id}/subtitles/{index}/stream.{format}",
+            get(subtitles::get_subtitle),
+        )
+        .route(
             "/Videos/{item_id}/{media_source_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}",
+            get(subtitles::get_subtitle_with_ticks),
+        )
+        .route(
+            "/videos/{item_id}/{media_source_id}/subtitles/{index}/{start_position_ticks}/stream.{format}",
             get(subtitles::get_subtitle_with_ticks),
         )
         .route(
@@ -2003,7 +2012,15 @@ fn video_routes() -> Router<Arc<AppState>> {
             get(subtitles::get_subtitle_playlist),
         )
         .route(
+            "/videos/{item_id}/{media_source_id}/subtitles/{index}/subtitles.m3u8",
+            get(subtitles::get_subtitle_playlist),
+        )
+        .route(
             "/Videos/{item_id}/{media_source_id}/Attachments/{index}",
+            get(video_attachments::get),
+        )
+        .route(
+            "/videos/{item_id}/{media_source_id}/attachments/{index}",
             get(video_attachments::get),
         )
         .route(

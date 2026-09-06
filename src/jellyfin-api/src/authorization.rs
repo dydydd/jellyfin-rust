@@ -340,8 +340,14 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         {
             RoutePolicy::Public
         }
+        ["videos", _, _, "subtitles", _, ..]
+            if is_get_or_head(method) && subtitle_stream_segment(&segments) =>
+        {
+            RoutePolicy::Public
+        }
         ["Videos", _, "Subtitles", _] if method == Method::DELETE => RoutePolicy::Default,
         ["Videos", _, _, "Attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
+        ["videos", _, _, "attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
         ["Audio", _, "hls", ..] => RoutePolicy::Public,
         ["Videos", _, "hls", ..] if hls_path_is_playlist(&segments) => RoutePolicy::Default,
         ["Videos", _, "hls", ..] => RoutePolicy::Public,
@@ -452,10 +458,16 @@ fn is_get_or_head(method: &Method) -> bool {
 fn subtitle_stream_segment(segments: &[&str]) -> bool {
     segments
         .get(5)
-        .is_some_and(|segment| segment.starts_with("Stream."))
+        .is_some_and(|segment| starts_with_ignore_ascii_case(segment, "Stream."))
         || segments
             .get(6)
-            .is_some_and(|segment| segment.starts_with("Stream."))
+            .is_some_and(|segment| starts_with_ignore_ascii_case(segment, "Stream."))
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
 }
 
 fn is_write(method: &Method) -> bool {
