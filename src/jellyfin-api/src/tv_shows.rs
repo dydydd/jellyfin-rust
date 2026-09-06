@@ -728,18 +728,21 @@ async fn project_items_to_dtos(
     let mut recursive_item_counts =
         user_library::recursive_item_counts_for_items(state, &items, fields, target_user_id)
             .await?;
+    let mut episode_hierarchy_names = user_library::episode_hierarchy_names(state, &items).await?;
 
     let mut dtos = Vec::with_capacity(items.len());
     for item in items {
         let item_id = item.id;
         let remembered = remembered_user_data.remove(&item_id);
-        let mut dto = user_library::project_item_to_dto(
+        let hierarchy_names = episode_hierarchy_names.remove(&item_id);
+        let mut dto = user_library::project_item_to_dto_with_hierarchy_names(
             state,
             item,
             target_user_id,
             fields.without_trickplay(),
             defaults.as_ref(),
             remembered.as_ref(),
+            hierarchy_names.as_ref(),
         )
         .await?;
         user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));

@@ -377,10 +377,6 @@ async fn episode_detail_routes_project_official_series_and_season_names() {
     episode.media_type = Some("Video".to_owned());
     episode.series_id = Some(series.id);
     episode.season_id = Some(season.id);
-    episode.data = Some(json!({
-        "SeriesName": "Example Series",
-        "SeasonName": "Season 2"
-    }));
     let episode = items.create(episode).await.expect("episode item");
 
     for route in [
@@ -405,6 +401,16 @@ async fn episode_detail_routes_project_official_series_and_season_names() {
     assert_eq!(page["Items"].as_array().unwrap().len(), 1);
     assert_eq!(page["Items"][0]["SeriesName"], "Example Series");
     assert_eq!(page["Items"][0]["SeasonName"], "Season 2");
+
+    let episodes = get_json(
+        &fixture.app,
+        &format!("/Shows/{}/Episodes?userId={}", series.id, fixture.user_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(episodes["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(episodes["Items"][0]["SeriesName"], "Example Series");
+    assert_eq!(episodes["Items"][0]["SeasonName"], "Season 2");
 
     items
         .delete_many(&[episode.id, season.id, series.id])

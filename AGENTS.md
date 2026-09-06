@@ -153,6 +153,9 @@
   is valid for a virtual-folder configuration but must be omitted from user-view item DTOs because
   the client DTO enum cannot decode it.
 - Project the official single-item detail routes with their default all-fields `DtoOptions`: clients must receive media sources, nested and top-level media streams, and trickplay without supplying a non-official `Fields` query.
+- Project Episode `SeriesName` and `SeasonName` from the linked Series and Season rows when legacy
+  items lack the denormalized JSON fields. Resolve parent names in one bounded batch for item pages
+  and show episode pages; do not add a parent lookup per episode.
 - Project persisted `SeriesName` and `SeasonName` on `BaseItemDto`; these are unconditional
   episode/season identity fields in official item details and lists, not optional `Fields` values.
 - Project persisted `OriginalLanguage` unconditionally on item details and lists. When expanding

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum::{
     Json,
@@ -383,6 +386,12 @@ pub struct BaseItemQueryResult {
     pub items: Vec<BaseItemDto>,
     pub total_record_count: usize,
     pub start_index: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EpisodeHierarchyNames {
+    series_name: Option<String>,
+    season_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1098,6 +1107,30 @@ pub(crate) async fn project_item_to_dto(
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
+    let mut hierarchy_names = episode_hierarchy_names(state, std::slice::from_ref(&item)).await?;
+    let hierarchy_names = hierarchy_names.remove(&item_id);
+    project_item_to_dto_with_hierarchy_names(
+        state,
+        item,
+        target_user_id,
+        fields,
+        defaults,
+        remembered_user_data,
+        hierarchy_names.as_ref(),
+    )
+    .await
+}
+
+pub(crate) async fn project_item_to_dto_with_hierarchy_names(
+    state: &AppState,
+    item: base_item::Model,
+    target_user_id: Uuid,
+    fields: BaseItemDtoFields,
+    defaults: Option<&MediaStreamDefaults>,
+    remembered_user_data: Option<&user_data::Model>,
+    hierarchy_names: Option<&EpisodeHierarchyNames>,
+) -> Result<BaseItemDto, ApiError> {
+    let item_id = item.id;
     let media_source_policy = if fields.wants_media_sources() {
         Some(media_source_policy_for_user(state, target_user_id).await?)
     } else {
@@ -1106,6 +1139,7 @@ pub(crate) async fn project_item_to_dto(
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let mut dto = item_to_dto(item, state.server_id());
+    attach_episode_hierarchy_names(&mut dto, hierarchy_names);
     if is_audio_item(&dto) {
         let lyric_item_ids = state
             .media_streams
@@ -1217,6 +1251,70 @@ pub(crate) async fn project_item_to_dto(
         apply_media_source_policy(&mut dto, policy);
     }
     Ok(dto)
+}
+
+pub(crate) async fn episode_hierarchy_names(
+    state: &AppState,
+    items: &[base_item::Model],
+) -> Result<HashMap<Uuid, EpisodeHierarchyNames>, ApiError> {
+    let episodes = items
+        .iter()
+        .filter(|item| is_item_type(&item.item_type, "Episode"))
+        .collect::<Vec<_>>();
+    if episodes.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut parent_ids = HashSet::new();
+    for item in &episodes {
+        if metadata_string(item.data.as_ref(), &["SeriesName", "series_name"])
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            parent_ids.extend(item.series_id);
+        }
+        if metadata_string(item.data.as_ref(), &["SeasonName", "season_name"])
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            parent_ids.extend(item.season_id);
+        }
+    }
+    let parent_names = state
+        .base_items
+        .get_many(&parent_ids.into_iter().collect::<Vec<_>>())
+        .await?
+        .into_iter()
+        .filter_map(|item| item.name.map(|name| (item.id, name)))
+        .collect::<HashMap<_, _>>();
+
+    Ok(episodes
+        .into_iter()
+        .map(|item| {
+            (
+                item.id,
+                EpisodeHierarchyNames {
+                    series_name: item.series_id.and_then(|id| parent_names.get(&id).cloned()),
+                    season_name: item.season_id.and_then(|id| parent_names.get(&id).cloned()),
+                },
+            )
+        })
+        .collect())
+}
+
+pub(crate) fn attach_episode_hierarchy_names(
+    dto: &mut BaseItemDto,
+    hierarchy_names: Option<&EpisodeHierarchyNames>,
+) {
+    let Some(hierarchy_names) = hierarchy_names else {
+        return;
+    };
+    if dto.series_name.as_deref().is_none_or(str::is_empty) {
+        dto.series_name.clone_from(&hierarchy_names.series_name);
+    }
+    if dto.season_name.as_deref().is_none_or(str::is_empty) {
+        dto.season_name.clone_from(&hierarchy_names.season_name);
+    }
 }
 
 pub(crate) async fn media_source_policy_for_user(

@@ -2150,6 +2150,8 @@ async fn page_to_dto_with_fields_and_options(
         _ => HashMap::new(),
     };
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
+    let mut episode_hierarchy_names =
+        user_library::episode_hierarchy_names(state, &page.items).await?;
     let mut image_projections =
         if dto_options.enable_images || requested_fields.wants_primary_image_aspect_ratio() {
             state
@@ -2184,6 +2186,10 @@ async fn page_to_dto_with_fields_and_options(
         let item_id = item.id;
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let mut dto = user_library::item_to_dto(item, state.server_id());
+        user_library::attach_episode_hierarchy_names(
+            &mut dto,
+            episode_hierarchy_names.remove(&item_id).as_ref(),
+        );
         user_library::attach_has_lyrics(&mut dto, lyric_item_ids.contains(&item_id));
         user_library::attach_has_subtitles(&mut dto, subtitle_item_ids.contains(&item_id));
         let original_language = dto.original_language.clone();
