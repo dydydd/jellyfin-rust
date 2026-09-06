@@ -6,7 +6,7 @@ use axum::{
     http::HeaderMap,
     response::Response,
 };
-use jellyfin_data::PersonQuery;
+use jellyfin_data::{BaseItemPage, PersonQuery};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -51,6 +51,13 @@ pub(crate) struct PersonsQueryParams {
     name_starts_with_or_greater: Option<String>,
     #[serde(
         default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(
+        default,
         rename = "filters",
         alias = "Filters",
         deserialize_with = "crate::query::comma::deserialize"
@@ -63,6 +70,26 @@ pub(crate) struct PersonsQueryParams {
         alias = "isfavorite"
     )]
     is_favorite: Option<bool>,
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
     #[serde(
         default,
         rename = "excludePersonTypes",
@@ -87,6 +114,12 @@ pub(crate) struct PersonsQueryParams {
         alias = "appearsinitemid"
     )]
     appears_in_item_id: Option<Uuid>,
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -126,6 +159,14 @@ pub(crate) async fn list(
             .any(|filter| filter.eq_ignore_ascii_case("IsFavorite"))
             .then_some(true)
     });
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
     let page = state
         .persons
         .list(
@@ -148,14 +189,21 @@ pub(crate) async fn list(
             },
         )
         .await?;
-    let items = page
-        .people
-        .into_iter()
-        .map(|person| user_library::person_to_dto(person, state.server_id()))
-        .collect::<Vec<_>>();
+    let projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        BaseItemPage {
+            items: page.people.into_iter().map(|person| person.model).collect(),
+            total_record_count: page.total_record_count,
+            start_index: page.start_index,
+        },
+        query.fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
     Ok(Json(PersonsQueryResult {
-        items,
-        total_record_count: page.total_record_count,
+        items: projected.items,
+        total_record_count: u64::try_from(projected.total_record_count).unwrap_or(u64::MAX),
         start_index: response_start_index,
     }))
 }
@@ -175,7 +223,17 @@ pub(crate) async fn get(
         .persons
         .get(&authenticated.user, target_user_id, &name)
         .await?;
-    Ok(Json(user_library::person_to_dto(person, state.server_id())))
+    let mut result = crate::items::page_to_dto_all_fields(
+        state.as_ref(),
+        BaseItemPage {
+            items: vec![person.model],
+            total_record_count: 1,
+            start_index: 0,
+        },
+        target_user_id,
+    )
+    .await?;
+    Ok(Json(result.items.pop().ok_or(ApiError::Internal)?))
 }
 
 pub(crate) async fn get_image(

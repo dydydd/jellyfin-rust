@@ -12,7 +12,7 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
-    Artist, Genre, GenreKind, LocalizationService, MusicGenre, Person, RelatedItemKind, Studio,
+    Artist, Genre, GenreKind, LocalizationService, MusicGenre, RelatedItemKind, Studio,
     TrickplayManifest, Year,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
@@ -1555,12 +1555,23 @@ pub(crate) async fn load_relation_metadata(
         .people_for_items(&item_ids)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let person_ids = people
+    let catalog_people = people
         .values()
         .flatten()
-        .map(|credit| credit.person.id)
-        .collect::<std::collections::HashSet<_>>()
+        .map(|credit| (credit.person.id, credit.person.clone()))
+        .collect::<HashMap<_, _>>()
         .into_iter()
+        .map(|(_, person)| person)
+        .collect::<Vec<_>>();
+    let canonical_items = state.persons.canonical_items(&catalog_people).await?;
+    let canonical_people = catalog_people
+        .into_iter()
+        .zip(canonical_items)
+        .filter_map(|(person, item)| item.map(|item| (person.id, item)))
+        .collect::<HashMap<_, _>>();
+    let person_ids = canonical_people
+        .values()
+        .map(|item| item.id)
         .collect::<Vec<_>>();
     let person_image_tags = state
         .dto_images
@@ -1590,12 +1601,15 @@ pub(crate) async fn load_relation_metadata(
                 .remove(&item.id)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|credit| BaseItemPerson {
-                    name: credit.person.name,
-                    id: credit.person.id.simple().to_string(),
-                    role: credit.role,
-                    person_type: person_kind_from_name(&credit.person_type),
-                    primary_image_tag: person_image_tags.get(&credit.person.id).cloned(),
+                .filter_map(|credit| {
+                    let canonical = canonical_people.get(&credit.person.id)?;
+                    Some(BaseItemPerson {
+                        name: credit.person.name,
+                        id: canonical.id.simple().to_string(),
+                        role: credit.role,
+                        person_type: person_kind_from_name(&credit.person_type),
+                        primary_image_tag: person_image_tags.get(&canonical.id).cloned(),
+                    })
                 })
                 .collect(),
             tags: tags.remove(&item.id).unwrap_or_default(),
@@ -2571,58 +2585,6 @@ fn apply_item_value_counts(
     dto.program_count = Some(counts.program_count);
     dto.series_count = Some(counts.series_count);
     dto.trailer_count = Some(counts.trailer_count);
-}
-
-pub(crate) fn person_to_dto(person: Person, server_id: &str) -> BaseItemDto {
-    let model = person.model;
-    let presentation_unique_key = Some(format!("Person-{}", model.name));
-    let provider_ids = provider_ids_from_value(&model.provider_ids);
-    let name = model.name;
-    BaseItemDto {
-        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
-        name: Some(name.clone()),
-        server_id: server_id.to_owned(),
-        id: model.id.simple().to_string(),
-        playlist_item_id: None,
-        item_type: "Person".to_owned(),
-        etag: model.row_version.to_string(),
-        date_created: Some(model.date_created.to_rfc3339()),
-        sort_name: Some(name),
-        path: None,
-        overview: None,
-        media_type: None,
-        collection_type: None,
-        is_folder: false,
-        is_virtual_item: false,
-        parent_id: None,
-        index_number: None,
-        parent_index_number: None,
-        production_year: None,
-        premiere_date: None,
-        run_time_ticks: None,
-        presentation_unique_key,
-        series_id: None,
-        season_id: None,
-        extra_type: None,
-        has_lyrics: None,
-        provider_ids,
-        image_tags: HashMap::new(),
-        backdrop_image_tags: Vec::new(),
-        parent_primary_image_item_id: None,
-        parent_primary_image_tag: None,
-        parent_logo_item_id: None,
-        parent_logo_image_tag: None,
-        parent_thumb_item_id: None,
-        parent_thumb_image_tag: None,
-        primary_image_aspect_ratio: None,
-        series_primary_image_tag: None,
-        parent_backdrop_image_item_id: None,
-        parent_backdrop_image_tags: Vec::new(),
-        media_sources: None,
-        media_streams: None,
-        trickplay: None,
-        ..BaseItemDto::default()
-    }
 }
 
 pub(crate) fn year_to_dto(year: Year, server_id: &str) -> BaseItemDto {

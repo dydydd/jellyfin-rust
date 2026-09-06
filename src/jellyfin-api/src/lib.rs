@@ -285,7 +285,10 @@ impl AppState {
                 Arc::clone(&database),
                 item_by_name.clone(),
             ),
-            persons: PersonService::new(Arc::clone(&database)),
+            persons: PersonService::with_item_by_name_service(
+                Arc::clone(&database),
+                item_by_name.clone(),
+            ),
             dto_images: PersistedDtoImageProjectionService::new(
                 BaseItemRepository::new(Arc::clone(&database)),
                 BaseItemImageRepository::new(Arc::clone(&database)),
@@ -658,6 +661,10 @@ impl AppState {
             self.internal_metadata_directory.as_path(),
         );
         self.music_genres.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
+        self.persons.set_item_by_name_directories(
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
@@ -2612,8 +2619,7 @@ impl IntoResponse for ApiError {
             Self::Person(
                 PersonError::NotFound
                 | PersonError::UserNotFound
-                | PersonError::User(UserError::NotFound)
-                | PersonError::BaseItem(BaseItemError::NotFound),
+                | PersonError::User(UserError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Person or user not found"),
             Self::Person(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

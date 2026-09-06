@@ -5108,10 +5108,14 @@ fn append_raw_item_filters(
             " AND EXISTS (
             SELECT 1 FROM jellyfin.people_base_item_map AS person_map
             WHERE person_map.item_id = item.id
-              AND person_map.person_id IN (",
+              AND person_map.person_id IN (
+                  SELECT person.id
+                  FROM jellyfin.base_items AS public_person
+                  JOIN jellyfin.people AS person ON person.name = public_person.name
+                  WHERE public_person.id IN (",
         );
         append_bind_list(sql, values, query.person_ids.iter().copied());
-        sql.push(')');
+        sql.push_str("))");
         if !query.person_types.is_empty() {
             sql.push_str(" AND person_map.person_type IN (");
             append_bind_list(sql, values, query.person_types.iter().cloned());

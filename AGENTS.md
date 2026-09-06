@@ -175,6 +175,14 @@
   must stop both operations before their next page; never load the full people catalog, issue
   per-credit queries, refresh remote metadata, or delete people, legacy Person rows, image rows, or
   image files during this reconciliation phase.
+- Expose only the exact deterministic canonical `base_items.id` for people through `/Persons`,
+  `BaseItemDto.People`, and person `SearchHint` results; `people.id` remains an internal credit
+  foreign key and must never escape on those API surfaces. Resolve page credits and their Primary
+  image tags in batches, and keep Person detail, image, favorite, and user-data operations centered
+  on the canonical item without name or clean-name fallback. Translate `Items?PersonIds=` from the
+  supplied public BaseItem ids through exact persisted names to internal people ids in one set-based
+  query, preserving `PersonTypes`; resolve favorite Person rows to exact canonical ids before count,
+  ordering, and pagination so same-name legacy rows cannot change results.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an

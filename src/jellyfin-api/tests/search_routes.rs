@@ -1,13 +1,18 @@
 #![allow(clippy::too_many_lines)]
+use std::sync::atomic::AtomicBool;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{
+    ItemByNameKind, ItemByNameService, PersonReconciliationService, UserService,
+};
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, NewPerson, PersonRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson,
+    PersonRepository,
     entities::{item_value, user},
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
@@ -66,6 +71,9 @@ async fn exercise_search_routes(database_name: &str) {
         .expect("PostgreSQL migrations must succeed");
 
     let suffix = Uuid::new_v4().simple().to_string();
+    let storage_root = std::env::temp_dir().join(format!("search-routes-{suffix}"));
+    let program_data_root = storage_root.join("programdata");
+    let metadata_root = storage_root.join("metadata");
     let users = UserService::new(database.clone());
     let administrator = users
         .create_initial_administrator(&format!("search-admin-{suffix}"))
@@ -168,12 +176,12 @@ async fn exercise_search_routes(database_name: &str) {
         .await
         .expect("sports tag link");
     let genre = format!("Cyberpunk {suffix}");
-    let genre_row = values
+    values
         .link(matrix_id, item_value::ItemValueType::Genre, &genre)
         .await
         .expect("genre link");
     let studio = format!("Warner Search {suffix}");
-    let studio_row = values
+    values
         .link(matrix_id, item_value::ItemValueType::Studios, &studio)
         .await
         .expect("studio link");
@@ -183,7 +191,7 @@ async fn exercise_search_routes(database_name: &str) {
         .await
         .expect("artist link");
     let music_genre = format!("Synthwave {suffix}");
-    let music_genre_row = values
+    values
         .link(audio_id, item_value::ItemValueType::Genre, &music_genre)
         .await
         .expect("music genre link");
@@ -194,11 +202,71 @@ async fn exercise_search_routes(database_name: &str) {
         .await
         .expect("person link");
 
-    let app = jellyfin_api::router(AppState::new(
-        database.clone(),
-        "Search Test Server".to_owned(),
-        "http://127.0.0.1:8096".to_owned(),
-    ));
+    let reconciliation = PersonReconciliationService::new(database.clone());
+    reconciliation.set_item_by_name_directories(&program_data_root, &metadata_root);
+    reconciliation
+        .reconcile(&AtomicBool::new(false))
+        .await
+        .expect("canonical Person reconciliation");
+    let item_by_name = ItemByNameService::new(database.clone());
+    item_by_name.set_directories(&program_data_root, &metadata_root);
+    let genre_item = item_by_name
+        .resolve_direct(ItemByNameKind::Genre, &genre)
+        .await
+        .expect("canonical Genre item");
+    let music_genre_item = item_by_name
+        .resolve_direct(ItemByNameKind::MusicGenre, &music_genre)
+        .await
+        .expect("canonical MusicGenre item");
+    let studio_item = item_by_name
+        .resolve_direct(ItemByNameKind::Studio, &studio)
+        .await
+        .expect("canonical Studio item");
+    let canonical_person = item_by_name
+        .existing_canonical_many_direct(ItemByNameKind::Person, std::slice::from_ref(&person))
+        .await
+        .expect("canonical Person lookup")
+        .pop()
+        .and_then(|lookup| lookup.item)
+        .expect("canonical Person item");
+    assert_ne!(canonical_person.id, person_row.id);
+    let person_image_path = storage_root.join("search-person.png");
+    tokio::fs::create_dir_all(&storage_root)
+        .await
+        .expect("search storage root");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 90, 180, 255]))
+        .save(&person_image_path)
+        .expect("search Person image");
+    BaseItemImageRepository::new(database.clone())
+        .replace(
+            canonical_person.id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: person_image_path.to_string_lossy().into_owned(),
+                date_modified: chrono::Utc::now(),
+                width: Some(2),
+                height: Some(2),
+                blurhash: None,
+            }],
+        )
+        .await
+        .expect("search Person image registration");
+
+    let app = jellyfin_api::router(
+        AppState::new(
+            database.clone(),
+            "Search Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )
+        .with_storage_paths(
+            &program_data_root,
+            storage_root.join("web"),
+            storage_root.join("image-cache"),
+            storage_root.join("cache"),
+            &metadata_root,
+        ),
+    );
 
     assert_eq!(
         request(&app, "/Search/Hints?searchTerm=Matrix", None)
@@ -423,7 +491,7 @@ async fn exercise_search_routes(database_name: &str) {
         .await,
     )
     .await;
-    let genre_id = genre_row.item_value_id.simple().to_string();
+    let genre_id = genre_item.id.simple().to_string();
     assert_eq!(genre_hints["TotalRecordCount"], 1);
     assert_eq!(genre_hints["SearchHints"].as_array().unwrap().len(), 1);
     assert_eq!(genre_hints["SearchHints"][0]["Id"], genre_id);
@@ -442,7 +510,7 @@ async fn exercise_search_routes(database_name: &str) {
         .await,
     )
     .await;
-    let music_genre_id = music_genre_row.item_value_id.simple().to_string();
+    let music_genre_id = music_genre_item.id.simple().to_string();
     assert_eq!(music_genre_hints["TotalRecordCount"], 1);
     assert_eq!(
         music_genre_hints["SearchHints"].as_array().unwrap().len(),
@@ -526,7 +594,7 @@ async fn exercise_search_routes(database_name: &str) {
         .await,
     )
     .await;
-    let person_id = person_row.id.simple().to_string();
+    let person_id = canonical_person.id.simple().to_string();
     assert_eq!(people_hints["TotalRecordCount"], 1);
     assert_eq!(people_hints["SearchHints"].as_array().unwrap().len(), 1);
     assert_eq!(people_hints["SearchHints"][0]["Id"], person_id);
@@ -534,7 +602,18 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(people_hints["SearchHints"][0]["Name"], person);
     assert_eq!(people_hints["SearchHints"][0]["MatchedTerm"], "Laurence");
     assert_eq!(people_hints["SearchHints"][0]["Type"], "Person");
+    assert!(people_hints["SearchHints"][0]["PrimaryImageTag"].is_string());
     assert!(people_hints["SearchHints"][0].get("IsFolder").is_none());
+    assert_eq!(
+        request(
+            &app,
+            &format!("/Items/{}", canonical_person.id),
+            Some(&user_token),
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
 
     let people_movie_type_filtered = body_json(
         request(
@@ -573,7 +652,7 @@ async fn exercise_search_routes(database_name: &str) {
         .await,
     )
     .await;
-    let studio_id = studio_row.item_value_id.simple().to_string();
+    let studio_id = studio_item.id.simple().to_string();
     assert_eq!(studio_hints["TotalRecordCount"], 1);
     assert_eq!(studio_hints["SearchHints"].as_array().unwrap().len(), 1);
     assert_eq!(studio_hints["SearchHints"][0]["Id"], studio_id);
@@ -637,6 +716,7 @@ async fn exercise_search_routes(database_name: &str) {
         .exec(&database)
         .await
         .expect("search route user cleanup");
+    let _ = tokio::fs::remove_dir_all(storage_root).await;
     database.close().await.expect("database pool cleanup");
 }
 

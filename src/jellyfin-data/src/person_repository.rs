@@ -67,6 +67,9 @@ pub struct PersonQuery {
     pub person_types: Vec<String>,
     pub exclude_person_types: Vec<String>,
     pub is_favorite: Option<bool>,
+    /// Exact canonical Person names selected from user data before the people
+    /// query is paginated. `Some([])` deliberately matches no people.
+    pub canonical_favorite_names: Option<Vec<String>>,
     pub user_id: Option<Uuid>,
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
@@ -189,6 +192,39 @@ impl PersonRepository {
             ))
             .all(self.database.as_ref())
             .await?)
+    }
+
+    /// Loads Person base items with an explicit user-data favorite value.
+    ///
+    /// Callers must still verify each returned row against the deterministic
+    /// item-by-name identifier. A legacy Person row may share the same name,
+    /// but must not make the canonical public Person appear favorite.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn user_data_person_items(
+        &self,
+        user_id: Uuid,
+        is_favorite: bool,
+    ) -> Result<Vec<base_item::Model>, PersonError> {
+        Ok(
+            base_item::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT DISTINCT ON (item.id) item.* \
+             FROM jellyfin.user_data AS data \
+             JOIN jellyfin.base_items AS item ON item.id = data.item_id \
+             WHERE data.user_id = $1 \
+               AND data.is_favorite = $2 \
+               AND item.item_type IN (\
+                   'Person', 'MediaBrowser.Controller.Entities.Person'\
+               ) \
+             ORDER BY item.id",
+                [user_id.into(), is_favorite.into()],
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
     }
 
     /// Links a canonical person to a base item with role and ordering metadata.
@@ -960,23 +996,11 @@ fn append_people_item_filters(sql: &mut String, values: &mut Vec<SeaValue>, quer
     append_tag_class_filter(sql, query.is_kids, "kids");
     append_person_type_filter(sql, values, &query.person_types, false);
     append_person_type_filter(sql, values, &query.exclude_person_types, true);
-    if let Some(is_favorite) = query.is_favorite {
-        let Some(user_id) = query.user_id else {
-            return;
-        };
-        push_bind(
-            sql,
-            values,
-            user_id,
-            " AND EXISTS (
-                SELECT 1 FROM jellyfin.user_data AS data
-                JOIN jellyfin.base_items AS person_item ON person_item.id = data.item_id
-                WHERE person_item.item_type = 'Person'
-                  AND person_item.name = person.name
-                  AND data.user_id = ",
-        );
-        push_bind(sql, values, is_favorite, " AND data.is_favorite = ");
-        sql.push(')');
+    if let Some(names) = query.canonical_favorite_names.as_ref() {
+        values.push(serde_json::json!(names).into());
+        sql.push_str(" AND person.name IN (SELECT jsonb_array_elements_text($");
+        sql.push_str(&values.len().to_string());
+        sql.push_str("::jsonb))");
     }
 }
 

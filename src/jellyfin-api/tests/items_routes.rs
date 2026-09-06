@@ -4,9 +4,9 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use jellyfin_api::AppState;
-use jellyfin_controller::MediaAttachmentService;
-use jellyfin_controller::MediaStreamService;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{
+    ItemByNameKind, ItemByNameService, MediaAttachmentService, MediaStreamService, UserService,
+};
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DeviceRepository,
     ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson, NewPersonCredit,
@@ -487,19 +487,21 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         .await
         .expect("genre link");
     let people = PersonRepository::new(fixture.database.clone());
+    let unknown_name = format!("Unknown Person {}", fixture.suffix);
+    let director_name = format!("Director Person {}", fixture.suffix);
     let created_people = people
         .replace_credits(
             movie.id,
             vec![
                 NewPersonCredit {
-                    person: NewPerson::new(format!("Unknown Person {}", fixture.suffix)),
+                    person: NewPerson::new(&unknown_name),
                     person_type: "Cinematographer".to_owned(),
                     role: String::new(),
                     sort_order: None,
                     list_order: 0,
                 },
                 NewPersonCredit {
-                    person: NewPerson::new(format!("Director Person {}", fixture.suffix)),
+                    person: NewPerson::new(&director_name),
                     person_type: "director".to_owned(),
                     role: String::new(),
                     sort_order: None,
@@ -509,6 +511,45 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         )
         .await
         .expect("person credits");
+    let item_by_name = ItemByNameService::new(fixture.database.clone());
+    item_by_name.set_directories(
+        fixture.storage_root.join("programdata"),
+        fixture.storage_root.join("metadata"),
+    );
+    let canonical_people = vec![
+        item_by_name
+            .resolve_direct(ItemByNameKind::Person, &unknown_name)
+            .await
+            .expect("canonical unknown Person"),
+        item_by_name
+            .resolve_direct(ItemByNameKind::Person, &director_name)
+            .await
+            .expect("canonical director Person"),
+    ];
+    assert_ne!(canonical_people[0].id, created_people[0].id);
+    assert_ne!(canonical_people[1].id, created_people[1].id);
+    let mut legacy_person = NewBaseItem::new(Uuid::new_v4(), "Person");
+    legacy_person.name = Some(unknown_name.clone());
+    legacy_person.sort_name = legacy_person.name.clone();
+    let legacy_person = items
+        .create(legacy_person)
+        .await
+        .expect("same-name legacy Person");
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            canonical_people[0].id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: format!("/media/canonical-person-{}.jpg", fixture.suffix),
+                date_modified: Utc::now(),
+                width: Some(300),
+                height: Some(450),
+                blurhash: None,
+            }],
+        )
+        .await
+        .expect("canonical Person primary image");
 
     let body = body_json(
         fixture
@@ -529,6 +570,16 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
     assert_eq!(item["Video3DFormat"], "MVC");
     assert_eq!(item["People"][0]["Type"], "Unknown");
     assert_eq!(item["People"][1]["Type"], "Director");
+    assert_eq!(
+        item["People"][0]["Id"],
+        canonical_people[0].id.simple().to_string()
+    );
+    assert_eq!(
+        item["People"][1]["Id"],
+        canonical_people[1].id.simple().to_string()
+    );
+    assert!(item["People"][0]["PrimaryImageTag"].is_string());
+    assert!(item["People"][1].get("PrimaryImageTag").is_none());
     assert_eq!(
         item["Studios"],
         serde_json::json!([{
@@ -555,7 +606,44 @@ async fn item_metadata_matches_swift_sdk_object_and_array_shapes() {
         ])
     );
 
+    for person_ids in ["personIds", "PersonIds", "personids"] {
+        let filtered = body_json(
+            fixture
+                .request(
+                    &format!(
+                        "/Items?Ids={}&{person_ids}={}&PersonTypes=Cinematographer",
+                        movie.id, canonical_people[0].id
+                    ),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(filtered["TotalRecordCount"], 1, "{person_ids}");
+        assert_eq!(filtered["Items"][0]["Id"], movie.id.simple().to_string());
+    }
+    let internal_id_filtered = body_json(
+        fixture
+            .request(
+                &format!("/Items?Ids={}&PersonIds={}", movie.id, created_people[0].id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(internal_id_filtered["TotalRecordCount"], 0);
+
     items.delete(movie.id).await.expect("movie cleanup");
+    items
+        .delete(legacy_person.id)
+        .await
+        .expect("legacy Person cleanup");
+    for person in canonical_people {
+        items
+            .delete(person.id)
+            .await
+            .expect("canonical Person cleanup");
+    }
     for person in created_people {
         people.delete(person.id).await.expect("person cleanup");
     }
@@ -2048,6 +2136,7 @@ struct Fixture {
     user_id: Uuid,
     user_token: String,
     item_ids: Vec<Uuid>,
+    storage_root: std::path::PathBuf,
 }
 
 impl Fixture {
@@ -2082,6 +2171,7 @@ impl Fixture {
                 .expect("stale items test rows must be removed");
         }
         let suffix = Uuid::new_v4().simple().to_string();
+        let storage_root = std::env::temp_dir().join(format!("items-routes-{suffix}"));
         let users = UserService::new(database.clone());
         let admin = users
             .create_initial_administrator(&format!("items-admin-{suffix}"))
@@ -2130,6 +2220,13 @@ impl Fixture {
             database.clone(),
             "Items Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
+        )
+        .with_storage_paths(
+            storage_root.join("programdata"),
+            storage_root.join("web"),
+            storage_root.join("image-cache"),
+            storage_root.join("cache"),
+            storage_root.join("metadata"),
         );
         let app = jellyfin_api::router(state);
         Self {
@@ -2141,6 +2238,7 @@ impl Fixture {
             user_id: user.id,
             user_token,
             item_ids: vec![first.id, second.id, third.id, nested.id],
+            storage_root,
         }
     }
 
@@ -2169,6 +2267,7 @@ impl Fixture {
             .exec(&self.database)
             .await
             .expect("user cleanup");
+        let _ = tokio::fs::remove_dir_all(self.storage_root).await;
     }
 }
 

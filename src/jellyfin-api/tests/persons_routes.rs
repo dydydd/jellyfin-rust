@@ -1,11 +1,15 @@
 #![allow(clippy::too_many_lines)]
+use std::sync::atomic::AtomicBool;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
 use chrono::Utc;
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{
+    ItemByNameKind, ItemByNameService, PersonReconciliationService, UserService,
+};
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
     DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewPerson,
@@ -43,13 +47,24 @@ async fn person_returns_pascal_case_base_item_dto_for_unicode_clean_name() {
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     let dto = body_json(response).await;
-    assert_eq!(dto["Id"], fixture.person_id.simple().to_string());
+    assert_ne!(fixture.person_id, fixture.person_item_id);
+    assert_ne!(fixture.legacy_person_item_id, fixture.person_item_id);
+    assert_eq!(dto["Id"], fixture.person_item_id.simple().to_string());
     assert_eq!(dto["Name"], fixture.person_name);
     assert_eq!(dto["Type"], "Person");
     assert_eq!(dto["ProviderIds"]["Tmdb"], fixture.tmdb_id);
     assert_eq!(dto["ProviderIds"]["Numeric"], "42");
     assert!(dto["ProviderIds"].get("Missing").is_none());
     assert_eq!(dto["IsFolder"], false);
+    assert_eq!(dto["Overview"], "Canonical person overview");
+    assert!(
+        dto["Path"]
+            .as_str()
+            .is_some_and(|path| path.contains("People"))
+    );
+    assert!(dto["Etag"].is_string());
+    assert!(dto["ImageTags"]["Primary"].is_string());
+    assert_eq!(dto["UserData"]["IsFavorite"], true);
     assert!(dto.get("item_type").is_none());
     assert!(dto.get("provider_ids").is_none());
 
@@ -202,6 +217,19 @@ async fn persons_list_matches_official_persons_contract() {
         3,
         0,
     );
+    assert_eq!(
+        unlimited["Items"]
+            .as_array()
+            .expect("canonical person items")
+            .iter()
+            .map(|item| item["Id"].as_str().expect("canonical person id"))
+            .collect::<Vec<_>>(),
+        [
+            fixture.director_item_id.simple().to_string(),
+            fixture.nested_person_item_id.simple().to_string(),
+            fixture.person_item_id.simple().to_string(),
+        ]
+    );
 
     let searched = body_json(
         fixture
@@ -298,7 +326,26 @@ async fn persons_list_matches_official_persons_contract() {
             .await,
     )
     .await;
-    assert_people(&favorite, &[&fixture.person_name], 1, 0);
+    assert_people(
+        &favorite,
+        &[&fixture.nested_person_name, &fixture.person_name],
+        2,
+        0,
+    );
+
+    for query in [
+        "isFavorite=true&startIndex=1&limit=1",
+        "IsFavorite=true&StartIndex=1&Limit=1",
+        "isfavorite=true&startindex=1&limit=1",
+    ] {
+        let favorite_page = body_json(
+            fixture
+                .request(&format!("/Persons?{query}"), Some(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_people(&favorite_page, &[&fixture.person_name], 2, 1);
+    }
 
     let not_favorite = body_json(
         fixture
@@ -376,6 +423,87 @@ async fn persons_list_matches_official_persons_contract() {
             .status(),
         StatusCode::OK
     );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn persons_list_projects_official_dto_options_in_all_supported_casings() {
+    let fixture = Fixture::new().await;
+    let search = encoded(&fixture.person_name);
+
+    let default_page = body_json(
+        fixture
+            .request(
+                &format!("/Persons?searchTerm={search}"),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let default_person = &default_page["Items"][0];
+    assert_eq!(
+        default_person["Id"],
+        fixture.person_item_id.simple().to_string()
+    );
+    assert!(default_person["ImageTags"]["Primary"].is_string());
+    assert_eq!(default_person["UserData"]["IsFavorite"], true);
+
+    for query in [
+        "fields=Overview&enableUserData=false&imageTypeLimit=1&enableImageTypes=Primary&enableImages=true",
+        "Fields=Overview&EnableUserData=false&ImageTypeLimit=1&EnableImageTypes=Primary&EnableImages=true",
+        "fields=Overview&enableuserdata=false&imagetypelimit=1&enableimagetypes=Primary&enableimages=true",
+    ] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Persons?searchTerm={search}&{query}"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let person = &page["Items"][0];
+        assert_eq!(person["Overview"], "Canonical person overview", "{query}");
+        assert!(person["ImageTags"]["Primary"].is_string(), "{query}");
+        assert!(person.get("UserData").is_none(), "{query}");
+    }
+
+    for enable_images in ["enableImages", "EnableImages", "enableimages"] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Persons?searchTerm={search}&{enable_images}=false"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert!(
+            page["Items"][0].get("ImageTags").is_none(),
+            "{enable_images}"
+        );
+    }
+
+    for query in [
+        "imageTypeLimit=0",
+        "ImageTypeLimit=0",
+        "imagetypelimit=0",
+        "enableImageTypes=Backdrop",
+        "EnableImageTypes=Backdrop",
+        "enableimagetypes=Backdrop",
+    ] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Persons?searchTerm={search}&{query}"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert!(page["Items"][0].get("ImageTags").is_none(), "{query}");
+    }
 
     fixture.cleanup().await;
 }
@@ -581,6 +709,15 @@ async fn persons_list_applies_the_target_users_media_visibility_policy() {
         .update_policy(fixture.user_id, &policy)
         .await
         .expect("restricted person policy");
+    let reconciliation = PersonReconciliationService::new(fixture.database.clone());
+    reconciliation.set_item_by_name_directories(
+        fixture.storage_root.join("programdata"),
+        fixture.storage_root.join("metadata"),
+    );
+    reconciliation
+        .reconcile(&AtomicBool::new(false))
+        .await
+        .expect("policy Person reconciliation");
 
     let search = suffix;
     for route in [
@@ -619,13 +756,18 @@ async fn person_image_routes_resolve_public_base_item_ordinals() {
     assert_ne!(fixture.person_item_id, fixture.person_id);
     let first_path = std::env::temp_dir().join(format!("person-{}.png", Uuid::new_v4().simple()));
     let second_path = std::env::temp_dir().join(format!("person-{}.png", Uuid::new_v4().simple()));
+    let legacy_path = std::env::temp_dir().join(format!("person-{}.png", Uuid::new_v4().simple()));
     image::RgbaImage::from_pixel(4, 2, image::Rgba([220, 30, 30, 255]))
         .save(&first_path)
         .unwrap();
     image::RgbaImage::from_pixel(4, 2, image::Rgba([30, 30, 220, 255]))
         .save(&second_path)
         .unwrap();
-    BaseItemImageRepository::new(fixture.database.clone())
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([30, 220, 30, 255]))
+        .save(&legacy_path)
+        .unwrap();
+    let images = BaseItemImageRepository::new(fixture.database.clone());
+    images
         .replace(
             fixture.person_item_id,
             &[
@@ -651,9 +793,28 @@ async fn person_image_routes_resolve_public_base_item_ordinals() {
         )
         .await
         .unwrap();
+    images
+        .replace(
+            fixture.legacy_person_item_id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Backdrop,
+                image_index: 9,
+                path: legacy_path.to_string_lossy().into_owned(),
+                date_modified: Utc::now(),
+                width: Some(4),
+                height: Some(2),
+                blurhash: None,
+            }],
+        )
+        .await
+        .unwrap();
 
     let base = format!("{}/Images/Backdrop", person_route(&fixture.person_name));
-    for route in [format!("{base}?imageIndex=1"), format!("{base}/1")] {
+    for route in [
+        format!("{base}?imageIndex=1"),
+        format!("{base}?imageIndex=1&width=1&maxWidth=1&quality=1"),
+        format!("{base}/1"),
+    ] {
         let response = fixture.request(&route, None).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
@@ -734,6 +895,7 @@ async fn person_image_routes_resolve_public_base_item_ordinals() {
 
     let _ = std::fs::remove_file(first_path);
     let _ = std::fs::remove_file(second_path);
+    let _ = std::fs::remove_file(legacy_path);
     fixture.cleanup().await;
 }
 
@@ -769,17 +931,25 @@ struct Fixture {
     parent_id: Uuid,
     person_id: Uuid,
     person_item_id: Uuid,
+    legacy_person_item_id: Uuid,
+    director_item_id: Uuid,
+    nested_person_item_id: Uuid,
     person_name: String,
     director_name: String,
     nested_person_name: String,
     variant_name: String,
     tmdb_id: String,
+    storage_root: std::path::PathBuf,
+    fixture_image_paths: Vec<std::path::PathBuf>,
 }
 
 impl Fixture {
     async fn new() -> Self {
         let (database_name, database) = test_database().await;
         let suffix = Uuid::new_v4().simple().to_string();
+        let storage_root = std::env::temp_dir().join(format!("persons-routes-{suffix}"));
+        let program_data_root = storage_root.join("programdata");
+        let metadata_root = storage_root.join("metadata");
         let users = UserService::new(database.clone());
         let admin = users
             .create_initial_administrator(&format!("persons-admin-{suffix}"))
@@ -860,20 +1030,56 @@ impl Fixture {
         for result in [one, two, three, four] {
             assert_eq!(result.expect("concurrent deduplication").id, person.id);
         }
-        let mut person_item = NewBaseItem::new(Uuid::new_v4(), "Person");
-        person_item.name = Some(person_name.clone());
-        person_item.sort_name = person_item.name.clone();
-        let person_item = items
-            .create(person_item)
+        let mut legacy_person_item = NewBaseItem::new(Uuid::new_v4(), "Person");
+        legacy_person_item.name = Some(person_name.clone());
+        legacy_person_item.sort_name = legacy_person_item.name.clone();
+        legacy_person_item.overview = Some("Canonical person overview".to_owned());
+        let legacy_person_item = items
+            .create(legacy_person_item)
             .await
-            .expect("person base item creation");
-        let mut director_person_item = NewBaseItem::new(Uuid::new_v4(), "Person");
-        director_person_item.name = Some(director_name.clone());
-        director_person_item.sort_name = director_person_item.name.clone();
-        let director_person_item = items
-            .create(director_person_item)
+            .expect("legacy person base item creation");
+        let mut legacy_director_item = NewBaseItem::new(Uuid::new_v4(), "Person");
+        legacy_director_item.name = Some(director_name.clone());
+        legacy_director_item.sort_name = legacy_director_item.name.clone();
+        let legacy_director_item = items
+            .create(legacy_director_item)
             .await
-            .expect("director person base item creation");
+            .expect("legacy director base item creation");
+
+        let reconciliation = PersonReconciliationService::new(database.clone());
+        reconciliation.set_item_by_name_directories(&program_data_root, &metadata_root);
+        let summary = reconciliation
+            .reconcile(&AtomicBool::new(false))
+            .await
+            .expect("canonical Person reconciliation");
+        assert_eq!(summary.people_considered, 3);
+        let item_by_name = ItemByNameService::new(database.clone());
+        item_by_name.set_directories(&program_data_root, &metadata_root);
+        let canonical = item_by_name
+            .existing_canonical_many_direct(
+                ItemByNameKind::Person,
+                &[
+                    person_name.clone(),
+                    director_name.clone(),
+                    nested_person_name.clone(),
+                ],
+            )
+            .await
+            .expect("canonical Person lookup");
+        let person_item = canonical[0]
+            .item
+            .clone()
+            .expect("canonical person base item");
+        let director_person_item = canonical[1]
+            .item
+            .clone()
+            .expect("canonical director base item");
+        let nested_person_item = canonical[2]
+            .item
+            .clone()
+            .expect("canonical nested Person item");
+        assert_ne!(person_item.id, person.id);
+        assert_ne!(person_item.id, legacy_person_item.id);
         let user_data = UserDataRepository::new(database.clone());
         let mut movie_favorite = NewUserData::new(second_item.id, user.id, "MovieFavorite");
         movie_favorite.is_favorite = true;
@@ -895,11 +1101,74 @@ impl Fixture {
             ))
             .await
             .expect("person non-favorite user data");
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Persons Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        ));
+        let mut nested_person_favorite =
+            NewUserData::new(nested_person_item.id, user.id, "PersonFavorite");
+        nested_person_favorite.is_favorite = true;
+        user_data
+            .upsert(nested_person_favorite)
+            .await
+            .expect("nested person favorite user data");
+        let mut legacy_person_not_favorite =
+            NewUserData::new(legacy_person_item.id, user.id, "LegacyPersonFavorite");
+        legacy_person_not_favorite.is_favorite = false;
+        user_data
+            .upsert(legacy_person_not_favorite)
+            .await
+            .expect("legacy person non-favorite user data");
+        let mut legacy_director_favorite =
+            NewUserData::new(legacy_director_item.id, user.id, "LegacyPersonFavorite");
+        legacy_director_favorite.is_favorite = true;
+        user_data
+            .upsert(legacy_director_favorite)
+            .await
+            .expect("legacy director favorite user data");
+
+        let canonical_primary_path = storage_root.join("canonical-person.png");
+        let legacy_primary_path = storage_root.join("legacy-person.png");
+        tokio::fs::create_dir_all(&storage_root)
+            .await
+            .expect("person route storage root");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([30, 200, 80, 255]))
+            .save(&canonical_primary_path)
+            .expect("canonical person image");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([200, 30, 80, 255]))
+            .save(&legacy_primary_path)
+            .expect("legacy person image");
+        let images = BaseItemImageRepository::new(database.clone());
+        for (item_id, path) in [
+            (person_item.id, &canonical_primary_path),
+            (legacy_person_item.id, &legacy_primary_path),
+        ] {
+            images
+                .replace(
+                    item_id,
+                    &[NewBaseItemImage {
+                        image_type: BaseItemImageType::Primary,
+                        image_index: 0,
+                        path: path.to_string_lossy().into_owned(),
+                        date_modified: Utc::now(),
+                        width: Some(3),
+                        height: Some(2),
+                        blurhash: None,
+                    }],
+                )
+                .await
+                .expect("person primary image registration");
+        }
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Persons Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                &program_data_root,
+                storage_root.join("web"),
+                storage_root.join("image-cache"),
+                storage_root.join("cache"),
+                &metadata_root,
+            ),
+        );
         Self {
             database_name,
             database,
@@ -912,11 +1181,16 @@ impl Fixture {
             parent_id: parent.id,
             person_id: person.id,
             person_item_id: person_item.id,
+            legacy_person_item_id: legacy_person_item.id,
+            director_item_id: director_person_item.id,
+            nested_person_item_id: nested_person_item.id,
             person_name,
             director_name,
             nested_person_name,
             variant_name,
             tmdb_id,
+            storage_root,
+            fixture_image_paths: vec![canonical_primary_path, legacy_primary_path],
         }
     }
 
@@ -949,9 +1223,15 @@ impl Fixture {
             database_name,
             database,
             app,
+            storage_root,
+            fixture_image_paths,
             ..
         } = self;
         drop(app);
+        for path in fixture_image_paths {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        let _ = tokio::fs::remove_dir_all(storage_root).await;
         database.close().await.unwrap();
         let administrator = jellyfin_data::connect(&DatabaseConfig::default())
             .await

@@ -1,11 +1,12 @@
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use jellyfin_data::{
-    BaseItemError, BaseItemQuery, BaseItemRepository, CanonicalPersonEntity,
-    PersonError as PersonRepositoryError, PersonQuery, PersonRepository,
+    BaseItemQuery, CanonicalPersonEntity, PersonError as PersonRepositoryError, PersonQuery,
+    PersonRepository,
     entities::{base_item, person, user},
 };
 use thiserror::Error;
@@ -20,7 +21,7 @@ const PERSON_RECONCILIATION_BATCH_SIZE: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Person {
-    pub model: person::Model,
+    pub model: base_item::Model,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +44,7 @@ pub enum PersonError {
     #[error(transparent)]
     Repository(#[from] PersonRepositoryError),
     #[error(transparent)]
-    BaseItem(#[from] BaseItemError),
+    ItemByName(#[from] ItemByNameError),
     #[error(transparent)]
     UserLibrary(#[from] UserLibraryError),
 }
@@ -268,21 +269,40 @@ impl PersonReconciliationService {
 #[derive(Clone)]
 pub struct PersonService {
     users: UserService,
-    items: BaseItemRepository,
     people: PersonRepository,
     user_library: UserLibraryService,
+    item_by_name: ItemByNameService,
 }
 
 impl PersonService {
     #[must_use]
     pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
         let database = database.into();
+        let item_by_name = ItemByNameService::new(std::sync::Arc::clone(&database));
+        Self::with_item_by_name_service(database, item_by_name)
+    }
+
+    #[must_use]
+    pub fn with_item_by_name_service(
+        database: impl Into<jellyfin_data::SharedDatabase>,
+        item_by_name: ItemByNameService,
+    ) -> Self {
+        let database = database.into();
         Self {
             users: UserService::new(std::sync::Arc::clone(&database)),
-            items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             people: PersonRepository::new(std::sync::Arc::clone(&database)),
             user_library: UserLibraryService::new(database),
+            item_by_name,
         }
+    }
+
+    pub fn set_item_by_name_directories(
+        &self,
+        program_data_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        self.item_by_name
+            .set_directories(program_data_directory, internal_metadata_directory);
     }
 
     /// Resolves a person by exact display name and then Unicode clean name.
@@ -298,19 +318,14 @@ impl PersonService {
     ) -> Result<Person, PersonError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
-        let person = match self.people.get_exact(name).await {
-            Ok(Some(person)) => person,
-            Ok(None) => match self.people.get_normalized(name).await {
-                Ok(Some(person)) => person,
-                Ok(None) | Err(PersonRepositoryError::InvalidName) => {
-                    return Err(PersonError::NotFound);
-                }
-                Err(error) => return Err(error.into()),
-            },
-            Err(PersonRepositoryError::InvalidName) => return Err(PersonError::NotFound),
-            Err(error) => return Err(error.into()),
-        };
-        Ok(Person { model: person })
+        let person = self.catalog_person(name).await?;
+        let canonical = self
+            .canonical_items(std::slice::from_ref(&person))
+            .await?
+            .pop()
+            .flatten()
+            .ok_or(PersonError::NotFound)?;
+        Ok(Person { model: canonical })
     }
 
     /// Resolves the persisted `Person` item that owns image metadata.
@@ -319,7 +334,16 @@ impl PersonService {
     ///
     /// Returns a database error when the item lookup fails.
     pub async fn image_item(&self, name: &str) -> Result<Option<base_item::Model>, PersonError> {
-        Ok(self.items.get_by_type_and_name("Person", name).await?)
+        let person = match self.catalog_person(name).await {
+            Ok(person) => person,
+            Err(PersonError::NotFound) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(self
+            .canonical_items(std::slice::from_ref(&person))
+            .await?
+            .pop()
+            .flatten())
     }
 
     /// Lists people credited to filtered library items.
@@ -340,16 +364,94 @@ impl PersonService {
             .apply_user_policy(&mut access_filter, target_user_id)
             .await?;
         query.access_filter = Some(access_filter);
+        if let Some(is_favorite) = query.is_favorite.take() {
+            query.canonical_favorite_names = Some(
+                self.canonical_favorite_names(target_user_id, is_favorite)
+                    .await?,
+            );
+        }
         let page = self.people.query(&query).await?;
+        let canonical = self.canonical_items(&page.people).await?;
         Ok(PersonPage {
             people: page
                 .people
                 .into_iter()
-                .map(|person| Person { model: person })
+                .zip(canonical)
+                .filter_map(|(_, item)| item.map(|model| Person { model }))
                 .collect(),
             total_record_count: page.total_record_count,
             start_index: page.start_index,
         })
+    }
+
+    /// Resolves exact canonical Person items for internal catalog rows.
+    ///
+    /// The result remains aligned with `people`; a missing canonical row is
+    /// represented by `None` and never falls back to the internal credit id.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration or persistence errors.
+    pub async fn canonical_items(
+        &self,
+        people: &[person::Model],
+    ) -> Result<Vec<Option<base_item::Model>>, PersonError> {
+        let names = people
+            .iter()
+            .map(|person| person.name.clone())
+            .collect::<Vec<_>>();
+        Ok(self
+            .item_by_name
+            .existing_canonical_many_direct(ItemByNameKind::Person, &names)
+            .await?
+            .into_iter()
+            .map(|lookup| lookup.item)
+            .collect())
+    }
+
+    async fn canonical_favorite_names(
+        &self,
+        target_user_id: Uuid,
+        is_favorite: bool,
+    ) -> Result<Vec<String>, PersonError> {
+        let candidates = self
+            .people
+            .user_data_person_items(target_user_id, is_favorite)
+            .await?;
+        let names = candidates
+            .iter()
+            .map(|item| item.name.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        let lookups = self
+            .item_by_name
+            .existing_canonical_many_direct(ItemByNameKind::Person, &names)
+            .await?;
+        let mut seen = HashSet::new();
+        Ok(candidates
+            .into_iter()
+            .zip(names)
+            .zip(lookups)
+            .filter_map(|((candidate, name), lookup)| {
+                (!name.is_empty()
+                    && candidate.id == lookup.expected_id
+                    && lookup.item.is_some()
+                    && seen.insert(name.clone()))
+                .then_some(name)
+            })
+            .collect())
+    }
+
+    async fn catalog_person(&self, name: &str) -> Result<person::Model, PersonError> {
+        match self.people.get_exact(name).await {
+            Ok(Some(person)) => Ok(person),
+            Ok(None) => match self.people.get_normalized(name).await {
+                Ok(Some(person)) => Ok(person),
+                Ok(None) | Err(PersonRepositoryError::InvalidName) => Err(PersonError::NotFound),
+                Err(error) => Err(error.into()),
+            },
+            Err(PersonRepositoryError::InvalidName) => Err(PersonError::NotFound),
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn validate_user(

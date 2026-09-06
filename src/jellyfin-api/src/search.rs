@@ -200,11 +200,22 @@ pub(crate) async fn hints(
             )
             .await?;
         result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
-        result.search_hints.extend(
-            page.people
-                .into_iter()
-                .map(|person| person_hint(person, search_term)),
-        );
+        let person_ids = page
+            .people
+            .iter()
+            .map(|person| person.model.id)
+            .collect::<Vec<_>>();
+        let person_image_tags = state
+            .dto_images
+            .primary_image_tags(&person_ids)
+            .await
+            .map_err(|_| ApiError::Internal)?;
+        result
+            .search_hints
+            .extend(page.people.into_iter().map(|person| {
+                let image_tag = person_image_tags.get(&person.model.id).cloned();
+                person_hint(person, search_term, image_tag)
+            }));
     }
 
     if include_genres {
@@ -473,12 +484,17 @@ fn music_genre_hint(genre: MusicGenre, matched_term: &str) -> SearchHint {
     }
 }
 
-fn person_hint(person: Person, matched_term: &str) -> SearchHint {
+fn person_hint(
+    person: Person,
+    matched_term: &str,
+    primary_image_tag: Option<String>,
+) -> SearchHint {
     SearchHint {
         item_id: person.model.id,
         id: person.model.id,
-        name: person.model.name,
+        name: person.model.name.unwrap_or_default(),
         matched_term: Some(matched_term.to_owned()),
+        primary_image_tag,
         item_type: "Person".to_owned(),
         ..SearchHint::default()
     }
