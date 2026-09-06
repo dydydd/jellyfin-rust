@@ -1,6 +1,6 @@
 use std::{collections::HashMap, error::Error, fmt};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -36,7 +36,10 @@ impl Default for ChapterInfo {
             start_position_ticks: 0,
             name: None,
             image_path: None,
-            image_date_modified: DateTime::<Utc>::UNIX_EPOCH,
+            image_date_modified: Utc
+                .with_ymd_and_hms(1, 1, 1, 0, 0, 0)
+                .single()
+                .expect("year 1 must be representable by chrono"),
             image_tag: None,
         }
     }
