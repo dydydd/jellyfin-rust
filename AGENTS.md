@@ -251,6 +251,9 @@
   Traverse hierarchy and linked descendants, expand merged folder groups, exclude virtual leaves,
   alternate versions, and owned non-extra rows, and return zero entries without per-folder fallbacks.
 - Order episode detail pages with the official aired-episode comparer before applying `StartItemId`, adjacency, or pagination. Specials with `AirsBeforeSeasonNumber`, `AirsAfterSeasonNumber`, or `AirsBeforeEpisodeNumber` must be positioned relative to regular episodes rather than compared with a single incompatible numeric key; season zero itself remains sorted by `SortName`.
+- Bind `Shows/{SeriesId}/Episodes` pagination as signed 32-bit values. Preserve a negative
+  `StartIndex` in the response while treating it as no skip, let a negative `Limit` return an empty
+  page, and reject values outside the official `Int32` range.
 - `Items/Latest` defaults `GroupItems` to true. For TV, select the top Series groups from the
   complete policy-filtered Episode set before applying the result limit, then analyze each Series'
   inclusive 24-hour window in PostgreSQL. Return Series for cross-season additions; for one Season

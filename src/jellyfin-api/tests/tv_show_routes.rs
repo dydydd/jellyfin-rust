@@ -486,6 +486,60 @@ async fn assert_episodes_route(fixture: &Fixture) {
     .await;
     assert_eq!(pascal_limit["StartIndex"], 0);
     assert_eq!(pascal_limit["Items"].as_array().unwrap().len(), 2);
+
+    let negative_start = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/Shows/{}/Episodes?startindex=-1&Limit=2",
+                    fixture.series_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(negative_start["StartIndex"], -1);
+    assert_eq!(negative_start["TotalRecordCount"], 5);
+    assert_eq!(
+        item_ids(&negative_start),
+        vec![
+            fixture.special_episode_id.simple().to_string(),
+            fixture.first_episode_id.simple().to_string(),
+        ]
+    );
+
+    let negative_limit = body_json(
+        fixture
+            .get(
+                &format!("/Shows/{}/Episodes?limit=-1", fixture.series_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(negative_limit["StartIndex"], 0);
+    assert_eq!(negative_limit["TotalRecordCount"], 5);
+    assert!(negative_limit["Items"].as_array().unwrap().is_empty());
+
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture
+                .get(
+                    &format!("/Shows/{}/Episodes?{query}", fixture.series_id),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{query}"
+        );
+    }
 }
 
 async fn assert_next_up_route(fixture: &Fixture) {

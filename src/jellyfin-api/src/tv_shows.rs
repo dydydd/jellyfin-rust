@@ -9,7 +9,7 @@ use axum_extra::extract::Query;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use jellyfin_controller::UserLibraryError;
 use jellyfin_data::{BaseItemOrder, BaseItemQuery, entities::base_item};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -85,15 +85,10 @@ pub(crate) struct EpisodesQuery {
     adjacent_to: Option<Uuid>,
     #[serde(rename = "startItemId", alias = "StartItemId", alias = "startitemid")]
     start_item_id: Option<Uuid>,
-    #[serde(
-        default,
-        rename = "startIndex",
-        alias = "StartIndex",
-        alias = "startindex"
-    )]
-    start_index: u64,
+    #[serde(rename = "startIndex", alias = "StartIndex", alias = "startindex")]
+    start_index: Option<i32>,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(
         rename = "enableImages",
         alias = "EnableImages",
@@ -122,6 +117,14 @@ pub(crate) struct EpisodesQuery {
     enable_user_data: Option<bool>,
     #[serde(rename = "sortBy", alias = "SortBy", alias = "sortby")]
     sort_by: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct EpisodesResult {
+    items: Vec<user_library::BaseItemDto>,
+    total_record_count: usize,
+    start_index: i32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -376,7 +379,7 @@ pub(crate) async fn episodes(
     headers: HeaderMap,
     Path(series_id): Path<Uuid>,
     Query(query): Query<EpisodesQuery>,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+) -> Result<Json<EpisodesResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
@@ -440,10 +443,10 @@ pub(crate) async fn episodes(
             .into_iter()
             .find(|item| item.index_number == Some(season_number))
         else {
-            return Ok(Json(user_library::BaseItemQueryResult {
+            return Ok(Json(EpisodesResult {
                 items: Vec::new(),
                 total_record_count: 0,
-                start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
+                start_index: query.start_index.unwrap_or_default(),
             }));
         };
         (
@@ -510,10 +513,10 @@ pub(crate) async fn episodes(
     let total_record_count = episodes.len();
     let return_items = apply_paging(episodes, query.start_index, query.limit);
     let items = project_items_to_dtos(state.as_ref(), return_items, fields, target_user_id).await?;
-    Ok(Json(user_library::BaseItemQueryResult {
+    Ok(Json(EpisodesResult {
         items,
         total_record_count,
-        start_index: usize::try_from(query.start_index).unwrap_or(usize::MAX),
+        start_index: query.start_index.unwrap_or_default(),
     }))
 }
 
@@ -759,12 +762,14 @@ async fn project_items_to_dtos(
 
 fn apply_paging(
     items: Vec<base_item::Model>,
-    start_index: u64,
-    limit: Option<u64>,
+    start_index: Option<i32>,
+    limit: Option<i32>,
 ) -> Vec<base_item::Model> {
-    let start_index = usize::try_from(start_index).unwrap_or(usize::MAX);
-    let limit = limit.map_or(usize::MAX, |limit| {
-        usize::try_from(limit).unwrap_or(usize::MAX)
+    let start_index = start_index
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or_default();
+    let limit = limit.map_or(usize::MAX, |value| {
+        usize::try_from(value).unwrap_or_default()
     });
     items.into_iter().skip(start_index).take(limit).collect()
 }
