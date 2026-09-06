@@ -8,12 +8,12 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::{
-    LyricProvider, LyricProviderFuture, LyricSearchRequest, RemoteLyricInfo, UserService,
+    LyricProvider, LyricProviderFuture, LyricSearchRequest, RemoteLyricInfo, RemoteLyricResponse,
+    UserService,
 };
 use jellyfin_data::{
     ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice, ServerConfigurationRepository,
 };
-use jellyfin_providers::lyrics::LyricFile;
 use sea_orm::ConnectionTrait;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -291,8 +291,11 @@ impl LyricProvider for NamedLyricProvider {
         Box::pin(async { Ok(Vec::new()) })
     }
 
-    fn get_lyrics(&self, _id: &str) -> Option<LyricFile> {
-        None
+    fn get_lyrics<'a>(
+        &'a self,
+        _id: &'a str,
+    ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>> {
+        Box::pin(async { Ok(None) })
     }
 }
 

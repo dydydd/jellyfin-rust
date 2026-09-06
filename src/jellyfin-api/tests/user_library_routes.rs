@@ -3,9 +3,10 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::MediaAttachmentService;
-use jellyfin_controller::MediaStreamService;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{
+    LyricProvider, LyricProviderFuture, LyricSearchRequest, MediaAttachmentService,
+    MediaStreamService, RemoteLyricInfo, RemoteLyricResponse, UserService,
+};
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem, NewDevice,
     NewTrickplayInfo, NewUserData, TrickplayInfoRepository, USER_ROOT_FOLDER_ID,
@@ -18,11 +19,55 @@ use sea_orm::{
     Set,
 };
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"User Library Tests\", Device=\"Test\", DeviceId=\"user-library\", Version=\"1.0\"";
+const DOWNLOAD_LYRIC_PROVIDER_ID: &str = "a14e566951f4669abf58f6555ec9d3d1";
+
+struct RemoteDownloadLyricProvider {
+    content: Vec<u8>,
+    requested_ids: Arc<Mutex<Vec<String>>>,
+}
+
+impl LyricProvider for RemoteDownloadLyricProvider {
+    fn name(&self) -> &str {
+        "Download Provider"
+    }
+
+    fn search<'a>(
+        &'a self,
+        _request: &'a LyricSearchRequest,
+    ) -> LyricProviderFuture<'a, Vec<RemoteLyricInfo>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn get_lyrics<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>> {
+        self.requested_ids
+            .lock()
+            .expect("requested lyric ids")
+            .push(id.to_owned());
+        let content = self.content.clone();
+        Box::pin(async move {
+            match id {
+                "missing" => Ok(None),
+                "invalid" => Ok(Some(RemoteLyricResponse::new(
+                    "srt",
+                    b"unsupported".to_vec(),
+                ))),
+                "error" => Err(std::io::Error::other("provider download failed").into()),
+                _ => Ok(Some(RemoteLyricResponse::new("lrc", content))),
+            }
+        })
+    }
+}
 
 #[tokio::test]
 async fn official_nonexistent_user_routes_return_not_found() {
@@ -684,6 +729,128 @@ async fn remote_lyric_search_matches_management_policy_and_empty_provider_contra
     assert_eq!(provider_regular.status(), StatusCode::FORBIDDEN);
     let provider_admin = request(&fixture.app, provider_route, &fixture.administrator_token).await;
     assert_eq!(provider_admin.status(), StatusCode::NOT_FOUND);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn remote_lyric_get_and_download_preserve_provider_bytes_and_error_semantics() {
+    let original = utf16_lyric_bytes("[00:01.00]Downloaded from UTF-16", true);
+    let requested_ids = Arc::new(Mutex::new(Vec::new()));
+    let fixture =
+        UserLibraryFixture::with_lyric_providers(vec![Arc::new(RemoteDownloadLyricProvider {
+            content: original.clone(),
+            requested_ids: Arc::clone(&requested_ids),
+        })])
+        .await;
+
+    let preview_route =
+        format!("/Providers/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_preview_with_underscores");
+    let preview = get_json(&fixture.app, &preview_route, &fixture.administrator_token).await;
+    assert_eq!(preview["Lyrics"][0]["Text"], "Downloaded from UTF-16");
+    assert!(
+        MediaStreamService::new(fixture.database.clone())
+            .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+                fixture.item_id,
+            ))
+            .await
+            .expect("streams after preview")
+            .iter()
+            .all(|stream| stream.stream_type != MediaStreamType::Lyric),
+        "provider preview must not persist lyrics"
+    );
+
+    let download_route = format!(
+        "/Audio/{}/RemoteSearch/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_download_with_underscores",
+        fixture.item_id
+    );
+    let download = request_post(&fixture.app, &download_route, &fixture.administrator_token).await;
+    assert_eq!(download.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(download).await["Lyrics"][0]["Text"],
+        "Downloaded from UTF-16"
+    );
+
+    let lyric_stream = MediaStreamService::new(fixture.database.clone())
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(
+            fixture.item_id,
+        ))
+        .await
+        .expect("streams after download")
+        .into_iter()
+        .find(|stream| stream.stream_type == MediaStreamType::Lyric)
+        .expect("registered lyric stream");
+    assert_eq!(lyric_stream.codec.as_deref(), Some("lrc"));
+    let lyric_path = lyric_stream.path.expect("managed lyric path");
+    assert_eq!(
+        tokio::fs::read(&lyric_path)
+            .await
+            .expect("persisted remote lyric"),
+        original,
+        "remote provider bytes must not be transcoded while saving"
+    );
+
+    for provider_result in ["missing", "invalid"] {
+        let preview_response = request(
+            &fixture.app,
+            &format!("/Providers/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_{provider_result}"),
+            &fixture.administrator_token,
+        )
+        .await;
+        assert_eq!(
+            preview_response.status(),
+            StatusCode::NOT_FOUND,
+            "preview {provider_result}"
+        );
+        let download_response = request_post(
+            &fixture.app,
+            &format!(
+                "/Audio/{}/RemoteSearch/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_{provider_result}",
+                fixture.item_id
+            ),
+            &fixture.administrator_token,
+        )
+        .await;
+        assert_eq!(
+            download_response.status(),
+            StatusCode::NOT_FOUND,
+            "download {provider_result}"
+        );
+    }
+    let preview_error = request(
+        &fixture.app,
+        &format!("/Providers/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_error"),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(preview_error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let download_error = request_post(
+        &fixture.app,
+        &format!(
+            "/Audio/{}/RemoteSearch/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_error",
+            fixture.item_id
+        ),
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(download_error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    assert_eq!(
+        requested_ids
+            .lock()
+            .expect("requested lyric ids")
+            .as_slice(),
+        [
+            "preview_with_underscores",
+            "download_with_underscores",
+            "missing",
+            "missing",
+            "invalid",
+            "invalid",
+            "error",
+            "error"
+        ]
+    );
 
     fixture.cleanup().await;
 }
@@ -1842,6 +2009,10 @@ struct UserLibraryFixture {
 
 impl UserLibraryFixture {
     async fn new() -> Self {
+        Self::with_lyric_providers(Vec::new()).await
+    }
+
+    async fn with_lyric_providers(providers: Vec<Arc<dyn LyricProvider>>) -> Self {
         let database = test_database().await;
         let users = UserService::new(database.clone());
         let suffix = Uuid::new_v4().simple().to_string();
@@ -1918,7 +2089,8 @@ impl UserLibraryFixture {
             storage_root.join("cache/images"),
             storage_root.join("cache"),
             storage_root.join("metadata"),
-        );
+        )
+        .with_lyric_providers(providers);
         let app = jellyfin_api::router(state);
         Self {
             database,

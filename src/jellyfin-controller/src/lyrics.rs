@@ -5,6 +5,7 @@ use jellyfin_providers::lyrics::{LrcLyricParser, LyricFile};
 use md5::{Digest, Md5};
 use serde::Serialize;
 use serde_json::{Value, json};
+use thiserror::Error;
 
 const MAX_CONCURRENT_LYRIC_SEARCHES: usize = 4;
 const LYRIC_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -76,7 +77,24 @@ pub struct RemoteLyricInfo {
     pub id: String,
     pub provider_name: String,
     pub metadata: Value,
-    pub lyrics: LyricFile,
+    pub lyrics: RemoteLyricResponse,
+}
+
+/// Format and original bytes returned by a remote lyric provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoteLyricResponse {
+    pub format: String,
+    pub content: Vec<u8>,
+}
+
+impl RemoteLyricResponse {
+    #[must_use]
+    pub fn new(format: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
+        Self {
+            format: format.into(),
+            content: content.into(),
+        }
+    }
 }
 
 /// Remote lyric search result matching Jellyfin's `RemoteLyricInfoDto`.
@@ -124,6 +142,18 @@ pub type LyricProviderError = Box<dyn Error + Send + Sync>;
 pub type LyricProviderFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, LyricProviderError>> + Send + 'a>>;
 
+#[derive(Debug, Error)]
+pub enum LyricManagerError {
+    #[error("lyric provider {provider} failed")]
+    Provider {
+        provider: String,
+        #[source]
+        source: LyricProviderError,
+    },
+    #[error("lyric provider {provider} timed out")]
+    ProviderTimeout { provider: String },
+}
+
 /// Remote lyric provider boundary matching Jellyfin's plugin contract.
 pub trait LyricProvider: Send + Sync {
     fn name(&self) -> &str;
@@ -134,7 +164,10 @@ pub trait LyricProvider: Send + Sync {
         &'a self,
         request: &'a LyricSearchRequest,
     ) -> LyricProviderFuture<'a, Vec<RemoteLyricInfo>>;
-    fn get_lyrics(&self, id: &str) -> Option<LyricFile>;
+    fn get_lyrics<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>>;
 }
 
 /// Aggregates remote lyric providers and parses their responses.
@@ -258,8 +291,8 @@ impl LyricManager {
         results
             .into_iter()
             .filter_map(|result| {
-                let format = lyric_format(&result.lyrics.name)?;
-                let mut lyrics = Self::parse_lyrics(format, &result.lyrics.content)?;
+                let content = decode_lyric_bytes(&result.lyrics.content);
+                let mut lyrics = Self::parse_lyrics(&result.lyrics.format, &content)?;
                 let object = lyrics.as_object_mut()?;
                 object.insert(
                     "Metadata".to_owned(),
@@ -283,17 +316,32 @@ impl LyricManager {
         (index, self.search_provider(provider, request).await)
     }
 
-    /// Resolves a provider-owned lyric id.
-    #[must_use]
-    pub fn get_lyrics(&self, id: &str) -> Option<LyricFile> {
+    /// Resolves a provider-owned lyric id with the same deadline as provider searches.
+    pub async fn get_lyrics(
+        &self,
+        id: &str,
+    ) -> Result<Option<RemoteLyricResponse>, LyricManagerError> {
         // `string.Split('_', 2)` in the official manager uses the only part as
         // both the provider id and provider-owned id when no separator exists.
         let (provider_id, lyric_id) = id.split_once('_').unwrap_or((id, id));
-        let provider = self
+        let Some(provider) = self
             .providers
             .iter()
-            .find(|provider| lyric_provider_id(provider.name()) == provider_id)?;
-        provider.get_lyrics(lyric_id)
+            .find(|provider| lyric_provider_id(provider.name()) == provider_id)
+        else {
+            return Ok(None);
+        };
+        let provider_name = provider.name().to_owned();
+        match tokio::time::timeout(self.provider_timeout, provider.get_lyrics(lyric_id)).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(source)) => Err(LyricManagerError::Provider {
+                provider: provider_name,
+                source,
+            }),
+            Err(_) => Err(LyricManagerError::ProviderTimeout {
+                provider: provider_name,
+            }),
+        }
     }
 
     /// Parses a lyric file using Jellyfin's LRC parser with a TXT fallback.
@@ -343,11 +391,6 @@ fn lyric_provider_id(name: &str) -> String {
         write!(&mut provider_id, "{byte:02x}").expect("writing to a String cannot fail");
     }
     provider_id
-}
-
-fn lyric_format(file_name: &str) -> Option<&str> {
-    let (_, extension) = file_name.rsplit_once('.')?;
-    (!extension.is_empty()).then_some(extension)
 }
 
 fn split_unsynced_lyric_lines(content: &str) -> Vec<&str> {
@@ -444,6 +487,7 @@ mod tests {
         search_results: Vec<RemoteLyricInfo>,
         search_calls: Arc<AtomicUsize>,
         search_error: bool,
+        get_error: bool,
         requested_ids: Arc<Mutex<Vec<String>>>,
     }
 
@@ -472,12 +516,25 @@ mod tests {
             })
         }
 
-        fn get_lyrics(&self, id: &str) -> Option<LyricFile> {
+        fn get_lyrics<'a>(
+            &'a self,
+            id: &'a str,
+        ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>> {
             self.requested_ids
                 .lock()
                 .expect("requested ids")
                 .push(id.to_owned());
-            Some(LyricFile::new("download.lrc", "[00:01.00]Downloaded"))
+            let get_error = self.get_error;
+            Box::pin(async move {
+                if get_error {
+                    Err(std::io::Error::other("provider download failed").into())
+                } else {
+                    Ok(Some(RemoteLyricResponse::new(
+                        "lrc",
+                        b"[00:01.00]Downloaded".to_vec(),
+                    )))
+                }
+            })
         }
     }
 
@@ -488,6 +545,7 @@ mod tests {
             search_results,
             search_calls: Arc::default(),
             search_error: false,
+            get_error: false,
             requested_ids: Arc::default(),
         }
     }
@@ -497,7 +555,7 @@ mod tests {
             id: id.to_owned(),
             provider_name: provider_name.to_owned(),
             metadata: json!({}),
-            lyrics: LyricFile::new("result.txt", content),
+            lyrics: RemoteLyricResponse::new("txt", content.as_bytes().to_vec()),
         }
     }
 
@@ -546,8 +604,11 @@ mod tests {
             })
         }
 
-        fn get_lyrics(&self, _id: &str) -> Option<LyricFile> {
-            None
+        fn get_lyrics<'a>(
+            &'a self,
+            _id: &'a str,
+        ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>> {
+            Box::pin(async { Ok(None) })
         }
     }
 
@@ -583,8 +644,11 @@ mod tests {
             })
         }
 
-        fn get_lyrics(&self, _id: &str) -> Option<LyricFile> {
-            None
+        fn get_lyrics<'a>(
+            &'a self,
+            _id: &'a str,
+        ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>> {
+            Box::pin(async { Ok(None) })
         }
     }
 
@@ -610,8 +674,16 @@ mod tests {
             })
         }
 
-        fn get_lyrics(&self, _id: &str) -> Option<LyricFile> {
-            None
+        fn get_lyrics<'a>(
+            &'a self,
+            _id: &'a str,
+        ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>> {
+            let calls = Arc::clone(&self.calls);
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::AcqRel);
+                std::future::pending::<()>().await;
+                Ok(None)
+            })
         }
     }
 
@@ -653,8 +725,20 @@ mod tests {
             })
         }
 
-        fn get_lyrics(&self, _id: &str) -> Option<LyricFile> {
-            None
+        fn get_lyrics<'a>(
+            &'a self,
+            _id: &'a str,
+        ) -> LyricProviderFuture<'a, Option<RemoteLyricResponse>> {
+            let started = self.started.lock().expect("started sender").take();
+            let dropped = self.dropped.lock().expect("dropped sender").take();
+            Box::pin(async move {
+                let _drop_signal = DropSignal(dropped);
+                if let Some(sender) = started {
+                    let _ = sender.send(());
+                }
+                std::future::pending::<()>().await;
+                Ok(None)
+            })
         }
     }
 
@@ -774,7 +858,10 @@ mod tests {
                 id: "first-result".to_owned(),
                 provider_name: "First Provider".to_owned(),
                 metadata: json!({ "Artist": "Remote Artist", "IsSynced": true }),
-                lyrics: LyricFile::new("first.lrc", "[00:01.00]First result"),
+                lyrics: RemoteLyricResponse::new(
+                    "lrc",
+                    b"\xEF\xBB\xBF[00:01.00]First result".to_vec(),
+                ),
             }],
         ));
         let second = Arc::new(test_provider(
@@ -784,7 +871,7 @@ mod tests {
                     id: "unparseable".to_owned(),
                     provider_name: "Second Provider".to_owned(),
                     metadata: json!({}),
-                    lyrics: LyricFile::new("bad.srt", "unsupported"),
+                    lyrics: RemoteLyricResponse::new("srt", b"unsupported".to_vec()),
                 },
                 RemoteLyricInfo {
                     id: "second_result_with_underscores".to_owned(),
@@ -796,7 +883,7 @@ mod tests {
                         "IsSynced": "true",
                         "UnknownPluginField": { "nested": true }
                     }),
-                    lyrics: LyricFile::new("second.txt", "Second result"),
+                    lyrics: RemoteLyricResponse::new("txt", b"Second result".to_vec()),
                 },
             ],
         ));
@@ -1071,7 +1158,7 @@ mod tests {
                 id: "invalid".to_owned(),
                 provider_name: "Invalid".to_owned(),
                 metadata: json!({}),
-                lyrics: LyricFile::new("invalid.srt", "unsupported"),
+                lyrics: RemoteLyricResponse::new("srt", b"unsupported".to_vec()),
             }],
         );
         let invalid_calls = Arc::clone(&invalid.search_calls);
@@ -1234,8 +1321,8 @@ mod tests {
         assert_eq!(project_lyric_metadata(&Value::Null), json!({}));
     }
 
-    #[test]
-    fn remote_download_routes_by_hashed_provider_and_strips_prefix() {
+    #[tokio::test]
+    async fn remote_download_routes_by_hashed_provider_and_strips_prefix() {
         let requested_ids = Arc::new(Mutex::new(Vec::new()));
         let mut provider = test_provider("Download Provider", Vec::new());
         provider.requested_ids = Arc::clone(&requested_ids);
@@ -1246,15 +1333,30 @@ mod tests {
 
         let downloaded = manager
             .get_lyrics(&format!("{provider_id}_remote_id_with_underscores"))
+            .await
+            .expect("provider download")
             .expect("remote lyric");
 
-        assert_eq!(downloaded.name, "download.lrc");
+        assert_eq!(downloaded.format, "lrc");
+        assert_eq!(downloaded.content, b"[00:01.00]Downloaded");
         assert_eq!(
             requested_ids.lock().expect("requested ids").as_slice(),
             ["remote_id_with_underscores"]
         );
-        assert!(manager.get_lyrics("unknown_remote-id").is_none());
-        assert!(manager.get_lyrics(&provider_id).is_some());
+        assert!(
+            manager
+                .get_lyrics("unknown_remote-id")
+                .await
+                .expect("unknown provider lookup")
+                .is_none()
+        );
+        assert!(
+            manager
+                .get_lyrics(&provider_id)
+                .await
+                .expect("provider lookup without separator")
+                .is_some()
+        );
         assert_eq!(
             requested_ids.lock().expect("requested ids").as_slice(),
             ["remote_id_with_underscores", provider_id.as_str()]
@@ -1262,7 +1364,67 @@ mod tests {
         assert!(
             manager
                 .get_lyrics(&format!("{}_remote-id", provider_id.to_uppercase()))
+                .await
+                .expect("case-sensitive provider lookup")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn remote_download_distinguishes_provider_failures_and_timeouts_from_not_found() {
+        let mut failed = test_provider("Failed Provider", Vec::new());
+        failed.get_error = true;
+        let failed_id = lyric_provider_id(failed.name());
+        let manager =
+            LyricManager::with_search_limits(vec![Arc::new(failed)], 1, Duration::from_secs(5));
+        assert!(matches!(
+            manager.get_lyrics(&format!("{failed_id}_remote")).await,
+            Err(LyricManagerError::Provider { provider, .. }) if provider == "Failed Provider"
+        ));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let pending = Arc::new(PendingProvider {
+            calls: Arc::clone(&calls),
+        });
+        let pending_id = lyric_provider_id(pending.name());
+        let manager = LyricManager::with_search_limits(vec![pending], 1, Duration::from_millis(10));
+        assert!(matches!(
+            manager.get_lyrics(&format!("{pending_id}_remote")).await,
+            Err(LyricManagerError::ProviderTimeout { provider }) if provider == "Pending Provider"
+        ));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn dropping_remote_download_cancels_the_provider_future() {
+        let (started_sender, started_receiver) = oneshot::channel();
+        let (dropped_sender, dropped_receiver) = oneshot::channel();
+        let manager = LyricManager::with_search_limits(
+            vec![Arc::new(CancelProvider {
+                started: Mutex::new(Some(started_sender)),
+                dropped: Mutex::new(Some(dropped_sender)),
+            })],
+            1,
+            Duration::from_secs(60),
+        );
+        let provider_id = lyric_provider_id("Cancel Provider");
+        let download =
+            tokio::spawn(async move { manager.get_lyrics(&format!("{provider_id}_remote")).await });
+
+        tokio::time::timeout(Duration::from_secs(1), started_receiver)
+            .await
+            .expect("provider download must start")
+            .expect("start signal");
+        download.abort();
+        assert!(
+            download
+                .await
+                .expect_err("download must be cancelled")
+                .is_cancelled()
+        );
+        tokio::time::timeout(Duration::from_secs(1), dropped_receiver)
+            .await
+            .expect("provider download future must be dropped")
+            .expect("drop signal");
     }
 }

@@ -17,9 +17,9 @@ use tokio::{fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::{
-    HydratedBaseItem, ItemTypeRegistry, LocalizationService, LyricManager, LyricProvider,
-    LyricSearchRequest, MediaStreamFilter, MediaStreamService, MediaStreamServiceError, UserError,
-    UserService, decode_lyric_bytes,
+    HydratedBaseItem, ItemTypeRegistry, LocalizationService, LyricManager, LyricManagerError,
+    LyricProvider, LyricSearchRequest, MediaStreamFilter, MediaStreamService,
+    MediaStreamServiceError, UserError, UserService, decode_lyric_bytes,
 };
 
 #[derive(Debug, Error)]
@@ -36,6 +36,8 @@ pub enum UserLibraryError {
     InvalidLyricFile,
     #[error("lyric path is outside the internal metadata directory")]
     InvalidLyricPath,
+    #[error(transparent)]
+    LyricManager(#[from] LyricManagerError),
     #[error("stored user policy is invalid")]
     InvalidPolicy(#[source] serde_json::Error),
     #[error(transparent)]
@@ -748,20 +750,14 @@ impl UserLibraryService {
         let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let Some(lyric_file) = self.lyrics.get_lyrics(lyric_id) else {
+        let Some(response) = self.lyrics.get_lyrics(lyric_id).await? else {
             return Err(UserLibraryError::LyricsNotFound);
         };
-        let Some(format) = lyric_file
-            .name
-            .rsplit_once('.')
-            .map(|(_, extension)| extension)
-        else {
+        let content = decode_lyric_bytes(&response.content);
+        let Some(lyrics) = LyricManager::parse_lyrics(&response.format, &content) else {
             return Err(UserLibraryError::LyricsNotFound);
         };
-        let Some(lyrics) = LyricManager::parse_lyrics(format, &lyric_file.content) else {
-            return Err(UserLibraryError::LyricsNotFound);
-        };
-        self.save_lyric_file(item, format, lyric_file.content.as_bytes(), lyrics)
+        self.save_lyric_file(item, &response.format, &response.content, lyrics)
             .await
     }
 
@@ -771,18 +767,12 @@ impl UserLibraryService {
     ///
     /// Returns [`UserLibraryError::LyricsNotFound`] when no provider can
     /// resolve `lyric_id` or the payload cannot be parsed.
-    pub fn get_remote_lyrics(&self, lyric_id: &str) -> Result<Value, UserLibraryError> {
-        let Some(lyric_file) = self.lyrics.get_lyrics(lyric_id) else {
+    pub async fn get_remote_lyrics(&self, lyric_id: &str) -> Result<Value, UserLibraryError> {
+        let Some(response) = self.lyrics.get_lyrics(lyric_id).await? else {
             return Err(UserLibraryError::LyricsNotFound);
         };
-        let Some(format) = lyric_file
-            .name
-            .rsplit_once('.')
-            .map(|(_, extension)| extension)
-        else {
-            return Err(UserLibraryError::LyricsNotFound);
-        };
-        LyricManager::parse_lyrics(format, &lyric_file.content)
+        let content = decode_lyric_bytes(&response.content);
+        LyricManager::parse_lyrics(&response.format, &content)
             .ok_or(UserLibraryError::LyricsNotFound)
     }
 

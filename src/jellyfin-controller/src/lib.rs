@@ -80,8 +80,9 @@ pub use library_controller::{LibraryControllerError, LibraryControllerService, m
 pub use library_scan::{LibraryScanError, LibraryScanService, LibraryScanSummary};
 pub use localization::LocalizationService;
 pub use lyrics::{
-    LyricManager, LyricProvider, LyricProviderError, LyricProviderFuture, LyricSearchRequest,
-    RemoteLyricInfo, RemoteLyricInfoDto, decode_lyric_bytes,
+    LyricManager, LyricManagerError, LyricProvider, LyricProviderError, LyricProviderFuture,
+    LyricSearchRequest, RemoteLyricInfo, RemoteLyricInfoDto, RemoteLyricResponse,
+    decode_lyric_bytes,
 };
 pub use media_attachments::{
     MediaAttachmentFilter, MediaAttachmentMapper, MediaAttachmentService,

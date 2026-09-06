@@ -726,7 +726,7 @@ pub(crate) async fn get_remote_lyrics(
     if !authenticated.can_manage_lyrics() {
         return Err(ApiError::Forbidden);
     }
-    let lyrics = state.user_library.get_remote_lyrics(&lyric_id)?;
+    let lyrics = state.user_library.get_remote_lyrics(&lyric_id).await?;
     Ok(Json(lyrics))
 }
 

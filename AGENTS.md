@@ -73,6 +73,11 @@
   flatten results in configured provider order. Bound each provider by a 30-second deadline,
   isolate provider errors and timeouts as empty results, and propagate caller cancellation by
   dropping in-flight and queued futures rather than spawning detached tasks.
+- Model remote lyric payloads as an explicit provider format plus the original bytes. Decode those
+  bytes only for DTO parsing; provider preview must not persist them, while item-scoped download
+  must save them without BOM or character-encoding conversion. Keep downloads asynchronous with a
+  30-second provider deadline and cancellation-by-drop: unknown, empty, or unparseable responses
+  are 404, while provider failures and timeouts remain server errors instead of false not-found.
 - Keep remote lyric metadata on the official strongly typed `LyricMetadata` wire contract. Omit
   absent nullable fields and never let arbitrary provider JSON make the enclosing Swift SDK search
   result undecodable.
