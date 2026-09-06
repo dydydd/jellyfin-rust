@@ -16,7 +16,8 @@ use axum::{
 };
 use jellyfin_model::{
     DeviceProfile, EncodingContext, MediaOptions, MediaProtocol, MediaSourceInfo,
-    MediaStreamProtocol, PlayMethod, PlaybackErrorCode, StreamBuilder, UserPolicy,
+    MediaStreamProtocol, MediaStreamType, PlayMethod, PlaybackErrorCode, StreamBuilder,
+    SubtitleDeliveryMethod, UserPolicy,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -1012,7 +1013,7 @@ fn apply_stream_builder(
         );
         stream.play_session_id = Some(play_session_id.to_owned());
         stream.start_position_ticks = playback_options.start_time_ticks;
-        apply_selected_stream_metadata(&mut stream, &options, access_token);
+        apply_selected_stream_metadata(&mut stream, &options, access_token, &builder);
         projected_sources.push(
             stream
                 .media_source
@@ -1027,6 +1028,7 @@ fn apply_selected_stream_metadata(
     stream: &mut jellyfin_model::StreamInfo,
     options: &MediaOptions,
     access_token: &str,
+    builder: &StreamBuilder,
 ) {
     let play_method = stream.play_method;
     let supports_direct_play = play_method == PlayMethod::DirectPlay
@@ -1053,6 +1055,62 @@ fn apply_selected_stream_metadata(
         source.supports_transcoding = transcoding.is_some();
         source.default_audio_stream_index = stream.audio_stream_index;
         source.default_subtitle_stream_index = stream.subtitle_stream_index;
+        for subtitle in source
+            .media_streams
+            .iter_mut()
+            .filter(|media_stream| media_stream.stream_type == MediaStreamType::Subtitle)
+        {
+            let (delivery_method, delivery_format) = {
+                let profile = builder.get_subtitle_profile(
+                    subtitle,
+                    &options.profile.subtitle_profiles,
+                    play_method,
+                    stream.container.as_deref(),
+                    Some(stream.sub_protocol),
+                );
+                (profile.method, profile.format.to_owned())
+            };
+            subtitle.delivery_method = Some(delivery_method);
+            subtitle.delivery_url = None;
+            subtitle.is_external_url = None;
+            if delivery_method == SubtitleDeliveryMethod::External {
+                let source_id = source.id.as_deref().unwrap_or_default();
+                let mut delivery_url = format!(
+                    "/Videos/{}/{}/Subtitles/{}/{}/Stream.{}",
+                    stream.item_id,
+                    source_id,
+                    subtitle.index,
+                    stream.start_position_ticks,
+                    delivery_format,
+                );
+                let is_direct_external_url = subtitle.is_external
+                    && subtitle.supports_external_stream
+                    && subtitle
+                        .codec
+                        .as_deref()
+                        .is_some_and(|codec| codec.eq_ignore_ascii_case(&delivery_format))
+                    && subtitle.path.as_deref().is_some_and(|path| {
+                        path.starts_with("http://") || path.starts_with("https://")
+                    });
+                if is_direct_external_url {
+                    delivery_url = subtitle.path.clone().unwrap_or_default();
+                    subtitle.is_external_url = Some(true);
+                } else {
+                    delivery_url.push_str("?ApiKey=");
+                    delivery_url.push_str(access_token);
+                    subtitle.is_external_url = Some(false);
+                }
+                subtitle.delivery_url = Some(delivery_url);
+            }
+        }
+        for attachment in &mut source.media_attachments {
+            attachment.delivery_url = Some(format!(
+                "/Videos/{}/{}/Attachments/{}",
+                stream.item_id,
+                source.id.as_deref().unwrap_or_default(),
+                attachment.index
+            ));
+        }
         if let Some((url, container, sub_protocol)) = transcoding {
             source.transcoding_url = Some(url);
             source.transcoding_container = container;
@@ -1168,11 +1226,15 @@ mod tests {
     use crate::AppState;
 
     use jellyfin_model::{
-        DeviceProfile, DirectPlayProfile, DlnaProfileType, EncodingContext, MediaStream,
-        MediaStreamProtocol, MediaStreamType, TranscodingProfile, UserPolicy,
+        DeviceProfile, DirectPlayProfile, DlnaProfileType, EncodingContext, MediaAttachment,
+        MediaOptions, MediaStream, MediaStreamProtocol, MediaStreamType, PlayMethod, StreamBuilder,
+        SubtitleDeliveryMethod, SubtitleProfile, TranscodingProfile, UserPolicy,
     };
 
-    use super::{MediaProtocol, MediaSourceInfo, PlaybackOptions, apply_stream_builder};
+    use super::{
+        MediaProtocol, MediaSourceInfo, PlaybackOptions, apply_selected_stream_metadata,
+        apply_stream_builder,
+    };
     use uuid::Uuid;
 
     #[tokio::test]
@@ -1378,6 +1440,76 @@ mod tests {
         assert_eq!(
             sources[0].transcoding_sub_protocol,
             MediaStreamProtocol::Hls
+        );
+    }
+
+    #[test]
+    fn selected_playback_stream_exposes_android_subtitle_and_attachment_urls() {
+        let item_id = Uuid::new_v4();
+        let source_id = Uuid::new_v4();
+        let mut stream = jellyfin_model::StreamInfo::default();
+        stream.item_id = item_id;
+        stream.play_method = PlayMethod::DirectPlay;
+        stream.container = Some("mkv".to_owned());
+        stream.sub_protocol = MediaStreamProtocol::Http;
+        stream.start_position_ticks = 123;
+        stream.media_source = Some(MediaSourceInfo {
+            id: Some(source_id.simple().to_string()),
+            media_streams: vec![MediaStream {
+                index: 2,
+                stream_type: MediaStreamType::Subtitle,
+                codec: Some("srt".to_owned()),
+                path: Some("/media/movie.srt".to_owned()),
+                supports_external_stream: true,
+                ..MediaStream::default()
+            }],
+            media_attachments: vec![MediaAttachment {
+                index: 4,
+                ..MediaAttachment::default()
+            }],
+            supports_direct_play: true,
+            ..MediaSourceInfo::default()
+        });
+        let options = MediaOptions {
+            profile: DeviceProfile {
+                subtitle_profiles: vec![SubtitleProfile {
+                    format: "srt".to_owned(),
+                    method: SubtitleDeliveryMethod::External,
+                    ..SubtitleProfile::default()
+                }],
+                ..DeviceProfile::default()
+            },
+            enable_direct_play: true,
+            ..MediaOptions::default()
+        };
+
+        let builder = StreamBuilder::default();
+        apply_selected_stream_metadata(&mut stream, &options, "token", &builder);
+
+        let source = stream.media_source.expect("selected source");
+        let subtitle = &source.media_streams[0];
+        assert_eq!(
+            subtitle.delivery_method,
+            Some(SubtitleDeliveryMethod::External)
+        );
+        assert_eq!(subtitle.is_external_url, Some(false));
+        assert_eq!(
+            subtitle.delivery_url.as_deref(),
+            Some(format!(
+                "/Videos/{}/{}/Subtitles/2/123/Stream.srt?ApiKey=token",
+                item_id,
+                source_id.simple()
+            ))
+            .as_deref()
+        );
+        assert_eq!(
+            source.media_attachments[0].delivery_url.as_deref(),
+            Some(format!(
+                "/Videos/{}/{}/Attachments/4",
+                item_id,
+                source_id.simple()
+            ))
+            .as_deref()
         );
     }
 

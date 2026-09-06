@@ -286,6 +286,11 @@
 - After applying a playback `DeviceProfile`, project the selected subtitle index back to that source's
   `DefaultSubtitleStreamIndex`, including `-1` when subtitles are disabled; never leak an explicit
   index to another version when no matching `MediaSourceId` was selected.
+- After applying a playback `DeviceProfile`, match the official `SetDeviceSpecificSubtitleInfo`
+  behavior: populate every subtitle stream's `DeliveryMethod`, expose API subtitle URLs (or a
+  direct HTTP(S) URL when the persisted external stream is already in the selected format), and
+  append `ApiKey` to API URLs. Populate every selected media source attachment's
+  `/Videos/{itemId}/{mediaSourceId}/Attachments/{index}` `DeliveryUrl` as well.
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.
