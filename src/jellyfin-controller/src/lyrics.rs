@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Write as _, sync::Arc};
 
 use jellyfin_providers::lyrics::{LrcLyricParser, LyricFile};
 use md5::{Digest, Md5};
@@ -148,7 +148,9 @@ impl LyricManager {
     /// Resolves a provider-owned lyric id.
     #[must_use]
     pub fn get_lyrics(&self, id: &str) -> Option<LyricFile> {
-        let (provider_id, lyric_id) = id.split_once('_')?;
+        // `string.Split('_', 2)` in the official manager uses the only part as
+        // both the provider id and provider-owned id when no separator exists.
+        let (provider_id, lyric_id) = id.split_once('_').unwrap_or((id, id));
         let provider = self
             .providers
             .iter()
@@ -183,7 +185,26 @@ impl LyricManager {
 }
 
 fn lyric_provider_id(name: &str) -> String {
-    format!("{:x}", Md5::digest(name.to_lowercase().as_bytes()))
+    // Official Jellyfin hashes the invariant-lowercase provider name as
+    // `Encoding.Unicode` (UTF-16LE), then formats `new Guid(hash)` as `N`.
+    let utf16le = name
+        .to_lowercase()
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let mut digest: [u8; 16] = Md5::digest(utf16le).into();
+
+    // Guid(byte[]) treats its first three fields as little-endian, while the
+    // remaining eight bytes retain their original order when formatted.
+    digest[..4].reverse();
+    digest[4..6].reverse();
+    digest[6..8].reverse();
+
+    let mut provider_id = String::with_capacity(32);
+    for byte in digest {
+        write!(&mut provider_id, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    provider_id
 }
 
 fn lyric_format(file_name: &str) -> Option<&str> {
@@ -439,7 +460,7 @@ mod tests {
         assert_eq!(results[1].lyrics["Lyrics"][0]["Text"], "Second result");
         assert_eq!(
             results[0].id,
-            "86e6efa43156061e1f9d7b7154349726_first-result"
+            "191c3b5627f3b041e3390e72eac7d213_first-result"
         );
         assert!(results[1].id.ends_with("_second_result_with_underscores"));
 
@@ -449,6 +470,26 @@ mod tests {
             ["Id", "Lyrics", "ProviderName"]
         );
         assert!(wire.get("Name").is_none());
+    }
+
+    #[test]
+    fn provider_ids_match_utf16le_dotnet_guid_n_format() {
+        assert_eq!(
+            lyric_provider_id("First Provider"),
+            "191c3b5627f3b041e3390e72eac7d213"
+        );
+        assert_eq!(
+            lyric_provider_id("FIRST PROVIDER"),
+            lyric_provider_id("First Provider")
+        );
+
+        let provider_id = lyric_provider_id("First Provider");
+        assert_eq!(provider_id.len(), 32);
+        assert!(
+            provider_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
     }
 
     #[test]
@@ -501,6 +542,7 @@ mod tests {
         });
         let manager = LyricManager::new(vec![provider]);
         let provider_id = lyric_provider_id("Download Provider");
+        assert_eq!(provider_id, "a14e566951f4669abf58f6555ec9d3d1");
 
         let downloaded = manager
             .get_lyrics(&format!("{provider_id}_remote_id_with_underscores"))
@@ -512,6 +554,15 @@ mod tests {
             ["remote_id_with_underscores"]
         );
         assert!(manager.get_lyrics("unknown_remote-id").is_none());
-        assert!(manager.get_lyrics(&provider_id).is_none());
+        assert!(manager.get_lyrics(&provider_id).is_some());
+        assert_eq!(
+            requested_ids.lock().expect("requested ids").as_slice(),
+            ["remote_id_with_underscores", provider_id.as_str()]
+        );
+        assert!(
+            manager
+                .get_lyrics(&format!("{}_remote-id", provider_id.to_uppercase()))
+                .is_none()
+        );
     }
 }

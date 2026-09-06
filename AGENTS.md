@@ -54,6 +54,11 @@
 - Keep remote lyric metadata on the official strongly typed `LyricMetadata` wire contract. Omit
   absent nullable fields and never let arbitrary provider JSON make the enclosing Swift SDK search
   result undecodable.
+- Derive remote lyric provider ids from the invariant-lowercase provider name using UTF-16LE MD5,
+  then format the digest with `.NET Guid(byte[])` byte ordering and the lowercase, hyphenless `N`
+  format. Keep provider-id lookup case-sensitive like the official ordinal comparison, split a
+  provider-owned lyric id only at its first underscore, and pass the whole id through when that
+  separator is absent.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
