@@ -8,6 +8,7 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
+use jellyfin_controller::{run_ffmpeg, video_command};
 use jellyfin_data::BaseItemPage;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -35,6 +36,68 @@ pub(crate) struct StreamQuery {
         alias = "mediasourceid"
     )]
     media_source_id: Option<String>,
+    #[serde(rename = "videoCodec", alias = "VideoCodec", alias = "videocodec")]
+    video_codec: Option<String>,
+    #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
+    audio_codec: Option<String>,
+    #[serde(
+        rename = "videoBitRate",
+        alias = "VideoBitRate",
+        alias = "videobitrate"
+    )]
+    video_bitrate: Option<i64>,
+    #[serde(
+        rename = "audioBitRate",
+        alias = "AudioBitRate",
+        alias = "audiobitrate"
+    )]
+    audio_bitrate: Option<i64>,
+    #[serde(
+        rename = "audioSampleRate",
+        alias = "AudioSampleRate",
+        alias = "audiosamplerate"
+    )]
+    audio_sample_rate: Option<i32>,
+    #[serde(
+        rename = "audioChannels",
+        alias = "AudioChannels",
+        alias = "audiochannels"
+    )]
+    audio_channels: Option<i32>,
+    #[serde(
+        rename = "maxAudioChannels",
+        alias = "MaxAudioChannels",
+        alias = "maxaudiochannels"
+    )]
+    max_audio_channels: Option<i32>,
+    #[serde(
+        rename = "transcodingMaxAudioChannels",
+        alias = "TranscodingMaxAudioChannels",
+        alias = "transcodingmaxaudiochannels"
+    )]
+    transcoding_max_audio_channels: Option<i32>,
+    #[serde(rename = "maxWidth", alias = "MaxWidth", alias = "maxwidth")]
+    max_width: Option<i32>,
+    #[serde(rename = "maxHeight", alias = "MaxHeight", alias = "maxheight")]
+    max_height: Option<i32>,
+    #[serde(
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex"
+    )]
+    audio_stream_index: Option<i32>,
+    #[serde(
+        rename = "videoStreamIndex",
+        alias = "VideoStreamIndex",
+        alias = "videostreamindex"
+    )]
+    video_stream_index: Option<i32>,
+    #[serde(
+        rename = "startTimeTicks",
+        alias = "StartTimeTicks",
+        alias = "starttimeticks"
+    )]
+    start_time_ticks: Option<i64>,
 }
 
 pub(crate) async fn stream(
@@ -117,29 +180,76 @@ async fn stream_file(
             );
         }
     }
-    if !query.static_stream.unwrap_or(true) {
-        return Err(ApiError::UnsupportedMediaType);
+    if query.static_stream.unwrap_or(false) {
+        if path
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+            || path
+                .get(..8)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+        {
+            return proxy_remote_stream(&state.remote_stream_client, &headers, item_id, &path)
+                .await;
+        }
+        return crate::audio::serve_path(headers, &path, request).await;
     }
-    if path
-        .get(..7)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
-        || path
-            .get(..8)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
-    {
-        return proxy_remote_stream(&state.remote_stream_client, &headers, item_id, &path).await;
-    }
-    let metadata = tokio::fs::metadata(&path).await.ok();
-    tracing::info!(
-        %item_id,
-        media_source_id = %item.id,
-        requested_container = requested_container.unwrap_or_default(),
-        range_requested = headers.contains_key(axum::http::header::RANGE),
-        source_exists = metadata.is_some(),
-        source_size = metadata.as_ref().map(std::fs::Metadata::len),
-        "serving local video stream",
+
+    let container = requested_container
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim_start_matches('.').to_ascii_lowercase())
+        .unwrap_or_else(|| "mp4".to_owned());
+    let video_codec = query
+        .video_codec
+        .as_deref()
+        .unwrap_or_else(|| video_codec_for_container(&container));
+    let audio_codec = query
+        .audio_codec
+        .as_deref()
+        .unwrap_or_else(|| audio_codec_for_container(&container));
+    let output = state
+        .transcode_directory
+        .join(format!("{item_id}-video-{video_codec}.{container}"));
+    tokio::fs::create_dir_all(&state.transcode_directory)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    let command = video_command(
+        &state.ffmpeg_path,
+        std::path::Path::new(&path),
+        &output,
+        video_codec,
+        audio_codec,
+        query.video_bitrate,
+        query.audio_bitrate,
+        query
+            .audio_channels
+            .or(query.max_audio_channels)
+            .or(query.transcoding_max_audio_channels),
+        query.audio_sample_rate,
+        query.max_width,
+        query.max_height,
+        query.audio_stream_index,
+        query.video_stream_index,
+        query.start_time_ticks,
     );
-    crate::audio::serve_path(headers, &path, request).await
+    let job = state.transcode_jobs.register(output.to_string_lossy());
+    run_ffmpeg(&command, &job)
+        .await
+        .map_err(|_| ApiError::UnsupportedMediaType)?;
+    crate::audio::serve_path(headers, &output.to_string_lossy(), request).await
+}
+
+fn video_codec_for_container(container: &str) -> &str {
+    match container {
+        "webm" => "vp9",
+        _ => "h264",
+    }
+}
+
+fn audio_codec_for_container(container: &str) -> &str {
+    match container {
+        "webm" => "opus",
+        _ => "aac",
+    }
 }
 
 async fn proxy_remote_stream(
@@ -264,9 +374,31 @@ mod tests {
         time::Duration,
     };
 
-    use axum::{body::to_bytes, http::header};
+    use axum::{
+        body::to_bytes,
+        http::{Uri, header},
+    };
+    use axum_extra::extract::Query;
 
     use super::*;
+
+    #[test]
+    fn video_stream_binds_android_progressive_parameters() {
+        let uri: Uri = "/Videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&videoBitRate=2000000&maxWidth=1280&audioStreamIndex=2&videoStreamIndex=0&startTimeTicks=10000"
+            .parse()
+            .unwrap();
+        let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+        assert!(!query.static_stream.unwrap());
+        assert_eq!(query.video_codec.as_deref(), Some("h264"));
+        assert_eq!(query.audio_codec.as_deref(), Some("aac"));
+        assert_eq!(query.video_bitrate, Some(2_000_000));
+        assert_eq!(query.max_width, Some(1280));
+        assert_eq!(query.audio_stream_index, Some(2));
+        assert_eq!(query.video_stream_index, Some(0));
+        assert_eq!(query.start_time_ticks, Some(10_000));
+        assert_eq!(video_codec_for_container("mp4"), "h264");
+        assert_eq!(audio_codec_for_container("webm"), "opus");
+    }
 
     #[tokio::test]
     async fn remote_stream_forwards_ranges_without_buffering_the_upstream_body() {

@@ -340,6 +340,78 @@ pub fn audio_command(
     }
 }
 
+/// Builds the progressive video command used by Video stream requests.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn video_command(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+    output_path: &Path,
+    video_codec: &str,
+    audio_codec: &str,
+    video_bitrate: Option<i64>,
+    audio_bitrate: Option<i64>,
+    audio_channels: Option<i32>,
+    audio_sample_rate: Option<i32>,
+    max_width: Option<i32>,
+    max_height: Option<i32>,
+    audio_stream_index: Option<i32>,
+    video_stream_index: Option<i32>,
+    start_time_ticks: Option<i64>,
+) -> FfmpegCommand {
+    let mut arguments = vec![
+        "-hide_banner".to_owned(),
+        "-loglevel".to_owned(),
+        "error".to_owned(),
+        "-y".to_owned(),
+    ];
+    if let Some(start_time_ticks) = start_time_ticks.filter(|ticks| *ticks > 0) {
+        arguments.push("-ss".to_owned());
+        arguments.push(format_ticks_as_seconds(start_time_ticks));
+    }
+    arguments.push("-i".to_owned());
+    arguments.push(input_path.to_string_lossy().into_owned());
+    arguments.push("-map".to_owned());
+    arguments
+        .push(video_stream_index.map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}")));
+    arguments.push("-c:v".to_owned());
+    arguments.push(video_codec.to_owned());
+    if let Some(bitrate) = video_bitrate {
+        arguments.push("-b:v".to_owned());
+        arguments.push(bitrate.to_string());
+    }
+    if let Some(width) = max_width {
+        arguments.push("-vf".to_owned());
+        arguments.push(format!("scale='min({width},iw)':-2"));
+    } else if let Some(height) = max_height {
+        arguments.push("-vf".to_owned());
+        arguments.push(format!("scale=-2:'min({height},ih)'"));
+    }
+    arguments.push("-map".to_owned());
+    arguments
+        .push(audio_stream_index.map_or_else(|| "0:a:0".to_owned(), |index| format!("0:{index}")));
+    arguments.push("-c:a".to_owned());
+    arguments.push(audio_codec.to_owned());
+    if let Some(bitrate) = audio_bitrate {
+        arguments.push("-b:a".to_owned());
+        arguments.push(bitrate.to_string());
+    }
+    if let Some(channels) = audio_channels {
+        arguments.push("-ac".to_owned());
+        arguments.push(channels.to_string());
+    }
+    if let Some(sample_rate) = audio_sample_rate {
+        arguments.push("-ar".to_owned());
+        arguments.push(sample_rate.to_string());
+    }
+    arguments.push(output_path.to_string_lossy().into_owned());
+
+    FfmpegCommand {
+        program: ffmpeg_path.to_path_buf(),
+        arguments,
+    }
+}
+
 fn format_ticks_as_seconds(ticks: i64) -> String {
     let milliseconds = ticks / 10_000;
     let sub_millisecond_ticks = ticks % 10_000;
@@ -1048,6 +1120,59 @@ mod tests {
                 "-ar",
                 "44100",
                 "/tmp/transcodes/out.mp3",
+            ]
+        );
+    }
+
+    #[test]
+    fn video_command_maps_selected_streams_and_limits() {
+        let command = video_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.mp4"),
+            "h264",
+            "aac",
+            Some(2_000_000),
+            Some(128_000),
+            Some(2),
+            Some(48_000),
+            Some(1280),
+            None,
+            Some(2),
+            Some(0),
+            Some(10_000),
+        );
+
+        assert_eq!(
+            command.arguments,
+            [
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                "0.001",
+                "-i",
+                "/media/movie.mkv",
+                "-map",
+                "0:0",
+                "-c:v",
+                "h264",
+                "-b:v",
+                "2000000",
+                "-vf",
+                "scale='min(1280,iw)':-2",
+                "-map",
+                "0:2",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128000",
+                "-ac",
+                "2",
+                "-ar",
+                "48000",
+                "/tmp/transcodes/out.mp4",
             ]
         );
     }
