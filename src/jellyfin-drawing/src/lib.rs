@@ -112,8 +112,7 @@ pub struct ProcessedImage {
 pub async fn original_image(source: ImageSource) -> Result<ProcessedImage, ImageProcessingError> {
     ensure_source_exists(&source.path).await?;
     Ok(ProcessedImage {
-        mime_type: format_from_path(&source.path)
-            .map_or("application/octet-stream", ImageFormat::mime_type),
+        mime_type: original_mime_type_from_path(&source.path),
         path: source.path,
         date_modified: source.date_modified,
     })
@@ -451,7 +450,7 @@ impl ImageProcessor {
         let output_format = normalized.output_format(source_format)?;
         let original = ProcessedImage {
             path: source.path.clone(),
-            mime_type: source_format.map_or("application/octet-stream", ImageFormat::mime_type),
+            mime_type: original_mime_type_from_path(&source.path),
             date_modified: source.date_modified,
         };
         let cache_path = cache_path(
@@ -1430,6 +1429,27 @@ fn format_from_path(path: &Path) -> Option<ImageFormat> {
         "webp" => Some(ImageFormat::Webp),
         "svg" => Some(ImageFormat::Svg),
         _ => None,
+    }
+}
+
+fn original_mime_type_from_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("apng") => "image/apng",
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("gif") => "image/gif",
+        Some("ico") => "image/x-icon",
+        Some("jpg" | "jpeg" | "tbn") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("svg" | "svgz") => "image/svg+xml",
+        Some("tif" | "tiff") => "image/tiff",
+        Some("webp") => "image/webp",
+        Some(_) | None => "application/octet-stream",
     }
 }
 

@@ -53,6 +53,46 @@ async fn original_image_never_decodes_or_reencodes_source() {
 }
 
 #[tokio::test]
+async fn original_image_preserves_official_upload_mime_types_without_decoding() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source_bytes = b"format is inferred from the path without decoding these bytes";
+
+    for (extension, expected_mime_type) in [
+        ("apng", "image/apng"),
+        ("avif", "image/avif"),
+        ("bmp", "image/bmp"),
+        ("gif", "image/gif"),
+        ("ico", "image/x-icon"),
+        ("jpeg", "image/jpeg"),
+        ("jpg", "image/jpeg"),
+        ("png", "image/png"),
+        ("svg", "image/svg+xml"),
+        ("tbn", "image/jpeg"),
+        ("tif", "image/tiff"),
+        ("tiff", "image/tiff"),
+        ("webp", "image/webp"),
+    ] {
+        let source_path = directory.path().join(format!("source.{extension}"));
+        fs::write(&source_path, source_bytes).expect("write source fixture");
+        let modified = fs::metadata(&source_path)
+            .and_then(|metadata| metadata.modified())
+            .expect("source modification time");
+
+        let result = original_image(ImageSource::new(source_path.clone(), modified))
+            .await
+            .expect("serve source directly");
+
+        assert_eq!(result.path, source_path);
+        assert_eq!(
+            result.mime_type, expected_mime_type,
+            "extension {extension}"
+        );
+        assert_eq!(result.date_modified, modified);
+        assert_eq!(fs::read(result.path).unwrap(), source_bytes);
+    }
+}
+
+#[tokio::test]
 async fn returns_original_for_default_request() {
     let (directory, source) = fixture(80, 40);
     // ALLOW: the test retains expected source metadata after exercising the consuming API.

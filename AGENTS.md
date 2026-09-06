@@ -94,8 +94,10 @@
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
   clients. Keep accepting the official image query surface for compatibility, but stream the
   original image bytes and content type so media-library browsing cannot create decoder-sized
-  memory spikes or a family of derived cache files. Image-info endpoints must return persisted
-  dimensions and BlurHash values without lazily decoding the source or writing metadata.
+  memory spikes or a family of derived cache files. Preserve the official MIME types for every
+  accepted image extension, including APNG, AVIF, ICO (`image/x-icon`), TIFF, and Jellyfin TBN
+  JPEG files, without inspecting or decoding their contents. Image-info endpoints must return
+  persisted dimensions and BlurHash values without lazily decoding the source or writing metadata.
 - Stream trickplay tile files with bounded chunks and preserve HEAD and byte-range semantics; never
   read an entire tile into a response buffer.
 
