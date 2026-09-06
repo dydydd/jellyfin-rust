@@ -184,6 +184,39 @@ impl UserViewManagerService {
         Ok(None)
     }
 
+    /// Derives the media-type filter used by Jellyfin's latest-items query.
+    ///
+    /// An explicit parent scope is restricted to matching physical collection
+    /// folders and does not apply the user's latest-item exclusions. Without
+    /// one, all visible collection folders participate except those exclusions.
+    ///
+    /// # Errors
+    ///
+    /// Returns user, folder, or stored-data errors.
+    pub async fn latest_media_types(
+        &self,
+        user_id: Uuid,
+        explicit_parent_ids: Option<&[Uuid]>,
+    ) -> Result<Vec<String>, UserViewManagerError> {
+        let user = self.users.get(user_id).await?;
+        let config = parse_config(user.preferences)?;
+        let policy = parse_policy(user.policy)?;
+        let folders = self
+            .visible_folders(&policy, false)
+            .await?
+            .into_iter()
+            .filter(|folder| {
+                explicit_parent_ids.map_or_else(
+                    || !config.latest_items_excludes.contains(&folder.id),
+                    |parent_ids| parent_ids.contains(&folder.id),
+                )
+            });
+
+        Ok(latest_media_types_for_collection_types(
+            folders.map(|folder| folder.collection_type),
+        ))
+    }
+
     async fn ensure_persisted_view(
         &self,
         view: &UserViewItem,
@@ -494,6 +527,42 @@ fn is_hidden(folder: &VirtualFolder) -> bool {
         .unwrap_or(false)
 }
 
+fn latest_media_types_for_collection_types(
+    collection_types: impl IntoIterator<Item = Option<String>>,
+) -> Vec<String> {
+    let mut video = false;
+    let mut audio = false;
+    let mut photo = false;
+    let mut book = false;
+    for collection_type in collection_types {
+        match collection_type.as_deref() {
+            Some(kind) if kind.eq_ignore_ascii_case("books") => {
+                book = true;
+                audio = true;
+            }
+            Some(kind) if kind.eq_ignore_ascii_case("music") => audio = true,
+            Some(kind)
+                if kind.eq_ignore_ascii_case("photos")
+                    || kind.eq_ignore_ascii_case("homevideos") =>
+            {
+                photo = true;
+                video = true;
+            }
+            _ => video = true,
+        }
+    }
+
+    [
+        (video, "Video"),
+        (audio, "Audio"),
+        (photo, "Photo"),
+        (book, "Book"),
+    ]
+    .into_iter()
+    .filter_map(|(include, media_type)| include.then(|| media_type.to_owned()))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +579,41 @@ mod tests {
             Uuid::parse_str("7a9a4730-1999-53e5-b36e-7c270c3d782a")
                 .expect("known Jellyfin shadow-view id")
         );
+    }
+
+    #[test]
+    fn latest_media_types_match_collection_folder_defaults() {
+        assert_eq!(
+            latest_media_types_for_collection_types([
+                Some("books".to_owned()),
+                Some("MUSIC".to_owned()),
+                Some("photos".to_owned()),
+                Some("homevideos".to_owned()),
+                Some("movies".to_owned()),
+                None,
+            ]),
+            ["Video", "Audio", "Photo", "Book"]
+        );
+        assert_eq!(
+            latest_media_types_for_collection_types([Some("music".to_owned())]),
+            ["Audio"]
+        );
+        assert_eq!(
+            latest_media_types_for_collection_types([Some("books".to_owned())]),
+            ["Audio", "Book"]
+        );
+        assert_eq!(
+            latest_media_types_for_collection_types([Some("photos".to_owned())]),
+            ["Video", "Photo"]
+        );
+        assert_eq!(
+            latest_media_types_for_collection_types([Some("homevideos".to_owned())]),
+            ["Video", "Photo"]
+        );
+        assert_eq!(
+            latest_media_types_for_collection_types([Some("tvshows".to_owned())]),
+            ["Video"]
+        );
+        assert!(latest_media_types_for_collection_types([]).is_empty());
     }
 }

@@ -4,7 +4,7 @@ use axum::{
 };
 use chrono::{TimeZone, Utc};
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{UserService, VirtualFolderService};
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
     DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData,
@@ -77,6 +77,7 @@ async fn exercise_latest_routes(database_name: &str) {
     assert_tv_latest_window_grouping(&fixture).await;
     assert_album_ancestor_grouping(&fixture).await;
     assert_latest_dto_options_and_image_fields(&fixture).await;
+    assert_collection_derived_media_types(&fixture).await;
 
     database.close().await.expect("database pool cleanup");
 }
@@ -114,6 +115,16 @@ struct Fixture {
     single_photo_album_id: Uuid,
     single_photo_id: Uuid,
     hidden_album_track_id: Uuid,
+    music_collection_id: Uuid,
+    music_audio_id: Uuid,
+    music_movie_id: Uuid,
+    books_collection_id: Uuid,
+    books_audio_id: Uuid,
+    books_book_id: Uuid,
+    movies_view_id: Uuid,
+    movies_movie_id: Uuid,
+    tvshows_view_id: Uuid,
+    tvshows_episode_id: Uuid,
 }
 
 impl Fixture {
@@ -146,8 +157,115 @@ impl Fixture {
         )
         .await;
 
+        let virtual_folders = VirtualFolderService::new(database.clone());
+        for (name, collection_type) in [
+            (format!("Latest Music {suffix}"), "music"),
+            (format!("Latest Books {suffix}"), "books"),
+            (format!("Latest Videos {suffix}"), "movies"),
+        ] {
+            virtual_folders
+                .create(
+                    &name,
+                    Some(collection_type.to_owned()),
+                    json!({ "Enabled": true }),
+                    Vec::new(),
+                    false,
+                )
+                .await
+                .expect("latest virtual folder");
+        }
+        let folders = virtual_folders.list().await.expect("virtual folder list");
+        let folder_id = |prefix: &str| {
+            folders
+                .iter()
+                .find(|folder| folder.name.starts_with(prefix))
+                .expect("latest virtual folder id")
+                .id
+        };
+        let music_collection_id = folder_id("Latest Music");
+        let books_collection_id = folder_id("Latest Books");
+        let videos_collection_id = folder_id("Latest Videos");
+
         let items = BaseItemRepository::new(database.clone());
         let root = items.ensure_user_root().await.expect("root");
+        for (id, name, collection_type) in [
+            (music_collection_id, "Latest Music", "music"),
+            (books_collection_id, "Latest Books", "books"),
+            (videos_collection_id, "Latest Videos", "movies"),
+        ] {
+            let mut collection = NewBaseItem::new(id, "CollectionFolder");
+            collection.name = Some(name.to_owned());
+            collection.sort_name = collection.name.clone();
+            collection.parent_id = Some(root.id);
+            collection.is_folder = true;
+            collection.data = Some(json!({ "CollectionType": collection_type }));
+            items
+                .create(collection)
+                .await
+                .expect("collection folder item");
+        }
+        let music_audio = create_item(
+            &items,
+            "Audio",
+            "Collection Music Audio",
+            music_collection_id,
+        )
+        .await;
+        let music_movie = create_item(
+            &items,
+            "Movie",
+            "Collection Music Movie",
+            music_collection_id,
+        )
+        .await;
+        let books_audio = create_item(
+            &items,
+            "Audio",
+            "Collection Books Audio",
+            books_collection_id,
+        )
+        .await;
+        let books_book =
+            create_item(&items, "Book", "Collection Books Book", books_collection_id).await;
+        create_item(
+            &items,
+            "Movie",
+            "Collection Books Movie",
+            books_collection_id,
+        )
+        .await;
+        let movies_movie = create_item(
+            &items,
+            "Movie",
+            "Collection View Movie",
+            videos_collection_id,
+        )
+        .await;
+        let tvshows_episode = create_item(
+            &items,
+            "Episode",
+            "Collection View Episode",
+            videos_collection_id,
+        )
+        .await;
+        let movies_view_id = Uuid::new_v4();
+        let tvshows_view_id = Uuid::new_v4();
+        for (id, name, view_type) in [
+            (movies_view_id, "Latest Movies View", "movies"),
+            (tvshows_view_id, "Latest TvShows View", "tvshows"),
+        ] {
+            let mut view = NewBaseItem::new(id, "UserView");
+            view.name = Some(name.to_owned());
+            view.sort_name = view.name.clone();
+            view.parent_id = Some(root.id);
+            view.is_folder = true;
+            view.is_virtual_item = true;
+            view.data = Some(json!({
+                "ViewType": view_type,
+                "DisplayParentId": videos_collection_id.simple().to_string(),
+            }));
+            items.create(view).await.expect("latest user view");
+        }
         let parent = create_item(&items, "Folder", "Latest Parent", root.id).await;
         let old_movie = create_item(&items, "Movie", "Old Movie", parent.id).await;
         let new_movie = create_item(&items, "Movie", "New Movie", parent.id).await;
@@ -544,6 +662,16 @@ impl Fixture {
             single_photo_album_id: single_photo_album.id,
             single_photo_id: single_photo.id,
             hidden_album_track_id: hidden_album_track.id,
+            music_collection_id,
+            music_audio_id: music_audio.id,
+            music_movie_id: music_movie.id,
+            books_collection_id,
+            books_audio_id: books_audio.id,
+            books_book_id: books_book.id,
+            movies_view_id,
+            movies_movie_id: movies_movie.id,
+            tvshows_view_id,
+            tvshows_episode_id: tvshows_episode.id,
         }
     }
 }
@@ -1028,6 +1156,102 @@ async fn assert_latest_dto_options_and_image_fields(fixture: &Fixture) {
     assert!(no_images[0].get("ImageTags").is_none());
 }
 
+async fn assert_collection_derived_media_types(fixture: &Fixture) {
+    let music = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&groupItems=false&limit=20",
+            fixture.music_collection_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(music.as_array().unwrap().len(), 1);
+    assert_eq!(music[0]["Id"], fixture.music_audio_id.simple().to_string());
+
+    let books = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&groupItems=false&limit=20",
+            fixture.books_collection_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    let book_ids = books
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().expect("latest item id"))
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(book_ids.len(), 2);
+    assert!(book_ids.contains(fixture.books_audio_id.simple().to_string().as_str()));
+    assert!(book_ids.contains(fixture.books_book_id.simple().to_string().as_str()));
+
+    let explicit_type = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&groupItems=false&limit=20",
+            fixture.music_collection_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(explicit_type.as_array().unwrap().len(), 1);
+    assert_eq!(
+        explicit_type[0]["Id"],
+        fixture.music_movie_id.simple().to_string()
+    );
+
+    for uri in [
+        format!(
+            "/Items/Latest?parentId={}&mediaType=Book&groupItems=false&limit=20",
+            fixture.music_collection_id
+        ),
+        format!(
+            "/Users/{}/Items/Latest?parentId={}&mediaType=Book&groupItems=false&limit=20",
+            fixture.user_id, fixture.music_collection_id
+        ),
+    ] {
+        let ignored_unknown_parameter = get_json(&fixture.app, &uri, &fixture.user_token).await;
+        assert_eq!(ignored_unknown_parameter.as_array().unwrap().len(), 1);
+        assert_eq!(
+            ignored_unknown_parameter[0]["Id"],
+            fixture.music_audio_id.simple().to_string()
+        );
+    }
+
+    let movies_view = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&groupItems=false&limit=20",
+            fixture.movies_view_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(movies_view.as_array().unwrap().len(), 1);
+    assert_eq!(
+        movies_view[0]["Id"],
+        fixture.movies_movie_id.simple().to_string()
+    );
+
+    let tvshows_view = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&groupItems=false&limit=20",
+            fixture.tvshows_view_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(tvshows_view.as_array().unwrap().len(), 1);
+    assert_eq!(
+        tvshows_view[0]["Id"],
+        fixture.tvshows_episode_id.simple().to_string()
+    );
+}
+
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::response::Response {
     let mut request = Request::get(uri);
     if let Some(token) = token {
@@ -1069,6 +1293,7 @@ async fn create_item(
     );
     item.media_type = match item_type {
         "Audio" => Some("Audio".to_owned()),
+        "Book" => Some("Book".to_owned()),
         "Photo" => Some("Photo".to_owned()),
         _ if !item.is_folder => Some("Video".to_owned()),
         _ => None,

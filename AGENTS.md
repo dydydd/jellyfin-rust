@@ -237,6 +237,11 @@
   multiple Seasons and Series otherwise. Count only visible primary, non-virtual Episodes, expose
   the recent-child count, and fall back to the newest Episode when the selected container is hidden.
   Keep candidate buffers bounded and load final containers and fallback Episodes in batches.
+- When `Items/Latest` omits `IncludeItemTypes`, derive MediaTypes from the target user's visible
+  collection folders: books use Book and Audio, music uses Audio, photos and home videos use Photo
+  and Video, and other collection types use Video. Apply `LatestItemsExcludes` only for the implicit
+  root scope; explicit parents ignore those exclusions. A movies or tvshows UserView instead
+  derives Movie or Episode respectively, and explicit `IncludeItemTypes` always wins.
 - Resolve `Items/Latest` Audio and Photo grouping containers from the nearest matching
   `MusicAlbum` or `PhotoAlbum` ancestor by closure-table depth, not only the direct parent. Load
   all resolved containers through one target-user-policy-aware batch; fall back to the media item

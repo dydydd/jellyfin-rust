@@ -1248,9 +1248,32 @@ async fn latest_for(
         query.parent_id,
     )
     .await?;
-    let include_item_types = std::mem::take(&mut query.include_item_types);
+    let has_explicit_parent = query.parent_id.is_some_and(|id| !id.is_nil());
+    let mut include_item_types = std::mem::take(&mut query.include_item_types);
+    if include_item_types.is_empty() {
+        include_item_types = match parent_scope.view_type.as_deref() {
+            Some(kind) if kind.eq_ignore_ascii_case("movies") => vec!["Movie".to_owned()],
+            Some(kind) if kind.eq_ignore_ascii_case("tvshows") => vec!["Episode".to_owned()],
+            _ => Vec::new(),
+        };
+    }
+    let explicit_parent_ids = has_explicit_parent.then(|| {
+        parent_scope
+            .parent_id
+            .into_iter()
+            .chain(parent_scope.parent_ids.iter().copied())
+            .collect::<Vec<_>>()
+    });
+    let media_types = if include_item_types.is_empty() {
+        state
+            .user_views
+            .latest_media_types(target_user_id, explicit_parent_ids.as_deref())
+            .await?
+    } else {
+        Vec::new()
+    };
     let is_folder = include_item_types.is_empty().then_some(false);
-    let exclude_item_types = include_item_types.is_empty().then(|| {
+    let exclude_item_types = (include_item_types.is_empty() && media_types.is_empty()).then(|| {
         ["Person", "Studio", "Year", "MusicGenre", "Genre"]
             .into_iter()
             .map(str::to_owned)
@@ -1266,6 +1289,7 @@ async fn latest_for(
         parent_ids: parent_scope.parent_ids,
         recursive: true,
         include_item_types,
+        media_types,
         exclude_item_types: exclude_item_types.unwrap_or_default(),
         is_folder,
         is_virtual_item: Some(false),
@@ -1545,6 +1569,7 @@ async fn group_latest_items(
 struct ResolvedParentScope {
     parent_id: Option<Uuid>,
     parent_ids: Vec<Uuid>,
+    view_type: Option<String>,
 }
 
 async fn resolve_user_view_parent_scope(
@@ -1564,8 +1589,26 @@ async fn resolve_user_view_parent_scope(
         return Ok(ResolvedParentScope {
             parent_id: Some(parent_id),
             parent_ids: Vec::new(),
+            view_type: None,
         });
     }
+
+    let view_type = parent
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|data| {
+            [
+                "ViewType",
+                "viewType",
+                "view_type",
+                "CollectionType",
+                "collection_type",
+            ]
+            .into_iter()
+            .find_map(|key| data.get(key).and_then(serde_json::Value::as_str))
+        })
+        .map(str::to_owned);
 
     // Official UserView.GetIdsForAncestorQuery redirects synthetic views to
     // their physical display parent. Without this mapping clients can render
@@ -1585,6 +1628,7 @@ async fn resolve_user_view_parent_scope(
         return Ok(ResolvedParentScope {
             parent_id: Some(display_parent_id),
             parent_ids: Vec::new(),
+            view_type,
         });
     }
 
@@ -1597,11 +1641,13 @@ async fn resolve_user_view_parent_scope(
             return Ok(ResolvedParentScope {
                 parent_id: Some(parent_id),
                 parent_ids,
+                view_type,
             });
         }
         return Ok(ResolvedParentScope {
             parent_id: None,
             parent_ids,
+            view_type,
         });
     }
 
@@ -1610,6 +1656,7 @@ async fn resolve_user_view_parent_scope(
     Ok(ResolvedParentScope {
         parent_id: Some(parent_id),
         parent_ids: Vec::new(),
+        view_type,
     })
 }
 
