@@ -271,6 +271,7 @@
   targets a nonexistent user.
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
+- Preserve scan-discovered local alternate versions in resolver input order. Batch assignment must ignore missing and self-referential pairs before applying first-valid-assignment wins, persist a contiguous per-primary `sort_order`, compact both sides when a child moves between primaries, and remain idempotent on repeated scans. Serialize competing reassignment transactions before taking row locks so opposing moves cannot deadlock, and report parents whose DTO-visible version order changed even when no child's `primary_version_id` changed.
 - Apply the playback `DeviceProfile` independently to every returned `MediaSource`, preserving source order and producing version-specific flags and URLs. Only apply explicit audio or subtitle indexes to the source whose id matches an explicitly requested `MediaSourceId`.
 - After applying a playback `DeviceProfile`, project the selected subtitle index back to that source's
   `DefaultSubtitleStreamIndex`, including `-1` when subtitles are disabled; never leak an explicit

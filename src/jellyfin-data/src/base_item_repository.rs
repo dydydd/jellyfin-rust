@@ -1321,8 +1321,12 @@ impl BaseItemRepository {
     /// Applies a batch of scan-discovered local alternate assignments.
     ///
     /// The base-item back references and typed linked-child rows change in one
-    /// transaction. Reassigning a child removes only its previous local link;
-    /// user-created alternate and ordinary manual links are left untouched.
+    /// transaction. The first valid assignment for each child wins, and local
+    /// links are numbered independently for each parent in their input order.
+    /// Reassigning a child removes only its previous local link; user-created
+    /// alternate and ordinary manual links are left untouched. The returned ids
+    /// include children whose primary changed and parents whose ordered local
+    /// links changed.
     ///
     /// # Errors
     ///
@@ -1331,70 +1335,21 @@ impl BaseItemRepository {
         &self,
         assignments: &[(Uuid, Uuid)],
     ) -> Result<Vec<Uuid>, BaseItemError> {
-        let mut unique = HashMap::with_capacity(assignments.len());
-        for (child_id, parent_id) in assignments.iter().copied() {
-            if child_id != parent_id {
-                unique.entry(child_id).or_insert(parent_id);
-            }
-        }
-        if unique.is_empty() {
+        if assignments.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut values = Vec::with_capacity(unique.len().saturating_mul(2));
-        let mut sql = String::from("WITH assignments(child_id, parent_id) AS (VALUES ");
-        for (index, (child_id, parent_id)) in unique.into_iter().enumerate() {
-            if index > 0 {
-                sql.push_str(", ");
-            }
-            values.push(child_id.into());
-            let child_bind = values.len();
-            values.push(parent_id.into());
-            let parent_bind = values.len();
-            let _ = write!(sql, "(${child_bind}::uuid, ${parent_bind}::uuid)");
-        }
-        sql.push_str(
-            "), valid AS MATERIALIZED (\
-                 SELECT assignment.child_id, assignment.parent_id \
-                 FROM assignments AS assignment \
-                 INNER JOIN jellyfin.base_items AS child ON child.id = assignment.child_id \
-                 INNER JOIN jellyfin.base_items AS parent ON parent.id = assignment.parent_id\
-             ), removed_local_links AS (\
-                 DELETE FROM jellyfin.linked_children AS link \
-                 USING valid \
-                 WHERE link.child_id = valid.child_id \
-                   AND link.child_type = 2 \
-                   AND link.parent_id <> valid.parent_id \
-                 RETURNING link.child_id\
-             ), local_links AS (\
-                 INSERT INTO jellyfin.linked_children \
-                     (parent_id, child_id, child_type, sort_order) \
-                 SELECT parent_id, child_id, 2, NULL FROM valid \
-                 WHERE (SELECT COUNT(*) FROM removed_local_links) >= 0 \
-                 ON CONFLICT (parent_id, child_id) DO NOTHING \
-                 RETURNING child_id\
-             ), updated AS (\
-                 UPDATE jellyfin.base_items AS item \
-                 SET primary_version_id = valid.parent_id \
-                 FROM valid \
-                 WHERE item.id = valid.child_id \
-                   AND item.primary_version_id IS DISTINCT FROM valid.parent_id \
-                   AND (SELECT COUNT(*) FROM local_links) >= 0 \
-                 RETURNING item.id\
-             ) \
-             SELECT id FROM updated",
-        );
         let transaction = self.database.begin().await?;
-        let changed = transaction
-            .query_all(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                sql,
-                values,
-            ))
-            .await?
-            .into_iter()
-            .map(|row| row.try_get::<Uuid>("", "id"))
-            .collect::<Result<Vec<_>, _>>()?;
+        acquire_hierarchy_lock(&transaction).await?;
+        let valid = lock_valid_local_assignments(&transaction, assignments).await?;
+        if valid.is_empty() {
+            transaction.commit().await?;
+            return Ok(Vec::new());
+        }
+        let mut changed = rewrite_local_alternate_links(&transaction, &valid).await?;
+        changed.extend(update_local_alternate_back_references(&transaction, &valid).await?);
+        changed.sort_unstable();
+        changed.dedup();
         transaction.commit().await?;
         Ok(changed)
     }
@@ -4165,6 +4120,225 @@ impl BaseItemRepository {
             start_index: query.start_index,
         })
     }
+}
+
+async fn lock_valid_local_assignments(
+    transaction: &DatabaseTransaction,
+    assignments: &[(Uuid, Uuid)],
+) -> Result<Vec<(Uuid, Uuid)>, BaseItemError> {
+    let supplied_ids = assignments
+        .iter()
+        .flat_map(|(child_id, parent_id)| [*child_id, *parent_id])
+        .collect::<HashSet<_>>();
+    let existing_ids = base_item::Entity::find()
+        .select_only()
+        .column(base_item::Column::Id)
+        .filter(base_item::Column::Id.is_in(supplied_ids))
+        .order_by_asc(base_item::Column::Id)
+        .lock_exclusive()
+        .into_tuple::<Uuid>()
+        .all(transaction)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+    let mut seen_children = HashSet::with_capacity(assignments.len());
+    Ok(assignments
+        .iter()
+        .copied()
+        .filter(|(child_id, parent_id)| {
+            child_id != parent_id
+                && existing_ids.contains(child_id)
+                && existing_ids.contains(parent_id)
+                && seen_children.insert(*child_id)
+        })
+        .collect())
+}
+
+async fn rewrite_local_alternate_links(
+    transaction: &DatabaseTransaction,
+    assignments: &[(Uuid, Uuid)],
+) -> Result<Vec<Uuid>, BaseItemError> {
+    let assigned_children = assignments
+        .iter()
+        .map(|(child_id, _)| *child_id)
+        .collect::<HashSet<_>>();
+    let mut affected_parents = assignments
+        .iter()
+        .map(|(_, parent_id)| *parent_id)
+        .collect::<HashSet<_>>();
+    affected_parents.extend(
+        linked_child::Entity::find()
+            .select_only()
+            .column(linked_child::Column::ParentId)
+            .filter(linked_child::Column::ChildType.eq(2))
+            .filter(linked_child::Column::ChildId.is_in(assigned_children.iter().copied()))
+            .into_tuple::<Uuid>()
+            .all(transaction)
+            .await?,
+    );
+    let mut affected_parents = affected_parents.into_iter().collect::<Vec<_>>();
+    affected_parents.sort_unstable();
+    base_item::Entity::find()
+        .select_only()
+        .column(base_item::Column::Id)
+        .filter(base_item::Column::Id.is_in(affected_parents.iter().copied()))
+        .order_by_asc(base_item::Column::Id)
+        .lock_exclusive()
+        .into_tuple::<Uuid>()
+        .all(transaction)
+        .await?;
+
+    let existing = linked_child::Entity::find()
+        .filter(linked_child::Column::ChildType.eq(2))
+        .filter(linked_child::Column::ParentId.is_in(affected_parents.iter().copied()))
+        .all(transaction)
+        .await?;
+    let (changed_parents, replacement_rows) =
+        local_link_replacements(assignments, &assigned_children, &affected_parents, existing)?;
+    if changed_parents.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    linked_child::Entity::delete_many()
+        .filter(linked_child::Column::ChildType.eq(2))
+        .filter(linked_child::Column::ParentId.is_in(changed_parents.iter().copied()))
+        .exec(transaction)
+        .await?;
+    if !replacement_rows.is_empty() {
+        linked_child::Entity::insert_many(replacement_rows)
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::columns([
+                    linked_child::Column::ParentId,
+                    linked_child::Column::ChildId,
+                ])
+                .do_nothing()
+                .to_owned(),
+            )
+            .exec_without_returning(transaction)
+            .await?;
+    }
+    Ok(changed_parents)
+}
+
+fn local_link_replacements(
+    assignments: &[(Uuid, Uuid)],
+    assigned_children: &HashSet<Uuid>,
+    affected_parents: &[Uuid],
+    existing: Vec<linked_child::Model>,
+) -> Result<(Vec<Uuid>, Vec<linked_child::ActiveModel>), BaseItemError> {
+    let mut existing_by_parent = HashMap::<Uuid, Vec<linked_child::Model>>::new();
+    for link in existing {
+        existing_by_parent
+            .entry(link.parent_id)
+            .or_default()
+            .push(link);
+    }
+    for links in existing_by_parent.values_mut() {
+        links.sort_by(|left, right| {
+            left.sort_order
+                .is_none()
+                .cmp(&right.sort_order.is_none())
+                .then_with(|| left.sort_order.cmp(&right.sort_order))
+                .then_with(|| left.child_id.cmp(&right.child_id))
+        });
+    }
+    let mut assigned_by_parent = HashMap::<Uuid, Vec<Uuid>>::new();
+    for (child_id, parent_id) in assignments {
+        assigned_by_parent
+            .entry(*parent_id)
+            .or_default()
+            .push(*child_id);
+    }
+
+    let mut changed_parents = Vec::new();
+    let mut replacement_rows = Vec::new();
+    for &parent_id in affected_parents {
+        let current = existing_by_parent.remove(&parent_id).unwrap_or_default();
+        let assigned = assigned_by_parent.remove(&parent_id).unwrap_or_default();
+        let mut assigned = assigned.into_iter();
+        let mut desired = current
+            .iter()
+            .filter_map(|link| {
+                if assigned_children.contains(&link.child_id) {
+                    assigned.next()
+                } else {
+                    Some(link.child_id)
+                }
+            })
+            .collect::<Vec<_>>();
+        desired.extend(assigned);
+        let desired = ordered_local_link_rows(parent_id, desired)?;
+        let unchanged = current.len() == desired.len()
+            && current.iter().zip(&desired).all(|(stored, wanted)| {
+                wanted.child_id.as_ref() == &stored.child_id
+                    && wanted.sort_order.as_ref() == &stored.sort_order
+            });
+        if !unchanged {
+            changed_parents.push(parent_id);
+            replacement_rows.extend(desired);
+        }
+    }
+    Ok((changed_parents, replacement_rows))
+}
+
+fn ordered_local_link_rows(
+    parent_id: Uuid,
+    child_ids: Vec<Uuid>,
+) -> Result<Vec<linked_child::ActiveModel>, BaseItemError> {
+    child_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, child_id)| {
+            let sort_order = i32::try_from(index).map_err(|_| {
+                BaseItemError::Database(DbErr::Custom(
+                    "local alternate sort order overflowed PostgreSQL integer range".to_owned(),
+                ))
+            })?;
+            Ok(linked_child::ActiveModel {
+                parent_id: Set(parent_id),
+                child_id: Set(child_id),
+                child_type: Set(2),
+                sort_order: Set(Some(sort_order)),
+            })
+        })
+        .collect()
+}
+
+async fn update_local_alternate_back_references(
+    transaction: &DatabaseTransaction,
+    assignments: &[(Uuid, Uuid)],
+) -> Result<Vec<Uuid>, BaseItemError> {
+    let mut values = Vec::with_capacity(assignments.len().saturating_mul(2));
+    let mut sql = String::from("WITH assignments(child_id, parent_id) AS (VALUES ");
+    for (index, (child_id, parent_id)) in assignments.iter().copied().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        values.push(child_id.into());
+        let child_bind = values.len();
+        values.push(parent_id.into());
+        let parent_bind = values.len();
+        let _ = write!(sql, "(${child_bind}::uuid, ${parent_bind}::uuid)");
+    }
+    sql.push_str(
+        ") UPDATE jellyfin.base_items AS item \
+         SET primary_version_id = assignment.parent_id \
+         FROM assignments AS assignment \
+         WHERE item.id = assignment.child_id \
+           AND item.primary_version_id IS DISTINCT FROM assignment.parent_id \
+         RETURNING item.id",
+    );
+    Ok(transaction
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .await?
+        .into_iter()
+        .map(|row| row.try_get::<Uuid>("", "id"))
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 fn linked_alternate_version_merge_sql(item_ids: &[Uuid]) -> (String, Vec<SeaValue>) {

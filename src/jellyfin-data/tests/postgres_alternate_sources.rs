@@ -132,6 +132,314 @@ async fn visible_item_ids_filter_alternate_sources_by_access_policy() {
 }
 
 #[tokio::test]
+async fn local_alternate_assignments_number_each_parent_in_input_order() {
+    let repository = repository().await;
+    let links = linked_repository().await;
+    let parent_a = create_ordering_item(&repository, "ordered-parent-a").await;
+    let parent_b = create_ordering_item(&repository, "ordered-parent-b").await;
+    let children_a = [
+        create_ordering_item(&repository, "ordered-child-a1").await,
+        create_ordering_item(&repository, "ordered-child-a2").await,
+    ];
+    let children_b = [
+        create_ordering_item(&repository, "ordered-child-b1").await,
+        create_ordering_item(&repository, "ordered-child-b2").await,
+    ];
+
+    repository
+        .assign_local_alternate_versions(&[
+            (children_a[0].id, parent_a.id),
+            (children_b[0].id, parent_b.id),
+            (children_a[1].id, parent_a.id),
+            (children_b[1].id, parent_b.id),
+        ])
+        .await
+        .expect("ordered local alternate assignments");
+
+    assert_eq!(
+        local_link_order(&links, parent_a.id).await,
+        vec![(children_a[0].id, Some(0)), (children_a[1].id, Some(1))]
+    );
+    assert_eq!(
+        local_link_order(&links, parent_b.id).await,
+        vec![(children_b[0].id, Some(0)), (children_b[1].id, Some(1))]
+    );
+    for (child_id, parent_id) in [
+        (children_a[0].id, parent_a.id),
+        (children_a[1].id, parent_a.id),
+        (children_b[0].id, parent_b.id),
+        (children_b[1].id, parent_b.id),
+    ] {
+        assert_eq!(
+            repository
+                .get(child_id)
+                .await
+                .expect("assigned child lookup")
+                .expect("assigned child")
+                .primary_version_id,
+            Some(parent_id)
+        );
+    }
+
+    delete_ordering_items(
+        &repository,
+        &[
+            parent_a.id,
+            parent_b.id,
+            children_a[0].id,
+            children_a[1].id,
+            children_b[0].id,
+            children_b[1].id,
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn local_alternate_assignments_keep_the_first_valid_parent_per_child() {
+    let repository = repository().await;
+    let links = linked_repository().await;
+    let parent_a = create_ordering_item(&repository, "first-parent-a").await;
+    let parent_b = create_ordering_item(&repository, "first-parent-b").await;
+    let child = create_ordering_item(&repository, "first-child").await;
+
+    repository
+        .assign_local_alternate_versions(&[
+            (child.id, Uuid::new_v4()),
+            (child.id, child.id),
+            (child.id, parent_a.id),
+            (child.id, parent_b.id),
+        ])
+        .await
+        .expect("first valid local alternate assignment");
+
+    assert_eq!(
+        local_link_order(&links, parent_a.id).await,
+        vec![(child.id, Some(0))]
+    );
+    assert!(local_link_order(&links, parent_b.id).await.is_empty());
+    assert_eq!(
+        repository
+            .get(child.id)
+            .await
+            .expect("first-wins child lookup")
+            .expect("first-wins child")
+            .primary_version_id,
+        Some(parent_a.id)
+    );
+
+    delete_ordering_items(&repository, &[parent_a.id, parent_b.id, child.id]).await;
+}
+
+#[tokio::test]
+async fn local_alternate_reassignment_rewrites_order_and_compacts_old_parent() {
+    let repository = repository().await;
+    let links = linked_repository().await;
+    let parent_a = create_ordering_item(&repository, "reorder-parent-a").await;
+    let parent_b = create_ordering_item(&repository, "reorder-parent-b").await;
+    let child_a = create_ordering_item(&repository, "reorder-child-a").await;
+    let child_b = create_ordering_item(&repository, "reorder-child-b").await;
+    let child_c = create_ordering_item(&repository, "reorder-child-c").await;
+
+    repository
+        .assign_local_alternate_versions(&[
+            (child_a.id, parent_a.id),
+            (child_b.id, parent_a.id),
+            (child_c.id, parent_b.id),
+        ])
+        .await
+        .expect("initial local alternate order");
+    assert_eq!(
+        repository
+            .assign_local_alternate_versions(&[
+                (child_b.id, parent_a.id),
+                (child_a.id, parent_a.id),
+            ])
+            .await
+            .expect("link-only local alternate reorder"),
+        vec![parent_a.id],
+        "a link-only reorder must report the parent whose DTO-visible order changed"
+    );
+    assert_eq!(
+        local_link_order(&links, parent_a.id).await,
+        vec![(child_b.id, Some(0)), (child_a.id, Some(1))]
+    );
+    let changed = repository
+        .assign_local_alternate_versions(&[(child_c.id, parent_b.id), (child_b.id, parent_b.id)])
+        .await
+        .expect("reordered local alternates");
+    assert_eq!(
+        changed
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
+        [parent_a.id, parent_b.id, child_b.id].into_iter().collect()
+    );
+
+    assert_eq!(
+        local_link_order(&links, parent_a.id).await,
+        vec![(child_a.id, Some(0))]
+    );
+    assert_eq!(
+        local_link_order(&links, parent_b.id).await,
+        vec![(child_c.id, Some(0)), (child_b.id, Some(1))]
+    );
+    assert_eq!(
+        repository
+            .get(child_b.id)
+            .await
+            .expect("reassigned child lookup")
+            .expect("reassigned child")
+            .primary_version_id,
+        Some(parent_b.id)
+    );
+
+    delete_ordering_items(
+        &repository,
+        &[parent_a.id, parent_b.id, child_a.id, child_b.id, child_c.id],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn repeated_local_alternate_assignments_are_idempotent() {
+    let repository = repository().await;
+    let links = linked_repository().await;
+    let parent = create_ordering_item(&repository, "repeat-parent").await;
+    let child_a = create_ordering_item(&repository, "repeat-child-a").await;
+    let child_b = create_ordering_item(&repository, "repeat-child-b").await;
+    let assignments = [(child_a.id, parent.id), (child_b.id, parent.id)];
+
+    repository
+        .assign_local_alternate_versions(&assignments)
+        .await
+        .expect("initial repeated assignments");
+    let links_before = links.list(parent.id).await.expect("links before repeat");
+    let children_before = [
+        repository
+            .get(child_a.id)
+            .await
+            .expect("first child before repeat")
+            .expect("first child"),
+        repository
+            .get(child_b.id)
+            .await
+            .expect("second child before repeat")
+            .expect("second child"),
+    ];
+
+    assert!(
+        repository
+            .assign_local_alternate_versions(&assignments)
+            .await
+            .expect("idempotent repeated assignments")
+            .is_empty()
+    );
+    assert_eq!(
+        links.list(parent.id).await.expect("links after repeat"),
+        links_before
+    );
+    assert!(
+        repository
+            .assign_local_alternate_versions(&[(child_a.id, parent.id)])
+            .await
+            .expect("idempotent partial repeated assignment")
+            .is_empty()
+    );
+    assert_eq!(
+        links
+            .list(parent.id)
+            .await
+            .expect("links after partial repeat"),
+        links_before,
+        "a partial scan batch must not move an existing child to the end"
+    );
+    assert_eq!(
+        [
+            repository
+                .get(child_a.id)
+                .await
+                .expect("first child after repeat")
+                .expect("first child"),
+            repository
+                .get(child_b.id)
+                .await
+                .expect("second child after repeat")
+                .expect("second child"),
+        ],
+        children_before
+    );
+
+    delete_ordering_items(&repository, &[parent.id, child_a.id, child_b.id]).await;
+}
+
+#[tokio::test]
+async fn opposing_local_alternate_reassignments_complete_without_deadlock() {
+    let repository = repository().await;
+    let links = linked_repository().await;
+    let parent_a = create_ordering_item(&repository, "opposing-parent-a").await;
+    let parent_b = create_ordering_item(&repository, "opposing-parent-b").await;
+    let child_a = create_ordering_item(&repository, "opposing-child-a").await;
+    let child_b = create_ordering_item(&repository, "opposing-child-b").await;
+    repository
+        .assign_local_alternate_versions(&[(child_a.id, parent_a.id), (child_b.id, parent_b.id)])
+        .await
+        .expect("initial opposing assignments");
+
+    let barrier = Arc::new(Barrier::new(3));
+    let move_a = spawn_assignment(
+        repository.clone(),
+        Arc::clone(&barrier),
+        child_a.id,
+        parent_b.id,
+    );
+    let move_b = spawn_assignment(
+        repository.clone(),
+        Arc::clone(&barrier),
+        child_b.id,
+        parent_a.id,
+    );
+    barrier.wait().await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        move_a
+            .await
+            .expect("first opposing assignment task")
+            .expect("first opposing assignment");
+        move_b
+            .await
+            .expect("second opposing assignment task")
+            .expect("second opposing assignment");
+    })
+    .await
+    .expect("opposing assignments must not deadlock");
+
+    assert_eq!(
+        local_link_order(&links, parent_a.id).await,
+        vec![(child_b.id, Some(0))]
+    );
+    assert_eq!(
+        local_link_order(&links, parent_b.id).await,
+        vec![(child_a.id, Some(0))]
+    );
+    for (child_id, parent_id) in [(child_a.id, parent_b.id), (child_b.id, parent_a.id)] {
+        assert_eq!(
+            repository
+                .get(child_id)
+                .await
+                .expect("opposing child lookup")
+                .expect("opposing child")
+                .primary_version_id,
+            Some(parent_id)
+        );
+    }
+
+    delete_ordering_items(
+        &repository,
+        &[parent_a.id, parent_b.id, child_a.id, child_b.id],
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn clearing_local_alternates_is_a_noop_and_preserves_rows() {
     let repository = repository().await;
     assert!(matches!(
@@ -385,6 +693,20 @@ fn spawn_clear(
     })
 }
 
+fn spawn_assignment(
+    repository: BaseItemRepository,
+    barrier: Arc<Barrier>,
+    child_id: Uuid,
+    parent_id: Uuid,
+) -> tokio::task::JoinHandle<Result<Vec<Uuid>, BaseItemError>> {
+    tokio::spawn(async move {
+        barrier.wait().await;
+        repository
+            .assign_local_alternate_versions(&[(child_id, parent_id)])
+            .await
+    })
+}
+
 async fn repository() -> BaseItemRepository {
     let database = jellyfin_data::connect(&DatabaseConfig::default())
         .await
@@ -401,6 +723,42 @@ async fn linked_repository() -> LinkedChildRepository {
             .await
             .expect("local PostgreSQL must be available"),
     )
+}
+
+async fn create_ordering_item(
+    repository: &BaseItemRepository,
+    label: &str,
+) -> jellyfin_data::entities::base_item::Model {
+    let id = Uuid::new_v4();
+    let mut item = NewBaseItem::new(id, "Movie");
+    item.name = Some(format!("{label}-{id}"));
+    item.sort_name = item.name.clone();
+    item.media_type = Some("Video".to_owned());
+    repository
+        .create(item)
+        .await
+        .expect("ordering fixture item")
+}
+
+async fn local_link_order(
+    links: &LinkedChildRepository,
+    parent_id: Uuid,
+) -> Vec<(Uuid, Option<i32>)> {
+    links
+        .list(parent_id)
+        .await
+        .expect("ordered local links")
+        .into_iter()
+        .filter(|link| link.child_type == LinkedChildType::LocalAlternateVersion)
+        .map(|link| (link.child_id, link.sort_order))
+        .collect()
+}
+
+async fn delete_ordering_items(repository: &BaseItemRepository, ids: &[Uuid]) {
+    repository
+        .delete_many(ids)
+        .await
+        .expect("ordering fixture cleanup");
 }
 
 struct VersionGroup {
