@@ -91,6 +91,48 @@ fn persisted_video_streams_preserve_repository_fields_and_compute_range_type() {
 }
 
 #[test]
+fn persisted_streams_project_official_external_stream_support() {
+    let mapper = MediaStreamMapper::new(TestPathMapper, "en-US");
+    let cases = [
+        (PersistedMediaStreamType::Audio, None, true, true),
+        (PersistedMediaStreamType::Subtitle, Some("srt"), false, true),
+        (
+            PersistedMediaStreamType::Subtitle,
+            Some("hdmv_pgs_subtitle"),
+            false,
+            true,
+        ),
+        (
+            PersistedMediaStreamType::Subtitle,
+            Some("vobsub"),
+            false,
+            true,
+        ),
+        (
+            PersistedMediaStreamType::Subtitle,
+            Some("dvbsub"),
+            false,
+            false,
+        ),
+        (PersistedMediaStreamType::Audio, Some("aac"), false, false),
+        (PersistedMediaStreamType::Video, Some("h264"), false, false),
+    ];
+
+    for (stream_type, codec, is_external, expected) in cases {
+        let mut persisted = minimal_persisted(0, stream_type);
+        persisted.codec = codec.map(str::to_owned);
+        persisted.is_external = is_external;
+
+        let stream = mapper.to_api(persisted);
+
+        assert_eq!(
+            stream.supports_external_stream, expected,
+            "unexpected SupportsExternalStream for {stream_type:?} codec {codec:?} external {is_external}"
+        );
+    }
+}
+
+#[test]
 fn api_streams_save_to_persisted_repository_shape() {
     let mapper = MediaStreamMapper::new(TestPathMapper, "en-US");
     let stream = MediaStream {

@@ -1366,6 +1366,16 @@ async fn media_source_defaults_follow_target_user_stream_preferences() {
 
     let source_subtitle = stream_by_index(&source["MediaStreams"], 3);
     let top_level_subtitle = stream_by_index(&item["MediaStreams"], 3);
+    assert_eq!(source_subtitle["SupportsExternalStream"], true);
+    assert_eq!(top_level_subtitle["SupportsExternalStream"], true);
+    assert_eq!(
+        stream_by_index(&item["MediaStreams"], 0)["SupportsExternalStream"],
+        false
+    );
+    assert_eq!(
+        stream_by_index(&item["MediaStreams"], 1)["SupportsExternalStream"],
+        false
+    );
     assert!(source_subtitle["Score"].as_i64().is_some());
     assert_eq!(top_level_subtitle["Score"], source_subtitle["Score"]);
     assert!(
@@ -1434,7 +1444,10 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     alternate.data = Some(json!({ "OriginalLanguage": "French" }));
     let alternate = items.create(alternate).await.expect("alternate version");
 
-    for (source, codec) in [(&primary, "h264"), (&alternate, "hevc")] {
+    for (source, codec, subtitle_codec) in [
+        (&primary, "h264", "srt"),
+        (&alternate, "hevc", "hdmv_pgs_subtitle"),
+    ] {
         MediaStreamService::new(fixture.database.clone())
             .save_media_streams(
                 source.id,
@@ -1462,6 +1475,14 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
                         path: source.path.clone(),
                         ..MediaStream::default()
                     },
+                    MediaStream {
+                        index: 3,
+                        stream_type: MediaStreamType::Subtitle,
+                        codec: Some(subtitle_codec.to_owned()),
+                        language: Some("eng".to_owned()),
+                        path: source.path.clone(),
+                        ..MediaStream::default()
+                    },
                 ],
             )
             .await
@@ -1482,6 +1503,18 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
     assert_eq!(sources[1]["Name"], "2160p");
     assert_eq!(sources[1]["DefaultAudioStreamIndex"], 2);
     assert_eq!(
+        stream_by_index(&sources[0]["MediaStreams"], 3)["SupportsExternalStream"],
+        true
+    );
+    assert_eq!(
+        stream_by_index(&sources[1]["MediaStreams"], 3)["SupportsExternalStream"],
+        true
+    );
+    assert_eq!(
+        stream_by_index(&sources[1]["MediaStreams"], 0)["SupportsExternalStream"],
+        false
+    );
+    assert_eq!(
         sources
             .iter()
             .map(|source| source["Id"].as_str().expect("source id"))
@@ -1495,6 +1528,10 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
         .collect()
     );
     assert_eq!(dto["MediaStreams"], sources[0]["MediaStreams"]);
+    assert_eq!(
+        stream_by_index(&dto["MediaStreams"], 3)["SupportsExternalStream"],
+        true
+    );
 
     let alternate_dto = get_json(
         &fixture.app,

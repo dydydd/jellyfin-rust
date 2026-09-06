@@ -138,6 +138,12 @@ where
         };
         apply_localization(&mut stream, localization, &self.server_culture);
         stream.refresh_computed_fields();
+        // Match MediaSourceManager.StreamSupportsExternalStream: clients may extract embedded
+        // text, PGS, and VobSub subtitles in addition to streams already stored externally.
+        stream.supports_external_stream = stream.is_external
+            || stream.is_text_subtitle_stream()
+            || stream.is_pgs_subtitle_stream()
+            || stream.is_vobsub_subtitle_stream();
         stream
     }
 
