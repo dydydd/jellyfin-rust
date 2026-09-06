@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
     TransactionTrait,
@@ -102,7 +104,7 @@ impl ChapterRepository {
         Ok(records)
     }
 
-    /// Lists chapters for one item in index order.
+    /// Lists chapters for one item in start-position order.
     ///
     /// # Errors
     ///
@@ -113,12 +115,53 @@ impl ChapterRepository {
     ) -> Result<Vec<ChapterRecord>, ChapterStoreError> {
         Ok(chapter::Entity::find()
             .filter(chapter::Column::ItemId.eq(item_id))
+            .order_by_asc(chapter::Column::StartPositionTicks)
             .order_by_asc(chapter::Column::IndexNumber)
+            .order_by_asc(chapter::Column::Id)
             .all(self.database.as_ref())
             .await?
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    /// Lists chapters for several items in one query, grouped by item id.
+    ///
+    /// Every requested item has an entry, including items without chapters. Chapters within each
+    /// entry use the official DTO order: start position first, with persisted index and id as
+    /// deterministic tie-breakers.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when lookup fails.
+    pub async fn list_many(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<ChapterRecord>>, ChapterStoreError> {
+        let mut grouped = item_ids
+            .iter()
+            .copied()
+            .map(|item_id| (item_id, Vec::new()))
+            .collect::<HashMap<_, _>>();
+        if grouped.is_empty() {
+            return Ok(grouped);
+        }
+
+        let chapters = chapter::Entity::find()
+            .filter(chapter::Column::ItemId.is_in(grouped.keys().copied()))
+            .order_by_asc(chapter::Column::ItemId)
+            .order_by_asc(chapter::Column::StartPositionTicks)
+            .order_by_asc(chapter::Column::IndexNumber)
+            .order_by_asc(chapter::Column::Id)
+            .all(self.database.as_ref())
+            .await?;
+        for chapter in chapters {
+            grouped
+                .entry(chapter.item_id)
+                .or_default()
+                .push(chapter.into());
+        }
+        Ok(grouped)
     }
 
     /// Updates the generated-image metadata for one chapter.
