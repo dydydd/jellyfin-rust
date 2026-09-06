@@ -40,6 +40,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 futures-util = "0.3"
 image.workspace = true
+jellyfin-providers = { path = "../jellyfin-providers" }
 oas3 = "0.22"
 tokio-tungstenite = "0.29"
 

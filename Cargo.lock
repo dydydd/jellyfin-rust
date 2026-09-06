@@ -1590,6 +1590,7 @@ dependencies = [
  "jellyfin-media-encoding",
  "jellyfin-model",
  "jellyfin-networking",
+ "jellyfin-providers",
  "jellyfin-server-implementations",
  "md-5",
  "oas3",

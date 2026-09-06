@@ -14,8 +14,8 @@ use axum_extra::extract::Query as RepeatedQuery;
 use jellyfin_controller::RelatedItemKind;
 use jellyfin_data::{BaseItemCounts, BaseItemPage, BaseItemQuery};
 use jellyfin_model::{
-    CollectionType, ImageOption, ImageType, ItemCounts, LibraryOptionsResultDto,
-    LibraryTypeOptionsDto,
+    CollectionType, ImageOption, ImageType, ItemCounts, LibraryOptionInfoDto,
+    LibraryOptionsResultDto, LibraryTypeOptionsDto,
 };
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
@@ -590,7 +590,15 @@ pub(crate) async fn available_options(
         .collect();
     let metadata_readers = ["Nfo"].into_iter().map(option_info).collect();
     let subtitle_fetchers: Vec<jellyfin_model::LibraryOptionInfoDto> = Vec::new();
-    let lyric_fetchers: Vec<jellyfin_model::LibraryOptionInfoDto> = Vec::new();
+    let item_types = representative_item_types(query.library_content_type);
+    let lyric_fetchers = if item_types
+        .iter()
+        .any(|item_type| item_type.eq_ignore_ascii_case("Audio"))
+    {
+        distinct_option_infos(state.user_library.lyric_provider_names())
+    } else {
+        Vec::new()
+    };
     let media_segment_providers = Vec::new();
     Ok(Json(LibraryOptionsResultDto {
         metadata_savers,
@@ -598,7 +606,7 @@ pub(crate) async fn available_options(
         subtitle_fetchers,
         lyric_fetchers,
         media_segment_providers,
-        type_options: representative_item_types(query.library_content_type)
+        type_options: item_types
             .into_iter()
             .map(|item_type| LibraryTypeOptionsDto {
                 item_type: Some(item_type.to_owned()),
@@ -1028,6 +1036,24 @@ fn representative_item_types(content_type: Option<CollectionType>) -> Vec<&'stat
         )
         | None => vec!["Series", "Season", "Episode", "Movie"],
     }
+}
+
+fn distinct_option_infos<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Vec<LibraryOptionInfoDto> {
+    let mut options: Vec<LibraryOptionInfoDto> = Vec::new();
+    for name in names {
+        if options.iter().any(|option| {
+            option
+                .name
+                .as_deref()
+                .is_some_and(|existing| existing.eq_ignore_ascii_case(name))
+        }) {
+            continue;
+        }
+        options.push(option_info(name));
+    }
+    options
 }
 
 fn default_image_options(item_type: &str) -> Vec<ImageOption> {

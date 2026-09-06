@@ -112,6 +112,12 @@ impl UserLibraryService {
         self
     }
 
+    /// Returns configured lyric provider names in provider execution order.
+    #[must_use]
+    pub fn lyric_provider_names(&self) -> impl Iterator<Item = &str> {
+        self.lyrics.provider_names()
+    }
+
     /// Ensures that server initialization has exactly one stable user root.
     ///
     /// # Errors

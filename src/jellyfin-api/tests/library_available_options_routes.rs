@@ -1,14 +1,17 @@
 #![allow(clippy::too_many_lines)]
+use std::sync::Arc;
+
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::UserService;
+use jellyfin_controller::{LyricProvider, LyricSearchRequest, RemoteLyricInfo, UserService};
 use jellyfin_data::{
     ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice, ServerConfigurationRepository,
 };
+use jellyfin_providers::lyrics::LyricFile;
 use sea_orm::ConnectionTrait;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -90,7 +93,12 @@ async fn exercise_library_available_options(database_name: &str) {
             "Library Available Options Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
         )
-        .with_persistent_startup(server_configuration.clone()),
+        .with_persistent_startup(server_configuration.clone())
+        .with_lyric_providers(vec![
+            Arc::new(NamedLyricProvider("LRCLib")),
+            Arc::new(NamedLyricProvider("lrclib")),
+            Arc::new(NamedLyricProvider("Second Lyrics")),
+        ]),
     );
 
     let first_time = get_json(&app, "/Libraries/AvailableOptions", None).await;
@@ -177,6 +185,20 @@ async fn exercise_library_available_options(database_name: &str) {
             .is_empty()
     );
 
+    let music = get_json(
+        &app,
+        "/Libraries/AvailableOptions?libraryContentType=music",
+        Some(&admin_token),
+    )
+    .await;
+    assert_eq!(
+        music["LyricFetchers"],
+        serde_json::json!([
+            { "Name": "LRCLib", "DefaultEnabled": true },
+            { "Name": "Second Lyrics", "DefaultEnabled": true }
+        ])
+    );
+
     let lowercase_tv = get_json(
         &app,
         "/Libraries/AvailableOptions?librarycontenttype=tvshows&isnewlibrary=true",
@@ -251,6 +273,22 @@ fn assert_image_option(option: &Value, image_type: &str, limit: i64, min_width: 
     assert_eq!(option["Type"], image_type);
     assert_eq!(option["Limit"], limit);
     assert_eq!(option["MinWidth"], min_width);
+}
+
+struct NamedLyricProvider(&'static str);
+
+impl LyricProvider for NamedLyricProvider {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    fn search(&self, _request: &LyricSearchRequest) -> Vec<RemoteLyricInfo> {
+        Vec::new()
+    }
+
+    fn get_lyrics(&self, _id: &str) -> Option<LyricFile> {
+        None
+    }
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

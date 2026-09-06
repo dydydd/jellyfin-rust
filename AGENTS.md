@@ -62,6 +62,9 @@
   format. Keep provider-id lookup case-sensitive like the official ordinal comparison, split a
   provider-owned lyric id only at its first underscore, and pass the whole id through when that
   separator is absent.
+- Project configured lyric providers in execution order as the music library's `LyricFetchers`
+  available options, case-insensitively deduplicate provider names, and mark every returned option
+  enabled by default. Do not expose lyric fetchers for representative types that omit Audio.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API

@@ -115,6 +115,12 @@ impl LyricManager {
         }
     }
 
+    /// Returns configured provider names in provider execution order.
+    #[must_use]
+    pub fn provider_names(&self) -> impl Iterator<Item = &str> {
+        self.providers.iter().map(|provider| provider.name())
+    }
+
     /// Searches every provider and projects parseable responses to the public DTO.
     #[must_use]
     pub fn search(&self, request: &LyricSearchRequest) -> Vec<RemoteLyricInfoDto> {
@@ -489,6 +495,27 @@ mod tests {
             provider_id
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+    }
+
+    #[test]
+    fn provider_names_preserve_configured_order() {
+        let manager = LyricManager::new(vec![
+            Arc::new(TestProvider {
+                name: "First Provider",
+                search_results: Vec::new(),
+                requested_ids: Arc::default(),
+            }),
+            Arc::new(TestProvider {
+                name: "Second Provider",
+                search_results: Vec::new(),
+                requested_ids: Arc::default(),
+            }),
+        ]);
+
+        assert_eq!(
+            manager.provider_names().collect::<Vec<_>>(),
+            ["First Provider", "Second Provider"]
         );
     }
 
