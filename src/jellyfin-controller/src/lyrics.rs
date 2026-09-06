@@ -87,6 +87,7 @@ pub struct RemoteLyricInfoDto {
 /// Provider lookup values used by remote lyric search.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LyricSearchRequest {
+    pub media_path: Option<String>,
     pub song_name: Option<String>,
     pub album_name: Option<String>,
     pub artist_names: Vec<String>,

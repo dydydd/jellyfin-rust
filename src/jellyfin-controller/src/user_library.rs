@@ -719,16 +719,10 @@ impl UserLibraryService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<Vec<Value>, UserLibraryError> {
-        let mut item = self
+        let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let request = LyricSearchRequest {
-            song_name: item.name.take(),
-            album_name: metadata_string(item.data.as_ref(), &["Album"]),
-            artist_names: metadata_string_list(item.data.as_ref(), &["Artists"]),
-            album_artist_names: metadata_string_list(item.data.as_ref(), &["AlbumArtists"]),
-            duration_ticks: item.runtime_ticks,
-        };
+        let request = lyric_search_request(&item);
         Ok(self
             .lyrics
             .search(&request)
@@ -1318,6 +1312,17 @@ fn metadata_string_list(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
     }
 }
 
+fn lyric_search_request(item: &base_item::Model) -> LyricSearchRequest {
+    LyricSearchRequest {
+        media_path: item.path.clone(),
+        song_name: item.name.clone(),
+        album_name: metadata_string(item.data.as_ref(), &["Album"]),
+        artist_names: metadata_string_list(item.data.as_ref(), &["Artists"]),
+        album_artist_names: metadata_string_list(item.data.as_ref(), &["AlbumArtists"]),
+        duration_ticks: item.runtime_ticks,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1388,6 +1393,30 @@ mod tests {
                 "additional_parts": ["/media/lowercase.mkv"]
             }))),
             ["/media/lowercase.mkv"]
+        );
+    }
+
+    #[test]
+    fn remote_lyric_search_maps_the_official_audio_request_fields() {
+        let mut item = item_with_data(json!({
+            "Album": "Album",
+            "Artists": ["First Artist", "Second Artist"],
+            "AlbumArtists": ["Album Artist"]
+        }));
+        item.path = Some("/media/Artist/Album/Song.flac".to_owned());
+        item.name = Some("Song".to_owned());
+        item.runtime_ticks = Some(1_234_567);
+
+        assert_eq!(
+            lyric_search_request(&item),
+            LyricSearchRequest {
+                media_path: Some("/media/Artist/Album/Song.flac".to_owned()),
+                song_name: Some("Song".to_owned()),
+                album_name: Some("Album".to_owned()),
+                artist_names: vec!["First Artist".to_owned(), "Second Artist".to_owned()],
+                album_artist_names: vec!["Album Artist".to_owned()],
+                duration_ticks: Some(1_234_567),
+            }
         );
     }
 }

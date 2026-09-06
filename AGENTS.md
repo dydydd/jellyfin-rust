@@ -65,6 +65,9 @@
 - For lyric uploads, resolve the authorized Audio item before validating the body or filename so
   missing, hidden, and non-Audio targets retain the official 404 precedence over malformed uploads.
   Parse and persist through the same service operation without loading the item twice.
+- Build remote lyric searches from the policy-authorized Audio item and pass its original path as
+  `LyricSearchRequest.MediaPath` together with the official name, album, artist, album-artist, and
+  duration fields so path-aware providers receive the same request as the official server.
 - Keep remote lyric metadata on the official strongly typed `LyricMetadata` wire contract. Omit
   absent nullable fields and never let arbitrary provider JSON make the enclosing Swift SDK search
   result undecodable.
