@@ -103,6 +103,13 @@ pub struct ItemValuePair {
     pub value: String,
 }
 
+/// One persisted item-by-name entity required by the current genre credits.
+#[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
+pub struct ItemByNameValue {
+    pub item_type: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemValuePage {
     pub values: Vec<ItemValueInfo>,
@@ -527,6 +534,85 @@ impl ItemValueRepository {
             .exec(self.database.as_ref())
             .await?;
         Ok(())
+    }
+
+    /// Lists one keyset page of generic and music genre entities required after a library scan.
+    ///
+    /// Official Jellyfin builds the two sets independently: music item types
+    /// contribute to `MusicGenre`, while every other type contributes to
+    /// `Genre`. A normalized value used by both sets therefore yields both
+    /// entity kinds. The minimum display value matches the official grouped
+    /// item-value query and keeps deterministic paths and identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the set-based query fails.
+    pub async fn required_genre_entities_page(
+        &self,
+        after: Option<&ItemByNameValue>,
+        limit: usize,
+    ) -> Result<Vec<ItemByNameValue>, ItemValueError> {
+        const MAX_PAGE_SIZE: usize = 512;
+        const MUSIC_TYPES: &str = "(\
+            'Audio', 'MediaBrowser.Controller.Entities.Audio.Audio', \
+            'MusicVideo', 'MediaBrowser.Controller.Entities.MusicVideo', \
+            'MusicAlbum', 'MediaBrowser.Controller.Entities.Audio.MusicAlbum', \
+            'MusicArtist', 'MediaBrowser.Controller.Entities.Audio.MusicArtist'\
+        )";
+        let mut sql = format!(
+            "WITH names AS (\
+                     SELECT value.clean_value, MIN(value.value) AS name, \
+                            bool_or(item.item_type IN {MUSIC_TYPES}) AS has_music, \
+                            bool_or(item.item_type NOT IN {MUSIC_TYPES}) AS has_generic \
+                     FROM jellyfin.item_values AS value \
+                     JOIN jellyfin.item_value_map AS map \
+                       ON map.item_value_id = value.item_value_id \
+                     JOIN jellyfin.base_items AS item ON item.id = map.item_id \
+                     WHERE value.type = 2 \
+                     GROUP BY value.clean_value\
+                 ) \
+                 , required AS (\
+                     SELECT 'Genre'::text AS item_type, names.name FROM names \
+                     WHERE has_generic \
+                   AND NOT EXISTS (\
+                       SELECT 1 FROM jellyfin.base_items AS existing \
+                       WHERE existing.clean_name = names.clean_value \
+                         AND existing.item_type IN (\
+                             'Genre', 'MediaBrowser.Controller.Entities.Genre')) \
+                     UNION ALL \
+                     SELECT 'MusicGenre'::text AS item_type, names.name FROM names \
+                     WHERE has_music \
+                   AND NOT EXISTS (\
+                       SELECT 1 FROM jellyfin.base_items AS existing \
+                       WHERE existing.clean_name = names.clean_value \
+                         AND existing.item_type IN (\
+                                 'MusicGenre', \
+                                 'MediaBrowser.Controller.Entities.Audio.MusicGenre'))\
+                 ) \
+                 SELECT item_type, name FROM required"
+        );
+        let mut values = Vec::with_capacity(3);
+        if let Some(after) = after {
+            push_bind(
+                &mut sql,
+                &mut values,
+                after.item_type.clone(),
+                " WHERE (item_type, name) > (",
+            );
+            push_bind(&mut sql, &mut values, after.name.clone(), ", ");
+            sql.push(')');
+        }
+        sql.push_str(" ORDER BY item_type, name LIMIT ");
+        push_bind(
+            &mut sql,
+            &mut values,
+            i64::try_from(limit.clamp(1, MAX_PAGE_SIZE)).unwrap_or(512),
+            "",
+        );
+        let statement = Statement::from_sql_and_values(DbBackend::Postgres, sql, values);
+        Ok(ItemByNameValue::find_by_statement(statement)
+            .all(self.database.as_ref())
+            .await?)
     }
 
     /// Lists item-by-name values that are attached to filtered base items.

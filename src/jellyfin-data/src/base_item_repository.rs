@@ -58,6 +58,18 @@ pub struct NewBaseItem {
     pub series_presentation_unique_key: Option<String>,
 }
 
+/// A deterministic item-by-name row discovered by a post-scan validator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewItemByNameEntity {
+    pub id: Uuid,
+    pub item_type: String,
+    pub name: String,
+    pub path: String,
+    pub presentation_unique_key: String,
+    pub date_created: DateTime<Utc>,
+    pub date_modified: DateTime<Utc>,
+}
+
 impl NewBaseItem {
     #[must_use]
     pub fn new(id: Uuid, item_type: impl Into<String>) -> Self {
@@ -662,6 +674,84 @@ impl BaseItemRepository {
         }
         transaction.commit().await?;
         Ok(result)
+    }
+
+    /// Inserts every missing deterministic item-by-name entity in one statement.
+    ///
+    /// An existing canonical or CLR-qualified row with the same normalized
+    /// name wins. Existing rows are never updated, preserving their metadata,
+    /// images, user data, and stable client-facing identities. Deterministic
+    /// identifiers plus `ON CONFLICT` make concurrent validator runs harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or database error.
+    pub async fn create_missing_item_by_name_entities(
+        &self,
+        entities: &[NewItemByNameEntity],
+    ) -> Result<u64, BaseItemError> {
+        if entities.is_empty() {
+            return Ok(0);
+        }
+        for entity in entities {
+            validate_item_type(&entity.item_type)?;
+        }
+
+        let mut values = Vec::with_capacity(entities.len().saturating_mul(7));
+        let mut sql = String::from(
+            "WITH candidate(\
+                 id, item_type, name, path, presentation_unique_key, date_created, date_modified\
+             ) AS (VALUES ",
+        );
+        for (index, entity) in entities.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('(');
+            push_bind(&mut sql, &mut values, entity.id, "");
+            push_bind(&mut sql, &mut values, entity.item_type.clone(), ", ");
+            push_bind(&mut sql, &mut values, entity.name.clone(), ", ");
+            push_bind(&mut sql, &mut values, entity.path.clone(), ", ");
+            push_bind(
+                &mut sql,
+                &mut values,
+                entity.presentation_unique_key.clone(),
+                ", ",
+            );
+            push_bind(&mut sql, &mut values, entity.date_created, ", ");
+            push_bind(&mut sql, &mut values, entity.date_modified, ", ");
+            sql.push(')');
+        }
+        sql.push_str(
+            ") \
+             INSERT INTO jellyfin.base_items \
+                 (id, item_type, name, sort_name, path, is_folder, presentation_unique_key, \
+                  date_created, date_modified) \
+             SELECT candidate.id, candidate.item_type, candidate.name, candidate.name, \
+                    candidate.path, true, candidate.presentation_unique_key, \
+                    candidate.date_created, candidate.date_modified \
+             FROM candidate \
+             WHERE NOT EXISTS (\
+                 SELECT 1 FROM jellyfin.base_items AS existing \
+                 WHERE existing.clean_name = jellyfin.normalize_search_text(candidate.name) \
+                   AND (existing.item_type = candidate.item_type \
+                        OR existing.item_type = CASE candidate.item_type \
+                            WHEN 'Genre' THEN 'MediaBrowser.Controller.Entities.Genre' \
+                            WHEN 'MusicGenre' THEN \
+                                'MediaBrowser.Controller.Entities.Audio.MusicGenre' \
+                            ELSE candidate.item_type END)\
+             ) \
+             ON CONFLICT (id) DO NOTHING",
+        );
+        let result = self
+            .database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?;
+        Ok(result.rows_affected())
     }
 
     /// Loads an item by its stable identifier.

@@ -54,6 +54,11 @@ async fn exercise_scan(database_name: &str) {
         "jellyfin-nfo-relations-{}",
         Uuid::new_v4().simple()
     ));
+    let storage_root = std::env::temp_dir().join(format!(
+        "jellyfin-nfo-relations-storage-{}",
+        Uuid::new_v4().simple()
+    ));
+    let metadata_root = storage_root.join("metadata");
     std::fs::create_dir_all(&library_root).expect("movie fixture directory");
     std::fs::write(library_root.join("Scan Movie.mkv"), b"not a real movie").unwrap();
     std::fs::write(
@@ -87,8 +92,17 @@ async fn exercise_scan(database_name: &str) {
         )
         .await
         .expect("movie virtual folder");
+    let collection_id = folders
+        .list()
+        .await
+        .expect("virtual folder list")
+        .into_iter()
+        .next()
+        .expect("movie virtual folder")
+        .id;
 
     let scan = LibraryScanService::with_probe_path(database.clone(), "missing-ffprobe");
+    scan.set_item_by_name_directories(&storage_root, &metadata_root);
     let summary = scan.scan_all().await.expect("movie library scan");
     assert_eq!(summary.folders_seen, 1);
 
@@ -108,6 +122,18 @@ async fn exercise_scan(database_name: &str) {
         genres.iter().any(|value| value.value == "Drama"),
         "NFO genre must be linked"
     );
+    let genre = items
+        .get_by_type_and_name("Genre", "Drama")
+        .await
+        .expect("genre entity lookup")
+        .expect("full scan must reconcile the persisted Genre entity");
+    assert!(genre.is_folder);
+    assert_eq!(
+        genre.presentation_unique_key.as_deref(),
+        Some("Genre-Drama")
+    );
+    assert!(metadata_root.join("Genre").join("Drama").is_dir());
+
     let tags = values
         .values_for_item(movie.id, ItemValueType::Tags)
         .await
@@ -158,12 +184,32 @@ async fn exercise_scan(database_name: &str) {
         "NFO director must be linked"
     );
 
+    let incremental_genre = format!("Incremental Genre {}", Uuid::new_v4().simple());
     std::fs::write(
         library_root.join("Scan Movie.nfo"),
-        "<movie><title>Scan Movie</title><genre>Drama</genre></movie>",
+        format!(
+            "<movie><title>Scan Movie</title><genre>Drama</genre><genre>{incremental_genre}</genre></movie>"
+        ),
     )
     .expect("tag-free movie NFO write");
-    scan.scan_all().await.expect("movie library rescan");
+    scan.scan_collection(collection_id)
+        .await
+        .expect("single-library scan");
+    assert!(
+        items
+            .get_by_type_and_name("Genre", &incremental_genre)
+            .await
+            .expect("incremental genre entity lookup")
+            .is_some(),
+        "single-library scans must run the same post-scan reconciliation"
+    );
+    assert!(
+        metadata_root
+            .join("Genre")
+            .join(&incremental_genre)
+            .is_dir(),
+        "single-library reconciliation must create the item-by-name directory"
+    );
     let movie = items
         .get(movie.id)
         .await
@@ -193,7 +239,29 @@ async fn exercise_scan(database_name: &str) {
         ["Favorite", "Neo-Noir"]
     );
 
+    let blocked_genre = format!("Blocked Genre {}", Uuid::new_v4().simple());
+    let blocked_metadata_root = storage_root.join("blocked-metadata");
+    std::fs::write(&blocked_metadata_root, b"not a directory").expect("blocked metadata fixture");
+    scan.set_item_by_name_directories(&storage_root, &blocked_metadata_root);
+    std::fs::write(
+        library_root.join("Scan Movie.nfo"),
+        format!("<movie><title>Scan Movie</title><genre>{blocked_genre}</genre></movie>"),
+    )
+    .expect("blocked genre NFO write");
+    scan.scan_collection(collection_id)
+        .await
+        .expect_err("an unusable metadata root must fail reconciliation");
+    assert!(
+        items
+            .get_by_type_and_name("Genre", &blocked_genre)
+            .await
+            .expect("blocked genre lookup")
+            .is_none(),
+        "a genre row must not be inserted when its directory cannot be created"
+    );
+
     std::fs::remove_dir_all(library_root).expect("movie fixture cleanup");
+    std::fs::remove_dir_all(storage_root).expect("item-by-name fixture cleanup");
     database.close().await.expect("database pool cleanup");
 }
 

@@ -178,6 +178,10 @@
   set-based PostgreSQL queries and deduplicate Episodes that carry the same value directly. Keep
   internal item-by-name discovery type filters out of the count scope; only the client's explicit
   `ExcludeItemTypes` may remove a type from the returned count buckets.
+- Reconcile persisted `Genre` and `MusicGenre` item-by-name entities after full and single-library
+  scans. Create their official metadata paths before insertion, derive IDs with the configured
+  official UTF-16LE/.NET `Guid(byte[])` semantics, process deterministic keyset pages in bounded
+  PostgreSQL batches, and never replace or delete existing entities, images, or metadata.
 - `IncludeItemTypes` and `ExcludeItemTypes` filters, count queries, and media-source queries must
   recognize canonical short item types and official legacy CLR-qualified persisted names, including
   case-insensitive API enum input. Preserve unknown plugin-defined types instead of discarding them.

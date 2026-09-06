@@ -14,12 +14,14 @@ use jellyfin_data::{
     BaseItemImageType, BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
     ItemUpdateRepository, ItemUpdateStoreError, ItemValueError, ItemValueRepository,
     MediaAttachmentRepository, MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository,
-    MediaStreamStoreError, NewBaseItem, NewBaseItemImage, NewChapter, NewPerson,
-    PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
-    PersonError as PersonStoreError, PersonRepository, TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
-    VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
+    MediaStreamStoreError, NewBaseItem, NewBaseItemImage, NewChapter, NewItemByNameEntity,
+    NewPerson, PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
+    PersonError as PersonStoreError, PersonRepository, ServerConfigurationRepository,
+    ServerConfigurationStoreError, TvHierarchyCandidate, USER_ROOT_FOLDER_ID, VirtualFolderError,
+    VirtualFolderRepository, VirtualFolderWithPaths,
     entities::{base_item, item_value::ItemValueType},
 };
+use jellyfin_extensions::StringExtensions;
 use jellyfin_media_encoding::probing::{
     CommandProbeProcessRunner, ExternalMediaSource, ExternalProbeError, ExternalProbeOptions,
     ExternalSourceProber, MediaAttachment as ProbedMediaAttachment, MediaInfo, MediaProtocol,
@@ -58,6 +60,7 @@ use crate::{
 };
 
 const SCAN_PATH_QUERY_BATCH_SIZE: usize = 256;
+const ITEM_BY_NAME_RECONCILIATION_BATCH_SIZE: usize = 512;
 const STRM_PLAYBACK_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const STRM_PROBE_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_STRM_PROBE_COORDINATION_ENTRIES: usize = 1_024;
@@ -310,6 +313,8 @@ pub enum LibraryScanError {
     #[error(transparent)]
     ItemValue(#[from] ItemValueError),
     #[error(transparent)]
+    ServerConfiguration(#[from] ServerConfigurationStoreError),
+    #[error(transparent)]
     ItemUpdate(#[from] ItemUpdateStoreError),
     #[error(transparent)]
     Person(#[from] PersonStoreError),
@@ -331,10 +336,13 @@ pub struct LibraryScanService {
     updates: ItemUpdateRepository,
     chapters: ChapterRepository,
     values: ItemValueRepository,
+    server_configuration: ServerConfigurationRepository,
     probe_path: RwLock<Arc<PathBuf>>,
     strm_probes: StrmProbeCoordinator,
     ffmpeg_path: RwLock<Arc<PathBuf>>,
     image_cache_directory: RwLock<Arc<PathBuf>>,
+    program_data_directory: RwLock<Arc<PathBuf>>,
+    internal_metadata_directory: RwLock<Arc<PathBuf>>,
     media_item_limiter: MediaItemConcurrencyLimiter,
     active_scans: Arc<Mutex<HashSet<Uuid>>>,
 }
@@ -454,6 +462,7 @@ impl LibraryScanService {
             people: PersonRepository::new(Arc::clone(&database)),
             updates: ItemUpdateRepository::new(Arc::clone(&database)),
             chapters: ChapterRepository::new(Arc::clone(&database)),
+            server_configuration: ServerConfigurationRepository::new(Arc::clone(&database)),
             values: ItemValueRepository::new(database),
             probe_path: RwLock::new(Arc::new(probe_path.into())),
             strm_probes: StrmProbeCoordinator::new(
@@ -462,6 +471,8 @@ impl LibraryScanService {
             ),
             ffmpeg_path: RwLock::new(Arc::new(PathBuf::from("ffmpeg"))),
             image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
+            program_data_directory: RwLock::new(Arc::new(PathBuf::from("programdata"))),
+            internal_metadata_directory: RwLock::new(Arc::new(PathBuf::from("metadata"))),
             media_item_limiter: MediaItemConcurrencyLimiter::new(default_fanout_concurrency()),
             active_scans: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -505,6 +516,28 @@ impl LibraryScanService {
             .expect("library scan image cache path lock poisoned") = Arc::new(path.into());
     }
 
+    /// Replaces the program-data and internal-metadata roots used for item-by-name IDs.
+    ///
+    /// # Panics
+    ///
+    /// Panics when either directory lock has been poisoned.
+    pub fn set_item_by_name_directories(
+        &self,
+        program_data_directory: impl Into<PathBuf>,
+        internal_metadata_directory: impl Into<PathBuf>,
+    ) {
+        *self
+            .program_data_directory
+            .write()
+            .expect("library scan program-data path lock poisoned") =
+            Arc::new(program_data_directory.into());
+        *self
+            .internal_metadata_directory
+            .write()
+            .expect("library scan internal-metadata path lock poisoned") =
+            Arc::new(internal_metadata_directory.into());
+    }
+
     fn fanout_concurrency(&self) -> usize {
         self.media_item_limiter.limit()
     }
@@ -525,6 +558,22 @@ impl LibraryScanService {
                 .read()
                 .expect("library scan image cache path lock poisoned"),
         )
+    }
+
+    fn item_by_name_directories(&self) -> (Arc<PathBuf>, Arc<PathBuf>) {
+        let program_data = Arc::clone(
+            &self
+                .program_data_directory
+                .read()
+                .expect("library scan program-data path lock poisoned"),
+        );
+        let internal_metadata = Arc::clone(
+            &self
+                .internal_metadata_directory
+                .read()
+                .expect("library scan internal-metadata path lock poisoned"),
+        );
+        (program_data, internal_metadata)
     }
 
     /// Scans configured virtual-folder paths into directly playable base items.
@@ -839,6 +888,7 @@ impl LibraryScanService {
         if let Err(error) = self.values.clear_inherited_tags().await {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
         }
+        self.reconcile_genre_entities().await?;
         if let Some(on_progress) = on_progress {
             on_progress(100.0);
         }
@@ -878,7 +928,79 @@ impl LibraryScanService {
         if let Err(error) = self.values.clear_inherited_tags().await {
             tracing::debug!(%error, "post-scan inherited-tags cleanup failed");
         }
+        self.reconcile_genre_entities().await?;
         Ok(summary)
+    }
+
+    async fn reconcile_genre_entities(&self) -> Result<(), LibraryScanError> {
+        let configuration = self.server_configuration.load().await?;
+        let (program_data, internal_metadata) = self.item_by_name_directories();
+        let mut after = None;
+        let mut required_total = 0;
+        let mut inserted = 0;
+        loop {
+            let required = self
+                .values
+                .required_genre_entities_page(
+                    after.as_ref(),
+                    ITEM_BY_NAME_RECONCILIATION_BATCH_SIZE,
+                )
+                .await?;
+            let Some(next_after) = required.last().cloned() else {
+                break;
+            };
+            let mut entities = Vec::with_capacity(required.len());
+            for required in required {
+                let directory_name = item_by_name_folder_name(&required.name);
+                let path = internal_metadata
+                    .join(required.item_type.as_str())
+                    .join(directory_name);
+                let clr_type = match required.item_type.as_str() {
+                    "Genre" => "MediaBrowser.Controller.Entities.Genre",
+                    "MusicGenre" => "MediaBrowser.Controller.Entities.Audio.MusicGenre",
+                    _ => unreachable!("genre reconciliation only returns supported entity types"),
+                };
+
+                // Official CreateItemByName creates the directory first and stores
+                // its timestamps. Keeping that order also prevents a database row
+                // from pointing at a directory that could not be created.
+                tokio::fs::create_dir_all(&path).await?;
+                let metadata = tokio::fs::metadata(&path).await?;
+                let modified = metadata.modified()?;
+                let created = metadata.created().unwrap_or(modified);
+                entities.push(NewItemByNameEntity {
+                    id: official_item_by_name_id(
+                        &path,
+                        &program_data,
+                        clr_type,
+                        configuration.enable_normalized_item_by_name_ids,
+                        true,
+                    ),
+                    presentation_unique_key: format!(
+                        "{}-{}",
+                        required.item_type,
+                        required.name.remove_diacritics()
+                    ),
+                    item_type: required.item_type,
+                    name: required.name,
+                    path: path.to_string_lossy().into_owned(),
+                    date_created: chrono::DateTime::<chrono::Utc>::from(created),
+                    date_modified: chrono::DateTime::<chrono::Utc>::from(modified),
+                });
+            }
+            required_total += entities.len();
+            inserted += self
+                .items
+                .create_missing_item_by_name_entities(&entities)
+                .await?;
+            after = Some(next_after);
+        }
+        tracing::debug!(
+            required = required_total,
+            inserted,
+            "post-scan genre entities reconciled"
+        );
+        Ok(())
     }
 
     async fn scan_one_folder(
@@ -4415,6 +4537,77 @@ fn stable_item_id(path: &str, item_type: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
+fn item_by_name_folder_name(name: &str) -> String {
+    const MAX_BYTES: usize = 128;
+    let mut valid_name = name
+        .chars()
+        .map(|character| {
+            if character <= '\u{1f}'
+                || matches!(
+                    character,
+                    '"' | '<' | '>' | '|' | ':' | '*' | '?' | '\\' | '/'
+                )
+            {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    valid_name = valid_name.trim().trim_end_matches('.').to_owned();
+    if valid_name.len() <= MAX_BYTES {
+        return valid_name;
+    }
+
+    let suffix = format!("-{}", official_md5_guid(&valid_name).simple());
+    let prefix_budget = MAX_BYTES.saturating_sub(suffix.len());
+    let prefix_end = valid_name
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(valid_name.len()))
+        .take_while(|index| *index <= prefix_budget)
+        .last()
+        .unwrap_or_default();
+    let prefix = valid_name[..prefix_end].trim_end().trim_end_matches('.');
+    format!("{prefix}{suffix}")
+}
+
+fn official_item_by_name_id(
+    path: &Path,
+    program_data: &Path,
+    clr_type: &str,
+    force_case_insensitive: bool,
+    enable_case_sensitive_item_ids: bool,
+) -> Uuid {
+    let path = path.to_string_lossy();
+    let program_data = program_data.to_string_lossy();
+    let mut path_key = if let Some(relative) = path.strip_prefix(program_data.as_ref()) {
+        relative.trim_start_matches(['/', '\\']).replace('/', "\\")
+    } else {
+        path.into_owned()
+    };
+    if force_case_insensitive || !enable_case_sensitive_item_ids {
+        path_key = path_key.to_lowercase();
+    }
+    official_md5_guid(&format!("{clr_type}{path_key}"))
+}
+
+fn official_md5_guid(value: &str) -> Uuid {
+    let utf16_le = value
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let digest = Md5::digest(utf16_le);
+    // `new Guid(byte[])` interprets the first three fields as little-endian,
+    // while `uuid::Uuid` stores the RFC/network byte order used in its string
+    // representation. Reorder those fields to preserve Jellyfin's Guid text.
+    Uuid::from_bytes([
+        digest[3], digest[2], digest[1], digest[0], digest[5], digest[4], digest[7], digest[6],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14],
+        digest[15],
+    ])
+}
+
 fn is_extras_directory(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -4452,12 +4645,12 @@ mod tests {
         apply_scanned_group_name, apply_strm_metadata, attachment_image_type,
         attachments_from_media_info, codec_from_extension, default_fanout_concurrency,
         default_stream, display_name, extra_type_name, image_extraction_command_succeeded,
-        is_extras_directory, is_placeholder_stream, local_image_type, media_item_data, media_kind,
-        merge_scan_summary, metadata_movie_version_groups, next_stream_index, read_strm_target,
-        relations_from_movie_nfo, relations_from_nfo_metadata,
-        resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
-        scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
-        streams_from_media_info, streams_need_probe, track_group_change,
+        is_extras_directory, is_placeholder_stream, item_by_name_folder_name, local_image_type,
+        media_item_data, media_kind, merge_scan_summary, metadata_movie_version_groups,
+        next_stream_index, official_item_by_name_id, read_strm_target, relations_from_movie_nfo,
+        relations_from_nfo_metadata, resolve_external_subtitle_streams_from_entries,
+        resolve_scanned_video_groups, scan_file_batches, scan_nfo_person, set_additional_parts,
+        stable_item_id, streams_from_media_info, streams_need_probe, track_group_change,
     };
 
     #[test]
@@ -4483,6 +4676,51 @@ mod tests {
         assert!(paths.contains(path));
         assert!(!paths.contains("/media/Library/movie.mkv"));
         assert!(!paths.contains("/media/Library/Movie.mkv.bak"));
+    }
+
+    #[test]
+    fn item_by_name_id_matches_official_utf16_guid_bytes() {
+        let id = official_item_by_name_id(
+            Path::new("/srv/config/metadata/Genre/Science Fiction"),
+            Path::new("/srv/config"),
+            "MediaBrowser.Controller.Entities.Genre",
+            true,
+            true,
+        );
+
+        // Generated by Jellyfin's GetNewItemIdInternal: the relative path is
+        // lower-cased with Windows separators, hashed as UTF-16LE, then passed
+        // to new Guid(byte[]).
+        assert_eq!(id.to_string(), "0430d514-c35e-1f15-8fa9-3f1eeb8361ea");
+
+        let case_sensitive = official_item_by_name_id(
+            Path::new("/srv/config/metadata/Genre/Science Fiction"),
+            Path::new("/srv/config"),
+            "MediaBrowser.Controller.Entities.Genre",
+            false,
+            true,
+        );
+        let case_insensitive_configuration = official_item_by_name_id(
+            Path::new("/srv/config/metadata/Genre/Science Fiction"),
+            Path::new("/srv/config"),
+            "MediaBrowser.Controller.Entities.Genre",
+            false,
+            false,
+        );
+        assert_ne!(case_sensitive, id);
+        assert_eq!(case_insensitive_configuration, id);
+    }
+
+    #[test]
+    fn item_by_name_folder_matches_official_sanitizing_and_byte_bound() {
+        assert_eq!(item_by_name_folder_name(" AC/DC? "), "AC DC");
+
+        let long = format!("{}é", "a".repeat(127));
+        let first = item_by_name_folder_name(&long);
+        let second = item_by_name_folder_name(&long);
+        assert_eq!(first, second);
+        assert!(first.len() <= 128);
+        assert!(first.contains('-'));
     }
 
     #[test]

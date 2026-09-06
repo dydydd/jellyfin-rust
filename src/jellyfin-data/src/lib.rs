@@ -41,9 +41,9 @@ pub use base_item_image_repository::{
 pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
     BaseItemQuery, BaseItemRepository, DescendantScanCandidate, LatestTvGroup,
-    MediaStreamLanguageLists, MetadataRefreshCandidate, NewBaseItem, ProductionYearOrder,
-    ProductionYearPage, ScoredBaseItem, ScoredBaseItemPage, TvHierarchyCandidate,
-    USER_ROOT_FOLDER_ID,
+    MediaStreamLanguageLists, MetadataRefreshCandidate, NewBaseItem, NewItemByNameEntity,
+    ProductionYearOrder, ProductionYearPage, ScoredBaseItem, ScoredBaseItemPage,
+    TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
 };
 pub use chapter_repository::{ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter};
 pub use collection_repository::{CollectionRepository, CollectionStoreError};
@@ -51,8 +51,8 @@ pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPref
 pub use item_types::OFFICIAL_ITEM_TYPE_ALIASES;
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
 pub use item_value_repository::{
-    ItemValueCounts, ItemValueError, ItemValueInfo, ItemValueOrder, ItemValuePage, ItemValuePair,
-    ItemValueQuery, ItemValueRepository,
+    ItemByNameValue, ItemValueCounts, ItemValueError, ItemValueInfo, ItemValueOrder, ItemValuePage,
+    ItemValuePair, ItemValueQuery, ItemValueRepository,
 };
 pub use keyframe_data_repository::{
     KeyframeDataExport, KeyframeDataRecord, KeyframeDataRepository, KeyframeDataStoreError,

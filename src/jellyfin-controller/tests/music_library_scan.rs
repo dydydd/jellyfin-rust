@@ -1,6 +1,8 @@
 use jellyfin_controller::{LibraryScanService, VirtualFolderService};
-use jellyfin_data::{BaseItemRepository, DatabaseConfig};
-use sea_orm::ConnectionTrait;
+use jellyfin_data::{
+    BaseItemRepository, DatabaseConfig, ItemValueRepository, entities::item_value::ItemValueType,
+};
+use sea_orm::{ConnectionTrait, Statement, TryGetable};
 use uuid::Uuid;
 
 const DATABASE_PREFIX: &str = "jellyfin_music_scan_";
@@ -49,6 +51,11 @@ async fn exercise_music_scan(database_name: &str) {
 
     let library_root =
         std::env::temp_dir().join(format!("jellyfin-music-scan-{}", Uuid::new_v4().simple()));
+    let storage_root = std::env::temp_dir().join(format!(
+        "jellyfin-music-scan-storage-{}",
+        Uuid::new_v4().simple()
+    ));
+    let metadata_root = storage_root.join("metadata");
     let artist = library_root.join("Artist");
     let album = artist.join("Album");
     std::fs::create_dir_all(&album).expect("music fixture directories");
@@ -67,6 +74,7 @@ async fn exercise_music_scan(database_name: &str) {
         .expect("music virtual folder");
 
     let scan = LibraryScanService::with_probe_path(database.clone(), "missing-ffprobe");
+    scan.set_item_by_name_directories(&storage_root, &metadata_root);
     let summary = scan.scan_all().await.expect("music library scan");
     assert_eq!(summary.folders_seen, 1);
 
@@ -124,7 +132,49 @@ async fn exercise_music_scan(database_name: &str) {
             .is_some_and(|path| path.ends_with("track.flac"))
     );
 
+    let genre_names = (0..513)
+        .map(|index| format!("Electronic {database_name} {index:03}"))
+        .collect::<Vec<_>>();
+    let values = ItemValueRepository::new(database.clone());
+    for name in &genre_names {
+        values
+            .link(audio.id, ItemValueType::Genre, name)
+            .await
+            .expect("music genre link");
+    }
+    scan.scan_collection(collection.id)
+        .await
+        .expect("single music-library rescan");
+    for genre_name in [&genre_names[0], &genre_names[512]] {
+        let music_genre = items
+            .get_by_type_and_name("MusicGenre", genre_name)
+            .await
+            .expect("music genre lookup")
+            .expect("single-library scan must reconcile across the batch boundary");
+        assert!(music_genre.is_folder);
+        assert_eq!(
+            music_genre.presentation_unique_key.as_deref(),
+            Some(format!("MusicGenre-{genre_name}").as_str())
+        );
+        assert!(metadata_root.join("MusicGenre").join(genre_name).is_dir());
+    }
+    let music_genre_count = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT COUNT(*) AS count FROM jellyfin.base_items WHERE item_type = 'MusicGenre'"
+                .to_owned(),
+        ))
+        .await
+        .expect("music genre count query")
+        .expect("music genre count row");
+    assert_eq!(
+        i64::try_get(&music_genre_count, "", "count").expect("music genre count"),
+        513,
+        "keyset reconciliation must neither skip nor repeat the second page"
+    );
+
     std::fs::remove_dir_all(library_root).expect("music fixture cleanup");
+    std::fs::remove_dir_all(storage_root).expect("item-by-name fixture cleanup");
     database.close().await.expect("database pool cleanup");
 }
 

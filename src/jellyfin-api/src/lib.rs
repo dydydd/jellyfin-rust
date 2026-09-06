@@ -625,6 +625,10 @@ impl AppState {
             .set_internal_metadata_directory(self.internal_metadata_directory.as_path());
         self.library_scan
             .set_image_cache_directory(self.image_cache_directory.as_path());
+        self.library_scan.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
         self.item_images = Arc::new(ItemImageService::with_storage_directories(
             Arc::clone(&self.database),
             self.image_cache_directory.as_path(),
@@ -2691,6 +2695,7 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
         | LibraryScanError::Chapter(_)
         | LibraryScanError::ItemImage(_)
         | LibraryScanError::ItemValue(_)
+        | LibraryScanError::ServerConfiguration(_)
         | LibraryScanError::ItemUpdate(_)
         | LibraryScanError::Person(_)
         | LibraryScanError::MediaStream(jellyfin_data::MediaStreamStoreError::Database(_))

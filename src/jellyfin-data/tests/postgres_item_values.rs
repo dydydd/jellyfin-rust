@@ -1,7 +1,137 @@
+use chrono::Utc;
 use jellyfin_data::{
     BaseItemRepository, DatabaseConfig, ItemValueError, ItemValueRepository, NewBaseItem,
+    NewItemByNameEntity,
     entities::{item_value, item_value_map},
 };
+
+#[tokio::test]
+async fn genre_entity_reconciliation_is_set_based_and_preserves_existing_rows() {
+    let database = prepare_database().await;
+    let items = BaseItemRepository::new(database.clone());
+    let values = ItemValueRepository::new(database.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let name = format!("Shared Genre {suffix}");
+    let movie = create_item(&items, "Movie", &format!("Movie {suffix}")).await;
+    let audio = create_item(&items, "Audio", &format!("Audio {suffix}")).await;
+    values
+        .link(movie.id, item_value::ItemValueType::Genre, &name)
+        .await
+        .expect("generic genre link");
+    values
+        .link(audio.id, item_value::ItemValueType::Genre, &name)
+        .await
+        .expect("music genre link");
+
+    let required = values
+        .required_genre_entities_page(None, 512)
+        .await
+        .expect("required genre entities");
+    assert!(
+        required
+            .iter()
+            .any(|entry| { entry.item_type == "Genre" && entry.name == name })
+    );
+    assert!(
+        required
+            .iter()
+            .any(|entry| { entry.item_type == "MusicGenre" && entry.name == name })
+    );
+
+    let mut existing = NewBaseItem::new(Uuid::new_v4(), "Genre");
+    existing.name = Some(name.clone());
+    existing.overview = Some("keep existing metadata".to_owned());
+    existing.is_folder = true;
+    let existing = items.create(existing).await.expect("existing genre");
+    let rejected_duplicate_id = Uuid::new_v4();
+    let music_genre_id = Uuid::new_v4();
+    let candidates = [
+        NewItemByNameEntity {
+            id: rejected_duplicate_id,
+            item_type: "Genre".to_owned(),
+            name: name.clone(),
+            path: format!("metadata/Genre/{name}"),
+            presentation_unique_key: format!("Genre-{name}"),
+            date_created: Utc::now(),
+            date_modified: Utc::now(),
+        },
+        NewItemByNameEntity {
+            id: music_genre_id,
+            item_type: "MusicGenre".to_owned(),
+            name: name.clone(),
+            path: format!("metadata/MusicGenre/{name}"),
+            presentation_unique_key: format!("MusicGenre-{name}"),
+            date_created: Utc::now(),
+            date_modified: Utc::now(),
+        },
+    ];
+
+    assert_eq!(
+        items
+            .create_missing_item_by_name_entities(&candidates)
+            .await
+            .expect("first reconciliation"),
+        1
+    );
+    assert_eq!(
+        items
+            .create_missing_item_by_name_entities(&candidates)
+            .await
+            .expect("idempotent reconciliation"),
+        0
+    );
+    assert!(items.get(rejected_duplicate_id).await.unwrap().is_none());
+    assert_eq!(
+        items
+            .get(existing.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .overview
+            .as_deref(),
+        Some("keep existing metadata")
+    );
+    let inserted = items.get(music_genre_id).await.unwrap().unwrap();
+    assert_eq!(inserted.name.as_deref(), Some(name.as_str()));
+    assert!(inserted.is_folder);
+    assert_genre_no_longer_required(&values, &name).await;
+
+    assert_item_by_name_index(&database).await;
+
+    items
+        .delete_many(&[movie.id, audio.id, existing.id, music_genre_id])
+        .await
+        .expect("fixture cleanup");
+}
+
+async fn assert_genre_no_longer_required(values: &ItemValueRepository, name: &str) {
+    assert!(
+        values
+            .required_genre_entities_page(None, 512)
+            .await
+            .expect("post-reconciliation requirements")
+            .iter()
+            .all(|entry| entry.name != name),
+        "existing canonical item-by-name rows must not be prepared again"
+    );
+}
+
+async fn assert_item_by_name_index(database: &DatabaseConnection) {
+    let index = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT indexdef FROM pg_indexes \
+             WHERE schemaname = 'jellyfin' \
+               AND indexname = 'base_items_item_by_name_type_clean_name_idx'"
+                .to_owned(),
+        ))
+        .await
+        .expect("index catalog query")
+        .expect("item-by-name index");
+    let definition = String::try_get(&index, "", "indexdef").expect("index definition");
+    assert!(!definition.contains("UNIQUE"));
+    assert!(definition.contains("clean_name"));
+}
 use jellyfin_migration::CreateItemValuesMigration;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
