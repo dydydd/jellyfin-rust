@@ -46,6 +46,10 @@ pub(crate) async fn image(
         Err(error) => match error {},
     };
     let mut response = response.map(Body::new);
+    // The official plugin-image action returns a physical file without enabling range processing.
+    // This handler also does not forward the caller's Range header, so advertising byte ranges
+    // would promise behavior that the response does not implement.
+    response.headers_mut().remove(header::ACCEPT_RANGES);
     if response.status().is_success() {
         let content_type =
             HeaderValue::from_str(&image.mime_type).map_err(|_| ApiError::Internal)?;

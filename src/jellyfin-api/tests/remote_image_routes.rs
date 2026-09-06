@@ -72,13 +72,35 @@ async fn exercise_remote_image_routes(database_name: &str) {
 
     let images = fixture.get(&images_route, &fixture.user_token).await;
     assert_eq!(images.status(), StatusCode::OK);
+    let empty_result = json!({
+        "Images": [],
+        "TotalRecordCount": 0,
+        "Providers": []
+    });
+    assert_eq!(body_json(images).await, empty_result);
+
+    let lowercase_query = fixture
+        .get(
+            &format!(
+                "/items/{}/remoteimages?type=Primary&startindex=10&limit=5&providername=Example&includealllanguages=true",
+                fixture.item_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(lowercase_query.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase_query).await, empty_result);
+
+    let lowercase_providers = fixture
+        .get(
+            &format!("/items/{}/remoteimages/providers", fixture.item_id),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(lowercase_providers.status(), StatusCode::OK);
     assert_eq!(
-        body_json(images).await,
-        json!({
-            "Images": [],
-            "TotalRecordCount": 0,
-            "Providers": []
-        })
+        body_json(lowercase_providers).await,
+        Value::Array(Vec::new())
     );
 
     let providers = fixture.get(&providers_route, &fixture.user_token).await;
@@ -109,6 +131,17 @@ async fn exercise_remote_image_routes(database_name: &str) {
 
     let admin_download = fixture.post(&download_route, &fixture.admin_token).await;
     assert_eq!(admin_download.status(), StatusCode::NOT_FOUND);
+
+    let lowercase_download = fixture
+        .post(
+            &format!(
+                "/items/{}/remoteimages/download?type=Primary&imageurl=https%3A%2F%2Fexample.invalid%2Fposter.jpg",
+                fixture.item_id
+            ),
+            &fixture.admin_token,
+        )
+        .await;
+    assert_eq!(lowercase_download.status(), StatusCode::NOT_FOUND);
 
     fixture.cleanup().await;
 }

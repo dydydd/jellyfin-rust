@@ -777,7 +777,7 @@ async fn artist_image_route_resolves_public_base_item_owner() {
         .await
         .unwrap();
     let route = format!(
-        "/Artists/{}/Images/Primary/0?tag=artist-tag",
+        "/artists/{}/images/Primary/0?tag=artist-tag",
         encoded(&image_name)
     );
     assert_eq!(

@@ -283,6 +283,8 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
         ["Branding", "Splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Branding", "Splashscreen"] if is_write(method) => RoutePolicy::Elevated,
+        ["branding", "splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
+        ["branding", "splashscreen"] if is_write(method) => RoutePolicy::Elevated,
         [
             "Users",
             "Public"
@@ -332,6 +334,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Items", _, "ContentType"] | ["Items", _, "RemoteImages", "Download"] => {
             RoutePolicy::Elevated
         }
+        ["items", _, "remoteimages", "download"] => RoutePolicy::Elevated,
         ["Videos", _, _, "Subtitles", _, ..]
             if is_get_or_head(method) && subtitle_stream_segment(&segments) =>
         {
@@ -346,8 +349,14 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Items", _, "Images", ..] if is_get_or_head(method) && segments.len() > 3 => {
             RoutePolicy::Optional
         }
+        ["items", _, "images", ..] if is_write(method) => RoutePolicy::Elevated,
+        ["items", _, "images", ..] if is_get_or_head(method) && segments.len() > 3 => {
+            RoutePolicy::Optional
+        }
         ["UserImage"] if is_get_or_head(method) => RoutePolicy::Optional,
+        ["userimage"] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Users", _, "Images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
+        ["users", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
         [
             "Artists" | "Genres" | "Studios" | "MusicGenres" | "Persons",
             _,
@@ -355,9 +364,11 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             ..,
         ] if is_get_or_head(method) => RoutePolicy::Optional,
         ["studios", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
+        ["artists" | "genres", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
         ["musicgenres", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
         ["persons", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Plugins", _, _, "Image"] => RoutePolicy::Optional,
+        ["plugins", _, _, "image"] => RoutePolicy::Optional,
         ["Plugins", ..] => RoutePolicy::Elevated,
         _ => RoutePolicy::Default,
     }
@@ -505,6 +516,25 @@ mod tests {
         assert_eq!(
             route_policy(&Method::GET, "/Items/{item_id}/Images/Primary"),
             RoutePolicy::Optional
+        );
+        for route in [
+            "/items/{item_id}/images/Primary",
+            "/artists/name/images/Primary/0",
+            "/genres/name/images/Primary/0",
+            "/branding/splashscreen",
+            "/userimage",
+            "/users/{user_id}/images/Primary",
+            "/plugins/{plugin_id}/1.0/image",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Optional,
+                "route {route}"
+            );
+        }
+        assert_eq!(
+            route_policy(&Method::POST, "/items/{item_id}/remoteimages/download"),
+            RoutePolicy::Elevated
         );
         assert_eq!(
             route_policy(&Method::GET, "/Localization/Options"),

@@ -861,6 +861,12 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .post(branding::upload_splashscreen)
                 .delete(branding::delete_splashscreen),
         )
+        .route(
+            "/branding/splashscreen",
+            get(branding::get_splashscreen)
+                .post(branding::upload_splashscreen)
+                .delete(branding::delete_splashscreen),
+        )
         .route("/Channels", get(channels::list))
         .route("/Channels/Features", get(channels::all_features))
         .route(
@@ -879,14 +885,25 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Artists/{name}/Images/{image_type}/{image_index}",
             get(artists::get_image),
         )
+        .route(
+            "/artists/{name}/images/{image_type}/{image_index}",
+            get(artists::get_image),
+        )
         .route("/Search/Hints", get(search::hints))
         .route("/Backup", get(backup::list))
         .route("/Backup/Create", post(backup::create))
         .route("/Backup/Manifest", get(backup::manifest))
         .route("/Backup/Restore", post(backup::restore))
         .route("/Items/{item_id}/Images", get(item_images::list))
+        .route("/items/{item_id}/images", get(item_images::list))
         .route(
             "/Items/{item_id}/Images/{image_type}",
+            get(item_images::get)
+                .post(item_images::upload)
+                .delete(item_images::delete),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}",
             get(item_images::get)
                 .post(item_images::upload)
                 .delete(item_images::delete),
@@ -898,20 +915,43 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(item_images::delete_by_index),
         )
         .route(
+            "/items/{item_id}/images/{image_type}/{image_index}",
+            get(item_images::get_by_index)
+                .post(item_images::upload_by_index)
+                .delete(item_images::delete_by_index),
+        )
+        .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
+            post(item_images::update_index),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}/{image_index}/index",
             post(item_images::update_index),
         )
         .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}/{tag}/{format}/{max_width}/{max_height}/{percent_played}/{unplayed_count}",
             get(item_images::get_legacy_path),
         )
+        .route(
+            "/items/{item_id}/images/{image_type}/{image_index}/{tag}/{format}/{max_width}/{max_height}/{percent_played}/{unplayed_count}",
+            get(item_images::get_legacy_path),
+        )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
+        .route("/items/{item_id}/remoteimages", get(remote_images::images))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",
             get(remote_images::providers),
         )
         .route(
+            "/items/{item_id}/remoteimages/providers",
+            get(remote_images::providers),
+        )
+        .route(
             "/Items/{item_id}/RemoteImages/Download",
+            post(remote_images::download),
+        )
+        .route(
+            "/items/{item_id}/remoteimages/download",
             post(remote_images::download),
         )
         .route(
@@ -1099,6 +1139,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/Plugins/{plugin_id}/Manifest", post(plugins::manifest))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
+        .route("/plugins/{plugin_id}/{version}/image", get(plugins::image))
         .merge(package_routes())
         .merge(environment_routes())
         .merge(localization_routes())
@@ -1476,6 +1517,12 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .post(users::post_user_image)
                 .delete(users::delete_user_image),
         )
+        .route(
+            "/userimage",
+            get(users::get_user_image)
+                .post(users::post_user_image)
+                .delete(users::delete_user_image),
+        )
         .route("/Users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
@@ -1504,7 +1551,19 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .delete(users::delete_user_image_legacy),
         )
         .route(
+            "/users/{id}/images/{image_type}",
+            get(users::get_user_image_legacy)
+                .post(users::post_user_image_legacy)
+                .delete(users::delete_user_image_legacy),
+        )
+        .route(
             "/Users/{id}/Images/{image_type}/{index}",
+            get(users::get_user_image_index_legacy)
+                .post(users::post_user_image_index_legacy)
+                .delete(users::delete_user_image_index_legacy),
+        )
+        .route(
+            "/users/{id}/images/{image_type}/{index}",
             get(users::get_user_image_index_legacy)
                 .post(users::post_user_image_index_legacy)
                 .delete(users::delete_user_image_index_legacy),

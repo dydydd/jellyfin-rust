@@ -98,6 +98,11 @@
   accepted image extension, including APNG, AVIF, ICO (`image/x-icon`), TIFF, and Jellyfin TBN
   JPEG files, without inspecting or decoding their contents. Image-info endpoints must return
   persisted dimensions and BlurHash values without lazily decoding the source or writing metadata.
+- Keep image-route static segments and compound query names compatible with ASP.NET's
+  case-insensitive binding, including representative all-lowercase legacy requests. Ordinary item,
+  user, branding, by-name, and plugin image responses must not advertise byte ranges unless the
+  handler actually implements Range semantics; trickplay tile routes remain the range-aware
+  exception.
 - Stream trickplay tile files with bounded chunks and preserve HEAD and byte-range semantics; never
   read an entire tile into a response buffer.
 

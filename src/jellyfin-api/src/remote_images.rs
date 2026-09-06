@@ -17,13 +17,28 @@ use crate::{ApiError, AppState, authentication, authorization};
 pub(crate) struct RemoteImagesQuery {
     #[serde(default, rename = "type", alias = "Type")]
     image_type: Option<ImageType>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: Option<usize>,
     #[serde(default, rename = "limit", alias = "Limit")]
     limit: Option<usize>,
-    #[serde(default, rename = "providerName", alias = "ProviderName")]
+    #[serde(
+        default,
+        rename = "providerName",
+        alias = "ProviderName",
+        alias = "providername"
+    )]
     provider_name: Option<String>,
-    #[serde(default, rename = "includeAllLanguages", alias = "IncludeAllLanguages")]
+    #[serde(
+        default,
+        rename = "includeAllLanguages",
+        alias = "IncludeAllLanguages",
+        alias = "includealllanguages"
+    )]
     include_all_languages: bool,
 }
 
@@ -31,7 +46,7 @@ pub(crate) struct RemoteImagesQuery {
 pub(crate) struct DownloadRemoteImageQuery {
     #[serde(default, rename = "type", alias = "Type")]
     image_type: Option<ImageType>,
-    #[serde(default, rename = "imageUrl", alias = "ImageUrl")]
+    #[serde(default, rename = "imageUrl", alias = "ImageUrl", alias = "imageurl")]
     image_url: Option<String>,
 }
 
@@ -125,4 +140,33 @@ async fn ensure_item_exists(state: &AppState, item_id: Uuid) -> Result<(), ApiEr
         .await?
         .ok_or(BaseItemError::NotFound)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod query_tests {
+    use axum_extra::extract::Query;
+
+    use super::{DownloadRemoteImageQuery, RemoteImagesQuery};
+
+    #[test]
+    fn remote_image_queries_bind_all_lowercase_compound_names() {
+        let uri = "http://localhost/?startindex=10&providername=Example&includealllanguages=true"
+            .parse()
+            .unwrap();
+        let query = Query::<RemoteImagesQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.start_index, Some(10));
+        assert_eq!(query.provider_name.as_deref(), Some("Example"));
+        assert!(query.include_all_languages);
+
+        let uri = "http://localhost/?imageurl=https%3A%2F%2Fexample.invalid%2Fposter.jpg"
+            .parse()
+            .unwrap();
+        let query = Query::<DownloadRemoteImageQuery>::try_from_uri(&uri)
+            .unwrap()
+            .0;
+        assert_eq!(
+            query.image_url.as_deref(),
+            Some("https://example.invalid/poster.jpg")
+        );
+    }
 }

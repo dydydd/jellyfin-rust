@@ -909,7 +909,7 @@ async fn genre_image_routes_resolve_public_ordinals() {
         )
         .await
         .unwrap();
-    let base = format!("/Genres/{}/Images/Backdrop", encoded(&name));
+    let base = format!("/genres/{}/images/Backdrop", encoded(&name));
     for route in [format!("{base}?imageIndex=1"), format!("{base}/1")] {
         let response = fixture.request(Method::GET, &route, Credential::None).await;
         assert_eq!(response.status(), StatusCode::OK);

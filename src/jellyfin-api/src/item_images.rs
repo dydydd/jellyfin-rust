@@ -25,9 +25,14 @@ const REAL_TIME_INFO: HeaderName = HeaderName::from_static("realtimeinfo.dlna.or
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct GetItemImageQuery {
-    #[serde(default, rename = "maxWidth", alias = "MaxWidth")]
+    #[serde(default, rename = "maxWidth", alias = "MaxWidth", alias = "maxwidth")]
     max_width: Option<i32>,
-    #[serde(default, rename = "maxHeight", alias = "MaxHeight")]
+    #[serde(
+        default,
+        rename = "maxHeight",
+        alias = "MaxHeight",
+        alias = "maxheight"
+    )]
     max_height: Option<i32>,
     #[serde(default, rename = "width", alias = "Width")]
     width: Option<i32>,
@@ -35,25 +40,60 @@ pub(crate) struct GetItemImageQuery {
     height: Option<i32>,
     #[serde(default, rename = "quality", alias = "Quality")]
     quality: Option<i32>,
-    #[serde(default, rename = "fillWidth", alias = "FillWidth")]
+    #[serde(
+        default,
+        rename = "fillWidth",
+        alias = "FillWidth",
+        alias = "fillwidth"
+    )]
     fill_width: Option<i32>,
-    #[serde(default, rename = "fillHeight", alias = "FillHeight")]
+    #[serde(
+        default,
+        rename = "fillHeight",
+        alias = "FillHeight",
+        alias = "fillheight"
+    )]
     fill_height: Option<i32>,
     #[serde(default, rename = "tag", alias = "Tag")]
     tag: Option<String>,
     #[serde(default, rename = "format", alias = "Format")]
     format: Option<String>,
-    #[serde(default, rename = "percentPlayed", alias = "PercentPlayed")]
+    #[serde(
+        default,
+        rename = "percentPlayed",
+        alias = "PercentPlayed",
+        alias = "percentplayed"
+    )]
     percent_played: Option<f64>,
-    #[serde(default, rename = "unplayedCount", alias = "UnplayedCount")]
+    #[serde(
+        default,
+        rename = "unplayedCount",
+        alias = "UnplayedCount",
+        alias = "unplayedcount"
+    )]
     unplayed_count: Option<i32>,
     #[serde(default, rename = "blur", alias = "Blur")]
     blur: Option<i32>,
-    #[serde(default, rename = "backgroundColor", alias = "BackgroundColor")]
+    #[serde(
+        default,
+        rename = "backgroundColor",
+        alias = "BackgroundColor",
+        alias = "backgroundcolor"
+    )]
     background_color: Option<String>,
-    #[serde(default, rename = "foregroundLayer", alias = "ForegroundLayer")]
+    #[serde(
+        default,
+        rename = "foregroundLayer",
+        alias = "ForegroundLayer",
+        alias = "foregroundlayer"
+    )]
     foreground_layer: Option<String>,
-    #[serde(default, rename = "imageIndex", alias = "ImageIndex")]
+    #[serde(
+        default,
+        rename = "imageIndex",
+        alias = "ImageIndex",
+        alias = "imageindex"
+    )]
     pub(crate) image_index: Option<i32>,
     #[serde(default, rename = "accept", alias = "Accept")]
     accept: Option<String>,
@@ -61,13 +101,18 @@ pub(crate) struct GetItemImageQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DeleteItemImageQuery {
-    #[serde(default, rename = "imageIndex", alias = "ImageIndex")]
+    #[serde(
+        default,
+        rename = "imageIndex",
+        alias = "ImageIndex",
+        alias = "imageindex"
+    )]
     image_index: Option<i32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UpdateItemImageIndexQuery {
-    #[serde(default, rename = "newIndex", alias = "NewIndex")]
+    #[serde(default, rename = "newIndex", alias = "NewIndex", alias = "newindex")]
     new_index: Option<i32>,
 }
 
@@ -592,4 +637,37 @@ fn if_modified_since(headers: &HeaderMap, modified: DateTime<Utc>) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
         .is_some_and(|cached| modified <= cached)
+}
+
+#[cfg(test)]
+mod query_tests {
+    use axum_extra::extract::Query;
+
+    use super::{DeleteItemImageQuery, GetItemImageQuery, UpdateItemImageIndexQuery};
+
+    #[test]
+    fn image_queries_bind_all_lowercase_compound_names() {
+        let uri = "http://localhost/?maxwidth=1&maxheight=2&fillwidth=3&fillheight=4&percentplayed=5.5&unplayedcount=6&backgroundcolor=black&foregroundlayer=shadow&imageindex=7"
+            .parse()
+            .unwrap();
+        let query = Query::<GetItemImageQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.max_width, Some(1));
+        assert_eq!(query.max_height, Some(2));
+        assert_eq!(query.fill_width, Some(3));
+        assert_eq!(query.fill_height, Some(4));
+        assert_eq!(query.percent_played, Some(5.5));
+        assert_eq!(query.unplayed_count, Some(6));
+        assert_eq!(query.background_color.as_deref(), Some("black"));
+        assert_eq!(query.foreground_layer.as_deref(), Some("shadow"));
+        assert_eq!(query.image_index, Some(7));
+
+        let delete = Query::<DeleteItemImageQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(delete.image_index, Some(7));
+
+        let uri = "http://localhost/?newindex=8".parse().unwrap();
+        let update = Query::<UpdateItemImageIndexQuery>::try_from_uri(&uri)
+            .unwrap()
+            .0;
+        assert_eq!(update.new_index, Some(8));
+    }
 }

@@ -266,6 +266,35 @@ async fn exercise_user_image_routes(database_name: &str) {
         png.as_slice()
     );
 
+    let lowercase_userid = get_image(
+        &app,
+        axum::http::Method::GET,
+        &format!("/userimage?userid={}", user.id),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(lowercase_userid.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(lowercase_userid.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap(),
+        png.as_slice()
+    );
+
+    assert_eq!(
+        get_image(
+            &app,
+            axum::http::Method::GET,
+            &format!("/users/{}/images/Primary/0", user.id),
+            None,
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
     let head = get_image(
         &app,
         axum::http::Method::HEAD,

@@ -206,7 +206,7 @@ pub struct UpdateUserQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct GetUserImageQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(default, rename = "tag", alias = "Tag")]
     tag: Option<String>,
@@ -715,5 +715,23 @@ fn normalize_ip(address: IpAddr) -> IpAddr {
             .to_ipv4_mapped()
             .map_or(IpAddr::V6(address), IpAddr::V4),
         address @ IpAddr::V4(_) => address,
+    }
+}
+
+#[cfg(test)]
+mod user_image_query_tests {
+    use axum_extra::extract::Query;
+    use uuid::Uuid;
+
+    use super::GetUserImageQuery;
+
+    #[test]
+    fn user_image_query_binds_lowercase_userid() {
+        let user_id = Uuid::new_v4();
+        let uri = format!("http://localhost/?userid={user_id}")
+            .parse()
+            .unwrap();
+        let query = Query::<GetUserImageQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.user_id, Some(user_id));
     }
 }

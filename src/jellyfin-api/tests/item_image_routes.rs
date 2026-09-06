@@ -976,6 +976,21 @@ async fn exercise_item_image_files(database_name: &str) {
         fs::read(fixture.path("remote-backdrop.png")).unwrap()
     );
 
+    let selected_by_lowercase_query = fixture
+        .request(
+            Method::GET,
+            &format!("/items/{}/images/Backdrop?imageindex=1", fixture.item_id),
+            &[],
+        )
+        .await;
+    assert_eq!(selected_by_lowercase_query.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(selected_by_lowercase_query.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        fs::read(fixture.path("remote-backdrop.png")).unwrap()
+    );
+
     let webp_requested = fixture
         .request(
             Method::GET,

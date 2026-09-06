@@ -191,7 +191,19 @@ async fn anonymous_plugin_images_match_official_file_and_path_security_contract(
         response.headers()[header::CONTENT_DISPOSITION],
         "attachment"
     );
+    assert!(!response.headers().contains_key(header::ACCEPT_RANGES));
     assert_eq!(body_bytes(response).await, b"official-plugin-image");
+
+    let ranged = fixture
+        .request(
+            &format!("/plugins/{valid_id}/1.0/image"),
+            &[(header::RANGE.as_str(), "bytes=0-1")],
+        )
+        .await;
+    assert_eq!(ranged.status(), StatusCode::OK);
+    assert!(!ranged.headers().contains_key(header::ACCEPT_RANGES));
+    assert!(!ranged.headers().contains_key(header::CONTENT_RANGE));
+    assert_eq!(body_bytes(ranged).await, b"official-plugin-image");
 
     let nested_response = fixture
         .request(&format!("/Plugins/{nested_id}/1.0/Image"), &[])
