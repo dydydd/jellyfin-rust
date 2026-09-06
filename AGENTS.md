@@ -104,6 +104,9 @@
   official server and preserve its provider-name ordering. Interpolate persisted provider ids
   verbatim, ignore only empty values, and do not substitute collection or legacy TV provider ids
   where the official provider does not.
+- Project `ExternalUrls` only for `ItemFields.ExternalUrls`, with an empty array when requested but
+  no provider matches. Resolve Season and Episode Series/Season context from real relational rows
+  in one batched page lookup, and keep provider names, URL strings, and provider order SDK-safe.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
   clients. Keep accepting the official image query surface for compatibility, but stream the

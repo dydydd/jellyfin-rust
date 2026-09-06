@@ -187,6 +187,213 @@ async fn settings_fields_are_requested_for_pages_and_defaulted_for_item_details(
 }
 
 #[tokio::test]
+async fn external_urls_follow_official_field_and_tv_hierarchy_contract() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let empty_movie = create_item_with_data(
+        &items,
+        "Movie",
+        &format!("SD External URLs empty {}", fixture.suffix),
+        root.id,
+        serde_json::json!({}),
+    )
+    .await;
+
+    let unrequested = body_json(
+        fixture
+            .request(
+                &format!("/Items?ids={}", empty_movie.id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        unrequested["Items"][0].get("ExternalUrls").is_none(),
+        "ExternalUrls must be omitted unless requested: {unrequested}"
+    );
+
+    for route in [
+        format!("/Items?ids={}&Fields=ExternalUrls", empty_movie.id),
+        format!("/Items?ids={}&fields=externalurls", empty_movie.id),
+        format!("/Items?ids={}&fields=EXTERNALURLS", empty_movie.id),
+        format!("/Items?ids={}&Fields=13", empty_movie.id),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let page = body_json(response).await;
+        assert_eq!(page["Items"][0]["ExternalUrls"], serde_json::json!([]));
+    }
+
+    for route in [
+        format!("/Items/{}?UserId={}", empty_movie.id, fixture.user_id),
+        format!("/Users/{}/Items/{}", fixture.user_id, empty_movie.id),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let dto = body_json(response).await;
+        assert_eq!(dto["ExternalUrls"], serde_json::json!([]), "{route}");
+    }
+
+    let mut series_one = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series_one.name = Some(format!("SD External URLs series one {}", fixture.suffix));
+    series_one.sort_name = series_one.name.clone();
+    series_one.parent_id = Some(root.id);
+    series_one.is_folder = true;
+    series_one.data = Some(serde_json::json!({
+        "ProviderIds": {
+            "Imdb": "ttseries1",
+            "Tmdb": "1399",
+            "Tvdb": "must-not-project",
+            "TvMaze": "must-not-project"
+        },
+        "DisplayOrder": "OriginalAirDate"
+    }));
+    let series_one = items.create(series_one).await.expect("first series");
+
+    let mut season_one = NewBaseItem::new(Uuid::new_v4(), "Season");
+    season_one.name = Some(format!("SD External URLs season one {}", fixture.suffix));
+    season_one.sort_name = season_one.name.clone();
+    season_one.parent_id = Some(series_one.id);
+    season_one.series_id = Some(series_one.id);
+    season_one.index_number = Some(2);
+    season_one.is_folder = true;
+    season_one.data = Some(serde_json::json!({
+        "ProviderIds": {
+            "Tmdb": "season-own-must-not-be-used",
+            "Zap2It": "season zap"
+        }
+    }));
+    let season_one = items.create(season_one).await.expect("first season");
+
+    let mut episode_one = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    episode_one.name = Some(format!("SD External URLs episode one {}", fixture.suffix));
+    episode_one.sort_name = episode_one.name.clone();
+    episode_one.parent_id = Some(season_one.id);
+    episode_one.series_id = Some(series_one.id);
+    episode_one.season_id = Some(season_one.id);
+    episode_one.index_number = Some(5);
+    episode_one.parent_index_number = Some(99);
+    episode_one.data = Some(serde_json::json!({
+        "ProviderIds": {
+            "Imdb": "ttepisode1",
+            "Tmdb": "episode-own-must-not-be-used",
+            "Zap2It": "episode zap",
+            "Tvdb": "must-not-project"
+        }
+    }));
+    let episode_one = items.create(episode_one).await.expect("first episode");
+
+    let mut series_two = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series_two.name = Some(format!("SD External URLs series two {}", fixture.suffix));
+    series_two.sort_name = series_two.name.clone();
+    series_two.parent_id = Some(root.id);
+    series_two.is_folder = true;
+    series_two.data = Some(serde_json::json!({
+        "ProviderIds": { "Tmdb": "42" },
+        "DisplayOrder": "OriginalAirDate"
+    }));
+    let series_two = items.create(series_two).await.expect("second series");
+
+    let mut season_two = NewBaseItem::new(Uuid::new_v4(), "Season");
+    season_two.name = Some(format!("SD External URLs season two {}", fixture.suffix));
+    season_two.sort_name = season_two.name.clone();
+    season_two.parent_id = Some(series_two.id);
+    season_two.series_id = Some(series_two.id);
+    season_two.index_number = Some(7);
+    season_two.is_folder = true;
+    let season_two = items.create(season_two).await.expect("second season");
+
+    let mut episode_two = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    episode_two.name = Some(format!("SD External URLs episode two {}", fixture.suffix));
+    episode_two.sort_name = episode_two.name.clone();
+    episode_two.parent_id = Some(season_two.id);
+    episode_two.series_id = Some(series_two.id);
+    episode_two.season_id = Some(season_two.id);
+    episode_two.index_number = Some(3);
+    let episode_two = items.create(episode_two).await.expect("second episode");
+
+    let page_route = format!(
+        "/Items?ids={},{},{}&fields=externalurls",
+        season_one.id, episode_one.id, episode_two.id
+    );
+    let response = fixture
+        .request(&page_route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "{page_route}");
+    let page = body_json(response).await;
+    let page = page["Items"].as_array().expect("external URL item page");
+    let find = |id: Uuid| {
+        page.iter()
+            .find(|dto| dto["Id"] == id.simple().to_string())
+            .expect("requested external URL dto")
+    };
+    assert_eq!(
+        find(season_one.id)["ExternalUrls"],
+        serde_json::json!([
+            {
+                "Name": "IMDb",
+                "Url": "https://www.imdb.com/title/ttseries1/episodes/?season=2"
+            },
+            {
+                "Name": "TMDB",
+                "Url": "https://www.themoviedb.org/tv/1399/season/2"
+            },
+            {
+                "Name": "Zap2It",
+                "Url": "http://tvlistings.zap2it.com/overview.html?programSeriesId=season zap"
+            }
+        ])
+    );
+    let episode_one_urls = serde_json::json!([
+        {
+            "Name": "IMDb",
+            "Url": "https://www.imdb.com/title/ttepisode1"
+        },
+        {
+            "Name": "TMDB",
+            "Url": "https://www.themoviedb.org/tv/1399/season/2/episode/5"
+        },
+        {
+            "Name": "Zap2It",
+            "Url": "http://tvlistings.zap2it.com/overview.html?programSeriesId=episode zap"
+        }
+    ]);
+    assert_eq!(find(episode_one.id)["ExternalUrls"], episode_one_urls);
+    assert_eq!(
+        find(episode_two.id)["ExternalUrls"],
+        serde_json::json!([{
+            "Name": "TMDB",
+            "Url": "https://www.themoviedb.org/tv/42/season/7/episode/3"
+        }])
+    );
+
+    let detail_route = format!("/Items/{}?UserId={}", episode_one.id, fixture.user_id);
+    let response = fixture
+        .request(&detail_route, Some(&fixture.user_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "{detail_route}");
+    let detail = body_json(response).await;
+    assert_eq!(detail["ExternalUrls"], episode_one_urls);
+
+    for (id, label) in [
+        (episode_two.id, "second episode"),
+        (season_two.id, "second season"),
+        (series_two.id, "second series"),
+        (episode_one.id, "first episode"),
+        (season_one.id, "first season"),
+        (series_one.id, "first series"),
+        (empty_movie.id, "empty movie"),
+    ] {
+        items.delete(id).await.expect(label);
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn chapters_follow_official_field_order_image_and_version_contract() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

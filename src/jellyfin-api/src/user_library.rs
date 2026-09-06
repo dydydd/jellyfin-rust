@@ -21,10 +21,13 @@ use jellyfin_data::{
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
-    ChapterInfo, ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo,
+    ChapterInfo, ExternalUrl, ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo,
     MediaSourceType, MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind,
     PlayAccess, SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto,
     UserPolicy, Video3DFormat, VideoType,
+};
+use jellyfin_providers::external_url::{
+    ExternalUrlItem, ExternalUrlItemKind, ExternalUrlProviderRegistry,
 };
 use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use md5::{Digest, Md5};
@@ -67,6 +70,7 @@ pub(crate) struct BaseItemDtoFields {
     chapters: bool,
     trickplay: bool,
     settings: bool,
+    external_urls: bool,
 }
 
 impl BaseItemDtoFields {
@@ -85,6 +89,7 @@ impl BaseItemDtoFields {
             chapters: true,
             trickplay: true,
             settings: true,
+            external_urls: true,
         }
     }
 
@@ -103,6 +108,7 @@ impl BaseItemDtoFields {
             chapters: false,
             trickplay: false,
             settings: false,
+            external_urls: false,
         }
     }
 
@@ -134,6 +140,8 @@ impl BaseItemDtoFields {
                 result.trickplay = true;
             } else if field.eq_ignore_ascii_case("Settings") {
                 result.settings = true;
+            } else if field.eq_ignore_ascii_case("ExternalUrls") || field.trim() == "13" {
+                result.external_urls = true;
             }
         }
         result
@@ -210,6 +218,11 @@ impl BaseItemDtoFields {
     }
 
     #[must_use]
+    pub(crate) const fn wants_external_urls(self) -> bool {
+        self.external_urls
+    }
+
+    #[must_use]
     pub(crate) const fn without_trickplay(mut self) -> Self {
         self.trickplay = false;
         self
@@ -218,6 +231,12 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn without_chapters(mut self) -> Self {
         self.chapters = false;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn without_external_urls(mut self) -> Self {
+        self.external_urls = false;
         self
     }
 }
@@ -334,6 +353,8 @@ pub struct BaseItemDto {
     pub has_lyrics: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_ids: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_urls: Option<Vec<ExternalUrl>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_data: Option<UserItemDataDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1132,6 +1153,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         extra_type,
         has_lyrics: None,
         provider_ids: metadata_provider_ids(item.data.as_ref()),
+        external_urls: None,
         user_data: None,
         genres: metadata_strings(item.data.as_ref(), &["Genres", "genres"]),
         genre_items: Vec::new(),
@@ -1222,6 +1244,7 @@ pub(crate) fn item_to_dto_with_fields(
     let mut dto = item_to_dto(item, server_id);
     dto.can_download = can_download;
     dto.chapters = fields.wants_chapters().then(Vec::new);
+    dto.external_urls = fields.wants_external_urls().then(Vec::new);
     if let Some(settings) = settings {
         dto.locked_fields = Some(settings.locked_fields);
         dto.is_locked = Some(settings.is_locked);
@@ -1380,6 +1403,8 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     hierarchy_names: Option<&EpisodeHierarchyNames>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
+    let mut external_urls =
+        external_urls_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut chapters = chapters_for_items(state, std::slice::from_ref(&item), fields).await?;
     let media_source_policy = if fields.wants_media_sources() {
         Some(media_source_policy_for_user(state, target_user_id).await?)
@@ -1390,6 +1415,11 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let item_access_policy = item_access_policy_for_user(state, target_user_id, fields).await?;
     let mut dto = item_to_dto_with_fields(item, state.server_id(), fields);
+    attach_external_urls(
+        &mut dto,
+        fields,
+        external_urls.remove(&item_id).unwrap_or_default(),
+    );
     attach_chapters(
         &mut dto,
         fields,
@@ -1563,6 +1593,99 @@ pub(crate) fn attach_chapters(
 ) {
     if fields.wants_chapters() {
         dto.chapters = Some(chapters);
+    }
+}
+
+/// Projects provider links for a whole page after resolving TV hierarchy rows in one batch.
+pub(crate) async fn external_urls_for_items(
+    state: &AppState,
+    items: &[base_item::Model],
+    fields: BaseItemDtoFields,
+) -> Result<HashMap<Uuid, Vec<ExternalUrl>>, ApiError> {
+    if !fields.wants_external_urls() {
+        return Ok(HashMap::new());
+    }
+
+    let mut parent_ids = HashSet::new();
+    for item in items {
+        if is_item_type(&item.item_type, "Season") || is_item_type(&item.item_type, "Episode") {
+            parent_ids.extend(item.series_id);
+        }
+        if is_item_type(&item.item_type, "Episode") {
+            parent_ids.extend(item.season_id);
+        }
+    }
+    let parents = state
+        .base_items
+        .get_many(&parent_ids.into_iter().collect::<Vec<_>>())
+        .await?
+        .into_iter()
+        .map(|parent| (parent.id, parent))
+        .collect::<HashMap<_, _>>();
+    let registry = ExternalUrlProviderRegistry::default();
+
+    Ok(items
+        .iter()
+        .map(|item| {
+            let series = item
+                .series_id
+                .and_then(|id| parents.get(&id))
+                .filter(|parent| is_item_type(&parent.item_type, "Series"));
+            let season = item
+                .season_id
+                .and_then(|id| parents.get(&id))
+                .filter(|parent| is_item_type(&parent.item_type, "Season"));
+            let mut provider_item = ExternalUrlItem::new(external_url_item_kind(&item.item_type));
+            provider_item.provider_ids =
+                metadata_provider_ids(item.data.as_ref()).unwrap_or_default();
+            provider_item.index_number = item.index_number;
+            if let Some(series) = series {
+                provider_item.series_provider_ids =
+                    metadata_provider_ids(series.data.as_ref()).unwrap_or_default();
+                provider_item.series_display_order = metadata_string(
+                    series.data.as_ref(),
+                    &["DisplayOrder", "displayOrder", "display_order"],
+                );
+            }
+            provider_item.season_index_number = season.and_then(|season| season.index_number);
+            (item.id, registry.get_external_urls(&provider_item))
+        })
+        .collect())
+}
+
+fn external_url_item_kind(item_type: &str) -> ExternalUrlItemKind {
+    if is_item_type(item_type, "Audio") {
+        ExternalUrlItemKind::Audio
+    } else if is_item_type(item_type, "Book") {
+        ExternalUrlItemKind::Book
+    } else if is_item_type(item_type, "BoxSet") {
+        ExternalUrlItemKind::BoxSet
+    } else if is_item_type(item_type, "Episode") {
+        ExternalUrlItemKind::Episode
+    } else if is_item_type(item_type, "Movie") {
+        ExternalUrlItemKind::Movie
+    } else if is_item_type(item_type, "MusicAlbum") {
+        ExternalUrlItemKind::MusicAlbum
+    } else if is_item_type(item_type, "MusicArtist") {
+        ExternalUrlItemKind::MusicArtist
+    } else if is_item_type(item_type, "Person") {
+        ExternalUrlItemKind::Person
+    } else if is_item_type(item_type, "Season") {
+        ExternalUrlItemKind::Season
+    } else if is_item_type(item_type, "Series") {
+        ExternalUrlItemKind::Series
+    } else {
+        ExternalUrlItemKind::Other
+    }
+}
+
+pub(crate) fn attach_external_urls(
+    dto: &mut BaseItemDto,
+    fields: BaseItemDtoFields,
+    external_urls: Vec<ExternalUrl>,
+) {
+    if fields.wants_external_urls() {
+        dto.external_urls = Some(external_urls);
     }
 }
 
@@ -3299,6 +3422,46 @@ mod tests {
         }
         assert!(!BaseItemDtoFields::media_sources().wants_settings());
         assert!(BaseItemDtoFields::all().wants_settings());
+    }
+
+    #[test]
+    fn external_url_field_binding_and_wire_shape_match_official_contract() {
+        for name in ["ExternalUrls", "externalurls", "EXTERNALURLS", "13"] {
+            let fields = BaseItemDtoFields::from_names(&[name.to_owned()]);
+            assert!(fields.wants_external_urls(), "{name}");
+        }
+        assert!(!BaseItemDtoFields::default().wants_external_urls());
+        assert!(!BaseItemDtoFields::media_sources().wants_external_urls());
+        assert!(BaseItemDtoFields::all().wants_external_urls());
+        assert!(
+            !BaseItemDtoFields::all()
+                .without_external_urls()
+                .wants_external_urls()
+        );
+
+        let omitted = serde_json::to_value(BaseItemDto::default()).unwrap();
+        assert!(omitted.get("ExternalUrls").is_none());
+        let empty = serde_json::to_value(BaseItemDto {
+            external_urls: Some(Vec::new()),
+            ..BaseItemDto::default()
+        })
+        .unwrap();
+        assert_eq!(empty["ExternalUrls"], json!([]));
+        let populated = serde_json::to_value(BaseItemDto {
+            external_urls: Some(vec![ExternalUrl {
+                name: Some("IMDb".to_owned()),
+                url: Some("https://www.imdb.com/title/tt123".to_owned()),
+            }]),
+            ..BaseItemDto::default()
+        })
+        .unwrap();
+        assert_eq!(
+            populated["ExternalUrls"],
+            json!([{
+                "Name": "IMDb",
+                "Url": "https://www.imdb.com/title/tt123"
+            }])
+        );
     }
 
     #[test]
