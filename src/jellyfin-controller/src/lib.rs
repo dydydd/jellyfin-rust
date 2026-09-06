@@ -79,7 +79,8 @@ pub use item_types::{
 };
 pub use item_update::{ItemUpdateError, ItemUpdateInput, ItemUpdateService};
 pub use library_controller::{
-    LibraryControllerError, LibraryControllerService, item_can_download, media_source_path,
+    LibraryControllerError, LibraryControllerService, item_can_delete, item_can_download,
+    media_source_path,
 };
 pub use library_scan::{LibraryScanError, LibraryScanService, LibraryScanSummary};
 pub use localization::LocalizationService;

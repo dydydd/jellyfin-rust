@@ -394,6 +394,11 @@
 - Apply static media-source capability flags from the target user's policy, including when an
   administrator requests another user's item or `PlaybackInfo`: audio transcoding controls audio
   sources, while video transcoding and playback remuxing independently control video sources.
+- Derive intrinsic `CanDelete` from the official item-type overrides. Most items require a non-empty
+  local File-protocol path; root and metadata-projection folders remain false, a physical
+  MusicArtist is true independently of its path, and an accessed-by-name MusicArtist is false.
+  Do not reject an otherwise local item merely because it is virtual, and keep Playlist owner/admin
+  authorization separate from the user-less intrinsic capability.
 - Project `CanDownload` and `PlayAccess` only when their `ItemFields` are requested (single-item
   details request all fields by default). Compute intrinsic download capability from the official
   item-type overrides, then apply the target user's download and playback policy once per page;

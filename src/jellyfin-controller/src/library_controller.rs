@@ -1,6 +1,6 @@
 use jellyfin_data::{
     BaseItemError, BaseItemPage, BaseItemQuery, BaseItemRepository, ItemValueError,
-    ItemValueRepository, PlaylistRepository, PlaylistStoreError,
+    ItemValueRepository, OFFICIAL_ITEM_TYPE_ALIASES, PlaylistRepository, PlaylistStoreError,
     entities::{base_item, item_value, user},
 };
 use jellyfin_model::UserPolicy;
@@ -99,30 +99,68 @@ pub fn media_source_path(item: &base_item::Model) -> Option<&str> {
         .or_else(|| item.path.as_deref().filter(|path| !path.is_empty()))
 }
 
-/// Mirrors the conservative part of `BaseItem.CanDelete()`: virtual and
-/// aggregate metadata entries are projections, not user-owned files. Items
-/// without a stored path still use Jellyfin's default file protocol and may
-/// be removed from the database; filesystem deletion is simply skipped.
-fn item_can_delete(item: &base_item::Model) -> bool {
-    if item.id == jellyfin_data::USER_ROOT_FOLDER_ID || item.is_virtual_item {
+/// Returns the item-intrinsic delete capability used before applying user policy.
+///
+/// This mirrors the official `CanDelete()` overrides for library items. Most
+/// items require a local file-protocol path, metadata projection types are
+/// never deletable, and a physical music artist is deletable independently of
+/// its path. Playlist ownership is deliberately not considered here: the
+/// official user-aware playlist override belongs to authorization, while the
+/// user-less and batched DTO paths use this intrinsic result.
+#[must_use]
+pub fn item_can_delete(item: &base_item::Model) -> bool {
+    let item_type = canonical_official_item_type(&item.item_type);
+    if matches!(
+        item_type,
+        "AggregateFolder"
+            | "BasePluginFolder"
+            | "Channel"
+            | "CollectionFolder"
+            | "Genre"
+            | "MusicGenre"
+            | "Person"
+            | "PlaylistsFolder"
+            | "Program"
+            | "Studio"
+            | "UserRootFolder"
+            | "UserView"
+            | "Year"
+    ) {
         return false;
     }
-    !matches!(
-        item.item_type.as_str(),
-        "UserView"
-            | "CollectionFolder"
-            | "AggregateFolder"
-            | "UserRootFolder"
-            | "Person"
-            | "Genre"
-            | "Studio"
-            | "MusicArtist"
-            | "MusicAlbum"
-            | "BoxSet"
-            | "Playlist"
-            | "Channel"
-            | "Program"
-    )
+
+    if item_type == "MusicArtist" {
+        return item.parent_id.is_some();
+    }
+
+    if item.is_folder && item_is_root_folder(item) {
+        return false;
+    }
+
+    item.path.as_deref().is_some_and(path_uses_file_protocol)
+}
+
+fn canonical_official_item_type(item_type: &str) -> &str {
+    OFFICIAL_ITEM_TYPE_ALIASES
+        .iter()
+        .find(|(canonical, persisted)| item_type == *canonical || item_type == *persisted)
+        .map_or(item_type, |(canonical, _)| *canonical)
+}
+
+fn item_is_root_folder(item: &base_item::Model) -> bool {
+    item.id == jellyfin_data::USER_ROOT_FOLDER_ID
+        || item
+            .data
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|object| {
+                object
+                    .get("IsRoot")
+                    .or_else(|| object.get("isRoot"))
+                    .or_else(|| object.get("is_root"))
+            })
+            .and_then(Value::as_bool)
+            .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -202,19 +240,101 @@ mod tests {
     }
 
     #[test]
-    fn can_delete_rejects_virtual_and_aggregate_items() {
+    fn can_delete_requires_file_protocol_except_for_physical_artists() {
         assert!(item_can_delete(&item("Movie", Some("/movie.mkv"), None)));
-        assert!(item_can_delete(&item("Movie", None, None)));
-        assert!(item_can_delete(&item("Folder", None, None)));
-        assert!(!item_can_delete(&item("UserView", Some("/view"), None)));
-        assert!(!item_can_delete(&item(
-            "CollectionFolder",
-            Some("/library"),
+        assert!(item_can_delete(&item(
+            "Movie",
+            Some("file:///movie.mkv"),
             None
         )));
+        assert!(!item_can_delete(&item("Movie", None, None)));
+        assert!(!item_can_delete(&item(
+            "Movie",
+            Some("https://example.test/movie.mkv"),
+            None
+        )));
+
         let mut virtual_item = item("Movie", Some("/virtual"), None);
         virtual_item.is_virtual_item = true;
-        assert!(!item_can_delete(&virtual_item));
+        assert!(item_can_delete(&virtual_item));
+
+        let mut by_name_artist = item("MusicArtist", Some("/metadata/artist"), None);
+        assert!(!item_can_delete(&by_name_artist));
+        by_name_artist.parent_id = Some(Uuid::new_v4());
+        by_name_artist.path = None;
+        assert!(item_can_delete(&by_name_artist));
+    }
+
+    #[test]
+    fn can_delete_honors_folder_and_metadata_type_overrides() {
+        let mut folder = item("Folder", Some("/library/folder"), None);
+        folder.is_folder = true;
+        assert!(item_can_delete(&folder));
+
+        folder.data = Some(json!({"IsRoot": true}));
+        assert!(!item_can_delete(&folder));
+
+        for item_type in [
+            "AggregateFolder",
+            "BasePluginFolder",
+            "Channel",
+            "CollectionFolder",
+            "Genre",
+            "MusicGenre",
+            "Person",
+            "PlaylistsFolder",
+            "Studio",
+            "UserRootFolder",
+            "UserView",
+            "Year",
+        ] {
+            assert!(
+                !item_can_delete(&item(item_type, Some("/metadata/item"), None)),
+                "{item_type}"
+            );
+        }
+
+        assert!(item_can_delete(&item(
+            "MusicAlbum",
+            Some("/music/album"),
+            None
+        )));
+        assert!(item_can_delete(&item(
+            "BoxSet",
+            Some("/metadata/collections/set"),
+            None
+        )));
+
+        // Playlist ownership/admin checks are user-context authorization. The
+        // intrinsic path follows Folder/BaseItem for user-less and page DTOs.
+        assert!(item_can_delete(&item(
+            "Playlist",
+            Some("/metadata/playlists/list"),
+            None
+        )));
+        assert!(!item_can_delete(&item("Playlist", None, None)));
+    }
+
+    #[test]
+    fn can_delete_resolves_official_clr_item_type_aliases() {
+        assert!(!item_can_delete(&item(
+            "MediaBrowser.Controller.Entities.Person",
+            Some("/metadata/person"),
+            None
+        )));
+        assert!(item_can_delete(&item(
+            "MediaBrowser.Controller.Entities.Audio.MusicAlbum",
+            Some("/music/album"),
+            None
+        )));
+
+        let mut physical_artist = item(
+            "MediaBrowser.Controller.Entities.Audio.MusicArtist",
+            None,
+            None,
+        );
+        physical_artist.parent_id = Some(Uuid::new_v4());
+        assert!(item_can_delete(&physical_artist));
     }
 }
 

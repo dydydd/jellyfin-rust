@@ -1979,6 +1979,7 @@ struct Fixture {
     media_path: String,
     audio_path: String,
     strm_path: String,
+    deletion_path: String,
 }
 
 impl Fixture {
@@ -2038,9 +2039,21 @@ impl Fixture {
         tokio::fs::write(&media_path, Self::media_bytes())
             .await
             .expect("library media fixture");
+        let deletion_path = format!("/tmp/jellyfin-rust-library-delete-{suffix}");
+        let parent_path = format!("{deletion_path}/parent");
+        tokio::fs::create_dir_all(&parent_path)
+            .await
+            .expect("library deletion directory fixture");
         let items = BaseItemRepository::new(database.clone());
         let root = items.ensure_user_root().await.expect("user root");
-        let parent = create_item(&items, "Folder", "Library Parent", root.id, None).await;
+        let parent = create_item(
+            &items,
+            "Folder",
+            "Library Parent",
+            root.id,
+            Some(&parent_path),
+        )
+        .await;
         let audio_path = format!("/tmp/jellyfin-rust-audio-{suffix}.bin");
         tokio::fs::write(&audio_path, Self::media_bytes())
             .await
@@ -2100,7 +2113,18 @@ impl Fixture {
         ] {
             count_items.push(create_item(&items, item_type, name, parent.id, None).await);
         }
-        let similar = create_item(&items, "Movie", "Similar Movie", root.id, None).await;
+        let similar_path = format!("{deletion_path}/similar.mkv");
+        tokio::fs::write(&similar_path, Self::media_bytes())
+            .await
+            .expect("similar deletion file fixture");
+        let similar = create_item(
+            &items,
+            "Movie",
+            "Similar Movie",
+            root.id,
+            Some(&similar_path),
+        )
+        .await;
         let second_collection =
             create_item(&items, "BoxSet", "Zulu Collection", root.id, None).await;
         let first_collection =
@@ -2135,7 +2159,18 @@ impl Fixture {
             )
             .await
             .unwrap();
-        let single_delete = create_item(&items, "Video", "Single Delete", root.id, None).await;
+        let single_delete_path = format!("{deletion_path}/single.mkv");
+        tokio::fs::write(&single_delete_path, Self::media_bytes())
+            .await
+            .expect("single deletion file fixture");
+        let single_delete = create_item(
+            &items,
+            "Video",
+            "Single Delete",
+            root.id,
+            Some(&single_delete_path),
+        )
+        .await;
         let missing_file = create_item(
             &items,
             "Video",
@@ -2197,6 +2232,7 @@ impl Fixture {
             media_path,
             audio_path,
             strm_path,
+            deletion_path,
         }
     }
 
@@ -2274,6 +2310,7 @@ impl Fixture {
         let _ = tokio::fs::remove_file(self.media_path).await;
         let _ = tokio::fs::remove_file(self.audio_path).await;
         let _ = tokio::fs::remove_file(self.strm_path).await;
+        let _ = tokio::fs::remove_dir_all(self.deletion_path).await;
         drop(items);
         self.database.close().await.expect("database pool cleanup");
         self.administrator
