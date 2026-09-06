@@ -2121,9 +2121,7 @@ fn trailer_urls(videos: &TmdbVideos) -> Vec<String> {
         if !TmdbUtils::is_trailer_type(video.site.as_deref(), video.video_type.as_deref()) {
             continue;
         }
-        let Some(key) = video.key.as_deref().filter(|key| !key.is_empty()) else {
-            continue;
-        };
+        let key = video.key.as_deref().unwrap_or_default();
         let url = format!("https://www.youtube.com/watch?v={key}");
         if !trailers
             .iter()
@@ -3465,6 +3463,18 @@ mod tests {
                     site: Some("YouTube".to_owned()),
                     video_type: Some("Teaser".to_owned()),
                 },
+                TmdbVideo {
+                    key: None,
+                    name: Some("Missing key".to_owned()),
+                    site: Some("YouTube".to_owned()),
+                    video_type: Some("Trailer".to_owned()),
+                },
+                TmdbVideo {
+                    key: Some(String::new()),
+                    name: Some("Empty key".to_owned()),
+                    site: Some("YouTube".to_owned()),
+                    video_type: Some("Teaser".to_owned()),
+                },
             ],
         };
 
@@ -3477,6 +3487,10 @@ mod tests {
                 }),
                 json!({"Url": "https://www.youtube.com/watch?v=trailer-second"}),
                 json!({
+                    "Name": "Missing key",
+                    "Url": "https://www.youtube.com/watch?v="
+                }),
+                json!({
                     "Name": "Teaser first",
                     "Url": "https://www.youtube.com/watch?v=teaser-first"
                 }),
@@ -3487,6 +3501,10 @@ mod tests {
                 json!({
                     "Name": "Episode duplicate",
                     "Url": "https://www.youtube.com/watch?v=TRAILER-FIRST"
+                }),
+                json!({
+                    "Name": "Empty key",
+                    "Url": "https://www.youtube.com/watch?v="
                 }),
             ]
         );
@@ -3499,6 +3517,7 @@ mod tests {
                 "https://www.youtube.com/watch?v=trailer-first",
                 "https://www.youtube.com/watch?v=trailer-second",
                 "https://www.youtube.com/watch?v=teaser-second",
+                "https://www.youtube.com/watch?v=",
             ]
         );
         assert_eq!(
@@ -3508,6 +3527,7 @@ mod tests {
                 json!({"Url": "https://www.youtube.com/watch?v=trailer-first"}),
                 json!({"Url": "https://www.youtube.com/watch?v=trailer-second"}),
                 json!({"Url": "https://www.youtube.com/watch?v=teaser-second"}),
+                json!({"Url": "https://www.youtube.com/watch?v="}),
             ]
         );
     }
