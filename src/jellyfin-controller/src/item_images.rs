@@ -15,12 +15,17 @@ use jellyfin_model::{ImageInfo, ImageType};
 use jellyfin_server_implementations::{DtoImage, DtoImageItem, ImageCacheTagProvider};
 use md5::{Digest, Md5};
 use thiserror::Error;
-use tokio::{fs, io::AsyncWriteExt, sync::OnceCell};
+use tokio::{
+    fs,
+    io::AsyncWriteExt,
+    sync::{OnceCell, Semaphore},
+};
 use uuid::Uuid;
 
 const DOTNET_UNIX_EPOCH_TICKS: i128 = 621_355_968_000_000_000;
 const TICKS_PER_SECOND: i128 = 10_000_000;
 const MAX_REMOTE_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS: usize = 4;
 const REMOTE_IMAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Failure while loading an item's persisted image metadata.
@@ -62,9 +67,19 @@ pub struct ItemImageService {
     internal_metadata_directory: PathBuf,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RemoteImageDownloadCoordinator {
     flights: Mutex<HashMap<String, Weak<RemoteImageDownloadFlight>>>,
+    permits: Semaphore,
+}
+
+impl Default for RemoteImageDownloadCoordinator {
+    fn default() -> Self {
+        Self {
+            flights: Mutex::new(HashMap::new()),
+            permits: Semaphore::new(MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -605,7 +620,18 @@ impl ItemImageService {
         };
         let result = flight
             .result
-            .get_or_init(|| self.download_image_bytes(url))
+            .get_or_init(|| async {
+                // Acquire inside the single-flight initializer so followers for the same URL
+                // share the leader's permit. Dropping a cancelled initializer releases the
+                // permit and leaves the OnceCell available for another waiter to retry.
+                let _permit = self
+                    .remote_downloads
+                    .permits
+                    .acquire()
+                    .await
+                    .expect("remote image download semaphore is never closed");
+                self.download_image_bytes(url).await
+            })
             .await
             .clone()
             .map_err(ItemImageError::from)?;
@@ -970,9 +996,22 @@ const fn persisted_image_type(image_type: ImageType) -> BaseItemImageType {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        path::PathBuf,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
 
-    use super::image_cache_tag;
+    use chrono::{TimeZone, Utc};
+    use sea_orm::DatabaseConnection;
+
+    use super::{ItemImageService, MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS, image_cache_tag};
 
     #[test]
     fn cache_tag_matches_jellyfin_utf16_md5_guid_contract() {
@@ -982,5 +1021,227 @@ mod tests {
             image_cache_tag("/media/image-info-test.mkv", modified),
             "fdcbd27b24b37e862315a492f0300d8c"
         );
+    }
+
+    #[tokio::test]
+    async fn same_url_downloads_share_one_global_permit_and_request() {
+        const DOWNLOAD_COUNT: usize = 8;
+
+        let service = test_service();
+        let upstream = BlockingImageServer::start("/shared.jpg");
+        let start = Arc::new(tokio::sync::Barrier::new(DOWNLOAD_COUNT + 1));
+        let mut downloads = Vec::with_capacity(DOWNLOAD_COUNT);
+        for _ in 0..DOWNLOAD_COUNT {
+            let service = service.clone();
+            let url = upstream.url.clone();
+            let start = Arc::clone(&start);
+            downloads.push(tokio::spawn(async move {
+                start.wait().await;
+                service.download_image(&url).await.map(|lease| lease.bytes)
+            }));
+        }
+        start.wait().await;
+        wait_for_request_total(std::slice::from_ref(&upstream), 1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(upstream.request_count(), 1);
+
+        upstream.release_response();
+        for download in downloads {
+            download
+                .await
+                .expect("remote image download task")
+                .expect("remote image download");
+        }
+        assert_eq!(upstream.stop(), 1, "same URL must only be fetched once");
+    }
+
+    #[tokio::test]
+    async fn distinct_url_downloads_obey_the_global_concurrency_limit() {
+        let service = test_service();
+        let download_count = MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS + 1;
+        let mut upstreams = Vec::with_capacity(download_count);
+        let mut downloads = Vec::with_capacity(download_count);
+        for index in 0..download_count {
+            let upstream = BlockingImageServer::start(&format!("/{index}.jpg"));
+            let request_service = service.clone();
+            let url = upstream.url.clone();
+            downloads.push(tokio::spawn(async move {
+                request_service
+                    .download_image(&url)
+                    .await
+                    .map(|lease| lease.bytes)
+            }));
+            upstreams.push(upstream);
+        }
+
+        wait_for_request_total(&upstreams, MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            request_total(&upstreams),
+            MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS,
+            "a fifth distinct URL must wait for a global download permit"
+        );
+
+        upstreams
+            .iter()
+            .find(|upstream| upstream.request_count() == 1)
+            .expect("one active upstream download")
+            .release_response();
+        wait_for_request_total(&upstreams, download_count).await;
+        for upstream in &upstreams {
+            upstream.release_response();
+        }
+        for download in downloads {
+            download
+                .await
+                .expect("remote image download task")
+                .expect("remote image download");
+        }
+        for upstream in upstreams {
+            assert_eq!(upstream.stop(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_download_releases_its_global_permit() {
+        let service = test_service();
+        let download_count = MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS + 1;
+        let mut upstreams = Vec::with_capacity(download_count);
+        let mut downloads = Vec::with_capacity(download_count);
+        for index in 0..download_count {
+            let upstream = BlockingImageServer::start(&format!("/{index}.jpg"));
+            let request_service = service.clone();
+            let url = upstream.url.clone();
+            downloads.push(tokio::spawn(async move {
+                request_service
+                    .download_image(&url)
+                    .await
+                    .map(|lease| lease.bytes)
+            }));
+            upstreams.push(upstream);
+        }
+
+        wait_for_request_total(&upstreams, MAX_CONCURRENT_REMOTE_IMAGE_DOWNLOADS).await;
+        let cancelled_index = upstreams
+            .iter()
+            .position(|upstream| upstream.request_count() == 1)
+            .expect("one active upstream download");
+        let cancelled = downloads.remove(cancelled_index);
+        cancelled.abort();
+        assert!(
+            cancelled
+                .await
+                .expect_err("download must be cancelled")
+                .is_cancelled(),
+            "the selected download task must observe cancellation"
+        );
+
+        wait_for_request_total(&upstreams, download_count).await;
+        for upstream in &upstreams {
+            upstream.release_response();
+        }
+        for download in downloads {
+            download
+                .await
+                .expect("remote image download task")
+                .expect("remote image download");
+        }
+        for upstream in upstreams {
+            assert_eq!(upstream.stop(), 1);
+        }
+    }
+
+    fn test_service() -> ItemImageService {
+        ItemImageService::with_storage_directories(
+            Arc::new(DatabaseConnection::Disconnected),
+            PathBuf::from("unused-image-limit-test-cache"),
+            PathBuf::from("unused-image-limit-test-metadata"),
+        )
+    }
+
+    struct BlockingImageServer {
+        url: String,
+        requests: Arc<AtomicUsize>,
+        stop: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
+        thread: thread::JoinHandle<()>,
+    }
+
+    impl BlockingImageServer {
+        fn start(path: &str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("mock image server bind");
+            listener
+                .set_nonblocking(true)
+                .expect("mock image server nonblocking mode");
+            let address = listener.local_addr().expect("mock image server address");
+            let requests = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let release = Arc::new(AtomicBool::new(false));
+            let server_requests = Arc::clone(&requests);
+            let server_stop = Arc::clone(&stop);
+            let server_release = Arc::clone(&release);
+            let thread = thread::spawn(move || {
+                while !server_stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            server_requests.fetch_add(1, Ordering::AcqRel);
+                            let mut request = [0_u8; 2048];
+                            let _ = stream.read(&mut request);
+                            while !server_release.load(Ordering::Acquire)
+                                && !server_stop.load(Ordering::Acquire)
+                            {
+                                thread::sleep(Duration::from_millis(5));
+                            }
+                            let response = b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\nConnection: close\r\n\r\nimage";
+                            let _ = stream.write_all(response);
+                            let _ = stream.flush();
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("mock image server accept failed: {error}"),
+                    }
+                }
+            });
+            Self {
+                url: format!("http://{address}{path}"),
+                requests,
+                stop,
+                release,
+                thread,
+            }
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.load(Ordering::Acquire)
+        }
+
+        fn release_response(&self) {
+            self.release.store(true, Ordering::Release);
+        }
+
+        fn stop(self) -> usize {
+            self.stop.store(true, Ordering::Release);
+            self.release.store(true, Ordering::Release);
+            self.thread.join().expect("mock image server thread");
+            self.requests.load(Ordering::Acquire)
+        }
+    }
+
+    fn request_total(upstreams: &[BlockingImageServer]) -> usize {
+        upstreams
+            .iter()
+            .map(BlockingImageServer::request_count)
+            .sum()
+    }
+
+    async fn wait_for_request_total(upstreams: &[BlockingImageServer], expected: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while request_total(upstreams) < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("expected mock upstream requests must arrive");
     }
 }

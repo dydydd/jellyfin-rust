@@ -40,7 +40,7 @@
   `inheritFromParent` nearest-first and independently for each media kind, preserve that owner's
   id, default to `SortName` ascending, and keep `SoundtrackSongsResult` as a distinct empty result.
   Batch candidate loading across the owner chain and apply the target user's normal library policy.
-- Coordinate remote-image downloads by URL so concurrent items share one bounded download. Validate that upstream content is an image, and remove or otherwise suppress permanently invalid remote references according to official behavior.
+- Coordinate remote-image downloads by URL so concurrent items share one bounded download, and cap leader downloads across distinct URLs at four so a media wall cannot multiply the per-image buffer without bound. Acquire the global permit inside the single-flight initializer so same-URL followers consume no additional permits and cancellation promptly releases capacity. Validate that upstream content is an image, and remove or otherwise suppress permanently invalid remote references according to official behavior.
 - Persist uploaded and remotely downloaded lyrics under the item's internal metadata directory with a same-directory temporary file and atomic rename, then register the file as a Lyric media stream. Keep the parsed JSON only as a compatibility cache; reads prefer the registered stream, and deletion must never remove unregistered files, symlinks, or files outside the internal metadata root.
 - Decode uploaded and local lyrics with the official BOM-aware UTF-8, UTF-16LE, UTF-16BE, UTF-32LE,
   and UTF-32BE behavior. Without a BOM, use UTF-8 replacement fallback; malformed or incomplete
