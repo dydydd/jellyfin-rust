@@ -298,6 +298,7 @@ pub fn audio_command(
     bitrate: Option<i64>,
     channels: Option<i32>,
     sample_rate: Option<i32>,
+    audio_stream_index: Option<i32>,
     start_time_ticks: Option<i64>,
 ) -> FfmpegCommand {
     let mut arguments = vec![
@@ -312,6 +313,10 @@ pub fn audio_command(
     }
     arguments.push("-i".to_owned());
     arguments.push(input_path.to_string_lossy().into_owned());
+    if let Some(audio_stream_index) = audio_stream_index {
+        arguments.push("-map".to_owned());
+        arguments.push(format!("0:{audio_stream_index}"));
+    }
     arguments.push("-vn".to_owned());
     arguments.push("-c:a".to_owned());
     arguments.push(codec.to_owned());
@@ -1018,6 +1023,7 @@ mod tests {
             Some(192_000),
             Some(2),
             Some(44_100),
+            Some(1),
             None,
         );
 
@@ -1030,6 +1036,8 @@ mod tests {
                 "-y",
                 "-i",
                 "/media/song.flac",
+                "-map",
+                "0:1",
                 "-vn",
                 "-c:a",
                 "mp3",

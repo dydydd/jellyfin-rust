@@ -52,6 +52,18 @@ pub(crate) struct StreamQuery {
     )]
     max_audio_channels: Option<i32>,
     #[serde(
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex"
+    )]
+    audio_stream_index: Option<i32>,
+    #[serde(
+        rename = "transcodingMaxAudioChannels",
+        alias = "TranscodingMaxAudioChannels",
+        alias = "transcodingmaxaudiochannels"
+    )]
+    transcoding_max_audio_channels: Option<i32>,
+    #[serde(
         rename = "startTimeTicks",
         alias = "StartTimeTicks",
         alias = "starttimeticks"
@@ -78,6 +90,12 @@ pub(crate) struct UniversalQuery {
         alias = "maxaudiochannels"
     )]
     max_audio_channels: Option<i32>,
+    #[serde(
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex"
+    )]
+    audio_stream_index: Option<i32>,
     #[serde(
         rename = "maxStreamingBitrate",
         alias = "MaxStreamingBitrate",
@@ -150,6 +168,7 @@ pub(crate) async fn universal(
     });
     let requires_transcode = query.audio_codec.is_some()
         || query.max_audio_channels.is_some()
+        || query.audio_stream_index.is_some()
         || query.max_streaming_bitrate.is_some()
         || query.start_time_ticks.is_some_and(|ticks| ticks != 0)
         || query.transcoding_container.is_some();
@@ -176,6 +195,7 @@ pub(crate) async fn universal(
         query.max_streaming_bitrate,
         query.max_audio_channels,
         None,
+        query.audio_stream_index,
         query.start_time_ticks,
     );
     let job = state.transcode_jobs.register(output.to_string_lossy());
@@ -275,8 +295,12 @@ async fn stream_file(
         &output,
         codec,
         query.audio_bitrate,
-        query.audio_channels.or(query.max_audio_channels),
+        query
+            .audio_channels
+            .or(query.max_audio_channels)
+            .or(query.transcoding_max_audio_channels),
         query.audio_sample_rate,
+        query.audio_stream_index,
         query.start_time_ticks,
     );
     let job = state.transcode_jobs.register(output.to_string_lossy());
@@ -306,7 +330,7 @@ mod tests {
 
     #[test]
     fn audio_stream_binds_android_transcoding_parameters() {
-        let uri: Uri = "/Audio/item/stream?static=false&audioCodec=mp3&audioBitRate=192000&audioSampleRate=44100&maxAudioChannels=2&startTimeTicks=10000"
+        let uri: Uri = "/Audio/item/stream?static=false&audioCodec=mp3&audioBitRate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
@@ -315,6 +339,7 @@ mod tests {
         assert_eq!(query.audio_bitrate, Some(192000));
         assert_eq!(query.audio_sample_rate, Some(44100));
         assert_eq!(query.max_audio_channels, Some(2));
+        assert_eq!(query.audio_stream_index, Some(1));
         assert_eq!(query.start_time_ticks, Some(10000));
     }
 }

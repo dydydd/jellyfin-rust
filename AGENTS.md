@@ -307,6 +307,9 @@
 - For profiled playback, generate `TranscodingUrl` for HTTP progressive as well as HLS
   transcoding selections. Match the official rewrite of non-DirectPlay selections to
   `PlayMethod.Transcode`, including Android audio profiles that consume `/audio/{id}/stream`.
+- Preserve Android audio `AudioStreamIndex` and `TranscodingMaxAudioChannels` query values when
+  serving progressive audio; the selected media stream must reach FFmpeg instead of silently
+  falling back to the first audio stream.
 - Project `SupportsExternalStream` on every persisted media stream using the official rule: true
   for external streams and for text, PGS, or VobSub subtitles. Keep the value consistent between
   top-level streams and every single- or alternate-version media source.
