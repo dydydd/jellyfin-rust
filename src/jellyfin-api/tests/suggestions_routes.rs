@@ -27,6 +27,10 @@ async fn suggestions_routes_match_official_auth_filters_and_count_contract() {
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
+        fixture.get("/items/suggestions", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
         fixture
             .get(
                 &format!("/Items/Suggestions?userId={}", fixture.admin_id),
@@ -63,6 +67,25 @@ async fn suggestions_routes_match_official_auth_filters_and_count_contract() {
             .all(|item| item["Type"] == "Movie" && item["MediaType"] == "Video")
     );
 
+    let lowercase_suggestions = body_json(
+        fixture
+            .get(
+                "/items/suggestions?mediatype=Video&type=Movie&enabletotalrecordcount=true",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        lowercase_suggestions["StartIndex"],
+        suggestions["StartIndex"]
+    );
+    assert_eq!(
+        lowercase_suggestions["TotalRecordCount"],
+        suggestions["TotalRecordCount"]
+    );
+    assert_eq!(item_names(&lowercase_suggestions), item_names(&suggestions));
+
     let limited = body_json(
         fixture
             .get(
@@ -95,6 +118,25 @@ async fn suggestions_routes_match_official_auth_filters_and_count_contract() {
         item_names(&legacy),
         BTreeSet::from([format!("Audio {}", fixture.suffix)])
     );
+
+    let lowercase_legacy = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/users/{}/suggestions?mediatype=Audio&type=Audio",
+                    fixture.user_id
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_legacy["StartIndex"], legacy["StartIndex"]);
+    assert_eq!(
+        lowercase_legacy["TotalRecordCount"],
+        legacy["TotalRecordCount"]
+    );
+    assert_eq!(item_names(&lowercase_legacy), item_names(&legacy));
 
     assert_eq!(
         fixture

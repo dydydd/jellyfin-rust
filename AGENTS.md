@@ -51,6 +51,9 @@
 
 - Match official Jellyfin DTO field names, nullability, defaults, HTTP status codes, authorization requirements, sorting, pagination, and case-insensitive matching.
 - ASP.NET route, query-name, and JSON-property binding is case-insensitive. Compatibility tests must cover PascalCase, camelCase, and representative lowercase legacy requests; do not assume an Axum route or Serde field is equivalent merely because one casing works.
+- Keep both the modern `/Items/Suggestions` route and legacy `/Users/{userId}/Suggestions`
+  route reachable through fully lowercase aliases, with equivalent authorization and filtered
+  results.
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.

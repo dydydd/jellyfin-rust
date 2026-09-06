@@ -1619,6 +1619,7 @@ fn item_query_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items", get(items::get).delete(library::delete_items))
         .route("/Items/Suggestions", get(items::suggestions))
+        .route("/items/suggestions", get(items::suggestions))
         .route("/Items/Latest", get(items::latest))
         .route("/UserItems/Resume", get(items::resume))
         .route("/Users/{user_id}/Items", get(items::get_legacy))
@@ -1626,6 +1627,10 @@ fn item_query_routes() -> Router<Arc<AppState>> {
         .route("/Users/{user_id}/Items//", get(items::get_legacy))
         .route(
             "/Users/{user_id}/Suggestions",
+            get(items::suggestions_legacy),
+        )
+        .route(
+            "/users/{user_id}/suggestions",
             get(items::suggestions_legacy),
         )
         .route("/Users/{user_id}/Items/Latest", get(items::latest_legacy))
