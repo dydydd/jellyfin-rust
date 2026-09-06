@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use jellyfin_data::{
     BaseItemError, BaseItemQuery, BaseItemRepository, DatabaseConfig, ItemValueRepository,
-    LinkedChildRepository, LinkedChildType, NewBaseItem, entities::item_value,
+    LinkedChildRepository, LinkedChildType, NewBaseItem,
+    entities::{item_value, linked_child},
 };
+use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 use serde_json::json;
 use tokio::sync::Barrier;
 use uuid::Uuid;
@@ -72,6 +74,18 @@ async fn media_source_versions_load_multiple_groups_in_one_batch() {
         .await
         .expect("batched media-source versions");
     assert_eq!(sources.len(), 6);
+    assert_eq!(
+        sources.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [
+            group_a.alternates[0],
+            group_a.primary,
+            group_a.alternates[1],
+            group_b.primary,
+            group_b.alternates[0],
+            group_b.alternates[1],
+        ],
+        "each group must retain its requested and relationship ordering in one batch"
+    );
     let source_ids = sources
         .iter()
         .map(|item| item.id)
@@ -82,6 +96,223 @@ async fn media_source_versions_load_multiple_groups_in_one_batch() {
     );
 
     cleanup(&repository, [&group_a, &group_b]).await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One fixture makes the root/local ordering relationships explicit.
+async fn media_source_versions_follow_official_linked_and_local_relationship_order() {
+    let (repository, database) = repository_and_database().await;
+    let primary = create_version_item(&repository, "primary", "Primary", None).await;
+    let linked_zulu =
+        create_version_item(&repository, "linked-zulu", "Zulu", Some(primary.id)).await;
+    let linked_alpha_later =
+        create_version_item(&repository, "linked-alpha-later", "Alpha", Some(primary.id)).await;
+    let linked_alpha_first =
+        create_version_item(&repository, "linked-alpha-first", "Alpha", Some(primary.id)).await;
+    let linked_unnamed_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    let linked_unnamed_later =
+        create_unnamed_version_item(&repository, linked_unnamed_ids[0], Some(primary.id)).await;
+    let linked_unnamed_first =
+        create_unnamed_version_item(&repository, linked_unnamed_ids[1], Some(primary.id)).await;
+    let primary_local_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    let primary_local_first_id = primary_local_ids[0].max(primary_local_ids[1]);
+    let primary_local_second_id = primary_local_ids[0].min(primary_local_ids[1]);
+    let primary_local_first = create_version_item_with_id(
+        &repository,
+        primary_local_first_id,
+        "primary-local-first",
+        "Primary local first",
+        Some(primary.id),
+    )
+    .await;
+    let primary_local_second = create_version_item_with_id(
+        &repository,
+        primary_local_second_id,
+        "primary-local-second",
+        "Primary local second",
+        Some(primary.id),
+    )
+    .await;
+    let zulu_local =
+        create_version_item(&repository, "zulu-local", "Zulu local", Some(primary.id)).await;
+    let alpha_later_local = create_version_item(
+        &repository,
+        "alpha-later-local",
+        "Alpha later local",
+        Some(primary.id),
+    )
+    .await;
+    let alpha_first_local = create_version_item(
+        &repository,
+        "alpha-first-local",
+        "Alpha first local",
+        Some(primary.id),
+    )
+    .await;
+
+    // Official Jellyfin first preserves the linked-child order and then applies a stable
+    // SortName ordering to linked roots. Null names compare first, while the two unnamed and two
+    // Alpha roots each retain their respective link order.
+    for (child_id, sort_order) in [
+        (linked_zulu.id, 0),
+        (linked_alpha_later.id, 2),
+        (linked_alpha_first.id, 1),
+        (linked_unnamed_later.id, 4),
+        (linked_unnamed_first.id, 3),
+    ] {
+        insert_version_link(
+            &database,
+            primary.id,
+            child_id,
+            LinkedChildType::LinkedAlternateVersion,
+            sort_order,
+        )
+        .await;
+    }
+    for (parent_id, child_id, sort_order) in [
+        (primary.id, primary_local_first.id, 0),
+        (primary.id, primary_local_second.id, 1),
+        (linked_zulu.id, zulu_local.id, 0),
+        (linked_alpha_later.id, alpha_later_local.id, 0),
+        (linked_alpha_first.id, alpha_first_local.id, 0),
+    ] {
+        insert_version_link(
+            &database,
+            parent_id,
+            child_id,
+            LinkedChildType::LocalAlternateVersion,
+            sort_order,
+        )
+        .await;
+    }
+
+    let from_primary = version_ids(
+        repository
+            .media_source_versions(primary.id)
+            .await
+            .expect("relationship-ordered sources from primary"),
+    );
+    assert_eq!(
+        from_primary,
+        [
+            primary.id,
+            linked_unnamed_first.id,
+            linked_unnamed_later.id,
+            linked_alpha_first.id,
+            linked_alpha_later.id,
+            linked_zulu.id,
+            primary_local_first.id,
+            primary_local_second.id,
+            alpha_first_local.id,
+            alpha_later_local.id,
+            zulu_local.id,
+        ]
+    );
+    assert!(
+        primary_local_first.id > primary_local_second.id,
+        "the fixture must prove local sort_order wins over UUID order"
+    );
+
+    let from_linked_root = version_ids(
+        repository
+            .media_source_versions(linked_zulu.id)
+            .await
+            .expect("relationship-ordered sources from linked root"),
+    );
+    assert_eq!(
+        from_linked_root,
+        [
+            linked_zulu.id,
+            primary.id,
+            linked_unnamed_first.id,
+            linked_unnamed_later.id,
+            linked_alpha_first.id,
+            linked_alpha_later.id,
+            zulu_local.id,
+            primary_local_first.id,
+            primary_local_second.id,
+            alpha_first_local.id,
+            alpha_later_local.id,
+        ]
+    );
+
+    let from_local_child = version_ids(
+        repository
+            .media_source_versions(zulu_local.id)
+            .await
+            .expect("relationship-ordered sources from local child"),
+    );
+    assert_eq!(
+        from_local_child,
+        [
+            zulu_local.id,
+            primary.id,
+            linked_unnamed_first.id,
+            linked_unnamed_later.id,
+            linked_alpha_first.id,
+            linked_alpha_later.id,
+            linked_zulu.id,
+            primary_local_first.id,
+            primary_local_second.id,
+            alpha_first_local.id,
+            alpha_later_local.id,
+        ]
+    );
+
+    delete_ordering_items(
+        &repository,
+        &[
+            primary.id,
+            linked_zulu.id,
+            linked_alpha_later.id,
+            linked_alpha_first.id,
+            linked_unnamed_later.id,
+            linked_unnamed_first.id,
+            primary_local_first.id,
+            primary_local_second.id,
+            zulu_local.id,
+            alpha_later_local.id,
+            alpha_first_local.id,
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn media_source_versions_use_uuid_only_for_legacy_unlinked_members() {
+    let repository = repository().await;
+    let primary = create_version_item(&repository, "legacy-primary", "Legacy primary", None).await;
+    let legacy_ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    for (index, id) in legacy_ids.iter().copied().enumerate() {
+        create_version_item_with_id(
+            &repository,
+            id,
+            &format!("legacy-{index}"),
+            &format!("Legacy {index}"),
+            Some(primary.id),
+        )
+        .await;
+    }
+    let requested_id = legacy_ids[1];
+    let mut remaining_ids = legacy_ids
+        .into_iter()
+        .filter(|id| *id != requested_id)
+        .collect::<Vec<_>>();
+    remaining_ids.sort_unstable();
+
+    let sources = version_ids(
+        repository
+            .media_source_versions(requested_id)
+            .await
+            .expect("legacy media-source versions"),
+    );
+    assert_eq!(sources[0], requested_id);
+    assert_eq!(sources[1], primary.id);
+    assert_eq!(&sources[2..], remaining_ids);
+
+    let mut cleanup_ids = vec![primary.id];
+    cleanup_ids.extend(legacy_ids);
+    delete_ordering_items(&repository, &cleanup_ids).await;
 }
 
 #[tokio::test]
@@ -717,6 +948,16 @@ async fn repository() -> BaseItemRepository {
     BaseItemRepository::new(database)
 }
 
+async fn repository_and_database() -> (BaseItemRepository, DatabaseConnection) {
+    let database = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    jellyfin_data::migrate(&database)
+        .await
+        .expect("PostgreSQL migrations must succeed");
+    (BaseItemRepository::new(database.clone()), database)
+}
+
 async fn linked_repository() -> LinkedChildRepository {
     LinkedChildRepository::new(
         jellyfin_data::connect(&DatabaseConfig::default())
@@ -738,6 +979,76 @@ async fn create_ordering_item(
         .create(item)
         .await
         .expect("ordering fixture item")
+}
+
+async fn create_version_item(
+    repository: &BaseItemRepository,
+    label: &str,
+    sort_name: &str,
+    primary_version_id: Option<Uuid>,
+) -> jellyfin_data::entities::base_item::Model {
+    create_version_item_with_id(
+        repository,
+        Uuid::new_v4(),
+        label,
+        sort_name,
+        primary_version_id,
+    )
+    .await
+}
+
+async fn create_version_item_with_id(
+    repository: &BaseItemRepository,
+    id: Uuid,
+    label: &str,
+    sort_name: &str,
+    primary_version_id: Option<Uuid>,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(id, "Movie");
+    item.name = Some(label.to_owned());
+    item.sort_name = Some(sort_name.to_owned());
+    item.media_type = Some("Video".to_owned());
+    item.primary_version_id = primary_version_id;
+    repository
+        .create(item)
+        .await
+        .expect("version ordering fixture item")
+}
+
+async fn create_unnamed_version_item(
+    repository: &BaseItemRepository,
+    id: Uuid,
+    primary_version_id: Option<Uuid>,
+) -> jellyfin_data::entities::base_item::Model {
+    let mut item = NewBaseItem::new(id, "Movie");
+    item.media_type = Some("Video".to_owned());
+    item.primary_version_id = primary_version_id;
+    repository
+        .create(item)
+        .await
+        .expect("unnamed version ordering fixture item")
+}
+
+async fn insert_version_link(
+    database: &DatabaseConnection,
+    parent_id: Uuid,
+    child_id: Uuid,
+    child_type: LinkedChildType,
+    sort_order: i32,
+) {
+    linked_child::ActiveModel {
+        parent_id: Set(parent_id),
+        child_id: Set(child_id),
+        child_type: Set(child_type as i16),
+        sort_order: Set(Some(sort_order)),
+    }
+    .insert(database)
+    .await
+    .expect("version relationship fixture");
+}
+
+fn version_ids(items: Vec<jellyfin_data::entities::base_item::Model>) -> Vec<Uuid> {
+    items.into_iter().map(|item| item.id).collect()
 }
 
 async fn local_link_order(

@@ -11,7 +11,7 @@ use jellyfin_data::{
     ApiKeyRepository, BaseItemRepository, DeviceRepository, ItemValueRepository, NewBaseItem,
     NewDevice, NewTrickplayInfo, NewUserData, TrickplayInfoRepository, USER_ROOT_FOLDER_ID,
     UserDataRepository,
-    entities::{api_key, base_item, item_value, user},
+    entities::{api_key, base_item, item_value, linked_child, user},
 };
 use jellyfin_model::{MediaAttachment, MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{
@@ -1889,6 +1889,155 @@ async fn media_sources_expand_all_video_versions_with_requested_version_first() 
 
     items.delete(alternate.id).await.expect("alternate cleanup");
     items.delete(primary.id).await.expect("primary cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn item_details_preserve_grouped_roots_before_relationship_ordered_local_versions() {
+    let fixture = UserLibraryFixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+
+    let mut primary = item(
+        "Movie",
+        "Relationship primary",
+        Some(fixture.root_id),
+        false,
+    );
+    primary.media_type = Some("Video".to_owned());
+    primary.path = Some("/media/relationship-primary.mkv".to_owned());
+    let primary = items.create(primary).await.expect("relationship primary");
+
+    let mut linked_root = item(
+        "Movie",
+        "Relationship linked root",
+        Some(fixture.root_id),
+        false,
+    );
+    linked_root.media_type = Some("Video".to_owned());
+    linked_root.path = Some("/media/relationship-linked.mkv".to_owned());
+    linked_root.primary_version_id = Some(primary.id);
+    let linked_root = items
+        .create(linked_root)
+        .await
+        .expect("relationship linked root");
+
+    let mut primary_local = item(
+        "Movie",
+        "Relationship primary local",
+        Some(fixture.root_id),
+        false,
+    );
+    primary_local.media_type = Some("Video".to_owned());
+    primary_local.path = Some("/media/relationship-primary-local.mkv".to_owned());
+    primary_local.primary_version_id = Some(primary.id);
+    let primary_local = items
+        .create(primary_local)
+        .await
+        .expect("relationship primary local");
+
+    let mut linked_local = item(
+        "Movie",
+        "Relationship linked local",
+        Some(fixture.root_id),
+        false,
+    );
+    linked_local.media_type = Some("Video".to_owned());
+    linked_local.path = Some("/media/relationship-linked-local.mkv".to_owned());
+    linked_local.primary_version_id = Some(primary.id);
+    let linked_local = items
+        .create(linked_local)
+        .await
+        .expect("relationship linked local");
+
+    for (parent_id, child_id, child_type) in [
+        (primary.id, linked_root.id, 3_i16),
+        (primary.id, primary_local.id, 2_i16),
+        (linked_root.id, linked_local.id, 2_i16),
+    ] {
+        linked_child::ActiveModel {
+            parent_id: Set(parent_id),
+            child_id: Set(child_id),
+            child_type: Set(child_type),
+            sort_order: Set(Some(0)),
+        }
+        .insert(&fixture.database)
+        .await
+        .expect("version relationship");
+    }
+
+    let linked_dto = get_json(
+        &fixture.app,
+        &format!(
+            "/Users/{}/Items/{}?Fields=MediaSources",
+            fixture.user_id, linked_root.id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    let linked_sources = linked_dto["MediaSources"]
+        .as_array()
+        .expect("linked-root media sources");
+    assert_eq!(
+        linked_sources
+            .iter()
+            .map(|source| source["Id"].as_str().expect("source id"))
+            .collect::<Vec<_>>(),
+        [
+            linked_root.id.simple().to_string(),
+            primary.id.simple().to_string(),
+            linked_local.id.simple().to_string(),
+            primary_local.id.simple().to_string(),
+        ]
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+    );
+    assert_eq!(linked_sources[0]["Type"], "Default");
+    assert_eq!(linked_sources[1]["Type"], "Grouping");
+    assert_eq!(linked_sources[2]["Type"], "Default");
+    assert_eq!(linked_sources[3]["Type"], "Default");
+
+    let local_dto = get_json(
+        &fixture.app,
+        &format!(
+            "/Users/{}/Items/{}?Fields=MediaSources",
+            fixture.user_id, linked_local.id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    let local_sources = local_dto["MediaSources"]
+        .as_array()
+        .expect("local-version media sources");
+    assert_eq!(
+        local_sources
+            .iter()
+            .map(|source| source["Id"].as_str().expect("source id"))
+            .collect::<Vec<_>>(),
+        [
+            linked_local.id.simple().to_string(),
+            primary.id.simple().to_string(),
+            linked_root.id.simple().to_string(),
+            primary_local.id.simple().to_string(),
+        ]
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+    );
+    assert_eq!(local_sources[0]["Type"], "Default");
+    assert_eq!(local_sources[1]["Type"], "Default");
+    assert_eq!(local_sources[2]["Type"], "Grouping");
+    assert_eq!(local_sources[3]["Type"], "Default");
+
+    items
+        .delete_many(&[
+            linked_local.id,
+            primary_local.id,
+            linked_root.id,
+            primary.id,
+        ])
+        .await
+        .expect("relationship version cleanup");
     fixture.cleanup().await;
 }
 

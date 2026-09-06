@@ -857,10 +857,11 @@ impl BaseItemRepository {
 
     /// Loads every local video source in the version group containing `item_id`.
     ///
-    /// The explicitly requested version is returned first, followed by the
-    /// primary and remaining alternates in stable identifier order. Keeping the
-    /// group expansion in PostgreSQL lets playback callers batch stream and
-    /// attachment projection without issuing one lookup per version.
+    /// The explicitly requested version is returned first. Grouping roots then
+    /// precede every scan-discovered local alternate, preserving the official
+    /// linked-root name order and each local relationship's persisted order.
+    /// Keeping the group expansion in PostgreSQL lets playback callers batch
+    /// stream and attachment projection without issuing one lookup per version.
     ///
     /// # Errors
     ///
@@ -869,40 +870,21 @@ impl BaseItemRepository {
         &self,
         item_id: Uuid,
     ) -> Result<Vec<base_item::Model>, BaseItemError> {
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "WITH requested AS MATERIALIZED (\
-                     SELECT COALESCE(primary_version_id, id) AS group_id \
-                     FROM jellyfin.base_items \
-                     WHERE id = $1 \
-                       AND item_type IN {VIDEO_ITEM_TYPES_SQL}\
-                 ) \
-                 SELECT {BASE_ITEM_COLUMNS} \
-                 FROM jellyfin.base_items AS item \
-                 INNER JOIN requested \
-                   ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
-                 WHERE item.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                 ORDER BY CASE WHEN item.id = $1 THEN 0 ELSE 1 END, \
-                          CASE WHEN item.primary_version_id IS NULL THEN 0 ELSE 1 END, \
-                          item.id"
-            ),
-            [item_id.into()],
-        );
-        Ok(base_item::Model::find_by_statement(statement)
-            .all(self.database.as_ref())
-            .await?)
+        self.media_source_versions_for_items(&[item_id]).await
     }
 
     /// Loads every local video source belonging to any requested version group.
     ///
     /// Each source is returned once even when multiple requested identifiers name the same group.
-    /// The primary source sorts before its alternates inside each group so page projection can
-    /// preserve the official default-source ordering without issuing one query per item.
+    /// The first requested identifier for a group is its default source, followed by all grouping
+    /// roots and then their local alternates in relationship order. Legacy rows which only retain a
+    /// `primary_version_id` back-reference sort last by identifier. Page projection can therefore
+    /// preserve the official source ordering without issuing one query per item or relationship.
     ///
     /// # Errors
     ///
     /// Returns a database error when the groups cannot be loaded.
+    #[allow(clippy::too_many_lines)] // One set-based statement keeps relationship expansion batched.
     pub async fn media_source_versions_for_items(
         &self,
         item_ids: &[Uuid],
@@ -910,24 +892,102 @@ impl BaseItemRepository {
         if item_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut sql = format!(
-            "WITH requested AS MATERIALIZED (\
-                 SELECT DISTINCT COALESCE(item.primary_version_id, item.id) AS group_id \
-                 FROM jellyfin.base_items AS item \
-                 WHERE item.item_type IN {VIDEO_ITEM_TYPES_SQL}",
-        );
         let mut values = Vec::with_capacity(item_ids.len());
-        append_uuid_list_filter(&mut sql, &mut values, "item.id", item_ids);
+        let mut sql = String::from("WITH requested_ids(id, request_order) AS (VALUES ");
+        for (request_order, item_id) in item_ids.iter().copied().enumerate() {
+            if request_order > 0 {
+                sql.push_str(", ");
+            }
+            values.push(item_id.into());
+            let _ = write!(sql, "(${}::uuid, {request_order}::bigint)", values.len());
+        }
         let _ = write!(
             sql,
-            ") SELECT {BASE_ITEM_COLUMNS} \
-             FROM jellyfin.base_items AS item \
-             INNER JOIN requested \
-               ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
-             WHERE item.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-             ORDER BY requested.group_id, \
-                      CASE WHEN item.primary_version_id IS NULL THEN 0 ELSE 1 END, \
-                      item.id"
+            "), requested_candidates AS MATERIALIZED (\
+                 SELECT requested_ids.id AS requested_id, \
+                        requested_ids.request_order, \
+                        COALESCE(item.primary_version_id, item.id) AS group_id \
+                 FROM requested_ids \
+                 INNER JOIN jellyfin.base_items AS item ON item.id = requested_ids.id \
+                 WHERE item.item_type IN {VIDEO_ITEM_TYPES_SQL}\
+             ), requested AS MATERIALIZED (\
+                 SELECT DISTINCT ON (group_id) requested_id, request_order, group_id \
+                 FROM requested_candidates \
+                 ORDER BY group_id, request_order\
+             ), linked_roots AS MATERIALIZED (\
+                 SELECT requested.requested_id, requested.request_order, requested.group_id, \
+                        link.child_id AS root_id, link.sort_order, \
+                        ROW_NUMBER() OVER (\
+                            PARTITION BY requested.group_id \
+                            ORDER BY COALESCE(NULLIF(BTRIM(root.sort_name), ''), \
+                                              NULLIF(BTRIM(root.name), '')) ASC NULLS FIRST, \
+                                     link.sort_order ASC NULLS LAST, \
+                                     link.child_id\
+                        ) AS root_rank \
+                 FROM requested \
+                 INNER JOIN jellyfin.linked_children AS link \
+                   ON link.parent_id = requested.group_id AND link.child_type = 3 \
+                 INNER JOIN jellyfin.base_items AS root \
+                   ON root.id = link.child_id \
+                  AND COALESCE(root.primary_version_id, root.id) = requested.group_id \
+                  AND root.item_type IN {VIDEO_ITEM_TYPES_SQL}\
+             ), roots AS MATERIALIZED (\
+                 SELECT requested_id, request_order, group_id, group_id AS root_id, \
+                        0::bigint AS root_rank \
+                 FROM requested \
+                 UNION ALL \
+                 SELECT requested_id, request_order, group_id, root_id, root_rank \
+                 FROM linked_roots\
+             ), local_memberships AS MATERIALIZED (\
+                 SELECT roots.group_id, local_link.child_id, \
+                        local_link.parent_id AS root_id, roots.root_rank, \
+                        local_link.sort_order, \
+                        ROW_NUMBER() OVER (\
+                            PARTITION BY roots.group_id, local_link.child_id \
+                            ORDER BY roots.root_rank, \
+                                     local_link.sort_order ASC NULLS LAST, \
+                                     local_link.parent_id\
+                        ) AS membership_rank \
+                 FROM roots \
+                 INNER JOIN jellyfin.linked_children AS local_link \
+                   ON local_link.parent_id = roots.root_id \
+                  AND local_link.child_type = 2\
+             ), ordered_members AS (\
+                 SELECT requested.request_order, requested.requested_id, \
+                        requested.group_id, item.*, root.root_rank, \
+                        local.root_id AS local_root_id, \
+                        local.root_rank AS local_root_rank, \
+                        local.sort_order AS local_sort_order, \
+                        requested_root.root_id IS NOT NULL AS requested_is_root, \
+                        CASE \
+                            WHEN item.id = requested.requested_id THEN 0 \
+                            WHEN root.root_id IS NOT NULL THEN 1 \
+                            WHEN local.root_id IS NOT NULL THEN 2 \
+                            ELSE 3 \
+                        END AS source_bucket \
+                 FROM requested \
+                 INNER JOIN jellyfin.base_items AS item \
+                   ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
+                  AND item.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                 LEFT JOIN roots AS root \
+                   ON root.group_id = requested.group_id AND root.root_id = item.id \
+                 LEFT JOIN roots AS requested_root \
+                   ON requested_root.group_id = requested.group_id \
+                  AND requested_root.root_id = requested.requested_id \
+                 LEFT JOIN local_memberships AS local \
+                   ON local.group_id = requested.group_id \
+                  AND local.child_id = item.id \
+                  AND local.membership_rank = 1\
+             ) \
+             SELECT {BASE_ITEM_COLUMNS} FROM ordered_members \
+             ORDER BY request_order, source_bucket, \
+                      CASE WHEN source_bucket = 1 THEN root_rank END ASC NULLS LAST, \
+                      CASE WHEN source_bucket = 2 THEN \
+                          CASE WHEN requested_is_root AND local_root_id = requested_id \
+                               THEN -1 ELSE local_root_rank END \
+                      END ASC NULLS LAST, \
+                      CASE WHEN source_bucket = 2 THEN local_sort_order END ASC NULLS LAST, \
+                      id"
         );
         Ok(
             base_item::Model::find_by_statement(Statement::from_sql_and_values(

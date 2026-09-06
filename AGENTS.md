@@ -271,6 +271,12 @@
   targets a nonexistent user.
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
+- Preserve the official relationship order when expanding alternate `MediaSources`: keep the
+  explicitly requested source first, emit every primary or user-linked grouping root before local
+  alternates, sort linked roots stably by non-empty `SortName` with link `sort_order` as the
+  fallback, and sort local alternates by their root and persisted `sort_order`. Use UUID ordering
+  only as a deterministic fallback for legacy rows without a relationship, and compute the order
+  in the set-based version query rather than loading links per item.
 - Resolve subtitle-stream, subtitle-playlist, and attachment route `MediaSourceId` values inside the requested item's authorized alternate-version group before reading runtime, streams, attachments, or files. Never serve a same-index stream from the displayed primary for an alternate source, and reject malformed or unrelated source ids with 404.
 - Preserve scan-discovered local alternate versions in resolver input order. Batch assignment must ignore missing and self-referential pairs before applying first-valid-assignment wins, persist a contiguous per-primary `sort_order`, compact both sides when a child moves between primaries, and remain idempotent on repeated scans. Serialize competing reassignment transactions before taking row locks so opposing moves cannot deadlock, and report parents whose DTO-visible version order changed even when no child's `primary_version_id` changed.
 - Apply the playback `DeviceProfile` independently to every returned `MediaSource`, preserving source order and producing version-specific flags and URLs. Only apply explicit audio or subtitle indexes to the source whose id matches an explicitly requested `MediaSourceId`.

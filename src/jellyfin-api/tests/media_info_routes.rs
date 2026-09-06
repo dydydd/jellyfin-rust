@@ -6,10 +6,10 @@ use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice,
-    entities::{base_item, user},
+    entities::{base_item, linked_child, user},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::Path};
 use tower::ServiceExt;
@@ -262,6 +262,17 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
             .await
             .expect("alternate media stream");
     }
+    for (sort_order, alternate_id) in [(0, alternate_ids[1]), (1, alternate_ids[0])] {
+        linked_child::ActiveModel {
+            parent_id: Set(fixture.item_id),
+            child_id: Set(alternate_id),
+            child_type: Set(2),
+            sort_order: Set(Some(sort_order)),
+        }
+        .insert(&fixture.database)
+        .await
+        .expect("ordered local alternate relationship");
+    }
 
     let route = format!("/Items/{}/PlaybackInfo", fixture.item_id);
     let all_sources = body_json(fixture.get(&route, Some(&fixture.user_token)).await).await;
@@ -275,6 +286,10 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .iter()
         .map(|source| source["Id"].as_str().expect("media source id").to_owned())
         .collect::<Vec<_>>();
+    assert_eq!(
+        source_order,
+        [fixture.item_id, alternate_ids[1], alternate_ids[0]].map(|id| id.simple().to_string())
+    );
     for source in sources {
         assert_version_stream_language_shape(source);
     }
@@ -282,6 +297,15 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
     let detail_route = format!("/Users/{}/Items/{}", fixture.user_id, fixture.item_id);
     let detail = body_json(fixture.get(&detail_route, Some(&fixture.user_token)).await).await;
     assert_eq!(detail["MediaSources"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        detail["MediaSources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|source| source["Id"].as_str().expect("detail source id"))
+            .collect::<Vec<_>>(),
+        source_order.iter().map(String::as_str).collect::<Vec<_>>()
+    );
     for source in detail["MediaSources"].as_array().unwrap() {
         assert_version_stream_language_shape(source);
     }
@@ -420,6 +444,11 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         -1
     );
 
+    linked_child::Entity::delete_many()
+        .filter(linked_child::Column::ParentId.eq(fixture.item_id))
+        .exec(&fixture.database)
+        .await
+        .expect("alternate relationship cleanup");
     for alternate_id in alternate_ids {
         base_item::Entity::delete_by_id(alternate_id)
             .exec(&fixture.database)
