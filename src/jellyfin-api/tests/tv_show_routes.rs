@@ -50,6 +50,39 @@ async fn seasons_route_lists_persisted_series_seasons_from_postgres() {
     }
 }
 
+#[tokio::test]
+async fn upcoming_route_matches_signed_pagination_contract() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        let fixture = Fixture::new(&task_database_name).await;
+        assert_upcoming_route(&fixture).await;
+        fixture.cleanup().await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
 async fn exercise_seasons_route(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
 
@@ -1641,6 +1674,36 @@ async fn assert_upcoming_route(fixture: &Fixture) {
         item_ids(&paged),
         vec![fixture.missing_episode_id.simple().to_string()]
     );
+
+    for (path, expected_count) in [
+        ("/Shows/Upcoming?StartIndex=-1&Limit=1", 1),
+        ("/Shows/Upcoming?startIndex=-1&limit=-1", 3),
+        ("/shows/upcoming?startindex=-1&limit=0", 0),
+    ] {
+        let signed_paging = body_json(fixture.get(path, Some(&fixture.user_token)).await).await;
+        assert_eq!(signed_paging["StartIndex"], -1, "{path}");
+        assert_eq!(signed_paging["TotalRecordCount"], expected_count, "{path}");
+        assert_eq!(
+            signed_paging["Items"]
+                .as_array()
+                .expect("upcoming items")
+                .len(),
+            expected_count,
+            "{path}"
+        );
+    }
+    for path in [
+        "/Shows/Upcoming?StartIndex=2147483648",
+        "/Shows/Upcoming?limit=2147483648",
+        "/Shows/Upcoming?startindex=-2147483649",
+        "/Shows/Upcoming?Limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture.get(path, Some(&fixture.user_token)).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
 }
 
 struct Fixture {

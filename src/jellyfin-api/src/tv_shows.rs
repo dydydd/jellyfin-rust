@@ -228,9 +228,9 @@ pub(crate) struct UpcomingQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: i32,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(
         default,
         rename = "fields",
@@ -274,6 +274,12 @@ pub(crate) async fn upcoming(
     Query(query): Query<UpcomingQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    // The official nullable Int32 contract preserves the requested offset in
+    // the response, only skips positive offsets, and lets SQLite interpret a
+    // negative LIMIT as unlimited.
+    let requested_start_index = query.start_index;
+    let start_index = u64::try_from(requested_start_index).unwrap_or_default();
+    let limit = query.limit.and_then(|limit| u64::try_from(limit).ok());
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
     let _ = (
@@ -294,20 +300,19 @@ pub(crate) async fn upcoming(
                 include_item_types: vec!["Episode".to_owned()],
                 min_premiere_date: Some(Utc::now() - Duration::days(1)),
                 order: BaseItemOrder::PremiereDateAscending,
-                start_index: query.start_index,
-                limit: query.limit,
+                start_index,
+                limit,
                 enable_total_record_count: Some(false),
                 ..BaseItemQuery::default()
             },
         )
         .await?;
     let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
-    let start_index = i32::try_from(page.start_index).unwrap_or(i32::MAX);
     let items = project_items_to_dtos(state.as_ref(), page.items, fields, target_user_id).await?;
     Ok(Json(user_library::BaseItemQueryResult {
         items,
         total_record_count,
-        start_index,
+        start_index: requested_start_index,
     }))
 }
 
