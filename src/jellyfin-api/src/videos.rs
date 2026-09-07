@@ -293,12 +293,32 @@ async fn stream_file(
     query: StreamQuery,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
-    let authenticated =
-        authentication::authenticated_session_for_uri(&state, &headers, request.uri()).await?;
-    let requested_item = state
-        .library_controller
-        .item(&authenticated.user, authenticated.user.id, item_id)
-        .await?;
+    let identity =
+        authentication::authenticated_identity(&state, &headers, Some(request.uri())).await?;
+    let mut requested_item = match identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            state
+                .library_controller
+                .item(&authenticated.user, authenticated.user.id, item_id)
+                .await?
+        }
+        // The official default authorization handler treats API keys as an
+        // unrestricted principal. Unlike a device session, they have no
+        // target-user library policy to apply before opening a stream.
+        authentication::AuthenticatedIdentity::ApiKey(_) => state
+            .base_items
+            .get(item_id)
+            .await?
+            .ok_or(ApiError::NotFound)?,
+    };
+    // Device sessions are hydrated by LibraryController. API keys load the
+    // unrestricted persisted row directly, so normalize official CLR aliases
+    // before applying this route's supported-video-type check.
+    let item_types = jellyfin_controller::ItemTypeRegistry::default();
+    let item_type = item_types
+        .resolve(&requested_item.item_type)
+        .ok_or(ApiError::NotFound)?;
+    requested_item.item_type = item_type.name().to_owned();
     if !matches!(
         requested_item.item_type.as_str(),
         "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"

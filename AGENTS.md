@@ -338,6 +338,9 @@
 - Keep progressive Video stream query binding aligned with `VideosController`: accept the full
   case-insensitive request surface, including the query-only `container` fallback on extensionless
   stream URLs, and cover PascalCase, camelCase, and lowercase SDK requests in focused tests.
+- Keep Video stream authorization aligned with the official default policy: device sessions resolve
+  media through their user's library policy, while a valid API key is unrestricted but still must
+  resolve an existing supported video item before either static local serving or remote proxying.
 - Preserve the official relationship order when expanding alternate `MediaSources`: keep the
   explicitly requested source first, emit every primary or user-linked grouping root before local
   alternates, sort linked roots stably by non-empty `SortName` with link `sort_order` as the

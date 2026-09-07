@@ -6,8 +6,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, ItemValueRepository, LinkedChildRepository,
-    LinkedChildType, NewBaseItem, NewDevice,
+    ApiKeyRepository, BaseItemRepository, DeviceRepository, ItemValueRepository,
+    LinkedChildRepository, LinkedChildType, NewBaseItem, NewDevice,
     entities::{item_value, user},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
@@ -138,6 +138,53 @@ async fn static_stream_uses_selected_alternate_media_source() {
     tokio::fs::remove_file(alternate_path)
         .await
         .expect("alternate fixture cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn static_video_stream_allows_api_keys_without_a_device_user() {
+    let fixture = Fixture::new().await;
+    let item = fixture
+        .repository
+        .get(fixture.group_a.primary)
+        .await
+        .expect("video lookup")
+        .expect("video item");
+    let path = item.path.expect("video path");
+    tokio::fs::write(&path, b"api-key-video")
+        .await
+        .expect("video fixture");
+    let route = format!(
+        "/Videos/{}/stream.mkv?Static=true&ApiKey={}",
+        fixture.group_a.primary, fixture.api_key_token
+    );
+
+    let response = fixture.send(Method::GET, &route, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("video response"),
+        "api-key-video"
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &format!(
+                    "/Videos/{}/stream.mkv?Static=true&ApiKey={}",
+                    fixture.non_video_id, fixture.api_key_token
+                ),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    tokio::fs::remove_file(path)
+        .await
+        .expect("video fixture cleanup");
     fixture.cleanup().await;
 }
 
@@ -553,6 +600,7 @@ struct Fixture {
     user_id: Uuid,
     admin_token: String,
     user_token: String,
+    api_key_token: String,
     group_a: VersionGroup,
     group_b: VersionGroup,
     non_video_id: Uuid,
@@ -582,6 +630,11 @@ impl Fixture {
         let devices = DeviceRepository::new(database.clone());
         let admin_token = session(&devices, admin.id, &format!("video-admin-{suffix}")).await;
         let user_token = session(&devices, user.id, &format!("video-user-{suffix}")).await;
+        let api_key_token = ApiKeyRepository::new(database.clone())
+            .create(&format!("video-key-{suffix}"))
+            .await
+            .expect("video API key")
+            .access_token;
         let repository = BaseItemRepository::new(database.clone());
         let group_a = create_group(
             &repository,
@@ -665,6 +718,7 @@ impl Fixture {
             user_id: user.id,
             admin_token,
             user_token,
+            api_key_token,
             group_a,
             group_b,
             non_video_id,
@@ -740,6 +794,10 @@ impl Fixture {
     }
 
     async fn cleanup(self) {
+        ApiKeyRepository::new(self.database.clone())
+            .revoke(&self.api_key_token)
+            .await
+            .expect("video API key cleanup");
         let ids = self
             .group_a
             .ids()
