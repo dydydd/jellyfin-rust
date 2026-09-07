@@ -377,14 +377,20 @@ fn supports_direct_play(
     actual_container: &str,
     streams: &[MediaStream],
 ) -> bool {
-    let selected_codec = streams
-        .iter()
-        .find(|stream| {
-            stream.stream_type == MediaStreamType::Audio
-                && query
-                    .audio_stream_index
-                    .is_none_or(|index| stream.index == index)
-        })
+    let selected_stream = streams.iter().find(|stream| {
+        stream.stream_type == MediaStreamType::Audio
+            && query
+                .audio_stream_index
+                .is_none_or(|index| stream.index == index)
+    });
+    if selected_stream.is_some_and(|stream| {
+        query
+            ._max_audio_bit_depth
+            .is_some_and(|maximum| stream.bit_depth.is_some_and(|depth| depth > maximum))
+    }) {
+        return false;
+    }
+    let selected_codec = selected_stream
         .and_then(|stream| stream.codec.as_deref())
         .map(str::trim)
         .filter(|codec| !codec.is_empty());
