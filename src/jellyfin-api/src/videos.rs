@@ -78,7 +78,7 @@ pub(crate) struct StreamQuery {
         alias = "EnableAutoStreamCopy",
         alias = "enableautostreamcopy"
     )]
-    _enable_auto_stream_copy: Option<bool>,
+    enable_auto_stream_copy: Option<bool>,
     #[serde(
         rename = "allowVideoStreamCopy",
         alias = "AllowVideoStreamCopy",
@@ -495,7 +495,8 @@ fn is_local_path(path: &str) -> bool {
 }
 
 fn copy_remux_has_no_transform(query: &StreamQuery) -> bool {
-    query.allow_video_stream_copy.unwrap_or(true)
+    query.enable_auto_stream_copy.unwrap_or(true)
+        && query.allow_video_stream_copy.unwrap_or(true)
         && query.allow_audio_stream_copy.unwrap_or(true)
         && query.video_bitrate.is_none()
         && query.audio_bitrate.is_none()
@@ -794,7 +795,7 @@ mod tests {
         assert_eq!(query._min_segments, Some(2));
         assert_eq!(query.media_source_id.as_deref(), Some("alternate"));
         assert_eq!(query._device_id.as_deref(), Some("device"));
-        assert_eq!(query._enable_auto_stream_copy, Some(true));
+        assert_eq!(query.enable_auto_stream_copy, Some(true));
         assert_eq!(query.allow_video_stream_copy, Some(false));
         assert_eq!(query.allow_audio_stream_copy, Some(true));
         assert_eq!(query.video_codec.as_deref(), Some("h264"));
@@ -890,6 +891,11 @@ mod tests {
             ..query
         };
         assert!(!copy_remux_has_no_transform(&resized));
+        let no_auto_copy = StreamQuery {
+            enable_auto_stream_copy: Some(false),
+            ..StreamQuery::default()
+        };
+        assert!(!copy_remux_has_no_transform(&no_auto_copy));
         assert!(!can_copy_remux(
             &StreamQuery {
                 video_codec: Some("hevc".to_owned()),
