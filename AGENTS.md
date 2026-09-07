@@ -570,7 +570,12 @@ For Android wire compatibility, run `android_sdk_compat` with a temporary Postgr
 `JELLYFIN_ANDROID_DUMP` set, then validate every dumped response with `tools/kotlin_validate.py`.
 Keep the fixture's canonical Person reconciliation and storage paths aligned with `AppState`, and
 use current generated Kotlin response types (including root arrays) rather than obsolete wrapper
-names. Do not add the checked-out SDK source tree or Python bytecode to commits.
+names. Validate that same dump with `tools/swift_validate.py` against the generated Swift Codable
+models: Swift rejects a present nested scalar, enum, dictionary, array, or ISO date whose wire
+shape differs, even when the property itself is optional. Run `tools/test_swift_validate.py` when
+changing that static validator, and use real Swift Codable decoding as an additional check whenever
+a Swift toolchain is available. Do not add the checked-out SDK source tree or Python bytecode to
+commits.
 
 Some `jellyfin-data` integration tests require PostgreSQL and create temporary databases whose names begin with `jellyfin_`. Do not point those tests at a database containing user data.
 
