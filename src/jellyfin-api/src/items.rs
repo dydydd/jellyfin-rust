@@ -2253,7 +2253,11 @@ async fn page_to_dto_with_fields_and_options(
         }
         _ => HashMap::new(),
     };
-    if let Some(target_user_id) = target_user_id {
+    // Match `DtoService.GetBaseItemDtos`: folder played/total precomputation is user-data
+    // projection work, so `EnableUserData=false` must not issue these recursive queries.
+    if dto_options.enable_user_data
+        && let Some(target_user_id) = target_user_id
+    {
         let unplayed_counts =
             user_library::unplayed_item_counts_for_items(state, &page.items, target_user_id)
                 .await?;
