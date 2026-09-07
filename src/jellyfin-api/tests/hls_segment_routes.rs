@@ -297,6 +297,10 @@ async fn official_video_rows_validate_before_scan_and_gate_real_segments() {
 async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
     let fixture = Fixture::new().await;
     let item_id = Uuid::new_v4();
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut item = NewBaseItem::new(item_id, "Movie");
+    item.path = Some("/media/dynamic-hls.mkv".to_owned());
+    items.create(item).await.expect("dynamic HLS item");
     fs::write(
         fixture.transcode_path().join("master.m3u8"),
         b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000\nmain.m3u8\n",
@@ -465,6 +469,11 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
         StatusCode::FORBIDDEN
     );
 
+    items
+        .delete(item_id)
+        .await
+        .expect("dynamic HLS item cleanup");
+
     fixture.cleanup().await;
 }
 
@@ -612,6 +621,10 @@ async fn universal_audio_hls_uses_the_authenticated_audio_playlist_pipeline() {
         .lines()
         .find(|line| line.starts_with("/Audio/"))
         .expect("Universal Audio HLS VOD segment URL");
+    assert!(
+        segment_url.contains(&format!("userId={}", fixture.user_id)),
+        "HLS segments must retain the playback target user"
+    );
     let response = fixture.get(segment_url, fixture.device_headers()).await;
     assert_file_response(
         response,

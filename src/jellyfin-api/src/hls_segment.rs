@@ -274,7 +274,7 @@ pub(crate) async fn audio_main_playlist(
 pub(crate) async fn audio_hls1_segment(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
-    Path((_item_id, playlist_id, segment_file)): Path<(Uuid, String, String)>,
+    Path((item_id, playlist_id, segment_file)): Path<(Uuid, String, String)>,
     Query(query): Query<DynamicSegmentQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -283,6 +283,7 @@ pub(crate) async fn audio_hls1_segment(
         &state,
         headers,
         &uri,
+        item_id,
         &playlist_id,
         segment_id,
         container,
@@ -359,7 +360,7 @@ pub(crate) async fn video_main_playlist(
 pub(crate) async fn video_hls1_segment(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
-    Path((_item_id, playlist_id, segment_file)): Path<(Uuid, String, String)>,
+    Path((item_id, playlist_id, segment_file)): Path<(Uuid, String, String)>,
     Query(query): Query<DynamicSegmentQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -368,6 +369,7 @@ pub(crate) async fn video_hls1_segment(
         &state,
         headers,
         &uri,
+        item_id,
         &playlist_id,
         segment_id,
         container,
@@ -631,6 +633,7 @@ async fn start_hls_job(
             &settings,
             media_type,
             Some(identity.access_token()),
+            Some(target_user_id),
         )
         .map_err(|_| ApiError::Internal)?;
         tokio::fs::write(
@@ -792,6 +795,8 @@ pub(crate) struct DynamicSegmentQuery {
         alias = "actualsegmentlengthticks"
     )]
     actual_segment_length_ticks: i64,
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
     #[serde(
         rename = "startTimeTicks",
         alias = "StartTimeTicks",
@@ -882,12 +887,25 @@ async fn serve_authenticated_hls1_segment(
     state: &AppState,
     headers: HeaderMap,
     uri: &Uri,
+    item_id: Uuid,
     playlist_id: &str,
     segment_id: i32,
     container: &str,
     query: DynamicSegmentQuery,
 ) -> Result<Response, ApiError> {
-    authorization::require_default(state, &headers, uri).await?;
+    let identity = authorization::require_default(state, &headers, uri).await?;
+    if let crate::authentication::AuthenticatedIdentity::Device(session) = identity {
+        let target_user_id = query.user_id.unwrap_or(session.user.id);
+        if target_user_id != session.user.id && !session.user.is_administrator {
+            return Err(ApiError::Forbidden);
+        }
+        // Playlist segment URLs carry the original target-user context. Check
+        // it again here so a reusable HLS job cannot bypass library policy.
+        state
+            .user_library
+            .item(&session.user, target_user_id, item_id)
+            .await?;
+    }
     if query.runtime_ticks < 0
         || query.actual_segment_length_ticks <= 0
         || query.start_time_ticks.is_some_and(|ticks| ticks > 0)

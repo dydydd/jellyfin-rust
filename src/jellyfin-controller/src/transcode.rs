@@ -1056,6 +1056,7 @@ pub fn build_main_playlist(
     settings: &HlsSegmentSettings,
     media_type: &str,
     access_token: Option<&str>,
+    target_user_id: Option<Uuid>,
 ) -> Result<String, HlsPlaylistError> {
     let endpoint_prefix = format!("/{media_type}/{item_id}/hls1/{job_id}");
     let segment_ticks = compute_equal_length_segment_ticks(
@@ -1080,13 +1081,17 @@ pub fn build_main_playlist(
     let encoded_access_token = access_token
         .filter(|token| !token.is_empty())
         .map(percent_encode_query_value);
+    let target_user_id = target_user_id.map(|user_id| user_id.to_string());
     for (index, length_ticks) in segment_ticks.iter().enumerate() {
         let authentication = encoded_access_token
             .as_deref()
             .map_or_else(String::new, |token| format!("&api_key={token}"));
+        let user_context = target_user_id
+            .as_deref()
+            .map_or_else(String::new, |user_id| format!("&userId={user_id}"));
         let _ = write!(
             playlist,
-            "#EXTINF:{:.6},\n{endpoint_prefix}/{index}.{extension}?runtimeTicks={current_runtime_ticks}&actualSegmentLengthTicks={length_ticks}{authentication}\n",
+            "#EXTINF:{:.6},\n{endpoint_prefix}/{index}.{extension}?runtimeTicks={current_runtime_ticks}&actualSegmentLengthTicks={length_ticks}{user_context}{authentication}\n",
             *length_ticks as f64 / 10_000_000.0
         );
         current_runtime_ticks = current_runtime_ticks.saturating_add(*length_ticks);
@@ -1739,11 +1744,13 @@ mod tests {
             },
             "Videos",
             Some("test token&scope=all"),
+            Some(Uuid::from_u128(2)),
         )
         .expect("playlist");
         assert!(playlist.contains("#EXTM3U"));
         assert!(playlist.contains("/Videos/00000000-0000-0000-0000-000000000001/hls1/job1/0.ts?"));
         assert!(playlist.contains("runtimeTicks=0&actualSegmentLengthTicks=60000000"));
+        assert!(playlist.contains("&userId=00000000-0000-0000-0000-000000000002"));
         assert!(playlist.contains("&api_key=test%20token%26scope%3Dall"));
     }
 
@@ -1759,6 +1766,7 @@ mod tests {
                 min_segments: 2,
             },
             "Videos",
+            None,
             None,
         )
         .expect_err("an unknown runtime is not a finite VOD playlist");
