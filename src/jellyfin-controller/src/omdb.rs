@@ -253,29 +253,13 @@ impl OmdbMetadataProvider {
                 .await?;
         }
 
-        if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
-            && let Some(name) = result
-                .item
-                .core
-                .name
-                .as_deref()
-                .filter(|value| !value.is_empty())
-        {
-            item.name = Some(name.to_owned());
-            item.sort_name = Some(name.to_owned());
-        }
-        if replace_data
-            || item
-                .overview
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            item.overview = std::mem::take(&mut result.item.core.overview)
-                .filter(|value| !value.trim().is_empty());
-        }
-        if replace_data || item.official_rating.is_none() {
-            item.official_rating = std::mem::take(&mut result.item.official_rating);
-        }
+        crate::tmdb::merge_remote_scalar_fields(
+            &mut item,
+            result.item.core.name.as_deref(),
+            result.item.core.overview.as_deref(),
+            std::mem::take(&mut result.item.official_rating),
+            replace_data,
+        );
         if replace_data || item.production_year.is_none() {
             item.production_year = result.item.production_year;
         }

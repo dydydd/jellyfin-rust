@@ -850,27 +850,13 @@ impl TmdbMetadataProvider {
                 .await?;
         }
 
-        if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
-            && let Some(title) = details.title.as_deref().filter(|value| !value.is_empty())
-        {
-            item.name = Some(title.to_owned());
-            item.sort_name = Some(title.to_owned());
-        }
-        if replace_data
-            || item
-                .overview
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            item.overview = details
-                .overview
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_owned);
-        }
-        if replace_data || item.official_rating.is_none() {
-            item.official_rating = us_rating(&details.release_dates);
-        }
+        merge_remote_scalar_fields(
+            &mut item,
+            details.title.as_deref(),
+            details.overview.as_deref(),
+            us_rating(&details.release_dates),
+            replace_data,
+        );
         if replace_data || item.runtime_ticks.is_none() {
             item.runtime_ticks = details
                 .runtime
@@ -940,27 +926,13 @@ impl TmdbMetadataProvider {
                 .await?;
         }
 
-        if (replace_data || item.name.as_deref().is_none_or(str::is_empty))
-            && let Some(name) = details.name.as_deref().filter(|value| !value.is_empty())
-        {
-            item.name = Some(name.to_owned());
-            item.sort_name = Some(name.to_owned());
-        }
-        if replace_data
-            || item
-                .overview
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            item.overview = details
-                .overview
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_owned);
-        }
-        if replace_data || item.official_rating.is_none() {
-            item.official_rating = tv_rating(&details.content_ratings);
-        }
+        merge_remote_scalar_fields(
+            &mut item,
+            details.name.as_deref(),
+            details.overview.as_deref(),
+            tv_rating(&details.content_ratings),
+            replace_data,
+        );
         if let Some(premiere_date) = parse_tmdb_date(details.first_air_date.as_deref())
             && (replace_data || item.premiere_date.is_none())
         {
@@ -1892,6 +1864,40 @@ fn visible_episodes_by_number(
         }
     }
     by_number
+}
+
+pub(crate) fn merge_remote_scalar_fields(
+    item: &mut base_item::Model,
+    name: Option<&str>,
+    overview: Option<&str>,
+    official_rating: Option<String>,
+    replace_data: bool,
+) {
+    // MetadataService.MergeBaseItemData applies these field locks even when
+    // the final provider merge replaces all metadata, including empty targets.
+    if !metadata_field_locked(item.data.as_ref(), "Name")
+        && (replace_data || item.name.as_deref().is_none_or(str::is_empty))
+        && let Some(name) = name.filter(|value| !value.trim().is_empty())
+    {
+        item.name = Some(name.to_owned());
+        item.sort_name = Some(name.to_owned());
+    }
+    if !metadata_field_locked(item.data.as_ref(), "Overview")
+        && (replace_data
+            || item
+                .overview
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty()))
+    {
+        item.overview = overview
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned);
+    }
+    if !metadata_field_locked(item.data.as_ref(), "OfficialRating")
+        && (replace_data || item.official_rating.is_none())
+    {
+        item.official_rating = official_rating;
+    }
 }
 
 fn metadata_field_locked(data: Option<&Value>, field: &str) -> bool {
@@ -3274,6 +3280,120 @@ mod tests {
             Some(&json!({ "LockedFields": ["Overview"] })),
             "Name"
         ));
+    }
+
+    #[test]
+    fn remote_scalar_merge_honors_each_lock_during_full_replacement() {
+        // Both TMDb Movie/Series and OMDb use this final merge, corresponding
+        // to MetadataService.MergeBaseItemData's per-field lock checks.
+        for locked_field in ["Name", "Overview", "OfficialRating"] {
+            let mut item = episode_item("Edited title", "/movie.mkv", 1);
+            item.item_type = "Movie".to_owned();
+            item.sort_name = Some("Edited sort title".to_owned());
+            item.overview = Some("Edited overview".to_owned());
+            item.official_rating = Some("Edited rating".to_owned());
+            item.data = Some(json!({ "lockedfields": [locked_field.to_lowercase()] }));
+
+            merge_remote_scalar_fields(
+                &mut item,
+                Some("Remote title"),
+                Some("Remote overview"),
+                Some("Remote rating".to_owned()),
+                true,
+            );
+
+            assert_eq!(
+                item.name.as_deref(),
+                Some(if locked_field == "Name" {
+                    "Edited title"
+                } else {
+                    "Remote title"
+                })
+            );
+            assert_eq!(
+                item.sort_name.as_deref(),
+                Some(if locked_field == "Name" {
+                    "Edited sort title"
+                } else {
+                    "Remote title"
+                })
+            );
+            assert_eq!(
+                item.overview.as_deref(),
+                Some(if locked_field == "Overview" {
+                    "Edited overview"
+                } else {
+                    "Remote overview"
+                })
+            );
+            assert_eq!(
+                item.official_rating.as_deref(),
+                Some(if locked_field == "OfficialRating" {
+                    "Edited rating"
+                } else {
+                    "Remote rating"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn remote_scalar_merge_does_not_fill_locked_empty_fields() {
+        for replace_data in [false, true] {
+            let mut item = episode_item("", "/series", 1);
+            item.item_type = "Series".to_owned();
+            item.name = None;
+            item.sort_name = Some("Preserved sort title".to_owned());
+            item.data = Some(json!({ "LockedFields": "NAME|overview,OfficialRating" }));
+
+            merge_remote_scalar_fields(
+                &mut item,
+                Some("Remote title"),
+                Some("Remote overview"),
+                Some("Remote rating".to_owned()),
+                replace_data,
+            );
+
+            assert_eq!(item.name, None);
+            assert_eq!(item.sort_name.as_deref(), Some("Preserved sort title"));
+            assert_eq!(item.overview, None);
+            assert_eq!(item.official_rating, None);
+        }
+    }
+
+    #[test]
+    fn remote_scalar_merge_preserves_provider_priority_for_unlocked_fields() {
+        let mut item = episode_item("", "/movie.mkv", 1);
+        item.item_type = "Movie".to_owned();
+        merge_remote_scalar_fields(
+            &mut item,
+            Some("Preferred title"),
+            Some("Preferred overview"),
+            Some("Preferred rating".to_owned()),
+            false,
+        );
+        merge_remote_scalar_fields(
+            &mut item,
+            Some("Lower priority title"),
+            Some("Lower priority overview"),
+            Some("Lower priority rating".to_owned()),
+            false,
+        );
+        assert_eq!(item.name.as_deref(), Some("Preferred title"));
+        assert_eq!(item.overview.as_deref(), Some("Preferred overview"));
+        assert_eq!(item.official_rating.as_deref(), Some("Preferred rating"));
+
+        merge_remote_scalar_fields(
+            &mut item,
+            Some("  \t  "),
+            Some("Replacement overview"),
+            Some("Replacement rating".to_owned()),
+            true,
+        );
+        assert_eq!(item.name.as_deref(), Some("Preferred title"));
+        assert_eq!(item.sort_name.as_deref(), Some("Preferred title"));
+        assert_eq!(item.overview.as_deref(), Some("Replacement overview"));
+        assert_eq!(item.official_rating.as_deref(), Some("Replacement rating"));
     }
 
     #[test]
