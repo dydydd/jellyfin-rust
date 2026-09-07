@@ -615,7 +615,9 @@ fn output_container(requested_container: Option<&str>, query_container: Option<&
         .unwrap_or_else(|| "mp4".to_owned())
 }
 
-fn required_remote_user_agent(item: &jellyfin_data::entities::base_item::Model) -> Option<&str> {
+pub(crate) fn required_remote_user_agent(
+    item: &jellyfin_data::entities::base_item::Model,
+) -> Option<&str> {
     let headers = item
         .data
         .as_ref()
@@ -637,7 +639,7 @@ fn required_remote_user_agent(item: &jellyfin_data::entities::base_item::Model) 
         .filter(|value| !value.is_empty())
 }
 
-async fn proxy_remote_stream(
+pub(crate) async fn proxy_remote_stream(
     client: &reqwest::Client,
     client_headers: &HeaderMap,
     item_id: Uuid,

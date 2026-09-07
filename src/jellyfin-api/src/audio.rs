@@ -4,7 +4,7 @@ use axum::{
     body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, Request},
-    response::Response,
+    response::{IntoResponse, Redirect, Response},
 };
 use bytes::Bytes;
 use futures_util::stream;
@@ -170,7 +170,7 @@ pub(crate) struct UniversalQuery {
         alias = "EnableRemoteMedia",
         alias = "enableremotemedia"
     )]
-    _enable_remote_media: Option<bool>,
+    enable_remote_media: Option<bool>,
     #[serde(
         rename = "enableAudioVbrEncoding",
         alias = "EnableAudioVbrEncoding",
@@ -182,7 +182,7 @@ pub(crate) struct UniversalQuery {
         alias = "EnableRedirection",
         alias = "enableredirection"
     )]
-    _enable_redirection: Option<bool>,
+    enable_redirection: Option<bool>,
 }
 
 pub(crate) async fn stream(
@@ -246,7 +246,7 @@ pub(crate) async fn universal(
     if item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
-    let path = item.path.as_deref().ok_or(ApiError::NotFound)?;
+    let path = jellyfin_controller::media_source_path(&item).ok_or(ApiError::NotFound)?;
     let actual_container = std::path::Path::new(path)
         .extension()
         .and_then(std::ffi::OsStr::to_str)
@@ -259,6 +259,22 @@ pub(crate) async fn universal(
     });
     let requires_transcode = universal_requires_transcode(&query);
     if supports_direct && !requires_transcode {
+        if path.starts_with("http://") || path.starts_with("https://") {
+            // The official controller only exposes an upstream URL when both
+            // client capabilities opt in.  Otherwise Jellyfin remains the
+            // streaming endpoint and proxies the authorized remote source.
+            if should_redirect_remote_media(&query) {
+                return Ok(Redirect::temporary(path).into_response());
+            }
+            return crate::videos::proxy_remote_stream(
+                &state.remote_stream_client,
+                &headers,
+                item.id,
+                path,
+                crate::videos::required_remote_user_agent(&item),
+            )
+            .await;
+        }
         return serve_path(headers, path, request).await;
     }
 
@@ -307,6 +323,10 @@ fn universal_requires_transcode(query: &UniversalQuery) -> bool {
         || query.max_audio_sample_rate.is_some()
         || query.start_time_ticks.is_some_and(|ticks| ticks != 0)
         || query.transcoding_container.is_some()
+}
+
+fn should_redirect_remote_media(query: &UniversalQuery) -> bool {
+    query.enable_remote_media == Some(true) && query.enable_redirection == Some(true)
 }
 
 fn audio_container(codec: &str) -> &str {
@@ -423,7 +443,9 @@ mod tests {
     use axum::http::Uri;
     use axum_extra::extract::Query;
 
-    use super::{StreamQuery, UniversalQuery, universal_requires_transcode};
+    use super::{
+        StreamQuery, UniversalQuery, should_redirect_remote_media, universal_requires_transcode,
+    };
 
     #[test]
     fn audio_stream_binds_alternate_media_source_id_case_insensitively() {
@@ -454,7 +476,7 @@ mod tests {
 
     #[test]
     fn universal_audio_binds_sdk_parameters_case_insensitively() {
-        let uri: Uri = "/audio/item/universal?mediasourceid=alternate&transcodingAudioChannels=2&AudioBitRate=128000&maxAudioSampleRate=48000&maxAudioBitDepth=24&transcodingProtocol=hls&enableRedirection=false"
+        let uri: Uri = "/audio/item/universal?mediasourceid=alternate&transcodingAudioChannels=2&AudioBitRate=128000&maxAudioSampleRate=48000&maxAudioBitDepth=24&transcodingProtocol=hls&enableRemoteMedia=true&enableRedirection=false"
             .parse()
             .unwrap();
         let query = Query::<super::UniversalQuery>::try_from_uri(&uri)
@@ -469,7 +491,8 @@ mod tests {
             query._transcoding_protocol,
             Some(jellyfin_model::MediaStreamProtocol::Hls)
         );
-        assert_eq!(query._enable_redirection, Some(false));
+        assert_eq!(query.enable_remote_media, Some(true));
+        assert_eq!(query.enable_redirection, Some(false));
     }
 
     #[test]
@@ -480,6 +503,26 @@ mod tests {
         let query = Query::<UniversalQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.audio_bitrate, Some(128_000));
         assert!(universal_requires_transcode(&query));
+    }
+
+    #[test]
+    fn universal_audio_redirects_remote_media_only_when_both_capabilities_opt_in() {
+        for (query_string, expected) in [
+            ("", false),
+            ("enableRemoteMedia=true", false),
+            ("enableRedirection=true", false),
+            ("enableRemoteMedia=true&enableRedirection=true", true),
+        ] {
+            let uri: Uri = format!("/audio/item/universal?{query_string}")
+                .parse()
+                .unwrap();
+            let query = Query::<UniversalQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(
+                should_redirect_remote_media(&query),
+                expected,
+                "{query_string}"
+            );
+        }
     }
 
     #[test]

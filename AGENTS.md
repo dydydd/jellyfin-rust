@@ -621,6 +621,10 @@
   Resolve an explicit audio `MediaSourceId` inside the authorized version group before selecting
   the source path. Use `AudioBitRate` as the encoding target and `MaxStreamingBitrate` only as its
   fallback; use `TranscodingAudioChannels` for the encoder channel count.
+- Resolve Universal Audio `.strm` sources through the persisted remote target rather than the
+  local sidecar path. For a direct-compatible remote HTTP source, proxy it with the same bounded
+  range and persisted-User-Agent behavior as Video unless *both* `EnableRemoteMedia` and
+  `EnableRedirection` explicitly opt into the official temporary redirect.
 - `SubtitleStreamIndex` is the persisted media-stream index exposed by the API. When constructing an FFmpeg `subtitles` filter, convert it to the zero-based index among embedded subtitle streams only; external subtitle streams are file inputs and must never be passed as the filter's `si` value. Keep this conversion consistent for progressive video and HLS playback.
 - Progressive audio and video transcodes must use an output path unique to the request (or an equivalent complete parameter key); never let concurrent requests with different stream, codec, bitrate, seek, subtitle, or dimension options share one FFmpeg output file. Remove the temporary output after the response has consumed it.
 - Advertise video direct stream only when the selected local File source can be copied unchanged into
