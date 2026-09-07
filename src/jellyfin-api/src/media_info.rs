@@ -9,7 +9,7 @@ use axum::{
     Json,
     body::Body,
     extract::{
-        Path, Query, State,
+        OriginalUri, Path, Query, State,
         rejection::{JsonRejection, QueryRejection},
     },
     http::{HeaderValue, Response, header},
@@ -559,12 +559,12 @@ pub(crate) async fn get_playback_info(
     State(state): State<Arc<AppState>>,
     RemoteIp(remote_ip): RemoteIp,
     headers: axum::http::HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     query: Result<Query<PlaybackInfoQuery>, QueryRejection>,
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
-    let identity = authentication::authenticated_session(&state, &headers).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let target_user_id = query.user_id.unwrap_or(identity.user.id);
+    let identity = playback_request_identity(&state, &headers, &uri, query.user_id).await?;
     let _live_stream_id = query.live_stream_id;
     let _auto_open_live_stream = query.auto_open_live_stream.unwrap_or_default();
     let options = PlaybackOptions {
@@ -584,10 +584,10 @@ pub(crate) async fn get_playback_info(
     playback_info(
         &state,
         &identity.user,
-        target_user_id,
+        identity.target_user_id,
         item_id,
         options,
-        &identity.device.device_id,
+        &identity.device_id,
         &identity.access_token,
         remote_ip,
     )
@@ -599,20 +599,21 @@ pub(crate) async fn post_playback_info(
     State(state): State<Arc<AppState>>,
     RemoteIp(remote_ip): RemoteIp,
     headers: axum::http::HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     query: Result<Query<PlaybackInfoQuery>, QueryRejection>,
     body: Result<Option<Json<PlaybackInfoDto>>, JsonRejection>,
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
-    let identity = authentication::authenticated_session(&state, &headers).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let body = optional_playback_body(body)?.unwrap_or_default();
-    let target_user_id = query.user_id.or(body.user_id).unwrap_or(identity.user.id);
+    let identity =
+        playback_request_identity(&state, &headers, &uri, query.user_id.or(body.user_id)).await?;
     let device_profile = match body.device_profile {
         Some(profile) => Some(parse_device_profile(profile).map_err(|error| {
             tracing::debug!(%error, "invalid playback device profile");
             ApiError::InvalidRequest
         })?),
-        None => stored_device_profile(&identity.device.capabilities),
+        None => identity.stored_device_profile,
     };
     // These legacy parameters are relevant only to live sources. Parse and
     // merge them for wire compatibility, but do not synthesize Live TV state
@@ -660,10 +661,10 @@ pub(crate) async fn post_playback_info(
     playback_info(
         &state,
         &identity.user,
-        target_user_id,
+        identity.target_user_id,
         item_id,
         options,
-        &identity.device.device_id,
+        &identity.device_id,
         &identity.access_token,
         remote_ip,
     )
@@ -724,6 +725,53 @@ fn optional_playback_body(
         Ok(Some(Json(body))) => Ok(Some(body)),
         Ok(None) | Err(JsonRejection::MissingJsonContentType(_)) => Ok(None),
         Err(_) => Err(ApiError::InvalidRequest),
+    }
+}
+
+/// The user and device context used to resolve a policy-aware playback request.
+///
+/// API keys are administrator-equivalent but do not carry an implicit user or
+/// device session. They must therefore name a real target user, whose normal
+/// library policy is used for both lookup and source projection.
+struct PlaybackRequestIdentity {
+    user: jellyfin_data::entities::user::Model,
+    target_user_id: Uuid,
+    device_id: String,
+    access_token: String,
+    stored_device_profile: Option<DeviceProfile>,
+}
+
+async fn playback_request_identity(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+    requested_user_id: Option<Uuid>,
+) -> Result<PlaybackRequestIdentity, ApiError> {
+    let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
+    let target_user_id = identity.target_user_id(requested_user_id)?;
+    let access_token = identity.access_token().to_owned();
+    match identity {
+        authentication::AuthenticatedIdentity::Device(session) => Ok(PlaybackRequestIdentity {
+            user: session.user,
+            target_user_id,
+            device_id: session.device.device_id,
+            access_token,
+            stored_device_profile: stored_device_profile(&session.device.capabilities),
+        }),
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            // API keys have no implicit user. This deliberately keeps a missing
+            // target user distinct from a device session's own user context.
+            if target_user_id.is_nil() {
+                return Err(ApiError::NotFound);
+            }
+            Ok(PlaybackRequestIdentity {
+                user: state.users.get(target_user_id).await?,
+                target_user_id,
+                device_id: "api-key".to_owned(),
+                access_token,
+                stored_device_profile: None,
+            })
+        }
     }
 }
 

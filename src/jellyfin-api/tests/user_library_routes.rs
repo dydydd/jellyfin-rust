@@ -320,6 +320,70 @@ async fn api_key_item_detail_uses_the_explicit_target_users_policy() {
 }
 
 #[tokio::test]
+async fn api_key_playback_info_uses_an_explicit_target_user() {
+    let fixture = UserLibraryFixture::new().await;
+    let api_key = ApiKeyRepository::new(fixture.database.clone())
+        .create(&format!("playback-info-{}", Uuid::new_v4().simple()))
+        .await
+        .expect("playback-info API key");
+
+    for route in [
+        format!(
+            "/Items/{}/PlaybackInfo?UserId={}",
+            fixture.item_id, fixture.user_id
+        ),
+        format!(
+            "/items/{}/playbackinfo?userid={}&apikey={}",
+            fixture.item_id, fixture.user_id, api_key.access_token
+        ),
+    ] {
+        let response = request(&fixture.app, &route, &api_key.access_token).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+    }
+
+    let query_token_route = format!(
+        "/items/{}/playbackinfo?userid={}&apikey={}",
+        fixture.item_id, fixture.user_id, api_key.access_token
+    );
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::get(&query_token_route)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{query_token_route}");
+
+    let posted = request_post(
+        &fixture.app,
+        &format!(
+            "/Items/{}/PlaybackInfo?UserId={}",
+            fixture.item_id, fixture.user_id
+        ),
+        &api_key.access_token,
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+
+    let missing_target = request(
+        &fixture.app,
+        &format!("/Items/{}/PlaybackInfo", fixture.item_id),
+        &api_key.access_token,
+    )
+    .await;
+    assert_eq!(missing_target.status(), StatusCode::NOT_FOUND);
+
+    api_key::Entity::delete_by_id(api_key.id)
+        .exec(&fixture.database)
+        .await
+        .expect("API key cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn related_item_routes_batch_default_fields_and_enforce_target_user_visibility() {
     let fixture = UserLibraryFixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
