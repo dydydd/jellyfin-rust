@@ -106,6 +106,7 @@ pub(crate) struct StreamQuery {
         rename = "audioBitRate",
         alias = "AudioBitRate",
         alias = "AudioBitrate",
+        alias = "audioBitrate",
         alias = "audiobitrate"
     )]
     audio_bitrate: Option<i64>,
@@ -993,7 +994,7 @@ mod tests {
     fn video_stream_binds_android_progressive_parameters() {
         // These names deliberately mix the canonical SDK casing, PascalCase,
         // and lower-case legacy spelling accepted by ASP.NET model binding.
-        let uri: Uri = "/videos/item/stream.mp4?container=webm&static=false&params=client%3Dandroid&Tag=etag&deviceprofileid=profile&PlaySessionId=play-session&segmentcontainer=ts&SegmentLength=6&minsegments=2&MediaSourceId=alternate&deviceid=device&enableautostreamcopy=true&AllowVideoStreamCopy=false&allowaudiostreamcopy=true&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&audioSampleRate=48000&MaxAudioBitDepth=24&audioChannels=2&maxAudioChannels=6&Profile=high&Level=4.1&framerate=24&width=1280&Height=720&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&MaxRefFrames=4&maxvideobitdepth=10&RequireAvc=true&deinterlace=true&requireNonAnamorphic=true&startTimeTicks=10000&CopyTimestamps=true&cpuCoreLimit=2&liveStreamId=live&enableMpegtsM2TsMode=true&subtitleCodec=srt&transcodeReasons=ContainerNotSupported&context=Streaming&streamoptions=quality%3Dhigh&enableAudioVbrEncoding=false"
+        let uri: Uri = "/videos/item/stream.mp4?container=webm&static=false&params=client%3Dandroid&Tag=etag&deviceprofileid=profile&PlaySessionId=play-session&segmentcontainer=ts&SegmentLength=6&minsegments=2&MediaSourceId=alternate&deviceid=device&enableautostreamcopy=true&AllowVideoStreamCopy=false&allowaudiostreamcopy=true&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&audioBitrate=128000&audioSampleRate=48000&MaxAudioBitDepth=24&audioChannels=2&maxAudioChannels=6&Profile=high&Level=4.1&framerate=24&width=1280&Height=720&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&MaxRefFrames=4&maxvideobitdepth=10&RequireAvc=true&deinterlace=true&requireNonAnamorphic=true&startTimeTicks=10000&CopyTimestamps=true&cpuCoreLimit=2&liveStreamId=live&enableMpegtsM2TsMode=true&subtitleCodec=srt&transcodeReasons=ContainerNotSupported&context=Streaming&streamoptions=quality%3Dhigh&enableAudioVbrEncoding=false"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;

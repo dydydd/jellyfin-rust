@@ -392,8 +392,9 @@
   bitrate, dimensions, and start position; explicit `static=true` remains byte-for-byte static
   playback with remote Range forwarding.
 - Accept the exact official URL spellings emitted by `StreamInfo.to_url`, including
-  `VideoBitrate` and `AudioBitrate` as well as legacy `VideoBitRate`/`AudioBitRate`; do not rely
-  on case-insensitive matching to bridge the different internal capitalisation.
+  `VideoBitrate`, `AudioBitrate`, and Android's `audioBitrate`, as well as legacy
+  `VideoBitRate`/`AudioBitRate`; do not rely on case-insensitive matching to bridge the different
+  internal capitalisation.
 - Bind video `SubtitleStreamIndex` and `SubtitleMethod` on progressive stream routes. Match the
   official default `Encode` behavior by burning the selected local subtitle stream into video;
   `External` and `Drop` must not silently burn it into the video.
