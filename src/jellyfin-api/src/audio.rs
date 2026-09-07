@@ -218,6 +218,12 @@ pub(crate) async fn universal(
     if target_user_id != identity.user.id && !identity.user.is_administrator {
         return Err(ApiError::Forbidden);
     }
+    let target_policy: jellyfin_model::UserPolicy = if target_user_id == identity.user.id {
+        serde_json::from_value(identity.user.policy.clone()).map_err(|_| ApiError::Internal)?
+    } else {
+        serde_json::from_value(state.users.get(target_user_id).await?.policy)
+            .map_err(|_| ApiError::Internal)?
+    };
     let item = state
         .library_controller
         .item(&identity.user, target_user_id, item_id)
@@ -276,6 +282,10 @@ pub(crate) async fn universal(
             .await;
         }
         return serve_path(headers, path, request).await;
+    }
+
+    if !target_policy.enable_audio_playback_transcoding {
+        return Err(ApiError::Forbidden);
     }
 
     if universal_uses_hls(&query) {
