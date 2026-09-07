@@ -103,6 +103,57 @@ async fn assert_atomic_credit_replacement(items: &BaseItemRepository, people: &P
     assert_eq!(replaced[1].person_type, "Writer");
     assert_eq!(replaced[1].role, "Screenplay");
 
+    let invalid_append = people
+        .link_credits_many(
+            item.id,
+            vec![
+                NewPersonCredit {
+                    person: NewPerson::new(format!("Append Person {suffix}")),
+                    person_type: "Actor".to_owned(),
+                    role: String::new(),
+                    sort_order: Some(2),
+                    list_order: 2,
+                },
+                NewPersonCredit {
+                    person: NewPerson::new("---"),
+                    person_type: "Writer".to_owned(),
+                    role: String::new(),
+                    sort_order: Some(3),
+                    list_order: 3,
+                },
+            ],
+        )
+        .await;
+    assert!(matches!(invalid_append, Err(PersonError::InvalidName)));
+    assert_eq!(
+        people
+            .people_for_item(item.id)
+            .await
+            .expect("credits after invalid append")
+            .len(),
+        2
+    );
+
+    people
+        .link_credits_many(
+            item.id,
+            vec![NewPersonCredit {
+                person: NewPerson::new(format!("Append Person {suffix}")),
+                person_type: "Actor".to_owned(),
+                role: String::new(),
+                sort_order: Some(2),
+                list_order: 2,
+            }],
+        )
+        .await
+        .expect("additive batch credits");
+    let appended = people
+        .people_for_item(item.id)
+        .await
+        .expect("appended credits");
+    assert_eq!(appended.len(), 3);
+    assert_eq!(appended[2].person_type, "Actor");
+
     items
         .delete(item.id)
         .await

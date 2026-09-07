@@ -15,10 +15,10 @@ use jellyfin_data::{
     ItemUpdateRepository, ItemUpdateStoreError, ItemValueError, ItemValueRepository,
     MediaAttachmentRepository, MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository,
     MediaStreamStoreError, NewBaseItem, NewBaseItemImage, NewChapter, NewItemByNameEntity,
-    NewPerson, PersistedMediaAttachment, PersistedMediaStream, PersistedMediaStreamType,
-    PersonError as PersonStoreError, PersonRepository, ServerConfigurationRepository,
-    ServerConfigurationStoreError, TvHierarchyCandidate, USER_ROOT_FOLDER_ID, VirtualFolderError,
-    VirtualFolderRepository, VirtualFolderWithPaths,
+    NewPerson, NewPersonCredit, PersistedMediaAttachment, PersistedMediaStream,
+    PersistedMediaStreamType, PersonError as PersonStoreError, PersonRepository,
+    ServerConfigurationRepository, ServerConfigurationStoreError, TvHierarchyCandidate,
+    USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
     entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_extensions::StringExtensions;
@@ -2923,23 +2923,22 @@ impl LibraryScanService {
                 )
                 .await?;
         }
-        for studio in relations.studios {
-            self.values
-                .link(item_id, ItemValueType::Studios, &studio)
-                .await?;
-        }
-        for (list_order, person) in relations.people.into_iter().enumerate() {
-            self.people
-                .link(
-                    item_id,
-                    NewPerson::new(person.name),
-                    &person.person_type,
-                    Some(&person.role),
-                    person.sort_order,
-                    i32::try_from(list_order).unwrap_or(i32::MAX),
-                )
-                .await?;
-        }
+        self.values
+            .link_many(item_id, ItemValueType::Studios, &relations.studios)
+            .await?;
+        let credits = relations
+            .people
+            .into_iter()
+            .enumerate()
+            .map(|(list_order, person)| NewPersonCredit {
+                person: NewPerson::new(person.name),
+                person_type: person.person_type,
+                role: person.role,
+                sort_order: person.sort_order,
+                list_order: i32::try_from(list_order).unwrap_or(i32::MAX),
+            })
+            .collect();
+        self.people.link_credits_many(item_id, credits).await?;
         Ok(())
     }
 

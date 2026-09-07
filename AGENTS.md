@@ -23,6 +23,9 @@
   media-probe fallbacks remain partial successes and must not make the scan fail.
 - Keep database invariants in PostgreSQL where practical (constraints, indexes, atomic upserts, transactions), while keeping domain rules explicit in Rust.
 - Avoid N+1 queries. Use set-based queries or bounded batches, and add migrations for indexes or constraints required by new query patterns.
+- Persist additive NFO Studio and Person relations in one validated transaction per media item:
+  preserve existing credits, keep Person `list_order`/role conflict semantics, and never replace
+  all credits merely to reduce scan round trips.
 - Build playback-aware queries from the target user's `user_data` rows and reverse hierarchy lookups rather than correlated scans over all `base_items`. Materialize shared candidate sets when count and page queries would otherwise repeat expensive work.
 - Project inherited images for an item page with one batched DTO-image lookup. Do not call the image projector once per item.
 - Project `ImageBlurHashes` only from persisted image metadata in the same batched DTO-image lookup

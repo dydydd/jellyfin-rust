@@ -281,6 +281,73 @@ impl PersonRepository {
         Ok(person)
     }
 
+    /// Atomically appends several canonical credits to a base item.
+    ///
+    /// Unlike [`Self::replace_credits`], this preserves credits that are not
+    /// present in the input. It is intended for scan metadata, whose NFO
+    /// relations are additive. Repeated writes keep the existing `link`
+    /// conflict semantics for role and ordering metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ItemNotFound`, validation, or database errors. Validation is
+    /// completed before the transaction starts, so invalid later credits do
+    /// not persist earlier ones.
+    pub async fn link_credits_many(
+        &self,
+        item_id: Uuid,
+        credits: Vec<NewPersonCredit>,
+    ) -> Result<(), PersonError> {
+        for credit in &credits {
+            clean_name(&credit.person.name)?;
+            if !credit.person.provider_ids.is_object() {
+                return Err(PersonError::InvalidProviderIds);
+            }
+            validate_credit(&credit.person_type, credit.sort_order, credit.list_order)?;
+        }
+        if credits.is_empty() {
+            return Ok(());
+        }
+
+        let transaction = self.database.begin().await?;
+        if base_item::Entity::find_by_id(item_id)
+            .one(&transaction)
+            .await?
+            .is_none()
+        {
+            return Err(PersonError::ItemNotFound);
+        }
+        for credit in credits {
+            let person = upsert_on(&transaction, credit.person).await?;
+            person_base_item_map::Entity::insert(person_base_item_map::ActiveModel {
+                item_id: sea_orm::Set(item_id),
+                person_id: sea_orm::Set(person.id),
+                person_type: sea_orm::Set(credit.person_type.trim().to_owned()),
+                role: sea_orm::Set(credit.role.trim().to_owned()),
+                sort_order: sea_orm::Set(credit.sort_order),
+                list_order: sea_orm::Set(credit.list_order),
+            })
+            .on_conflict(
+                OnConflict::columns([
+                    person_base_item_map::Column::ItemId,
+                    person_base_item_map::Column::PersonId,
+                    person_base_item_map::Column::PersonType,
+                    person_base_item_map::Column::Role,
+                ])
+                .update_columns([
+                    person_base_item_map::Column::SortOrder,
+                    person_base_item_map::Column::ListOrder,
+                ])
+                .to_owned(),
+            )
+            .exec_without_returning(&transaction)
+            .await
+            .map_err(map_database_error)?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// Atomically replaces every credit for one item and returns the canonical
     /// people in input order.
     ///

@@ -523,6 +523,7 @@ async fn assert_lookup_links_and_concurrency(
     values: &ItemValueRepository,
 ) -> Fixtures {
     assert_invalid_values(values).await;
+    assert_batch_links_are_additive_and_atomic(items, values).await;
     let mut seeded = seed_normalized_genre(items, values).await;
     assert_bidirectional_lookups(values, &seeded).await;
     let concurrent_ids = Box::pin(assert_concurrent_deduplication(
@@ -554,6 +555,48 @@ async fn assert_invalid_values(values: &ItemValueRepository) {
             .await,
         Err(ItemValueError::ItemNotFound)
     ));
+}
+
+async fn assert_batch_links_are_additive_and_atomic(
+    items: &BaseItemRepository,
+    values: &ItemValueRepository,
+) {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let item = create_item(items, "Movie", &format!("Batch Values {suffix}")).await;
+    let first = format!("First Studio {suffix}");
+    let second = format!("Second Studio {suffix}");
+    values
+        .link_many(
+            item.id,
+            item_value::ItemValueType::Studios,
+            &[first.clone(), second.clone(), first.clone()],
+        )
+        .await
+        .expect("idempotent batch links");
+    values
+        .link(item.id, item_value::ItemValueType::Studios, &first)
+        .await
+        .expect("existing link remains additive");
+    let linked = values
+        .values_for_item(item.id, item_value::ItemValueType::Studios)
+        .await
+        .expect("batch values");
+    assert_eq!(linked.len(), 2);
+
+    let invalid = values
+        .link_many(
+            item.id,
+            item_value::ItemValueType::Studios,
+            &[format!("Valid Studio {suffix}"), "---".to_owned()],
+        )
+        .await;
+    assert!(matches!(invalid, Err(ItemValueError::InvalidValue)));
+    let after_invalid = values
+        .values_for_item(item.id, item_value::ItemValueType::Studios)
+        .await
+        .expect("values after invalid batch");
+    assert_eq!(after_invalid, linked);
+    items.delete(item.id).await.expect("batch values cleanup");
 }
 
 async fn seed_normalized_genre(

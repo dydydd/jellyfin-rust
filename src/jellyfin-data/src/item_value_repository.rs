@@ -244,6 +244,62 @@ impl ItemValueRepository {
         Ok(item_value)
     }
 
+    /// Atomically creates or reuses several normalized values and links all of
+    /// them to one base item. Existing links are retained and duplicate input
+    /// values remain idempotent.
+    ///
+    /// Validation is completed before opening the transaction so malformed
+    /// scan metadata never leaves a partially linked item behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ItemNotFound` when the base item is absent, or a validation or
+    /// database error.
+    pub async fn link_many(
+        &self,
+        item_id: Uuid,
+        value_type: item_value::ItemValueType,
+        values: &[String],
+    ) -> Result<(), ItemValueError> {
+        for value in values {
+            validate_value(value)?;
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+
+        let transaction = self.database.begin().await?;
+        if base_item::Entity::find_by_id(item_id)
+            .one(&transaction)
+            .await?
+            .is_none()
+        {
+            return Err(ItemValueError::ItemNotFound);
+        }
+
+        let mut mappings = Vec::with_capacity(values.len());
+        for value in values {
+            let item_value = upsert_on(&transaction, value_type, value).await?;
+            mappings.push(item_value_map::ActiveModel {
+                item_value_id: Set(item_value.item_value_id),
+                item_id: Set(item_id),
+            });
+        }
+        item_value_map::Entity::insert_many(mappings)
+            .on_conflict(
+                OnConflict::columns([
+                    item_value_map::Column::ItemValueId,
+                    item_value_map::Column::ItemId,
+                ])
+                .do_nothing()
+                .to_owned(),
+            )
+            .exec_without_returning(&transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// Loads values of one type attached to an item in normalized name order.
     ///
     /// # Errors
