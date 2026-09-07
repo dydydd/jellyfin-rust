@@ -383,8 +383,14 @@ async fn stream_file(
                 .get(..8)
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
         {
-            return proxy_remote_stream(&state.remote_stream_client, &headers, item_id, &path)
-                .await;
+            return proxy_remote_stream(
+                &state.remote_stream_client,
+                &headers,
+                item_id,
+                &path,
+                required_remote_user_agent(&item),
+            )
+            .await;
         }
         return crate::audio::serve_path(headers, &path, request).await;
     }
@@ -609,13 +615,39 @@ fn output_container(requested_container: Option<&str>, query_container: Option<&
         .unwrap_or_else(|| "mp4".to_owned())
 }
 
+fn required_remote_user_agent(item: &jellyfin_data::entities::base_item::Model) -> Option<&str> {
+    let headers = item
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|data| {
+            [
+                "RequiredHttpHeaders",
+                "requiredHttpHeaders",
+                "required_http_headers",
+            ]
+            .iter()
+            .find_map(|key| data.get(*key))
+        })
+        .and_then(serde_json::Value::as_object)?;
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("User-Agent"))
+        .and_then(|(_, value)| value.as_str())
+        .filter(|value| !value.is_empty())
+}
+
 async fn proxy_remote_stream(
     client: &reqwest::Client,
     client_headers: &HeaderMap,
     item_id: Uuid,
     path: &str,
+    user_agent: Option<&str>,
 ) -> Result<Response, ApiError> {
     let mut request = client.get(path);
+    if let Some(user_agent) = user_agent {
+        request = request.header(header::USER_AGENT, user_agent);
+    }
     if let Some(range) = client_headers.get(header::RANGE) {
         request = request.header(header::RANGE, range);
     }
@@ -912,6 +944,7 @@ mod tests {
                 &headers,
                 Uuid::new_v4(),
                 &format!("http://{address}/signed/video.mkv?token=secret"),
+                Some("Jellyfin Remote Stream Test"),
             ),
         )
         .await
@@ -936,6 +969,12 @@ mod tests {
                 .any(|line| line.eq_ignore_ascii_case("range: bytes=20-29")),
             "{request}"
         );
+        assert!(
+            request.lines().any(|line| {
+                line.eq_ignore_ascii_case("user-agent: Jellyfin Remote Stream Test")
+            }),
+            "{request}"
+        );
     }
 
     #[tokio::test]
@@ -948,6 +987,7 @@ mod tests {
             &HeaderMap::new(),
             Uuid::new_v4(),
             &format!("http://{address}/video.mkv"),
+            None,
         )
         .await
         .expect_err("closed upstream port must fail");

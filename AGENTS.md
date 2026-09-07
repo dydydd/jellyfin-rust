@@ -627,6 +627,9 @@
   the selected progressive container. The remux command must map the selected streams with
   `-c:v copy -c:a copy` and must never accept filters, bitrate/size/frame-rate changes, subtitle
   burn-in, or a remote URL; fall back to an authorized encode or report the source unplayable.
+- For an authorized static HTTP media source, proxy byte ranges without buffering and forward only
+  the persisted `RequiredHttpHeaders.User-Agent` value. Do not copy arbitrary client headers or
+  expose a media item's remote authorization headers in unrelated DTO fields.
 
 ## Validation
 

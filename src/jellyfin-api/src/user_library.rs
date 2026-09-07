@@ -293,6 +293,8 @@ pub struct BaseItemDto {
     #[serde(skip)]
     pub(crate) media_source_timestamp: Option<TransportStreamTimestamp>,
     #[serde(skip)]
+    pub(crate) media_source_required_http_headers: HashMap<String, String>,
+    #[serde(skip)]
     pub(crate) album_artist_names: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overview: Option<String>,
@@ -1079,6 +1081,14 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         &["Timestamp", "timestamp"],
         TRANSPORT_STREAM_TIMESTAMPS,
     );
+    let media_source_required_http_headers = metadata_string_map(
+        item.data.as_ref(),
+        &[
+            "RequiredHttpHeaders",
+            "requiredHttpHeaders",
+            "required_http_headers",
+        ],
+    );
     let video_3d_format = metadata_enum(
         item.data.as_ref(),
         &["Video3DFormat", "video3DFormat", "video_3d_format"],
@@ -1110,6 +1120,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_source_size,
         media_source_etag,
         media_source_timestamp,
+        media_source_required_http_headers,
         album_artist_names: album_artist_names.clone().unwrap_or_default(),
         overview: item.overview,
         media_type: item
@@ -2623,6 +2634,7 @@ fn media_source_from_dto(
         etag: (protocol == MediaProtocol::File)
             .then(|| dto.media_source_etag.clone())
             .flatten(),
+        required_http_headers: dto.media_source_required_http_headers.clone(),
         ..MediaSourceInfo::default()
     })
 }
@@ -3292,6 +3304,23 @@ fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {
 
 fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
     metadata_value(data, keys).and_then(|value| value.as_str().map(str::to_owned))
+}
+
+fn metadata_string_map(data: Option<&Value>, keys: &[&str]) -> HashMap<String, String> {
+    metadata_value(data, keys)
+        .and_then(|value| value.as_object().cloned())
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    value
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .map(|value| (key, value.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn metadata_api_datetime(data: Option<&Value>, keys: &[&str]) -> Option<String> {
@@ -4217,6 +4246,10 @@ mod tests {
             media_source_path: Some(
                 "https://media.example/Movie.MP4?token=secret.mkv#fragment".to_owned(),
             ),
+            media_source_required_http_headers: HashMap::from([(
+                "User-Agent".to_owned(),
+                "Jellyfin Remote Stream Test".to_owned(),
+            )]),
             ..BaseItemDto::default()
         };
 
@@ -4228,6 +4261,10 @@ mod tests {
         assert_eq!(source.container.as_deref(), Some("mp4"));
         assert_eq!(source.name.as_deref(), Some("Cloud Movie"));
         assert_eq!(source.etag, None);
+        assert_eq!(
+            source.required_http_headers.get("User-Agent"),
+            Some(&"Jellyfin Remote Stream Test".to_owned())
+        );
         assert!(
             serde_json::to_value(dto)
                 .unwrap()
