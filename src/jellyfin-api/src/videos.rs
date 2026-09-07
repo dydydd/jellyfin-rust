@@ -27,7 +27,7 @@ pub(crate) struct MergeVersionsQuery {
     ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct StreamQuery {
     // `container` is a query parameter on the extensionless official route.
     // The by-container route receives it from the path instead.
@@ -196,7 +196,7 @@ pub(crate) struct StreamQuery {
     )]
     _max_video_bit_depth: Option<i32>,
     #[serde(rename = "requireAvc", alias = "RequireAvc", alias = "requireavc")]
-    _require_avc: Option<bool>,
+    require_avc: Option<bool>,
     #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
     de_interlace: Option<bool>,
     #[serde(
@@ -522,8 +522,15 @@ fn can_copy_remux(
     requested_video_codec: &str,
     requested_audio_codec: &str,
 ) -> bool {
-    let Some(video_codec) =
-        selected_stream_codec(streams, MediaStreamType::Video, query.video_stream_index)
+    let Some(video_stream) =
+        selected_stream(streams, MediaStreamType::Video, query.video_stream_index)
+    else {
+        return false;
+    };
+    let Some(video_codec) = video_stream
+        .codec
+        .as_deref()
+        .filter(|codec| !codec.trim().is_empty())
     else {
         return false;
     };
@@ -532,7 +539,10 @@ fn can_copy_remux(
     else {
         return false;
     };
-    codecs_match(video_codec, requested_video_codec)
+    !(query.require_avc == Some(true)
+        && video_codec.eq_ignore_ascii_case("h264")
+        && video_stream.is_avc == Some(false))
+        && codecs_match(video_codec, requested_video_codec)
         && codecs_match(audio_codec, requested_audio_codec)
         && copy_remux_container_supports(container, video_codec, audio_codec)
 }
@@ -542,14 +552,20 @@ fn selected_stream_codec(
     stream_type: MediaStreamType,
     requested_index: Option<i32>,
 ) -> Option<&str> {
-    streams
-        .iter()
-        .find(|stream| {
-            stream.stream_type == stream_type
-                && requested_index.is_none_or(|index| stream.index == index)
-        })
+    selected_stream(streams, stream_type, requested_index)
         .and_then(|stream| stream.codec.as_deref())
         .filter(|codec| !codec.trim().is_empty())
+}
+
+fn selected_stream(
+    streams: &[MediaStream],
+    stream_type: MediaStreamType,
+    requested_index: Option<i32>,
+) -> Option<&MediaStream> {
+    streams.iter().find(|stream| {
+        stream.stream_type == stream_type
+            && requested_index.is_none_or(|index| stream.index == index)
+    })
 }
 
 fn codecs_match(actual: &str, requested: &str) -> bool {
@@ -818,7 +834,7 @@ mod tests {
         assert_eq!(query.subtitle_method.as_deref(), Some("Encode"));
         assert_eq!(query._max_ref_frames, Some(4));
         assert_eq!(query._max_video_bit_depth, Some(10));
-        assert_eq!(query._require_avc, Some(true));
+        assert_eq!(query.require_avc, Some(true));
         assert_eq!(query.de_interlace, Some(true));
         assert_eq!(query._require_non_anamorphic, Some(true));
         assert_eq!(query.start_time_ticks, Some(10_000));
@@ -885,6 +901,25 @@ mod tests {
 
         assert!(copy_remux_has_no_transform(&query));
         assert!(can_copy_remux(&query, "mp4", &streams, "h264", "aac"));
+
+        let non_avc_streams = vec![
+            MediaStream {
+                is_avc: Some(false),
+                ..streams[0].clone()
+            },
+            streams[1].clone(),
+        ];
+        let require_avc = StreamQuery {
+            require_avc: Some(true),
+            ..query.clone()
+        };
+        assert!(!can_copy_remux(
+            &require_avc,
+            "mp4",
+            &non_avc_streams,
+            "h264",
+            "aac",
+        ));
 
         let resized = StreamQuery {
             max_width: Some(1280),
