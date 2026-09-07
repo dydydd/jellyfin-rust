@@ -983,6 +983,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Items/{item_id}/PlaybackInfo",
             get(media_info::get_playback_info).post(media_info::post_playback_info),
         )
+        .route(
+            "/items/{item_id}/playbackinfo",
+            get(media_info::get_playback_info).post(media_info::post_playback_info),
+        )
         .route("/LiveStreams/Open", post(media_info::open_live_stream))
         .route("/LiveStreams/Close", post(media_info::close_live_stream))
         .route(

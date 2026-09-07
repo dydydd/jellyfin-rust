@@ -134,6 +134,9 @@
   the value.
 - Stream trickplay tile files with bounded chunks and preserve HEAD and byte-range semantics; never
   read an entire tile into a response buffer.
+- Keep playback-info route static segments compatible with ASP.NET's case-insensitive routing:
+  register both `/Items/{itemId}/PlaybackInfo` and `/items/{itemId}/playbackinfo` (including GET
+  and POST) so generated Android and Swift SDK requests never depend on URL casing.
 - Project `CanDelete` only when requested, except on official default all-fields item and root
   details. For user-less pages expose only the item's intrinsic capability; for user pages combine
   it with the target user's global or CollectionFolder-scoped deletion policy in one batched
