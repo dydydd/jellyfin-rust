@@ -314,6 +314,9 @@
   `static` requests must transcode with the requested video/audio codecs, stream indexes,
   bitrate, dimensions, and start position; explicit `static=true` remains byte-for-byte static
   playback with remote Range forwarding.
+- Bind video `SubtitleStreamIndex` and `SubtitleMethod` on progressive stream routes. Match the
+  official default `Encode` behavior by burning the selected local subtitle stream into video;
+  `External` and `Drop` must not silently burn it into the video.
 - Progressive audio/video stream responses must start FFmpeg and read the growing output file
   immediately, matching the official `ProgressiveFileStream` behavior; never await complete
   FFmpeg termination before returning the response, or Android playback of long media can stall.

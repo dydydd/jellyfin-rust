@@ -362,6 +362,7 @@ pub fn video_command(
     audio_stream_index: Option<i32>,
     video_stream_index: Option<i32>,
     start_time_ticks: Option<i64>,
+    subtitle_stream_index: Option<i32>,
 ) -> FfmpegCommand {
     let mut arguments = vec![
         "-hide_banner".to_owned(),
@@ -384,12 +385,23 @@ pub fn video_command(
         arguments.push("-b:v".to_owned());
         arguments.push(bitrate.to_string());
     }
+    let mut video_filters = Vec::new();
     if let Some(width) = max_width {
-        arguments.push("-vf".to_owned());
-        arguments.push(format!("scale='min({width},iw)':-2"));
+        video_filters.push(format!("scale='min({width},iw)':-2"));
     } else if let Some(height) = max_height {
+        video_filters.push(format!("scale=-2:'min({height},ih)'"));
+    }
+    if let Some(subtitle_index) = subtitle_stream_index.filter(|index| *index >= 0) {
+        let escaped = input_path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace(':', "\\:");
+        video_filters.push(format!("subtitles='{escaped}':si={subtitle_index}"));
+    }
+    if !video_filters.is_empty() {
         arguments.push("-vf".to_owned());
-        arguments.push(format!("scale=-2:'min({height},ih)'"));
+        arguments.push(video_filters.join(","));
     }
     arguments.push("-map".to_owned());
     arguments
@@ -1166,6 +1178,7 @@ mod tests {
             Some(2),
             Some(0),
             Some(10_000),
+            None,
         );
 
         assert_eq!(
@@ -1245,6 +1258,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert!(
@@ -1252,6 +1266,34 @@ mod tests {
                 .arguments
                 .windows(2)
                 .any(|pair| { pair == ["-movflags", "frag_keyframe+empty_moov+delay_moov"] })
+        );
+    }
+
+    #[test]
+    fn video_command_burns_the_selected_subtitle_stream() {
+        let command = video_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.mp4"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["-vf", "subtitles='/media/movie.mkv':si=3"] })
         );
     }
 

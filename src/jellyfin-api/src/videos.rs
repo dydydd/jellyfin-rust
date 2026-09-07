@@ -93,6 +93,18 @@ pub(crate) struct StreamQuery {
     )]
     video_stream_index: Option<i32>,
     #[serde(
+        rename = "subtitleStreamIndex",
+        alias = "SubtitleStreamIndex",
+        alias = "subtitlestreamindex"
+    )]
+    subtitle_stream_index: Option<i32>,
+    #[serde(
+        rename = "subtitleMethod",
+        alias = "SubtitleMethod",
+        alias = "subtitlemethod"
+    )]
+    subtitle_method: Option<String>,
+    #[serde(
         rename = "startTimeTicks",
         alias = "StartTimeTicks",
         alias = "starttimeticks"
@@ -230,6 +242,9 @@ async fn stream_file(
         query.audio_stream_index,
         query.video_stream_index,
         query.start_time_ticks,
+        query
+            .subtitle_stream_index
+            .filter(|_| should_burn_subtitles(query.subtitle_method.as_deref())),
     );
     crate::audio::serve_transcoded_path(
         command,
@@ -237,6 +252,13 @@ async fn stream_file(
         request.method() == axum::http::Method::HEAD,
     )
     .await
+}
+
+fn should_burn_subtitles(method: Option<&str>) -> bool {
+    method.is_none_or(|method| {
+        let method = method.trim();
+        method.eq_ignore_ascii_case("Encode") || method == "0"
+    })
 }
 
 fn video_codec_for_container(container: &str) -> &str {
@@ -385,7 +407,7 @@ mod tests {
 
     #[test]
     fn video_stream_binds_android_progressive_parameters() {
-        let uri: Uri = "/Videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&videoBitRate=2000000&maxWidth=1280&audioStreamIndex=2&videoStreamIndex=0&startTimeTicks=10000"
+        let uri: Uri = "/Videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&videoBitRate=2000000&maxWidth=1280&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
@@ -396,9 +418,14 @@ mod tests {
         assert_eq!(query.max_width, Some(1280));
         assert_eq!(query.audio_stream_index, Some(2));
         assert_eq!(query.video_stream_index, Some(0));
+        assert_eq!(query.subtitle_stream_index, Some(3));
+        assert_eq!(query.subtitle_method.as_deref(), Some("Encode"));
         assert_eq!(query.start_time_ticks, Some(10_000));
         assert_eq!(video_codec_for_container("mp4"), "h264");
         assert_eq!(audio_codec_for_container("webm"), "opus");
+        assert!(should_burn_subtitles(Some("Encode")));
+        assert!(should_burn_subtitles(Some("0")));
+        assert!(!should_burn_subtitles(Some("External")));
     }
 
     #[tokio::test]
