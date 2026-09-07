@@ -274,6 +274,7 @@ fn show_metadata_patch(
         tags: replace_data.then(|| genres.clone()),
         genres: crate::tmdb::remote_genres_patch(existing_data, genres, replace_data),
         provider_ids: Some(provider_ids),
+        ..Default::default()
     }
 }
 

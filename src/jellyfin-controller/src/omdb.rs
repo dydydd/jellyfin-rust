@@ -243,6 +243,7 @@ impl OmdbMetadataProvider {
                     tags: None,
                     genres,
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;

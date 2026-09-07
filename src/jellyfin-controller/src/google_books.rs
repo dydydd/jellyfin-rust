@@ -213,6 +213,7 @@ impl GoogleBooksMetadataProvider {
                     tags: Some(categories.clone()),
                     genres: Some(categories),
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;

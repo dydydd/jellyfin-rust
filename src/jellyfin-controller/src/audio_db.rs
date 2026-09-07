@@ -225,6 +225,7 @@ impl AudioDbMetadataProvider {
                     tags: None,
                     genres: Some(genres),
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;
@@ -297,6 +298,7 @@ impl AudioDbMetadataProvider {
                     tags: None,
                     genres: Some(genres),
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;

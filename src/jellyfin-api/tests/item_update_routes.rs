@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::{
     Router,
-    body::Body,
+    body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
@@ -12,19 +12,53 @@ use jellyfin_data::{
     NewDevice,
     entities::{api_key, base_item, item_value, user},
 };
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn item_update_route_matches_official_contract_and_postgres_semantics() {
-    let fixture = Fixture::new().await;
+    let config = jellyfin_data::DatabaseConfig::default();
+    let administrator = jellyfin_data::connect(&config).await.unwrap();
+    let database_name = format!("jellyfin_item_update_{}", Uuid::new_v4().simple());
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .unwrap();
+    let mut database_url = reqwest::Url::parse(&config.url).unwrap();
+    database_url.set_path(&database_name);
+    let outcome = tokio::spawn(async move {
+        let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig {
+            url: database_url.to_string(),
+            ..config
+        })
+        .await
+        .unwrap();
+        exercise_item_update(database).await;
+    })
+    .await;
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .unwrap();
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        std::panic::resume_unwind(error.into_panic());
+    }
+}
+
+async fn exercise_item_update(database: sea_orm::DatabaseConnection) {
+    let fixture = Fixture::new(database).await;
     fixture.assert_access_and_errors().await;
     fixture.assert_official_collection_rows().await;
     fixture.assert_three_state_normalization_and_api_key().await;
     fixture.assert_transaction_rollback().await;
     fixture.assert_concurrent_partial_updates().await;
+    fixture.assert_studio_edits_and_binding().await;
+    fixture
+        .assert_studio_rollback_and_concurrent_updates()
+        .await;
     fixture.cleanup().await;
 }
 
@@ -41,10 +75,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new() -> Self {
-        let database = jellyfin_data::connect(&jellyfin_data::DatabaseConfig::default())
-            .await
-            .expect("local PostgreSQL must be available");
+    async fn new(database: sea_orm::DatabaseConnection) -> Self {
         jellyfin_data::migrate(&database)
             .await
             .expect("PostgreSQL migrations must succeed");
@@ -90,6 +121,21 @@ impl Fixture {
 
     async fn assert_access_and_errors(&self) {
         let body = json!({ "Tags": ["new-tag"] });
+        for (token, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some(self.user_token.as_str()), StatusCode::FORBIDDEN),
+        ] {
+            assert_eq!(
+                self.post_uri(
+                    &format!("/items/{}", self.item_id),
+                    token,
+                    json!({"studios": [{"name": "Unauthorized Studio"}]}),
+                )
+                .await
+                .status(),
+                expected
+            );
+        }
         assert_eq!(
             self.post(self.item_id, None, body.clone()).await.status(),
             StatusCode::UNAUTHORIZED
@@ -136,6 +182,7 @@ impl Fixture {
                 "Imdb".to_owned(),
                 Some("tt1234567".to_owned()),
             )])),
+            ..Default::default()
         })
         .await;
 
@@ -216,7 +263,7 @@ impl Fixture {
         );
         assert_eq!(
             metadata_value(&normalized, "ProviderIds"),
-            Some(&json!({ "Imdb": "tt7654321", "Whitespace": "  " }))
+            Some(&json!({ "Imdb": "tt7654321" }))
         );
         assert_eq!(
             self.value_names(item_value::ItemValueType::Genre).await,
@@ -241,7 +288,7 @@ impl Fixture {
         );
         assert_eq!(
             metadata_value(&preserved, "ProviderIds"),
-            Some(&json!({ "Imdb": "tt7654321", "Whitespace": "  " }))
+            Some(&json!({ "Imdb": "tt7654321" }))
         );
 
         let response = self
@@ -268,6 +315,7 @@ impl Fixture {
             tags: Some(vec!["stable-tag".to_owned()]),
             genres: Some(vec!["Action".to_owned()]),
             provider_ids: None,
+            ..Default::default()
         })
         .await;
         let before = self.persisted_item().await;
@@ -314,6 +362,151 @@ impl Fixture {
         assert_eq!(
             metadata_value(&persisted, "ProviderIds"),
             Some(&json!({ "Tmdb": "12345" }))
+        );
+    }
+
+    async fn assert_studio_edits_and_binding(&self) {
+        // ItemUpdateController takes NameGuidPair[]: Id is bound but only Name is used.
+        for (field, name, id) in [
+            ("Studios", "Name", "Id"),
+            ("studios", "name", "id"),
+            ("sTuDiOs", "nAmE", "iD"),
+        ] {
+            let response = self
+                .post_uri(
+                    &format!("/items/{}", self.item_id),
+                    Some(&self.administrator_token),
+                    json!({(field): [
+                        {(name): "Zulu Studio", (id): Uuid::new_v4()},
+                        {(name): "Alpha Studio"},
+                        {(name): "zulu studio", (id): null},
+                        {(name): "  Spaced Studio  "}
+                    ]}),
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert_eq!(
+                metadata_strings(&self.persisted_item().await, "Studios"),
+                ["Zulu Studio", "Alpha Studio", "  Spaced Studio  "]
+            );
+            assert_eq!(
+                self.value_names(item_value::ItemValueType::Studios).await,
+                ["Alpha Studio", "Spaced Studio", "Zulu Studio"]
+            );
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::get(format!("/Items/{}", self.item_id))
+                    .header("x-emby-token", &self.administrator_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let dto: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                .unwrap();
+        let mut names = dto["Studios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|studio| studio["Name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, ["Alpha Studio", "Spaced Studio", "Zulu Studio"]);
+
+        for body in [json!({}), json!({"studios": null})] {
+            assert_eq!(
+                self.post(self.item_id, Some(&self.administrator_token), body)
+                    .await
+                    .status(),
+                StatusCode::NO_CONTENT
+            );
+            assert_eq!(
+                metadata_strings(&self.persisted_item().await, "Studios").len(),
+                3
+            );
+        }
+        for body in [
+            json!({"Studios": ["wrong wire shape"]}),
+            json!({"Studios": [{"Name": "Bad ID", "Id": "invalid"}]}),
+            json!({"studios": [{"name": "Bad ID", "id": ""}]}),
+        ] {
+            let before = self.persisted_item().await;
+            assert_eq!(
+                self.post(self.item_id, Some(&self.administrator_token), body)
+                    .await
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(self.persisted_item().await.row_version, before.row_version);
+        }
+        assert_eq!(
+            self.post(
+                self.item_id,
+                Some(&self.administrator_token),
+                json!({"studios": []}),
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            metadata_value(&self.persisted_item().await, "Studios"),
+            Some(&json!([]))
+        );
+        assert!(
+            self.value_names(item_value::ItemValueType::Studios)
+                .await
+                .is_empty()
+        );
+    }
+
+    async fn assert_studio_rollback_and_concurrent_updates(&self) {
+        let first = self.post(
+            self.item_id,
+            Some(&self.administrator_token),
+            json!({"Studios": [{"Name": "Stable Studio"}]}),
+        );
+        let second = self.post(
+            self.item_id,
+            Some(&self.administrator_token),
+            json!({"Tags": ["stable-tag"], "Genres": ["Drama"]}),
+        );
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first.status(), StatusCode::NO_CONTENT);
+        assert_eq!(second.status(), StatusCode::NO_CONTENT);
+        let before = self.persisted_item().await;
+        assert_eq!(metadata_strings(&before, "Studios"), ["Stable Studio"]);
+        assert_eq!(metadata_strings(&before, "Tags"), ["stable-tag"]);
+        assert_eq!(metadata_strings(&before, "Genres"), ["Drama"]);
+        assert_eq!(
+            self.post(
+                self.item_id,
+                Some(&self.administrator_token),
+                json!({
+                    "Tags": ["must-roll-back"],
+                    "Studios": [{"Name": "Changed Studio"}],
+                    "Genres": ["---"]
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let after = self.persisted_item().await;
+        assert_eq!(after.row_version, before.row_version);
+        assert_eq!(after.data, before.data);
+        assert_eq!(
+            self.value_names(item_value::ItemValueType::Studios).await,
+            ["Stable Studio"]
+        );
+        assert_eq!(
+            self.value_names(item_value::ItemValueType::Tags).await,
+            ["stable-tag"]
         );
     }
 

@@ -22,6 +22,7 @@ use uuid::Uuid;
 pub struct ItemUpdateInput {
     pub tags: Option<Vec<String>>,
     pub genres: Option<Vec<String>>,
+    pub studios: Option<Vec<Option<String>>>,
     pub provider_ids: Option<BTreeMap<String, Option<String>>>,
 }
 
@@ -229,6 +230,21 @@ pub(crate) fn movie_nfo_from_item(item: &base_item::Model, mut existing: MovieNf
     {
         existing.provider_ids = provider_ids;
     }
+    if let Some(studios) = data
+        .and_then(|data| data.get("Studios"))
+        .and_then(Value::as_array)
+    {
+        // BaseNfoSaver writes trimmed studio names in name order. Explicitly
+        // empty editor values must also clear the old NFO's studios.
+        existing.studios = studios
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect();
+        existing.studios.sort();
+    }
     existing
 }
 
@@ -256,6 +272,13 @@ fn normalize_input(input: ItemUpdateInput) -> ItemMetadataPatch {
         genres: input
             .genres
             .map(|values| distinct_ignore_case(values, false)),
+        studios: input.studios.map(|values| {
+            let mut seen = HashSet::with_capacity(values.len());
+            values
+                .into_iter()
+                .filter(|value| seen.insert(value.as_deref().map(str::to_lowercase)))
+                .collect()
+        }),
         provider_ids: input.provider_ids.map(|values| {
             values
                 .into_iter()
@@ -292,10 +315,12 @@ mod tests {
         let empty = normalize_input(ItemUpdateInput {
             tags: Some(Vec::new()),
             genres: Some(Vec::new()),
+            studios: Some(Vec::new()),
             provider_ids: Some(BTreeMap::new()),
         });
         assert_eq!(empty.tags, Some(Vec::new()));
         assert_eq!(empty.genres, Some(Vec::new()));
+        assert_eq!(empty.studios, Some(Vec::new()));
         assert_eq!(empty.provider_ids, Some(BTreeMap::new()));
 
         let normalized = normalize_input(ItemUpdateInput {
@@ -311,6 +336,7 @@ mod tests {
                 " éPOPÉE ".to_owned(),
             ]),
             provider_ids: None,
+            ..Default::default()
         });
         assert_eq!(
             normalized.tags,
@@ -319,6 +345,31 @@ mod tests {
         assert_eq!(
             normalized.genres,
             Some(vec!["Action".to_owned(), " Épopée ".to_owned()])
+        );
+    }
+
+    #[test]
+    fn studio_edits_preserve_first_spelling_whitespace_and_nullable_names() {
+        let normalized = normalize_input(ItemUpdateInput {
+            studios: Some(vec![
+                Some("Studio".to_owned()),
+                Some("STUDIO".to_owned()),
+                None,
+                Some(" Épopée ".to_owned()),
+                Some(" éPOPÉE ".to_owned()),
+                None,
+                Some(String::new()),
+            ]),
+            ..Default::default()
+        });
+        assert_eq!(
+            normalized.studios,
+            Some(vec![
+                Some("Studio".to_owned()),
+                None,
+                Some(" Épopée ".to_owned()),
+                Some(String::new()),
+            ])
         );
     }
 
@@ -400,6 +451,7 @@ mod tests {
             custom_rating: Some("Custom".to_owned()),
             is_locked: true,
             locked_fields: vec!["Cast".to_owned()],
+            studios: vec!["Old Studio".to_owned()],
             ..MovieNfo::default()
         };
         let item = base_item::Model {
@@ -408,6 +460,7 @@ mod tests {
             data: Some(serde_json::json!({
                 "OriginalTitle": "New Original",
                 "Genres": ["Action"],
+                "Studios": [" Zebra Studio ", null, "", "   ", "Alpha Studio"],
                 "ProviderIds": { "Imdb": "tt1234567" },
                 "IsLocked": false,
                 "LockedFields": ["Name"]
@@ -445,8 +498,25 @@ mod tests {
         assert_eq!(merged.tagline.as_deref(), Some("Keep this tagline"));
         assert_eq!(merged.custom_rating.as_deref(), Some("Custom"));
         assert_eq!(merged.genres, ["Action"]);
+        assert_eq!(merged.studios, ["Alpha Studio", "Zebra Studio"]);
         assert_eq!(merged.provider_ids["Imdb"], "tt1234567");
         assert!(!merged.is_locked);
         assert_eq!(merged.locked_fields, ["Name"]);
+
+        let mut cleared_item = item.clone();
+        cleared_item.data = Some(serde_json::json!({ "Studios": [] }));
+        let cleared = movie_nfo_from_item(&cleared_item, merged);
+        assert!(cleared.studios.is_empty());
+
+        let mut unchanged_item = item;
+        unchanged_item.data = None;
+        let preserved = movie_nfo_from_item(
+            &unchanged_item,
+            MovieNfo {
+                studios: vec!["Existing Studio".to_owned()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(preserved.studios, ["Existing Studio"]);
     }
 }

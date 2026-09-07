@@ -840,6 +840,7 @@ impl TmdbMetadataProvider {
                     tags: Some(into_keyword_names(details.keywords)),
                     genres,
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;
@@ -929,6 +930,7 @@ impl TmdbMetadataProvider {
                     tags: Some(into_keyword_names(details.keywords)),
                     genres,
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;
@@ -1000,6 +1002,7 @@ impl TmdbMetadataProvider {
                         ("Tmdb".to_owned(), details.id.to_string()),
                         ("TmdbCollection".to_owned(), details.id.to_string()),
                     ])),
+                    ..Default::default()
                 },
             )
             .await?;
@@ -1043,6 +1046,7 @@ impl TmdbMetadataProvider {
                     tags: None,
                     genres: None,
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;

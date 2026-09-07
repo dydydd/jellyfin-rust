@@ -25,6 +25,14 @@
   as in serial scans. Return an accurate total plus only a bounded sample of per-file diagnostics;
   media-probe fallbacks remain partial successes and must not make the scan fail.
 - Keep database invariants in PostgreSQL where practical (constraints, indexes, atomic upserts, transactions), while keeping domain rules explicit in Rust.
+- Persist metadata-editor `Studios` from the official `NameGuidPair` object array, binding both
+  outer and nested JSON properties case-insensitively. Use names rather than submitted ids, keep
+  first-occurrence order with case-insensitive deduplication, preserve omitted/null collections,
+  and clear on an empty array. Update JSON and normalized Studio relations in the existing item
+  transaction using fixed 128-name batches, and replace or clear Movie NFO studios when local
+  metadata saving is enabled. Accept punctuation-only names in JSON/NFO even when the existing
+  searchable-key constraint prevents a normalized relation; do not turn such edits into a 400.
+  Keep the lowercase `/items/{itemId}` POST alias on the same administrator authorization path.
 - Avoid N+1 queries. Use set-based queries or bounded batches, and add migrations for indexes or constraints required by new query patterns.
 - Persist additive NFO Studio and Person relations in one validated transaction per media item:
   preserve existing credits, keep Person `list_order`/role conflict semantics, and never replace

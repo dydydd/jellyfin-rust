@@ -354,6 +354,7 @@ impl MusicBrainzMetadataProvider {
                     tags: Some(genres.clone()),
                     genres: Some(genres),
                     provider_ids: Some(provider_ids),
+                    ..Default::default()
                 },
             )
             .await?;
