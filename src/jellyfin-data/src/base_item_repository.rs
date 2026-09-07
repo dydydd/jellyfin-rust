@@ -29,6 +29,13 @@ const VIDEO_ITEM_TYPES_SQL: &str = "('Video', 'Movie', 'Episode', 'MusicVideo', 
     'MediaBrowser.Controller.Entities.TV.Episode', \
     'MediaBrowser.Controller.Entities.MusicVideo', \
     'MediaBrowser.Controller.Entities.Trailer')";
+const VERSIONED_MEDIA_ITEM_TYPES_SQL: &str = "('Audio', 'Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer', \
+    'MediaBrowser.Controller.Entities.Audio', \
+    'MediaBrowser.Controller.Entities.Video', \
+    'MediaBrowser.Controller.Entities.Movies.Movie', \
+    'MediaBrowser.Controller.Entities.TV.Episode', \
+    'MediaBrowser.Controller.Entities.MusicVideo', \
+    'MediaBrowser.Controller.Entities.Trailer')";
 pub const USER_ROOT_FOLDER_ID: Uuid = Uuid::from_u128(2);
 
 /// Values accepted when creating a persisted Jellyfin base item.
@@ -845,6 +852,41 @@ impl BaseItemRepository {
                        ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
                      WHERE item.id = $2 \
                        AND item.item_type IN {VIDEO_ITEM_TYPES_SQL}\
+                 ) \
+                 SELECT {BASE_ITEM_COLUMNS} FROM target_version"
+            ),
+            [source_item_id.into(), version_item_id.into()],
+        );
+        Ok(base_item::Model::find_by_statement(statement)
+            .one(self.database.as_ref())
+            .await?)
+    }
+
+    /// Resolves an audio or video alternate version visible from a source item.
+    ///
+    /// Universal audio requests use the same MediaSourceId contract as video
+    /// playback. Keep the relationship check in PostgreSQL so an arbitrary
+    /// item id cannot be used to bypass the displayed item's version group.
+    pub async fn alternate_media_version(
+        &self,
+        source_item_id: Uuid,
+        version_item_id: Uuid,
+    ) -> Result<Option<base_item::Model>, BaseItemError> {
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!(
+                "WITH requested AS MATERIALIZED (\
+                     SELECT COALESCE(primary_version_id, id) AS group_id \
+                     FROM jellyfin.base_items \
+                     WHERE id = $1 \
+                       AND item_type IN {VERSIONED_MEDIA_ITEM_TYPES_SQL}\
+                 ), target_version AS (\
+                     SELECT item.* \
+                     FROM jellyfin.base_items AS item \
+                     INNER JOIN requested \
+                       ON COALESCE(item.primary_version_id, item.id) = requested.group_id \
+                     WHERE item.id = $2 \
+                       AND item.item_type IN {VERSIONED_MEDIA_ITEM_TYPES_SQL}\
                  ) \
                  SELECT {BASE_ITEM_COLUMNS} FROM target_version"
             ),

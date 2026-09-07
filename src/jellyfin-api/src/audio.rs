@@ -90,6 +90,14 @@ pub(crate) struct UniversalQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     container: Vec<String>,
+    #[serde(
+        rename = "mediaSourceId",
+        alias = "MediaSourceId",
+        alias = "mediasourceid"
+    )]
+    media_source_id: Option<String>,
+    #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
+    _device_id: Option<String>,
     #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
@@ -100,6 +108,12 @@ pub(crate) struct UniversalQuery {
         alias = "maxaudiochannels"
     )]
     max_audio_channels: Option<i32>,
+    #[serde(
+        rename = "transcodingAudioChannels",
+        alias = "TranscodingAudioChannels",
+        alias = "transcodingaudiochannels"
+    )]
+    transcoding_audio_channels: Option<i32>,
     #[serde(
         rename = "audioStreamIndex",
         alias = "AudioStreamIndex",
@@ -113,6 +127,13 @@ pub(crate) struct UniversalQuery {
     )]
     max_streaming_bitrate: Option<i64>,
     #[serde(
+        rename = "audioBitRate",
+        alias = "AudioBitRate",
+        alias = "AudioBitrate",
+        alias = "audiobitrate"
+    )]
+    audio_bitrate: Option<i64>,
+    #[serde(
         rename = "startTimeTicks",
         alias = "StartTimeTicks",
         alias = "starttimeticks"
@@ -124,6 +145,42 @@ pub(crate) struct UniversalQuery {
         alias = "transcodingcontainer"
     )]
     transcoding_container: Option<String>,
+    #[serde(
+        rename = "transcodingProtocol",
+        alias = "TranscodingProtocol",
+        alias = "transcodingprotocol"
+    )]
+    _transcoding_protocol: Option<jellyfin_model::MediaStreamProtocol>,
+    #[serde(
+        rename = "maxAudioSampleRate",
+        alias = "MaxAudioSampleRate",
+        alias = "maxaudiosamplerate"
+    )]
+    max_audio_sample_rate: Option<i32>,
+    #[serde(
+        rename = "maxAudioBitDepth",
+        alias = "MaxAudioBitDepth",
+        alias = "maxaudiobitdepth"
+    )]
+    _max_audio_bit_depth: Option<i32>,
+    #[serde(
+        rename = "enableRemoteMedia",
+        alias = "EnableRemoteMedia",
+        alias = "enableremotemedia"
+    )]
+    _enable_remote_media: Option<bool>,
+    #[serde(
+        rename = "enableAudioVbrEncoding",
+        alias = "EnableAudioVbrEncoding",
+        alias = "enableaudiovbrencoding"
+    )]
+    _enable_audio_vbr_encoding: Option<bool>,
+    #[serde(
+        rename = "enableRedirection",
+        alias = "EnableRedirection",
+        alias = "enableredirection"
+    )]
+    _enable_redirection: Option<bool>,
 }
 
 pub(crate) async fn stream(
@@ -165,6 +222,28 @@ pub(crate) async fn universal(
     if item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
+    let item = if let Some(media_source_id) = query
+        .media_source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let source_id = Uuid::parse_str(media_source_id).map_err(|_| ApiError::NotFound)?;
+        if source_id == item_id {
+            item
+        } else {
+            state
+                .base_items
+                .alternate_media_version(item_id, source_id)
+                .await?
+                .ok_or(ApiError::NotFound)?
+        }
+    } else {
+        item
+    };
+    if item.item_type != "Audio" {
+        return Err(ApiError::NotFound);
+    }
     let path = item.path.as_deref().ok_or(ApiError::NotFound)?;
     let actual_container = std::path::Path::new(path)
         .extension()
@@ -178,8 +257,11 @@ pub(crate) async fn universal(
     });
     let requires_transcode = query.audio_codec.is_some()
         || query.max_audio_channels.is_some()
+        || query.transcoding_audio_channels.is_some()
         || query.audio_stream_index.is_some()
         || query.max_streaming_bitrate.is_some()
+        || query.audio_bitrate.is_some()
+        || query.max_audio_sample_rate.is_some()
         || query.start_time_ticks.is_some_and(|ticks| ticks != 0)
         || query.transcoding_container.is_some();
     if supports_direct && !requires_transcode {
@@ -204,12 +286,14 @@ pub(crate) async fn universal(
         std::path::Path::new(path),
         &output,
         &codec,
-        query.max_streaming_bitrate,
-        query.max_audio_channels,
-        None,
+        query.audio_bitrate.or(query.max_streaming_bitrate),
+        query
+            .transcoding_audio_channels
+            .or(query.max_audio_channels),
+        query.max_audio_sample_rate,
         query.audio_stream_index,
         query.start_time_ticks,
-        false,
+        true,
     );
     serve_transcoded_path(
         command,
@@ -360,6 +444,26 @@ mod tests {
         assert_eq!(query.audio_stream_index, Some(1));
         assert_eq!(query.start_time_ticks, Some(10000));
         assert_eq!(query.copy_timestamps, Some(true));
+    }
+
+    #[test]
+    fn universal_audio_binds_sdk_parameters_case_insensitively() {
+        let uri: Uri = "/audio/item/universal?mediasourceid=alternate&transcodingAudioChannels=2&AudioBitRate=128000&maxAudioSampleRate=48000&maxAudioBitDepth=24&transcodingProtocol=hls&enableRedirection=false"
+            .parse()
+            .unwrap();
+        let query = Query::<super::UniversalQuery>::try_from_uri(&uri)
+            .unwrap()
+            .0;
+        assert_eq!(query.media_source_id.as_deref(), Some("alternate"));
+        assert_eq!(query.transcoding_audio_channels, Some(2));
+        assert_eq!(query.audio_bitrate, Some(128000));
+        assert_eq!(query.max_audio_sample_rate, Some(48000));
+        assert_eq!(query._max_audio_bit_depth, Some(24));
+        assert_eq!(
+            query._transcoding_protocol,
+            Some(jellyfin_model::MediaStreamProtocol::Hls)
+        );
+        assert_eq!(query._enable_redirection, Some(false));
     }
 }
 
