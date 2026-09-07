@@ -157,9 +157,9 @@ impl UserLibraryService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<base_item::Model, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
-            .await?;
         if item_id.is_nil() {
+            self.validate_user(authenticated_user, target_user_id)
+                .await?;
             return self.ensure_user_root().await;
         }
         let mut query = BaseItemQuery {
@@ -167,7 +167,8 @@ impl UserLibraryService {
             include_alternate_versions: true,
             ..BaseItemQuery::default()
         };
-        self.apply_user_policy(&mut query, target_user_id).await?;
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
+            .await?;
         let page = self.hydrate_page(self.items.query(&query).await?);
         page.items
             .into_iter()
@@ -187,9 +188,8 @@ impl UserLibraryService {
         target_user_id: Uuid,
         mut query: BaseItemQuery,
     ) -> Result<BaseItemPage, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
             .await?;
-        self.apply_user_policy(&mut query, target_user_id).await?;
         query.user_id = Some(target_user_id);
         if query.parent_id.is_none() && query.parent_ids.is_empty() && query.ids.is_empty() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
@@ -234,9 +234,8 @@ impl UserLibraryService {
         mut query: BaseItemQuery,
         limit: u64,
     ) -> Result<Vec<LatestTvGroup>, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
             .await?;
-        self.apply_user_policy(&mut query, target_user_id).await?;
         query.user_id = Some(target_user_id);
         if query.parent_id.is_none() && query.parent_ids.is_empty() && query.ids.is_empty() {
             query.parent_id = Some(self.ensure_user_root().await?.id);
@@ -258,9 +257,8 @@ impl UserLibraryService {
         target_user_id: Uuid,
         query: &mut BaseItemQuery,
     ) -> Result<(), UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, query)
             .await?;
-        self.apply_user_policy(query, target_user_id).await?;
         query.user_id = Some(target_user_id);
         Ok(())
     }
@@ -277,9 +275,8 @@ impl UserLibraryService {
         target_user_id: Uuid,
         mut query: BaseItemQuery,
     ) -> Result<HashMap<Uuid, u64>, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
             .await?;
-        self.apply_user_policy(&mut query, target_user_id).await?;
         query.user_id = Some(target_user_id);
         Ok(self.items.child_counts_by_parent(&query).await?)
     }
@@ -361,10 +358,12 @@ impl UserLibraryService {
         target_user_id: Uuid,
         query: &mut ItemValueQuery,
     ) -> Result<(), UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
-            .await?;
-        self.apply_user_policy(&mut query.access_policy, target_user_id)
-            .await?;
+        self.authorize_and_apply_user_policy(
+            authenticated_user,
+            target_user_id,
+            &mut query.access_policy,
+        )
+        .await?;
         query.user_id = Some(target_user_id);
         Ok(())
     }
@@ -455,9 +454,8 @@ impl UserLibraryService {
         target_user_id: Uuid,
         mut query: BaseItemQuery,
     ) -> Result<ScoredBaseItemPage, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
             .await?;
-        self.apply_user_policy(&mut query, target_user_id).await?;
         query.user_id = Some(target_user_id);
         let page = self.items.search(&query).await?;
         Ok(ScoredBaseItemPage {
@@ -490,9 +488,8 @@ impl UserLibraryService {
         target_user_id: Uuid,
         mut query: BaseItemQuery,
     ) -> Result<BaseItemPage, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
             .await?;
-        self.apply_user_policy(&mut query, target_user_id).await?;
         query.recursive = true;
         query.is_virtual_item = Some(false);
         if query.parent_id.is_none() && query.parent_ids.is_empty() {
@@ -520,8 +517,6 @@ impl UserLibraryService {
         limit: Option<u64>,
         enable_total_record_count: bool,
     ) -> Result<BaseItemPage, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
-            .await?;
         let mut query = BaseItemQuery {
             parent_id,
             recursive: true,
@@ -531,7 +526,8 @@ impl UserLibraryService {
             enable_total_record_count: Some(enable_total_record_count),
             ..BaseItemQuery::default()
         };
-        self.apply_user_policy(&mut query, target_user_id).await?;
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
+            .await?;
         let page = self
             .items
             .next_up(
@@ -599,9 +595,9 @@ impl UserLibraryService {
         kind: RelatedItemKind,
         order: BaseItemOrder,
     ) -> Result<HashMap<Uuid, Vec<base_item::Model>>, UserLibraryError> {
-        self.validate_user(authenticated_user, target_user_id)
-            .await?;
         if owner_ids.is_empty() {
+            self.validate_user(authenticated_user, target_user_id)
+                .await?;
             return Ok(HashMap::new());
         }
 
@@ -613,7 +609,8 @@ impl UserLibraryService {
             enable_total_record_count: Some(false),
             ..BaseItemQuery::default()
         };
-        self.apply_user_policy(&mut query, target_user_id).await?;
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
+            .await?;
 
         let owners = owner_ids
             .iter()
@@ -1043,15 +1040,43 @@ impl UserLibraryService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
     ) -> Result<(), UserLibraryError> {
-        match self.users.get(target_user_id).await {
-            Ok(_) => {}
+        self.authorized_target_user(authenticated_user, target_user_id)
+            .await
+            .map(|_| ())
+    }
+
+    /// Loads and authorizes a target user before a policy-aware query.
+    ///
+    /// The lookup deliberately precedes the access check to preserve Jellyfin's existing missing
+    /// target-user error precedence. Callers that also need policy filtering reuse this row instead
+    /// of issuing a second user lookup through [`Self::apply_user_policy`].
+    async fn authorized_target_user(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+    ) -> Result<user::Model, UserLibraryError> {
+        let target_user = match self.users.get(target_user_id).await {
+            Ok(user) => user,
             Err(UserError::NotFound) => return Err(UserLibraryError::UserNotFound),
             Err(error) => return Err(error.into()),
-        }
+        };
         if authenticated_user.id != target_user_id && !authenticated_user.is_administrator {
             return Err(UserLibraryError::Forbidden);
         }
-        Ok(())
+        Ok(target_user)
+    }
+
+    async fn authorize_and_apply_user_policy(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        query: &mut BaseItemQuery,
+    ) -> Result<(), UserLibraryError> {
+        let target_user = self
+            .authorized_target_user(authenticated_user, target_user_id)
+            .await?;
+        self.apply_stored_user_policy(query, target_user.policy)
+            .await
     }
 
     /// Applies the target user's library-access policy to a base-item query.
