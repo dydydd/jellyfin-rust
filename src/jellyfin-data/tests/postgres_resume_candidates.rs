@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use chrono::{TimeZone, Utc};
 use jellyfin_data::{
-    BaseItemQuery, BaseItemRepository, DatabaseConfig, NewBaseItem, NewUserData, UserDataRepository,
+    BaseItemQuery, BaseItemRepository, DatabaseConfig, ItemValueRepository, NewBaseItem,
+    NewUserData, UserDataRepository, entities::item_value::ItemValueType,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 use uuid::Uuid;
@@ -176,7 +177,87 @@ async fn exercise_resume_candidates(database_name: &str) {
     assert_eq!(past_end.total_record_count, expected.len() as u64);
     assert!(past_end.items.is_empty());
 
+    assert_resume_page_metadata_and_policy(&database, &repository, &user_data, user_id).await;
     database.close().await.expect("database pool cleanup");
+}
+
+async fn assert_resume_page_metadata_and_policy(
+    database: &DatabaseConnection,
+    repository: &BaseItemRepository,
+    user_data: &UserDataRepository,
+    user_id: Uuid,
+) {
+    let values = ItemValueRepository::new(database.clone());
+    let mut visible = Vec::new();
+    let mut ids = Vec::new();
+    for (day, blocked) in [(6, false), (7, false), (8, true)] {
+        let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
+        item.name = Some(format!("Resume metadata {day}"));
+        item.overview = Some("Complete metadata survives page selection. ".repeat(128));
+        item.data = Some(serde_json::json!({
+            "Tags": if blocked { vec!["visible", "blocked"] } else { vec!["visible"] },
+            "OriginalLanguage": "zh",
+            "ProbeDescription": "wide metadata ".repeat(256),
+        }));
+        let saved = repository.create(item).await.unwrap();
+        // Policy queries read normalized tag relations; the JSON copy alone is DTO metadata.
+        values
+            .link(saved.id, ItemValueType::Tags, "visible")
+            .await
+            .unwrap();
+        if blocked {
+            values
+                .link(saved.id, ItemValueType::Tags, "blocked")
+                .await
+                .unwrap();
+        }
+        insert_user_data(user_data, user_id, saved.id, false, 1_000, day).await;
+        ids.push(saved.id);
+        if !blocked {
+            visible.push(saved);
+        }
+    }
+    // Like the official repository, count and policy filtering precede pagination and
+    // the resulting page still contains full metadata, despite storing only candidate ids.
+    let query = BaseItemQuery {
+        ids,
+        user_id: Some(user_id),
+        allowed_tags: vec!["visible".to_owned()],
+        blocked_tags: vec!["blocked".to_owned()],
+        enable_all_folders: true,
+        start_index: 1,
+        limit: Some(1),
+        ..Default::default()
+    };
+    let page = repository.query_resumable(user_id, &query).await.unwrap();
+    assert_eq!(page.total_record_count, 2);
+    assert_eq!(page.start_index, 1);
+    assert_eq!(page.items, vec![visible[0].clone()]);
+
+    let page_without_total = repository
+        .query_resumable(
+            user_id,
+            &BaseItemQuery {
+                enable_total_record_count: Some(false),
+                ..query.clone()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_without_total.total_record_count, 1);
+    assert_eq!(page_without_total.items, page.items);
+    let empty = repository
+        .query_resumable(
+            user_id,
+            &BaseItemQuery {
+                limit: Some(0),
+                ..query
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.total_record_count, 2);
+    assert!(empty.items.is_empty());
 }
 
 async fn insert_user(database: &DatabaseConnection, prefix: &str) -> Uuid {

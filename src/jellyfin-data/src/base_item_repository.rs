@@ -2469,7 +2469,7 @@ impl BaseItemRepository {
     async fn query_resumable_page(
         &self,
         cte: String,
-        mut values: Vec<SeaValue>,
+        values: Vec<SeaValue>,
         query: &BaseItemQuery,
     ) -> Result<BaseItemPage, BaseItemError> {
         let transaction = self
@@ -2479,58 +2479,7 @@ impl BaseItemRepository {
                 Some(AccessMode::ReadOnly),
             )
             .await?;
-        let mut sql = cte;
-        if total_count_enabled(query) {
-            sql.push_str(
-                ", page_ids AS MATERIALIZED (\
-                     SELECT id, ROW_NUMBER() OVER (\
-                         ORDER BY resume_last_played_date DESC NULLS LAST, id\
-                     ) AS page_order \
-                     FROM filtered \
-                     ORDER BY resume_last_played_date DESC NULLS LAST, id",
-            );
-            push_bind(
-                &mut sql,
-                &mut values,
-                i64::try_from(query.start_index).unwrap_or(i64::MAX),
-                " OFFSET ",
-            );
-            if let Some(limit) = query.limit {
-                push_bind(
-                    &mut sql,
-                    &mut values,
-                    i64::try_from(limit).unwrap_or(i64::MAX),
-                    " LIMIT ",
-                );
-            }
-            sql.push_str(
-                ") \
-                 SELECT total.total_record_count, page_ids.id \
-                 FROM (SELECT COUNT(*)::bigint AS total_record_count FROM filtered) AS total \
-                 LEFT JOIN page_ids ON true \
-                 ORDER BY page_ids.page_order",
-            );
-        } else {
-            sql.push_str(
-                " SELECT NULL::bigint AS total_record_count, id \
-                  FROM filtered \
-                  ORDER BY resume_last_played_date DESC NULLS LAST, id",
-            );
-            push_bind(
-                &mut sql,
-                &mut values,
-                i64::try_from(query.start_index).unwrap_or(i64::MAX),
-                " OFFSET ",
-            );
-            if let Some(limit) = query.limit {
-                push_bind(
-                    &mut sql,
-                    &mut values,
-                    i64::try_from(limit).unwrap_or(i64::MAX),
-                    " LIMIT ",
-                );
-            }
-        }
+        let (sql, values) = resumable_page_id_query(cte, values, query);
 
         let page_rows = ResumePageId::find_by_statement(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -4814,6 +4763,66 @@ fn query_uses_advanced_filters(query: &BaseItemQuery) -> bool {
         || !query.albums.is_empty()
 }
 
+fn resumable_page_id_query(
+    cte: String,
+    mut values: Vec<SeaValue>,
+    query: &BaseItemQuery,
+) -> (String, Vec<SeaValue>) {
+    let mut sql = cte;
+    if total_count_enabled(query) {
+        sql.push_str(
+            ", page_ids AS MATERIALIZED (\
+                 SELECT id, ROW_NUMBER() OVER (\
+                     ORDER BY resume_last_played_date DESC NULLS LAST, id\
+                 ) AS page_order \
+                 FROM filtered \
+                 ORDER BY resume_last_played_date DESC NULLS LAST, id",
+        );
+        push_bind(
+            &mut sql,
+            &mut values,
+            i64::try_from(query.start_index).unwrap_or(i64::MAX),
+            " OFFSET ",
+        );
+        if let Some(limit) = query.limit {
+            push_bind(
+                &mut sql,
+                &mut values,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                " LIMIT ",
+            );
+        }
+        sql.push_str(
+            ") \
+             SELECT total.total_record_count, page_ids.id \
+             FROM (SELECT COUNT(*)::bigint AS total_record_count FROM filtered) AS total \
+             LEFT JOIN page_ids ON true \
+             ORDER BY page_ids.page_order",
+        );
+    } else {
+        sql.push_str(
+            " SELECT NULL::bigint AS total_record_count, id \
+              FROM filtered \
+              ORDER BY resume_last_played_date DESC NULLS LAST, id",
+        );
+        push_bind(
+            &mut sql,
+            &mut values,
+            i64::try_from(query.start_index).unwrap_or(i64::MAX),
+            " OFFSET ",
+        );
+        if let Some(limit) = query.limit {
+            push_bind(
+                &mut sql,
+                &mut values,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                " LIMIT ",
+            );
+        }
+    }
+    (sql, values)
+}
+
 fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<SeaValue>) {
     let mut values = vec![user_id.into()];
     let mut sql = String::from(
@@ -4888,6 +4897,9 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
         false,
         LeafUserDataCondition::Unplayed,
     );
+    // Count and page selection share this materialization, but full entities are fetched only
+    // for the selected page inside query_resumable_page's repeatable-read transaction. Keep
+    // metadata JSON and other wide columns out of PostgreSQL's candidate tuplestore.
     sql.push_str(
         ")\
          ), resumable_folder_ids AS (\
@@ -4907,7 +4919,7 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
              JOIN jellyfin.base_items AS folder ON folder.id = resumable.folder_id \
              LEFT JOIN progress_by_item AS progress ON progress.item_id = folder.id\
          ), filtered AS MATERIALIZED (\
-             SELECT item.*, candidate.resume_last_played_date \
+             SELECT item.id, candidate.resume_last_played_date \
              FROM resume_candidates AS candidate \
              JOIN jellyfin.base_items AS item ON item.id = candidate.id \
              WHERE item.item_type <> 'PLACEHOLDER'",
@@ -6803,6 +6815,9 @@ fn map_database_error(error: DbErr) -> BaseItemError {
         BaseItemError::Database(error)
     }
 }
+
+#[cfg(test)]
+mod resume_plan_tests;
 
 #[cfg(test)]
 mod tests {
