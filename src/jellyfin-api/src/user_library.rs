@@ -440,8 +440,11 @@ pub struct BaseItemDto {
     pub airs_before_season_number: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub airs_before_episode_number: Option<i32>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub image_tags: HashMap<String, String>,
+    /// A missing map means image projection was disabled. Once images are
+    /// enabled, Jellyfin emits this map even when the item has no images.
+    /// Afuse iterates the map directly during its library bootstrap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_tags: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub backdrop_image_tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1213,7 +1216,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             item.data.as_ref(),
             &["AirsBeforeEpisodeNumber", "airs_before_episode_number"],
         ),
-        image_tags: HashMap::new(),
+        image_tags: None,
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
@@ -2056,7 +2059,7 @@ pub(crate) fn attach_dto_image_projection(
     dto: &mut BaseItemDto,
     projection: jellyfin_server_implementations::DtoImageProjection,
 ) {
-    dto.image_tags = projection.image_tags;
+    dto.image_tags = Some(projection.image_tags);
     dto.backdrop_image_tags = projection.backdrop_image_tags;
     dto.parent_primary_image_item_id = projection
         .parent_primary_image_item_id
@@ -2987,7 +2990,7 @@ pub(crate) fn music_genre_to_dto(
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
-        image_tags: HashMap::new(),
+        image_tags: Some(HashMap::new()),
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
@@ -3055,7 +3058,7 @@ pub(crate) fn genre_to_dto(
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
-        image_tags: HashMap::new(),
+        image_tags: Some(HashMap::new()),
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
@@ -3113,7 +3116,7 @@ pub(crate) fn studio_to_dto(
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
-        image_tags: HashMap::new(),
+        image_tags: Some(HashMap::new()),
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
@@ -3171,7 +3174,7 @@ pub(crate) fn artist_to_dto(
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
-        image_tags: HashMap::new(),
+        image_tags: Some(HashMap::new()),
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
@@ -3257,7 +3260,7 @@ pub(crate) fn year_to_dto(year: Year, server_id: &str) -> BaseItemDto {
         extra_type: None,
         has_lyrics: None,
         provider_ids: None,
-        image_tags: HashMap::new(),
+        image_tags: Some(HashMap::new()),
         backdrop_image_tags: Vec::new(),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
