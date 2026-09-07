@@ -152,10 +152,7 @@ pub(crate) async fn list(
     } else {
         None
     };
-    let page = state
-        .years
-        .list(&authenticated.user, target_user_id, item_query, order)
-        .await?;
+    let page = state.years.list_authorized(item_query, order).await?;
     Ok(Json(YearsResult {
         items: page
             .years

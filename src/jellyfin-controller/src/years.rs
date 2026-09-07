@@ -122,6 +122,24 @@ impl YearService {
     ) -> Result<YearPage, YearError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        self.list_authorized(query, order).await
+    }
+
+    /// Lists production years after the caller has already loaded and
+    /// authorized the target user while applying its library policy.
+    ///
+    /// This keeps the public [`Self::list`] authorization boundary for normal
+    /// callers, while avoiding a second `users` read in endpoints that need
+    /// the policy-filtered query before listing years.
+    ///
+    /// # Errors
+    ///
+    /// Returns reconciliation or persistence errors.
+    pub async fn list_authorized(
+        &self,
+        query: BaseItemQuery,
+        order: ProductionYearOrder,
+    ) -> Result<YearPage, YearError> {
         self.item_by_name.reconcile_studios_and_years_once().await?;
         let page = self.items.production_years(&query, order).await?;
         let names = page

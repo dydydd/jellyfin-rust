@@ -212,6 +212,9 @@
 - Keep `/Years` pagination on the official signed 32-bit contract. A negative `StartIndex` skips
   nothing but is preserved in the response, a non-positive `Limit` returns an empty page, values
   outside `Int32` fail binding, and `TotalRecordCount` is computed before endpoint pagination.
+- After `/Years` resolves and applies a target user's library policy, use the already-authorized
+  listing path rather than reloading that user. Keep the public service entry point validating its
+  target user so this request-local optimization cannot weaken callers that have not applied policy.
 - Preserve the `/Years` recursive-folder total-count quirk: report the number of policy-visible,
   filtered primary descendants before extracting distinct positive production years. For a
   non-recursive folder or a non-folder parent, report the distinct-year count instead.
