@@ -2607,6 +2607,16 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
         2,
         "{resume_route}"
     );
+    let lowercase_resume = body_json(
+        fixture
+            .request(
+                "/useritems/resume?startindex=-1&limit=-1",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_resume, resume);
 
     for (search_term, sort_by, sort_order) in [
         ("searchTerm", "sortBy", "sortOrder"),

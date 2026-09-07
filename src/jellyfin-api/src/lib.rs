@@ -1821,6 +1821,7 @@ fn item_query_routes() -> Router<Arc<AppState>> {
         .route("/Items/Latest", get(items::latest))
         .route("/items/latest", get(items::latest))
         .route("/UserItems/Resume", get(items::resume))
+        .route("/useritems/resume", get(items::resume))
         .route("/Users/{user_id}/Items", get(items::get_legacy))
         .route("/Users/{user_id}/Items/", get(items::get_legacy))
         .route("/Users/{user_id}/Items//", get(items::get_legacy))
