@@ -45,7 +45,8 @@
   empty-genre Audio seed as an unfiltered visible-Audio mix while an unknown genre name stays empty.
 - Keep the six Similar routes on one contract: bind `ExcludeArtistIds`, `UserId`, signed `Limit`, and
   `Fields` case-insensitively; return official empty results for Episodes and named items other than
-  MusicArtist; and project the bounded page with default images, user data, and ProviderIds.
+  MusicArtist; project the bounded page with default images, user data, and ProviderIds; and keep
+  every static path segment reachable in fully lowercase form.
 - Project theme songs and theme videos with the official default all-fields `DtoOptions`. Resolve
   `inheritFromParent` nearest-first and independently for each media kind, preserve that owner's
   id, default to `SortName` ascending, and keep `SoundtrackSongsResult` as a distinct empty result.

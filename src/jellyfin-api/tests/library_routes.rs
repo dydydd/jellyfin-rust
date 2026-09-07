@@ -53,6 +53,17 @@ async fn official_library_controller_missing_item_contract() {
             "{route}"
         );
     }
+    for route in ["artists", "items", "albums", "shows", "movies", "trailers"] {
+        let route = format!("/{route}/{missing}/similar");
+        assert_eq!(
+            fixture
+                .request("GET", &route, Some(&fixture.admin_token))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{route}"
+        );
+    }
     for route in [format!("/Items/{missing}"), format!("/Items?ids={missing}")] {
         assert_eq!(
             fixture.request("DELETE", &route, None).await.status(),
@@ -214,6 +225,16 @@ async fn similar_and_instant_mix_apply_target_user_library_policy() {
         item["Id"] != hidden_similar.id.simple().to_string()
             && item["Id"] != blocked_similar.id.simple().to_string()
     }));
+    assert_eq!(
+        fixture
+            .json(
+                "GET",
+                &format!("/movies/{}/similar", similar_seed.id),
+                &fixture.user_token,
+            )
+            .await,
+        similar
+    );
     assert_eq!(
         fixture
             .request(

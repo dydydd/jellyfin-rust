@@ -1904,11 +1904,16 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
             get(library::available_options),
         )
         .route("/Artists/{item_id}/Similar", get(library::similar))
+        .route("/artists/{item_id}/similar", get(library::similar))
         .route("/Items/{item_id}/Similar", get(library::similar))
+        .route("/items/{item_id}/similar", get(library::similar))
         .route("/Albums/{item_id}/Similar", get(library::similar))
+        .route("/albums/{item_id}/similar", get(library::similar))
         .route("/Shows/{item_id}/Similar", get(library::similar))
+        .route("/shows/{item_id}/similar", get(library::similar))
         .route("/Movies/Recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
+        .route("/movies/{item_id}/similar", get(library::similar))
         .route("/Shows/NextUp", get(tv_shows::next_up))
         .route("/shows/nextup", get(tv_shows::next_up))
         .route("/Shows/Upcoming", get(tv_shows::upcoming))
@@ -1918,6 +1923,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Shows/{series_id}/Seasons", get(tv_shows::seasons))
         .route("/shows/{series_id}/seasons", get(tv_shows::seasons))
         .route("/Trailers/{item_id}/Similar", get(library::similar))
+        .route("/trailers/{item_id}/similar", get(library::similar))
 }
 
 fn user_library_routes() -> Router<Arc<AppState>> {
