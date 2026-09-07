@@ -158,6 +158,8 @@
   preserve the official handler and authorization policy under lowercase static segments.
 - Keep `/Users/Public` available as `/users/public`; otherwise Axum's dynamic `/users/{id}` route
   treats the SDK's lowercase public-user request as a UUID binding failure.
+- Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
+  the canonical route's public authorization policy as well as its handler.
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.

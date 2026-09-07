@@ -193,7 +193,7 @@ impl Fixture {
         let authorization = format!(
             "MediaBrowser Client=\"Login Policy Tests\", DeviceId=\"{device_id}\", Device=\"Test\", Version=\"1.0\""
         );
-        let mut request = Request::post("/Users/AuthenticateByName")
+        let mut request = Request::post("/users/authenticatebyname")
             .header(header::AUTHORIZATION, authorization)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(

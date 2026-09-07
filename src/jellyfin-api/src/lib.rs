@@ -1504,6 +1504,10 @@ fn authentication_routes() -> Router<Arc<AppState>> {
             post(authentication::authenticate_by_name),
         )
         .route(
+            "/users/authenticatebyname",
+            post(authentication::authenticate_by_name),
+        )
+        .route(
             "/Users/AuthenticateWithQuickConnect",
             post(authentication::authenticate_with_quick_connect),
         )
