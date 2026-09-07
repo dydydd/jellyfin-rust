@@ -866,8 +866,10 @@ pub struct HlsJobIdInput<'a> {
     pub audio_codec: Option<&'a str>,
     pub video_bitrate: Option<i64>,
     pub audio_bitrate: Option<i64>,
+    pub audio_stream_index: Option<i32>,
     pub max_width: Option<i32>,
     pub max_height: Option<i32>,
+    pub max_framerate: Option<f32>,
     pub hwaccel: Option<&'a str>,
     pub subtitle_index: Option<i32>,
     pub burn_subtitles: bool,
@@ -895,8 +897,10 @@ pub fn hls_job_id(
             audio_codec: target.audio_codec.as_deref(),
             video_bitrate: target.video_bitrate,
             audio_bitrate: target.audio_bitrate,
+            audio_stream_index: target.audio_stream_index,
             max_width: target.max_width,
             max_height: target.max_height,
+            max_framerate: target.max_framerate,
             hwaccel: target.hwaccel.as_deref(),
             subtitle_index: target.subtitle_index,
             burn_subtitles: target.burn_subtitles,
@@ -920,8 +924,16 @@ pub fn hls_job_id_from_input(item_id: Uuid, input: HlsJobIdInput<'_>) -> String 
     digest.update(input.audio_codec.unwrap_or_default().as_bytes());
     digest.update(input.video_bitrate.unwrap_or_default().to_le_bytes());
     digest.update(input.audio_bitrate.unwrap_or_default().to_le_bytes());
+    digest.update(input.audio_stream_index.unwrap_or_default().to_le_bytes());
     digest.update(input.max_width.unwrap_or_default().to_le_bytes());
     digest.update(input.max_height.unwrap_or_default().to_le_bytes());
+    digest.update(
+        input
+            .max_framerate
+            .unwrap_or_default()
+            .to_bits()
+            .to_le_bytes(),
+    );
     digest.update(input.hwaccel.unwrap_or_default().as_bytes());
     digest.update(input.subtitle_index.unwrap_or_default().to_le_bytes());
     digest.update([
@@ -1445,6 +1457,30 @@ mod tests {
                 Some(100),
                 &target,
                 &settings,
+            )
+        );
+        let mut different_stream = target.clone();
+        different_stream.audio_stream_index = Some(1);
+        assert_ne!(
+            first,
+            hls_job_id(
+                item,
+                Some("source"),
+                Some(100),
+                &different_stream,
+                &settings
+            )
+        );
+        different_stream.audio_stream_index = None;
+        different_stream.max_framerate = Some(23.976);
+        assert_ne!(
+            first,
+            hls_job_id(
+                item,
+                Some("source"),
+                Some(100),
+                &different_stream,
+                &settings
             )
         );
     }
