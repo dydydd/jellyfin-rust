@@ -394,6 +394,7 @@ pub fn video_command(
     max_width: Option<i32>,
     max_height: Option<i32>,
     max_framerate: Option<f32>,
+    deinterlace: bool,
     audio_stream_index: Option<i32>,
     video_stream_index: Option<i32>,
     start_time_ticks: Option<i64>,
@@ -425,6 +426,11 @@ pub fn video_command(
         arguments.push(bitrate.to_string());
     }
     let mut video_filters = Vec::new();
+    if deinterlace {
+        // Jellyfin's default EncodingOptions uses yadif with single-rate
+        // output, automatic parity, and all frames enabled.
+        video_filters.push("yadif=0:-1:0".to_owned());
+    }
     if let Some(width) = max_width {
         video_filters.push(format!("scale='min({width},iw)':-2"));
     } else if let Some(height) = max_height {
@@ -1393,6 +1399,7 @@ mod tests {
             Some(1280),
             None,
             None,
+            false,
             Some(2),
             Some(0),
             Some(10_000),
@@ -1519,6 +1526,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             None,
             None,
             None,
@@ -1549,6 +1557,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             None,
             None,
             None,
@@ -1579,6 +1588,7 @@ mod tests {
             Some(1280),
             None,
             Some(23.976),
+            false,
             None,
             None,
             None,
@@ -1591,6 +1601,37 @@ mod tests {
                 .arguments
                 .windows(2)
                 .any(|pair| { pair == ["-vf", "scale='min(1280,iw)':-2,fps=23.976"] })
+        );
+    }
+
+    #[test]
+    fn video_command_uses_the_official_default_deinterlace_filter() {
+        let command = video_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.ts"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["-vf", "yadif=0:-1:0"] })
         );
     }
 
@@ -1609,6 +1650,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             None,
             None,
             Some(10_000),

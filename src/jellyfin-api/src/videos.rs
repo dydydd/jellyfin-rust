@@ -198,7 +198,7 @@ pub(crate) struct StreamQuery {
     #[serde(rename = "requireAvc", alias = "RequireAvc", alias = "requireavc")]
     _require_avc: Option<bool>,
     #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
-    _de_interlace: Option<bool>,
+    de_interlace: Option<bool>,
     #[serde(
         rename = "requireNonAnamorphic",
         alias = "RequireNonAnamorphic",
@@ -474,6 +474,7 @@ async fn stream_file(
             query.max_width.or(query.width),
             query.max_height.or(query.height),
             query.framerate.or(query.max_framerate),
+            query.de_interlace.unwrap_or(false),
             query.audio_stream_index,
             query.video_stream_index,
             query.start_time_ticks,
@@ -508,6 +509,7 @@ fn copy_remux_has_no_transform(query: &StreamQuery) -> bool {
         && query.height.is_none()
         && query.framerate.is_none()
         && query.max_framerate.is_none()
+        && query.de_interlace != Some(true)
         && !(query.subtitle_stream_index.is_some()
             && should_burn_subtitles(query.subtitle_method.as_deref()))
 }
@@ -816,7 +818,7 @@ mod tests {
         assert_eq!(query._max_ref_frames, Some(4));
         assert_eq!(query._max_video_bit_depth, Some(10));
         assert_eq!(query._require_avc, Some(true));
-        assert_eq!(query._de_interlace, Some(true));
+        assert_eq!(query.de_interlace, Some(true));
         assert_eq!(query._require_non_anamorphic, Some(true));
         assert_eq!(query.start_time_ticks, Some(10_000));
         assert_eq!(query.copy_timestamps, Some(true));
