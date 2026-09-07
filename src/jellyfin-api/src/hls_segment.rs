@@ -53,6 +53,8 @@ pub(crate) struct TranscodeQuery {
     #[serde(
         rename = "videoBitrate",
         alias = "VideoBitrate",
+        alias = "videoBitRate",
+        alias = "VideoBitRate",
         alias = "videobitrate"
     )]
     video_bitrate: Option<i64>,
@@ -1204,6 +1206,15 @@ mod tests {
             .unwrap();
         let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.audio_bitrate, Some(128_000));
+    }
+
+    #[test]
+    fn hls_binds_legacy_video_bitrate_spelling() {
+        let uri: Uri = "/videos/item/master.m3u8?videoBitRate=2000000"
+            .parse()
+            .unwrap();
+        let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.video_bitrate, Some(2_000_000));
     }
 
     #[test]
