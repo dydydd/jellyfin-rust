@@ -238,7 +238,7 @@ pub(crate) async fn channel_items(
         }
     }
 
-    let _ = (query.filters, query.fields);
+    let _ = query.filters;
     let page = state
         .user_library
         .query_items(
@@ -255,16 +255,9 @@ pub(crate) async fn channel_items(
             },
         )
         .await?;
-    let items = page
-        .items
-        .into_iter()
-        .map(|item| user_library::item_to_dto(item, state.server_id()))
-        .collect::<Vec<_>>();
-    Ok(Json(user_library::BaseItemQueryResult {
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
-        items,
-    }))
+    Ok(Json(
+        items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?,
+    ))
 }
 
 pub(crate) async fn latest_channel_items(
@@ -282,7 +275,7 @@ pub(crate) async fn latest_channel_items(
         item_ids
     };
 
-    let _ = (query.filters, query.fields);
+    let _ = query.filters;
     let page = state
         .user_library
         .query_items(
@@ -300,16 +293,9 @@ pub(crate) async fn latest_channel_items(
             },
         )
         .await?;
-    let items = page
-        .items
-        .into_iter()
-        .map(|item| user_library::item_to_dto(item, state.server_id()))
-        .collect::<Vec<_>>();
-    Ok(Json(user_library::BaseItemQueryResult {
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
-        items,
-    }))
+    Ok(Json(
+        items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?,
+    ))
 }
 
 fn channel_features_dto(channel: base_item::Model) -> ChannelFeaturesDto {

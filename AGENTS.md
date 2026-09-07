@@ -136,6 +136,8 @@
 - Keep non-Live-TV Channels routes reachable through fully lowercase static-path aliases and
   bind their compound query names (`StartIndex`, `FolderId`, `ChannelIds`, sort and capability
   options) case-insensitively, matching the official ASP.NET binder and legacy SDK traffic.
+  Channel Items and Latest Items must pass SDK `Fields` through the shared batched DTO projector
+  rather than accepting them and returning the fixed minimal item shape.
 - Bind image `ImageType` and `ImageFormat` parameters from case-insensitive official names or their
   defined integer values. Reject unknown names and integer values as bad requests before resource
   lookup, including legacy user-image route parameters whose controller action otherwise ignores
