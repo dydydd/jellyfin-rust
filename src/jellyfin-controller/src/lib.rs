@@ -29,7 +29,7 @@ pub use transcode::{
     TranscodeJobRegistry, TranscodeTarget, TranscodingJobInfo, audio_command, build_main_playlist,
     build_master_playlist, build_variant_master_playlist, embedded_subtitle_filter_index,
     hls_command, hls_command_with_playlist_type, hls_job_id, hls_job_id_from_input, run_ffmpeg,
-    video_command, wait_for_segment,
+    video_command, video_remux_command, wait_for_segment,
 };
 mod media_streams;
 mod metadata_editor;

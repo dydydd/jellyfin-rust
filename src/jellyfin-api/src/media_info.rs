@@ -983,19 +983,28 @@ fn apply_stream_builder(
                 .is_some_and(|source_id| source_id.replace('-', "").eq_ignore_ascii_case(requested))
         });
         let selected_source_id = source_is_selected.then(|| source.id.clone()).flatten();
-        let can_transcode = playback_options.enable_transcoding
+        let can_encode = playback_options.enable_transcoding
             && policy_can_transcode(policy, !is_video)
+            && source.path.as_deref().is_some_and(|path| !path.is_empty());
+        let can_direct_stream = is_video
+            && playback_options.enable_direct_stream
+            && playback_options.allow_video_stream_copy
+            && playback_options.allow_audio_stream_copy
+            && policy.enable_playback_remuxing
+            && source.protocol == MediaProtocol::File
             && source.path.as_deref().is_some_and(|path| !path.is_empty());
         source.supports_direct_play &= playback_options.enable_direct_play
             && source.path.as_deref().is_some_and(|path| !path.is_empty())
             && (source.protocol == MediaProtocol::File
                 || (is_video && source.protocol == MediaProtocol::Http));
-        // Ordinary HTTP direct-stream/remux URLs are not implemented: the
-        // static route streams the original bytes regardless of its suffix.
-        source.supports_direct_stream = false;
-        source.supports_transcoding &= can_transcode;
+        // Progressive copy-remux is intentionally local-file only. Remote
+        // sources need separate origin authorization, SSRF, and Range
+        // semantics before they can be advertised as direct streams.
+        source.supports_direct_stream = can_direct_stream;
+        source.supports_transcoding =
+            (source.supports_transcoding && can_encode) || can_direct_stream;
         let mut options = MediaOptions {
-            enable_transcoding: can_transcode,
+            enable_transcoding: can_encode,
             enable_direct_play: playback_options.enable_direct_play,
             enable_direct_stream: playback_options.enable_direct_stream
                 && source.supports_direct_stream,
@@ -1085,24 +1094,33 @@ fn apply_selected_stream_metadata(
             .media_source
             .as_ref()
             .is_some_and(|source| source.supports_direct_play);
-    let supports_transcoding = options.enable_transcoding
-        && (play_method == PlayMethod::DirectStream
-            || stream
+    let supports_direct_stream = options.enable_direct_stream
+        && matches!(
+            play_method,
+            PlayMethod::DirectPlay | PlayMethod::DirectStream
+        )
+        && stream
+            .media_source
+            .as_ref()
+            .is_some_and(|source| local_copy_remux_supported(source, stream));
+    let supports_transcoding = (play_method == PlayMethod::DirectStream && supports_direct_stream)
+        || (options.enable_transcoding
+            && (stream
                 .media_source
                 .as_ref()
                 .is_some_and(|source| source.transcoding_container.is_some())
-            || options.profile.transcoding_profiles.iter().any(|profile| {
-                profile.profile_type == stream.media_type && profile.context == options.context
-            }));
+                || options.profile.transcoding_profiles.iter().any(|profile| {
+                    profile.profile_type == stream.media_type && profile.context == options.context
+                })));
     // The official helper rewrites every non-DirectPlay selection to Transcode
     // before building its URL. This includes HTTP progressive audio profiles;
     // restricting the URL to HLS leaves Android with SupportsTranscoding=true
     // but no playable TranscodingUrl.
-    if !supports_direct_play && supports_transcoding {
+    if !supports_direct_play && (supports_transcoding || supports_direct_stream) {
         stream.play_method = PlayMethod::Transcode;
     }
     let transcoding = if stream.play_method == PlayMethod::Transcode
-        && options.enable_transcoding
+        && (options.enable_transcoding || supports_direct_stream)
         && supports_transcoding
     {
         // Clients already know the externally reachable server URL. Returning
@@ -1118,7 +1136,7 @@ fn apply_selected_stream_metadata(
         source.supports_direct_play = supports_direct_play;
         // Match MediaInfoHelper.SetDeviceSpecificData: DirectPlay can still advertise
         // direct-stream and transcoding fallbacks supported by the device profile.
-        source.supports_direct_stream = supports_direct_play;
+        source.supports_direct_stream = supports_direct_stream;
         source.supports_transcoding = supports_transcoding;
         source.default_audio_stream_index = stream.audio_stream_index;
         source.default_subtitle_stream_index = stream.subtitle_stream_index;
@@ -1186,6 +1204,77 @@ fn apply_selected_stream_metadata(
     }
 }
 
+fn local_copy_remux_supported(
+    source: &MediaSourceInfo,
+    stream: &jellyfin_model::StreamInfo,
+) -> bool {
+    if source.protocol != MediaProtocol::File
+        || source.path.as_deref().is_none_or(str::is_empty)
+        || (stream.subtitle_stream_index.is_some()
+            && stream.subtitle_delivery_method == SubtitleDeliveryMethod::Encode)
+    {
+        return false;
+    }
+    let Some(video_codec) = source
+        .video_stream()
+        .and_then(|video| video.codec.as_deref())
+    else {
+        return false;
+    };
+    let Some(audio_codec) = source
+        .default_audio_stream(stream.audio_stream_index)
+        .and_then(|audio| audio.codec.as_deref())
+    else {
+        return false;
+    };
+    stream
+        .video_codecs
+        .iter()
+        .any(|codec| codec.eq_ignore_ascii_case(video_codec))
+        && stream
+            .audio_codecs
+            .iter()
+            .any(|codec| codec.eq_ignore_ascii_case(audio_codec))
+        && local_copy_remux_container_supports(
+            stream.container.as_deref().unwrap_or_default(),
+            video_codec,
+            audio_codec,
+        )
+}
+
+fn local_copy_remux_container_supports(
+    container: &str,
+    video_codec: &str,
+    audio_codec: &str,
+) -> bool {
+    let container = container.trim().to_ascii_lowercase();
+    let video_codec = video_codec.trim().to_ascii_lowercase();
+    let audio_codec = audio_codec.trim().to_ascii_lowercase();
+    match container.as_str() {
+        "mkv" | "matroska" => true,
+        "mp4" | "m4v" | "mov" => {
+            matches!(
+                video_codec.as_str(),
+                "h264" | "hevc" | "h265" | "av1" | "mpeg4"
+            ) && matches!(
+                audio_codec.as_str(),
+                "aac" | "ac3" | "eac3" | "mp3" | "alac"
+            )
+        }
+        "ts" | "mpegts" => {
+            matches!(
+                video_codec.as_str(),
+                "h264" | "hevc" | "h265" | "mpeg2video"
+            ) && matches!(audio_codec.as_str(), "aac" | "ac3" | "eac3" | "mp3")
+        }
+        "webm" => {
+            matches!(video_codec.as_str(), "vp8" | "vp9" | "av1")
+                && matches!(audio_codec.as_str(), "opus" | "vorbis")
+        }
+        _ => false,
+    }
+}
+
 fn clear_playback_capabilities(source: &mut MediaSourceInfo) {
     source.supports_direct_play = false;
     source.supports_direct_stream = false;
@@ -1217,9 +1306,6 @@ const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: boo
     if is_audio {
         policy.enable_audio_playback_transcoding
     } else {
-        // The progressive and HLS video handlers always encode their selected
-        // streams. They do not implement a stream-copy/remux route, so a
-        // remux-only policy must not advertise a transcoding URL.
         policy.enable_audio_playback_transcoding || policy.enable_video_playback_transcoding
     }
 }
@@ -1301,7 +1387,7 @@ mod tests {
 
     use super::{
         MediaProtocol, MediaSourceInfo, PlaybackOptions, apply_selected_stream_metadata,
-        apply_stream_builder,
+        apply_stream_builder, local_copy_remux_supported,
     };
     use uuid::Uuid;
 
@@ -1343,6 +1429,37 @@ mod tests {
                 && !source.supports_transcoding
                 && source.transcoding_url.is_none()
         }));
+    }
+
+    #[test]
+    fn local_copy_remux_rejects_a_profile_that_needs_audio_encoding() {
+        let source = MediaSourceInfo {
+            protocol: MediaProtocol::File,
+            path: Some("/media/movie.mkv".to_owned()),
+            media_streams: vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("dts".to_owned()),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+            ],
+            ..MediaSourceInfo::default()
+        };
+        let mut stream = jellyfin_model::StreamInfo::default();
+        stream.container = Some("mp4".to_owned());
+        stream.video_codecs = vec!["h264".to_owned()];
+        stream.audio_codecs = vec!["aac".to_owned()];
+        stream.audio_stream_index = Some(1);
+
+        assert!(!local_copy_remux_supported(&source, &stream));
     }
 
     #[tokio::test]
@@ -1575,13 +1692,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remux_only_video_policy_does_not_advertise_an_unimplemented_transcode() {
+    async fn remux_only_video_policy_advertises_a_local_copy_remux_url() {
         let item_id = Uuid::new_v4();
         let source = MediaSourceInfo {
             id: Some(item_id.simple().to_string()),
             protocol: MediaProtocol::File,
             path: Some("/media/movie.mkv".to_owned()),
             container: Some("mkv".to_owned()),
+            bitrate: Some(1_000_000),
             media_streams: vec![
                 MediaStream {
                     index: 0,
@@ -1598,6 +1716,7 @@ mod tests {
                     ..MediaStream::default()
                 },
             ],
+            supports_direct_play: true,
             ..MediaSourceInfo::default()
         };
         let profile = DeviceProfile {
@@ -1644,9 +1763,15 @@ mod tests {
 
         let source = &sources[0];
         assert!(!source.supports_direct_play);
-        assert!(!source.supports_direct_stream);
-        assert!(!source.supports_transcoding);
-        assert!(source.transcoding_url.is_none());
+        assert!(source.supports_direct_stream);
+        assert!(source.supports_transcoding);
+        let url = source.transcoding_url.as_deref().expect("local remux URL");
+        assert!(url.contains("/stream.mkv"));
+        assert!(url.contains("VideoCodec=h264"));
+        assert!(url.contains("AudioCodec=aac"));
+        assert!(!url.contains("Static=true"));
+        assert_eq!(source.transcoding_container.as_deref(), Some("mkv"));
+        assert_eq!(source.transcoding_sub_protocol, MediaStreamProtocol::Http);
     }
 
     #[tokio::test]

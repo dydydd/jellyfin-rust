@@ -8,8 +8,9 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
-use jellyfin_controller::{embedded_subtitle_filter_index, video_command};
+use jellyfin_controller::{embedded_subtitle_filter_index, video_command, video_remux_command};
 use jellyfin_data::BaseItemPage;
+use jellyfin_model::{MediaStream, MediaStreamType};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -83,13 +84,13 @@ pub(crate) struct StreamQuery {
         alias = "AllowVideoStreamCopy",
         alias = "allowvideostreamcopy"
     )]
-    _allow_video_stream_copy: Option<bool>,
+    allow_video_stream_copy: Option<bool>,
     #[serde(
         rename = "allowAudioStreamCopy",
         alias = "AllowAudioStreamCopy",
         alias = "allowaudiostreamcopy"
     )]
-    _allow_audio_stream_copy: Option<bool>,
+    allow_audio_stream_copy: Option<bool>,
     #[serde(rename = "videoCodec", alias = "VideoCodec", alias = "videocodec")]
     video_codec: Option<String>,
     #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
@@ -295,21 +296,30 @@ async fn stream_file(
 ) -> Result<Response, ApiError> {
     let identity =
         authentication::authenticated_identity(&state, &headers, Some(request.uri())).await?;
-    let mut requested_item = match identity {
+    let (mut requested_item, device_policy) = match identity {
         authentication::AuthenticatedIdentity::Device(authenticated) => {
-            state
-                .library_controller
-                .item(&authenticated.user, authenticated.user.id, item_id)
-                .await?
+            let policy: jellyfin_model::UserPolicy =
+                serde_json::from_value(authenticated.user.policy.clone())
+                    .map_err(|_| ApiError::Internal)?;
+            (
+                state
+                    .library_controller
+                    .item(&authenticated.user, authenticated.user.id, item_id)
+                    .await?,
+                Some(policy),
+            )
         }
         // The official default authorization handler treats API keys as an
         // unrestricted principal. Unlike a device session, they have no
         // target-user library policy to apply before opening a stream.
-        authentication::AuthenticatedIdentity::ApiKey(_) => state
-            .base_items
-            .get(item_id)
-            .await?
-            .ok_or(ApiError::NotFound)?,
+        authentication::AuthenticatedIdentity::ApiKey(_) => (
+            state
+                .base_items
+                .get(item_id)
+                .await?
+                .ok_or(ApiError::NotFound)?,
+            None,
+        ),
     };
     // Device sessions are hydrated by LibraryController. API keys load the
     // unrestricted persisted row directly, so normalize official CLR aliases
@@ -408,34 +418,166 @@ async fn stream_file(
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let command = video_command(
-        &state.ffmpeg_path,
-        std::path::Path::new(&path),
-        &output,
-        video_codec,
-        audio_codec,
-        query.video_bitrate,
-        query.audio_bitrate,
-        query
-            .audio_channels
-            .or(query.max_audio_channels)
-            .or(query.transcoding_max_audio_channels),
-        query.audio_sample_rate,
-        query.max_width.or(query.width),
-        query.max_height.or(query.height),
-        query.framerate.or(query.max_framerate),
-        query.audio_stream_index,
-        query.video_stream_index,
-        query.start_time_ticks,
-        subtitle_filter_index,
-        query.copy_timestamps.unwrap_or(false),
-    );
+    let copy_timestamps = query.copy_timestamps.unwrap_or(false);
+    let mut is_local_copy_remux = if subtitle_filter_index.is_none()
+        && is_local_path(&path)
+        && copy_remux_has_no_transform(&query)
+    {
+        let streams = state
+            .media_streams
+            .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
+            .await?;
+        can_copy_remux(&query, &container, &streams, video_codec, audio_codec)
+    } else {
+        false
+    };
+    if let Some(policy) = device_policy {
+        let can_encode =
+            policy.enable_audio_playback_transcoding || policy.enable_video_playback_transcoding;
+        if is_local_copy_remux && !policy.enable_playback_remuxing {
+            is_local_copy_remux = false;
+        }
+        if !is_local_copy_remux && !can_encode {
+            return Err(ApiError::Forbidden);
+        }
+    }
+    let command = if is_local_copy_remux {
+        video_remux_command(
+            &state.ffmpeg_path,
+            std::path::Path::new(&path),
+            &output,
+            query.audio_stream_index,
+            query.video_stream_index,
+            query.start_time_ticks,
+            copy_timestamps,
+        )
+    } else {
+        video_command(
+            &state.ffmpeg_path,
+            std::path::Path::new(&path),
+            &output,
+            video_codec,
+            audio_codec,
+            query.video_bitrate,
+            query.audio_bitrate,
+            query
+                .audio_channels
+                .or(query.max_audio_channels)
+                .or(query.transcoding_max_audio_channels),
+            query.audio_sample_rate,
+            query.max_width.or(query.width),
+            query.max_height.or(query.height),
+            query.framerate.or(query.max_framerate),
+            query.audio_stream_index,
+            query.video_stream_index,
+            query.start_time_ticks,
+            subtitle_filter_index,
+            copy_timestamps,
+        )
+    };
     crate::audio::serve_transcoded_path(
         command,
         &output.to_string_lossy(),
         request.method() == axum::http::Method::HEAD,
     )
     .await
+}
+
+fn is_local_path(path: &str) -> bool {
+    !path.contains("://")
+}
+
+fn copy_remux_has_no_transform(query: &StreamQuery) -> bool {
+    query.allow_video_stream_copy.unwrap_or(true)
+        && query.allow_audio_stream_copy.unwrap_or(true)
+        && query.video_bitrate.is_none()
+        && query.audio_bitrate.is_none()
+        && query.audio_channels.is_none()
+        && query.max_audio_channels.is_none()
+        && query.transcoding_max_audio_channels.is_none()
+        && query.audio_sample_rate.is_none()
+        && query.max_width.is_none()
+        && query.width.is_none()
+        && query.max_height.is_none()
+        && query.height.is_none()
+        && query.framerate.is_none()
+        && query.max_framerate.is_none()
+        && !(query.subtitle_stream_index.is_some()
+            && should_burn_subtitles(query.subtitle_method.as_deref()))
+}
+
+fn can_copy_remux(
+    query: &StreamQuery,
+    container: &str,
+    streams: &[MediaStream],
+    requested_video_codec: &str,
+    requested_audio_codec: &str,
+) -> bool {
+    let Some(video_codec) =
+        selected_stream_codec(streams, MediaStreamType::Video, query.video_stream_index)
+    else {
+        return false;
+    };
+    let Some(audio_codec) =
+        selected_stream_codec(streams, MediaStreamType::Audio, query.audio_stream_index)
+    else {
+        return false;
+    };
+    codecs_match(video_codec, requested_video_codec)
+        && codecs_match(audio_codec, requested_audio_codec)
+        && copy_remux_container_supports(container, video_codec, audio_codec)
+}
+
+fn selected_stream_codec(
+    streams: &[MediaStream],
+    stream_type: MediaStreamType,
+    requested_index: Option<i32>,
+) -> Option<&str> {
+    streams
+        .iter()
+        .find(|stream| {
+            stream.stream_type == stream_type
+                && requested_index.is_none_or(|index| stream.index == index)
+        })
+        .and_then(|stream| stream.codec.as_deref())
+        .filter(|codec| !codec.trim().is_empty())
+}
+
+fn codecs_match(actual: &str, requested: &str) -> bool {
+    actual.trim().eq_ignore_ascii_case(requested.trim())
+}
+
+fn copy_remux_container_supports(container: &str, video_codec: &str, audio_codec: &str) -> bool {
+    let container = container.trim().to_ascii_lowercase();
+    let video_codec = video_codec.trim().to_ascii_lowercase();
+    let audio_codec = audio_codec.trim().to_ascii_lowercase();
+    match container.as_str() {
+        // Matroska accepts the broadest practical set of already-probed
+        // FFmpeg codecs, so it is the safe fallback for clients that support
+        // it. Keep MP4/WebM conservative: a failed mux after advertising a
+        // direct stream is worse than falling back to an encode.
+        "mkv" | "matroska" => true,
+        "mp4" | "m4v" | "mov" => {
+            matches!(
+                video_codec.as_str(),
+                "h264" | "hevc" | "h265" | "av1" | "mpeg4"
+            ) && matches!(
+                audio_codec.as_str(),
+                "aac" | "ac3" | "eac3" | "mp3" | "alac"
+            )
+        }
+        "ts" | "mpegts" => {
+            matches!(
+                video_codec.as_str(),
+                "h264" | "hevc" | "h265" | "mpeg2video"
+            ) && matches!(audio_codec.as_str(), "aac" | "ac3" | "eac3" | "mp3")
+        }
+        "webm" => {
+            matches!(video_codec.as_str(), "vp8" | "vp9" | "av1")
+                && matches!(audio_codec.as_str(), "opus" | "vorbis")
+        }
+        _ => false,
+    }
 }
 
 fn should_burn_subtitles(method: Option<&str>) -> bool {
@@ -617,8 +759,8 @@ mod tests {
         assert_eq!(query.media_source_id.as_deref(), Some("alternate"));
         assert_eq!(query._device_id.as_deref(), Some("device"));
         assert_eq!(query._enable_auto_stream_copy, Some(true));
-        assert_eq!(query._allow_video_stream_copy, Some(false));
-        assert_eq!(query._allow_audio_stream_copy, Some(true));
+        assert_eq!(query.allow_video_stream_copy, Some(false));
+        assert_eq!(query.allow_audio_stream_copy, Some(true));
         assert_eq!(query.video_codec.as_deref(), Some("h264"));
         assert_eq!(query.audio_codec.as_deref(), Some("aac"));
         assert_eq!(query.video_bitrate, Some(2_000_000));
@@ -680,6 +822,52 @@ mod tests {
             "mkv",
             "the by-container route remains authoritative"
         );
+    }
+
+    #[test]
+    fn local_copy_remux_requires_matching_codecs_and_no_transform() {
+        let streams = vec![
+            MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("h264".to_owned()),
+                ..MediaStream::default()
+            },
+            MediaStream {
+                index: 1,
+                stream_type: MediaStreamType::Audio,
+                codec: Some("aac".to_owned()),
+                ..MediaStream::default()
+            },
+        ];
+        let query = StreamQuery {
+            video_codec: Some("h264".to_owned()),
+            audio_codec: Some("aac".to_owned()),
+            ..StreamQuery::default()
+        };
+
+        assert!(copy_remux_has_no_transform(&query));
+        assert!(can_copy_remux(&query, "mp4", &streams, "h264", "aac"));
+
+        let resized = StreamQuery {
+            max_width: Some(1280),
+            ..query
+        };
+        assert!(!copy_remux_has_no_transform(&resized));
+        assert!(!can_copy_remux(
+            &StreamQuery {
+                video_codec: Some("hevc".to_owned()),
+                audio_codec: Some("aac".to_owned()),
+                ..StreamQuery::default()
+            },
+            "mp4",
+            &streams,
+            "hevc",
+            "aac",
+        ));
+        assert!(!is_local_path("https://media.example/video.mkv"));
+        assert!(!is_local_path("rtsp://media.example/video.mkv"));
+        assert!(is_local_path("/library/video.mkv"));
     }
 
     #[tokio::test]

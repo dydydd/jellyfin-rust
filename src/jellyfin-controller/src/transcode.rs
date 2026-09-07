@@ -485,6 +485,71 @@ pub fn video_command(
     }
 }
 
+/// Builds a local progressive video remux command.
+///
+/// This is deliberately narrower than [`video_command`]: it never adds an
+/// encoder, filter, scale, frame-rate, or bitrate option. Callers must first
+/// establish that the selected input codecs can be copied into the requested
+/// container. Keeping that check outside this command makes accidental
+/// remux-as-transcode regressions visible at the HTTP boundary.
+#[must_use]
+pub fn video_remux_command(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+    output_path: &Path,
+    audio_stream_index: Option<i32>,
+    video_stream_index: Option<i32>,
+    start_time_ticks: Option<i64>,
+    copy_timestamps: bool,
+) -> FfmpegCommand {
+    let mut arguments = vec![
+        "-hide_banner".to_owned(),
+        "-loglevel".to_owned(),
+        "error".to_owned(),
+        "-y".to_owned(),
+    ];
+    if copy_timestamps {
+        arguments.push("-copyts".to_owned());
+    }
+    if let Some(start_time_ticks) = start_time_ticks.filter(|ticks| *ticks > 0) {
+        arguments.push("-ss".to_owned());
+        arguments.push(format_ticks_as_seconds(start_time_ticks));
+    }
+    arguments.push("-i".to_owned());
+    arguments.push(input_path.to_string_lossy().into_owned());
+    arguments.push("-map".to_owned());
+    arguments
+        .push(video_stream_index.map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}")));
+    arguments.push("-map".to_owned());
+    arguments
+        .push(audio_stream_index.map_or_else(|| "0:a:0".to_owned(), |index| format!("0:{index}")));
+    arguments.push("-c:v".to_owned());
+    arguments.push("copy".to_owned());
+    arguments.push("-c:a".to_owned());
+    arguments.push("copy".to_owned());
+    if copy_timestamps {
+        arguments.push("-avoid_negative_ts".to_owned());
+        arguments.push("disabled".to_owned());
+        arguments.push("-start_at_zero".to_owned());
+    }
+    if output_path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"))
+    {
+        arguments.push("-f".to_owned());
+        arguments.push("mp4".to_owned());
+        arguments.push("-movflags".to_owned());
+        arguments.push("frag_keyframe+empty_moov+delay_moov".to_owned());
+    }
+    arguments.push(output_path.to_string_lossy().into_owned());
+
+    FfmpegCommand {
+        program: ffmpeg_path.to_path_buf(),
+        arguments,
+    }
+}
+
 fn is_mp4_container(path: &Path) -> bool {
     path.extension()
         .and_then(std::ffi::OsStr::to_str)
@@ -1366,6 +1431,49 @@ mod tests {
                 "/tmp/transcodes/out.mp4",
             ]
         );
+    }
+
+    #[test]
+    fn video_remux_command_only_copies_selected_streams() {
+        let command = video_remux_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.mp4"),
+            Some(2),
+            Some(0),
+            Some(10_000),
+            false,
+        );
+
+        assert_eq!(
+            command.arguments,
+            [
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                "0.001",
+                "-i",
+                "/media/movie.mkv",
+                "-map",
+                "0:0",
+                "-map",
+                "0:2",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-f",
+                "mp4",
+                "-movflags",
+                "frag_keyframe+empty_moov+delay_moov",
+                "/tmp/transcodes/out.mp4",
+            ]
+        );
+        assert!(!command.arguments.contains(&"-vf".to_owned()));
+        assert!(!command.arguments.contains(&"-b:v".to_owned()));
+        assert!(!command.arguments.contains(&"-b:a".to_owned()));
     }
 
     #[test]
