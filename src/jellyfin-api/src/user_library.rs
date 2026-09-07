@@ -1462,14 +1462,20 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     let mut external_urls =
         external_urls_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut chapters = chapters_for_items(state, std::slice::from_ref(&item), fields).await?;
-    let media_source_policy = if fields.wants_media_sources() {
-        Some(media_source_policy_for_user(state, target_user_id).await?)
-    } else {
-        None
-    };
     let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
     let item_access_policy = item_access_policy_for_user(state, target_user_id, fields).await?;
+    // `GetItem` requests all fields, so the media-source capability policy and the
+    // access policy refer to the same persisted user row. Reuse it instead of
+    // performing a second user lookup on the episode-detail hot path.
+    let media_source_policy = if fields.wants_media_sources() {
+        Some(match item_access_policy.as_ref() {
+            Some(access) => access.policy.clone(),
+            None => media_source_policy_for_user(state, target_user_id).await?,
+        })
+    } else {
+        None
+    };
     let deletion_folder_item_ids = if is_playlist {
         HashSet::new()
     } else {
@@ -2029,27 +2035,39 @@ pub(crate) async fn load_relation_metadata(
     items: &[base_item::Model],
 ) -> Result<HashMap<Uuid, ItemRelationMetadata>, ApiError> {
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let mut genres = state
-        .item_values
-        .value_pairs_for_items(&item_ids, item_value::ItemValueType::Genre)
-        .await
-        .map_err(|_| ApiError::Internal)?;
-    let mut tags = state
-        .item_values
-        .values_for_items(&item_ids, item_value::ItemValueType::Tags)
-        .await
-        .map_err(|_| ApiError::Internal)?;
-    let mut studios = state
-        .item_values
-        .value_pairs_for_items(&item_ids, item_value::ItemValueType::Studios)
-        .await
-        .map_err(|_| ApiError::Internal)?;
-    let mut music = load_music_relation_metadata(state, items).await?;
-    let mut people = state
-        .people
-        .people_for_items(&item_ids)
-        .await
-        .map_err(|_| ApiError::Internal)?;
+    // These relation reads are independent. Run them concurrently so an episode
+    // detail does not pay the sum of several PostgreSQL round trips.
+    let (mut genres, mut tags, mut studios, mut music, mut people) = tokio::try_join!(
+        async {
+            state
+                .item_values
+                .value_pairs_for_items(&item_ids, item_value::ItemValueType::Genre)
+                .await
+                .map_err(|_| ApiError::Internal)
+        },
+        async {
+            state
+                .item_values
+                .values_for_items(&item_ids, item_value::ItemValueType::Tags)
+                .await
+                .map_err(|_| ApiError::Internal)
+        },
+        async {
+            state
+                .item_values
+                .value_pairs_for_items(&item_ids, item_value::ItemValueType::Studios)
+                .await
+                .map_err(|_| ApiError::Internal)
+        },
+        load_music_relation_metadata(state, items),
+        async {
+            state
+                .people
+                .people_for_items(&item_ids)
+                .await
+                .map_err(|_| ApiError::Internal)
+        },
+    )?;
     let catalog_people = people
         .values()
         .flatten()
