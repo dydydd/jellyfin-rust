@@ -25,8 +25,9 @@
   that produces the exposed image tags. Keep the top-level map present when empty, include hashes
   for inherited and Series primary tags, and never decode images or issue per-item lookups to fill it.
 - When DTO image projection is enabled (including the default `/UserViews` and legacy
-  `/Users/{userId}/Views` bootstrap paths), emit `ImageTags` as an object even when it is empty.
-  Only omit it when image projection was explicitly disabled; Afuse iterates this map directly.
+  `/Users/{userId}/Views` bootstrap paths), emit `ImageTags` as an object and
+  `BackdropImageTags` as an array even when either is empty. Only omit them when image projection
+  was explicitly disabled; Afuse iterates these collections directly.
 - Project `Chapters` only when `ItemFields.Chapters` is requested, while default all-fields item
   details must include an empty array when none exist. Load page chapters in one PostgreSQL batch,
   order by `StartPositionTicks`, keep alternate versions isolated, and derive chapter image tags

@@ -560,6 +560,11 @@ async fn assert_user_views(fixture: &Fixture) {
     assert!(items.iter().all(|item| item["Type"] == "CollectionFolder"));
     assert!(items.iter().all(|item| item["IsFolder"] == true));
     assert!(items.iter().all(|item| item["ImageTags"].is_object()));
+    assert!(
+        items
+            .iter()
+            .all(|item| item["BackdropImageTags"].is_array())
+    );
     assert!(items.iter().any(
         |item| item["Id"] == fixture.movie_view_id.simple().to_string()
             && item["CollectionType"] == "movies"

@@ -229,7 +229,7 @@ pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto
         // `DtoOptions()` enables images for user views. Keep the empty map on
         // the wire as the official server does; Afuse iterates it directly.
         image_tags: Some(HashMap::new()),
-        backdrop_image_tags: Vec::new(),
+        backdrop_image_tags: Some(Vec::new()),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
         parent_logo_item_id: None,
@@ -289,7 +289,7 @@ pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemD
         provider_ids: None,
         // See `view_to_dto`: image projection is enabled by default here.
         image_tags: Some(HashMap::new()),
-        backdrop_image_tags: Vec::new(),
+        backdrop_image_tags: Some(Vec::new()),
         parent_primary_image_item_id: None,
         parent_primary_image_tag: None,
         parent_logo_item_id: None,
