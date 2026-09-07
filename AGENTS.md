@@ -18,6 +18,9 @@
 - Keep deterministic scan hierarchy creation idempotent under sibling-file concurrency. Series and
   season nodes must be checked and created while holding the PostgreSQL hierarchy lock so a
   duplicate-node race cannot silently drop one media item.
+- Reuse Series and Season resolution only within one bounded scan file batch. Cache misses must
+  still call the locked create-or-read path, and per-item NFO relation persistence must remain
+  outside that cache.
 - Treat filesystem and persistence failures from concurrent media-item scans as scan failures just
   as in serial scans. Return an accurate total plus only a bounded sample of per-file diagnostics;
   media-probe fallbacks remain partial successes and must not make the scan fail.

@@ -71,6 +71,9 @@ const MEDIA_INFO_PROBE_SCHEMA_VERSION: u64 = 1;
 const LOCAL_MEDIA_PROBE_FAILURE_BACKOFF: Duration = Duration::from_secs(15 * 60);
 const MAX_LOCAL_MEDIA_PROBE_FAILURE_ENTRIES: usize = 1_024;
 const MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES: usize = 32;
+// One hierarchy cache is scoped to a bounded `process_file_batch`, so a large
+// library scan never retains every discovered Series or Season.
+const MAX_EPISODE_HIERARCHY_CACHE_ENTRIES: usize = SCAN_PATH_QUERY_BATCH_SIZE;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -398,6 +401,55 @@ struct ScanDirectorySnapshot {
 struct PreloadedMediaState {
     streams: Vec<PersistedMediaStream>,
     images: Vec<BaseItemImage>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedEpisodeSeries {
+    id: Uuid,
+    presentation_unique_key: String,
+}
+
+/// Per-file-batch single-flight state for deterministic TV hierarchy nodes.
+///
+/// `BaseItemRepository::create_if_absent` still takes the PostgreSQL hierarchy
+/// advisory lock. The cache only avoids repeat lookups/updates by sibling
+/// Episode workers after the first worker has resolved the same node.
+#[derive(Debug, Default)]
+struct EpisodeHierarchyCache {
+    series: Mutex<HashMap<Uuid, Arc<OnceCell<CachedEpisodeSeries>>>>,
+    seasons: Mutex<HashMap<Uuid, Arc<OnceCell<Uuid>>>>,
+}
+
+impl EpisodeHierarchyCache {
+    fn series_cell(&self, id: Uuid) -> Arc<OnceCell<CachedEpisodeSeries>> {
+        let mut series = self
+            .series
+            .lock()
+            .expect("episode hierarchy Series cache lock poisoned");
+        if let Some(cell) = series.get(&id) {
+            return Arc::clone(cell);
+        }
+        let cell = Arc::new(OnceCell::new());
+        if series.len() < MAX_EPISODE_HIERARCHY_CACHE_ENTRIES {
+            series.insert(id, Arc::clone(&cell));
+        }
+        cell
+    }
+
+    fn season_cell(&self, id: Uuid) -> Arc<OnceCell<Uuid>> {
+        let mut seasons = self
+            .seasons
+            .lock()
+            .expect("episode hierarchy Season cache lock poisoned");
+        if let Some(cell) = seasons.get(&id) {
+            return Arc::clone(cell);
+        }
+        let cell = Arc::new(OnceCell::new());
+        if seasons.len() < MAX_EPISODE_HIERARCHY_CACHE_ENTRIES {
+            seasons.insert(id, Arc::clone(&cell));
+        }
+        cell
+    }
 }
 
 struct MediaInfoRepairCandidate {
@@ -2280,6 +2332,7 @@ impl LibraryScanService {
                 .images
                 .push(image);
         }
+        let hierarchy_cache = Arc::new(EpisodeHierarchyCache::default());
         let concurrency = self.fanout_concurrency();
         if concurrency <= 1 {
             let mut added = 0;
@@ -2299,6 +2352,7 @@ impl LibraryScanService {
                         kind,
                         library_root,
                         directory_snapshot,
+                        hierarchy_cache.as_ref(),
                         preloaded,
                         existing,
                     )
@@ -2328,6 +2382,7 @@ impl LibraryScanService {
                 .as_ref()
                 .and_then(|item| preloaded_by_id.remove(&item.id))
                 .unwrap_or_default();
+            let hierarchy_cache = Arc::clone(&hierarchy_cache);
             work.push(
                 async move {
                     let result = self
@@ -2338,6 +2393,7 @@ impl LibraryScanService {
                             kind,
                             library_root,
                             directory_snapshot,
+                            hierarchy_cache.as_ref(),
                             preloaded,
                             existing,
                         )
@@ -2360,6 +2416,7 @@ impl LibraryScanService {
                     .as_ref()
                     .and_then(|item| preloaded_by_id.remove(&item.id))
                     .unwrap_or_default();
+                let hierarchy_cache = Arc::clone(&hierarchy_cache);
                 work.push(
                     async move {
                         let result = self
@@ -2370,6 +2427,7 @@ impl LibraryScanService {
                                 kind,
                                 library_root,
                                 directory_snapshot,
+                                hierarchy_cache.as_ref(),
                                 preloaded,
                                 existing,
                             )
@@ -2402,6 +2460,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         library_root: &Path,
         directory_snapshot: &ScanDirectorySnapshot,
+        hierarchy_cache: &EpisodeHierarchyCache,
         preloaded: PreloadedMediaState,
         existing: Option<base_item::Model>,
     ) -> Result<MediaItemScanOutcome, LibraryScanError> {
@@ -2413,6 +2472,7 @@ impl LibraryScanService {
             kind,
             library_root,
             directory_snapshot,
+            hierarchy_cache,
             preloaded,
             existing,
         )
@@ -2461,6 +2521,7 @@ impl LibraryScanService {
         kind: ScanLibraryKind,
         library_root: &Path,
         directory_snapshot: &ScanDirectorySnapshot,
+        hierarchy_cache: &EpisodeHierarchyCache,
         preloaded: PreloadedMediaState,
         existing: Option<base_item::Model>,
     ) -> Result<MediaItemScanOutcome, LibraryScanError> {
@@ -2543,6 +2604,7 @@ impl LibraryScanService {
                     parent_id,
                     library_root,
                     directory_snapshot,
+                    hierarchy_cache,
                     &preloaded,
                     media_kind,
                     path_str,
@@ -2559,6 +2621,7 @@ impl LibraryScanService {
                     parent_id,
                     library_root,
                     directory_snapshot,
+                    hierarchy_cache,
                     &preloaded,
                     media_kind,
                     path_str,
@@ -2633,6 +2696,7 @@ impl LibraryScanService {
         parent_id: Uuid,
         library_root: &Path,
         directory_snapshot: &ScanDirectorySnapshot,
+        hierarchy_cache: &EpisodeHierarchyCache,
         preloaded: &PreloadedMediaState,
         media_kind: MediaKind,
         path_str: &str,
@@ -2653,41 +2717,64 @@ impl LibraryScanService {
             episode_series_context(path, library_root, series_name)
         {
             resolved_series_name = Some(series_name.clone());
-            let (series_item_id, _) = self
-                .ensure_series_item(&series_name, parent_id, series_path.as_deref(), path)
-                .await?;
+            let series_cache_key = series_path.as_deref().map_or_else(
+                || stable_item_id(&series_name, "Series"),
+                |series_path| stable_item_id(&series_path.to_string_lossy(), "Series"),
+            );
+            let series_cell = hierarchy_cache.series_cell(series_cache_key);
+            let cached_series = series_cell
+                .get_or_try_init(|| async {
+                    let (id, _) = self
+                        .ensure_series_item(&series_name, parent_id, series_path.as_deref(), path)
+                        .await?;
+                    Ok::<_, LibraryScanError>(CachedEpisodeSeries {
+                        id,
+                        presentation_unique_key: id.simple().to_string(),
+                    })
+                })
+                .await?
+                .clone();
+            let series_item_id = cached_series.id;
             self.persist_scan_relations(series_item_id, path_str, "Series", None)
                 .await?;
             series_id = Some(series_item_id);
-            series_puk = Some(series_item_id.simple().to_string());
+            series_puk = Some(cached_series.presentation_unique_key.clone());
 
             if let Some(sn) = season_number {
                 let season_key = format!("{}_{}", series_item_id.simple(), sn);
                 let season_item_id = stable_item_id(&season_key, "Season");
-                if self.items.get(season_item_id).await?.is_none() {
-                    let season_path = path.parent().and_then(|folder| {
-                        let name = folder.file_name()?.to_str()?;
-                        parse_season_directory(name)
-                            .filter(|number| *number == sn)
-                            .map(|_| folder.to_path_buf())
-                    });
-                    let mut season = NewBaseItem::new(season_item_id, "Season");
-                    season.path = season_path.map(|path| path.to_string_lossy().into_owned());
-                    season.name = Some(format!("Season {sn}"));
-                    season.sort_name = season.name.clone();
-                    season.parent_id = Some(series_item_id);
-                    season.index_number = Some(sn);
-                    season.is_folder = true;
-                    season.is_virtual_item = false;
-                    season.series_id = Some(series_item_id);
-                    season.series_presentation_unique_key = series_puk.clone();
-                    self.items.create_if_absent(season).await?;
-                }
-                if let Some(mut season) = self.items.get(season_item_id).await?
-                    && apply_season_nfo_metadata(&mut season, path, Some(sn))
-                {
-                    self.items.update(season).await?;
-                }
+                let season_cell = hierarchy_cache.season_cell(season_item_id);
+                let series_puk_for_season = cached_series.presentation_unique_key.clone();
+                let season_item_id = *season_cell
+                    .get_or_try_init(|| async {
+                        if self.items.get(season_item_id).await?.is_none() {
+                            let season_path = path.parent().and_then(|folder| {
+                                let name = folder.file_name()?.to_str()?;
+                                parse_season_directory(name)
+                                    .filter(|number| *number == sn)
+                                    .map(|_| folder.to_path_buf())
+                            });
+                            let mut season = NewBaseItem::new(season_item_id, "Season");
+                            season.path =
+                                season_path.map(|path| path.to_string_lossy().into_owned());
+                            season.name = Some(format!("Season {sn}"));
+                            season.sort_name = season.name.clone();
+                            season.parent_id = Some(series_item_id);
+                            season.index_number = Some(sn);
+                            season.is_folder = true;
+                            season.is_virtual_item = false;
+                            season.series_id = Some(series_item_id);
+                            season.series_presentation_unique_key = Some(series_puk_for_season);
+                            self.items.create_if_absent(season).await?;
+                        }
+                        if let Some(mut season) = self.items.get(season_item_id).await?
+                            && apply_season_nfo_metadata(&mut season, path, Some(sn))
+                        {
+                            self.items.update(season).await?;
+                        }
+                        Ok::<_, LibraryScanError>(season_item_id)
+                    })
+                    .await?;
                 self.persist_scan_relations(season_item_id, path_str, "Season", Some(sn))
                     .await?;
                 season_id = Some(season_item_id);
@@ -5009,7 +5096,8 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 #[cfg(test)]
 mod tests {
     use super::{
-        LibraryScanError, LibraryScanGuard, LibraryScanService, LibraryScanSummary,
+        EpisodeHierarchyCache, LibraryScanError, LibraryScanGuard, LibraryScanService,
+        LibraryScanSummary, MAX_EPISODE_HIERARCHY_CACHE_ENTRIES,
         MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES, MediaInfoProbeFingerprint, MediaItemScanOutcome,
         MediaKind, ScanLibraryKind, ScannedPathFingerprint, SeenPaths, StrmProbeCoordinator,
         StrmProbeKey, StrmProbeLease, apply_episode_nfo, apply_non_movie_nfo,
@@ -5615,6 +5703,33 @@ mod tests {
         assert_eq!(count, MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES + 1);
         assert_eq!(failures.len(), MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES);
         assert_eq!(failures[0].path, "/media/0.mkv");
+    }
+
+    #[test]
+    fn episode_hierarchy_cache_shares_siblings_and_bounds_retained_nodes() {
+        let cache = EpisodeHierarchyCache::default();
+        let series_id = uuid::Uuid::new_v4();
+        let first_series = cache.series_cell(series_id);
+        let second_series = cache.series_cell(series_id);
+        assert!(Arc::ptr_eq(&first_series, &second_series));
+
+        let season_id = uuid::Uuid::new_v4();
+        let first_season = cache.season_cell(season_id);
+        let second_season = cache.season_cell(season_id);
+        assert!(Arc::ptr_eq(&first_season, &second_season));
+
+        for _ in 0..=MAX_EPISODE_HIERARCHY_CACHE_ENTRIES {
+            cache.series_cell(uuid::Uuid::new_v4());
+            cache.season_cell(uuid::Uuid::new_v4());
+        }
+        assert_eq!(
+            cache.series.lock().expect("series cache lock").len(),
+            MAX_EPISODE_HIERARCHY_CACHE_ENTRIES
+        );
+        assert_eq!(
+            cache.seasons.lock().expect("season cache lock").len(),
+            MAX_EPISODE_HIERARCHY_CACHE_ENTRIES
+        );
     }
 
     fn base_item_default() -> base_item::Model {
