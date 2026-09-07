@@ -473,6 +473,48 @@ async fn artist_routes_match_official_artist_contract() {
     .await;
     assert_artists(&lowercase_album_artists, &[&fixture.album_artist], 2, 0);
 
+    for (path, expected_names, expected_start) in [
+        (
+            "/Artists?StartIndex=-1&Limit=1",
+            vec![fixture.alpha_artist.as_str()],
+            -1,
+        ),
+        (
+            "/Artists?startIndex=-1&limit=-1",
+            vec![
+                fixture.alpha_artist.as_str(),
+                fixture.beta_artist.as_str(),
+                fixture.gamma_artist.as_str(),
+                fixture.movie_artist.as_str(),
+            ],
+            -1,
+        ),
+        ("/Artists?startindex=-1&limit=0", Vec::new(), -1),
+    ] {
+        let paged = body_json(
+            fixture
+                .request(Method::GET, path, Credential::Device(&fixture.user_token))
+                .await,
+        )
+        .await;
+        assert_artists(&paged, &expected_names, 4, expected_start);
+    }
+    for path in [
+        "/Artists?StartIndex=2147483648",
+        "/Artists?limit=2147483648",
+        "/Artists?startindex=-2147483649",
+        "/Artists?Limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture
+                .request(Method::GET, path, Credential::Device(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+
     let lowercase_item = body_json(
         fixture
             .request(
@@ -858,7 +900,7 @@ fn assert_artists(
     body: &Value,
     expected_names: &[&str],
     expected_total: usize,
-    expected_start: usize,
+    expected_start: i32,
 ) {
     assert_eq!(body["TotalRecordCount"], expected_total);
     assert_eq!(body["StartIndex"], expected_start);

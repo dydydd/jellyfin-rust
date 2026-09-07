@@ -190,6 +190,9 @@
   `StartIndex` skips nothing but is echoed, `Limit=0` is empty, and a negative `Limit` follows the
   official SQLite unlimited-limit behavior. When `EnableTotalRecordCount` is false, return zero
   rather than the current page length.
+- Keep `/Artists` and `/Artists/AlbumArtists` on the same signed `Int32` item-by-name pagination
+  contract: a negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative
+  `Limit` is unlimited, and out-of-range query values fail binding for every supported casing.
 - Keep the modern and legacy `/Items` and Resume pages on their signed `Int32` pagination contract
   used by Android and Swift: negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty,
   negative `Limit` is unlimited, and out-of-range values fail query binding.

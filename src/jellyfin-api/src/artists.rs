@@ -33,9 +33,9 @@ pub(crate) struct ArtistsQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: i32,
     #[serde(rename = "limit", alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
     search_term: Option<String>,
     #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
@@ -227,6 +227,12 @@ async fn list_kind(
     kind: ArtistValueKind,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    // Jellyfin's nullable Int32 values are passed through to the response. Its
+    // item-by-name repository only skips positive offsets, and SQLite treats a
+    // negative LIMIT as unlimited.
+    let requested_start_index = query.start_index;
+    let start_index = u64::try_from(requested_start_index).unwrap_or_default();
+    let limit = query.limit.and_then(|limit| u64::try_from(limit).ok());
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
@@ -259,8 +265,8 @@ async fn list_kind(
         name_starts_with_or_greater: query.name_starts_with_or_greater,
         name_starts_with: query.name_starts_with,
         name_less_than: query.name_less_than,
-        start_index: query.start_index,
-        limit: query.limit,
+        start_index,
+        limit,
         order,
         descending,
         enable_total_record_count: Some(enable_total_record_count),
@@ -288,7 +294,7 @@ async fn list_kind(
     Ok(Json(user_library::BaseItemQueryResult {
         items,
         total_record_count,
-        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
+        start_index: requested_start_index,
     }))
 }
 
