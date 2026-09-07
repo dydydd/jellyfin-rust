@@ -10,6 +10,7 @@ use std::{
 };
 
 use jellyfin_media_encoding_hls::{HlsPlaylistError, compute_equal_length_segment_ticks};
+use jellyfin_model::{MediaStream, MediaStreamType};
 use tokio::{fs, process::Command};
 use uuid::Uuid;
 
@@ -34,6 +35,30 @@ pub struct TranscodeTarget {
     pub max_height: Option<i32>,
     pub max_framerate: Option<f32>,
     pub start_time_ticks: Option<i64>,
+}
+
+/// Converts Jellyfin's media-stream index to FFmpeg's `subtitles` filter index.
+///
+/// Jellyfin exposes the persisted stream index, which is global across the
+/// input.  The filter's `si` parameter instead counts only embedded subtitle
+/// streams.  External subtitles are files and must not be addressed with
+/// `si` at all.
+#[must_use]
+pub fn embedded_subtitle_filter_index(
+    media_streams: &[MediaStream],
+    selected_index: i32,
+) -> Option<i32> {
+    let mut embedded_index = 0;
+    for stream in media_streams {
+        if stream.stream_type != MediaStreamType::Subtitle || stream.is_external {
+            continue;
+        }
+        if stream.index == selected_index {
+            return Some(embedded_index);
+        }
+        embedded_index += 1;
+    }
+    media_streams.is_empty().then_some(selected_index)
 }
 
 impl Default for TranscodeTarget {
@@ -1081,6 +1106,38 @@ pub async fn wait_for_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn subtitle(index: i32, is_external: bool) -> MediaStream {
+        MediaStream {
+            index,
+            is_external,
+            stream_type: MediaStreamType::Subtitle,
+            ..MediaStream::default()
+        }
+    }
+
+    #[test]
+    fn embedded_subtitle_filter_index_counts_only_embedded_subtitles() {
+        let streams = vec![
+            MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                ..MediaStream::default()
+            },
+            subtitle(1, false),
+            subtitle(2, true),
+            subtitle(3, false),
+        ];
+
+        assert_eq!(embedded_subtitle_filter_index(&streams, 1), Some(0));
+        assert_eq!(embedded_subtitle_filter_index(&streams, 3), Some(1));
+        assert_eq!(embedded_subtitle_filter_index(&streams, 2), None);
+    }
+
+    #[test]
+    fn embedded_subtitle_filter_index_keeps_legacy_fallback_without_stream_metadata() {
+        assert_eq!(embedded_subtitle_filter_index(&[], 3), Some(3));
+    }
 
     #[test]
     fn hls_command_uses_segment_prefix_and_expected_codecs() {

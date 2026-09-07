@@ -8,7 +8,7 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
-use jellyfin_controller::video_command;
+use jellyfin_controller::{embedded_subtitle_filter_index, video_command};
 use jellyfin_data::BaseItemPage;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -236,6 +236,18 @@ async fn stream_file(
         .audio_codec
         .as_deref()
         .unwrap_or_else(|| audio_codec_for_container(&container));
+    let subtitle_stream_index = query
+        .subtitle_stream_index
+        .filter(|_| should_burn_subtitles(query.subtitle_method.as_deref()));
+    let subtitle_filter_index = if let Some(index) = subtitle_stream_index {
+        let streams = state
+            .media_streams
+            .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
+            .await?;
+        embedded_subtitle_filter_index(&streams, index)
+    } else {
+        None
+    };
     let output = state
         .transcode_directory
         .join(format!("{item_id}-video-{video_codec}.{container}"));
@@ -261,9 +273,7 @@ async fn stream_file(
         query.audio_stream_index,
         query.video_stream_index,
         query.start_time_ticks,
-        query
-            .subtitle_stream_index
-            .filter(|_| should_burn_subtitles(query.subtitle_method.as_deref())),
+        subtitle_filter_index,
         query.copy_timestamps.unwrap_or(false),
     );
     crate::audio::serve_transcoded_path(

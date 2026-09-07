@@ -9,8 +9,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{
     HlsJobIdInput, HlsPlaylistType, HlsSegmentSettings, HlsVariant, TranscodeTarget,
-    build_main_playlist, build_variant_master_playlist, hls_command_with_playlist_type,
-    hls_job_id_from_input, run_ffmpeg, wait_for_segment,
+    build_main_playlist, build_variant_master_playlist, embedded_subtitle_filter_index,
+    hls_command_with_playlist_type, hls_job_id_from_input, run_ffmpeg, wait_for_segment,
 };
 use jellyfin_extensions::PathHelper;
 use jellyfin_model::MimeTypes;
@@ -440,7 +440,7 @@ async fn start_hls_job(
             return Err(ApiError::NotFound);
         }
     };
-    let target = TranscodeTarget {
+    let mut target = TranscodeTarget {
         is_video: media_type == "Videos",
         hwaccel: query.hwaccel.clone(),
         video_codec: query
@@ -505,6 +505,15 @@ async fn start_hls_job(
     } else {
         requested_item
     };
+    if target.burn_subtitles {
+        if let Some(index) = target.subtitle_index {
+            let streams = state
+                .media_streams
+                .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
+                .await?;
+            target.subtitle_index = embedded_subtitle_filter_index(&streams, index);
+        }
+    }
     let playlist_type = if item.runtime_ticks.is_none() {
         HlsPlaylistType::Event
     } else {

@@ -528,6 +528,10 @@
 - If TMDb returns an episode name equal to its series name in the preferred language, fetch the English episode metadata once and use only its non-placeholder name as a fallback. Preserve all localized non-name fields, and apply the same rule to direct episode refresh and bulk season refresh.
 - Cancellation of scans and refreshes must promptly stop new work, release locks/permits, and leave the database in a consistent state.
 
+## Android playback compatibility
+
+- `SubtitleStreamIndex` is the persisted media-stream index exposed by the API. When constructing an FFmpeg `subtitles` filter, convert it to the zero-based index among embedded subtitle streams only; external subtitle streams are file inputs and must never be passed as the filter's `si` value. Keep this conversion consistent for progressive video and HLS playback.
+
 ## Validation
 
 Run the narrowest relevant checks while iterating, then broaden validation before committing:
