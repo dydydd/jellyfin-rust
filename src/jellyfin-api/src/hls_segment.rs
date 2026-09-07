@@ -20,7 +20,10 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authorization};
+use crate::{
+    ApiError, AppState, authorization,
+    videos::{output_video_level, output_video_profile},
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -115,6 +118,10 @@ pub(crate) struct TranscodeQuery {
         alias = "maxframerate"
     )]
     max_framerate: Option<f32>,
+    #[serde(rename = "profile", alias = "Profile")]
+    profile: Option<String>,
+    #[serde(rename = "level", alias = "Level")]
+    level: Option<String>,
     #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
     de_interlace: Option<bool>,
     #[serde(
@@ -225,6 +232,8 @@ impl TranscodeQuery {
             || self.max_width.is_some()
             || self.max_height.is_some()
             || self.max_framerate.is_some()
+            || self.profile.is_some()
+            || self.level.is_some()
             || self.de_interlace == Some(true)
             || self.max_audio_channels.is_some()
             || self.segment_container.is_some()
@@ -527,6 +536,22 @@ async fn start_hls_job(
             .video_codec
             .clone()
             .or_else(|| Some("h264".to_owned())),
+        video_profile: (media_type == "Videos")
+            .then(|| {
+                output_video_profile(
+                    query.video_codec.as_deref().unwrap_or("h264"),
+                    query.profile.as_deref(),
+                )
+            })
+            .flatten(),
+        video_level: (media_type == "Videos")
+            .then(|| {
+                output_video_level(
+                    query.video_codec.as_deref().unwrap_or("h264"),
+                    query.level.as_deref(),
+                )
+            })
+            .flatten(),
         audio_codec: query.audio_codec.clone().or_else(|| Some("aac".to_owned())),
         video_bitrate: query.video_bitrate,
         audio_bitrate: query.audio_bitrate,
@@ -766,6 +791,16 @@ fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, segment_length_ms: i32)
             media_source_id: query.media_source_id.as_deref(),
             start_time_ticks: query.start_time_ticks,
             video_codec: query.video_codec.as_deref(),
+            video_profile: output_video_profile(
+                query.video_codec.as_deref().unwrap_or("h264"),
+                query.profile.as_deref(),
+            )
+            .as_deref(),
+            video_level: output_video_level(
+                query.video_codec.as_deref().unwrap_or("h264"),
+                query.level.as_deref(),
+            )
+            .as_deref(),
             audio_codec: query.audio_codec.as_deref(),
             video_bitrate: query.video_bitrate,
             audio_bitrate: query.audio_bitrate,
@@ -1196,6 +1231,25 @@ mod tests {
         assert_ne!(
             super::compute_job_id(item_id, &plain, 6_000),
             super::compute_job_id(item_id, &transformed, 6_000),
+        );
+    }
+
+    #[test]
+    fn hls_query_binds_profile_and_level_and_isolates_its_job() {
+        let item_id = Uuid::new_v4();
+        let plain_uri: Uri = "/Videos/item/master.m3u8".parse().unwrap();
+        let plain = Query::<TranscodeQuery>::try_from_uri(&plain_uri).unwrap().0;
+        let constrained_uri: Uri = "/Videos/item/master.m3u8?Profile=High&level=4.1"
+            .parse()
+            .unwrap();
+        let constrained = Query::<TranscodeQuery>::try_from_uri(&constrained_uri)
+            .unwrap()
+            .0;
+        assert_eq!(constrained.profile.as_deref(), Some("High"));
+        assert_eq!(constrained.level.as_deref(), Some("4.1"));
+        assert_ne!(
+            super::compute_job_id(item_id, &plain, 6_000),
+            super::compute_job_id(item_id, &constrained, 6_000),
         );
     }
 

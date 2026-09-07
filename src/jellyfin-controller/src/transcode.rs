@@ -21,6 +21,8 @@ pub struct TranscodeTarget {
     pub is_video: bool,
     pub hwaccel: Option<String>,
     pub video_codec: Option<String>,
+    pub video_profile: Option<String>,
+    pub video_level: Option<String>,
     pub audio_codec: Option<String>,
     pub video_bitrate: Option<i64>,
     pub audio_bitrate: Option<i64>,
@@ -69,6 +71,8 @@ impl Default for TranscodeTarget {
             is_video: true,
             hwaccel: None,
             video_codec: Some("h264".to_owned()),
+            video_profile: None,
+            video_level: None,
             audio_codec: Some("aac".to_owned()),
             video_bitrate: None,
             audio_bitrate: None,
@@ -197,6 +201,22 @@ pub fn hls_command_with_playlist_type(
                 );
                 arguments.push("-c:v".to_owned());
                 arguments.push(codec.to_owned());
+                if let Some(profile) = target
+                    .video_profile
+                    .as_deref()
+                    .filter(|profile| !profile.trim().is_empty())
+                {
+                    arguments.push("-profile:v".to_owned());
+                    arguments.push(profile.to_owned());
+                }
+                if let Some(level) = target
+                    .video_level
+                    .as_deref()
+                    .filter(|level| !level.trim().is_empty())
+                {
+                    arguments.push("-level:v".to_owned());
+                    arguments.push(level.to_owned());
+                }
             }
             Some(_) => {
                 arguments.push("-map".to_owned());
@@ -995,6 +1015,8 @@ pub struct HlsJobIdInput<'a> {
     pub media_source_id: Option<&'a str>,
     pub start_time_ticks: Option<i64>,
     pub video_codec: Option<&'a str>,
+    pub video_profile: Option<&'a str>,
+    pub video_level: Option<&'a str>,
     pub audio_codec: Option<&'a str>,
     pub video_bitrate: Option<i64>,
     pub audio_bitrate: Option<i64>,
@@ -1028,6 +1050,8 @@ pub fn hls_job_id(
             media_source_id,
             start_time_ticks,
             video_codec: target.video_codec.as_deref(),
+            video_profile: target.video_profile.as_deref(),
+            video_level: target.video_level.as_deref(),
             audio_codec: target.audio_codec.as_deref(),
             video_bitrate: target.video_bitrate,
             audio_bitrate: target.audio_bitrate,
@@ -1085,6 +1109,14 @@ pub fn hls_job_id_from_input(item_id: Uuid, input: HlsJobIdInput<'_>) -> String 
     if let Some(video_stream_index) = input.video_stream_index {
         digest.update(b":video_stream_index=");
         digest.update(video_stream_index.to_le_bytes());
+    }
+    if let Some(video_profile) = input.video_profile {
+        digest.update(b":video_profile=");
+        digest.update(video_profile.as_bytes());
+    }
+    if let Some(video_level) = input.video_level {
+        digest.update(b":video_level=");
+        digest.update(video_level.as_bytes());
     }
     if input.deinterlace {
         digest.update(b":deinterlace=true");
@@ -1364,6 +1396,38 @@ mod tests {
                 .arguments
                 .windows(2)
                 .any(|pair| pair == ["-map", "0:4"])
+        );
+    }
+
+    #[test]
+    fn hls_command_applies_requested_video_profile_and_level() {
+        let command = hls_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/job1"),
+            &TranscodeTarget {
+                video_profile: Some("high".to_owned()),
+                video_level: Some("4.1".to_owned()),
+                ..TranscodeTarget::default()
+            },
+            &HlsSegmentSettings {
+                container: "ts".to_owned(),
+                segment_length_ms: 6_000,
+                min_segments: 2,
+            },
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-profile:v", "high"])
+        );
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-level:v", "4.1"])
         );
     }
 

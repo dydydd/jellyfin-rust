@@ -688,12 +688,12 @@ fn video_level_allows_copy(source_level: Option<f64>, requested_level: Option<&s
         .is_none_or(|(requested, source)| source <= requested)
 }
 
-fn output_video_profile(codec: &str, profile: Option<&str>) -> Option<String> {
+pub(crate) fn output_video_profile(codec: &str, profile: Option<&str>) -> Option<String> {
     let profile = requested_video_profiles(profile).next()?;
     video_profile_score(codec, profile).map(|_| compact_profile(profile))
 }
 
-fn output_video_level(codec: &str, level: Option<&str>) -> Option<String> {
+pub(crate) fn output_video_level(codec: &str, level: Option<&str>) -> Option<String> {
     let requested = requested_video_level(level)?;
     let maximum = match normalized_video_codec(codec).to_ascii_lowercase().as_str() {
         "h264" => 51.0,
