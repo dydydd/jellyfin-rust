@@ -26,6 +26,7 @@ use jellyfin_data::{
     TrickplayInfoRepository,
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
+use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use percent_encoding::utf8_percent_encode;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
@@ -34,6 +35,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"kotlin-sdk-compat\", DeviceId=\"kotlin-sdk-compat\", Device=\"Test\", Version=\"1.0\"";
+const LOGIN_AUTHORIZATION: &str = "MediaBrowser Client=\"kotlin-sdk-compat\", DeviceId=\"kotlin-sdk-login-compat\", Device=\"Test\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_android_sdk_compat_";
 
 /// `(route, kotlin model, credential)` for the Android surface. `admin` marks the
@@ -223,6 +225,45 @@ async fn exercise(database_name: &str) {
     let fixture = Fixture::new(&database, &storage_root).await;
     let mut failures = Vec::new();
     let mut dumped = Vec::new();
+
+    // Login is the first Android/iOS SDK DTO boundary. Keep it in this
+    // harness rather than only seeding a token, so a missing required nested
+    // SessionInfo or User collection cannot make a mobile client fail before
+    // it reaches any browse route.
+    let authentication = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/Users/AuthenticateByName")
+                // Use a distinct device id so the official token replacement
+                // behavior does not invalidate the seeded browse session.
+                .header(header::AUTHORIZATION, LOGIN_AUTHORIZATION)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "Username": "compat-user",
+                        "Pw": "compat-password"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let authentication_status = authentication.status();
+    let authentication = to_bytes(authentication.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        authentication_status,
+        StatusCode::OK,
+        "login response: {}",
+        String::from_utf8_lossy(&authentication)
+    );
+    dumped.push((
+        "AuthenticationResult".to_owned(),
+        serde_json::from_slice(&authentication).expect("login response must be JSON"),
+    ));
 
     for (route, model, who) in READS {
         let resolved = fixture.resolve(route);
@@ -525,6 +566,13 @@ impl Fixture {
             ..UserPolicy::default()
         };
         users.update_policy(user.id, &policy).await.unwrap();
+        users
+            .set_password_hash(
+                user.id,
+                DefaultAuthenticationProvider::new().password_hash("compat-password"),
+            )
+            .await
+            .unwrap();
 
         let user_token = DeviceRepository::new(database.clone())
             .create_session(NewDevice::new(
