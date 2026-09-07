@@ -288,7 +288,7 @@ async fn list_kind(
     Ok(Json(user_library::BaseItemQueryResult {
         items,
         total_record_count,
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
     }))
 }
 

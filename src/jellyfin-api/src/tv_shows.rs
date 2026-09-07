@@ -302,7 +302,7 @@ pub(crate) async fn upcoming(
         )
         .await?;
     let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
-    let start_index = usize::try_from(page.start_index).unwrap_or(usize::MAX);
+    let start_index = i32::try_from(page.start_index).unwrap_or(i32::MAX);
     let items = project_items_to_dtos(state.as_ref(), page.items, fields, target_user_id).await?;
     Ok(Json(user_library::BaseItemQueryResult {
         items,

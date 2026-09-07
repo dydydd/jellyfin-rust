@@ -853,7 +853,7 @@ async fn theme_result(
     Ok(ThemeMediaResult {
         items: page.items,
         total_record_count: page.total_record_count,
-        start_index: page.start_index,
+        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
         owner_id,
     })
 }
@@ -1024,7 +1024,7 @@ fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQue
             .map(|item| user_library::item_to_dto(item, server_id))
             .collect(),
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
     }
 }
 

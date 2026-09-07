@@ -149,7 +149,7 @@ pub(crate) async fn list(
         .collect::<Vec<_>>();
     Ok(Json(user_library::BaseItemQueryResult {
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
         items,
     }))
 }
@@ -236,7 +236,7 @@ pub(crate) async fn channel_items(
         .collect::<Vec<_>>();
     Ok(Json(user_library::BaseItemQueryResult {
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
         items,
     }))
 }
@@ -281,7 +281,7 @@ pub(crate) async fn latest_channel_items(
         .collect::<Vec<_>>();
     Ok(Json(user_library::BaseItemQueryResult {
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
         items,
     }))
 }

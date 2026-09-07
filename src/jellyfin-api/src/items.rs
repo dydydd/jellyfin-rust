@@ -29,9 +29,9 @@ pub(crate) struct ItemsQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: i32,
     #[serde(default, alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(default, alias = "Recursive")]
     recursive: Option<bool>,
     #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
@@ -908,6 +908,7 @@ async fn get_for(
         }
     };
     let mut query = query;
+    let requested_start_index = query.start_index;
     let fields = std::mem::take(&mut query.fields);
     let dto_options = page_dto_options(&query);
     let Some(target_user_id) = target_user_id else {
@@ -916,16 +917,18 @@ async fn get_for(
             .user_library
             .query_items_without_user(query.try_into()?)
             .await?;
-        return Ok(Json(
-            page_to_dto_with_fields_and_options(
-                state.as_ref(),
-                page,
-                user_library::BaseItemDtoFields::from_names(&fields),
-                None,
-                &dto_options,
-            )
-            .await?,
-        ));
+        let result = page_to_dto_with_fields_and_options(
+            state.as_ref(),
+            page,
+            user_library::BaseItemDtoFields::from_names(&fields),
+            None,
+            &dto_options,
+        )
+        .await?;
+        return Ok(Json(with_requested_start_index(
+            result,
+            requested_start_index,
+        )));
     };
     let authenticated_user = authenticated_user.expect("user context accompanies a target id");
     let parent_scope = resolve_user_view_parent_scope(
@@ -946,7 +949,6 @@ async fn get_for(
         .map(str::trim)
         .filter(|term| !term.is_empty())
     {
-        let requested_start_index = query.start_index;
         let requested_limit = query.limit;
         let search_results = state
             .search
@@ -959,7 +961,9 @@ async fn get_for(
                     exclude_item_types: &query.exclude_item_types,
                     media_types: &query.media_types,
                     parent_id: query.parent_id,
-                    limit: requested_limit.map(|limit| limit.saturating_mul(3)),
+                    limit: requested_limit
+                        .filter(|limit| *limit >= 0)
+                        .map(|limit| u64::try_from(limit).unwrap_or_default().saturating_mul(3)),
                 },
             )
             .await?;
@@ -999,29 +1003,31 @@ async fn get_for(
                     })
                     .then_with(|| left.id.cmp(&right.id))
             });
-            let start = usize::try_from(requested_start_index).unwrap_or(usize::MAX);
+            let start = usize::try_from(requested_start_index).unwrap_or_default();
             page.items = page
                 .items
                 .into_iter()
                 .skip(start)
                 .take(
                     requested_limit
+                        .filter(|limit| *limit >= 0)
                         .and_then(|limit| usize::try_from(limit).ok())
                         .unwrap_or(usize::MAX),
                 )
                 .collect();
             page.total_record_count = u64::try_from(total_record_count).unwrap_or(u64::MAX);
-            page.start_index = requested_start_index;
-            return Ok(Json(
-                page_to_dto_with_options(
-                    state.as_ref(),
-                    page,
-                    fields,
-                    target_user_id,
-                    &dto_options,
-                )
-                .await?,
-            ));
+            let result = page_to_dto_with_options(
+                state.as_ref(),
+                page,
+                fields,
+                target_user_id,
+                &dto_options,
+            )
+            .await?;
+            return Ok(Json(with_requested_start_index(
+                result,
+                requested_start_index,
+            )));
         }
     }
 
@@ -1031,10 +1037,13 @@ async fn get_for(
         .user_library
         .query_items(&authenticated_user, target_user_id, database_query)
         .await?;
-    Ok(Json(
+    let result =
         page_to_dto_with_options(state.as_ref(), page, fields, target_user_id, &dto_options)
-            .await?,
-    ))
+            .await?;
+    Ok(Json(with_requested_start_index(
+        result,
+        requested_start_index,
+    )))
 }
 
 async fn suggestions_for(
@@ -1235,6 +1244,7 @@ async fn resume_for(
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
+    let requested_start_index = query.start_index;
     let fields = std::mem::take(&mut query.fields);
     let dto_options = page_dto_options(&query);
     let parent_scope = resolve_user_view_parent_scope(
@@ -1275,10 +1285,13 @@ async fn resume_for(
         .user_library
         .resume_items(&authenticated.user, target_user_id, database_query)
         .await?;
-    Ok(Json(
+    let result =
         page_to_dto_with_options(state.as_ref(), page, fields, target_user_id, &dto_options)
-            .await?,
-    ))
+            .await?;
+    Ok(Json(with_requested_start_index(
+        result,
+        requested_start_index,
+    )))
 }
 
 fn page_dto_options(query: &ItemsQuery) -> PageDtoOptions {
@@ -1866,8 +1879,14 @@ impl TryFrom<ItemsQuery> for BaseItemQuery {
             enable_all_folders: true,
             blocked_media_folders: None,
             order: item_order(&query.sort_by, &query.sort_order),
-            start_index: query.start_index,
-            limit: query.limit,
+            // ASP.NET binds both parameters as nullable Int32 values. The repository uses
+            // unsigned pagination internally, so match its query-paging behavior here: a
+            // negative offset skips nothing and a negative SQLite limit is unlimited.
+            start_index: u64::try_from(query.start_index).unwrap_or_default(),
+            limit: query
+                .limit
+                .filter(|limit| *limit >= 0)
+                .map(|limit| u64::try_from(limit).unwrap_or_default()),
             enable_total_record_count: Some(query.enable_total_record_count),
         })
     }
@@ -2419,8 +2438,16 @@ async fn page_to_dto_with_fields_and_options(
     Ok(user_library::BaseItemQueryResult {
         items,
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
     })
+}
+
+fn with_requested_start_index(
+    mut result: user_library::BaseItemQueryResult,
+    requested_start_index: i32,
+) -> user_library::BaseItemQueryResult {
+    result.start_index = requested_start_index;
+    result
 }
 
 fn constrain_image_projection(

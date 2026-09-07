@@ -495,7 +495,7 @@ pub struct BaseItemPerson {
 pub struct BaseItemQueryResult {
     pub items: Vec<BaseItemDto>,
     pub total_record_count: usize,
-    pub start_index: usize,
+    pub start_index: i32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

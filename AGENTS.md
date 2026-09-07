@@ -190,6 +190,9 @@
   `StartIndex` skips nothing but is echoed, `Limit=0` is empty, and a negative `Limit` follows the
   official SQLite unlimited-limit behavior. When `EnableTotalRecordCount` is false, return zero
   rather than the current page length.
+- Keep the modern and legacy `/Items` and Resume pages on their signed `Int32` pagination contract
+  used by Android and Swift: negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty,
+  negative `Limit` is unlimited, and out-of-range values fail query binding.
 - Filter `/Persons` through the media items visible to the target user: a person remains visible
   when at least one credited item passes enabled/blocked folder, allowed/blocked tag, parental-
   rating, and unrated-item policy. Keep this set-based, and do not apply the related-media filter

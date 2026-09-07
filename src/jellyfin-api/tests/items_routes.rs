@@ -2538,6 +2538,73 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
         "search-provider results keep the full candidate count even when total counts are disabled"
     );
 
+    // ItemsController declares signed nullable Int32 pagination. PostgreSQL uses an
+    // unsigned query representation internally, but its externally visible behavior
+    // must retain the official negative-offset echo and SQLite's negative-limit
+    // unlimited behavior expected by the Android and Swift SDKs.
+    for start_index in ["startIndex", "StartIndex", "startindex"] {
+        for prefix in [
+            "/Items".to_owned(),
+            format!("/Users/{}/Items", fixture.user_id),
+        ] {
+            let route = format!(
+                "{prefix}?ids={},{}&{start_index}=-1&limit=1",
+                fixture.item_ids[0], fixture.item_ids[2]
+            );
+            let page = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+            assert_eq!(page["StartIndex"], -1, "{route}");
+            assert_eq!(page["TotalRecordCount"], 2, "{route}");
+            assert_eq!(page["Items"].as_array().unwrap().len(), 1, "{route}");
+        }
+    }
+    for limit_name in ["limit", "Limit"] {
+        for (limit, expected_len) in [("0", 0), ("-1", 2)] {
+            let route = format!(
+                "/Items?ids={},{}&{limit_name}={limit}",
+                fixture.item_ids[0], fixture.item_ids[2]
+            );
+            let page = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+            assert_eq!(page["StartIndex"], 0, "{route}");
+            assert_eq!(
+                page["Items"].as_array().unwrap().len(),
+                expected_len,
+                "{route}"
+            );
+        }
+    }
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        let route = format!("/Items?recursive=true&{query}");
+        assert_eq!(
+            fixture
+                .request(&route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{route}"
+        );
+    }
+    let resume_route = format!(
+        "/Users/{}/Items/Resume?startIndex=-1&limit=-1",
+        fixture.user_id
+    );
+    let resume = body_json(
+        fixture
+            .request(&resume_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(resume["StartIndex"], -1, "{resume_route}");
+    assert_eq!(
+        resume["Items"].as_array().unwrap().len(),
+        2,
+        "{resume_route}"
+    );
+
     for (search_term, sort_by, sort_order) in [
         ("searchTerm", "sortBy", "sortOrder"),
         ("SearchTerm", "SortBy", "SortOrder"),
