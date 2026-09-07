@@ -323,6 +323,9 @@
 - Bind the official video `MaxFramerate` query on progressive stream routes and apply it after
   any requested scaling, accepting PascalCase, camelCase, and lowercase spellings like the
   Android SDK and ASP.NET query binder.
+- Bind progressive video `Width`/`Height` and normalize them to the same effective maximum
+  dimensions as the official streaming helper; explicit `MaxWidth`/`MaxHeight` values take
+  precedence when both forms are supplied.
 - Progressive audio/video stream responses must start FFmpeg and read the growing output file
   immediately, matching the official `ProgressiveFileStream` behavior; never await complete
   FFmpeg termination before returning the response, or Android playback of long media can stall.

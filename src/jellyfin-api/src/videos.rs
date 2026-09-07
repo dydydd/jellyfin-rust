@@ -82,6 +82,10 @@ pub(crate) struct StreamQuery {
     max_width: Option<i32>,
     #[serde(rename = "maxHeight", alias = "MaxHeight", alias = "maxheight")]
     max_height: Option<i32>,
+    #[serde(rename = "width", alias = "Width")]
+    width: Option<i32>,
+    #[serde(rename = "height", alias = "Height")]
+    height: Option<i32>,
     #[serde(
         rename = "maxFramerate",
         alias = "MaxFramerate",
@@ -245,8 +249,8 @@ async fn stream_file(
             .or(query.max_audio_channels)
             .or(query.transcoding_max_audio_channels),
         query.audio_sample_rate,
-        query.max_width,
-        query.max_height,
+        query.max_width.or(query.width),
+        query.max_height.or(query.height),
         query.max_framerate,
         query.audio_stream_index,
         query.video_stream_index,
@@ -416,7 +420,7 @@ mod tests {
 
     #[test]
     fn video_stream_binds_android_progressive_parameters() {
-        let uri: Uri = "/videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&maxWidth=1280&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000"
+        let uri: Uri = "/videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&width=1280&Height=720&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
@@ -425,7 +429,8 @@ mod tests {
         assert_eq!(query.audio_codec.as_deref(), Some("aac"));
         assert_eq!(query.video_bitrate, Some(2_000_000));
         assert_eq!(query.audio_bitrate, Some(128_000));
-        assert_eq!(query.max_width, Some(1280));
+        assert_eq!(query.width, Some(1280));
+        assert_eq!(query.height, Some(720));
         assert_eq!(query.max_framerate, Some(23.976));
         assert_eq!(query.audio_stream_index, Some(2));
         assert_eq!(query.video_stream_index, Some(0));
