@@ -199,6 +199,9 @@
 - Honor `/Playlists/{playlistId}/Items` DTO options exactly like the official controller: bind
   case-insensitive `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes`, then
   pass them through the shared batched projector instead of silently ignoring SDK query values.
+- Keep `/Items/{itemId}/RemoteImages` on the official signed `Int32` paging contract used by Android
+  and Swift: negative `StartIndex` skips nothing, non-positive `Limit` returns an empty image page,
+  and values outside `Int32` fail binding before lookup work starts.
 - Filter `/Persons` through the media items visible to the target user: a person remains visible
   when at least one credited item passes enabled/blocked folder, allowed/blocked tag, parental-
   rating, and unrated-item policy. Keep this set-based, and do not apply the related-media filter

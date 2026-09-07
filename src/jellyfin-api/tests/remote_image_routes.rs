@@ -91,6 +91,38 @@ async fn exercise_remote_image_routes(database_name: &str) {
     assert_eq!(lowercase_query.status(), StatusCode::OK);
     assert_eq!(body_json(lowercase_query).await, empty_result);
 
+    for route in [
+        format!(
+            "/Items/{}/RemoteImages?startIndex=-1&limit=-1",
+            fixture.item_id
+        ),
+        format!(
+            "/Items/{}/RemoteImages?StartIndex=-1&Limit=0",
+            fixture.item_id
+        ),
+        format!(
+            "/items/{}/remoteimages?startindex=-1&limit=-1",
+            fixture.item_id
+        ),
+    ] {
+        let response = fixture.get(&route, &fixture.user_token).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(body_json(response).await, empty_result, "{route}");
+    }
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        let route = format!("/Items/{}/RemoteImages?{query}", fixture.item_id);
+        assert_eq!(
+            fixture.get(&route, &fixture.user_token).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{route}"
+        );
+    }
+
     let invalid_image_type = fixture
         .get(
             &format!("/Items/{}/RemoteImages?type=13", Uuid::new_v4()),

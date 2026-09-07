@@ -23,9 +23,9 @@ pub(crate) struct RemoteImagesQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: Option<usize>,
+    start_index: Option<i32>,
     #[serde(default, rename = "limit", alias = "Limit")]
-    limit: Option<usize>,
+    limit: Option<i32>,
     #[serde(
         default,
         rename = "providerName",
@@ -62,6 +62,17 @@ pub(crate) async fn images(
         .as_deref()
         .map(parse_image_type)
         .transpose()?;
+    // RemoteImageController receives nullable Int32 values. Enumerable.Skip
+    // ignores a negative offset, while Take returns an empty sequence for a
+    // non-positive limit.
+    let start_index = usize::try_from(query.start_index.unwrap_or_default()).unwrap_or_default();
+    let limit = query.limit.map(|limit| {
+        if limit <= 0 {
+            0
+        } else {
+            usize::try_from(limit).unwrap_or_default()
+        }
+    });
     state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
@@ -76,8 +87,8 @@ pub(crate) async fn images(
             image_type,
             query.provider_name.as_deref(),
             query.include_all_languages,
-            query.start_index.unwrap_or(0),
-            query.limit,
+            start_index,
+            limit,
             &api_key,
             &configuration.preferred_metadata_language,
             &configuration.metadata_country_code,
