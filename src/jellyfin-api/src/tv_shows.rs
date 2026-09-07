@@ -810,13 +810,16 @@ async fn project_items_to_dtos(
     let mut episode_hierarchy_names = user_library::episode_hierarchy_names(state, &items).await?;
     let mut chapters = user_library::chapters_for_items(state, &items, fields).await?;
     let mut external_urls = user_library::external_urls_for_items(state, &items, fields).await?;
+    let mut relation_metadata = user_library::load_relation_metadata(state, &items).await?;
+    let access_policy =
+        user_library::item_access_policy_for_user(state, target_user_id, fields).await?;
 
     let mut dtos = Vec::with_capacity(items.len());
     for item in items {
         let item_id = item.id;
         let remembered = remembered_user_data.remove(&item_id);
         let hierarchy_names = episode_hierarchy_names.remove(&item_id);
-        let mut dto = user_library::project_item_to_dto_with_hierarchy_names(
+        let mut dto = user_library::project_item_to_dto_with_context(
             state,
             item,
             target_user_id,
@@ -827,6 +830,8 @@ async fn project_items_to_dtos(
             defaults.as_ref(),
             remembered.as_ref(),
             hierarchy_names.as_ref(),
+            relation_metadata.remove(&item_id),
+            access_policy.as_ref(),
         )
         .await?;
         user_library::attach_external_urls(

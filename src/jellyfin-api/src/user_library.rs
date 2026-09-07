@@ -1436,7 +1436,7 @@ pub(crate) async fn project_item_to_dto(
     let item_id = item.id;
     let mut hierarchy_names = episode_hierarchy_names(state, std::slice::from_ref(&item)).await?;
     let hierarchy_names = hierarchy_names.remove(&item_id);
-    project_item_to_dto_with_hierarchy_names(
+    project_item_to_dto_with_context(
         state,
         item,
         target_user_id,
@@ -1444,11 +1444,13 @@ pub(crate) async fn project_item_to_dto(
         defaults,
         remembered_user_data,
         hierarchy_names.as_ref(),
+        None,
+        None,
     )
     .await
 }
 
-pub(crate) async fn project_item_to_dto_with_hierarchy_names(
+pub(crate) async fn project_item_to_dto_with_context(
     state: &AppState,
     item: base_item::Model,
     target_user_id: Uuid,
@@ -1456,20 +1458,31 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     defaults: Option<&MediaStreamDefaults>,
     remembered_user_data: Option<&user_data::Model>,
     hierarchy_names: Option<&EpisodeHierarchyNames>,
+    relation_metadata: Option<ItemRelationMetadata>,
+    access_policy: Option<&ItemAccessPolicy>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
     let is_playlist = is_item_type(&item.item_type, "Playlist");
     let mut external_urls =
         external_urls_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut chapters = chapters_for_items(state, std::slice::from_ref(&item), fields).await?;
-    let mut relations = load_relation_metadata(state, std::slice::from_ref(&item)).await?;
+    let mut relations = match relation_metadata {
+        Some(metadata) => HashMap::from([(item.id, metadata)]),
+        None => load_relation_metadata(state, std::slice::from_ref(&item)).await?,
+    };
     let user_data = user_data_for_item(state, &item, target_user_id).await?;
-    let item_access_policy = item_access_policy_for_user(state, target_user_id, fields).await?;
+    let owned_access_policy;
+    let item_access_policy = if access_policy.is_some() {
+        access_policy
+    } else {
+        owned_access_policy = item_access_policy_for_user(state, target_user_id, fields).await?;
+        owned_access_policy.as_ref()
+    };
     // `GetItem` requests all fields, so the media-source capability policy and the
     // access policy refer to the same persisted user row. Reuse it instead of
     // performing a second user lookup on the episode-detail hot path.
     let media_source_policy = if fields.wants_media_sources() {
-        Some(match item_access_policy.as_ref() {
+        Some(match item_access_policy {
             Some(access) => access.policy.clone(),
             None => media_source_policy_for_user(state, target_user_id).await?,
         })
@@ -1483,7 +1496,7 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
             state,
             std::slice::from_ref(&item_id),
             fields,
-            item_access_policy.as_ref(),
+            item_access_policy,
         )
         .await?
     };
@@ -1514,7 +1527,7 @@ pub(crate) async fn project_item_to_dto_with_hierarchy_names(
     attach_item_access_fields(
         &mut dto,
         fields,
-        item_access_policy.as_ref(),
+        item_access_policy,
         deletion_folder_item_ids.contains(&item_id),
         playlist_can_delete,
     );
