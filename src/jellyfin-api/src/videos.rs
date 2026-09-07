@@ -501,18 +501,8 @@ fn copy_remux_has_no_transform(query: &StreamQuery) -> bool {
     query.enable_auto_stream_copy.unwrap_or(true)
         && query.allow_video_stream_copy.unwrap_or(true)
         && query.allow_audio_stream_copy.unwrap_or(true)
-        && query.video_bitrate.is_none()
-        && query.audio_bitrate.is_none()
-        && query.audio_channels.is_none()
-        && query.max_audio_channels.is_none()
-        && query.transcoding_max_audio_channels.is_none()
-        && query.audio_sample_rate.is_none()
-        && query.max_width.is_none()
         && query.width.is_none()
-        && query.max_height.is_none()
         && query.height.is_none()
-        && query.framerate.is_none()
-        && query.max_framerate.is_none()
         && query.de_interlace != Some(true)
         && !(query.subtitle_stream_index.is_some()
             && should_burn_subtitles(query.subtitle_method.as_deref()))
@@ -563,6 +553,12 @@ fn can_copy_remux(
             query.profile.as_deref(),
         )
         && video_level_allows_copy(video_stream.level, query.level.as_deref())
+        && video_dimensions_allow_copy(video_stream, query.max_width, query.max_height)
+        && video_framerate_allows_copy(
+            video_stream,
+            query.max_framerate.or(query.framerate),
+        )
+        && video_bitrate_allows_copy(video_stream, query.video_bitrate)
         && !query.max_ref_frames.is_some_and(|maximum| {
             video_stream
                 .ref_frames
@@ -580,9 +576,70 @@ fn can_copy_remux(
                 .bit_depth
                 .is_some_and(|actual| actual > maximum)
         })
+        && audio_channels_allow_copy(
+            audio_stream,
+            query
+                .max_audio_channels
+                .or(query.audio_channels)
+                .or(query.transcoding_max_audio_channels),
+        )
+        && audio_sample_rate_allows_copy(audio_stream, query.audio_sample_rate)
+        && audio_bitrate_allows_copy(audio_stream, query.audio_bitrate)
         && codecs_match(video_codec, requested_video_codec)
         && codecs_match(audio_codec, requested_audio_codec)
         && copy_remux_container_supports(container, video_codec, audio_codec)
+}
+
+fn video_dimensions_allow_copy(
+    stream: &MediaStream,
+    max_width: Option<i32>,
+    max_height: Option<i32>,
+) -> bool {
+    max_width.is_none_or(|maximum| stream.width.is_some_and(|actual| actual <= maximum))
+        && max_height.is_none_or(|maximum| stream.height.is_some_and(|actual| actual <= maximum))
+}
+
+fn video_framerate_allows_copy(stream: &MediaStream, requested: Option<f32>) -> bool {
+    requested.is_none_or(|maximum| {
+        // EncodingHelper permits a 0.05 fps tolerance for probe rounding.
+        stream
+            .reference_frame_rate()
+            .is_some_and(|actual| actual <= maximum + 0.05)
+    })
+}
+
+fn video_bitrate_allows_copy(stream: &MediaStream, requested: Option<i64>) -> bool {
+    requested.is_none_or(|maximum| {
+        stream
+            .bit_rate
+            .is_some_and(|actual| i64::from(actual) <= maximum)
+    })
+}
+
+fn audio_channels_allow_copy(stream: &MediaStream, requested: Option<i32>) -> bool {
+    requested.is_none_or(|maximum| {
+        stream
+            .channels
+            .is_some_and(|actual| actual > 0 && actual <= maximum)
+    })
+}
+
+fn audio_sample_rate_allows_copy(stream: &MediaStream, requested: Option<i32>) -> bool {
+    requested.is_none_or(|maximum| {
+        stream
+            .sample_rate
+            .is_some_and(|actual| actual > 0 && actual <= maximum)
+    })
+}
+
+fn audio_bitrate_allows_copy(stream: &MediaStream, requested: Option<i64>) -> bool {
+    // EncodingHelper allows an unknown audio bitrate but rejects a known
+    // bitrate above the requested ceiling.
+    requested.is_none_or(|maximum| {
+        stream
+            .bit_rate
+            .is_none_or(|actual| i64::from(actual) <= maximum)
+    })
 }
 
 fn selected_stream(
@@ -1042,6 +1099,54 @@ mod tests {
         assert!(copy_remux_has_no_transform(&query));
         assert!(can_copy_remux(&query, "mp4", &streams, "h264", "aac"));
 
+        let compatible_limited_streams = vec![
+            MediaStream {
+                width: Some(1280),
+                height: Some(720),
+                average_frame_rate: Some(24.0),
+                bit_rate: Some(2_000_000),
+                ..streams[0].clone()
+            },
+            MediaStream {
+                channels: Some(2),
+                sample_rate: Some(48_000),
+                bit_rate: Some(128_000),
+                ..streams[1].clone()
+            },
+        ];
+        let compatible_limits = StreamQuery {
+            max_width: Some(1280),
+            max_height: Some(720),
+            max_framerate: Some(23.976),
+            video_bitrate: Some(2_000_000),
+            audio_bitrate: Some(128_000),
+            max_audio_channels: Some(2),
+            audio_sample_rate: Some(48_000),
+            ..query.clone()
+        };
+        assert!(copy_remux_has_no_transform(&compatible_limits));
+        assert!(can_copy_remux(
+            &compatible_limits,
+            "mp4",
+            &compatible_limited_streams,
+            "h264",
+            "aac",
+        ));
+        let incompatible_framerate_streams = vec![
+            MediaStream {
+                average_frame_rate: Some(24.1),
+                ..compatible_limited_streams[0].clone()
+            },
+            compatible_limited_streams[1].clone(),
+        ];
+        assert!(!can_copy_remux(
+            &compatible_limits,
+            "mp4",
+            &incompatible_framerate_streams,
+            "h264",
+            "aac",
+        ));
+
         let non_avc_streams = vec![
             MediaStream {
                 is_avc: Some(false),
@@ -1173,7 +1278,11 @@ mod tests {
             max_width: Some(1280),
             ..query
         };
-        assert!(!copy_remux_has_no_transform(&resized));
+        assert!(copy_remux_has_no_transform(&resized));
+        assert!(
+            !can_copy_remux(&resized, "mp4", &streams, "h264", "aac"),
+            "unknown source dimensions require an encode under the official check"
+        );
         let no_auto_copy = StreamQuery {
             enable_auto_stream_copy: Some(false),
             ..StreamQuery::default()
