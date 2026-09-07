@@ -307,6 +307,26 @@ impl UserLibraryService {
             .await?)
     }
 
+    /// Counts played real leaf descendants for several folders using the
+    /// target user's normal library policy.
+    pub async fn recursive_played_item_counts(
+        &self,
+        target_user_id: Uuid,
+        parent_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, u64>, UserLibraryError> {
+        let mut query = BaseItemQuery {
+            is_virtual_item: Some(false),
+            is_played: Some(true),
+            user_id: Some(target_user_id),
+            ..BaseItemQuery::default()
+        };
+        self.apply_user_policy(&mut query, target_user_id).await?;
+        Ok(self
+            .items
+            .dto_recursive_item_counts(parent_ids, &query)
+            .await?)
+    }
+
     /// Counts non-virtual items visible to one target user using the normal library policy.
     ///
     /// # Errors

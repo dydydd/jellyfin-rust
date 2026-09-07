@@ -264,10 +264,35 @@ impl UserDataService {
         target_user_id: Uuid,
         items: &[base_item::Model],
     ) -> Result<HashMap<Uuid, UserItemDataDto>, UserDataServiceError> {
-        let rows = self.get_preferred_for_items(target_user_id, items).await?;
+        // Playback reports may legitimately persist against the selected
+        // MediaSourceId (an alternate ISO/video version) rather than the
+        // displayed primary.  DTOs for the displayed item still need the
+        // latest user state, otherwise details and Continue Watching lose the
+        // resume position after an alternate source was played.
+        let alternate_items = self
+            .items
+            .media_source_versions_for_items(
+                &items
+                    .iter()
+                    .filter(|item| item.item_type == "Episode" || item.item_type == "Movie")
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let mut lookup_items = items.to_vec();
+        lookup_items.extend(alternate_items.iter().cloned());
+        lookup_items.sort_by_key(|item| item.id);
+        lookup_items.dedup_by_key(|item| item.id);
+        let rows = self
+            .get_preferred_for_items(target_user_id, &lookup_items)
+            .await?;
         let mut result = HashMap::with_capacity(items.len());
         for item in items {
-            let dto = rows.get(&item.id).cloned().map_or_else(
+            let data = rows
+                .get(&item.id)
+                .cloned()
+                .or_else(|| latest_alternate_user_data(item, &alternate_items, &rows));
+            let dto = data.map_or_else(
                 || default_user_data_dto(item, target_user_id),
                 |data| user_data_to_dto(data, item.runtime_ticks),
             );
@@ -361,6 +386,28 @@ impl UserDataService {
                 .iter()
                 .any(|id| policy.enabled_folders.contains(id)))
     }
+}
+
+fn latest_alternate_user_data(
+    item: &base_item::Model,
+    alternate_items: &[base_item::Model],
+    rows: &HashMap<Uuid, user_data::Model>,
+) -> Option<user_data::Model> {
+    alternate_items
+        .iter()
+        .filter(|alternate| {
+            alternate.primary_version_id == Some(item.id)
+                || (item.primary_version_id.is_some()
+                    && alternate.primary_version_id == item.primary_version_id)
+        })
+        .filter_map(|alternate| rows.get(&alternate.id).cloned())
+        .max_by_key(|data| {
+            (
+                data.last_played_date,
+                data.playback_position_ticks,
+                data.play_count,
+            )
+        })
 }
 
 pub(crate) fn current_user_data_keys(item: &base_item::Model) -> Vec<String> {

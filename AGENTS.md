@@ -530,6 +530,13 @@
 
 ## Android playback compatibility
 
+- Persist playback progress against the authorized selected `MediaSourceId`, but when projecting a
+  displayed primary item's `UserData`, fall back to the latest visible alternate-version row when
+  the primary has no row. This keeps ISO and alternate playback resume positions visible on item
+  details, lists, and Continue Watching without duplicating playstate rows.
+- For Series and Season DTOs, populate `UserData.UnplayedItemCount` from one target-user-policy-
+  aware recursive descendant count and played-descendant count; never leave this official folder
+  field permanently null.
 - Universal Audio must bind the complete generated SDK query surface, including `MediaSourceId`,
   `AudioBitRate`, `TranscodingAudioChannels`, protocol, sample-rate, bit-depth, and feature flags.
   Resolve an explicit audio `MediaSourceId` inside the authorized version group before selecting

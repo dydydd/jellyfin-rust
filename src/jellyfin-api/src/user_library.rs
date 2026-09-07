@@ -2294,6 +2294,15 @@ async fn user_data_for_item(
             key: item.id.simple().to_string(),
             item_id: item.id.simple().to_string(),
         });
+    if matches!(item.item_type.as_str(), "Series" | "Season") {
+        let count =
+            unplayed_item_counts_for_items(state, std::slice::from_ref(item), target_user_id)
+                .await?
+                .remove(&item.id);
+        let mut user_data = user_data;
+        user_data.unplayed_item_count = count;
+        return Ok(user_data);
+    }
     Ok(user_data)
 }
 
@@ -2356,6 +2365,39 @@ pub(crate) async fn recursive_item_counts_for_items(
         .user_library
         .recursive_item_counts(target_user_id, &parent_ids)
         .await?)
+}
+
+pub(crate) async fn unplayed_item_counts_for_items(
+    state: &AppState,
+    items: &[base_item::Model],
+    target_user_id: Uuid,
+) -> Result<HashMap<Uuid, i32>, ApiError> {
+    let parent_ids = items
+        .iter()
+        .filter(|item| matches!(item.item_type.as_str(), "Series" | "Season"))
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    if parent_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let (total, played) = tokio::try_join!(
+        state
+            .user_library
+            .recursive_item_counts(target_user_id, &parent_ids),
+        state
+            .user_library
+            .recursive_played_item_counts(target_user_id, &parent_ids),
+    )?;
+    Ok(total
+        .into_iter()
+        .map(|(item_id, total)| {
+            let played = played.get(&item_id).copied().unwrap_or_default();
+            (
+                item_id,
+                i32::try_from(total.saturating_sub(played)).unwrap_or(i32::MAX),
+            )
+        })
+        .collect())
 }
 
 pub(crate) fn attach_child_count(dto: &mut BaseItemDto, child_count: Option<u64>) {

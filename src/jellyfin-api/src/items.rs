@@ -2234,6 +2234,16 @@ async fn page_to_dto_with_fields_and_options(
         }
         _ => HashMap::new(),
     };
+    if let Some(target_user_id) = target_user_id {
+        let unplayed_counts =
+            user_library::unplayed_item_counts_for_items(state, &page.items, target_user_id)
+                .await?;
+        for (item_id, count) in unplayed_counts {
+            if let Some(user_data) = user_dtos.get_mut(&item_id) {
+                user_data.unplayed_item_count = Some(count);
+            }
+        }
+    }
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
     let mut episode_hierarchy_names =
         user_library::episode_hierarchy_names(state, &page.items).await?;
