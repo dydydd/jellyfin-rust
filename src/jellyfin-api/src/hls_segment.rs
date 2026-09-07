@@ -29,6 +29,8 @@ pub(crate) struct TranscodeQuery {
     job_id: Option<String>,
     #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
     device_id: Option<String>,
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
     #[serde(
         rename = "playSessionId",
         alias = "PlaySessionId",
@@ -136,6 +138,70 @@ pub(crate) struct TranscodeQuery {
 }
 
 impl TranscodeQuery {
+    pub(crate) fn universal_audio(
+        media_source_id: Option<String>,
+        device_id: Option<String>,
+        user_id: Option<Uuid>,
+        audio_codec: Option<String>,
+        audio_bitrate: Option<i64>,
+        max_audio_channels: Option<i32>,
+        audio_sample_rate: Option<i32>,
+        audio_stream_index: Option<i32>,
+        start_time_ticks: Option<i64>,
+    ) -> Self {
+        Self {
+            media_source_id,
+            device_id,
+            user_id,
+            audio_codec,
+            audio_bitrate,
+            max_audio_channels,
+            audio_sample_rate,
+            audio_stream_index,
+            start_time_ticks,
+            // Rust's current generated VOD playlist uses MPEG-TS segment URLs.
+            // Do not promise fMP4 until it also emits the required init segment.
+            segment_container: Some("ts".to_owned()),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn audio_master_uri(&self, item_id: Uuid) -> Result<Uri, ApiError> {
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        if let Some(value) = self.media_source_id.as_deref() {
+            serializer.append_pair("mediaSourceId", value);
+        }
+        if let Some(value) = self.device_id.as_deref() {
+            serializer.append_pair("deviceId", value);
+        }
+        if let Some(value) = self.user_id {
+            serializer.append_pair("userId", &value.to_string());
+        }
+        if let Some(value) = self.audio_codec.as_deref() {
+            serializer.append_pair("audioCodec", value);
+        }
+        if let Some(value) = self.audio_bitrate {
+            serializer.append_pair("audioBitrate", &value.to_string());
+        }
+        if let Some(value) = self.max_audio_channels {
+            serializer.append_pair("transcodingMaxAudioChannels", &value.to_string());
+        }
+        if let Some(value) = self.audio_sample_rate {
+            serializer.append_pair("audioSampleRate", &value.to_string());
+        }
+        if let Some(value) = self.audio_stream_index {
+            serializer.append_pair("audioStreamIndex", &value.to_string());
+        }
+        if let Some(value) = self.start_time_ticks {
+            serializer.append_pair("startTimeTicks", &value.to_string());
+        }
+        serializer.append_pair("segmentContainer", "ts");
+        let query = serializer.finish();
+        format!("/Audio/{item_id}/master.m3u8?{query}")
+            .parse()
+            .map_err(|_| ApiError::Internal)
+    }
+
     fn has_transcode_parameters(&self) -> bool {
         self.video_codec.is_some()
             || self.audio_codec.is_some()
@@ -331,7 +397,7 @@ pub(crate) async fn stop_active_encoding(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn ensure_master_playlist(
+pub(crate) async fn ensure_master_playlist(
     state: &AppState,
     headers: HeaderMap,
     uri: &Uri,
@@ -484,9 +550,13 @@ async fn start_hls_job(
         audio_bitrate = ?target.audio_bitrate,
         "starting HLS transcode job",
     );
+    let target_user_id = query.user_id.unwrap_or(user.id);
+    if target_user_id != user.id && !user.is_administrator {
+        return Err(ApiError::Forbidden);
+    }
     let requested_item = state
         .library_controller
-        .item(user, user.id, item_id)
+        .item(user, target_user_id, item_id)
         .await?;
     let item = if let Some(media_source_id) = query
         .media_source_id
@@ -498,11 +568,18 @@ async fn start_hls_job(
         if version_id == requested_item.id {
             requested_item
         } else {
-            state
-                .base_items
-                .alternate_video_version(requested_item.id, version_id)
-                .await?
-                .ok_or(ApiError::NotFound)?
+            let alternate = if media_type == "Audio" {
+                state
+                    .base_items
+                    .alternate_media_version(requested_item.id, version_id)
+                    .await?
+            } else {
+                state
+                    .base_items
+                    .alternate_video_version(requested_item.id, version_id)
+                    .await?
+            };
+            alternate.ok_or(ApiError::NotFound)?
         }
     } else {
         requested_item
@@ -1014,6 +1091,42 @@ mod tests {
             .unwrap();
         let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.audio_bitrate, Some(128_000));
+    }
+
+    #[test]
+    fn universal_audio_hls_request_keeps_selected_source_and_policy_context() {
+        let item_id = Uuid::new_v4();
+        let source_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let source_id_string = source_id.to_string();
+        let query = TranscodeQuery::universal_audio(
+            Some(source_id_string.clone()),
+            Some("android-device".to_owned()),
+            Some(user_id),
+            Some("aac".to_owned()),
+            Some(128_000),
+            Some(2),
+            Some(48_000),
+            Some(1),
+            Some(10_000),
+        );
+
+        let uri = query.audio_master_uri(item_id).unwrap();
+        assert_eq!(uri.path(), format!("/Audio/{item_id}/master.m3u8"));
+        let parsed = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(
+            parsed.media_source_id.as_deref(),
+            Some(source_id_string.as_str())
+        );
+        assert_eq!(parsed.device_id.as_deref(), Some("android-device"));
+        assert_eq!(parsed.user_id, Some(user_id));
+        assert_eq!(parsed.audio_codec.as_deref(), Some("aac"));
+        assert_eq!(parsed.audio_bitrate, Some(128_000));
+        assert_eq!(parsed.max_audio_channels, Some(2));
+        assert_eq!(parsed.audio_sample_rate, Some(48_000));
+        assert_eq!(parsed.audio_stream_index, Some(1));
+        assert_eq!(parsed.start_time_ticks, Some(10_000));
+        assert_eq!(parsed.segment_container.as_deref(), Some("ts"));
     }
 
     #[tokio::test]

@@ -98,7 +98,7 @@ pub(crate) struct UniversalQuery {
     )]
     media_source_id: Option<String>,
     #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
-    _device_id: Option<String>,
+    device_id: Option<String>,
     #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
@@ -152,7 +152,7 @@ pub(crate) struct UniversalQuery {
         alias = "TranscodingProtocol",
         alias = "transcodingprotocol"
     )]
-    _transcoding_protocol: Option<jellyfin_model::MediaStreamProtocol>,
+    transcoding_protocol: Option<jellyfin_model::MediaStreamProtocol>,
     #[serde(
         rename = "maxAudioSampleRate",
         alias = "MaxAudioSampleRate",
@@ -278,6 +278,30 @@ pub(crate) async fn universal(
         return serve_path(headers, path, request).await;
     }
 
+    if universal_uses_hls(&query) {
+        let hls_query = crate::hls_segment::TranscodeQuery::universal_audio(
+            query.media_source_id.clone(),
+            query.device_id.clone(),
+            Some(target_user_id),
+            query.audio_codec.clone(),
+            query.audio_bitrate.or(query.max_streaming_bitrate),
+            query.max_audio_channels,
+            query.max_audio_sample_rate,
+            query.audio_stream_index,
+            query.start_time_ticks,
+        );
+        let hls_uri = hls_query.audio_master_uri(item_id)?;
+        let hls_identity = authentication::AuthenticatedIdentity::Device(Box::new(identity));
+        return crate::hls_segment::ensure_master_playlist(
+            &state,
+            headers,
+            &hls_uri,
+            hls_query,
+            &hls_identity,
+        )
+        .await;
+    }
+
     let codec = query.audio_codec.as_deref().unwrap_or("aac").to_owned();
     let container = query.transcoding_container.as_deref().map_or_else(
         || audio_container(&codec).to_owned(),
@@ -327,6 +351,10 @@ fn universal_requires_transcode(query: &UniversalQuery) -> bool {
 
 fn should_redirect_remote_media(query: &UniversalQuery) -> bool {
     query.enable_remote_media == Some(true) && query.enable_redirection == Some(true)
+}
+
+fn universal_uses_hls(query: &UniversalQuery) -> bool {
+    query.transcoding_protocol == Some(jellyfin_model::MediaStreamProtocol::Hls)
 }
 
 fn audio_container(codec: &str) -> &str {
@@ -445,6 +473,7 @@ mod tests {
 
     use super::{
         StreamQuery, UniversalQuery, should_redirect_remote_media, universal_requires_transcode,
+        universal_uses_hls,
     };
 
     #[test]
@@ -488,7 +517,7 @@ mod tests {
         assert_eq!(query.max_audio_sample_rate, Some(48000));
         assert_eq!(query._max_audio_bit_depth, Some(24));
         assert_eq!(
-            query._transcoding_protocol,
+            query.transcoding_protocol,
             Some(jellyfin_model::MediaStreamProtocol::Hls)
         );
         assert_eq!(query.enable_remote_media, Some(true));
@@ -522,6 +551,21 @@ mod tests {
                 expected,
                 "{query_string}"
             );
+        }
+    }
+
+    #[test]
+    fn universal_audio_selects_hls_only_when_requested() {
+        for (query_string, expected) in [
+            ("", false),
+            ("transcodingProtocol=http", false),
+            ("transcodingProtocol=hls", true),
+        ] {
+            let uri: Uri = format!("/audio/item/universal?{query_string}")
+                .parse()
+                .unwrap();
+            let query = Query::<UniversalQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(universal_uses_hls(&query), expected, "{query_string}");
         }
     }
 

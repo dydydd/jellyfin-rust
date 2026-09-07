@@ -573,6 +573,62 @@ async fn unknown_alternate_runtime_uses_event_hls_while_known_runtimes_remain_vo
 }
 
 #[tokio::test]
+async fn universal_audio_hls_uses_the_authenticated_audio_playlist_pipeline() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let item_id = Uuid::new_v4();
+    let mut item = NewBaseItem::new(item_id, "Audio");
+    item.path = Some("/media/universal-audio.mp3".to_owned());
+    item.runtime_ticks = Some(120_000_000);
+    items.create(item).await.expect("universal audio item");
+
+    let response = fixture
+        .get(
+            &format!(
+                "/Audio/{item_id}/universal?transcodingProtocol=hls&audioCodec=aac&audioBitRate=128000&maxAudioChannels=2"
+            ),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let master = String::from_utf8(body(response).await).expect("UTF-8 master playlist");
+    let main_url = master
+        .lines()
+        .find(|line| line.starts_with("main.m3u8?"))
+        .expect("Universal Audio HLS master must select the main playlist");
+    assert!(main_url.contains("audioBitrate=128000"));
+    assert!(main_url.contains("transcodingMaxAudioChannels=2"));
+
+    let response = fixture
+        .get(
+            &format!("/Audio/{item_id}/{main_url}"),
+            fixture.device_headers(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let playlist = String::from_utf8(body(response).await).expect("UTF-8 VOD playlist");
+    assert!(playlist.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+    let segment_url = playlist
+        .lines()
+        .find(|line| line.starts_with("/Audio/"))
+        .expect("Universal Audio HLS VOD segment URL");
+    let response = fixture.get(segment_url, fixture.device_headers()).await;
+    assert_file_response(
+        response,
+        StatusCode::OK,
+        "video/mp2t",
+        b"universal-audio.mp3",
+    )
+    .await;
+
+    items
+        .delete(item_id)
+        .await
+        .expect("Universal Audio item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn dynamic_hls_rejects_media_sources_outside_the_requested_version_group() {
     let fixture = Fixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
