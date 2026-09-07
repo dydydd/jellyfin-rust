@@ -423,6 +423,39 @@ async fn assert_audio_stream(fixture: &Fixture) {
         to_bytes(response.into_body(), usize::MAX).await.unwrap(),
         media_bytes
     );
+    let users = UserService::new(fixture.database.clone());
+    let original_policy: UserPolicy = serde_json::from_value(
+        users
+            .get(fixture.user_id)
+            .await
+            .expect("audio stream user")
+            .policy,
+    )
+    .expect("audio stream policy");
+    let mut no_audio_transcoding = original_policy.clone();
+    no_audio_transcoding.enable_audio_playback_transcoding = false;
+    users
+        .update_policy(fixture.user_id, &no_audio_transcoding)
+        .await
+        .expect("disable audio transcoding");
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!(
+                    "/Audio/{}/universal?audioCodec=mp3",
+                    fixture.stream_audio_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    users
+        .update_policy(fixture.user_id, &original_policy)
+        .await
+        .expect("restore audio transcoding");
     let api_key_static = format!(
         "/Audio/{}/stream.bin?static=true&api_key={}",
         fixture.stream_audio_id, fixture.api_key_token
