@@ -194,7 +194,7 @@ pub(crate) struct StreamQuery {
         alias = "MaxVideoBitDepth",
         alias = "maxvideobitdepth"
     )]
-    _max_video_bit_depth: Option<i32>,
+    max_video_bit_depth: Option<i32>,
     #[serde(rename = "requireAvc", alias = "RequireAvc", alias = "requireavc")]
     require_avc: Option<bool>,
     #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
@@ -547,6 +547,11 @@ fn can_copy_remux(
                 .ref_frames
                 .is_some_and(|actual| actual > maximum)
         })
+        && !query.max_video_bit_depth.is_some_and(|maximum| {
+            video_stream
+                .bit_depth
+                .is_some_and(|actual| actual > maximum)
+        })
         && codecs_match(video_codec, requested_video_codec)
         && codecs_match(audio_codec, requested_audio_codec)
         && copy_remux_container_supports(container, video_codec, audio_codec)
@@ -838,7 +843,7 @@ mod tests {
         assert_eq!(query.subtitle_stream_index, Some(3));
         assert_eq!(query.subtitle_method.as_deref(), Some("Encode"));
         assert_eq!(query.max_ref_frames, Some(4));
-        assert_eq!(query._max_video_bit_depth, Some(10));
+        assert_eq!(query.max_video_bit_depth, Some(10));
         assert_eq!(query.require_avc, Some(true));
         assert_eq!(query.de_interlace, Some(true));
         assert_eq!(query._require_non_anamorphic, Some(true));
@@ -941,6 +946,25 @@ mod tests {
             &too_many_ref_frames,
             "mp4",
             &high_ref_streams,
+            "h264",
+            "aac",
+        ));
+
+        let low_bit_depth_limit = StreamQuery {
+            max_video_bit_depth: Some(8),
+            ..query.clone()
+        };
+        let high_bit_depth_streams = vec![
+            MediaStream {
+                bit_depth: Some(10),
+                ..streams[0].clone()
+            },
+            streams[1].clone(),
+        ];
+        assert!(!can_copy_remux(
+            &low_bit_depth_limit,
+            "mp4",
+            &high_bit_depth_streams,
             "h264",
             "aac",
         ));
