@@ -61,11 +61,11 @@ impl LibraryWatcher {
         )
         .map_err(LibraryWatcherError::Notify)?;
 
-        for path in &self.paths {
-            if let Err(error) = watcher.watch(path, RecursiveMode::Recursive) {
-                return Err(LibraryWatcherError::Watch(path.clone(), error));
-            }
-            tracing::info!(path = %path.display(), "watching library directory");
+        if register_library_paths(self.paths, |path| {
+            watcher.watch(path, RecursiveMode::Recursive)
+        }) == 0
+        {
+            return Ok(());
         }
 
         let scan = self.scan;
@@ -166,6 +166,39 @@ pub enum LibraryWatcherError {
     Thread(std::io::Error),
 }
 
+fn register_library_paths(
+    mut paths: Vec<PathBuf>,
+    mut watch: impl FnMut(&Path) -> notify::Result<()>,
+) -> usize {
+    // LibraryMonitor.Start orders roots and suppresses descendants of an
+    // existing recursive watch. Retain only successful roots so one failure
+    // does not suppress another configured directory that can be watched.
+    paths.sort_unstable();
+    paths.dedup();
+    let mut watched = Vec::<PathBuf>::new();
+    for path in paths {
+        if watched.iter().any(|parent| path.starts_with(parent)) {
+            continue;
+        }
+        // LibraryMonitor.StartWatchingPath skips unavailable directories and
+        // catches registration errors independently for each configured path.
+        if !path.is_dir() {
+            tracing::info!(path = %path.display(), "skipping realtime monitor for unavailable directory");
+            continue;
+        }
+        match watch(&path) {
+            Ok(()) => {
+                tracing::info!(path = %path.display(), "watching library directory");
+                watched.push(path);
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "cannot watch library directory");
+            }
+        }
+    }
+    watched.len()
+}
+
 fn relevant_event_paths(event: Event) -> impl Iterator<Item = PathBuf> {
     let relevant = matches!(
         event.kind,
@@ -253,6 +286,99 @@ fn affected_folder_ids(paths: &[PathBuf], folders: &[VirtualFolder]) -> HashSet<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_registration_isolates_unavailable_paths_and_registration_errors() {
+        let root = std::env::temp_dir().join(format!(
+            "jellyfin-watcher-registration-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let first = root.join("first");
+        let failure = root.join("registration-failure");
+        let last = root.join("z-last");
+        for path in [&first, &failure, &last] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let regular_file = root.join("file.mkv");
+        std::fs::write(&regular_file, []).unwrap();
+        let mut attempts = Vec::new();
+        let registered = register_library_paths(
+            vec![
+                last.clone(),
+                root.join("missing"),
+                failure.clone(),
+                regular_file,
+                first.clone(),
+            ],
+            |path| {
+                attempts.push(path.to_path_buf());
+                if path == failure {
+                    Err(notify::Error::generic("simulated registration failure"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(registered, 2);
+        assert_eq!(attempts, [first, failure, last]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recursive_watch_registration_deduplicates_parent_and_child_roots() {
+        let root =
+            std::env::temp_dir().join(format!("jellyfin-watcher-roots-{}", uuid::Uuid::new_v4()));
+        let parent = root.join("movies");
+        let child = parent.join("collection");
+        let sibling = root.join("movies-other");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let mut attempts = Vec::new();
+        let registered = register_library_paths(
+            vec![child, sibling.clone(), parent.clone(), parent.clone()],
+            |path| {
+                attempts.push(path.to_path_buf());
+                Ok(())
+            },
+        );
+        assert_eq!(registered, 2);
+        assert_eq!(attempts, [parent, sibling]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_parent_registration_does_not_hide_a_watchable_child() {
+        let root =
+            std::env::temp_dir().join(format!("jellyfin-watcher-parent-{}", uuid::Uuid::new_v4()));
+        let child = root.join("movies");
+        std::fs::create_dir_all(&child).unwrap();
+        let mut attempts = Vec::new();
+        let registered = register_library_paths(vec![child.clone(), root.clone()], |path| {
+            attempts.push(path.to_path_buf());
+            if path == root {
+                Err(notify::Error::generic(
+                    "simulated parent registration failure",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(registered, 1);
+        assert_eq!(attempts, [root.clone(), child]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unavailable_roots_leave_no_registered_watch() {
+        let missing =
+            std::env::temp_dir().join(format!("jellyfin-watcher-missing-{}", uuid::Uuid::new_v4()));
+        assert_eq!(
+            register_library_paths(vec![missing], |_| panic!(
+                "missing directory must be skipped"
+            )),
+            0
+        );
+    }
 
     #[test]
     fn event_paths_are_bounded_to_media_and_all_paths_are_retained() {
