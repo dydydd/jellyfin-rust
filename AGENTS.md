@@ -566,6 +566,12 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+For Android wire compatibility, run `android_sdk_compat` with a temporary PostgreSQL database and
+`JELLYFIN_ANDROID_DUMP` set, then validate every dumped response with `tools/kotlin_validate.py`.
+Keep the fixture's canonical Person reconciliation and storage paths aligned with `AppState`, and
+use current generated Kotlin response types (including root arrays) rather than obsolete wrapper
+names. Do not add the checked-out SDK source tree or Python bytecode to commits.
+
 Some `jellyfin-data` integration tests require PostgreSQL and create temporary databases whose names begin with `jellyfin_`. Do not point those tests at a database containing user data.
 
 For scan-memory work, include a repeatable large-directory or synthetic-library measurement when possible. Report baseline, peak, 60-second, and 300-second post-scan values. Separate process RSS and anonymous memory (`RssAnon` or `smaps_rollup` Anonymous) from cgroup `file` and `inactive_file`; metadata image page cache is reclaimable and must not be reported as a Rust heap leak. Also report whether memory returns after the scan, and do not infer a leak from allocator-retained RSS alone.
