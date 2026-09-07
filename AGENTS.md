@@ -25,9 +25,10 @@
   that produces the exposed image tags. Keep the top-level map present when empty, include hashes
   for inherited and Series primary tags, and never decode images or issue per-item lookups to fill it.
 - When DTO image projection is enabled (including the default `/UserViews` and legacy
-  `/Users/{userId}/Views` bootstrap paths), emit `ImageTags` as an object and
-  `BackdropImageTags` as an array even when either is empty. Only omit them when image projection
-  was explicitly disabled; Afuse iterates these collections directly.
+  `/Users/{userId}/Views` bootstrap paths), emit `ImageTags` as an object even when empty, and
+  emit `BackdropImageTags` as an array when the Backdrop image type is enabled even when it is
+  empty. Omit `ImageTags` only when image projection was explicitly disabled, and omit
+  `BackdropImageTags` when that type is disabled; Afuse iterates these collections directly.
 - Project `Chapters` only when `ItemFields.Chapters` is requested, while default all-fields item
   details must include an empty array when none exist. Load page chapters in one PostgreSQL batch,
   order by `StartPositionTicks`, keep alternate versions isolated, and derive chapter image tags
@@ -153,8 +154,8 @@
   and POST) so generated Android and Swift SDK requests never depend on URL casing.
 - Cover the mobile browse bootstrap routes with fully lowercase aliases as well: public/system
   info, branding configuration, users and user views, devices, display preferences, sessions,
-  item latest/counts/resume, and library available-options routes must preserve the official
-  handler and authorization policy under lowercase static segments.
+  modern and legacy item latest/counts/resume routes, and library available-options routes must
+  preserve the official handler and authorization policy under lowercase static segments.
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.

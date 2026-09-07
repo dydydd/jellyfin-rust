@@ -2061,8 +2061,12 @@ pub(crate) fn attach_dto_image_projection(
     dto: &mut BaseItemDto,
     projection: jellyfin_server_implementations::DtoImageProjection,
 ) {
-    dto.image_tags = Some(projection.image_tags);
-    dto.backdrop_image_tags = Some(projection.backdrop_image_tags);
+    dto.image_tags = projection
+        .image_tags_present
+        .then_some(projection.image_tags);
+    dto.backdrop_image_tags = projection
+        .backdrop_image_tags_present
+        .then_some(projection.backdrop_image_tags);
     dto.parent_primary_image_item_id = projection
         .parent_primary_image_item_id
         .map(|id| id.simple().to_string());

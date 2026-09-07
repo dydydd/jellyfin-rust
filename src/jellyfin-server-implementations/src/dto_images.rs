@@ -103,7 +103,14 @@ pub struct DtoImageProjection {
     pub parent_thumb_item_id: Option<Uuid>,
     pub parent_thumb_image_tag: Option<String>,
     pub primary_image_aspect_ratio: Option<f64>,
+    /// Whether `ImageTags` is enabled by the DTO image options. The map is
+    /// present even when no enabled image types produce a tag.
+    pub image_tags_present: bool,
     pub image_tags: HashMap<String, String>,
+    /// Whether `BackdropImageTags` is enabled by the DTO image options. The
+    /// array is present even when no backdrops exist, but omitted when the
+    /// caller filtered the Backdrop image type out.
+    pub backdrop_image_tags_present: bool,
     pub backdrop_image_tags: Vec<String>,
     pub parent_backdrop_image_item_id: Option<Uuid>,
     pub parent_backdrop_image_tags: Vec<String>,
@@ -516,7 +523,9 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         let mut projection = DtoImageProjection {
             primary_image_tag,
             primary_image_aspect_ratio,
+            image_tags_present: options.enable_images,
             image_tags,
+            backdrop_image_tags_present: options.enable_images,
             backdrop_image_tags,
             image_blur_hashes,
             ..DtoImageProjection::default()

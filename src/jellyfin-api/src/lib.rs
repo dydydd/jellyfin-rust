@@ -1804,6 +1804,9 @@ fn item_query_routes() -> Router<Arc<AppState>> {
         .route("/Users/{user_id}/Items", get(items::get_legacy))
         .route("/Users/{user_id}/Items/", get(items::get_legacy))
         .route("/Users/{user_id}/Items//", get(items::get_legacy))
+        .route("/users/{user_id}/items", get(items::get_legacy))
+        .route("/users/{user_id}/items/", get(items::get_legacy))
+        .route("/users/{user_id}/items//", get(items::get_legacy))
         .route(
             "/Users/{user_id}/Suggestions",
             get(items::suggestions_legacy),
@@ -1813,6 +1816,7 @@ fn item_query_routes() -> Router<Arc<AppState>> {
             get(items::suggestions_legacy),
         )
         .route("/Users/{user_id}/Items/Latest", get(items::latest_legacy))
+        .route("/users/{user_id}/items/latest", get(items::latest_legacy))
         .route("/Users/{user_id}/Items/Resume", get(items::resume_legacy))
         .route("/users/{user_id}/items/resume", get(items::resume_legacy))
 }

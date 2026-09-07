@@ -2476,7 +2476,9 @@ fn constrain_image_projection(
         projection.parent_thumb_item_id = None;
         projection.parent_thumb_image_tag = None;
     }
-    if !includes("Backdrop") || image_type_limit == 0 {
+    let backdrop_tags_enabled = includes("Backdrop") && image_type_limit > 0;
+    projection.backdrop_image_tags_present &= backdrop_tags_enabled;
+    if !backdrop_tags_enabled {
         projection.backdrop_image_tags.clear();
         projection.parent_backdrop_image_item_id = None;
         projection.parent_backdrop_image_tags.clear();

@@ -749,6 +749,17 @@ async fn assert_is_played_and_legacy_routes(fixture: &Fixture) {
     assert_eq!(mixed.as_array().unwrap().len(), 2);
     assert_eq!(mixed[0]["Id"], fixture.episode_id.simple().to_string());
     assert_eq!(mixed[1]["Id"], fixture.new_movie_id.simple().to_string());
+
+    let lowercase_mixed = get_json(
+        &fixture.app,
+        &format!(
+            "/users/{}/items/latest?parentid={}&includeitemtypes=movie,episode&isplayed=false&groupitems=false&limit=2",
+            fixture.user_id, fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(lowercase_mixed, mixed);
 }
 
 async fn assert_default_grouping_and_explicit_ungrouping(fixture: &Fixture) {
@@ -1141,8 +1152,15 @@ async fn assert_latest_dto_options_and_image_fields(fixture: &Fixture) {
         &fixture.user_token,
     )
     .await;
-    assert!(unknown_number[0].get("ImageTags").is_none());
+    assert!(unknown_number[0]["ImageTags"].is_object());
+    assert!(
+        unknown_number[0]["ImageTags"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
     assert!(unknown_number[0].get("PrimaryImageTag").is_none());
+    assert!(unknown_number[0].get("BackdropImageTags").is_none());
 
     let no_images = get_json(
         &fixture.app,
@@ -1153,7 +1171,9 @@ async fn assert_latest_dto_options_and_image_fields(fixture: &Fixture) {
         &fixture.user_token,
     )
     .await;
-    assert!(no_images[0].get("ImageTags").is_none());
+    assert!(no_images[0]["ImageTags"].is_object());
+    assert!(no_images[0]["ImageTags"].as_object().unwrap().is_empty());
+    assert!(no_images[0].get("BackdropImageTags").is_none());
 }
 
 async fn assert_collection_derived_media_types(fixture: &Fixture) {

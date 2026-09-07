@@ -1390,16 +1390,18 @@ async fn legacy_item_collection_accepts_empty_trailing_path_segments() {
     );
 
     for prefix in ["", "/api", "/emby"] {
-        for trailing in ["/", "//"] {
-            let route = format!(
-                "{prefix}/Users/{}/Items{trailing}?ids={item_id}",
-                fixture.user_id
-            );
-            let response = fixture.request(&route, Some(&fixture.user_token)).await;
-            assert_eq!(response.status(), StatusCode::OK, "{route}");
-            let body = body_json(response).await;
-            assert_eq!(body["TotalRecordCount"], 1, "{route}");
-            assert_eq!(body["Items"][0]["Id"], item_id.simple().to_string());
+        for path in [
+            format!("Users/{}/Items", fixture.user_id),
+            format!("users/{}/items", fixture.user_id),
+        ] {
+            for trailing in ["/", "//"] {
+                let route = format!("{prefix}/{path}{trailing}?ids={item_id}");
+                let response = fixture.request(&route, Some(&fixture.user_token)).await;
+                assert_eq!(response.status(), StatusCode::OK, "{route}");
+                let body = body_json(response).await;
+                assert_eq!(body["TotalRecordCount"], 1, "{route}");
+                assert_eq!(body["Items"][0]["Id"], item_id.simple().to_string());
+            }
         }
     }
 
@@ -2546,6 +2548,7 @@ async fn postgres_item_queries_apply_recursive_filters_and_pagination() {
         for prefix in [
             "/Items".to_owned(),
             format!("/Users/{}/Items", fixture.user_id),
+            format!("/users/{}/items", fixture.user_id),
         ] {
             let route = format!(
                 "{prefix}?ids={},{}&{start_index}=-1&limit=1",
