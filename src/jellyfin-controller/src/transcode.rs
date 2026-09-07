@@ -396,6 +396,8 @@ pub fn video_command(
     max_framerate: Option<f32>,
     deinterlace: bool,
     require_non_anamorphic: bool,
+    profile: Option<&str>,
+    level: Option<&str>,
     audio_stream_index: Option<i32>,
     video_stream_index: Option<i32>,
     start_time_ticks: Option<i64>,
@@ -422,6 +424,14 @@ pub fn video_command(
         .push(video_stream_index.map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}")));
     arguments.push("-c:v".to_owned());
     arguments.push(video_codec.to_owned());
+    if let Some(profile) = profile.filter(|profile| !profile.trim().is_empty()) {
+        arguments.push("-profile:v".to_owned());
+        arguments.push(profile.to_owned());
+    }
+    if let Some(level) = level.filter(|level| !level.trim().is_empty()) {
+        arguments.push("-level:v".to_owned());
+        arguments.push(level.to_owned());
+    }
     if let Some(bitrate) = video_bitrate {
         arguments.push("-b:v".to_owned());
         arguments.push(bitrate.to_string());
@@ -1410,6 +1420,8 @@ mod tests {
             None,
             false,
             false,
+            None,
+            None,
             Some(2),
             Some(0),
             Some(10_000),
@@ -1542,6 +1554,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             false,
         );
 
@@ -1570,6 +1584,8 @@ mod tests {
             None,
             false,
             false,
+            None,
+            None,
             None,
             None,
             None,
@@ -1606,6 +1622,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             false,
         );
 
@@ -1638,6 +1656,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             false,
         );
 
@@ -1666,6 +1686,8 @@ mod tests {
             None,
             false,
             false,
+            None,
+            None,
             None,
             None,
             Some(10_000),
@@ -1704,6 +1726,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             false,
         );
 
@@ -1713,6 +1737,46 @@ mod tests {
                 "scale=trunc(iw*sar/2)*2:ih,setsar=1,scale='min(1280,iw)':-2",
             ]
         }));
+    }
+
+    #[test]
+    fn video_command_applies_requested_profile_and_level() {
+        let command = video_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.ts"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            Some("high"),
+            Some("4.1"),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-profile:v", "high"])
+        );
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-level:v", "4.1"])
+        );
     }
 
     #[test]

@@ -134,9 +134,9 @@ pub(crate) struct StreamQuery {
     )]
     max_audio_channels: Option<i32>,
     #[serde(rename = "profile", alias = "Profile")]
-    _profile: Option<String>,
+    profile: Option<String>,
     #[serde(rename = "level", alias = "Level")]
-    _level: Option<String>,
+    level: Option<String>,
     #[serde(rename = "framerate", alias = "Framerate")]
     framerate: Option<f32>,
     #[serde(
@@ -476,6 +476,8 @@ async fn stream_file(
             query.framerate.or(query.max_framerate),
             query.de_interlace.unwrap_or(false),
             query.require_non_anamorphic.unwrap_or(false),
+            output_video_profile(video_codec, query.profile.as_deref()).as_deref(),
+            output_video_level(video_codec, query.level.as_deref()).as_deref(),
             query.audio_stream_index,
             query.video_stream_index,
             query.start_time_ticks,
@@ -555,6 +557,12 @@ fn can_copy_remux(
         // stream. Unknown probe state preserves the official copy fallback.
         && !(query.require_non_anamorphic == Some(true)
             && video_stream.is_anamorphic == Some(true))
+        && video_profile_allows_copy(
+            video_codec,
+            video_stream.profile.as_deref(),
+            query.profile.as_deref(),
+        )
+        && video_level_allows_copy(video_stream.level, query.level.as_deref())
         && !query.max_ref_frames.is_some_and(|maximum| {
             video_stream
                 .ref_frames
@@ -586,6 +594,118 @@ fn selected_stream(
         stream.stream_type == stream_type
             && requested_index.is_none_or(|index| stream.index == index)
     })
+}
+
+fn requested_video_profiles(profile: Option<&str>) -> impl Iterator<Item = &str> {
+    profile.into_iter().flat_map(|value| {
+        value
+            // EncodingJobInfo uses only Jellyfin's pipe/comma profile
+            // separators; a semicolon remains part of the profile name.
+            .split(|character| matches!(character, ',' | '|'))
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty())
+    })
+}
+
+fn compact_profile(profile: &str) -> String {
+    profile
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn normalized_video_codec(codec: &str) -> &str {
+    if codec.eq_ignore_ascii_case("h265") {
+        "hevc"
+    } else {
+        codec
+    }
+}
+
+fn video_profile_score(codec: &str, profile: &str) -> Option<usize> {
+    let profiles = match normalized_video_codec(codec).to_ascii_lowercase().as_str() {
+        "h264" => [
+            "constrainedbaseline",
+            "baseline",
+            "extended",
+            "main",
+            "high",
+            "progressivehigh",
+            "constrainedhigh",
+            "high10",
+        ]
+        .as_slice(),
+        "hevc" => ["main", "main10"].as_slice(),
+        "av1" => ["main", "high", "professional"].as_slice(),
+        _ => return None,
+    };
+    let profile = compact_profile(profile);
+    profiles.iter().position(|known| *known == profile)
+}
+
+fn video_profile_allows_copy(
+    codec: &str,
+    source_profile: Option<&str>,
+    requested_profile: Option<&str>,
+) -> bool {
+    let requested_profiles = requested_video_profiles(requested_profile).collect::<Vec<_>>();
+    if requested_profiles.is_empty() {
+        return true;
+    }
+    let Some(source_profile) = source_profile.filter(|profile| !profile.is_empty()) else {
+        // EncodingHelper.CanStreamCopyVideo intentionally preserves this
+        // fallback when ffprobe did not report a source profile.
+        return true;
+    };
+    let source_profile = compact_profile(source_profile);
+    if requested_profiles
+        .iter()
+        .any(|profile| compact_profile(profile) == source_profile)
+    {
+        return true;
+    }
+    matches!(
+        (
+            video_profile_score(codec, &source_profile),
+            video_profile_score(codec, requested_profiles[0]),
+        ),
+        (Some(source), Some(requested)) if source <= requested
+    )
+}
+
+fn requested_video_level(level: Option<&str>) -> Option<f64> {
+    level
+        .map(str::trim)
+        .filter(|level| !level.is_empty())
+        .and_then(|level| level.parse::<f64>().ok())
+        .filter(|level| level.is_finite())
+}
+
+fn video_level_allows_copy(source_level: Option<f64>, requested_level: Option<&str>) -> bool {
+    requested_video_level(requested_level)
+        .zip(source_level)
+        .is_none_or(|(requested, source)| source <= requested)
+}
+
+fn output_video_profile(codec: &str, profile: Option<&str>) -> Option<String> {
+    let profile = requested_video_profiles(profile).next()?;
+    video_profile_score(codec, profile).map(|_| compact_profile(profile))
+}
+
+fn output_video_level(codec: &str, level: Option<&str>) -> Option<String> {
+    let requested = requested_video_level(level)?;
+    let maximum = match normalized_video_codec(codec).to_ascii_lowercase().as_str() {
+        "h264" => 51.0,
+        "hevc" => 150.0,
+        "av1" => 15.0,
+        _ => return level.map(str::trim).map(str::to_owned),
+    };
+    if requested < 0.0 || requested >= maximum {
+        Some(maximum.to_string())
+    } else {
+        level.map(str::trim).map(str::to_owned)
+    }
 }
 
 fn codecs_match(actual: &str, requested: &str) -> bool {
@@ -842,8 +962,8 @@ mod tests {
         assert_eq!(query.max_audio_bit_depth, Some(24));
         assert_eq!(query.audio_channels, Some(2));
         assert_eq!(query.max_audio_channels, Some(6));
-        assert_eq!(query._profile.as_deref(), Some("high"));
-        assert_eq!(query._level.as_deref(), Some("4.1"));
+        assert_eq!(query.profile.as_deref(), Some("high"));
+        assert_eq!(query.level.as_deref(), Some("4.1"));
         assert_eq!(query.framerate, Some(24.0));
         assert_eq!(query.width, Some(1280));
         assert_eq!(query.height, Some(720));
@@ -1017,6 +1137,38 @@ mod tests {
             "aac",
         ));
 
+        let high_profile_streams = vec![
+            MediaStream {
+                profile: Some("High".to_owned()),
+                level: Some(42.0),
+                ..streams[0].clone()
+            },
+            streams[1].clone(),
+        ];
+        let constrained_profile = StreamQuery {
+            profile: Some("Main".to_owned()),
+            ..query.clone()
+        };
+        assert!(!can_copy_remux(
+            &constrained_profile,
+            "mp4",
+            &high_profile_streams,
+            "h264",
+            "aac",
+        ));
+        let lower_profile = StreamQuery {
+            profile: Some("High".to_owned()),
+            level: Some("41".to_owned()),
+            ..query.clone()
+        };
+        assert!(!can_copy_remux(
+            &lower_profile,
+            "mp4",
+            &high_profile_streams,
+            "h264",
+            "aac",
+        ));
+
         let resized = StreamQuery {
             max_width: Some(1280),
             ..query
@@ -1041,6 +1193,37 @@ mod tests {
         assert!(!is_local_path("https://media.example/video.mkv"));
         assert!(!is_local_path("rtsp://media.example/video.mkv"));
         assert!(is_local_path("/library/video.mkv"));
+    }
+
+    #[test]
+    fn video_profile_and_level_follow_official_copy_and_encoder_rules() {
+        assert!(video_profile_allows_copy(
+            "h264",
+            Some("Constrained Baseline"),
+            Some("Main"),
+        ));
+        assert!(video_profile_allows_copy("h264", None, Some("Baseline")));
+        assert!(!video_profile_allows_copy(
+            "h264",
+            Some("High"),
+            Some("Main"),
+        ));
+        assert!(video_level_allows_copy(Some(41.0), Some("41")));
+        assert!(!video_level_allows_copy(Some(42.0), Some("41")));
+        assert_eq!(
+            output_video_profile("h264", Some("High")),
+            Some("high".to_owned())
+        );
+        assert_eq!(output_video_profile("h264", Some("unknown")), None);
+        assert_eq!(
+            output_video_level("h264", Some("99")),
+            Some("51".to_owned())
+        );
+        assert_eq!(
+            output_video_level("hevc", Some("153")),
+            Some("150".to_owned())
+        );
+        assert_eq!(output_video_level("av1", Some("15")), Some("15".to_owned()));
     }
 
     #[tokio::test]
