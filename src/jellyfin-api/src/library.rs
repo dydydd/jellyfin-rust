@@ -34,9 +34,9 @@ pub(crate) struct LibraryQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
+    start_index: i32,
     #[serde(alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -335,6 +335,13 @@ pub(crate) async fn collections(
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    // The official controller applies Enumerable.Skip/Take: negative starts
+    // skip nothing, while non-positive limits produce an empty page.
+    let requested_start_index = query.start_index;
+    let start_index = u64::try_from(requested_start_index).unwrap_or_default();
+    let limit = query
+        .limit
+        .map(|limit| u64::try_from(limit.max(0)).unwrap_or_default());
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let page = state
         .library_controller
@@ -342,11 +349,13 @@ pub(crate) async fn collections(
             &authenticated.user,
             target_user_id,
             item_id,
-            query.start_index,
-            query.limit,
+            start_index,
+            limit,
         )
         .await?;
-    Ok(Json(page_to_dto(page, state.server_id())))
+    let mut result = page_to_dto(page, state.server_id());
+    result.start_index = requested_start_index;
+    Ok(Json(result))
 }
 
 pub(crate) async fn similar(

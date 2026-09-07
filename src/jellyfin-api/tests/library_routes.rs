@@ -96,6 +96,14 @@ async fn official_library_controller_missing_item_contract() {
 }
 
 #[tokio::test]
+async fn item_collections_match_signed_pagination_contract() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    assert_collections_signed_paging(&fixture).await;
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn ancestors_download_similar_and_empty_relationships_have_real_success_semantics() {
     let _guard = LIBRARY_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
@@ -1536,6 +1544,53 @@ async fn assert_relationships(fixture: &Fixture) {
         lowercase_collections["Items"][0]["Id"],
         fixture.second_collection_id.simple().to_string()
     );
+
+    assert_collections_signed_paging(fixture).await;
+}
+
+async fn assert_collections_signed_paging(fixture: &Fixture) {
+    for (query, expected_count) in [
+        ("StartIndex=-1&Limit=1", 1),
+        ("startIndex=-1&limit=-1", 0),
+        ("startindex=-1&limit=0", 0),
+    ] {
+        let collections = fixture
+            .json(
+                "GET",
+                &format!("/Items/{}/Collections?{query}", fixture.child_id),
+                &fixture.user_token,
+            )
+            .await;
+        assert_eq!(collections["StartIndex"], -1, "{query}");
+        assert_eq!(collections["TotalRecordCount"], 2, "{query}");
+        assert_eq!(
+            collections["Items"]
+                .as_array()
+                .expect("collection items")
+                .len(),
+            expected_count,
+            "{query}"
+        );
+    }
+    for query in [
+        "StartIndex=2147483648",
+        "limit=2147483648",
+        "startindex=-2147483649",
+        "Limit=-2147483649",
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    "GET",
+                    &format!("/Items/{}/Collections?{query}", fixture.child_id),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{query}"
+        );
+    }
 }
 
 async fn assert_item_counts(fixture: &Fixture) {
