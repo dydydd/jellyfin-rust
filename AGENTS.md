@@ -14,6 +14,7 @@
 - Preserve unrelated user changes and existing commits. Never rewrite history or use destructive Git commands.
 - Prefer bounded concurrency, streaming or pagination, batched PostgreSQL operations, and short-lived buffers for library scans. Do not collect an entire library into memory when work can be processed incrementally.
 - Keep filesystem watcher queues bounded and deduplicated. Coalesce changed paths by virtual library before scanning, reuse one short-lived directory snapshot for sibling media discovery, and batch PostgreSQL reads and writes instead of issuing per-item queries.
+- Keep serial and concurrent media scans failure-equivalent: database writes, hierarchy creation, and filesystem/persistence errors must fail the scan with a bounded per-file failure report and accurate total, while FFprobe failures retain the item with fallback streams and are treated as partial success.
 - Keep deterministic scan hierarchy creation idempotent under sibling-file concurrency. Series and
   season nodes must be checked and created while holding the PostgreSQL hierarchy lock so a
   duplicate-node race cannot silently drop one media item.
@@ -328,6 +329,9 @@
   targets a nonexistent user.
 - Audit DTOs recursively: preserve object-array shapes, serialize API enums by their official names, keep string dictionaries string-valued, and emit full API `DateTime` values rather than storage-only dates.
 - Treat alternate video versions as one playback group. Item details and `PlaybackInfo` must expose every version as a distinct `MediaSource`, honor `MediaSourceId` when opening static or transcoded content, and keep all stream and attachment loading batched by version identifiers.
+- Keep progressive Video stream query binding aligned with `VideosController`: accept the full
+  case-insensitive request surface, including the query-only `container` fallback on extensionless
+  stream URLs, and cover PascalCase, camelCase, and lowercase SDK requests in focused tests.
 - Preserve the official relationship order when expanding alternate `MediaSources`: keep the
   explicitly requested source first, emit every primary or user-linked grouping root before local
   alternates, sort linked roots stably by non-empty `SortName` with link `sort_order` as the

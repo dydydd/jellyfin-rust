@@ -28,14 +28,68 @@ pub(crate) struct MergeVersionsQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct StreamQuery {
+    // `container` is a query parameter on the extensionless official route.
+    // The by-container route receives it from the path instead.
+    #[serde(rename = "container", alias = "Container")]
+    container: Option<String>,
     #[serde(rename = "static", alias = "Static")]
     static_stream: Option<bool>,
+    #[serde(rename = "params", alias = "Params")]
+    _params: Option<String>,
+    #[serde(rename = "tag", alias = "Tag")]
+    _tag: Option<String>,
+    #[serde(
+        rename = "deviceProfileId",
+        alias = "DeviceProfileId",
+        alias = "deviceprofileid"
+    )]
+    _device_profile_id: Option<String>,
+    #[serde(
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid"
+    )]
+    _play_session_id: Option<String>,
+    #[serde(
+        rename = "segmentContainer",
+        alias = "SegmentContainer",
+        alias = "segmentcontainer"
+    )]
+    _segment_container: Option<String>,
+    #[serde(
+        rename = "segmentLength",
+        alias = "SegmentLength",
+        alias = "segmentlength"
+    )]
+    _segment_length: Option<i32>,
+    #[serde(rename = "minSegments", alias = "MinSegments", alias = "minsegments")]
+    _min_segments: Option<i32>,
     #[serde(
         rename = "mediaSourceId",
         alias = "MediaSourceId",
         alias = "mediasourceid"
     )]
     media_source_id: Option<String>,
+    #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
+    _device_id: Option<String>,
+    #[serde(
+        rename = "enableAutoStreamCopy",
+        alias = "EnableAutoStreamCopy",
+        alias = "enableautostreamcopy"
+    )]
+    _enable_auto_stream_copy: Option<bool>,
+    #[serde(
+        rename = "allowVideoStreamCopy",
+        alias = "AllowVideoStreamCopy",
+        alias = "allowvideostreamcopy"
+    )]
+    _allow_video_stream_copy: Option<bool>,
+    #[serde(
+        rename = "allowAudioStreamCopy",
+        alias = "AllowAudioStreamCopy",
+        alias = "allowaudiostreamcopy"
+    )]
+    _allow_audio_stream_copy: Option<bool>,
     #[serde(rename = "videoCodec", alias = "VideoCodec", alias = "videocodec")]
     video_codec: Option<String>,
     #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
@@ -61,6 +115,12 @@ pub(crate) struct StreamQuery {
     )]
     audio_sample_rate: Option<i32>,
     #[serde(
+        rename = "maxAudioBitDepth",
+        alias = "MaxAudioBitDepth",
+        alias = "maxaudiobitdepth"
+    )]
+    _max_audio_bit_depth: Option<i32>,
+    #[serde(
         rename = "audioChannels",
         alias = "AudioChannels",
         alias = "audiochannels"
@@ -72,6 +132,12 @@ pub(crate) struct StreamQuery {
         alias = "maxaudiochannels"
     )]
     max_audio_channels: Option<i32>,
+    #[serde(rename = "profile", alias = "Profile")]
+    _profile: Option<String>,
+    #[serde(rename = "level", alias = "Level")]
+    _level: Option<String>,
+    #[serde(rename = "framerate", alias = "Framerate")]
+    framerate: Option<f32>,
     #[serde(
         rename = "transcodingMaxAudioChannels",
         alias = "TranscodingMaxAudioChannels",
@@ -117,6 +183,28 @@ pub(crate) struct StreamQuery {
     )]
     subtitle_method: Option<String>,
     #[serde(
+        rename = "maxRefFrames",
+        alias = "MaxRefFrames",
+        alias = "maxrefframes"
+    )]
+    _max_ref_frames: Option<i32>,
+    #[serde(
+        rename = "maxVideoBitDepth",
+        alias = "MaxVideoBitDepth",
+        alias = "maxvideobitdepth"
+    )]
+    _max_video_bit_depth: Option<i32>,
+    #[serde(rename = "requireAvc", alias = "RequireAvc", alias = "requireavc")]
+    _require_avc: Option<bool>,
+    #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
+    _de_interlace: Option<bool>,
+    #[serde(
+        rename = "requireNonAnamorphic",
+        alias = "RequireNonAnamorphic",
+        alias = "requirenonanamorphic"
+    )]
+    _require_non_anamorphic: Option<bool>,
+    #[serde(
         rename = "startTimeTicks",
         alias = "StartTimeTicks",
         alias = "starttimeticks"
@@ -128,6 +216,53 @@ pub(crate) struct StreamQuery {
         alias = "copytimestamps"
     )]
     copy_timestamps: Option<bool>,
+    #[serde(
+        rename = "cpuCoreLimit",
+        alias = "CpuCoreLimit",
+        alias = "cpucorelimit"
+    )]
+    _cpu_core_limit: Option<i32>,
+    #[serde(
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid"
+    )]
+    _live_stream_id: Option<String>,
+    #[serde(
+        rename = "enableMpegtsM2TsMode",
+        alias = "EnableMpegtsM2TsMode",
+        alias = "enablempegtsm2tsmode"
+    )]
+    _enable_mpegts_m2_ts_mode: Option<bool>,
+    #[serde(
+        rename = "subtitleCodec",
+        alias = "SubtitleCodec",
+        alias = "subtitlecodec"
+    )]
+    _subtitle_codec: Option<String>,
+    #[serde(
+        rename = "transcodeReasons",
+        alias = "TranscodeReasons",
+        alias = "transcodereasons"
+    )]
+    _transcode_reasons: Option<String>,
+    #[serde(rename = "context", alias = "Context")]
+    _context: Option<String>,
+    // ASP.NET binds this as a string dictionary. The progressive path does
+    // not yet use its values, but model the input explicitly so the gap is
+    // visible when its streaming state gains those options.
+    #[serde(
+        rename = "streamOptions",
+        alias = "StreamOptions",
+        alias = "streamoptions"
+    )]
+    _stream_options: Option<String>,
+    #[serde(
+        rename = "enableAudioVbrEncoding",
+        alias = "EnableAudioVbrEncoding",
+        alias = "enableaudiovbrencoding"
+    )]
+    _enable_audio_vbr_encoding: Option<bool>,
 }
 
 pub(crate) async fn stream(
@@ -224,10 +359,7 @@ async fn stream_file(
         return crate::audio::serve_path(headers, &path, request).await;
     }
 
-    let container = requested_container
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim_start_matches('.').to_ascii_lowercase())
-        .unwrap_or_else(|| "mp4".to_owned());
+    let container = output_container(requested_container, query.container.as_deref());
     let video_codec = query
         .video_codec
         .as_deref()
@@ -271,7 +403,7 @@ async fn stream_file(
         query.audio_sample_rate,
         query.max_width.or(query.width),
         query.max_height.or(query.height),
-        query.max_framerate,
+        query.framerate.or(query.max_framerate),
         query.audio_stream_index,
         query.video_stream_index,
         query.start_time_ticks,
@@ -305,6 +437,14 @@ fn audio_codec_for_container(container: &str) -> &str {
         "webm" => "opus",
         _ => "aac",
     }
+}
+
+fn output_container(requested_container: Option<&str>, query_container: Option<&str>) -> String {
+    requested_container
+        .or(query_container)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim_start_matches('.').to_ascii_lowercase())
+        .unwrap_or_else(|| "mp4".to_owned())
 }
 
 async fn proxy_remote_stream(
@@ -439,15 +579,37 @@ mod tests {
 
     #[test]
     fn video_stream_binds_android_progressive_parameters() {
-        let uri: Uri = "/videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&width=1280&Height=720&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000&CopyTimestamps=true"
+        // These names deliberately mix the canonical SDK casing, PascalCase,
+        // and lower-case legacy spelling accepted by ASP.NET model binding.
+        let uri: Uri = "/videos/item/stream.mp4?container=webm&static=false&params=client%3Dandroid&Tag=etag&deviceprofileid=profile&PlaySessionId=play-session&segmentcontainer=ts&SegmentLength=6&minsegments=2&MediaSourceId=alternate&deviceid=device&enableautostreamcopy=true&AllowVideoStreamCopy=false&allowaudiostreamcopy=true&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&audioSampleRate=48000&MaxAudioBitDepth=24&audioChannels=2&maxAudioChannels=6&Profile=high&Level=4.1&framerate=24&width=1280&Height=720&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&MaxRefFrames=4&maxvideobitdepth=10&RequireAvc=true&deinterlace=true&requireNonAnamorphic=true&startTimeTicks=10000&CopyTimestamps=true&cpuCoreLimit=2&liveStreamId=live&enableMpegtsM2TsMode=true&subtitleCodec=srt&transcodeReasons=ContainerNotSupported&context=Streaming&streamoptions=quality%3Dhigh&enableAudioVbrEncoding=false"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.container.as_deref(), Some("webm"));
         assert!(!query.static_stream.unwrap());
+        assert_eq!(query._params.as_deref(), Some("client=android"));
+        assert_eq!(query._tag.as_deref(), Some("etag"));
+        assert_eq!(query._device_profile_id.as_deref(), Some("profile"));
+        assert_eq!(query._play_session_id.as_deref(), Some("play-session"));
+        assert_eq!(query._segment_container.as_deref(), Some("ts"));
+        assert_eq!(query._segment_length, Some(6));
+        assert_eq!(query._min_segments, Some(2));
+        assert_eq!(query.media_source_id.as_deref(), Some("alternate"));
+        assert_eq!(query._device_id.as_deref(), Some("device"));
+        assert_eq!(query._enable_auto_stream_copy, Some(true));
+        assert_eq!(query._allow_video_stream_copy, Some(false));
+        assert_eq!(query._allow_audio_stream_copy, Some(true));
         assert_eq!(query.video_codec.as_deref(), Some("h264"));
         assert_eq!(query.audio_codec.as_deref(), Some("aac"));
         assert_eq!(query.video_bitrate, Some(2_000_000));
         assert_eq!(query.audio_bitrate, Some(128_000));
+        assert_eq!(query.audio_sample_rate, Some(48_000));
+        assert_eq!(query._max_audio_bit_depth, Some(24));
+        assert_eq!(query.audio_channels, Some(2));
+        assert_eq!(query.max_audio_channels, Some(6));
+        assert_eq!(query._profile.as_deref(), Some("high"));
+        assert_eq!(query._level.as_deref(), Some("4.1"));
+        assert_eq!(query.framerate, Some(24.0));
         assert_eq!(query.width, Some(1280));
         assert_eq!(query.height, Some(720));
         assert_eq!(query.max_framerate, Some(23.976));
@@ -455,13 +617,49 @@ mod tests {
         assert_eq!(query.video_stream_index, Some(0));
         assert_eq!(query.subtitle_stream_index, Some(3));
         assert_eq!(query.subtitle_method.as_deref(), Some("Encode"));
+        assert_eq!(query._max_ref_frames, Some(4));
+        assert_eq!(query._max_video_bit_depth, Some(10));
+        assert_eq!(query._require_avc, Some(true));
+        assert_eq!(query._de_interlace, Some(true));
+        assert_eq!(query._require_non_anamorphic, Some(true));
         assert_eq!(query.start_time_ticks, Some(10_000));
         assert_eq!(query.copy_timestamps, Some(true));
+        assert_eq!(query._cpu_core_limit, Some(2));
+        assert_eq!(query._live_stream_id.as_deref(), Some("live"));
+        assert_eq!(query._enable_mpegts_m2_ts_mode, Some(true));
+        assert_eq!(query._subtitle_codec.as_deref(), Some("srt"));
+        assert_eq!(
+            query._transcode_reasons.as_deref(),
+            Some("ContainerNotSupported")
+        );
+        assert_eq!(query._context.as_deref(), Some("Streaming"));
+        assert_eq!(query._stream_options.as_deref(), Some("quality=high"));
+        assert_eq!(query._enable_audio_vbr_encoding, Some(false));
         assert_eq!(video_codec_for_container("mp4"), "h264");
         assert_eq!(audio_codec_for_container("webm"), "opus");
         assert!(should_burn_subtitles(Some("Encode")));
         assert!(should_burn_subtitles(Some("0")));
         assert!(!should_burn_subtitles(Some("External")));
+    }
+
+    #[test]
+    fn video_stream_binds_lowercase_container_and_framerate() {
+        let uri: Uri = "/videos/item/stream?container=.WEBM&framerate=25"
+            .parse()
+            .unwrap();
+        let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.container.as_deref(), Some(".WEBM"));
+        assert_eq!(query.framerate, Some(25.0));
+        assert_eq!(
+            output_container(None, query.container.as_deref()),
+            "webm",
+            "extensionless routes use the official query container"
+        );
+        assert_eq!(
+            output_container(Some("mkv"), query.container.as_deref()),
+            "mkv",
+            "the by-container route remains authoritative"
+        );
     }
 
     #[tokio::test]
