@@ -15,6 +15,7 @@ use tower_http::services::ServeFile;
 use uuid::Uuid;
 
 use jellyfin_controller::{FfmpegCommand, audio_command};
+use jellyfin_model::{MediaStream, MediaStreamType};
 
 use crate::{ApiError, AppState, authentication};
 
@@ -251,12 +252,11 @@ pub(crate) async fn universal(
         .extension()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or_default();
-    let supports_direct = query.container.iter().any(|profile| {
-        profile
-            .split('|')
-            .next()
-            .is_some_and(|container| container.eq_ignore_ascii_case(actual_container))
-    });
+    let streams = state
+        .media_streams
+        .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
+        .await?;
+    let supports_direct = supports_direct_play(&query, actual_container, &streams);
     let requires_transcode = universal_requires_transcode(&query);
     if supports_direct && !requires_transcode {
         if path.starts_with("http://") || path.starts_with("https://") {
@@ -355,6 +355,50 @@ fn should_redirect_remote_media(query: &UniversalQuery) -> bool {
 
 fn universal_uses_hls(query: &UniversalQuery) -> bool {
     query.transcoding_protocol == Some(jellyfin_model::MediaStreamProtocol::Hls)
+}
+
+/// Mirrors UniversalAudioController's DirectPlayProfile construction: each
+/// comma-delimited `container` value is a `container|codec|codec` profile.
+/// A profile without codecs permits the matching container. When scan metadata
+/// identifies the selected audio codec, a codec-constrained profile must name
+/// it before raw bytes can be sent to the player.
+fn supports_direct_play(
+    query: &UniversalQuery,
+    actual_container: &str,
+    streams: &[MediaStream],
+) -> bool {
+    let selected_codec = streams
+        .iter()
+        .find(|stream| {
+            stream.stream_type == MediaStreamType::Audio
+                && query
+                    .audio_stream_index
+                    .is_none_or(|index| stream.index == index)
+        })
+        .and_then(|stream| stream.codec.as_deref())
+        .map(str::trim)
+        .filter(|codec| !codec.is_empty());
+
+    query.container.iter().any(|profile| {
+        let mut parts = profile
+            .split('|')
+            .map(str::trim)
+            .filter(|part| !part.is_empty());
+        let Some(container) = parts.next() else {
+            return false;
+        };
+        if !container.eq_ignore_ascii_case(actual_container) {
+            return false;
+        }
+        let codecs = parts.collect::<Vec<_>>();
+        codecs.is_empty()
+            || selected_codec.is_none()
+            || selected_codec.is_some_and(|codec| {
+                codecs
+                    .iter()
+                    .any(|supported| supported.eq_ignore_ascii_case(codec))
+            })
+    })
 }
 
 fn audio_container(codec: &str) -> &str {
@@ -497,8 +541,8 @@ mod tests {
     use axum_extra::extract::Query;
 
     use super::{
-        StreamQuery, UniversalQuery, should_redirect_remote_media, universal_requires_transcode,
-        universal_uses_hls,
+        StreamQuery, UniversalQuery, should_redirect_remote_media, supports_direct_play,
+        universal_requires_transcode, universal_uses_hls,
     };
 
     #[test]
@@ -591,6 +635,32 @@ mod tests {
                 .unwrap();
             let query = Query::<UniversalQuery>::try_from_uri(&uri).unwrap().0;
             assert_eq!(universal_uses_hls(&query), expected, "{query_string}");
+        }
+    }
+
+    #[test]
+    fn universal_audio_direct_play_honors_profile_audio_codecs() {
+        let stream = jellyfin_model::MediaStream {
+            stream_type: jellyfin_model::MediaStreamType::Audio,
+            index: 0,
+            codec: Some("flac".to_owned()),
+            ..Default::default()
+        };
+        for (profile, expected) in [
+            ("flac", true),
+            ("flac|flac", true),
+            ("flac|aac", false),
+            ("mp3|flac", false),
+        ] {
+            let uri: Uri = format!("/audio/item/universal?container={profile}")
+                .parse()
+                .unwrap();
+            let query = Query::<UniversalQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(
+                supports_direct_play(&query, "flac", &[stream.clone()]),
+                expected,
+                "{profile}"
+            );
         }
     }
 
