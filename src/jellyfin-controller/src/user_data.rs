@@ -274,7 +274,7 @@ impl UserDataService {
             .media_source_versions_for_items(
                 &items
                     .iter()
-                    .filter(|item| item.item_type == "Episode" || item.item_type == "Movie")
+                    .filter(|item| is_versioned_video_type(&item.item_type))
                     .map(|item| item.id)
                     .collect::<Vec<_>>(),
             )
@@ -407,6 +407,18 @@ fn latest_alternate_user_data(
                 data.playback_position_ticks,
                 data.play_count,
             )
+        })
+}
+
+fn is_versioned_video_type(item_type: &str) -> bool {
+    ["Episode", "Movie", "MusicVideo", "Trailer", "Video"]
+        .iter()
+        .any(|expected| {
+            item_type.eq_ignore_ascii_case(expected)
+                || item_type
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(expected))
         })
 }
 
