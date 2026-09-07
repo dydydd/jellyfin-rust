@@ -18,6 +18,9 @@
 - Keep deterministic scan hierarchy creation idempotent under sibling-file concurrency. Series and
   season nodes must be checked and created while holding the PostgreSQL hierarchy lock so a
   duplicate-node race cannot silently drop one media item.
+- Treat filesystem and persistence failures from concurrent media-item scans as scan failures just
+  as in serial scans. Return an accurate total plus only a bounded sample of per-file diagnostics;
+  media-probe fallbacks remain partial successes and must not make the scan fail.
 - Keep database invariants in PostgreSQL where practical (constraints, indexes, atomic upserts, transactions), while keeping domain rules explicit in Rust.
 - Avoid N+1 queries. Use set-based queries or bounded batches, and add migrations for indexes or constraints required by new query patterns.
 - Build playback-aware queries from the target user's `user_data` rows and reverse hierarchy lookups rather than correlated scans over all `base_items`. Materialize shared candidate sets when count and page queries would otherwise repeat expensive work.
