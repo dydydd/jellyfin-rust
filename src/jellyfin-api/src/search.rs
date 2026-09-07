@@ -18,9 +18,9 @@ const DEFAULT_EXCLUDE_ITEM_TYPES: [&str; 3] = ["Year", "Folder", "CollectionFold
 #[serde(default)]
 pub(crate) struct SearchHintsQuery {
     #[serde(rename = "startIndex", alias = "StartIndex", alias = "startindex")]
-    start_index: u64,
+    start_index: i32,
     #[serde(alias = "Limit")]
-    limit: Option<u64>,
+    limit: Option<i32>,
     #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(rename = "searchTerm", alias = "SearchTerm", alias = "searchterm")]
@@ -104,6 +104,13 @@ pub(crate) async fn hints(
         .map(str::trim)
         .filter(|term| !term.is_empty())
         .ok_or(ApiError::InvalidRequest)?;
+    // SearchManager passes Limit to its candidate provider before it computes
+    // TotalRecordCount. LINQ Take returns no candidates for zero or negative
+    // values, so the official endpoint returns its default empty result rather
+    // than an empty page with the unbounded match count.
+    if query.limit.is_some_and(|limit| limit <= 0) {
+        return Ok(Json(SearchHintResult::default()));
+    }
     let target_user_id = query
         .user_id
         .filter(|user_id| !user_id.is_nil())
@@ -361,18 +368,21 @@ pub(crate) async fn hints(
 }
 
 fn source_page_bounds(query: &SearchHintsQuery) -> (u64, Option<u64>) {
+    let start_index = u64::try_from(query.start_index).unwrap_or_default();
     (
         0,
         query
             .limit
-            .map(|limit| query.start_index.saturating_add(limit)),
+            .and_then(|limit| u64::try_from(limit).ok())
+            .map(|limit| start_index.saturating_add(limit)),
     )
 }
 
-fn paginate_search_hints(result: &mut SearchHintResult, start_index: u64, limit: Option<u64>) {
+fn paginate_search_hints(result: &mut SearchHintResult, start_index: i32, limit: Option<i32>) {
+    let start_index = u64::try_from(start_index).unwrap_or_default();
     let start = usize::try_from(start_index).unwrap_or(usize::MAX);
     let limit = limit.map_or(usize::MAX, |limit| {
-        usize::try_from(limit).unwrap_or(usize::MAX)
+        usize::try_from(limit).unwrap_or_default()
     });
 
     result.search_hints = result

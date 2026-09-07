@@ -237,6 +237,10 @@
   query, preserving `PersonTypes`; resolve favorite Person rows to exact canonical ids before count,
   ordering, and pagination so same-name legacy rows cannot change results.
 - Treat generated SDK models as executable compatibility specifications alongside the C# DTOs. Swift `Codable` rejects the entire enclosing item or page when one nested object, enum, dictionary value, or date has the wrong wire shape.
+- Keep `/Search/Hints` on its official signed `Int32` pagination contract used by both mobile SDKs:
+  negative `StartIndex` skips nothing, non-positive `Limit` returns the default empty result with a
+  zero total, and values outside `Int32` fail binding. Apply the limit before candidate counting,
+  rather than returning an empty page with an unbounded total.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an
   unknown plugin row cannot make a client reject the enclosing page.

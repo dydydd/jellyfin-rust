@@ -342,6 +342,46 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(limited["TotalRecordCount"], 2);
     assert_eq!(limited["SearchHints"].as_array().unwrap().len(), 1);
 
+    let negative_start = body_json(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=matrix&includeItemTypes=Movie&mediaTypes=Video&startIndex=-1",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(negative_start, hints);
+
+    for limit in ["0", "-1"] {
+        let empty = body_json(
+            request(
+                &app,
+                &format!(
+                    "/Search/Hints?searchTerm=matrix&includeItemTypes=Movie&mediaTypes=Video&limit={limit}"
+                ),
+                Some(&user_token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            empty,
+            json!({ "SearchHints": [], "TotalRecordCount": 0 }),
+            "limit={limit}"
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "/Search/Hints?searchTerm=matrix&limit=2147483648",
+            Some(&user_token),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
     let merged_limited = body_json(
         request(
             &app,
