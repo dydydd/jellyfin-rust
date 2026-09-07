@@ -449,7 +449,9 @@
   unlimited, and reject values outside the official `Int32` range.
 - Keep `Shows/Upcoming` on the official signed `Int32` pagination contract used by Android and
   Swift: a negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative
-  `Limit` is unlimited, and out-of-range values fail binding across supported query casing.
+  `Limit` is unlimited, and out-of-range values fail binding across supported query casing. Honor
+  its `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes` with the shared
+  batched DTO options instead of accepting and discarding mobile SDK parameters.
 - Resolve `Shows/NextUp` target-user authorization before its Series filter. Treat an empty,
   unknown, or non-Series `SeriesId` as absent and fall back to `ParentId` or the user's root; a
   valid Series wins over `ParentId` and scopes episodes by its `PresentationUniqueKey`. Keep that

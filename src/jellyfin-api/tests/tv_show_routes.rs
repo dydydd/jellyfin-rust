@@ -1624,6 +1624,49 @@ async fn assert_upcoming_route(fixture: &Fixture) {
     );
     assert!(upcoming["Items"][0]["PremiereDate"].as_str().is_some());
 
+    let mut upcoming_user_data = NewUserData::new(
+        fixture.first_episode_id,
+        fixture.user_id,
+        fixture.first_episode_id.to_string(),
+    );
+    upcoming_user_data.played = true;
+    UserDataRepository::new(fixture.database.clone())
+        .upsert(upcoming_user_data)
+        .await
+        .expect("upcoming episode user data");
+    let with_user_data = body_json(
+        fixture
+            .get("/Shows/Upcoming", Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert!(
+        with_user_data["Items"]
+            .as_array()
+            .expect("upcoming items")
+            .iter()
+            .find(|item| item["Id"] == fixture.first_episode_id.simple().to_string())
+            .expect("upcoming first episode")
+            .get("UserData")
+            .is_some()
+    );
+    let without_user_data = body_json(
+        fixture
+            .get(
+                "/shows/upcoming?enableuserdata=false&enableimages=false",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        without_user_data["Items"]
+            .as_array()
+            .expect("upcoming items")
+            .iter()
+            .all(|item| item.get("UserData").is_none())
+    );
+
     let parent_scoped = body_json(
         fixture
             .get(

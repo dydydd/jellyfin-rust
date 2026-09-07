@@ -271,7 +271,7 @@ pub(crate) struct UpcomingQuery {
 pub(crate) async fn upcoming(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<UpcomingQuery>,
+    Query(mut query): Query<UpcomingQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     // The official nullable Int32 contract preserves the requested offset in
@@ -281,13 +281,15 @@ pub(crate) async fn upcoming(
     let start_index = u64::try_from(requested_start_index).unwrap_or_default();
     let limit = query.limit.and_then(|limit| u64::try_from(limit).ok());
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
-    let _ = (
-        query.enable_images,
-        query.image_type_limit,
-        query.enable_image_types,
-        query.enable_user_data,
-    );
+    let fields = std::mem::take(&mut query.fields);
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
 
     let page = state
         .user_library
@@ -307,13 +309,16 @@ pub(crate) async fn upcoming(
             },
         )
         .await?;
-    let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
-    let items = project_items_to_dtos(state.as_ref(), page.items, fields, target_user_id).await?;
-    Ok(Json(user_library::BaseItemQueryResult {
-        items,
-        total_record_count,
-        start_index: requested_start_index,
-    }))
+    let mut result = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        page,
+        fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
+    result.start_index = requested_start_index;
+    Ok(Json(result))
 }
 
 pub(crate) async fn next_up(
