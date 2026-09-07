@@ -204,7 +204,7 @@ pub(crate) struct StreamQuery {
         alias = "RequireNonAnamorphic",
         alias = "requirenonanamorphic"
     )]
-    _require_non_anamorphic: Option<bool>,
+    require_non_anamorphic: Option<bool>,
     #[serde(
         rename = "startTimeTicks",
         alias = "StartTimeTicks",
@@ -475,6 +475,7 @@ async fn stream_file(
             query.max_height.or(query.height),
             query.framerate.or(query.max_framerate),
             query.de_interlace.unwrap_or(false),
+            query.require_non_anamorphic.unwrap_or(false),
             query.audio_stream_index,
             query.video_stream_index,
             query.start_time_ticks,
@@ -542,6 +543,11 @@ fn can_copy_remux(
     !(query.require_avc == Some(true)
         && video_codec.eq_ignore_ascii_case("h264")
         && video_stream.is_avc == Some(false))
+        // EncodingHelper.CanStreamCopyVideo only rejects this requirement
+        // when the persisted probe positively identifies an anamorphic
+        // stream. Unknown probe state preserves the official copy fallback.
+        && !(query.require_non_anamorphic == Some(true)
+            && video_stream.is_anamorphic == Some(true))
         && !query.max_ref_frames.is_some_and(|maximum| {
             video_stream
                 .ref_frames
@@ -846,7 +852,7 @@ mod tests {
         assert_eq!(query.max_video_bit_depth, Some(10));
         assert_eq!(query.require_avc, Some(true));
         assert_eq!(query.de_interlace, Some(true));
-        assert_eq!(query._require_non_anamorphic, Some(true));
+        assert_eq!(query.require_non_anamorphic, Some(true));
         assert_eq!(query.start_time_ticks, Some(10_000));
         assert_eq!(query.copy_timestamps, Some(true));
         assert_eq!(query._cpu_core_limit, Some(2));
@@ -927,6 +933,25 @@ mod tests {
             &require_avc,
             "mp4",
             &non_avc_streams,
+            "h264",
+            "aac",
+        ));
+
+        let anamorphic_streams = vec![
+            MediaStream {
+                is_anamorphic: Some(true),
+                ..streams[0].clone()
+            },
+            streams[1].clone(),
+        ];
+        let require_non_anamorphic = StreamQuery {
+            require_non_anamorphic: Some(true),
+            ..query.clone()
+        };
+        assert!(!can_copy_remux(
+            &require_non_anamorphic,
+            "mp4",
+            &anamorphic_streams,
             "h264",
             "aac",
         ));
