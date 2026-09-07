@@ -307,7 +307,9 @@ async fn similar_and_instant_mix_apply_target_user_library_policy() {
 
 async fn assert_video_stream(fixture: &Fixture) {
     let media_bytes = Fixture::media_bytes();
-    let route = format!("/Videos/{}/stream.mkv", fixture.child_id);
+    // File bytes and range semantics belong to the explicit static branch;
+    // without it the official route creates a progressive remux/transcode.
+    let route = format!("/Videos/{}/stream.mkv?static=true", fixture.child_id);
     let response = fixture
         .request("GET", &route, Some(&fixture.user_token))
         .await;
@@ -347,7 +349,7 @@ async fn assert_video_stream(fixture: &Fixture) {
     let query_token = fixture
         .request(
             "GET",
-            &format!("{route}?api_key={}", fixture.user_token),
+            &format!("{route}&api_key={}", fixture.user_token),
             None,
         )
         .await;
@@ -359,7 +361,7 @@ async fn assert_video_stream(fixture: &Fixture) {
     let generic_mp4_route = fixture
         .request(
             "GET",
-            &format!("/Videos/{}/stream.mp4", fixture.child_id),
+            &format!("/Videos/{}/stream.mp4?static=true", fixture.child_id),
             Some(&fixture.user_token),
         )
         .await;
@@ -379,10 +381,10 @@ async fn assert_video_stream(fixture: &Fixture) {
             )
             .await
             .status(),
-        StatusCode::UNSUPPORTED_MEDIA_TYPE
+        StatusCode::OK
     );
 
-    let strm_route = format!("/Videos/{}/stream.mkv", fixture.strm_id);
+    let strm_route = format!("/Videos/{}/stream.mkv?static=true", fixture.strm_id);
     let response = fixture
         .request("GET", &strm_route, Some(&fixture.user_token))
         .await;
@@ -406,7 +408,9 @@ async fn assert_video_stream(fixture: &Fixture) {
 
 async fn assert_audio_stream(fixture: &Fixture) {
     let media_bytes = Fixture::media_bytes();
-    let route = format!("/Audio/{}/stream.bin", fixture.stream_audio_id);
+    // `static=true` is the official direct-file branch. Without it the
+    // progressive route selects a transcode target from the URL extension.
+    let route = format!("/Audio/{}/stream.bin?static=true", fixture.stream_audio_id);
     assert_eq!(
         fixture.request("GET", &route, None).await.status(),
         StatusCode::UNAUTHORIZED
@@ -507,7 +511,9 @@ async fn assert_audio_stream(fixture: &Fixture) {
             )
             .await
             .status(),
-        StatusCode::UNSUPPORTED_MEDIA_TYPE
+        // The ordinary progressive endpoint defaults to a transcode target;
+        // static files are requested explicitly above.
+        StatusCode::OK
     );
 
     let universal = format!(
@@ -542,7 +548,7 @@ async fn assert_audio_stream(fixture: &Fixture) {
             )
             .await
             .status(),
-        StatusCode::UNSUPPORTED_MEDIA_TYPE
+        StatusCode::OK
     );
     assert_eq!(
         fixture
@@ -556,7 +562,7 @@ async fn assert_audio_stream(fixture: &Fixture) {
             )
             .await
             .status(),
-        StatusCode::UNSUPPORTED_MEDIA_TYPE
+        StatusCode::OK
     );
 }
 
@@ -686,7 +692,7 @@ async fn assert_instant_mix(fixture: &Fixture) {
         1
     );
 
-    let images_disabled = fixture
+    let images_limited = fixture
         .json(
             "GET",
             &format!(
@@ -696,14 +702,17 @@ async fn assert_instant_mix(fixture: &Fixture) {
             &fixture.user_token,
         )
         .await;
-    let images_disabled_projected = images_disabled["Items"]
+    let images_limited_projected = images_limited["Items"]
         .as_array()
         .unwrap()
         .iter()
         .find(|item| item["Id"] == projected_song_id.simple().to_string())
         .expect("image-limited instant mix projection");
-    assert!(images_disabled_projected.get("ImageTags").is_none());
-    assert!(images_disabled_projected.get("UserData").is_none());
+    // `EnableImages=true` retains the DTO image-projection contract even when
+    // a non-positive type limit suppresses every tag. Afuse iterates this map
+    // directly, so only an explicit `EnableImages=false` may omit it.
+    assert_eq!(images_limited_projected["ImageTags"], serde_json::json!({}));
+    assert!(images_limited_projected.get("UserData").is_none());
 
     let genre_route = format!(
         "/MusicGenres/InstantMix?id={}&limit=1",
