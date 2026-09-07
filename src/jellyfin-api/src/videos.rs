@@ -43,12 +43,14 @@ pub(crate) struct StreamQuery {
     #[serde(
         rename = "videoBitRate",
         alias = "VideoBitRate",
+        alias = "VideoBitrate",
         alias = "videobitrate"
     )]
     video_bitrate: Option<i64>,
     #[serde(
         rename = "audioBitRate",
         alias = "AudioBitRate",
+        alias = "AudioBitrate",
         alias = "audiobitrate"
     )]
     audio_bitrate: Option<i64>,
@@ -407,7 +409,7 @@ mod tests {
 
     #[test]
     fn video_stream_binds_android_progressive_parameters() {
-        let uri: Uri = "/Videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&videoBitRate=2000000&maxWidth=1280&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000"
+        let uri: Uri = "/videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&maxWidth=1280&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
@@ -415,6 +417,7 @@ mod tests {
         assert_eq!(query.video_codec.as_deref(), Some("h264"));
         assert_eq!(query.audio_codec.as_deref(), Some("aac"));
         assert_eq!(query.video_bitrate, Some(2_000_000));
+        assert_eq!(query.audio_bitrate, Some(128_000));
         assert_eq!(query.max_width, Some(1280));
         assert_eq!(query.audio_stream_index, Some(2));
         assert_eq!(query.video_stream_index, Some(0));

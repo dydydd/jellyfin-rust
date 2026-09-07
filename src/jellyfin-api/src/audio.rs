@@ -33,6 +33,7 @@ pub(crate) struct StreamQuery {
     #[serde(
         rename = "audioBitRate",
         alias = "AudioBitRate",
+        alias = "AudioBitrate",
         alias = "audiobitrate"
     )]
     audio_bitrate: Option<i64>,
@@ -335,7 +336,7 @@ mod tests {
 
     #[test]
     fn audio_stream_binds_android_transcoding_parameters() {
-        let uri: Uri = "/Audio/item/stream?static=false&audioCodec=mp3&audioBitRate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000"
+        let uri: Uri = "/audio/item/stream?static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
