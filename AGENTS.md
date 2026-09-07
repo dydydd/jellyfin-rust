@@ -331,6 +331,9 @@
 - Include every HLS stream-selection and video-rate input that changes FFmpeg output, including
   `AudioStreamIndex` and `MaxFramerate`, in the deterministic transcode job id so Android audio
   track switches and profile changes cannot reuse another rendition's segments.
+- Treat `AudioStreamIndex` as the persisted global media-stream index in HLS FFmpeg mapping;
+  explicit selections must use `-map 0:{index}`, matching the official encoder and progressive
+  routes, while an omitted selection may still use the first-audio shorthand.
 - Progressive audio/video stream responses must start FFmpeg and read the growing output file
   immediately, matching the official `ProgressiveFileStream` behavior; never await complete
   FFmpeg termination before returning the response, or Android playback of long media can stall.

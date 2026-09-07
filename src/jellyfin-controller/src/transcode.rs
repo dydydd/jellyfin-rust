@@ -191,7 +191,7 @@ pub fn hls_command_with_playlist_type(
         arguments.push(
             target
                 .audio_stream_index
-                .map_or_else(|| "0:a:0".to_owned(), |index| format!("0:a:{index}")),
+                .map_or_else(|| "0:a:0".to_owned(), |index| format!("0:{index}")),
         );
         arguments.push("-c:a".to_owned());
         arguments.push(audio_codec.to_owned());
@@ -1132,6 +1132,31 @@ mod tests {
 
         let joined = command.arguments.join(" ");
         assert!(joined.contains("-ss 6.500 -i /media/movie.mkv"));
+    }
+
+    #[test]
+    fn hls_command_maps_selected_audio_by_global_media_stream_index() {
+        let command = hls_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/job1"),
+            &TranscodeTarget {
+                audio_stream_index: Some(2),
+                ..TranscodeTarget::default()
+            },
+            &HlsSegmentSettings {
+                container: "ts".to_owned(),
+                segment_length_ms: 6_000,
+                min_segments: 2,
+            },
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-map", "0:2"])
+        );
     }
 
     #[test]
