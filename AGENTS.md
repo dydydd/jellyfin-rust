@@ -10,7 +10,10 @@
 ## Working practices
 
 - Read the relevant Rust implementation and its official C# counterpart before changing behavior. Record important parity assumptions in tests or focused comments.
-- Keep changes small and independently reviewable. Complete one coherent fix, run its focused tests, and commit it before starting another fix.
+- Keep changes small and independently reviewable. Accumulate a few coherent fixes across agents,
+  validate them together in the remote deployment host's existing cached builder, then commit each
+  fix separately. Do not rebuild or run a full test cycle after every small edit. Keep the coordinating
+  agent focused on integration, remote builds, testing, and deployment while agents implement fixes.
 - Preserve unrelated user changes and existing commits. Never rewrite history or use destructive Git commands.
 - Prefer bounded concurrency, streaming or pagination, batched PostgreSQL operations, and short-lived buffers for library scans. Do not collect an entire library into memory when work can be processed incrementally.
 - Keep filesystem watcher queues bounded and deduplicated. Coalesce changed paths by virtual library before scanning, reuse one short-lived directory snapshot for sibling media discovery, and batch PostgreSQL reads and writes instead of issuing per-item queries.
@@ -38,6 +41,10 @@
   preserve existing credits, keep Person `list_order`/role conflict semantics, and never replace
   all credits merely to reduce scan round trips.
 - Build playback-aware queries from the target user's `user_data` rows and reverse hierarchy lookups rather than correlated scans over all `base_items`. Materialize shared candidate sets when count and page queries would otherwise repeat expensive work.
+- Materialize only item identifiers and latest-playback dates for shared Resume count/page candidates.
+  Apply every authorization and metadata filter against the full source item before materialization,
+  then batch-load the bounded page's complete items within the same repeatable-read transaction;
+  do not put every candidate's wide JSON metadata into PostgreSQL's shared temporary result.
 - When an item-by-name list route has already authorized its target user and applied the resulting
   policy to its query, call the corresponding authorized list path rather than rereading that user.
   Keep each public service list entry point validating its target user so callers without a resolved
@@ -58,6 +65,10 @@
   Resolve Chapter image GET/HEAD by `(item_id, ChapterIndex)` from the chapter repository; never
   store or enumerate chapter thumbnails as ordinary `base_item_images`, and serve their source
   bytes without decoding or resizing.
+- Replace chapters under an owner-row lock in one transaction, including empty replacements. Insert
+  fixed batches of 128 without returning fields already supplied by the caller, preserve input order
+  in the replacement result and start-position order in reads, and roll back every batch on failure
+  so concurrent replacements can never merge their chapter sets.
 - Match official TV hierarchy image inheritance from relational Series/Season links: Episode and
   Season DTOs always derive `SeriesPrimaryImageTag`; Episode parent Primary prefers Season then
   Series; parent Logo prefers the nearest parent, parent Thumb prefers Series over Season, and
@@ -182,6 +193,12 @@
   treats the SDK's lowercase public-user request as a UUID binding failure.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
   the canonical route's public authorization policy as well as its handler.
+- Treat valid API keys as administrators for user creation, deletion, profile/configuration updates,
+  and password changes through modern and legacy routes. An omitted or nil target for an API key's
+  profile/configuration/password update remains a 404; ordinary user mutations still require self
+  access and `EnableUserPreferenceAccess`. Keep target lookup before those preference checks,
+  preserve password-change token revocation and
+  reset-without-revocation behavior, and retain equivalent lowercase route authorization.
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.
@@ -601,6 +618,10 @@
 - Resolve an explicit `MediaSourceId` inside the authorized alternate-version group before lazy `.strm` probing, and hydrate that selected source rather than the displayed primary. Probe diagnostics must identify the item without logging a target path or signed URL.
 - Select HLS playlist mode after resolving `MediaSourceId`. A selected source with an unknown runtime must use a job-scoped EVENT playlist; do not coerce a null runtime into a zero-length VOD, and keep known positive runtimes on the finite VOD path.
 - Preserve unknown or optional metadata where the official server does; a partial provider response must not erase valid existing metadata.
+- TMDb and OMDb Movie/Series scalar merges must honor `LockedFields.Name`, `Overview`, and
+  `OfficialRating` both when filling gaps and when replacing metadata during a full refresh. A
+  locked Name also preserves SortName, and remote blank or whitespace-only names must never erase
+  an established title.
 - Merge remote movie and series genres only when `LockedFields.Genres` permits it and the refresh replaces data or fills an empty target, including a lower-priority provider filling a gap left by the preferred provider. An empty provider genre list must not erase established genres, and JSON `Genres` must stay atomic with normalized PostgreSQL genre relations.
 - Merge episode metadata in official priority order: local metadata first, remote providers filling or replacing only eligible placeholders, and `LockedFields.Name` always protecting an established title. A repeated scan or alternate-version regroup must not turn a scraped episode title back into the series or filename-derived group name. During later scans, treat an Episode NFO title equal to its `showtitle`, known series name, or media filename as a placeholder: keep the established `Name` and `SortName` while still merging the NFO's other fields.
 - During bulk season refresh, select the visible primary of each alternate-version group before applying episode metadata and use the same title merge rules as direct episode refresh. Missing-metadata repair must include primary episodes whose title is empty or still equals the parent series title, even when an overview and provider identifiers already exist.
@@ -622,6 +643,10 @@
 - During episode refresh, merge a neighboring local NFO before remote metadata: preserve a non-empty established local title, but continue to treat a local title equal to the series or path-derived name as a replaceable placeholder; allow the first remote result to replace only such placeholders, and honor `LockedFields.Name` even for a full refresh.
 - If TMDb returns an episode name equal to its series name in the preferred language, fetch the English episode metadata once and use only its non-placeholder name as a fallback. Preserve all localized non-name fields, and apply the same rule to direct episode refresh and bulk season refresh.
 - Cancellation of scans and refreshes must promptly stop new work, release locks/permits, and leave the database in a consistent state.
+- Filesystem watcher startup must skip unavailable or non-directory library roots and isolate each
+  root's registration error. Successful recursive parent watches cover duplicate and child roots,
+  while a child may still register if its parent's watch failed. Do not retain an idle watcher
+  thread when no configured root was registered.
 
 ## Android playback compatibility
 
@@ -674,7 +699,9 @@
 
 ## Validation
 
-Run the narrowest relevant checks while iterating, then broaden validation before committing:
+Prepare focused regression tests while implementing several related fixes, then run their narrow
+targets together using the remote host's existing builder cache. Avoid local or per-edit rebuilds.
+Broaden validation for that completed batch before committing its independently reviewable fixes:
 
 ```bash
 cargo fmt --all -- --check
@@ -699,6 +726,11 @@ commits.
 Some `jellyfin-data` integration tests require PostgreSQL and create temporary databases whose names begin with `jellyfin_`. Do not point those tests at a database containing user data.
 
 For scan-memory work, include a repeatable large-directory or synthetic-library measurement when possible. Report baseline, peak, 60-second, and 300-second post-scan values. Separate process RSS and anonymous memory (`RssAnon` or `smaps_rollup` Anonymous) from cgroup `file` and `inactive_file`; metadata image page cache is reclaimable and must not be reported as a Rust heap leak. Also report whether memory returns after the scan, and do not infer a leak from allocator-retained RSS alone.
+
+For Resume query memory changes, the optional ignored `resume_materialization_plan` test with
+`JELLYFIN_RESUME_PLAN_DUMP` records isolated PostgreSQL execution plans. Compare materialized row
+width and temporary blocks separately from process RSS or heap measurements; neither execution-plan
+estimates nor reclaimable database caches alone establish a memory leak.
 
 ## Deployment verification
 
