@@ -425,6 +425,12 @@ struct ResumePageId {
     id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, FromQueryResult)]
+struct NextUpPageId {
+    id: Uuid,
+    total_record_count: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionYearPage {
     pub years: Vec<i32>,
@@ -3002,30 +3008,23 @@ impl BaseItemRepository {
         } else {
             sql.push_str(", selected AS MATERIALIZED (SELECT * FROM normal_selected)");
         }
-        let total = if query.enable_total_record_count.unwrap_or(false) {
-            Some(
-                self.database
-                    .query_one(Statement::from_sql_and_values(
-                        DbBackend::Postgres,
-                        format!("{sql} SELECT COUNT(*) AS total_record_count FROM selected"),
-                        values.clone(),
-                    ))
-                    .await?
-                    .ok_or_else(|| {
-                        DbErr::RecordNotFound("next-up count returned no row".to_owned())
-                    })?
-                    .try_get::<i64>("", "total_record_count")?,
+        let count_enabled = query.enable_total_record_count.unwrap_or(false);
+        let mut page_values = values;
+        let mut page_sql = if count_enabled {
+            format!(
+                "{sql} SELECT id, COUNT(*) OVER () AS total_record_count FROM selected \
+                 ORDER BY series_last_played_date DESC NULLS LAST, \
+                          result_rank, \
+                          series_presentation_unique_key, id"
             )
         } else {
-            None
+            format!(
+                "{sql} SELECT {BASE_ITEM_COLUMNS} FROM selected \
+                 ORDER BY series_last_played_date DESC NULLS LAST, \
+                          result_rank, \
+                          series_presentation_unique_key, id"
+            )
         };
-        let mut page_values = values;
-        let mut page_sql = format!(
-            "{sql} SELECT {BASE_ITEM_COLUMNS} FROM selected \
-             ORDER BY series_last_played_date DESC NULLS LAST, \
-                      result_rank, \
-                      series_presentation_unique_key, id"
-        );
         push_bind(
             &mut page_sql,
             &mut page_values,
@@ -3040,17 +3039,48 @@ impl BaseItemRepository {
                 " LIMIT ",
             );
         }
-        let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            page_sql,
-            page_values,
-        ))
-        .all(self.database.as_ref())
-        .await?;
+        let (items, total_record_count) = if count_enabled {
+            let page_rows = NextUpPageId::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                page_sql,
+                page_values,
+            ))
+            .all(self.database.as_ref())
+            .await?;
+            let total_record_count = page_rows
+                .first()
+                .map(|row| u64::try_from(row.total_record_count).unwrap_or_default())
+                .unwrap_or_default();
+            let page_ids = page_rows.iter().map(|row| row.id).collect::<Vec<_>>();
+            let page_items = if page_ids.is_empty() {
+                Vec::new()
+            } else {
+                base_item::Entity::find()
+                    .filter(base_item::Column::Id.is_in(page_ids.iter().copied()))
+                    .all(self.database.as_ref())
+                    .await?
+            };
+            let mut items_by_id = page_items
+                .into_iter()
+                .map(|item| (item.id, item))
+                .collect::<HashMap<_, _>>();
+            let items = page_ids
+                .into_iter()
+                .filter_map(|id| items_by_id.remove(&id))
+                .collect::<Vec<_>>();
+            (items, total_record_count)
+        } else {
+            let items = base_item::Model::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                page_sql,
+                page_values,
+            ))
+            .all(self.database.as_ref())
+            .await?;
+            (items, 0)
+        };
         Ok(BaseItemPage {
-            total_record_count: total
-                .map(|count| u64::try_from(count).unwrap_or_default())
-                .unwrap_or_default(),
+            total_record_count,
             items,
             start_index,
         })
