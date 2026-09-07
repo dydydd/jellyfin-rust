@@ -1169,9 +1169,10 @@ const fn policy_can_transcode(policy: &jellyfin_model::UserPolicy, is_audio: boo
     if is_audio {
         policy.enable_audio_playback_transcoding
     } else {
-        policy.enable_audio_playback_transcoding
-            || policy.enable_video_playback_transcoding
-            || policy.enable_playback_remuxing
+        // The progressive and HLS video handlers always encode their selected
+        // streams. They do not implement a stream-copy/remux route, so a
+        // remux-only policy must not advertise a transcoding URL.
+        policy.enable_audio_playback_transcoding || policy.enable_video_playback_transcoding
     }
 }
 
@@ -1523,6 +1524,81 @@ mod tests {
             sources[0].transcoding_sub_protocol,
             MediaStreamProtocol::Hls
         );
+    }
+
+    #[tokio::test]
+    async fn remux_only_video_policy_does_not_advertise_an_unimplemented_transcode() {
+        let item_id = Uuid::new_v4();
+        let source = MediaSourceInfo {
+            id: Some(item_id.simple().to_string()),
+            protocol: MediaProtocol::File,
+            path: Some("/media/movie.mkv".to_owned()),
+            container: Some("mkv".to_owned()),
+            media_streams: vec![
+                MediaStream {
+                    index: 0,
+                    stream_type: MediaStreamType::Video,
+                    codec: Some("h264".to_owned()),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    index: 1,
+                    stream_type: MediaStreamType::Audio,
+                    codec: Some("aac".to_owned()),
+                    is_default: true,
+                    ..MediaStream::default()
+                },
+            ],
+            ..MediaSourceInfo::default()
+        };
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: "mp4".to_owned(),
+                audio_codec: Some("aac".to_owned()),
+                video_codec: Some("h264".to_owned()),
+                profile_type: DlnaProfileType::Video,
+            }],
+            transcoding_profiles: vec![TranscodingProfile {
+                container: "ts".to_owned(),
+                profile_type: DlnaProfileType::Video,
+                video_codec: "h264".to_owned(),
+                audio_codec: "aac".to_owned(),
+                protocol: MediaStreamProtocol::Hls,
+                context: EncodingContext::Streaming,
+                ..TranscodingProfile::default()
+            }],
+            ..DeviceProfile::default()
+        };
+        let policy = UserPolicy {
+            enable_playback_remuxing: true,
+            enable_audio_playback_transcoding: false,
+            enable_video_playback_transcoding: false,
+            ..UserPolicy::default()
+        };
+        let mut sources = vec![source];
+
+        apply_stream_builder(
+            &mut sources,
+            &policy,
+            &test_state(),
+            item_id,
+            &PlaybackOptions {
+                device_profile: Some(profile),
+                ..PlaybackOptions::default()
+            },
+            &mut None,
+            "device-id",
+            "access-token",
+            "play-session-id",
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        );
+
+        let source = &sources[0];
+        assert!(!source.supports_direct_play);
+        assert!(!source.supports_direct_stream);
+        assert!(!source.supports_transcoding);
+        assert!(source.transcoding_url.is_none());
     }
 
     #[tokio::test]
