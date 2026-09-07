@@ -248,9 +248,11 @@ async fn stream_file(
     } else {
         None
     };
-    let output = state
-        .transcode_directory
-        .join(format!("{item_id}-video-{video_codec}.{container}"));
+    let output = state.transcode_directory.join(format!(
+        "{item_id}-video-{}.{}",
+        Uuid::new_v4().simple(),
+        container
+    ));
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;

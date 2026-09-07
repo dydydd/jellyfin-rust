@@ -191,9 +191,11 @@ pub(crate) async fn universal(
         || audio_container(&codec).to_owned(),
         |container| container.trim_start_matches('.').to_owned(),
     );
-    let output = state
-        .transcode_directory
-        .join(format!("{item_id}-{codec}.{container}"));
+    let output = state.transcode_directory.join(format!(
+        "{item_id}-audio-{}.{}",
+        Uuid::new_v4().simple(),
+        container
+    ));
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;
@@ -295,9 +297,11 @@ async fn stream_file(
         .filter(|container| !container.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| audio_container(codec).to_owned());
-    let output = state
-        .transcode_directory
-        .join(format!("{item_id}-{codec}.{container}"));
+    let output = state.transcode_directory.join(format!(
+        "{item_id}-audio-{}.{}",
+        Uuid::new_v4().simple(),
+        container
+    ));
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;
@@ -465,8 +469,12 @@ async fn next_transcode_chunk(
                 return Some((Ok(Bytes::from(buffer)), state));
             }
             Ok(_) => match state.child.try_wait() {
-                Ok(Some(status)) if status.success() => return None,
+                Ok(Some(status)) if status.success() => {
+                    let _ = tokio::fs::remove_file(&state.output_path).await;
+                    return None;
+                }
                 Ok(Some(status)) => {
+                    let _ = tokio::fs::remove_file(&state.output_path).await;
                     return Some((
                         Err(io::Error::other(format!("FFmpeg exited with {status}"))),
                         state,

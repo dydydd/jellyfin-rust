@@ -531,6 +531,7 @@
 ## Android playback compatibility
 
 - `SubtitleStreamIndex` is the persisted media-stream index exposed by the API. When constructing an FFmpeg `subtitles` filter, convert it to the zero-based index among embedded subtitle streams only; external subtitle streams are file inputs and must never be passed as the filter's `si` value. Keep this conversion consistent for progressive video and HLS playback.
+- Progressive audio and video transcodes must use an output path unique to the request (or an equivalent complete parameter key); never let concurrent requests with different stream, codec, bitrate, seek, subtitle, or dimension options share one FFmpeg output file. Remove the temporary output after the response has consumed it.
 
 ## Validation
 
