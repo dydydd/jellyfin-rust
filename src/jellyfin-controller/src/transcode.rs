@@ -35,6 +35,7 @@ pub struct TranscodeTarget {
     pub max_width: Option<i32>,
     pub max_height: Option<i32>,
     pub max_framerate: Option<f32>,
+    pub deinterlace: bool,
     pub start_time_ticks: Option<i64>,
 }
 
@@ -82,6 +83,7 @@ impl Default for TranscodeTarget {
             max_width: None,
             max_height: None,
             max_framerate: None,
+            deinterlace: false,
             start_time_ticks: None,
         }
     }
@@ -252,6 +254,11 @@ pub fn hls_command_with_playlist_type(
     }
 
     let mut filters = Vec::new();
+    if target.deinterlace {
+        // Match Jellyfin's default EncodingOptions: single-rate YADIF with
+        // automatic field parity and all frames enabled.
+        filters.push("yadif=0:-1:0".to_owned());
+    }
     if let Some(width) = target.max_width {
         filters.push(format!("scale='min({width},iw)':-2"));
     } else if let Some(height) = target.max_height {
@@ -996,6 +1003,7 @@ pub struct HlsJobIdInput<'a> {
     pub max_width: Option<i32>,
     pub max_height: Option<i32>,
     pub max_framerate: Option<f32>,
+    pub deinterlace: bool,
     pub hwaccel: Option<&'a str>,
     pub subtitle_index: Option<i32>,
     pub burn_subtitles: bool,
@@ -1028,6 +1036,7 @@ pub fn hls_job_id(
             max_width: target.max_width,
             max_height: target.max_height,
             max_framerate: target.max_framerate,
+            deinterlace: target.deinterlace,
             hwaccel: target.hwaccel.as_deref(),
             subtitle_index: target.subtitle_index,
             burn_subtitles: target.burn_subtitles,
@@ -1076,6 +1085,9 @@ pub fn hls_job_id_from_input(item_id: Uuid, input: HlsJobIdInput<'_>) -> String 
     if let Some(video_stream_index) = input.video_stream_index {
         digest.update(b":video_stream_index=");
         digest.update(video_stream_index.to_le_bytes());
+    }
+    if input.deinterlace {
+        digest.update(b":deinterlace=true");
     }
     let bytes = digest.finalize();
     let mut job_id = String::with_capacity(17);
@@ -1352,6 +1364,31 @@ mod tests {
                 .arguments
                 .windows(2)
                 .any(|pair| pair == ["-map", "0:4"])
+        );
+    }
+
+    #[test]
+    fn hls_command_uses_the_official_default_deinterlace_filter() {
+        let command = hls_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/job1"),
+            &TranscodeTarget {
+                deinterlace: true,
+                ..TranscodeTarget::default()
+            },
+            &HlsSegmentSettings {
+                container: "ts".to_owned(),
+                segment_length_ms: 6_000,
+                min_segments: 2,
+            },
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-vf", "yadif=0:-1:0"])
         );
     }
 

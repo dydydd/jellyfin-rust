@@ -115,6 +115,8 @@ pub(crate) struct TranscodeQuery {
         alias = "maxframerate"
     )]
     max_framerate: Option<f32>,
+    #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
+    de_interlace: Option<bool>,
     #[serde(
         rename = "transcodingMaxAudioChannels",
         alias = "TranscodingMaxAudioChannels",
@@ -223,6 +225,7 @@ impl TranscodeQuery {
             || self.max_width.is_some()
             || self.max_height.is_some()
             || self.max_framerate.is_some()
+            || self.de_interlace == Some(true)
             || self.max_audio_channels.is_some()
             || self.segment_container.is_some()
             || self.segment_length.is_some()
@@ -538,6 +541,7 @@ async fn start_hls_job(
         max_width: query.max_width,
         max_height: query.max_height,
         max_framerate: query.max_framerate,
+        deinterlace: query.de_interlace.unwrap_or(false),
         start_time_ticks: query.start_time_ticks,
     };
     let settings = HlsSegmentSettings {
@@ -770,6 +774,7 @@ fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, segment_length_ms: i32)
             max_width: query.max_width,
             max_height: query.max_height,
             max_framerate: query.max_framerate,
+            deinterlace: query.de_interlace.unwrap_or(false),
             hwaccel: query.hwaccel.as_deref(),
             subtitle_index: query.subtitle_stream_index,
             burn_subtitles: query.burn_subtitles.unwrap_or(false),
@@ -1175,6 +1180,22 @@ mod tests {
         assert_ne!(
             super::compute_job_id(item_id, &first, 6_000),
             super::compute_job_id(item_id, &second, 6_000),
+        );
+    }
+
+    #[test]
+    fn hls_query_binds_deinterlace_and_isolates_its_job() {
+        let item_id = Uuid::new_v4();
+        let plain_uri: Uri = "/Videos/item/master.m3u8".parse().unwrap();
+        let plain = Query::<TranscodeQuery>::try_from_uri(&plain_uri).unwrap().0;
+        let transformed_uri: Uri = "/Videos/item/master.m3u8?deinterlace=true".parse().unwrap();
+        let transformed = Query::<TranscodeQuery>::try_from_uri(&transformed_uri)
+            .unwrap()
+            .0;
+        assert_eq!(transformed.de_interlace, Some(true));
+        assert_ne!(
+            super::compute_job_id(item_id, &plain, 6_000),
+            super::compute_job_id(item_id, &transformed, 6_000),
         );
     }
 
