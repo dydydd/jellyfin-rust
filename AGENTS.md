@@ -640,6 +640,10 @@
   progressive encode branch. A user with `EnableAudioPlaybackTranscoding=false` may still use a
   compatible direct source, but must receive the normal playback-policy denial before FFmpeg work
   or an HLS job starts.
+- Universal Audio and its HLS follow-ups must accept API keys under the ordinary default route
+  policy. With no `UserId`, an API key is user-less and unrestricted; with an explicit non-nil
+  `UserId`, resolve that user and apply the same library and transcoding policy to the master and
+  every generated segment request.
 - `SubtitleStreamIndex` is the persisted media-stream index exposed by the API. When constructing an FFmpeg `subtitles` filter, convert it to the zero-based index among embedded subtitle streams only; external subtitle streams are file inputs and must never be passed as the filter's `si` value. Keep this conversion consistent for progressive video and HLS playback.
 - Progressive audio and video transcodes must use an output path unique to the request (or an equivalent complete parameter key); never let concurrent requests with different stream, codec, bitrate, seek, subtitle, or dimension options share one FFmpeg output file. Remove the temporary output after the response has consumed it.
 - Advertise video direct stream only when the selected local File source can be copied unchanged into

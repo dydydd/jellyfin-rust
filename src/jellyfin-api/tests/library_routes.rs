@@ -247,6 +247,22 @@ async fn similar_and_instant_mix_apply_target_user_library_policy() {
             "{route}"
         );
     }
+    // API keys are user-less by default, but an explicit target user must
+    // retain that user's library policy on Universal Audio as well.
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!(
+                    "/Audio/{}/universal?container=bin&userId={}&api_key={}",
+                    hidden_audio.id, fixture.user_id, fixture.api_key_token
+                ),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 
     let similar = fixture
         .json(

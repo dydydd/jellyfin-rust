@@ -642,6 +642,66 @@ async fn universal_audio_hls_uses_the_authenticated_audio_playlist_pipeline() {
 }
 
 #[tokio::test]
+async fn universal_audio_hls_allows_userless_api_keys() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let item_id = Uuid::new_v4();
+    let mut item = NewBaseItem::new(item_id, "Audio");
+    item.path = Some("/media/universal-api-key-audio.mp3".to_owned());
+    item.runtime_ticks = Some(120_000_000);
+    items
+        .create(item)
+        .await
+        .expect("universal API key audio item");
+
+    let response = fixture
+        .get(
+            &format!(
+                "/Audio/{item_id}/universal?transcodingProtocol=hls&audioCodec=aac&audioBitRate=128000&maxAudioChannels=2&ApiKey={}",
+                fixture.api_key_token
+            ),
+            HeaderMap::new(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let master = String::from_utf8(body(response).await).expect("UTF-8 API key master playlist");
+    let main_url = master
+        .lines()
+        .find(|line| line.starts_with("main.m3u8?"))
+        .expect("API key Universal Audio HLS master must select the main playlist");
+    assert!(main_url.contains("api_key="));
+
+    let response = fixture
+        .get(&format!("/Audio/{item_id}/{main_url}"), HeaderMap::new())
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let playlist = String::from_utf8(body(response).await).expect("UTF-8 API key VOD playlist");
+    let segment_url = playlist
+        .lines()
+        .find(|line| line.starts_with("/Audio/"))
+        .expect("API key Universal Audio HLS VOD segment URL");
+    assert!(segment_url.contains("api_key="));
+    assert!(
+        !segment_url.contains("userId="),
+        "user-less API keys must not synthesize a target user"
+    );
+    let response = fixture.get(segment_url, HeaderMap::new()).await;
+    assert_file_response(
+        response,
+        StatusCode::OK,
+        "video/mp2t",
+        b"universal-api-key-audio.mp3",
+    )
+    .await;
+
+    items
+        .delete(item_id)
+        .await
+        .expect("Universal API key Audio item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn dynamic_hls_rejects_media_sources_outside_the_requested_version_group() {
     let fixture = Fixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());

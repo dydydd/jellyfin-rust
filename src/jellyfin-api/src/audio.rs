@@ -213,21 +213,53 @@ pub(crate) async fn universal(
     Query(query): Query<UniversalQuery>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
-    let identity = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(identity.user.id);
-    if target_user_id != identity.user.id && !identity.user.is_administrator {
-        return Err(ApiError::Forbidden);
-    }
-    let target_policy: jellyfin_model::UserPolicy = if target_user_id == identity.user.id {
-        serde_json::from_value(identity.user.policy.clone()).map_err(|_| ApiError::Internal)?
-    } else {
-        serde_json::from_value(state.users.get(target_user_id).await?.policy)
-            .map_err(|_| ApiError::Internal)?
+    let identity =
+        authentication::authenticated_identity(&state, &headers, Some(request.uri())).await?;
+    let requested_user_id = query.user_id.filter(|user_id| !user_id.is_nil());
+    let (target_user_id, target_policy, item) = match &identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            let target_user_id = requested_user_id.unwrap_or(session.user.id);
+            if target_user_id != session.user.id && !session.user.is_administrator {
+                return Err(ApiError::Forbidden);
+            }
+            let policy: jellyfin_model::UserPolicy = if target_user_id == session.user.id {
+                serde_json::from_value(session.user.policy.clone())
+                    .map_err(|_| ApiError::Internal)?
+            } else {
+                serde_json::from_value(state.users.get(target_user_id).await?.policy)
+                    .map_err(|_| ApiError::Internal)?
+            };
+            let item = state
+                .user_library
+                .item(&session.user, target_user_id, item_id)
+                .await?;
+            (Some(target_user_id), Some(policy), item)
+        }
+        // An API key has the default unrestricted controller authorization.
+        // If it explicitly selects a user, use that user's normal library and
+        // transcoding policy just like other playback endpoints do.
+        authentication::AuthenticatedIdentity::ApiKey(_) => match requested_user_id {
+            Some(target_user_id) => {
+                let user = state.users.get(target_user_id).await?;
+                let policy =
+                    serde_json::from_value(user.policy.clone()).map_err(|_| ApiError::Internal)?;
+                let item = state
+                    .user_library
+                    .item(&user, target_user_id, item_id)
+                    .await?;
+                (Some(target_user_id), Some(policy), item)
+            }
+            None => (
+                None,
+                None,
+                state
+                    .base_items
+                    .get(item_id)
+                    .await?
+                    .ok_or(ApiError::NotFound)?,
+            ),
+        },
     };
-    let item = state
-        .user_library
-        .item(&identity.user, target_user_id, item_id)
-        .await?;
     if item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
@@ -284,7 +316,7 @@ pub(crate) async fn universal(
         return serve_path(headers, path, request).await;
     }
 
-    if !target_policy.enable_audio_playback_transcoding {
+    if target_policy.is_some_and(|policy| !policy.enable_audio_playback_transcoding) {
         return Err(ApiError::Forbidden);
     }
 
@@ -292,7 +324,7 @@ pub(crate) async fn universal(
         let hls_query = crate::hls_segment::TranscodeQuery::universal_audio(
             query.media_source_id.clone(),
             query.device_id.clone(),
-            Some(target_user_id),
+            target_user_id,
             query.audio_codec.clone(),
             query.audio_bitrate.or(query.max_streaming_bitrate),
             query.max_audio_channels,
@@ -300,14 +332,9 @@ pub(crate) async fn universal(
             query.audio_stream_index,
             query.start_time_ticks,
         );
-        let hls_uri = hls_query.audio_master_uri(item_id)?;
-        let hls_identity = authentication::AuthenticatedIdentity::Device(Box::new(identity));
+        let hls_uri = hls_query.audio_master_uri(item_id, identity.access_token())?;
         return crate::hls_segment::ensure_master_playlist(
-            &state,
-            headers,
-            &hls_uri,
-            hls_query,
-            &hls_identity,
+            &state, headers, &hls_uri, hls_query, &identity,
         )
         .await;
     }

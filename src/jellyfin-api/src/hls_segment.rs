@@ -181,7 +181,11 @@ impl TranscodeQuery {
         }
     }
 
-    pub(crate) fn audio_master_uri(&self, item_id: Uuid) -> Result<Uri, ApiError> {
+    pub(crate) fn audio_master_uri(
+        &self,
+        item_id: Uuid,
+        access_token: &str,
+    ) -> Result<Uri, ApiError> {
         let mut serializer = form_urlencoded::Serializer::new(String::new());
         if let Some(value) = self.media_source_id.as_deref() {
             serializer.append_pair("mediaSourceId", value);
@@ -209,6 +213,13 @@ impl TranscodeQuery {
         }
         if let Some(value) = self.start_time_ticks {
             serializer.append_pair("startTimeTicks", &value.to_string());
+        }
+        if !access_token.is_empty() {
+            // The Universal Audio request builds its internal HLS master URI
+            // from query state, not the client URI. Preserve authentication
+            // on the master-to-main hop for HLS clients that do not retain
+            // the original Authorization header.
+            serializer.append_pair("api_key", access_token);
         }
         serializer.append_pair("segmentContainer", "ts");
         let query = serializer.finish();
@@ -523,12 +534,6 @@ async fn start_hls_job(
     media_type: &str,
     segment_length_ms: i32,
 ) -> Result<HlsPlaylistType, ApiError> {
-    let user = match identity {
-        crate::authentication::AuthenticatedIdentity::Device(session) => &session.user,
-        crate::authentication::AuthenticatedIdentity::ApiKey(_) => {
-            return Err(ApiError::NotFound);
-        }
-    };
     let mut target = TranscodeTarget {
         is_video: media_type == "Videos",
         hwaccel: query.hwaccel.clone(),
@@ -589,14 +594,44 @@ async fn start_hls_job(
         audio_bitrate = ?target.audio_bitrate,
         "starting HLS transcode job",
     );
-    let target_user_id = query.user_id.unwrap_or(user.id);
-    if target_user_id != user.id && !user.is_administrator {
-        return Err(ApiError::Forbidden);
-    }
-    let requested_item = state
-        .user_library
-        .item(user, target_user_id, item_id)
-        .await?;
+    let requested_user_id = query.user_id.filter(|user_id| !user_id.is_nil());
+    let (requested_item, target_user_id) = match identity {
+        crate::authentication::AuthenticatedIdentity::Device(session) => {
+            let target_user_id = requested_user_id.unwrap_or(session.user.id);
+            if target_user_id != session.user.id && !session.user.is_administrator {
+                return Err(ApiError::Forbidden);
+            }
+            (
+                state
+                    .user_library
+                    .item(&session.user, target_user_id, item_id)
+                    .await?,
+                Some(target_user_id),
+            )
+        }
+        // API keys have the default unrestricted route authorization. An
+        // explicit target user opts into that user's normal library policy.
+        crate::authentication::AuthenticatedIdentity::ApiKey(_) => match requested_user_id {
+            Some(target_user_id) => {
+                let user = state.users.get(target_user_id).await?;
+                (
+                    state
+                        .user_library
+                        .item(&user, target_user_id, item_id)
+                        .await?,
+                    Some(target_user_id),
+                )
+            }
+            None => (
+                state
+                    .base_items
+                    .get(item_id)
+                    .await?
+                    .ok_or(ApiError::NotFound)?,
+                None,
+            ),
+        },
+    };
     let item = if let Some(media_source_id) = query
         .media_source_id
         .as_deref()
@@ -670,7 +705,7 @@ async fn start_hls_job(
             &settings,
             media_type,
             Some(identity.access_token()),
-            Some(target_user_id),
+            target_user_id,
         )
         .map_err(|_| ApiError::Internal)?;
         tokio::fs::write(
@@ -943,17 +978,28 @@ async fn serve_authenticated_hls1_segment(
     query: DynamicSegmentQuery,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(state, &headers, uri).await?;
-    if let crate::authentication::AuthenticatedIdentity::Device(session) = identity {
-        let target_user_id = query.user_id.unwrap_or(session.user.id);
-        if target_user_id != session.user.id && !session.user.is_administrator {
-            return Err(ApiError::Forbidden);
+    match identity {
+        crate::authentication::AuthenticatedIdentity::Device(session) => {
+            let target_user_id = query.user_id.unwrap_or(session.user.id);
+            if target_user_id != session.user.id && !session.user.is_administrator {
+                return Err(ApiError::Forbidden);
+            }
+            // Playlist segment URLs carry the original target-user context.
+            // Check it again so a reusable HLS job cannot bypass library policy.
+            state
+                .user_library
+                .item(&session.user, target_user_id, item_id)
+                .await?;
         }
-        // Playlist segment URLs carry the original target-user context. Check
-        // it again here so a reusable HLS job cannot bypass library policy.
-        state
-            .user_library
-            .item(&session.user, target_user_id, item_id)
-            .await?;
+        crate::authentication::AuthenticatedIdentity::ApiKey(_) => {
+            if let Some(target_user_id) = query.user_id.filter(|user_id| !user_id.is_nil()) {
+                let user = state.users.get(target_user_id).await?;
+                state
+                    .user_library
+                    .item(&user, target_user_id, item_id)
+                    .await?;
+            }
+        }
     }
     if query.runtime_ticks < 0
         || query.actual_segment_length_ticks <= 0
@@ -1178,7 +1224,7 @@ mod tests {
             Some(10_000),
         );
 
-        let uri = query.audio_master_uri(item_id).unwrap();
+        let uri = query.audio_master_uri(item_id, "token").unwrap();
         assert_eq!(uri.path(), format!("/Audio/{item_id}/master.m3u8"));
         let parsed = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(
@@ -1194,6 +1240,10 @@ mod tests {
         assert_eq!(parsed.audio_stream_index, Some(1));
         assert_eq!(parsed.start_time_ticks, Some(10_000));
         assert_eq!(parsed.segment_container.as_deref(), Some("ts"));
+        assert!(
+            uri.query()
+                .is_some_and(|query| query.contains("api_key=token"))
+        );
     }
 
     #[test]
