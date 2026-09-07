@@ -159,6 +159,9 @@
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.
+- Keep Android and Swift user-data routes case-insensitive too: `UserItems` user-data and rating,
+  `UserFavoriteItems`, `UserPlayedItems`, and legacy user item-data routes need fully lowercase
+  aliases with the same authorization and mutation semantics.
 - Project `CanDelete` only when requested, except on official default all-fields item and root
   details. For user-less pages expose only the item's intrinsic capability; for user pages combine
   it with the target user's global or CollectionFolder-scoped deletion policy in one batched

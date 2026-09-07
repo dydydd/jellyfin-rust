@@ -599,7 +599,7 @@ fn blocked_schedule_policy(is_administrator: bool) -> UserPolicy {
 }
 
 fn modern_route(item_id: Uuid) -> String {
-    format!("/UserItems/{item_id}/Rating")
+    format!("/useritems/{item_id}/rating")
 }
 
 fn legacy_route(user_id: Uuid, item_id: Uuid) -> String {

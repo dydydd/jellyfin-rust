@@ -1759,6 +1759,10 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             post(playstate::mark_played_modern).delete(playstate::mark_unplayed_modern),
         )
         .route(
+            "/userplayeditems/{item_id}",
+            post(playstate::mark_played_modern).delete(playstate::mark_unplayed_modern),
+        )
+        .route(
             "/Users/{user_id}/PlayedItems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
         )
@@ -1771,11 +1775,23 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             get(user_data::get_item_data_modern).post(user_data::update_item_data_modern),
         )
         .route(
+            "/useritems/{item_id}/userdata",
+            get(user_data::get_item_data_modern).post(user_data::update_item_data_modern),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}/UserData",
             get(user_data::get_item_data_legacy).post(user_data::update_item_data_legacy),
         )
         .route(
+            "/users/{user_id}/items/{item_id}/userdata",
+            get(user_data::get_item_data_legacy).post(user_data::update_item_data_legacy),
+        )
+        .route(
             "/UserFavoriteItems/{item_id}",
+            post(user_data::mark_favorite_modern).delete(user_data::unmark_favorite_modern),
+        )
+        .route(
+            "/userfavoriteitems/{item_id}",
             post(user_data::mark_favorite_modern).delete(user_data::unmark_favorite_modern),
         )
         .route(
@@ -1784,6 +1800,10 @@ fn user_data_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/UserItems/{item_id}/Rating",
+            post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
+        )
+        .route(
+            "/useritems/{item_id}/rating",
             post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
         )
         .route(
