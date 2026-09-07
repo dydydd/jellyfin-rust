@@ -423,6 +423,16 @@ async fn assert_audio_stream(fixture: &Fixture) {
         to_bytes(response.into_body(), usize::MAX).await.unwrap(),
         media_bytes
     );
+    let api_key_static = format!(
+        "/Audio/{}/stream.bin?static=true&api_key={}",
+        fixture.stream_audio_id, fixture.api_key_token
+    );
+    let response = fixture.request("GET", &api_key_static, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        media_bytes
+    );
     let head = fixture
         .request("HEAD", &route, Some(&fixture.user_token))
         .await;

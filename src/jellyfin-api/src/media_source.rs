@@ -15,9 +15,16 @@ pub(crate) async fn resolve_static_item(
     if source_id == requested_item.id {
         return Ok(requested_item);
     }
-    state
-        .base_items
-        .alternate_video_version(requested_item.id, source_id)
-        .await?
-        .ok_or(ApiError::NotFound)
+    let alternate = if requested_item.item_type.eq_ignore_ascii_case("Audio") {
+        state
+            .base_items
+            .alternate_media_version(requested_item.id, source_id)
+            .await?
+    } else {
+        state
+            .base_items
+            .alternate_video_version(requested_item.id, source_id)
+            .await?
+    };
+    alternate.ok_or(ApiError::NotFound)
 }

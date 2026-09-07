@@ -638,6 +638,11 @@
 - For an authorized static HTTP media source, proxy byte ranges without buffering and forward only
   the persisted `RequiredHttpHeaders.User-Agent` value. Do not copy arbitrary client headers or
   expose a media item's remote authorization headers in unrelated DTO fields.
+- Keep the ordinary Audio stream route on the same default authorization contract as Video: an API
+  key is unrestricted and user-less, while a device session resolves the item through its own
+  library policy. Resolve Audio alternate `MediaSourceId` values within the audio/video version
+  group (not the video-only group), and use a `.strm` item's resolved source rather than serving
+  its sidecar bytes.
 
 ## Validation
 

@@ -389,11 +389,29 @@ async fn stream_file(
     query: StreamQuery,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let requested_item = state
-        .library_controller
-        .item(&authenticated.user, authenticated.user.id, item_id)
-        .await?;
+    let identity =
+        authentication::authenticated_identity(&state, &headers, Some(request.uri())).await?;
+    let mut requested_item = match identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            state
+                .library_controller
+                .item(&authenticated.user, authenticated.user.id, item_id)
+                .await?
+        }
+        // API keys use the same unrestricted default authorization policy as
+        // the official stream controller. They have no device user whose
+        // library policy can be applied before opening the selected source.
+        authentication::AuthenticatedIdentity::ApiKey(_) => state
+            .base_items
+            .get(item_id)
+            .await?
+            .ok_or(ApiError::NotFound)?,
+    };
+    let item_types = jellyfin_controller::ItemTypeRegistry::default();
+    let item_type = item_types
+        .resolve(&requested_item.item_type)
+        .ok_or(ApiError::NotFound)?;
+    requested_item.item_type = item_type.name().to_owned();
     if requested_item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
@@ -410,10 +428,7 @@ async fn stream_file(
     if item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
-    let path = item
-        .path
-        .filter(|path| !path.is_empty())
-        .ok_or(ApiError::NotFound)?;
+    let path = jellyfin_controller::media_source_path(&item).ok_or(ApiError::NotFound)?;
     if let Some(container) = requested_container {
         let actual = std::path::Path::new(&path)
             .extension()
@@ -424,7 +439,17 @@ async fn stream_file(
         }
     }
     if query.static_stream.unwrap_or(false) {
-        return serve_path(headers, &path, request).await;
+        if path.starts_with("http://") || path.starts_with("https://") {
+            return crate::videos::proxy_remote_stream(
+                &state.remote_stream_client,
+                &headers,
+                item.id,
+                path,
+                crate::videos::required_remote_user_agent(&item),
+            )
+            .await;
+        }
+        return serve_path(headers, path, request).await;
     }
 
     let codec = query
