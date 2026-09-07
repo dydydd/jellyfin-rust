@@ -1,8 +1,4 @@
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{cmp::Ordering, sync::Arc};
 
 use axum::{
     Json,
@@ -12,7 +8,7 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use jellyfin_controller::UserLibraryError;
-use jellyfin_data::{BaseItemOrder, BaseItemQuery, entities::base_item};
+use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -422,23 +418,24 @@ pub(crate) async fn episodes(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(series_id): Path<Uuid>,
-    Query(query): Query<EpisodesQuery>,
+    Query(mut query): Query<EpisodesQuery>,
 ) -> Result<Json<EpisodesResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
-    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
+    let fields = std::mem::take(&mut query.fields);
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
     let requested_random_order = query
         .sort_by
         .as_deref()
         .and_then(parse_item_sort_by)
         .is_some_and(|sort| sort == ITEM_SORT_BY_RANDOM);
-
-    let _ = (
-        query.enable_images,
-        query.image_type_limit,
-        query.enable_image_types,
-        query.enable_user_data,
-    );
 
     let (mut episodes, use_aired_episode_order) = if let Some(season_id) = query.season_id {
         let season = state
@@ -557,9 +554,23 @@ pub(crate) async fn episodes(
 
     let total_record_count = episodes.len();
     let return_items = apply_paging(episodes, query.start_index, query.limit);
-    let items = project_items_to_dtos(state.as_ref(), return_items, fields, target_user_id).await?;
+    let projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        BaseItemPage {
+            items: return_items,
+            total_record_count: u64::try_from(total_record_count).unwrap_or(u64::MAX),
+            start_index: query
+                .start_index
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or_default(),
+        },
+        fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
     Ok(Json(EpisodesResult {
-        items,
+        items: projected.items,
         total_record_count,
         start_index: query.start_index.unwrap_or_default(),
     }))
@@ -702,7 +713,7 @@ pub(crate) async fn seasons(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(series_id): Path<Uuid>,
-    Query(query): Query<SeasonsQuery>,
+    Query(mut query): Query<SeasonsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
@@ -714,13 +725,15 @@ pub(crate) async fn seasons(
         return Err(UserLibraryError::ItemNotFound.into());
     }
 
-    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
-    let _ = (
-        query.enable_images,
-        query.image_type_limit,
-        query.enable_image_types,
-        query.enable_user_data,
-    );
+    let fields = std::mem::take(&mut query.fields);
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
 
     let page = state
         .user_library
@@ -755,12 +768,20 @@ pub(crate) async fn seasons(
         seasons = filter_for_adjacency(seasons, adjacent_to);
     }
 
-    let items = project_items_to_dtos(state.as_ref(), seasons, fields, target_user_id).await?;
-    Ok(Json(user_library::BaseItemQueryResult {
-        total_record_count: items.len(),
-        start_index: 0,
-        items,
-    }))
+    let total_record_count = seasons.len();
+    let projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        BaseItemPage {
+            items: seasons,
+            total_record_count: u64::try_from(total_record_count).unwrap_or(u64::MAX),
+            start_index: 0,
+        },
+        fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
+    Ok(Json(projected))
 }
 
 async fn validate_series(
@@ -804,176 +825,6 @@ async fn query_episodes_under(
         )
         .await?
         .items)
-}
-
-async fn project_items_to_dtos(
-    state: &AppState,
-    items: Vec<base_item::Model>,
-    fields: user_library::BaseItemDtoFields,
-    target_user_id: Uuid,
-) -> Result<Vec<user_library::BaseItemDto>, ApiError> {
-    let defaults =
-        user_library::media_stream_defaults_for_user(state, target_user_id, fields).await?;
-    let mut remembered_user_data = if fields.wants_media_streams() {
-        state
-            .user_data
-            .get_preferred_for_items(target_user_id, &items)
-            .await?
-    } else {
-        HashMap::new()
-    };
-    let mut trickplay_manifests =
-        user_library::trickplay_manifests_for_items(state, &items, fields).await?;
-    let mut child_counts =
-        user_library::child_counts_for_items(state, &items, fields, target_user_id).await?;
-    let mut recursive_item_counts =
-        user_library::recursive_item_counts_for_items(state, &items, fields, target_user_id)
-            .await?;
-    let mut episode_hierarchy_names = user_library::episode_hierarchy_names(state, &items).await?;
-    let mut chapters = user_library::chapters_for_items(state, &items, fields).await?;
-    let mut external_urls = user_library::external_urls_for_items(state, &items, fields).await?;
-    let mut relation_metadata = user_library::load_relation_metadata(state, &items).await?;
-    let access_policy =
-        user_library::item_access_policy_for_user(state, target_user_id, fields).await?;
-    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let mut user_data_dtos = state
-        .user_data
-        .preferred_dto_map(target_user_id, &items)
-        .await?;
-    let subtitle_item_ids = state
-        .media_streams
-        .item_ids_with_stream_type(&item_ids, jellyfin_model::MediaStreamType::Subtitle)
-        .await?;
-    let mut image_projections = state
-        .dto_images
-        .project_many(
-            &item_ids,
-            jellyfin_server_implementations::DtoImageOptions::default(),
-        )
-        .await
-        .map_err(|_| ApiError::Internal)?;
-    let mut versioned_contexts = HashMap::new();
-    if fields.wants_media_sources() {
-        let all_sources = state
-            .base_items
-            .media_source_versions_for_items(&item_ids)
-            .await?;
-        let all_source_ids = all_sources
-            .iter()
-            .map(|source| source.id)
-            .collect::<Vec<_>>();
-        let visible_source_ids = state
-            .user_library
-            .visible_item_ids(target_user_id, &all_source_ids)
-            .await?;
-        let linked_parents = state
-            .base_items
-            .linked_alternate_version_parents(&all_source_ids)
-            .await?;
-        let all_streams = state
-            .media_streams
-            .get_media_streams_for_items(&all_source_ids)
-            .await?;
-        let all_attachments = state
-            .media_attachments
-            .get_media_attachments_for_items(&all_source_ids)
-            .await?;
-        for item in &items {
-            let group_id = item.primary_version_id.unwrap_or(item.id);
-            let mut roots = std::collections::HashSet::from([group_id, item.id]);
-            loop {
-                let previous = roots.len();
-                for source in &all_sources {
-                    if linked_parents
-                        .get(&source.id)
-                        .is_some_and(|parent| roots.contains(parent))
-                    {
-                        roots.insert(source.id);
-                    }
-                }
-                if roots.len() == previous {
-                    break;
-                }
-            }
-            let source_items = all_sources
-                .iter()
-                .filter(|source| {
-                    let source_root = source.primary_version_id.unwrap_or(source.id);
-                    (source.id == item.id || roots.contains(&source_root))
-                        && (source.id == item.id || visible_source_ids.contains(&source.id))
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            let source_ids = source_items
-                .iter()
-                .map(|source| source.id)
-                .collect::<HashSet<_>>();
-            let media_streams = all_streams
-                .iter()
-                .filter(|(id, _)| source_ids.contains(id))
-                .map(|(id, streams)| (*id, streams.clone()))
-                .collect();
-            let media_attachments = all_attachments
-                .iter()
-                .filter(|(id, _)| source_ids.contains(id))
-                .map(|(id, attachments)| (*id, attachments.clone()))
-                .collect();
-            versioned_contexts.insert(
-                item.id,
-                user_library::VersionedMediaSourceContext {
-                    source_items,
-                    media_streams,
-                    media_attachments,
-                    linked_parents: linked_parents.clone(),
-                },
-            );
-        }
-    }
-
-    let mut dtos = Vec::with_capacity(items.len());
-    for item in items {
-        let item_id = item.id;
-        let remembered = remembered_user_data.remove(&item_id);
-        let hierarchy_names = episode_hierarchy_names.remove(&item_id);
-        let mut dto = user_library::project_item_to_dto_with_context(
-            state,
-            item,
-            target_user_id,
-            fields
-                .without_trickplay()
-                .without_chapters()
-                .without_external_urls(),
-            defaults.as_ref(),
-            remembered.as_ref(),
-            hierarchy_names.as_ref(),
-            relation_metadata.remove(&item_id),
-            access_policy.as_ref(),
-            user_data_dtos.remove(&item_id),
-            Some(subtitle_item_ids.contains(&item_id)),
-            image_projections.remove(&item_id),
-            versioned_contexts.remove(&item_id),
-        )
-        .await?;
-        user_library::attach_external_urls(
-            &mut dto,
-            fields,
-            external_urls.remove(&item_id).unwrap_or_default(),
-        );
-        user_library::attach_chapters(
-            &mut dto,
-            fields,
-            chapters.remove(&item_id).unwrap_or_default(),
-        );
-        user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
-        user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
-        user_library::attach_trickplay_manifest(
-            &mut dto,
-            fields,
-            trickplay_manifests.remove(&item_id).unwrap_or_default(),
-        );
-        dtos.push(dto);
-    }
-    Ok(dtos)
 }
 
 fn apply_paging(

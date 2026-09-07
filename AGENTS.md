@@ -448,7 +448,9 @@
   `StartIndex` in the response while treating it as no skip, treat every non-positive `Limit` as
   unlimited, and reject values outside the official `Int32` range. Honor the official
   `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes` DTO options through
-  the shared batched projector rather than accepting and discarding SDK request parameters.
+  the shared batched projector rather than accepting and discarding SDK request parameters. Apply
+  that same projector contract to the Episodes and Seasons TV routes, including lowercase SDK
+  query names, so all three controller actions match `AddAdditionalDtoOptions`.
 - Keep `Shows/Upcoming` on the official signed `Int32` pagination contract used by Android and
   Swift: a negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative
   `Limit` is unlimited, and out-of-range values fail binding across supported query casing. Honor
