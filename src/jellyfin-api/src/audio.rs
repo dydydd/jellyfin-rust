@@ -225,7 +225,7 @@ pub(crate) async fn universal(
             .map_err(|_| ApiError::Internal)?
     };
     let item = state
-        .library_controller
+        .user_library
         .item(&identity.user, target_user_id, item_id)
         .await?;
     if item.item_type != "Audio" {
@@ -454,7 +454,7 @@ async fn stream_file(
     let mut requested_item = match identity {
         authentication::AuthenticatedIdentity::Device(authenticated) => {
             state
-                .library_controller
+                .user_library
                 .item(&authenticated.user, authenticated.user.id, item_id)
                 .await?
         }

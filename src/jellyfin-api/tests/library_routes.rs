@@ -153,8 +153,13 @@ async fn similar_and_instant_mix_apply_target_user_library_policy() {
         )
         .await;
     }
-    let hidden_similar =
+    let mut hidden_similar =
         create_item(&items, "Movie", "Hidden similar", hidden_folder.id, None).await;
+    hidden_similar.path = Some(fixture.media_path.clone());
+    let hidden_similar = items
+        .update(hidden_similar)
+        .await
+        .expect("hidden playable video");
     let blocked_similar =
         create_item(&items, "Movie", "Blocked similar", visible_folder.id, None).await;
 
@@ -175,8 +180,13 @@ async fn similar_and_instant_mix_apply_target_user_library_policy() {
         None,
     )
     .await;
-    let hidden_audio =
+    let mut hidden_audio =
         create_item(&items, "Audio", "Hidden mix audio", hidden_folder.id, None).await;
+    hidden_audio.path = Some(fixture.audio_path.clone());
+    let hidden_audio = items
+        .update(hidden_audio)
+        .await
+        .expect("hidden playable audio");
     let blocked_audio = create_item(
         &items,
         "Audio",
@@ -218,6 +228,25 @@ async fn similar_and_instant_mix_apply_target_user_library_policy() {
         .update_policy(fixture.user_id, &policy)
         .await
         .expect("restricted library policy");
+
+    // Playback paths must enforce the same target-user library visibility as
+    // item pages. These sources are otherwise valid local files, so a 404 is
+    // evidence that policy filtering happened before opening the media.
+    for route in [
+        format!("/Audio/{}/stream?static=true", hidden_audio.id),
+        format!("/Audio/{}/universal?container=bin", hidden_audio.id),
+        format!("/Audio/{}/master.m3u8?audioCodec=aac", hidden_audio.id),
+        format!("/Videos/{}/stream.mkv?static=true", hidden_similar.id),
+    ] {
+        assert_eq!(
+            fixture
+                .request("GET", &route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{route}"
+        );
+    }
 
     let similar = fixture
         .json(

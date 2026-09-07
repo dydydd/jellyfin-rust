@@ -303,7 +303,7 @@ async fn stream_file(
                     .map_err(|_| ApiError::Internal)?;
             (
                 state
-                    .library_controller
+                    .user_library
                     .item(&authenticated.user, authenticated.user.id, item_id)
                     .await?,
                 Some(policy),

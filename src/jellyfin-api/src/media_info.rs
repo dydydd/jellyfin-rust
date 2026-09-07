@@ -885,7 +885,7 @@ async fn media_sources(
     media_source_id: Option<&str>,
 ) -> Result<Vec<MediaSourceInfo>, ApiError> {
     let item = state
-        .library_controller
+        .user_library
         .item(authenticated_user, target_user_id, item_id)
         .await?;
     if let Some(source_id) = selected_playback_source_id(state, item_id, media_source_id).await? {

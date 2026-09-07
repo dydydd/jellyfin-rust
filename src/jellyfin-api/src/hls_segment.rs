@@ -557,7 +557,7 @@ async fn start_hls_job(
         return Err(ApiError::Forbidden);
     }
     let requested_item = state
-        .library_controller
+        .user_library
         .item(user, target_user_id, item_id)
         .await?;
     let item = if let Some(media_source_id) = query
