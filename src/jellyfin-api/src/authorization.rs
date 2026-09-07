@@ -295,7 +295,8 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             | "AuthenticateWithQuickConnect"
             | "ForgotPassword",
         ]
-        | ["Users", "ForgotPassword", "Pin"] => RoutePolicy::Public,
+        | ["Users", "ForgotPassword", "Pin"]
+        | ["users", "public"] => RoutePolicy::Public,
         ["Users", _, "Authenticate"] => RoutePolicy::Public,
         ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
         ["Startup" | "Environment", ..]

@@ -156,6 +156,8 @@
   info, branding configuration, users and user views, devices, display preferences, sessions,
   modern and legacy item latest/counts/resume routes, and library available-options routes must
   preserve the official handler and authorization policy under lowercase static segments.
+- Keep `/Users/Public` available as `/users/public`; otherwise Axum's dynamic `/users/{id}` route
+  treats the SDK's lowercase public-user request as a UUID binding failure.
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.

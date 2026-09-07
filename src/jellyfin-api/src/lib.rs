@@ -1568,6 +1568,7 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users", get(users::list).post(users::update))
         .route("/users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
+        .route("/users/public", get(users::list_public))
         .route("/Users/New", post(users::create))
         .route("/Users/ForgotPassword", post(users::forgot_password))
         .route(

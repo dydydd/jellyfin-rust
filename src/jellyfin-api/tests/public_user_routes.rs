@@ -265,7 +265,7 @@ async fn public_user_names(
     remote_ip: IpAddr,
 ) -> BTreeSet<String> {
     let mut request =
-        Request::get("/Users/Public").extension(ConnectInfo(SocketAddr::new(remote_ip, 12345)));
+        Request::get("/users/public").extension(ConnectInfo(SocketAddr::new(remote_ip, 12345)));
     if let Some(device_id) = device_id {
         request = request.header(
             header::AUTHORIZATION,
