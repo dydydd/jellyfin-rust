@@ -90,6 +90,18 @@ async fn exercise_channels_route(database_name: &str) {
     assert_eq!(items[0]["Name"], "B Channel");
     assert_eq!(items[0]["Type"], "Channel");
 
+    let lowercase = body_json(
+        fixture
+            .get(
+                "/channels?startindex=1&limit=1&supportslatestitems=true&supportsmediadeletion=false&isfavorite=false",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase["StartIndex"], 1);
+    assert_eq!(lowercase["Items"].as_array().expect("items").len(), 1);
+
     let filtered = body_json(
         fixture
             .get(
@@ -437,6 +449,20 @@ async fn assert_channel_items(fixture: &Fixture) {
         folder_items[0]["ParentId"],
         fixture.channel_folder_id.simple().to_string()
     );
+
+    let lowercase = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/channels/{}/items?folderid={}&startindex=0&sortby=name&sortorder=ascending",
+                    fixture.first_channel_id, fixture.channel_folder_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase["TotalRecordCount"], 1);
 }
 
 async fn assert_latest_channel_items(fixture: &Fixture) {
@@ -527,6 +553,20 @@ async fn assert_latest_channel_items(fixture: &Fixture) {
     .await;
     assert_eq!(empty_channel["TotalRecordCount"], 0);
     assert_eq!(empty_channel["Items"].as_array().expect("items").len(), 0);
+
+    let lowercase = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/channels/items/latest?channelids={}&startindex=0&limit=3",
+                    fixture.first_channel_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase["TotalRecordCount"], 3);
 }
 
 fn assert_default_channel_features(features: &Value) {

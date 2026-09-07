@@ -872,9 +872,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(branding::delete_splashscreen),
         )
         .route("/Channels", get(channels::list))
+        .route("/channels", get(channels::list))
         .route("/Channels/Features", get(channels::all_features))
+        .route("/channels/features", get(channels::all_features))
         .route(
             "/Channels/Items/Latest",
+            get(channels::latest_channel_items),
+        )
+        .route(
+            "/channels/items/latest",
             get(channels::latest_channel_items),
         )
         .route(
@@ -882,7 +888,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(channels::features),
         )
         .route(
+            "/channels/{channel_id}/features",
+            get(channels::features),
+        )
+        .route(
             "/Channels/{channel_id}/Items",
+            get(channels::channel_items),
+        )
+        .route(
+            "/channels/{channel_id}/items",
             get(channels::channel_items),
         )
         .route(

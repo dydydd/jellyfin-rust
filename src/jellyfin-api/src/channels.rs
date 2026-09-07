@@ -14,32 +14,51 @@ use crate::{ApiError, AppState, authentication, items, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ChannelsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
     limit: Option<u64>,
-    #[serde(rename = "supportsLatestItems", alias = "SupportsLatestItems")]
+    #[serde(
+        rename = "supportsLatestItems",
+        alias = "SupportsLatestItems",
+        alias = "supportslatestitems"
+    )]
     supports_latest_items: Option<bool>,
-    #[serde(rename = "supportsMediaDeletion", alias = "SupportsMediaDeletion")]
+    #[serde(
+        rename = "supportsMediaDeletion",
+        alias = "SupportsMediaDeletion",
+        alias = "supportsmediadeletion"
+    )]
     supports_media_deletion: Option<bool>,
-    #[serde(rename = "isFavorite", alias = "IsFavorite")]
+    #[serde(rename = "isFavorite", alias = "IsFavorite", alias = "isfavorite")]
     is_favorite: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ChannelItemsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "folderId", alias = "FolderId")]
+    #[serde(default, rename = "folderId", alias = "FolderId", alias = "folderid")]
     folder_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
     limit: Option<u64>,
     #[serde(
         default,
         rename = "sortBy",
         alias = "SortBy",
+        alias = "sortby",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_by: Vec<String>,
@@ -47,6 +66,7 @@ pub(crate) struct ChannelItemsQuery {
         default,
         rename = "sortOrder",
         alias = "SortOrder",
+        alias = "sortorder",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,
@@ -68,9 +88,14 @@ pub(crate) struct ChannelItemsQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct LatestChannelItemsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
     start_index: u64,
     limit: Option<u64>,
     #[serde(
@@ -91,6 +116,7 @@ pub(crate) struct LatestChannelItemsQuery {
         default,
         rename = "channelIds",
         alias = "ChannelIds",
+        alias = "channelids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     channel_ids: Vec<Uuid>,
