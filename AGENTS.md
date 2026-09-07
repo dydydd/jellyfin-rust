@@ -141,6 +141,9 @@
   info, branding configuration, users and user views, devices, display preferences, sessions,
   item latest/counts/resume, and library available-options routes must preserve the official
   handler and authorization policy under lowercase static segments.
+- Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
+  intros/special features, show pages, InstantMix, search hints, trailers, and video additional
+  parts on the same handler and authorization contract as their canonical routes.
 - Project `CanDelete` only when requested, except on official default all-fields item and root
   details. For user-less pages expose only the item's intrinsic capability; for user pages combine
   it with the target user's global or CollectionFolder-scoped deletion policy in one batched

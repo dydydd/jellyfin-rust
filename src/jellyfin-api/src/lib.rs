@@ -894,6 +894,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(artists::get_image),
         )
         .route("/Search/Hints", get(search::hints))
+        .route("/search/hints", get(search::hints))
         .route("/Backup", get(backup::list))
         .route("/Backup/Create", post(backup::create))
         .route("/Backup/Manifest", get(backup::manifest))
@@ -1251,6 +1252,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(studios::get_image_by_index),
         )
         .route("/Trailers", get(trailers::list))
+        .route("/trailers", get(trailers::list))
         .route("/MusicGenres", get(music_genre::list))
         .route("/MusicGenres/{genre_name}", get(music_genre::get))
         .route(
@@ -1835,20 +1837,37 @@ fn collection_routes() -> Router<Arc<AppState>> {
 fn library_controller_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Songs/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/songs/{item_id}/instantmix", get(library::instant_mix))
         .route("/Albums/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/albums/{item_id}/instantmix", get(library::instant_mix))
         .route(
             "/Playlists/{item_id}/InstantMix",
             get(library::instant_mix_playlist),
         )
+        .route(
+            "/playlists/{item_id}/instantmix",
+            get(library::instant_mix_playlist),
+        )
         .route("/Artists/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/artists/{item_id}/instantmix", get(library::instant_mix))
         .route("/Items/{item_id}/InstantMix", get(library::instant_mix))
+        .route("/items/{item_id}/instantmix", get(library::instant_mix))
         .route(
             "/MusicGenres/InstantMix",
             get(library::instant_mix_genre_by_id),
         )
+        .route(
+            "/musicgenres/instantmix",
+            get(library::instant_mix_genre_by_id),
+        )
         .route("/Artists/InstantMix", get(library::instant_mix_by_id))
+        .route("/artists/instantmix", get(library::instant_mix_by_id))
         .route(
             "/MusicGenres/{name}/InstantMix",
+            get(library::instant_mix_genre_by_name),
+        )
+        .route(
+            "/musicgenres/{name}/instantmix",
             get(library::instant_mix_genre_by_name),
         )
         .route("/Items/Counts", get(library::item_counts))
@@ -1856,15 +1875,21 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Items/{item_id}/File", get(library::file))
         .route("/items/{item_id}/file", get(library::file))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
+        .route("/items/{item_id}/themesongs", get(library::theme_songs))
         .route("/Items/{item_id}/ThemeVideos", get(library::theme_videos))
+        .route("/items/{item_id}/themevideos", get(library::theme_videos))
         .route("/Items/{item_id}/ThemeMedia", get(library::theme_media))
+        .route("/items/{item_id}/thememedia", get(library::theme_media))
         .route("/Items/{item_id}/Ancestors", get(library::ancestors))
+        .route("/items/{item_id}/ancestors", get(library::ancestors))
         .route("/Items/{item_id}/Download", get(library::download))
         .route("/items/{item_id}/download", get(library::download))
         .route("/Items/{item_id}/Collections", get(library::collections))
+        .route("/items/{item_id}/collections", get(library::collections))
         .route("/Library/Refresh", post(library::refresh))
         .route("/Library/PhysicalPaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
+        .route("/library/mediafolders", get(library::media_folders))
         .route("/Library/Series/Added", post(library::updated_series))
         .route("/Library/Series/Updated", post(library::updated_series))
         .route("/Library/Movies/Added", post(library::updated_movies))
@@ -1885,15 +1910,20 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Movies/Recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
         .route("/Shows/NextUp", get(tv_shows::next_up))
+        .route("/shows/nextup", get(tv_shows::next_up))
         .route("/Shows/Upcoming", get(tv_shows::upcoming))
+        .route("/shows/upcoming", get(tv_shows::upcoming))
         .route("/Shows/{series_id}/Episodes", get(tv_shows::episodes))
+        .route("/shows/{series_id}/episodes", get(tv_shows::episodes))
         .route("/Shows/{series_id}/Seasons", get(tv_shows::seasons))
+        .route("/shows/{series_id}/seasons", get(tv_shows::seasons))
         .route("/Trailers/{item_id}/Similar", get(library::similar))
 }
 
 fn user_library_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items/Root", get(user_library::get_root))
+        .route("/items/root", get(user_library::get_root))
         .route(
             "/Items/{item_id}",
             get(user_library::get_item)
@@ -1908,7 +1938,12 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),
         )
+        .route(
+            "/items/{item_id}/contenttype",
+            post(item_update::update_content_type),
+        )
         .route("/Items/{item_id}/Refresh", post(item_refresh::refresh))
+        .route("/items/{item_id}/refresh", post(item_refresh::refresh))
         .route(
             "/Items/{item_id}/MetadataEditor",
             get(item_update::metadata_editor),
@@ -1955,12 +1990,21 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::apply_remote_search),
         )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
+        .route("/items/{item_id}/intros", get(user_library::get_intros))
         .route(
             "/Items/{item_id}/LocalTrailers",
             get(user_library::get_local_trailers),
         )
         .route(
+            "/items/{item_id}/localtrailers",
+            get(user_library::get_local_trailers),
+        )
+        .route(
             "/Items/{item_id}/SpecialFeatures",
+            get(user_library::get_special_features),
+        )
+        .route(
+            "/items/{item_id}/specialfeatures",
             get(user_library::get_special_features),
         )
         .route(
@@ -2018,6 +2062,10 @@ fn video_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/Videos/{item_id}/AdditionalParts",
+            get(videos::additional_parts),
+        )
+        .route(
+            "/videos/{item_id}/additionalparts",
             get(videos::additional_parts),
         )
         .route(

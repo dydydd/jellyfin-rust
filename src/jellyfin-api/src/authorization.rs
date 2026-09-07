@@ -333,7 +333,9 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Users", _] => RoutePolicy::Default,
         ["LiveTv", "TunerHosts"] => RoutePolicy::Elevated,
         ["LiveTv", "ListingProviders", ..] => RoutePolicy::Elevated,
-        ["Library", "MediaFolders" | "PhysicalPaths" | "Refresh"] => RoutePolicy::Elevated,
+        ["Library", "MediaFolders" | "PhysicalPaths" | "Refresh"] | ["library", "mediafolders"] => {
+            RoutePolicy::Elevated
+        }
         ["Items", _, "Refresh" | "MetadataEditor" | "ExternalIdInfos"] => RoutePolicy::Elevated,
         ["Items", "RemoteSearch", "Person"] | ["Items", "RemoteSearch", "Apply", _] => {
             RoutePolicy::Elevated
