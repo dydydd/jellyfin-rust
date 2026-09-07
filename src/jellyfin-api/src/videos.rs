@@ -120,7 +120,7 @@ pub(crate) struct StreamQuery {
         alias = "MaxAudioBitDepth",
         alias = "maxaudiobitdepth"
     )]
-    _max_audio_bit_depth: Option<i32>,
+    max_audio_bit_depth: Option<i32>,
     #[serde(
         rename = "audioChannels",
         alias = "AudioChannels",
@@ -535,8 +535,15 @@ fn can_copy_remux(
     else {
         return false;
     };
-    let Some(audio_codec) =
-        selected_stream_codec(streams, MediaStreamType::Audio, query.audio_stream_index)
+    let Some(audio_stream) =
+        selected_stream(streams, MediaStreamType::Audio, query.audio_stream_index)
+    else {
+        return false;
+    };
+    let Some(audio_codec) = audio_stream
+        .codec
+        .as_deref()
+        .filter(|codec| !codec.trim().is_empty())
     else {
         return false;
     };
@@ -558,19 +565,16 @@ fn can_copy_remux(
                 .bit_depth
                 .is_some_and(|actual| actual > maximum)
         })
+        // EncodingHelper.CanStreamCopyAudio applies this constraint only
+        // when stream probing supplied an audio bit depth.
+        && !query.max_audio_bit_depth.is_some_and(|maximum| {
+            audio_stream
+                .bit_depth
+                .is_some_and(|actual| actual > maximum)
+        })
         && codecs_match(video_codec, requested_video_codec)
         && codecs_match(audio_codec, requested_audio_codec)
         && copy_remux_container_supports(container, video_codec, audio_codec)
-}
-
-fn selected_stream_codec(
-    streams: &[MediaStream],
-    stream_type: MediaStreamType,
-    requested_index: Option<i32>,
-) -> Option<&str> {
-    selected_stream(streams, stream_type, requested_index)
-        .and_then(|stream| stream.codec.as_deref())
-        .filter(|codec| !codec.trim().is_empty())
 }
 
 fn selected_stream(
@@ -835,7 +839,7 @@ mod tests {
         assert_eq!(query.video_bitrate, Some(2_000_000));
         assert_eq!(query.audio_bitrate, Some(128_000));
         assert_eq!(query.audio_sample_rate, Some(48_000));
-        assert_eq!(query._max_audio_bit_depth, Some(24));
+        assert_eq!(query.max_audio_bit_depth, Some(24));
         assert_eq!(query.audio_channels, Some(2));
         assert_eq!(query.max_audio_channels, Some(6));
         assert_eq!(query._profile.as_deref(), Some("high"));
@@ -990,6 +994,25 @@ mod tests {
             &low_bit_depth_limit,
             "mp4",
             &high_bit_depth_streams,
+            "h264",
+            "aac",
+        ));
+
+        let low_audio_bit_depth_limit = StreamQuery {
+            max_audio_bit_depth: Some(16),
+            ..query.clone()
+        };
+        let high_bit_depth_audio_streams = vec![
+            streams[0].clone(),
+            MediaStream {
+                bit_depth: Some(24),
+                ..streams[1].clone()
+            },
+        ];
+        assert!(!can_copy_remux(
+            &low_audio_bit_depth_limit,
+            "mp4",
+            &high_bit_depth_audio_streams,
             "h264",
             "aac",
         ));
