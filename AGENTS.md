@@ -193,6 +193,9 @@
 - Keep the modern and legacy `/Items` and Resume pages on their signed `Int32` pagination contract
   used by Android and Swift: negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty,
   negative `Limit` is unlimited, and out-of-range values fail query binding.
+- Keep `/Playlists/{playlistId}/Items` on the official signed `Int32` contract used by Android and
+  Swift: negative `StartIndex` skips nothing but is echoed, while a non-positive `Limit` returns an
+  empty page through the controller's `Enumerable.Take` behavior; out-of-range values fail binding.
 - Filter `/Persons` through the media items visible to the target user: a person remains visible
   when at least one credited item passes enabled/blocked folder, allowed/blocked tag, parental-
   rating, and unrated-item policy. Keep this set-based, and do not apply the related-media filter

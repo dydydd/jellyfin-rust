@@ -61,12 +61,17 @@ pub(crate) struct ItemsQuery {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct GetItemsQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(default, rename = "startIndex", alias = "StartIndex")]
-    start_index: usize,
+    #[serde(
+        default,
+        rename = "startIndex",
+        alias = "StartIndex",
+        alias = "startindex"
+    )]
+    start_index: Option<i32>,
     #[serde(default, alias = "Limit")]
-    limit: Option<usize>,
+    limit: Option<i32>,
     #[serde(
         default,
         alias = "Fields",
@@ -281,9 +286,21 @@ pub(crate) async fn get_items(
     if user_id.is_nil() {
         return Err(ApiError::InvalidRequest);
     }
+    let requested_start_index = query.start_index.unwrap_or_default();
+    // Enumerable.Skip treats negative counts as zero and Enumerable.Take returns an
+    // empty sequence for non-positive counts. Keep the original signed offset only
+    // for the official QueryResult response contract.
+    let start_index = usize::try_from(requested_start_index).unwrap_or_default();
+    let limit = query.limit.map(|limit| {
+        if limit <= 0 {
+            0
+        } else {
+            usize::try_from(limit).unwrap_or_default()
+        }
+    });
     let page = state
         .playlists
-        .items(playlist_id, user_id, query.start_index, query.limit)
+        .items(playlist_id, user_id, start_index, limit)
         .await?;
     let total_record_count = page.total_record_count;
     let start_index = page.start_index;
@@ -298,6 +315,7 @@ pub(crate) async fn get_items(
         start_index: u64::try_from(start_index).unwrap_or(u64::MAX),
     };
     let mut result = crate::items::page_to_dto(&state, page, query.fields, user_id).await?;
+    result.start_index = requested_start_index;
     for (dto, entry_id) in result.items.iter_mut().zip(entry_ids) {
         dto.playlist_item_id = Some(entry_id.simple().to_string());
     }

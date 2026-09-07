@@ -712,6 +712,52 @@ async fn assert_items_projection_and_reordering(fixture: &Fixture, playlist_id: 
         links.iter().map(|link| link.sort_order).collect::<Vec<_>>(),
         [Some(0), Some(1), Some(2)]
     );
+
+    // Android and Swift both expose signed Int paging here, as does the
+    // official PlaylistsController. Negative offsets skip nothing but remain
+    // visible in the QueryResult; non-positive limits use Enumerable.Take's
+    // empty-page behavior.
+    for start_index in ["startIndex", "StartIndex", "startindex"] {
+        let route = format!("/Playlists/{playlist_id}/Items?{start_index}=-1&limit=1");
+        let page = body_json(
+            fixture
+                .request(Method::GET, &route, Some(&fixture.reader_token), None)
+                .await,
+        )
+        .await;
+        assert_eq!(page["StartIndex"], -1, "{route}");
+        assert_eq!(page["TotalRecordCount"], 3, "{route}");
+        assert_eq!(page["Items"].as_array().unwrap().len(), 1, "{route}");
+    }
+    for limit_name in ["limit", "Limit"] {
+        for limit in ["0", "-1"] {
+            let route = format!("/Playlists/{playlist_id}/Items?{limit_name}={limit}");
+            let page = body_json(
+                fixture
+                    .request(Method::GET, &route, Some(&fixture.reader_token), None)
+                    .await,
+            )
+            .await;
+            assert_eq!(page["StartIndex"], 0, "{route}");
+            assert!(page["Items"].as_array().unwrap().is_empty(), "{route}");
+        }
+    }
+    for query in [
+        "startIndex=2147483648",
+        "startIndex=-2147483649",
+        "limit=2147483648",
+        "limit=-2147483649",
+    ] {
+        let route = format!("/Playlists/{playlist_id}/Items?{query}");
+        assert_eq!(
+            fixture
+                .request(Method::GET, &route, Some(&fixture.reader_token), None)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{route}"
+        );
+    }
 }
 
 async fn assert_user_deletion_lifecycle(fixture: &Fixture) {
