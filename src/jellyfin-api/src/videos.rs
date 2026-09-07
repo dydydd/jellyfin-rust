@@ -122,6 +122,12 @@ pub(crate) struct StreamQuery {
         alias = "starttimeticks"
     )]
     start_time_ticks: Option<i64>,
+    #[serde(
+        rename = "copyTimestamps",
+        alias = "CopyTimestamps",
+        alias = "copytimestamps"
+    )]
+    copy_timestamps: Option<bool>,
 }
 
 pub(crate) async fn stream(
@@ -258,6 +264,7 @@ async fn stream_file(
         query
             .subtitle_stream_index
             .filter(|_| should_burn_subtitles(query.subtitle_method.as_deref())),
+        query.copy_timestamps.unwrap_or(false),
     );
     crate::audio::serve_transcoded_path(
         command,
@@ -420,7 +427,7 @@ mod tests {
 
     #[test]
     fn video_stream_binds_android_progressive_parameters() {
-        let uri: Uri = "/videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&width=1280&Height=720&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000"
+        let uri: Uri = "/videos/item/stream.mp4?static=false&videoCodec=h264&audioCodec=aac&VideoBitrate=2000000&AudioBitrate=128000&width=1280&Height=720&MaxFramerate=23.976&audioStreamIndex=2&videoStreamIndex=0&subtitleStreamIndex=3&subtitleMethod=Encode&startTimeTicks=10000&CopyTimestamps=true"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
@@ -437,6 +444,7 @@ mod tests {
         assert_eq!(query.subtitle_stream_index, Some(3));
         assert_eq!(query.subtitle_method.as_deref(), Some("Encode"));
         assert_eq!(query.start_time_ticks, Some(10_000));
+        assert_eq!(query.copy_timestamps, Some(true));
         assert_eq!(video_codec_for_container("mp4"), "h264");
         assert_eq!(audio_codec_for_container("webm"), "opus");
         assert!(should_burn_subtitles(Some("Encode")));

@@ -300,6 +300,7 @@ pub fn audio_command(
     sample_rate: Option<i32>,
     audio_stream_index: Option<i32>,
     start_time_ticks: Option<i64>,
+    copy_timestamps: bool,
 ) -> FfmpegCommand {
     let mut arguments = vec![
         "-hide_banner".to_owned(),
@@ -307,6 +308,9 @@ pub fn audio_command(
         "error".to_owned(),
         "-y".to_owned(),
     ];
+    if copy_timestamps {
+        arguments.push("-copyts".to_owned());
+    }
     if let Some(start_time_ticks) = start_time_ticks.filter(|ticks| *ticks > 0) {
         arguments.push("-ss".to_owned());
         arguments.push(format_ticks_as_seconds(start_time_ticks));
@@ -331,6 +335,11 @@ pub fn audio_command(
     if let Some(sample_rate) = sample_rate {
         arguments.push("-ar".to_owned());
         arguments.push(sample_rate.to_string());
+    }
+    if copy_timestamps {
+        arguments.push("-avoid_negative_ts".to_owned());
+        arguments.push("disabled".to_owned());
+        arguments.push("-start_at_zero".to_owned());
     }
     if is_mp4_container(output_path) {
         arguments.push("-movflags".to_owned());
@@ -364,6 +373,7 @@ pub fn video_command(
     video_stream_index: Option<i32>,
     start_time_ticks: Option<i64>,
     subtitle_stream_index: Option<i32>,
+    copy_timestamps: bool,
 ) -> FfmpegCommand {
     let mut arguments = vec![
         "-hide_banner".to_owned(),
@@ -371,6 +381,9 @@ pub fn video_command(
         "error".to_owned(),
         "-y".to_owned(),
     ];
+    if copy_timestamps {
+        arguments.push("-copyts".to_owned());
+    }
     if let Some(start_time_ticks) = start_time_ticks.filter(|ticks| *ticks > 0) {
         arguments.push("-ss".to_owned());
         arguments.push(format_ticks_as_seconds(start_time_ticks));
@@ -423,6 +436,11 @@ pub fn video_command(
     if let Some(sample_rate) = audio_sample_rate {
         arguments.push("-ar".to_owned());
         arguments.push(sample_rate.to_string());
+    }
+    if copy_timestamps {
+        arguments.push("-avoid_negative_ts".to_owned());
+        arguments.push("disabled".to_owned());
+        arguments.push("-start_at_zero".to_owned());
     }
     if output_path
         .extension()
@@ -1138,6 +1156,7 @@ mod tests {
             Some(44_100),
             Some(1),
             None,
+            false,
         );
 
         assert_eq!(
@@ -1166,6 +1185,36 @@ mod tests {
     }
 
     #[test]
+    fn audio_command_preserves_timestamps_when_requested() {
+        let command = audio_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/song.flac"),
+            Path::new("/tmp/transcodes/out.mp3"),
+            "mp3",
+            None,
+            None,
+            None,
+            None,
+            Some(10_000),
+            true,
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-copyts", "-ss"])
+        );
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["-avoid_negative_ts", "disabled"] })
+        );
+        assert!(command.arguments.contains(&"-start_at_zero".to_owned()));
+    }
+
+    #[test]
     fn video_command_maps_selected_streams_and_limits() {
         let command = video_command(
             Path::new("/usr/bin/ffmpeg"),
@@ -1184,6 +1233,7 @@ mod tests {
             Some(0),
             Some(10_000),
             None,
+            false,
         );
 
         assert_eq!(
@@ -1236,6 +1286,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
 
         assert!(
@@ -1265,6 +1316,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
 
         assert!(
@@ -1294,6 +1346,7 @@ mod tests {
             None,
             None,
             Some(3),
+            false,
         );
 
         assert!(
@@ -1323,6 +1376,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
 
         assert!(
@@ -1331,6 +1385,38 @@ mod tests {
                 .windows(2)
                 .any(|pair| { pair == ["-vf", "scale='min(1280,iw)':-2,fps=23.976"] })
         );
+    }
+
+    #[test]
+    fn video_command_preserves_timestamps_when_requested() {
+        let command = video_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.ts"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(10_000),
+            None,
+            true,
+        );
+
+        assert!(command.arguments.contains(&"-copyts".to_owned()));
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["-avoid_negative_ts", "disabled"] })
+        );
+        assert!(command.arguments.contains(&"-start_at_zero".to_owned()));
     }
 
     #[test]

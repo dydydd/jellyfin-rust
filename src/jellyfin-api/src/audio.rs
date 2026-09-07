@@ -73,6 +73,12 @@ pub(crate) struct StreamQuery {
         alias = "starttimeticks"
     )]
     start_time_ticks: Option<i64>,
+    #[serde(
+        rename = "copyTimestamps",
+        alias = "CopyTimestamps",
+        alias = "copytimestamps"
+    )]
+    copy_timestamps: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -201,6 +207,7 @@ pub(crate) async fn universal(
         None,
         query.audio_stream_index,
         query.start_time_ticks,
+        false,
     );
     serve_transcoded_path(
         command,
@@ -307,6 +314,7 @@ async fn stream_file(
         query.audio_sample_rate,
         query.audio_stream_index,
         query.start_time_ticks,
+        query.copy_timestamps.unwrap_or(false),
     );
     serve_transcoded_path(
         command,
@@ -336,7 +344,7 @@ mod tests {
 
     #[test]
     fn audio_stream_binds_android_transcoding_parameters() {
-        let uri: Uri = "/audio/item/stream?static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000"
+        let uri: Uri = "/audio/item/stream?static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000&CopyTimestamps=true"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
@@ -347,6 +355,7 @@ mod tests {
         assert_eq!(query.max_audio_channels, Some(2));
         assert_eq!(query.audio_stream_index, Some(1));
         assert_eq!(query.start_time_ticks, Some(10000));
+        assert_eq!(query.copy_timestamps, Some(true));
     }
 }
 

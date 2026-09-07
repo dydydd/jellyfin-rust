@@ -326,6 +326,8 @@
 - Bind progressive video `Width`/`Height` and normalize them to the same effective maximum
   dimensions as the official streaming helper; explicit `MaxWidth`/`MaxHeight` values take
   precedence when both forms are supplied.
+- Preserve progressive `CopyTimestamps=true` semantics for Android seek requests by passing
+  FFmpeg `-copyts -avoid_negative_ts disabled -start_at_zero` for both audio and video.
 - Progressive audio/video stream responses must start FFmpeg and read the growing output file
   immediately, matching the official `ProgressiveFileStream` behavior; never await complete
   FFmpeg termination before returning the response, or Android playback of long media can stall.
