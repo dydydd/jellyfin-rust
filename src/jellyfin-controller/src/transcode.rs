@@ -359,6 +359,7 @@ pub fn video_command(
     audio_sample_rate: Option<i32>,
     max_width: Option<i32>,
     max_height: Option<i32>,
+    max_framerate: Option<f32>,
     audio_stream_index: Option<i32>,
     video_stream_index: Option<i32>,
     start_time_ticks: Option<i64>,
@@ -390,6 +391,9 @@ pub fn video_command(
         video_filters.push(format!("scale='min({width},iw)':-2"));
     } else if let Some(height) = max_height {
         video_filters.push(format!("scale=-2:'min({height},ih)'"));
+    }
+    if let Some(framerate) = max_framerate.filter(|value| value.is_finite() && *value > 0.0) {
+        video_filters.push(format!("fps={framerate}"));
     }
     if let Some(subtitle_index) = subtitle_stream_index.filter(|index| *index >= 0) {
         let escaped = input_path
@@ -1175,6 +1179,7 @@ mod tests {
             Some(48_000),
             Some(1280),
             None,
+            None,
             Some(2),
             Some(0),
             Some(10_000),
@@ -1259,6 +1264,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert!(
@@ -1286,6 +1292,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(3),
         );
 
@@ -1294,6 +1301,35 @@ mod tests {
                 .arguments
                 .windows(2)
                 .any(|pair| { pair == ["-vf", "subtitles='/media/movie.mkv':si=3"] })
+        );
+    }
+
+    #[test]
+    fn video_command_applies_max_framerate_after_scaling() {
+        let command = video_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.ts"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            Some(1280),
+            None,
+            Some(23.976),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["-vf", "scale='min(1280,iw)':-2,fps=23.976"] })
         );
     }
 
