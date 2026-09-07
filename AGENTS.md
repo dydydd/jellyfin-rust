@@ -30,6 +30,10 @@
   preserve existing credits, keep Person `list_order`/role conflict semantics, and never replace
   all credits merely to reduce scan round trips.
 - Build playback-aware queries from the target user's `user_data` rows and reverse hierarchy lookups rather than correlated scans over all `base_items`. Materialize shared candidate sets when count and page queries would otherwise repeat expensive work.
+- When an item-by-name list route has already authorized its target user and applied the resulting
+  policy to its query, call the corresponding authorized list path rather than rereading that user.
+  Keep each public service list entry point validating its target user so callers without a resolved
+  policy context retain the authorization boundary.
 - Project inherited images for an item page with one batched DTO-image lookup. Do not call the image projector once per item.
 - Project `ImageBlurHashes` only from persisted image metadata in the same batched DTO-image lookup
   that produces the exposed image tags. Keep the top-level map present when empty, include hashes

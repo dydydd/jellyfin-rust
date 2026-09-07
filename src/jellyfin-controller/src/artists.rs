@@ -145,6 +145,19 @@ impl ArtistService {
     ) -> Result<ArtistPage, ArtistError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        self.list_authorized(kind, query).await
+    }
+
+    /// Lists artists after the caller has authorized and applied a target-user policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns reconciliation, validation, or persistence errors.
+    pub async fn list_authorized(
+        &self,
+        kind: ArtistValueKind,
+        query: ItemValueQuery,
+    ) -> Result<ArtistPage, ArtistError> {
         let mut query = self.scope_parent(query).await?;
         query.by_name_item_type = Some("MusicArtist".to_owned());
         let page = self

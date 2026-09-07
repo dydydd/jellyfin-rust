@@ -116,7 +116,7 @@ pub(crate) async fn filters2(
     let genres = if is_music_filter {
         state
             .music_genres
-            .list(&authenticated.user, target_user_id, item_query)
+            .list_authorized(item_query)
             .await?
             .genres
             .into_iter()
@@ -128,7 +128,7 @@ pub(crate) async fn filters2(
     } else {
         state
             .genres
-            .list(&authenticated.user, target_user_id, item_query)
+            .list_authorized(item_query)
             .await?
             .genres
             .into_iter()

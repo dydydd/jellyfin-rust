@@ -167,10 +167,7 @@ pub(crate) async fn list(
         .user_library
         .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
         .await?;
-    let page = state
-        .genres
-        .list(&authenticated.user, target_user_id, item_query)
-        .await?;
+    let page = state.genres.list_authorized(item_query).await?;
     let items = page
         .genres
         .into_iter()

@@ -154,10 +154,7 @@ pub(crate) async fn list(
             item_query.ids = vec![parent.id];
         }
     }
-    let page = state
-        .studios
-        .list(&authenticated.user, target_user_id, item_query)
-        .await?;
+    let page = state.studios.list_authorized(item_query).await?;
     let items = page
         .studios
         .into_iter()

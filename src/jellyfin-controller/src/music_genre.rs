@@ -167,6 +167,18 @@ impl MusicGenreService {
     ) -> Result<MusicGenrePage, MusicGenreError> {
         self.validate_user(authenticated_user, target_user_id)
             .await?;
+        self.list_authorized(query).await
+    }
+
+    /// Lists music genres after the caller has authorized and applied a target-user policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns reconciliation, validation, or persistence errors.
+    pub async fn list_authorized(
+        &self,
+        query: ItemValueQuery,
+    ) -> Result<MusicGenrePage, MusicGenreError> {
         self.item_by_name.reconcile_once().await?;
         let mut query = self.scope_music_query(query).await?;
         query.by_name_item_type = Some("MusicGenre".to_owned());
