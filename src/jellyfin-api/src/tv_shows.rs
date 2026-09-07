@@ -813,6 +813,23 @@ async fn project_items_to_dtos(
     let mut relation_metadata = user_library::load_relation_metadata(state, &items).await?;
     let access_policy =
         user_library::item_access_policy_for_user(state, target_user_id, fields).await?;
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut user_data_dtos = state
+        .user_data
+        .preferred_dto_map(target_user_id, &items)
+        .await?;
+    let subtitle_item_ids = state
+        .media_streams
+        .item_ids_with_stream_type(&item_ids, jellyfin_model::MediaStreamType::Subtitle)
+        .await?;
+    let mut image_projections = state
+        .dto_images
+        .project_many(
+            &item_ids,
+            jellyfin_server_implementations::DtoImageOptions::default(),
+        )
+        .await
+        .map_err(|_| ApiError::Internal)?;
 
     let mut dtos = Vec::with_capacity(items.len());
     for item in items {
@@ -832,6 +849,9 @@ async fn project_items_to_dtos(
             hierarchy_names.as_ref(),
             relation_metadata.remove(&item_id),
             access_policy.as_ref(),
+            user_data_dtos.remove(&item_id),
+            Some(subtitle_item_ids.contains(&item_id)),
+            image_projections.remove(&item_id),
         )
         .await?;
         user_library::attach_external_urls(

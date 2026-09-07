@@ -1446,6 +1446,9 @@ pub(crate) async fn project_item_to_dto(
         hierarchy_names.as_ref(),
         None,
         None,
+        None,
+        None,
+        None,
     )
     .await
 }
@@ -1460,6 +1463,9 @@ pub(crate) async fn project_item_to_dto_with_context(
     hierarchy_names: Option<&EpisodeHierarchyNames>,
     relation_metadata: Option<ItemRelationMetadata>,
     access_policy: Option<&ItemAccessPolicy>,
+    preloaded_user_data: Option<UserItemDataDto>,
+    preloaded_has_subtitles: Option<bool>,
+    image_projection: Option<jellyfin_server_implementations::DtoImageProjection>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
     let is_playlist = is_item_type(&item.item_type, "Playlist");
@@ -1470,7 +1476,10 @@ pub(crate) async fn project_item_to_dto_with_context(
         Some(metadata) => HashMap::from([(item.id, metadata)]),
         None => load_relation_metadata(state, std::slice::from_ref(&item)).await?,
     };
-    let user_data = user_data_for_item(state, &item, target_user_id).await?;
+    let user_data = match preloaded_user_data {
+        Some(user_data) => user_data,
+        None => user_data_for_item(state, &item, target_user_id).await?,
+    };
     let owned_access_policy;
     let item_access_policy = if access_policy.is_some() {
         access_policy
@@ -1540,21 +1549,27 @@ pub(crate) async fn project_item_to_dto_with_context(
         attach_has_lyrics(&mut dto, lyric_item_ids.contains(&item_id));
     }
     if is_video_item(&dto) {
-        let subtitle_item_ids = state
-            .media_streams
-            .item_ids_with_stream_type(&[item_id], MediaStreamType::Subtitle)
-            .await?;
-        attach_has_subtitles(&mut dto, subtitle_item_ids.contains(&item_id));
+        if let Some(has_subtitles) = preloaded_has_subtitles {
+            attach_has_subtitles(&mut dto, has_subtitles);
+        } else {
+            let subtitle_item_ids = state
+                .media_streams
+                .item_ids_with_stream_type(&[item_id], MediaStreamType::Subtitle)
+                .await?;
+            attach_has_subtitles(&mut dto, subtitle_item_ids.contains(&item_id));
+        }
     }
     let original_language = dto.original_language.clone();
     attach_relation_metadata(&mut dto, relations.remove(&item_id).unwrap_or_default());
     attach_user_data_dto(&mut dto, user_data);
-    if let Some(projection) = state
-        .dto_images
-        .project(item_id, DtoImageOptions::default())
-        .await
-        .map_err(|_| ApiError::Internal)?
-    {
+    if let Some(projection) = match image_projection {
+        Some(projection) => Ok(Some(projection)),
+        None => state
+            .dto_images
+            .project(item_id, DtoImageOptions::default())
+            .await
+            .map_err(|_| ApiError::Internal),
+    }? {
         attach_dto_image_projection(&mut dto, projection);
     }
     if fields.wants_trickplay() && is_video_item(&dto) {
