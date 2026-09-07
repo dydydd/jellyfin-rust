@@ -68,6 +68,12 @@ pub(crate) struct TranscodeQuery {
     )]
     audio_stream_index: Option<i32>,
     #[serde(
+        rename = "videoStreamIndex",
+        alias = "VideoStreamIndex",
+        alias = "videostreamindex"
+    )]
+    video_stream_index: Option<i32>,
+    #[serde(
         rename = "subtitleStreamIndex",
         alias = "SubtitleStreamIndex",
         alias = "subtitlestreamindex"
@@ -208,6 +214,7 @@ impl TranscodeQuery {
             || self.video_bitrate.is_some()
             || self.audio_bitrate.is_some()
             || self.audio_sample_rate.is_some()
+            || self.video_stream_index.is_some()
             || self.subtitle_stream_index.is_some()
             || self.burn_subtitles == Some(true)
             || self.audio_normalize == Some(true)
@@ -523,6 +530,7 @@ async fn start_hls_job(
         audio_channels: query.max_audio_channels,
         audio_sample_rate: query.audio_sample_rate,
         audio_stream_index: query.audio_stream_index,
+        video_stream_index: query.video_stream_index,
         subtitle_index: query.subtitle_stream_index,
         burn_subtitles: query.burn_subtitles.unwrap_or(false),
         audio_normalize: query.audio_normalize.unwrap_or(false),
@@ -758,6 +766,7 @@ fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, segment_length_ms: i32)
             video_bitrate: query.video_bitrate,
             audio_bitrate: query.audio_bitrate,
             audio_stream_index: query.audio_stream_index,
+            video_stream_index: query.video_stream_index,
             max_width: query.max_width,
             max_height: query.max_height,
             max_framerate: query.max_framerate,
@@ -1145,6 +1154,28 @@ mod tests {
         assert_eq!(parsed.audio_stream_index, Some(1));
         assert_eq!(parsed.start_time_ticks, Some(10_000));
         assert_eq!(parsed.segment_container.as_deref(), Some("ts"));
+    }
+
+    #[test]
+    fn hls_query_binds_the_selected_video_stream_and_changes_the_job_id() {
+        let item_id = Uuid::new_v4();
+        let first_uri: Uri = "/Videos/item/master.m3u8?videoStreamIndex=2"
+            .parse()
+            .unwrap();
+        let first = Query::<TranscodeQuery>::try_from_uri(&first_uri).unwrap().0;
+        assert_eq!(first.video_stream_index, Some(2));
+
+        let second_uri: Uri = "/Videos/item/master.m3u8?VideoStreamIndex=3"
+            .parse()
+            .unwrap();
+        let second = Query::<TranscodeQuery>::try_from_uri(&second_uri)
+            .unwrap()
+            .0;
+        assert_eq!(second.video_stream_index, Some(3));
+        assert_ne!(
+            super::compute_job_id(item_id, &first, 6_000),
+            super::compute_job_id(item_id, &second, 6_000),
+        );
     }
 
     #[tokio::test]

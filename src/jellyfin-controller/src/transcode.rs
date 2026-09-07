@@ -27,6 +27,7 @@ pub struct TranscodeTarget {
     pub audio_channels: Option<i32>,
     pub audio_sample_rate: Option<i32>,
     pub audio_stream_index: Option<i32>,
+    pub video_stream_index: Option<i32>,
     pub subtitle_index: Option<i32>,
     pub burn_subtitles: bool,
     pub audio_normalize: bool,
@@ -73,6 +74,7 @@ impl Default for TranscodeTarget {
             audio_channels: None,
             audio_sample_rate: None,
             audio_stream_index: None,
+            video_stream_index: None,
             subtitle_index: None,
             burn_subtitles: false,
             audio_normalize: false,
@@ -186,13 +188,21 @@ pub fn hls_command_with_playlist_type(
         match target.video_codec.as_deref() {
             Some(codec) if !codec.eq_ignore_ascii_case("copy") => {
                 arguments.push("-map".to_owned());
-                arguments.push("0:v:0".to_owned());
+                arguments.push(
+                    target
+                        .video_stream_index
+                        .map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}")),
+                );
                 arguments.push("-c:v".to_owned());
                 arguments.push(codec.to_owned());
             }
             Some(_) => {
                 arguments.push("-map".to_owned());
-                arguments.push("0:v:0".to_owned());
+                arguments.push(
+                    target
+                        .video_stream_index
+                        .map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}")),
+                );
                 arguments.push("-c:v".to_owned());
                 arguments.push("copy".to_owned());
             }
@@ -982,6 +992,7 @@ pub struct HlsJobIdInput<'a> {
     pub video_bitrate: Option<i64>,
     pub audio_bitrate: Option<i64>,
     pub audio_stream_index: Option<i32>,
+    pub video_stream_index: Option<i32>,
     pub max_width: Option<i32>,
     pub max_height: Option<i32>,
     pub max_framerate: Option<f32>,
@@ -1013,6 +1024,7 @@ pub fn hls_job_id(
             video_bitrate: target.video_bitrate,
             audio_bitrate: target.audio_bitrate,
             audio_stream_index: target.audio_stream_index,
+            video_stream_index: target.video_stream_index,
             max_width: target.max_width,
             max_height: target.max_height,
             max_framerate: target.max_framerate,
@@ -1058,6 +1070,13 @@ pub fn hls_job_id_from_input(item_id: Uuid, input: HlsJobIdInput<'_>) -> String 
     ]);
     digest.update(input.segment_length_ms.to_le_bytes());
     digest.update(input.container.as_bytes());
+    // Keep legacy job ids stable when no video stream was selected, but make
+    // explicit multi-video requests distinct so their FFmpeg jobs cannot be
+    // reused with the wrong mapped stream.
+    if let Some(video_stream_index) = input.video_stream_index {
+        digest.update(b":video_stream_index=");
+        digest.update(video_stream_index.to_le_bytes());
+    }
     let bytes = digest.finalize();
     let mut job_id = String::with_capacity(17);
     for byte in bytes.iter().take(8) {
@@ -1308,6 +1327,31 @@ mod tests {
                 .arguments
                 .windows(2)
                 .any(|pair| pair == ["-map", "0:2"])
+        );
+    }
+
+    #[test]
+    fn hls_command_maps_selected_video_by_global_media_stream_index() {
+        let command = hls_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/job1"),
+            &TranscodeTarget {
+                video_stream_index: Some(4),
+                ..TranscodeTarget::default()
+            },
+            &HlsSegmentSettings {
+                container: "ts".to_owned(),
+                segment_length_ms: 6_000,
+                min_segments: 2,
+            },
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-map", "0:4"])
         );
     }
 
