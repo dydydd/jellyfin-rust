@@ -34,6 +34,7 @@ pub(crate) struct StreamQuery {
         rename = "audioBitRate",
         alias = "AudioBitRate",
         alias = "AudioBitrate",
+        alias = "audioBitrate",
         alias = "audiobitrate"
     )]
     audio_bitrate: Option<i64>,
@@ -130,6 +131,7 @@ pub(crate) struct UniversalQuery {
         rename = "audioBitRate",
         alias = "AudioBitRate",
         alias = "AudioBitrate",
+        alias = "audioBitrate",
         alias = "audiobitrate"
     )]
     audio_bitrate: Option<i64>,
@@ -255,15 +257,7 @@ pub(crate) async fn universal(
             .next()
             .is_some_and(|container| container.eq_ignore_ascii_case(actual_container))
     });
-    let requires_transcode = query.audio_codec.is_some()
-        || query.max_audio_channels.is_some()
-        || query.transcoding_audio_channels.is_some()
-        || query.audio_stream_index.is_some()
-        || query.max_streaming_bitrate.is_some()
-        || query.audio_bitrate.is_some()
-        || query.max_audio_sample_rate.is_some()
-        || query.start_time_ticks.is_some_and(|ticks| ticks != 0)
-        || query.transcoding_container.is_some();
+    let requires_transcode = universal_requires_transcode(&query);
     if supports_direct && !requires_transcode {
         return serve_path(headers, path, request).await;
     }
@@ -301,6 +295,18 @@ pub(crate) async fn universal(
         request.method() == axum::http::Method::HEAD,
     )
     .await
+}
+
+fn universal_requires_transcode(query: &UniversalQuery) -> bool {
+    query.audio_codec.is_some()
+        || query.max_audio_channels.is_some()
+        || query.transcoding_audio_channels.is_some()
+        || query.audio_stream_index.is_some()
+        || query.max_streaming_bitrate.is_some()
+        || query.audio_bitrate.is_some()
+        || query.max_audio_sample_rate.is_some()
+        || query.start_time_ticks.is_some_and(|ticks| ticks != 0)
+        || query.transcoding_container.is_some()
 }
 
 fn audio_container(codec: &str) -> &str {
@@ -417,7 +423,7 @@ mod tests {
     use axum::http::Uri;
     use axum_extra::extract::Query;
 
-    use super::StreamQuery;
+    use super::{StreamQuery, UniversalQuery, universal_requires_transcode};
 
     #[test]
     fn audio_stream_binds_alternate_media_source_id_case_insensitively() {
@@ -464,6 +470,23 @@ mod tests {
             Some(jellyfin_model::MediaStreamProtocol::Hls)
         );
         assert_eq!(query._enable_redirection, Some(false));
+    }
+
+    #[test]
+    fn universal_audio_honors_camel_case_audio_bitrate() {
+        // ASP.NET binds `audioBitRate` case-insensitively, so clients using the conventional
+        // camel-case spelling must not fall through to direct playback.
+        let uri: Uri = "/audio/item/universal?audioBitrate=128000".parse().unwrap();
+        let query = Query::<UniversalQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.audio_bitrate, Some(128_000));
+        assert!(universal_requires_transcode(&query));
+    }
+
+    #[test]
+    fn progressive_audio_honors_camel_case_audio_bitrate() {
+        let uri: Uri = "/audio/item/stream?audioBitrate=192000".parse().unwrap();
+        let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.audio_bitrate, Some(192_000));
     }
 }
 

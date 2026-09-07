@@ -54,6 +54,8 @@ pub(crate) struct TranscodeQuery {
     #[serde(
         rename = "audioBitrate",
         alias = "AudioBitrate",
+        alias = "audioBitRate",
+        alias = "AudioBitRate",
         alias = "audiobitrate"
     )]
     audio_bitrate: Option<i64>,
@@ -980,9 +982,10 @@ mod tests {
     use std::path::PathBuf;
 
     use axum::http::Uri;
+    use axum_extra::extract::Query;
     use uuid::Uuid;
 
-    use super::{cleanup_transcode_job, media_type_item_id, segment_length_ms};
+    use super::{TranscodeQuery, cleanup_transcode_job, media_type_item_id, segment_length_ms};
 
     #[test]
     fn generated_lowercase_transcode_paths_resolve_their_media_type() {
@@ -1000,6 +1003,17 @@ mod tests {
         assert_eq!(segment_length_ms(Some(6)).unwrap(), 6_000);
         assert!(segment_length_ms(Some(0)).is_err());
         assert!(segment_length_ms(Some(i32::MAX)).is_err());
+    }
+
+    #[test]
+    fn audio_hls_binds_universal_audio_bitrate_spelling() {
+        // Universal Audio exposes this parameter as `audioBitRate`; ASP.NET binds it on the HLS
+        // follow-up request despite the Dynamic HLS parameter's `audioBitrate` spelling.
+        let uri: Uri = "/audio/item/master.m3u8?audioBitRate=128000"
+            .parse()
+            .unwrap();
+        let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.audio_bitrate, Some(128_000));
     }
 
     #[tokio::test]
