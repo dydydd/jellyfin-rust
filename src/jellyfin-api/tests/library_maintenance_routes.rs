@@ -6,7 +6,9 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice};
+use jellyfin_data::{
+    ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
+};
 use sea_orm::ConnectionTrait;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -79,6 +81,43 @@ async fn exercise_library_maintenance_routes(database_name: &str) {
         .await
         .expect("API key creation")
         .access_token;
+    let items = BaseItemRepository::new(database.clone());
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.data = Some(json!({
+        "ProviderIds": { "ImDb": "tt0133093", "TMDB": "603" }
+    }));
+    items.create(movie).await.expect("provider-id movie");
+    let mut series = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series.data = Some(json!({ "ProviderIds": { "TVDB": "121361" } }));
+    items.create(series).await.expect("provider-id series");
+    items
+        .create(NewBaseItem::new(Uuid::new_v4(), "Series"))
+        .await
+        .expect("series without TVDB id");
+    assert!(
+        items
+            .has_provider_id("Movie", "imdb", Some("TT0133093"))
+            .await
+            .expect("case-insensitive IMDb match")
+    );
+    assert!(
+        items
+            .has_provider_id("Series", "tvdb", Some("121361"))
+            .await
+            .expect("case-insensitive TVDB match")
+    );
+    assert!(
+        items
+            .has_provider_id("Series", "Tvdb", None)
+            .await
+            .expect("omitted TVDB id match")
+    );
+    assert!(
+        !items
+            .has_provider_id("Movie", "Tmdb", Some("missing"))
+            .await
+            .expect("unmatched TMDB id")
+    );
 
     let app = jellyfin_api::router(AppState::new(
         database.clone(),

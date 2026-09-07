@@ -117,6 +117,10 @@
   preserve names, while Episodes keep source order, deduplicate URLs case-insensitively like
   `AddTrailerUrl`, leave trailer names absent, and construct the URL even when TMDb omits the key.
 - Treat passwords, access tokens, API keys, and deployment credentials as secrets. Do not log or commit them.
+- Match `Library/Series/Updated` and `Library/Movies/Updated` external-source reports: select
+  Series by TVDB (including the official omitted-id/no-TVDB case), select Movies by nonblank IMDb
+  before TMDB with case-insensitive provider-id comparison, and feed a matching report into the
+  bounded library-scan fallback once rather than silently accepting it as a no-op.
 - Do not decode, resize, reformat, decorate, or otherwise transform images requested by API
   clients. Keep accepting the official image query surface for compatibility, but stream the
   original image bytes and content type so media-library browsing cannot create decoder-sized

@@ -134,6 +134,11 @@ struct ItemIdRow {
     item_id: Uuid,
 }
 
+#[derive(Debug, FromQueryResult)]
+struct ProviderIdMatchRow {
+    matched: bool,
+}
+
 /// Minimal descendant fields needed while reconciling a library scan.
 #[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
 pub struct DescendantScanCandidate {
@@ -784,6 +789,69 @@ impl BaseItemRepository {
         Ok(base_item::Entity::find_by_id(id)
             .one(self.database.as_ref())
             .await?)
+    }
+
+    /// Reports whether an item kind has a provider identifier matching the
+    /// official ordinal-ignore-case comparison.
+    ///
+    /// Passing `None` for `provider_value` matches items without that provider,
+    /// which preserves the official series-update notification behavior for an
+    /// omitted TVDB identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the lookup fails.
+    pub async fn has_provider_id(
+        &self,
+        item_type: &str,
+        provider_name: &str,
+        provider_value: Option<&str>,
+    ) -> Result<bool, BaseItemError> {
+        let item_types = expand_item_type_aliases(&[item_type.to_owned()]);
+        let mut values = Vec::with_capacity(item_types.len().saturating_add(2));
+        let mut sql = String::from(
+            "SELECT EXISTS (SELECT 1 FROM jellyfin.base_items AS item WHERE item.item_type IN (",
+        );
+        for (index, item_type) in item_types.into_iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            push_bind(&mut sql, &mut values, item_type, "");
+        }
+        sql.push_str(") AND ");
+        let providers = "jsonb_each_text(CASE \
+            WHEN jsonb_typeof(item.data -> 'ProviderIds') = 'object' \
+            THEN item.data -> 'ProviderIds' ELSE '{}'::jsonb END) \
+            AS provider(provider_id, provider_value)";
+        match provider_value {
+            Some(provider_value) => {
+                sql.push_str("EXISTS (SELECT 1 FROM ");
+                sql.push_str(providers);
+                sql.push_str(" WHERE lower(provider_id) = lower(");
+                push_bind(&mut sql, &mut values, provider_name.to_owned(), "");
+                sql.push_str(") AND lower(provider_value) = lower(");
+                push_bind(&mut sql, &mut values, provider_value.to_owned(), "");
+                sql.push_str("))");
+            }
+            None => {
+                sql.push_str("NOT EXISTS (SELECT 1 FROM ");
+                sql.push_str(providers);
+                sql.push_str(" WHERE lower(provider_id) = lower(");
+                push_bind(&mut sql, &mut values, provider_name.to_owned(), "");
+                sql.push_str("))");
+            }
+        }
+        sql.push_str(") AS matched");
+        Ok(
+            ProviderIdMatchRow::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .one(self.database.as_ref())
+            .await?
+            .is_some_and(|row| row.matched),
+        )
     }
 
     /// Loads a set of items in one `PostgreSQL` query.

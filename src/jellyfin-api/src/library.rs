@@ -660,7 +660,13 @@ pub(crate) async fn updated_series(
 ) -> Result<StatusCode, ApiError> {
     authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let _ = query.tvdb_id.as_deref();
+    if state
+        .base_items
+        .has_provider_id("Series", "Tvdb", query.tvdb_id.as_deref())
+        .await?
+    {
+        scan_reported_provider_update(&state).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -672,8 +678,45 @@ pub(crate) async fn updated_movies(
 ) -> Result<StatusCode, ApiError> {
     authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let _ = (query.imdb_id.as_deref(), query.tmdb_id.as_deref());
+    if let Some((provider_name, provider_value)) =
+        movie_update_provider(query.imdb_id.as_deref(), query.tmdb_id.as_deref())
+        && state
+            .base_items
+            .has_provider_id("Movie", provider_name, Some(provider_value))
+            .await?
+    {
+        scan_reported_provider_update(&state).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn scan_reported_provider_update(state: &AppState) -> Result<(), ApiError> {
+    // The official server queues each matching path in its filesystem monitor.
+    // This server does not yet expose that monitor, so use the existing bounded
+    // full-library scan fallback from Library/Media/Updated once per report.
+    let summary = state.library_scan.scan_all().await?;
+    crate::websocket::broadcast_library_changed(
+        state,
+        &summary.added_ids,
+        &summary.removed_ids,
+        &summary.changed_ids,
+    )
+    .await;
+    Ok(())
+}
+
+fn movie_update_provider<'a>(
+    imdb_id: Option<&'a str>,
+    tmdb_id: Option<&'a str>,
+) -> Option<(&'static str, &'a str)> {
+    imdb_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| ("Imdb", value))
+        .or_else(|| {
+            tmdb_id
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| ("Tmdb", value))
+        })
 }
 
 pub(crate) async fn updated_media(
@@ -1193,7 +1236,7 @@ mod tests {
     use axum::http::Uri;
     use uuid::Uuid;
 
-    use super::delete_item_ids;
+    use super::{delete_item_ids, movie_update_provider};
 
     const FIRST: &str = "00112233-4455-6677-8899-aabbccddeeff";
     const SECOND: &str = "11223344-5566-7788-99aa-bbccddeeff00";
@@ -1231,5 +1274,18 @@ mod tests {
             parse(&format!("/Items?ids={FIRST},{SECOND}&ids={THIRD}")),
             [Uuid::parse_str(THIRD).unwrap()]
         );
+    }
+
+    #[test]
+    fn movie_update_provider_matches_official_imdb_precedence() {
+        assert_eq!(
+            movie_update_provider(Some("tt0133093"), Some("603")),
+            Some(("Imdb", "tt0133093"))
+        );
+        assert_eq!(
+            movie_update_provider(Some(" \t"), Some("603")),
+            Some(("Tmdb", "603"))
+        );
+        assert_eq!(movie_update_provider(None, Some("\n")), None);
     }
 }
