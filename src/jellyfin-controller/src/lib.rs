@@ -82,7 +82,10 @@ pub use library_controller::{
     LibraryControllerError, LibraryControllerService, item_can_delete, item_can_download,
     media_source_path,
 };
-pub use library_scan::{LibraryScanError, LibraryScanService, LibraryScanSummary};
+pub use library_scan::{
+    LibraryScanError, LibraryScanService, LibraryScanSummary, MediaItemScanFailure,
+    MediaItemScanFailureKind, MediaItemScanFailureStage,
+};
 pub use localization::LocalizationService;
 pub use lyrics::{
     LyricManager, LyricManagerError, LyricProvider, LyricProviderError, LyricProviderFuture,

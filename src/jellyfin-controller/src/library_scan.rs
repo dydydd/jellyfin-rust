@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use jellyfin_data::{
     BaseItemError, BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError,
     BaseItemImageType, BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
@@ -70,6 +70,7 @@ const MAX_STRM_PROBE_COORDINATION_ENTRIES: usize = 1_024;
 const MEDIA_INFO_PROBE_SCHEMA_VERSION: u64 = 1;
 const LOCAL_MEDIA_PROBE_FAILURE_BACKOFF: Duration = Duration::from_secs(15 * 60);
 const MAX_LOCAL_MEDIA_PROBE_FAILURE_ENTRIES: usize = 1_024;
+const MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES: usize = 32;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LibraryScanSummary {
@@ -80,6 +81,45 @@ pub struct LibraryScanSummary {
     pub added_ids: Vec<Uuid>,
     pub changed_ids: Vec<Uuid>,
     pub removed_ids: Vec<Uuid>,
+}
+
+/// The part of media-item processing that failed during a library scan.
+///
+/// Media probing intentionally is not represented here: a failed probe leaves
+/// the item with its playback-safe fallback stream and is retried after the
+/// local probe backoff. Every error reported by this type instead prevented a
+/// filesystem, hierarchy, or persistence operation from completing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaItemScanFailureStage {
+    Filesystem,
+    Persistence,
+}
+
+/// The source error category for a failed media item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaItemScanFailureKind {
+    BaseItem,
+    MediaStream,
+    MediaAttachment,
+    Chapter,
+    ItemImage,
+    ItemValue,
+    ServerConfiguration,
+    ItemUpdate,
+    Person,
+    VirtualFolder,
+    Io,
+    AlreadyScanning,
+}
+
+/// A bounded per-file failure report returned when a media-item scan batch
+/// cannot be persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaItemScanFailure {
+    pub path: String,
+    pub stage: MediaItemScanFailureStage,
+    pub kind: MediaItemScanFailureKind,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -304,6 +344,49 @@ struct MediaItemScanOutcome {
     changed: bool,
 }
 
+fn record_media_item_scan_result(
+    path: &Path,
+    result: Result<MediaItemScanOutcome, LibraryScanError>,
+    summary: &mut LibraryScanSummary,
+    failures: &mut Vec<MediaItemScanFailure>,
+    failure_count: &mut usize,
+) -> usize {
+    match result {
+        Ok(outcome) => {
+            if outcome.added {
+                summary.added_ids.push(outcome.item_id);
+            }
+            if outcome.changed {
+                summary.changed_ids.push(outcome.item_id);
+            }
+            usize::from(outcome.added)
+        }
+        Err(error) => {
+            // Probe failures are converted to fallback streams by
+            // `ensure_media_streams`; reaching this point means a filesystem,
+            // hierarchy, or persistence operation failed and the scan must not
+            // report success.
+            *failure_count += 1;
+            if failures.len() < MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES {
+                failures.push(MediaItemScanFailure {
+                    path: path.to_string_lossy().into_owned(),
+                    stage: error.media_item_failure_stage(),
+                    kind: error.media_item_failure_kind(),
+                    message: error.to_string(),
+                });
+            }
+            0
+        }
+    }
+}
+
+fn media_item_failures_error(
+    count: usize,
+    failures: Vec<MediaItemScanFailure>,
+) -> Option<LibraryScanError> {
+    (count > 0).then_some(LibraryScanError::MediaItemFailures { count, failures })
+}
+
 #[derive(Debug, Default)]
 struct ScanDirectorySnapshot {
     entries: Vec<MediaFileSystemEntry>,
@@ -420,8 +503,53 @@ pub enum LibraryScanError {
     VirtualFolder(#[from] VirtualFolderError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("failed to persist {count} media item(s) during the library scan")]
+    MediaItemFailures {
+        count: usize,
+        failures: Vec<MediaItemScanFailure>,
+    },
     #[error("a library scan is already in progress")]
     AlreadyScanning,
+}
+
+impl LibraryScanError {
+    const fn media_item_failure_stage(&self) -> MediaItemScanFailureStage {
+        match self {
+            Self::Io(_) => MediaItemScanFailureStage::Filesystem,
+            Self::BaseItem(_)
+            | Self::MediaStream(_)
+            | Self::MediaAttachment(_)
+            | Self::Chapter(_)
+            | Self::ItemImage(_)
+            | Self::ItemValue(_)
+            | Self::ServerConfiguration(_)
+            | Self::ItemUpdate(_)
+            | Self::Person(_)
+            | Self::VirtualFolder(_)
+            | Self::AlreadyScanning
+            | Self::MediaItemFailures { .. } => MediaItemScanFailureStage::Persistence,
+        }
+    }
+
+    fn media_item_failure_kind(&self) -> MediaItemScanFailureKind {
+        match self {
+            Self::BaseItem(_) => MediaItemScanFailureKind::BaseItem,
+            Self::MediaStream(_) => MediaItemScanFailureKind::MediaStream,
+            Self::MediaAttachment(_) => MediaItemScanFailureKind::MediaAttachment,
+            Self::Chapter(_) => MediaItemScanFailureKind::Chapter,
+            Self::ItemImage(_) => MediaItemScanFailureKind::ItemImage,
+            Self::ItemValue(_) => MediaItemScanFailureKind::ItemValue,
+            Self::ServerConfiguration(_) => MediaItemScanFailureKind::ServerConfiguration,
+            Self::ItemUpdate(_) => MediaItemScanFailureKind::ItemUpdate,
+            Self::Person(_) => MediaItemScanFailureKind::Person,
+            Self::VirtualFolder(_) => MediaItemScanFailureKind::VirtualFolder,
+            Self::Io(_) => MediaItemScanFailureKind::Io,
+            Self::AlreadyScanning => MediaItemScanFailureKind::AlreadyScanning,
+            Self::MediaItemFailures { .. } => {
+                unreachable!("media item scan failures cannot be nested")
+            }
+        }
+    }
 }
 
 pub struct LibraryScanService {
@@ -2155,13 +2283,15 @@ impl LibraryScanService {
         let concurrency = self.fanout_concurrency();
         if concurrency <= 1 {
             let mut added = 0;
+            let mut failures = Vec::new();
+            let mut failure_count = 0;
             for (path, media_kind) in files {
                 let existing = path.to_str().and_then(|p| existing_by_path.remove(p));
                 let preloaded = existing
                     .as_ref()
                     .and_then(|item| preloaded_by_id.remove(&item.id))
                     .unwrap_or_default();
-                let outcome = self
+                let result = self
                     .ensure_media_item_with_permit(
                         path,
                         parent_id,
@@ -2172,19 +2302,24 @@ impl LibraryScanService {
                         preloaded,
                         existing,
                     )
-                    .await?;
-                if outcome.added {
-                    added += 1;
-                    summary.added_ids.push(outcome.item_id);
-                }
-                if outcome.changed {
-                    summary.changed_ids.push(outcome.item_id);
-                }
+                    .await;
+                added += record_media_item_scan_result(
+                    path,
+                    result,
+                    summary,
+                    &mut failures,
+                    &mut failure_count,
+                );
+            }
+            if let Some(error) = media_item_failures_error(failure_count, failures) {
+                return Err(error);
             }
             return Ok(added);
         }
         let mut files = files.iter();
-        let work = FuturesUnordered::new();
+        let work: FuturesUnordered<
+            BoxFuture<'_, (&Path, Result<MediaItemScanOutcome, LibraryScanError>)>,
+        > = FuturesUnordered::new();
         for (path, media_kind) in files.by_ref().take(concurrency) {
             let existing = path
                 .to_str()
@@ -2193,20 +2328,30 @@ impl LibraryScanService {
                 .as_ref()
                 .and_then(|item| preloaded_by_id.remove(&item.id))
                 .unwrap_or_default();
-            work.push(self.ensure_media_item_with_permit(
-                path,
-                parent_id,
-                *media_kind,
-                kind,
-                library_root,
-                directory_snapshot,
-                preloaded,
-                existing,
-            ));
+            work.push(
+                async move {
+                    let result = self
+                        .ensure_media_item_with_permit(
+                            path,
+                            parent_id,
+                            *media_kind,
+                            kind,
+                            library_root,
+                            directory_snapshot,
+                            preloaded,
+                            existing,
+                        )
+                        .await;
+                    (path.as_path(), result)
+                }
+                .boxed(),
+            );
         }
         let mut work = work;
         let mut added = 0;
-        while let Some(result) = work.next().await {
+        let mut failures = Vec::new();
+        let mut failure_count = 0;
+        while let Some((completed_path, result)) = work.next().await {
             if let Some((path, media_kind)) = files.next() {
                 let existing = path
                     .to_str()
@@ -2215,36 +2360,35 @@ impl LibraryScanService {
                     .as_ref()
                     .and_then(|item| preloaded_by_id.remove(&item.id))
                     .unwrap_or_default();
-                work.push(self.ensure_media_item_with_permit(
-                    path,
-                    parent_id,
-                    *media_kind,
-                    kind,
-                    library_root,
-                    directory_snapshot,
-                    preloaded,
-                    existing,
-                ));
+                work.push(
+                    async move {
+                        let result = self
+                            .ensure_media_item_with_permit(
+                                path,
+                                parent_id,
+                                *media_kind,
+                                kind,
+                                library_root,
+                                directory_snapshot,
+                                preloaded,
+                                existing,
+                            )
+                            .await;
+                        (path.as_path(), result)
+                    }
+                    .boxed(),
+                );
             }
-            match result {
-                Ok(MediaItemScanOutcome {
-                    item_id,
-                    added: true,
-                    ..
-                }) => {
-                    added += 1;
-                    summary.added_ids.push(item_id);
-                }
-                Ok(MediaItemScanOutcome {
-                    item_id,
-                    changed: true,
-                    ..
-                }) => summary.changed_ids.push(item_id),
-                Ok(MediaItemScanOutcome { .. }) => {}
-                Err(error) => {
-                    tracing::debug!(%error, "concurrent media item processing failed");
-                }
-            }
+            added += record_media_item_scan_result(
+                completed_path,
+                result,
+                summary,
+                &mut failures,
+                &mut failure_count,
+            );
+        }
+        if let Some(error) = media_item_failures_error(failure_count, failures) {
+            return Err(error);
         }
         Ok(added)
     }
@@ -4866,19 +5010,22 @@ const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "
 #[cfg(test)]
 mod tests {
     use super::{
-        LibraryScanGuard, LibraryScanService, MediaInfoProbeFingerprint, MediaKind,
-        ScanLibraryKind, ScannedPathFingerprint, SeenPaths, StrmProbeCoordinator, StrmProbeKey,
-        StrmProbeLease, apply_episode_nfo, apply_non_movie_nfo, apply_probed_item_metadata,
-        apply_scanned_file_size, apply_scanned_group_name, apply_strm_metadata,
-        attachment_image_type, attachments_from_media_info, codec_from_extension,
-        default_fanout_concurrency, default_stream, display_name, extra_type_name,
-        image_extraction_command_succeeded, is_extras_directory, is_placeholder_stream,
-        item_by_name_folder_name, local_image_type, media_info_probe_marker_is_current,
-        media_item_data, media_kind, merge_scan_summary, metadata_movie_version_groups,
-        next_stream_index, official_item_by_name_id, read_strm_target, relations_from_movie_nfo,
-        relations_from_nfo_metadata, resolve_external_subtitle_streams_from_entries,
-        resolve_scanned_video_groups, scan_file_batches, scan_nfo_person, set_additional_parts,
-        stable_item_id, streams_from_media_info, streams_need_probe, track_group_change,
+        LibraryScanError, LibraryScanGuard, LibraryScanService, LibraryScanSummary,
+        MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES, MediaInfoProbeFingerprint, MediaItemScanOutcome,
+        MediaKind, ScanLibraryKind, ScannedPathFingerprint, SeenPaths, StrmProbeCoordinator,
+        StrmProbeKey, StrmProbeLease, apply_episode_nfo, apply_non_movie_nfo,
+        apply_probed_item_metadata, apply_scanned_file_size, apply_scanned_group_name,
+        apply_strm_metadata, attachment_image_type, attachments_from_media_info,
+        codec_from_extension, default_fanout_concurrency, default_stream, display_name,
+        extra_type_name, image_extraction_command_succeeded, is_extras_directory,
+        is_placeholder_stream, item_by_name_folder_name, local_image_type,
+        media_info_probe_marker_is_current, media_item_data, media_item_failures_error, media_kind,
+        merge_scan_summary, metadata_movie_version_groups, next_stream_index,
+        official_item_by_name_id, read_strm_target, record_media_item_scan_result,
+        relations_from_movie_nfo, relations_from_nfo_metadata,
+        resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
+        scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
+        streams_from_media_info, streams_need_probe, track_group_change,
         write_media_info_probe_marker,
     };
 
@@ -5128,7 +5275,7 @@ mod tests {
     }
 
     use chrono::Utc;
-    use jellyfin_data::{PersistedMediaStreamType, entities::base_item};
+    use jellyfin_data::{BaseItemError, PersistedMediaStreamType, entities::base_item};
     use jellyfin_media_encoding::probing::{ProbeContext, normalize_probe_json};
     use jellyfin_naming::ExtraType;
     use jellyfin_providers::media_info::MediaFileSystemEntry;
@@ -5386,6 +5533,89 @@ mod tests {
         assert_eq!(summary.added_ids, [added]);
         assert_eq!(summary.changed_ids, [changed]);
         assert_eq!(summary.removed_ids, [removed]);
+    }
+
+    #[test]
+    fn sequential_and_concurrent_item_results_both_fail_on_persistence_errors() {
+        fn collect(
+            results: Vec<(&str, Result<MediaItemScanOutcome, LibraryScanError>)>,
+        ) -> (LibraryScanSummary, usize, Vec<super::MediaItemScanFailure>) {
+            let mut summary = LibraryScanSummary::default();
+            let mut failures = Vec::new();
+            let mut failure_count = 0;
+            for (path, result) in results {
+                record_media_item_scan_result(
+                    Path::new(path),
+                    result,
+                    &mut summary,
+                    &mut failures,
+                    &mut failure_count,
+                );
+            }
+            (summary, failure_count, failures)
+        }
+
+        let sequential = collect(vec![
+            (
+                "/media/one.mkv",
+                Err(LibraryScanError::BaseItem(BaseItemError::NotFound)),
+            ),
+            (
+                "/media/two.mkv",
+                Ok(MediaItemScanOutcome::added(uuid::Uuid::new_v4())),
+            ),
+        ]);
+        // Futures complete in any order; reporting the same failures must not
+        // make a concurrent scan look successful.
+        let concurrent = collect(vec![
+            (
+                "/media/two.mkv",
+                Ok(MediaItemScanOutcome::added(uuid::Uuid::new_v4())),
+            ),
+            (
+                "/media/one.mkv",
+                Err(LibraryScanError::BaseItem(BaseItemError::NotFound)),
+            ),
+        ]);
+
+        for (_, count, failures) in [sequential, concurrent] {
+            let error = media_item_failures_error(count, failures).expect("scan must fail");
+            let LibraryScanError::MediaItemFailures { count, failures } = error else {
+                panic!("persistence failures must retain their batch error");
+            };
+            assert_eq!(count, 1);
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].path, "/media/one.mkv");
+            assert_eq!(failures[0].kind, super::MediaItemScanFailureKind::BaseItem);
+            assert_eq!(
+                failures[0].stage,
+                super::MediaItemScanFailureStage::Persistence
+            );
+        }
+    }
+
+    #[test]
+    fn media_item_failure_reports_are_bounded_but_keep_the_total_count() {
+        let mut summary = LibraryScanSummary::default();
+        let mut failures = Vec::new();
+        let mut failure_count = 0;
+        for index in 0..=MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES {
+            record_media_item_scan_result(
+                Path::new(&format!("/media/{index}.mkv")),
+                Err(LibraryScanError::BaseItem(BaseItemError::NotFound)),
+                &mut summary,
+                &mut failures,
+                &mut failure_count,
+            );
+        }
+
+        let error = media_item_failures_error(failure_count, failures).expect("scan must fail");
+        let LibraryScanError::MediaItemFailures { count, failures } = error else {
+            panic!("persistence failures must retain their batch error");
+        };
+        assert_eq!(count, MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES + 1);
+        assert_eq!(failures.len(), MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES);
+        assert_eq!(failures[0].path, "/media/0.mkv");
     }
 
     fn base_item_default() -> base_item::Model {

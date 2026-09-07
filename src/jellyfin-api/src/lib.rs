@@ -2975,6 +2975,7 @@ fn library_scan_error_response(error: &LibraryScanError) -> (StatusCode, &'stati
             "Library scan media metadata is invalid",
         ),
         LibraryScanError::Io(_)
+        | LibraryScanError::MediaItemFailures { .. }
         | LibraryScanError::BaseItem(_)
         | LibraryScanError::Chapter(_)
         | LibraryScanError::ItemImage(_)
