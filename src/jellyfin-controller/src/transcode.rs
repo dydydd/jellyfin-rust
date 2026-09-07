@@ -332,6 +332,10 @@ pub fn audio_command(
         arguments.push("-ar".to_owned());
         arguments.push(sample_rate.to_string());
     }
+    if is_mp4_container(output_path) {
+        arguments.push("-movflags".to_owned());
+        arguments.push("empty_moov+delay_moov".to_owned());
+    }
     arguments.push(output_path.to_string_lossy().into_owned());
 
     FfmpegCommand {
@@ -404,12 +408,33 @@ pub fn video_command(
         arguments.push("-ar".to_owned());
         arguments.push(sample_rate.to_string());
     }
+    if output_path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"))
+    {
+        arguments.push("-f".to_owned());
+        arguments.push("mp4".to_owned());
+        arguments.push("-movflags".to_owned());
+        arguments.push("frag_keyframe+empty_moov+delay_moov".to_owned());
+    }
     arguments.push(output_path.to_string_lossy().into_owned());
 
     FfmpegCommand {
         program: ffmpeg_path.to_path_buf(),
         arguments,
     }
+}
+
+fn is_mp4_container(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "mp4" | "m4a" | "m4p" | "m4b" | "m4r" | "m4v"
+            )
+        })
 }
 
 fn format_ticks_as_seconds(ticks: i64) -> String {
@@ -1172,8 +1197,61 @@ mod tests {
                 "2",
                 "-ar",
                 "48000",
+                "-f",
+                "mp4",
+                "-movflags",
+                "frag_keyframe+empty_moov+delay_moov",
                 "/tmp/transcodes/out.mp4",
             ]
+        );
+    }
+
+    #[test]
+    fn audio_command_fragments_mp4_output_for_progressive_playback() {
+        let command = audio_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/song.flac"),
+            Path::new("/tmp/transcodes/out.m4a"),
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["-movflags", "empty_moov+delay_moov"] })
+        );
+    }
+
+    #[test]
+    fn video_command_fragments_mp4_output_for_progressive_playback() {
+        let command = video_command(
+            Path::new("/usr/bin/ffmpeg"),
+            Path::new("/media/movie.mkv"),
+            Path::new("/tmp/transcodes/out.mp4"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["-movflags", "frag_keyframe+empty_moov+delay_moov"] })
         );
     }
 

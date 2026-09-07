@@ -317,6 +317,10 @@
 - Progressive audio/video stream responses must start FFmpeg and read the growing output file
   immediately, matching the official `ProgressiveFileStream` behavior; never await complete
   FFmpeg termination before returning the response, or Android playback of long media can stall.
+- Match the official progressive MP4 muxing contract: video output uses
+  `-f mp4 -movflags frag_keyframe+empty_moov+delay_moov`, while MP4-family audio output uses
+  `-movflags empty_moov+delay_moov`, so Android can parse initialization metadata before the
+  transcode finishes.
 - Project `SupportsExternalStream` on every persisted media stream using the official rule: true
   for external streams and for text, PGS, or VobSub subtitles. Keep the value consistent between
   top-level streams and every single- or alternate-version media source.
