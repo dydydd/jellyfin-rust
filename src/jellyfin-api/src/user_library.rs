@@ -1449,6 +1449,7 @@ pub(crate) async fn project_item_to_dto(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -1466,6 +1467,7 @@ pub(crate) async fn project_item_to_dto_with_context(
     preloaded_user_data: Option<UserItemDataDto>,
     preloaded_has_subtitles: Option<bool>,
     image_projection: Option<jellyfin_server_implementations::DtoImageProjection>,
+    versioned_media_sources: Option<VersionedMediaSourceContext>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
     let is_playlist = is_item_type(&item.item_type, "Playlist");
@@ -1596,6 +1598,20 @@ pub(crate) async fn project_item_to_dto_with_context(
     }
 
     if fields.media_sources {
+        if let Some(context) = versioned_media_sources {
+            attach_versioned_media_sources_from_context(
+                &mut dto,
+                context,
+                state.server_id(),
+                fields,
+                defaults,
+                remembered_user_data,
+            )?;
+            if let Some(policy) = media_source_policy.as_ref() {
+                apply_media_source_policy(&mut dto, policy);
+            }
+            return Ok(dto);
+        }
         let mut source_items = state.base_items.media_source_versions(item_id).await?;
         if !source_items.is_empty() {
             let source_ids = source_items.iter().map(|item| item.id).collect::<Vec<_>>();
@@ -1949,6 +1965,29 @@ async fn attach_versioned_media_sources(
     )
 }
 
+fn attach_versioned_media_sources_from_context(
+    dto: &mut BaseItemDto,
+    context: VersionedMediaSourceContext,
+    server_id: &str,
+    fields: BaseItemDtoFields,
+    defaults: Option<&MediaStreamDefaults>,
+    remembered_user_data: Option<&user_data::Model>,
+) -> Result<(), ApiError> {
+    let mut media_streams = context.media_streams;
+    let mut media_attachments = context.media_attachments;
+    project_item_dto_with_versioned_sources(
+        dto,
+        context.source_items,
+        server_id,
+        fields,
+        &mut media_streams,
+        &mut media_attachments,
+        defaults,
+        remembered_user_data,
+        &context.linked_parents,
+    )
+}
+
 pub(crate) fn project_item_dto_with_versioned_sources(
     dto: &mut BaseItemDto,
     mut source_items: Vec<base_item::Model>,
@@ -2049,6 +2088,13 @@ pub(crate) struct ItemRelationMetadata {
     people: Vec<BaseItemPerson>,
     tags: Vec<String>,
     studios: Vec<NameIdPair>,
+}
+
+pub(crate) struct VersionedMediaSourceContext {
+    pub(crate) source_items: Vec<base_item::Model>,
+    pub(crate) media_streams: HashMap<Uuid, Vec<MediaStream>>,
+    pub(crate) media_attachments: HashMap<Uuid, Vec<MediaAttachment>>,
+    pub(crate) linked_parents: HashMap<Uuid, Uuid>,
 }
 
 #[derive(Debug, Default)]

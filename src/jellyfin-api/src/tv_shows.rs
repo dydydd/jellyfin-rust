@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, collections::HashMap, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum::{
     Json,
@@ -830,6 +834,83 @@ async fn project_items_to_dtos(
         )
         .await
         .map_err(|_| ApiError::Internal)?;
+    let mut versioned_contexts = HashMap::new();
+    if fields.wants_media_sources() {
+        let all_sources = state
+            .base_items
+            .media_source_versions_for_items(&item_ids)
+            .await?;
+        let all_source_ids = all_sources
+            .iter()
+            .map(|source| source.id)
+            .collect::<Vec<_>>();
+        let visible_source_ids = state
+            .user_library
+            .visible_item_ids(target_user_id, &all_source_ids)
+            .await?;
+        let linked_parents = state
+            .base_items
+            .linked_alternate_version_parents(&all_source_ids)
+            .await?;
+        let all_streams = state
+            .media_streams
+            .get_media_streams_for_items(&all_source_ids)
+            .await?;
+        let all_attachments = state
+            .media_attachments
+            .get_media_attachments_for_items(&all_source_ids)
+            .await?;
+        for item in &items {
+            let group_id = item.primary_version_id.unwrap_or(item.id);
+            let mut roots = std::collections::HashSet::from([group_id, item.id]);
+            loop {
+                let previous = roots.len();
+                for source in &all_sources {
+                    if linked_parents
+                        .get(&source.id)
+                        .is_some_and(|parent| roots.contains(parent))
+                    {
+                        roots.insert(source.id);
+                    }
+                }
+                if roots.len() == previous {
+                    break;
+                }
+            }
+            let source_items = all_sources
+                .iter()
+                .filter(|source| {
+                    let source_root = source.primary_version_id.unwrap_or(source.id);
+                    (source.id == item.id || roots.contains(&source_root))
+                        && (source.id == item.id || visible_source_ids.contains(&source.id))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let source_ids = source_items
+                .iter()
+                .map(|source| source.id)
+                .collect::<HashSet<_>>();
+            let media_streams = all_streams
+                .iter()
+                .filter(|(id, _)| source_ids.contains(id))
+                .map(|(id, streams)| (*id, streams.clone()))
+                .collect();
+            let media_attachments = all_attachments
+                .iter()
+                .filter(|(id, _)| source_ids.contains(id))
+                .map(|(id, attachments)| (*id, attachments.clone()))
+                .collect();
+            versioned_contexts.insert(
+                item.id,
+                user_library::VersionedMediaSourceContext {
+                    source_items,
+                    media_streams,
+                    media_attachments,
+                    linked_parents: linked_parents.clone(),
+                },
+            );
+        }
+    }
 
     let mut dtos = Vec::with_capacity(items.len());
     for item in items {
@@ -852,6 +933,7 @@ async fn project_items_to_dtos(
             user_data_dtos.remove(&item_id),
             Some(subtitle_item_ids.contains(&item_id)),
             image_projections.remove(&item_id),
+            versioned_contexts.remove(&item_id),
         )
         .await?;
         user_library::attach_external_urls(
