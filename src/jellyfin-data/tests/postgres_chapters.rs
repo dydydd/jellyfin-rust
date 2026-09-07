@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use jellyfin_data::{
     BaseItemRepository, ChapterRecord, ChapterRepository, DatabaseConfig, NewBaseItem, NewChapter,
@@ -114,10 +114,127 @@ async fn exercise_chapters(database_name: &str) {
     );
 
     assert_chapter_query_indexes(&database, first.id).await;
+    assert_atomic_batched_replacement(&chapters, first.id).await;
+    assert_concurrent_replacements(&database, &chapters, without_chapters.id).await;
     database
         .close()
         .await
         .expect("temporary database connection must close");
+}
+
+async fn assert_atomic_batched_replacement(chapters: &ChapterRepository, item_id: Uuid) {
+    let input = (0..257)
+        .rev()
+        .map(|index| chapter(index, i64::from(index) * 100, "Batched"))
+        .collect();
+    let saved = chapters
+        .replace(item_id, input)
+        .await
+        .expect("chapter replacement crossing two batch boundaries must succeed");
+    assert_eq!(saved.len(), 257);
+    assert_eq!(saved.first().unwrap().index_number, 256);
+    assert_eq!(saved.last().unwrap().index_number, 0);
+    let mut expected = saved;
+    expected.reverse();
+    assert_eq!(chapters.list_for_item(item_id).await.unwrap(), expected);
+
+    // A constraint violation in the second INSERT must roll back the first batch and the
+    // preceding DELETE, including the original chapter identities and thumbnail metadata.
+    chapters
+        .set_image_data(expected[0].id, "/metadata/chapter.jpg", chrono::Utc::now())
+        .await
+        .unwrap();
+    let original = chapters.list_for_item(item_id).await.unwrap();
+    let mut invalid = (0..128)
+        .map(|index| chapter(index, i64::from(index) * 100, "Must roll back"))
+        .collect::<Vec<_>>();
+    invalid.push(chapter(0, 99_999, "Duplicate index in a later batch"));
+    assert!(chapters.replace(item_id, invalid).await.is_err());
+    assert_eq!(chapters.list_for_item(item_id).await.unwrap(), original);
+
+    assert!(
+        chapters
+            .replace(item_id, Vec::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(chapters.list_for_item(item_id).await.unwrap().is_empty());
+}
+
+async fn assert_concurrent_replacements(
+    database: &DatabaseConnection,
+    chapters: &ChapterRepository,
+    item_id: Uuid,
+) {
+    let holder = database.begin().await.unwrap();
+    holder
+        .query_one(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT id FROM jellyfin.base_items WHERE id = $1 FOR UPDATE",
+            [item_id.into()],
+        ))
+        .await
+        .unwrap();
+
+    let first_repository = chapters.clone();
+    let first = tokio::spawn(async move {
+        first_repository
+            .replace(
+                item_id,
+                (0..129)
+                    .map(|index| chapter(index, i64::from(index) * 100, "First replacement"))
+                    .collect(),
+            )
+            .await
+    });
+    let second_repository = chapters.clone();
+    let second = tokio::spawn(async move {
+        second_repository
+            .replace(
+                item_id,
+                (200..330)
+                    .map(|index| chapter(index, i64::from(index) * 100, "Second replacement"))
+                    .collect(),
+            )
+            .await
+    });
+
+    // Both writers must reach a database lock before the holder releases the empty item.
+    // Without owner serialization, both DELETEs finish first and their disjoint inserts merge.
+    let waiting = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let count = database
+                .query_one(Statement::from_string(
+                    DbBackend::Postgres,
+                    "SELECT COUNT(*)::bigint AS waiting FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event_type = 'Lock' \
+                     AND pid <> pg_backend_pid()",
+                ))
+                .await
+                .unwrap()
+                .unwrap()
+                .try_get::<i64>("", "waiting")
+                .unwrap();
+            if count >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    holder.commit().await.unwrap();
+    waiting.expect("both chapter writers must reach their database lock");
+    let first = first.await.unwrap().expect("first concurrent replacement");
+    let second = second
+        .await
+        .unwrap()
+        .expect("second concurrent replacement");
+    let saved = chapters.list_for_item(item_id).await.unwrap();
+    assert!(
+        saved == first || saved == second,
+        "concurrent replacements must leave one complete chapter set, never a union"
+    );
 }
 
 fn assert_indexes_then_start_positions(

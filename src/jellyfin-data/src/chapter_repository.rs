@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
-    TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, IntoActiveModel,
+    QueryFilter, QueryOrder, Set, Statement, TransactionTrait,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -10,6 +10,8 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::entities::chapter;
+
+const CHAPTER_WRITE_BATCH_SIZE: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewChapter {
@@ -56,7 +58,10 @@ impl ChapterRepository {
         }
     }
 
-    /// Replaces all chapters for one item in index order.
+    /// Atomically replaces all chapters for one item in bounded write batches.
+    ///
+    /// The owning item serializes concurrent replacements, including an empty replacement.
+    /// Returned records retain input order; chapter reads use start-position order.
     ///
     /// # Errors
     ///
@@ -70,35 +75,51 @@ impl ChapterRepository {
             validate_chapter(chapter)?;
         }
         let transaction = self.database.begin().await?;
+        // Official ChapterRepository.SaveChapters deletes and inserts inside one transaction.
+        // PostgreSQL's statement snapshots also need an owner lock: competing replacements of
+        // an initially empty chapter set must not both insert their own chapters after deleting.
+        transaction
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT id FROM jellyfin.base_items WHERE id = $1 FOR NO KEY UPDATE",
+                [item_id.into()],
+            ))
+            .await?;
         chapter::Entity::delete_many()
             .filter(chapter::Column::ItemId.eq(item_id))
             .exec(&transaction)
             .await?;
         let mut records = Vec::with_capacity(chapters.len());
-        for chapter in chapters {
-            let id = Uuid::new_v4();
-            let model = chapter::ActiveModel {
-                id: Set(id),
-                item_id: Set(item_id),
-                index_number: Set(chapter.index_number),
-                start_position_ticks: Set(chapter.start_position_ticks),
-                end_position_ticks: Set(chapter.end_position_ticks),
-                name: Set(chapter.name),
-                image_path: Set(None),
-                image_date_modified: Set(None),
+        let mut chapters = chapters.into_iter();
+        loop {
+            let batch = chapters
+                .by_ref()
+                .take(CHAPTER_WRITE_BATCH_SIZE)
+                .map(|chapter| chapter::Model {
+                    id: Uuid::new_v4(),
+                    item_id,
+                    index_number: chapter.index_number,
+                    start_position_ticks: chapter.start_position_ticks,
+                    end_position_ticks: chapter.end_position_ticks,
+                    name: chapter.name,
+                    image_path: None,
+                    image_date_modified: None,
+                })
+                .collect::<Vec<_>>();
+            if batch.is_empty() {
+                break;
             }
-            .insert(&transaction)
+            // All persisted fields are supplied above, so RETURNING would only buffer and
+            // transfer a second copy of each chapter. Bound SQL parameters and temporary models.
+            chapter::Entity::insert_many(
+                batch
+                    .iter()
+                    .cloned()
+                    .map(IntoActiveModel::into_active_model),
+            )
+            .exec_without_returning(&transaction)
             .await?;
-            records.push(ChapterRecord {
-                id: model.id,
-                item_id: model.item_id,
-                index_number: model.index_number,
-                start_position_ticks: model.start_position_ticks,
-                end_position_ticks: model.end_position_ticks,
-                name: model.name,
-                image_path: model.image_path,
-                image_date_modified: model.image_date_modified,
-            });
+            records.extend(batch.into_iter().map(ChapterRecord::from));
         }
         transaction.commit().await?;
         Ok(records)
