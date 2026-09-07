@@ -446,7 +446,9 @@
   a final value equal to `ItemSortBy.Random` randomizes; malformed input behaves as unset.
 - Keep `Shows/NextUp` pagination on its distinct signed 32-bit contract. Preserve a negative
   `StartIndex` in the response while treating it as no skip, treat every non-positive `Limit` as
-  unlimited, and reject values outside the official `Int32` range.
+  unlimited, and reject values outside the official `Int32` range. Honor the official
+  `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes` DTO options through
+  the shared batched projector rather than accepting and discarding SDK request parameters.
 - Keep `Shows/Upcoming` on the official signed `Int32` pagination contract used by Android and
   Swift: a negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative
   `Limit` is unlimited, and out-of-range values fail binding across supported query casing. Honor

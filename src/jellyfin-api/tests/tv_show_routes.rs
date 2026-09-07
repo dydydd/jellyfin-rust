@@ -83,6 +83,95 @@ async fn upcoming_route_matches_signed_pagination_contract() {
     }
 }
 
+#[tokio::test]
+async fn next_up_route_honors_dto_options() {
+    let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+        .await
+        .expect("local PostgreSQL must be available");
+    let database_name = format!("{DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+    assert_temporary_database_name(&database_name);
+    administrator
+        .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+        .await
+        .expect("temporary PostgreSQL database creation must succeed");
+
+    let task_database_name = database_name.clone();
+    let outcome = tokio::spawn(async move {
+        let fixture = Fixture::new(&task_database_name).await;
+        let mut favorite = NewUserData::new(
+            fixture.second_episode_id,
+            fixture.user_id,
+            fixture.second_episode_id.to_string(),
+        );
+        favorite.is_favorite = true;
+        UserDataRepository::new(fixture.database.clone())
+            .upsert(favorite)
+            .await
+            .expect("next-up episode user data");
+
+        let default_result = body_json(
+            fixture
+                .get(
+                    &format!("/Shows/NextUp?seriesId={}", fixture.series_id),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let default_items = default_result["Items"].as_array().expect("next-up items");
+        assert!(!default_items.is_empty());
+        assert!(
+            default_items
+                .iter()
+                .all(|item| item["UserData"].is_object())
+        );
+
+        let disabled_result = body_json(
+            fixture
+                .get(
+                    &format!(
+                        "/shows/nextup?seriesid={}&enableuserdata=false&enableimages=false",
+                        fixture.series_id
+                    ),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let disabled_items = disabled_result["Items"].as_array().expect("next-up items");
+        assert_eq!(
+            item_ids(&disabled_result),
+            item_ids(&default_result),
+            "DTO options must not change NextUp selection"
+        );
+        assert!(
+            disabled_items
+                .iter()
+                .all(|item| item.get("UserData").is_none())
+        );
+        assert!(
+            disabled_items
+                .iter()
+                .all(|item| item.get("ImageTags").is_none())
+        );
+
+        fixture.cleanup().await;
+    })
+    .await;
+
+    administrator
+        .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+        .await
+        .expect("temporary PostgreSQL database cleanup must succeed");
+    administrator.close().await.unwrap();
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("temporary database test task was cancelled: {error}");
+    }
+}
+
 async fn exercise_seasons_route(database_name: &str) {
     let fixture = Fixture::new(database_name).await;
 

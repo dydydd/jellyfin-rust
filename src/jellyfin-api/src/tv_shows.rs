@@ -324,7 +324,7 @@ pub(crate) async fn upcoming(
 pub(crate) async fn next_up(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<NextUpQuery>,
+    Query(mut query): Query<NextUpQuery>,
 ) -> Result<Json<NextUpResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
@@ -335,7 +335,15 @@ pub(crate) async fn next_up(
         return Err(ApiError::Forbidden);
     }
     state.users.get(target_user_id).await?;
-    let fields = user_library::BaseItemDtoFields::from_names(&query.fields);
+    let fields = std::mem::take(&mut query.fields);
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
     let parent_id = match query.series_id.filter(|series_id| !series_id.is_nil()) {
         Some(series_id)
             if state
@@ -349,12 +357,6 @@ pub(crate) async fn next_up(
         _ => query.parent_id,
     };
 
-    let _ = (
-        query.enable_images,
-        query.image_type_limit,
-        query.enable_image_types,
-        query.enable_user_data,
-    );
     let next_up_date_cutoff = query
         .next_up_date_cutoff
         .as_deref()
@@ -384,11 +386,17 @@ pub(crate) async fn next_up(
             query.enable_total_record_count,
         )
         .await?;
-    let total_record_count = usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
-    let items = project_items_to_dtos(state.as_ref(), page.items, fields, target_user_id).await?;
+    let projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        page,
+        fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
     Ok(Json(NextUpResult {
-        items,
-        total_record_count,
+        items: projected.items,
+        total_record_count: projected.total_record_count,
         start_index: query.start_index.unwrap_or_default(),
     }))
 }
