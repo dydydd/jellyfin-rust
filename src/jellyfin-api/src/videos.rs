@@ -188,7 +188,7 @@ pub(crate) struct StreamQuery {
         alias = "MaxRefFrames",
         alias = "maxrefframes"
     )]
-    _max_ref_frames: Option<i32>,
+    max_ref_frames: Option<i32>,
     #[serde(
         rename = "maxVideoBitDepth",
         alias = "MaxVideoBitDepth",
@@ -542,6 +542,11 @@ fn can_copy_remux(
     !(query.require_avc == Some(true)
         && video_codec.eq_ignore_ascii_case("h264")
         && video_stream.is_avc == Some(false))
+        && !query.max_ref_frames.is_some_and(|maximum| {
+            video_stream
+                .ref_frames
+                .is_some_and(|actual| actual > maximum)
+        })
         && codecs_match(video_codec, requested_video_codec)
         && codecs_match(audio_codec, requested_audio_codec)
         && copy_remux_container_supports(container, video_codec, audio_codec)
@@ -832,7 +837,7 @@ mod tests {
         assert_eq!(query.video_stream_index, Some(0));
         assert_eq!(query.subtitle_stream_index, Some(3));
         assert_eq!(query.subtitle_method.as_deref(), Some("Encode"));
-        assert_eq!(query._max_ref_frames, Some(4));
+        assert_eq!(query.max_ref_frames, Some(4));
         assert_eq!(query._max_video_bit_depth, Some(10));
         assert_eq!(query.require_avc, Some(true));
         assert_eq!(query.de_interlace, Some(true));
@@ -917,6 +922,25 @@ mod tests {
             &require_avc,
             "mp4",
             &non_avc_streams,
+            "h264",
+            "aac",
+        ));
+
+        let too_many_ref_frames = StreamQuery {
+            max_ref_frames: Some(3),
+            ..query.clone()
+        };
+        let high_ref_streams = vec![
+            MediaStream {
+                ref_frames: Some(4),
+                ..streams[0].clone()
+            },
+            streams[1].clone(),
+        ];
+        assert!(!can_copy_remux(
+            &too_many_ref_frames,
+            "mp4",
+            &high_ref_streams,
             "h264",
             "aac",
         ));
