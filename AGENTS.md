@@ -137,6 +137,10 @@
 - Keep playback-info route static segments compatible with ASP.NET's case-insensitive routing:
   register both `/Items/{itemId}/PlaybackInfo` and `/items/{itemId}/playbackinfo` (including GET
   and POST) so generated Android and Swift SDK requests never depend on URL casing.
+- Cover the mobile browse bootstrap routes with fully lowercase aliases as well: public/system
+  info, branding configuration, users and user views, devices, display preferences, sessions,
+  item latest/counts/resume, and library available-options routes must preserve the official
+  handler and authorization policy under lowercase static segments.
 - Project `CanDelete` only when requested, except on official default all-fields item and root
   details. For user-less pages expose only the item's intrinsic capability; for user pages combine
   it with the target user's global or CollectionFolder-scoped deletion policy in one batched

@@ -856,6 +856,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/websocket", get(websocket::connect))
         .route("/socket", get(websocket::connect))
         .route("/Branding/Configuration", get(branding::get_configuration))
+        .route("/branding/configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
         .route(
@@ -1332,7 +1333,9 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/Logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
         .route("/System/Info", get(system::info))
+        .route("/system/info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))
+        .route("/system/info/storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
         .route("/System/Ext/ServerDomains", get(system::server_domains))
         .route("/System/Restart", post(system::restart))
@@ -1493,6 +1496,7 @@ fn authentication_routes() -> Router<Arc<AppState>> {
             post(authentication::authenticate),
         )
         .route("/Users/Me", get(authentication::current_user))
+        .route("/users/me", get(authentication::current_user))
 }
 
 fn quick_connect_routes() -> Router<Arc<AppState>> {
@@ -1506,18 +1510,29 @@ fn quick_connect_routes() -> Router<Arc<AppState>> {
 fn device_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Devices", get(devices::list).delete(devices::delete))
+        .route("/devices", get(devices::list).delete(devices::delete))
         .route("/Devices/Info", get(devices::info))
+        .route("/devices/info", get(devices::info))
         .route(
             "/Devices/Options",
+            get(devices::options).post(devices::update_options),
+        )
+        .route(
+            "/devices/options",
             get(devices::options).post(devices::update_options),
         )
 }
 
 fn display_preference_routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/DisplayPreferences/{display_preferences_id}",
-        get(display_preferences::get).post(display_preferences::update),
-    )
+    Router::new()
+        .route(
+            "/DisplayPreferences/{display_preferences_id}",
+            get(display_preferences::get).post(display_preferences::update),
+        )
+        .route(
+            "/displaypreferences/{display_preferences_id}",
+            get(display_preferences::get).post(display_preferences::update),
+        )
 }
 
 fn user_routes() -> Router<Arc<AppState>> {
@@ -1535,6 +1550,7 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .delete(users::delete_user_image),
         )
         .route("/Users", get(users::list).post(users::update))
+        .route("/users", get(users::list).post(users::update))
         .route("/Users/Public", get(users::list_public))
         .route("/Users/New", post(users::create))
         .route("/Users/ForgotPassword", post(users::forgot_password))
@@ -1545,6 +1561,12 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/Configuration", post(users::update_configuration))
         .route(
             "/Users/{id}",
+            get(users::get)
+                .post(users::update_legacy)
+                .delete(users::delete),
+        )
+        .route(
+            "/users/{id}",
             get(users::get)
                 .post(users::update_legacy)
                 .delete(users::delete),
@@ -1586,11 +1608,13 @@ fn user_routes() -> Router<Arc<AppState>> {
 fn user_view_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/UserViews", get(user_views::get))
+        .route("/userviews", get(user_views::get))
         .route(
             "/UserViews/GroupingOptions",
             get(user_views::grouping_options),
         )
         .route("/Users/{user_id}/Views", get(user_views::get_legacy))
+        .route("/users/{user_id}/views", get(user_views::get_legacy))
         .route(
             "/Users/{user_id}/GroupingOptions",
             get(user_views::grouping_options_legacy),
@@ -1600,6 +1624,7 @@ fn user_view_routes() -> Router<Arc<AppState>> {
 fn session_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Sessions", get(session::list))
+        .route("/sessions", get(session::list))
         .route(
             "/Sessions/{session_id}/System/{command}",
             post(session::send_system_command),
@@ -1634,6 +1659,7 @@ fn session_routes() -> Router<Arc<AppState>> {
         )
         .route("/Sessions/Viewing", post(session::report_viewing))
         .route("/Sessions/Capabilities", post(session::post_capabilities))
+        .route("/sessions/capabilities", post(session::post_capabilities))
         .route(
             "/Sessions/Capabilities/Full",
             post(session::post_full_capabilities),
@@ -1757,6 +1783,7 @@ fn item_query_routes() -> Router<Arc<AppState>> {
         .route("/Items/Suggestions", get(items::suggestions))
         .route("/items/suggestions", get(items::suggestions))
         .route("/Items/Latest", get(items::latest))
+        .route("/items/latest", get(items::latest))
         .route("/UserItems/Resume", get(items::resume))
         .route("/Users/{user_id}/Items", get(items::get_legacy))
         .route("/Users/{user_id}/Items/", get(items::get_legacy))
@@ -1771,6 +1798,7 @@ fn item_query_routes() -> Router<Arc<AppState>> {
         )
         .route("/Users/{user_id}/Items/Latest", get(items::latest_legacy))
         .route("/Users/{user_id}/Items/Resume", get(items::resume_legacy))
+        .route("/users/{user_id}/items/resume", get(items::resume_legacy))
 }
 
 fn collection_routes() -> Router<Arc<AppState>> {
@@ -1824,6 +1852,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
             get(library::instant_mix_genre_by_name),
         )
         .route("/Items/Counts", get(library::item_counts))
+        .route("/items/counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
         .route("/items/{item_id}/file", get(library::file))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
@@ -1843,6 +1872,10 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Library/Media/Updated", post(library::updated_media))
         .route(
             "/Libraries/AvailableOptions",
+            get(library::available_options),
+        )
+        .route(
+            "/libraries/availableoptions",
             get(library::available_options),
         )
         .route("/Artists/{item_id}/Similar", get(library::similar))

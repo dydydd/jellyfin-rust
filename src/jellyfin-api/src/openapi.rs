@@ -68,6 +68,17 @@ pub(crate) fn documented_routes() -> Router<Arc<AppState>> {
                     })
             }),
         )
+        .route(
+            "/system/info/public",
+            get_with(public_system_info, |operation| {
+                operation
+                    .id("GetPublicSystemInfoLowercase")
+                    .summary("Gets public information about the server.")
+                    .response_with::<200, Json<PublicSystemInfo>, _>(|response| {
+                        response.description("Public server information was retrieved.")
+                    })
+            }),
+        )
         .api_route(
             "/System/Ping",
             get_with(super::ping, |operation| {

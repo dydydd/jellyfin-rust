@@ -278,8 +278,10 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
 
     match segments.as_slice() {
         ["health" | "GetUtcTime" | "metrics"] | ["api-docs", "openapi.json"] => RoutePolicy::Public,
-        ["System", "Info", "Public"] | ["System", "Ping"] => RoutePolicy::Public,
-        ["Branding", "Configuration"] => RoutePolicy::Public,
+        ["System", "Info", "Public"] | ["system", "info", "public"] | ["System", "Ping"] => {
+            RoutePolicy::Public
+        }
+        ["Branding", "Configuration"] | ["branding", "configuration"] => RoutePolicy::Public,
         ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
         ["Branding", "Splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Branding", "Splashscreen"] if is_write(method) => RoutePolicy::Elevated,
@@ -300,17 +302,22 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["Library", "VirtualFolders", ..]
         | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
         ["Localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
-        ["System", "Info"] => RoutePolicy::FirstTimeSetupOrIgnoreParentalControl,
+        ["System", "Info"] | ["system", "info"] => {
+            RoutePolicy::FirstTimeSetupOrIgnoreParentalControl
+        }
         ["System", "Restart"] => RoutePolicy::LocalOrElevated,
         ["System", "ActivityLog", "Entries"]
         | ["System", "Logs", ..]
         | ["System", "Info", "Storage"]
+        | ["system", "info", "storage"]
         | ["System", "Shutdown"] => RoutePolicy::Elevated,
         ["ScheduledTasks", ..] => RoutePolicy::Elevated,
         ["Auth", "Keys", ..] | ["Auth", "Providers" | "PasswordResetProviders"] => {
             RoutePolicy::Elevated
         }
-        ["Devices" | "Packages" | "Backup", ..] | ["Repositories"] => RoutePolicy::Elevated,
+        ["Devices" | "devices" | "Packages" | "Backup", ..] | ["Repositories"] => {
+            RoutePolicy::Elevated
+        }
         ["web", "ConfigurationPages"] => RoutePolicy::Elevated,
         ["web", "ConfigurationPage"] | ["web", ..] => RoutePolicy::Public,
         ["System", "Configuration", "MetadataOptions", "Default"]
@@ -322,7 +329,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Users", "Me"] => RoutePolicy::Default,
         ["Users", _] if method == Method::DELETE => RoutePolicy::Elevated,
         ["User", _] if method == Method::DELETE => RoutePolicy::Elevated,
-        ["Users", _] if method == Method::GET => RoutePolicy::IgnoreParentalControl,
+        ["Users" | "users", _] if method == Method::GET => RoutePolicy::IgnoreParentalControl,
         ["Users", _] => RoutePolicy::Default,
         ["LiveTv", "TunerHosts"] => RoutePolicy::Elevated,
         ["LiveTv", "ListingProviders", ..] => RoutePolicy::Elevated,
@@ -508,6 +515,18 @@ mod tests {
         assert_eq!(
             route_policy(&Method::GET, "/System/Info/Public"),
             RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/system/info/public"),
+            RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/branding/configuration"),
+            RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/system/info/storage"),
+            RoutePolicy::Elevated
         );
         assert_eq!(
             route_policy(&Method::GET, "/api-docs/openapi.json"),
