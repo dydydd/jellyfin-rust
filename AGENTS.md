@@ -196,6 +196,9 @@
 - Keep `/Playlists/{playlistId}/Items` on the official signed `Int32` contract used by Android and
   Swift: negative `StartIndex` skips nothing but is echoed, while a non-positive `Limit` returns an
   empty page through the controller's `Enumerable.Take` behavior; out-of-range values fail binding.
+- Honor `/Playlists/{playlistId}/Items` DTO options exactly like the official controller: bind
+  case-insensitive `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes`, then
+  pass them through the shared batched projector instead of silently ignoring SDK query values.
 - Filter `/Persons` through the media items visible to the target user: a person remains visible
   when at least one credited item passes enabled/blocked folder, allowed/blocked tag, parental-
   rating, and unrated-item policy. Keep this set-based, and do not apply the related-media filter

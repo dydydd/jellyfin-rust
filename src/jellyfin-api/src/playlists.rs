@@ -78,6 +78,32 @@ pub(crate) struct GetItemsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -314,7 +340,17 @@ pub(crate) async fn get_items(
         total_record_count: u64::try_from(total_record_count).unwrap_or(u64::MAX),
         start_index: u64::try_from(start_index).unwrap_or(u64::MAX),
     };
-    let mut result = crate::items::page_to_dto(&state, page, query.fields, user_id).await?;
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query.image_type_limit.map_or(usize::MAX, |limit| {
+            usize::try_from(limit).unwrap_or_default()
+        }),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
+    let mut result =
+        crate::items::page_to_dto_with_options(&state, page, query.fields, user_id, &dto_options)
+            .await?;
     result.start_index = requested_start_index;
     for (dto, entry_id) in result.items.iter_mut().zip(entry_ids) {
         dto.playlist_item_id = Some(entry_id.simple().to_string());

@@ -700,6 +700,24 @@ async fn assert_items_projection_and_reordering(fixture: &Fixture, playlist_id: 
         page["Items"][0]["PlaylistItemId"],
         fixture.first_id.simple().to_string()
     );
+    assert!(page["Items"][0].get("UserData").is_some(), "{list_route}");
+    for enable_user_data in ["enableUserData", "EnableUserData", "enableuserdata"] {
+        let route = format!("/Playlists/{playlist_id}/Items?{enable_user_data}=false");
+        let page = body_json(
+            fixture
+                .request(Method::GET, &route, Some(&fixture.reader_token), None)
+                .await,
+        )
+        .await;
+        assert!(
+            page["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item.get("UserData").is_none()),
+            "{route}"
+        );
+    }
     let links = LinkedChildRepository::new(fixture.database.clone())
         .list(playlist_id)
         .await
