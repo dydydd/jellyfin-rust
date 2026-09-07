@@ -1574,12 +1574,14 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/Public", get(users::list_public))
         .route("/users/public", get(users::list_public))
         .route("/Users/New", post(users::create))
+        .route("/users/new", post(users::create))
         .route("/Users/ForgotPassword", post(users::forgot_password))
         .route(
             "/Users/ForgotPassword/Pin",
             post(users::forgot_password_pin),
         )
         .route("/Users/Configuration", post(users::update_configuration))
+        .route("/users/configuration", post(users::update_configuration))
         .route(
             "/Users/{id}",
             get(users::get)
@@ -1594,8 +1596,13 @@ fn user_routes() -> Router<Arc<AppState>> {
         )
         .route("/User/{id}", axum::routing::delete(users::delete))
         .route("/Users/Password", post(users::update_password_query))
+        .route("/users/password", post(users::update_password_query))
         .route(
             "/Users/{id}/Configuration",
+            post(users::update_configuration_legacy),
+        )
+        .route(
+            "/users/{id}/configuration",
             post(users::update_configuration_legacy),
         )
         .route(
@@ -1623,7 +1630,9 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .delete(users::delete_user_image_index_legacy),
         )
         .route("/Users/{id}/Password", post(users::update_password))
+        .route("/users/{id}/password", post(users::update_password))
         .route("/Users/{id}/Policy", post(users::update_policy))
+        .route("/users/{id}/policy", post(users::update_policy))
 }
 
 fn user_view_routes() -> Router<Arc<AppState>> {

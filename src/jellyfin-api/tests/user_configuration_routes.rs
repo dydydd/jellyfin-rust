@@ -193,7 +193,10 @@ async fn assert_self_update(fixture: &Fixture) {
     // Jellyfin denies self-service mutations when the user's policy disables
     // EnableUserPreferenceAccess, while administrators retain access.
     let users = UserService::new(fixture.database.clone());
-    let mut policy = jellyfin_model::UserPolicy::default();
+    // A policy update requires both provider identifiers. Start from the
+    // existing DTO so this preference test changes only its intended permission.
+    let mut policy: jellyfin_model::UserPolicy =
+        serde_json::from_value(user["Policy"].clone()).expect("persisted user policy");
     policy.enable_user_preference_access = false;
     users
         .update_policy(fixture.user_id, &policy)
