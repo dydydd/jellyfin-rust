@@ -350,8 +350,8 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .expect("profiled primary source");
     assert!(primary.get("DefaultSubtitleStreamIndex").is_none());
     assert_eq!(primary["SupportsDirectPlay"], true, "{profiled}");
-    assert_eq!(primary["SupportsDirectStream"], false, "{profiled}");
-    assert_eq!(primary["SupportsTranscoding"], false, "{profiled}");
+    assert_eq!(primary["SupportsDirectStream"], true, "{profiled}");
+    assert_eq!(primary["SupportsTranscoding"], true, "{profiled}");
     assert!(primary.get("TranscodingUrl").is_none());
     let alternate = profiled_sources
         .iter()
@@ -379,8 +379,8 @@ async fn playback_info_exposes_and_selects_grouped_video_versions() {
         .expect("direct-play alternate source");
     assert!(direct_alternate.get("DefaultSubtitleStreamIndex").is_none());
     assert_eq!(direct_alternate["SupportsDirectPlay"], true);
-    assert_eq!(direct_alternate["SupportsDirectStream"], false);
-    assert_eq!(direct_alternate["SupportsTranscoding"], false);
+    assert_eq!(direct_alternate["SupportsDirectStream"], true);
+    assert_eq!(direct_alternate["SupportsTranscoding"], true);
     assert!(direct_alternate.get("TranscodingUrl").is_none());
 
     let selected = body_json(
@@ -475,8 +475,8 @@ async fn playback_capabilities_require_an_implemented_method_and_user_policy() {
     .await;
     let direct = &direct["MediaSources"][0];
     assert_eq!(direct["SupportsDirectPlay"], true);
-    assert_eq!(direct["SupportsDirectStream"], false);
-    assert_eq!(direct["SupportsTranscoding"], false);
+    assert_eq!(direct["SupportsDirectStream"], true);
+    assert_eq!(direct["SupportsTranscoding"], true);
     assert!(direct.get("TranscodingUrl").is_none());
 
     let incompatible = body_json(
@@ -502,7 +502,7 @@ async fn playback_capabilities_require_an_implemented_method_and_user_policy() {
     .await;
     assert_no_playback_capabilities(&incompatible["MediaSources"][0]);
 
-    let unimplemented_http_transcode = body_json(
+    let http_transcode = body_json(
         fixture
             .post(
                 &route,
@@ -525,7 +525,15 @@ async fn playback_capabilities_require_an_implemented_method_and_user_policy() {
             .await,
     )
     .await;
-    assert_no_playback_capabilities(&unimplemented_http_transcode["MediaSources"][0]);
+    let http_transcode = &http_transcode["MediaSources"][0];
+    assert_eq!(http_transcode["SupportsDirectPlay"], false);
+    assert_eq!(http_transcode["SupportsDirectStream"], false);
+    assert_eq!(http_transcode["SupportsTranscoding"], true);
+    assert!(
+        http_transcode["TranscodingUrl"]
+            .as_str()
+            .is_some_and(|url| url.contains("/stream.mp4"))
+    );
 
     let transcoded = body_json(
         fixture
@@ -1035,7 +1043,9 @@ fn assert_playback_info(playback: &Value, fixture: &Fixture) {
     );
     assert_eq!(source["Container"], "mkv");
     assert_eq!(source["RunTimeTicks"], 12_345_000_000_i64);
-    assert_no_playback_capabilities(source);
+    assert!(source["SupportsDirectPlay"].is_boolean());
+    assert!(source["SupportsDirectStream"].is_boolean());
+    assert!(source["SupportsTranscoding"].is_boolean());
     assert_eq!(source["MediaStreams"][0]["Index"], 0);
     assert_eq!(source["MediaStreams"][0]["Type"], "Video");
     assert_eq!(source["MediaStreams"][0]["Codec"], "h264");
