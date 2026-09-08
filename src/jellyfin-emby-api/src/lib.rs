@@ -23,6 +23,8 @@ pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let fallback = jellyfin_api::unprefixed_router(state.as_ref().clone());
     let routes = Router::new()
+        .route("/Branding/Configuration", get(branding_configuration))
+        .route("/branding/configuration", get(branding_configuration))
         .route("/System/Info/Public", get(public_system_info))
         .route("/system/info/public", get(public_system_info))
         .route("/System/Info", get(system_info))
@@ -48,6 +50,15 @@ struct PublicSystemInfo {
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct BrandingOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login_disclaimer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    custom_css: Option<String>,
 }
 
 impl From<jellyfin_model::PublicSystemInfo> for PublicSystemInfo {
@@ -93,6 +104,16 @@ async fn public_system_info(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PublicSystemInfo>, StatusCode> {
     Ok(Json(state.public_system_info().await?.into()))
+}
+
+async fn branding_configuration(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<BrandingOptions>, StatusCode> {
+    let options = state.branding_options().await?;
+    Ok(Json(BrandingOptions {
+        login_disclaimer: options.login_disclaimer,
+        custom_css: options.custom_css,
+    }))
 }
 
 async fn system_info(
@@ -165,6 +186,11 @@ mod tests {
         assert!(emby_info.get("WebPath").is_none());
         assert!(emby_info.get("LocalAddresses").is_some());
         assert!(emby_info.get("CompletedInstallations").is_some());
+
+        let jellyfin_branding = body(&jellyfin, "/Branding/Configuration").await;
+        let emby_branding = body(&emby, "/emby/Branding/Configuration").await;
+        assert!(jellyfin_branding.get("SplashscreenEnabled").is_some());
+        assert!(emby_branding.get("SplashscreenEnabled").is_none());
     }
 
     async fn status(app: &Router, uri: &str) -> StatusCode {

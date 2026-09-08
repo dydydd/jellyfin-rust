@@ -849,6 +849,13 @@ impl AppState {
             .await
             .map_err(IntoResponse::into_response)
     }
+
+    /// Loads branding state for protocol-specific API projections.
+    pub async fn branding_options(&self) -> Result<BrandingOptions, StatusCode> {
+        branding::branding_options(self)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
 }
 
 #[allow(clippy::too_many_lines)]
