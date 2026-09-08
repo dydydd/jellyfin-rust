@@ -836,10 +836,20 @@ impl AppState {
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::needless_pass_by_value)]
 pub fn router(state: AppState) -> Router {
+    let base = unprefixed_router(state);
+
+    Router::new().nest("/api", base.clone()).merge(base)
+}
+
+/// Builds only Jellyfin's unprefixed routes so another protocol crate can
+/// reuse the business handlers without inheriting Jellyfin's route prefixes.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::needless_pass_by_value)]
+pub fn unprefixed_router(state: AppState) -> Router {
     let state = Arc::new(state);
     let base = base_router(Arc::clone(&state));
 
-    jellyfin_emby_api::mount_routes(base).with_state(state)
+    base.with_state(state)
 }
 
 #[allow(clippy::too_many_lines)]

@@ -159,7 +159,8 @@ async fn main() -> anyhow::Result<()> {
     .with_log_directory(log_directory);
     let state = state.start_library_watcher().await;
     let shutdown_state = state.clone();
-    let app = jellyfin_api::router(state)
+    let app = jellyfin_api::router(state.clone())
+        .merge(jellyfin_emby_api::router(state))
         .layer(cors_layer)
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(network_manager),

@@ -10,10 +10,10 @@ use tower::ServiceExt;
 const MAX_BODY_SIZE: usize = 1024 * 1024;
 
 #[tokio::test]
-async fn api_and_emby_prefixes_serve_the_same_root_routes() {
+async fn jellyfin_root_and_api_prefix_serve_the_same_routes() {
     let app = app();
 
-    for prefix in jellyfin_emby_api::API_PREFIXES {
+    for prefix in ["", "/api"] {
         let response = get(&app, &format!("{prefix}/api-docs/openapi.json")).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
@@ -30,7 +30,7 @@ async fn api_and_emby_prefixes_serve_the_same_root_routes() {
 async fn prefixed_unknown_api_routes_fail_closed() {
     let app = app();
 
-    for uri in ["/api/not-a-route", "/emby/not-a-route", "/api/System/Logs"] {
+    for uri in ["/api/not-a-route", "/api/System/Logs"] {
         assert_eq!(
             get(&app, uri).await.status(),
             StatusCode::UNAUTHORIZED,

@@ -1389,7 +1389,7 @@ async fn legacy_item_collection_accepts_empty_trailing_path_segments() {
         StatusCode::UNAUTHORIZED
     );
 
-    for prefix in ["", "/api", "/emby"] {
+    for prefix in ["", "/api"] {
         for path in [
             format!("Users/{}/Items", fixture.user_id),
             format!("users/{}/items", fixture.user_id),

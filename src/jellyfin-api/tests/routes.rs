@@ -956,7 +956,7 @@ async fn startup_and_password_authentication_use_persisted_device_sessions() {
 }
 
 async fn assert_legacy_server_domain_probe(fixture: &StartupAuthFixture, token: &str) {
-    for prefix in ["", "/api", "/emby"] {
+    for prefix in ["", "/api"] {
         let uri = format!("{prefix}/System/Ext/ServerDomains");
         assert_eq!(
             get_response(&fixture.app, &uri).await.status(),

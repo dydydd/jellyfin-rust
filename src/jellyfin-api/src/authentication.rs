@@ -624,7 +624,7 @@ fn parse_authorization(value: &str) -> ClientMetadata {
     let Some((scheme, fields)) = value.split_once(' ') else {
         return ClientMetadata::default();
     };
-    if !jellyfin_emby_api::is_authorization_scheme(scheme) {
+    if !scheme.eq_ignore_ascii_case("MediaBrowser") && !scheme.eq_ignore_ascii_case("Emby") {
         return ClientMetadata::default();
     }
     let mut parts = parse_authorization_parts(fields);

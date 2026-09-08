@@ -11,6 +11,7 @@ axum.workspace = true
 jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
+jellyfin-emby-api = { path = "../jellyfin-emby-api" }
 jellyfin-live-tv = { path = "../jellyfin-live-tv" }
 jellyfin-media-encoding = { path = "../jellyfin-media-encoding" }
 jellyfin-model = { path = "../jellyfin-model" }

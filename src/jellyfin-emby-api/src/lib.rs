@@ -1,46 +1,53 @@
-//! Compatibility contract shared by Emby Android and iOS clients.
+//! Emby API surface for Android and iOS clients.
 //!
 //! The generated clients in `Emby.ApiClients` identify themselves with either
-//! the `Emby` or `MediaBrowser` scheme. Deployed clients may use the root API,
-//! Jellyfin's `/api` prefix, or Emby's `/emby` prefix.
+//! the `Emby` or `MediaBrowser` scheme and use Emby's `/emby` API base path.
 
 use axum::Router;
+use jellyfin_api::AppState;
 
-/// Jellyfin's historical API base path.
-pub const JELLYFIN_API_PREFIX: &str = "/api";
-
-/// Emby's generated Android and iOS clients' API base path.
+/// Emby's Android and iOS API base path.
 pub const EMBY_API_PREFIX: &str = "/emby";
 
-/// Every supported API base path, including the unprefixed server API.
-pub const API_PREFIXES: [&str; 3] = ["", JELLYFIN_API_PREFIX, EMBY_API_PREFIX];
-
-/// Mounts one API router on every base path used by Jellyfin and Emby clients.
-pub fn mount_routes<S>(base: Router<S>) -> Router<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    Router::new()
-        .nest(JELLYFIN_API_PREFIX, base.clone())
-        .nest(EMBY_API_PREFIX, base.clone())
-        .merge(base)
-}
-
-/// Returns whether an HTTP authorization scheme carries Emby-compatible client metadata.
-#[must_use]
-pub fn is_authorization_scheme(scheme: &str) -> bool {
-    scheme.eq_ignore_ascii_case("MediaBrowser") || scheme.eq_ignore_ascii_case("Emby")
+/// Builds the independent Emby route tree.
+pub fn router(state: AppState) -> Router {
+    Router::new().nest(EMBY_API_PREFIX, jellyfin_api::unprefixed_router(state))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use sea_orm::DatabaseConnection;
+    use tower::ServiceExt;
 
-    #[test]
-    fn mobile_client_contract_keeps_emby_path_and_schemes() {
-        assert_eq!(API_PREFIXES, ["", "/api", "/emby"]);
-        assert!(is_authorization_scheme("Emby"));
-        assert!(is_authorization_scheme("mediabrowser"));
-        assert!(!is_authorization_scheme("Bearer"));
+    #[tokio::test]
+    async fn jellyfin_and_emby_are_separate_route_trees() {
+        let state = AppState::new(
+            DatabaseConnection::Disconnected,
+            "API Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        let jellyfin = jellyfin_api::router(state.clone());
+        let emby = router(state);
+
+        assert_eq!(status(&jellyfin, "/GetUtcTime").await, StatusCode::OK);
+        assert_eq!(status(&jellyfin, "/api/GetUtcTime").await, StatusCode::OK);
+        assert_ne!(status(&jellyfin, "/emby/GetUtcTime").await, StatusCode::OK);
+
+        assert_eq!(status(&emby, "/emby/GetUtcTime").await, StatusCode::OK);
+        assert_ne!(status(&emby, "/GetUtcTime").await, StatusCode::OK);
+        assert_ne!(status(&emby, "/api/GetUtcTime").await, StatusCode::OK);
+    }
+
+    async fn status(app: &Router, uri: &str) -> StatusCode {
+        app.clone()
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
     }
 }
