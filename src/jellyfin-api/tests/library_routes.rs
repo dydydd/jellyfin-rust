@@ -768,6 +768,20 @@ async fn assert_instant_mix(fixture: &Fixture) {
     assert_eq!(genre_mix["Items"].as_array().unwrap().len(), 1);
     assert_eq!(genre_mix["Items"][0]["Type"], "Audio");
 
+    let public_genre = fixture
+        .json("GET", "/MusicGenres/Post%20Rock", &fixture.user_token)
+        .await;
+    let public_genre_route = format!(
+        "/MusicGenres/InstantMix?id={}&limit=1",
+        public_genre["Id"].as_str().expect("public music genre id")
+    );
+    let public_genre_mix = fixture
+        .json("GET", &public_genre_route, &fixture.user_token)
+        .await;
+    assert_eq!(public_genre_mix["TotalRecordCount"], 3);
+    assert_eq!(public_genre_mix["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(public_genre_mix["Items"][0]["Type"], "Audio");
+
     let genre_name_mix = fixture
         .json(
             "GET",
@@ -2545,13 +2559,17 @@ impl Fixture {
             .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
             .await
             .expect("temporary PostgreSQL database creation must succeed");
-        let database = jellyfin_data::connect(&DatabaseConfig {
-            url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
-            max_connections: 16,
-            min_connections: 1,
-        })
-        .await
-        .expect("temporary PostgreSQL database must be available");
+        let mut database_config = DatabaseConfig::default();
+        let (prefix, _) = database_config
+            .url
+            .rsplit_once('/')
+            .expect("database URL must include a database name");
+        database_config.url = format!("{prefix}/{database_name}");
+        database_config.max_connections = 16;
+        database_config.min_connections = 1;
+        let database = jellyfin_data::connect(&database_config)
+            .await
+            .expect("temporary PostgreSQL database must be available");
         jellyfin_data::migrate(&database).await.expect("migrations");
         for pattern in ["library-admin-%", "library-user-%"] {
             user::Entity::delete_many()

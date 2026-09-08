@@ -81,9 +81,50 @@ async fn create_library(fixture: &Fixture) -> (String, String) {
         .expect("created virtual folder");
     assert_eq!(library["CollectionType"], "movies");
     assert_eq!(library["LibraryOptions"]["Enabled"], false);
+    assert_sdk_required_library_option_defaults(&library["LibraryOptions"]);
     assert_eq!(library["RefreshStatus"], "RefreshRequested");
     let id = library["ItemId"].as_str().expect("item id").to_owned();
     (name, id)
+}
+
+fn assert_sdk_required_library_option_defaults(options: &Value) {
+    let expected = json!({
+        "EnablePhotos": true,
+        "EnableRealtimeMonitor": false,
+        "EnableLUFSScan": false,
+        "EnableChapterImageExtraction": false,
+        "ExtractChapterImagesDuringLibraryScan": false,
+        "EnableTrickplayImageExtraction": false,
+        "ExtractTrickplayImagesDuringLibraryScan": false,
+        "PathInfos": [],
+        "SaveLocalMetadata": false,
+        "EnableInternetProviders": false,
+        "EnableAutomaticSeriesGrouping": true,
+        "EnableEmbeddedTitles": false,
+        "EnableEmbeddedExtrasTitles": false,
+        "EnableEmbeddedEpisodeInfos": false,
+        "AutomaticRefreshIntervalDays": 0,
+        "SeasonZeroDisplayName": "Specials",
+        "DisabledLocalMetadataReaders": [],
+        "DisabledSubtitleFetchers": [],
+        "SubtitleFetcherOrder": [],
+        "DisabledMediaSegmentProviders": [],
+        "MediaSegmentProviderOrder": [],
+        "SkipSubtitlesIfEmbeddedSubtitlesPresent": false,
+        "SkipSubtitlesIfAudioTrackMatches": true,
+        "RequirePerfectSubtitleMatch": true,
+        "SaveSubtitlesWithMedia": true,
+        "DisabledLyricFetchers": [],
+        "LyricFetcherOrder": [],
+        "CustomTagDelimiters": ["/", "|", ";", "\\\\"],
+        "DelimiterWhitelist": [],
+        "AutomaticallyAddToCollection": false,
+        "AllowEmbeddedSubtitles": "AllowAll",
+        "TypeOptions": [],
+    });
+    for (key, value) in expected.as_object().unwrap() {
+        assert_eq!(options[key], *value, "LibraryOptions.{key}");
+    }
 }
 
 async fn assert_library_options_and_conflicts(fixture: &Fixture, name: &str, id: &str) {

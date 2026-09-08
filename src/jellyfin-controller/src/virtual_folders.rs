@@ -250,7 +250,7 @@ fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
         path_infos.push(path.path_info);
         locations.push(path.path);
     }
-    let mut options = model.folder.library_options;
+    let mut options = complete_library_options(model.folder.library_options);
     if let Some(object) = options.as_object_mut() {
         object.insert("PathInfos".to_owned(), Value::Array(path_infos));
     }
@@ -267,6 +267,58 @@ fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
         locations,
         refresh_requested: model.folder.refresh_requested,
     }
+}
+
+/// Supplies the official `LibraryOptions` defaults for legacy partial JSONB rows.
+/// The mobile Kotlin SDK has non-nullable fields for these defaults.
+fn complete_library_options(mut options: Value) -> Value {
+    let defaults = json!({
+        "Enabled": true,
+        "EnablePhotos": true,
+        "EnableRealtimeMonitor": false,
+        "EnableLUFSScan": false,
+        "EnableChapterImageExtraction": false,
+        "ExtractChapterImagesDuringLibraryScan": false,
+        "EnableTrickplayImageExtraction": false,
+        "ExtractTrickplayImagesDuringLibraryScan": false,
+        "PathInfos": [],
+        "SaveLocalMetadata": false,
+        "EnableInternetProviders": false,
+        "EnableAutomaticSeriesGrouping": true,
+        "EnableEmbeddedTitles": false,
+        "EnableEmbeddedExtrasTitles": false,
+        "EnableEmbeddedEpisodeInfos": false,
+        "AutomaticRefreshIntervalDays": 0,
+        "SeasonZeroDisplayName": "Specials",
+        "DisabledLocalMetadataReaders": [],
+        "DisabledSubtitleFetchers": [],
+        "SubtitleFetcherOrder": [],
+        "DisabledMediaSegmentProviders": [],
+        "MediaSegmentProviderOrder": [],
+        "SkipSubtitlesIfEmbeddedSubtitlesPresent": false,
+        "SkipSubtitlesIfAudioTrackMatches": true,
+        "RequirePerfectSubtitleMatch": true,
+        "SaveSubtitlesWithMedia": true,
+        "SaveLyricsWithMedia": false,
+        "SaveTrickplayWithMedia": false,
+        "DisabledLyricFetchers": [],
+        "LyricFetcherOrder": [],
+        "PreferNonstandardArtistsTag": false,
+        "UseCustomTagDelimiters": false,
+        "CustomTagDelimiters": ["/", "|", ";", "\\\\"],
+        "DelimiterWhitelist": [],
+        "AutomaticallyAddToCollection": false,
+        "AllowEmbeddedSubtitles": "AllowAll",
+        "TypeOptions": [],
+    });
+    if let (Some(options), Some(defaults)) = (options.as_object_mut(), defaults.as_object()) {
+        for (key, value) in defaults {
+            if !options.get(key).is_some_and(|existing| !existing.is_null()) {
+                options.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    options
 }
 
 pub(crate) fn canonical_collection_type_option(value: &str) -> Option<&'static str> {
@@ -326,6 +378,56 @@ async fn canonicalize_path_info(
         ancestors,
         path_info,
     })
+}
+
+#[cfg(test)]
+mod library_options_tests {
+    use super::*;
+
+    #[test]
+    fn complete_library_options_preserves_values_and_supplies_sdk_defaults() {
+        let options = complete_library_options(json!({ "Enabled": false }));
+        assert_eq!(options["Enabled"], false);
+        for key in [
+            "Enabled",
+            "EnablePhotos",
+            "EnableRealtimeMonitor",
+            "EnableLUFSScan",
+            "EnableChapterImageExtraction",
+            "ExtractChapterImagesDuringLibraryScan",
+            "EnableTrickplayImageExtraction",
+            "ExtractTrickplayImagesDuringLibraryScan",
+            "PathInfos",
+            "SaveLocalMetadata",
+            "EnableInternetProviders",
+            "EnableAutomaticSeriesGrouping",
+            "EnableEmbeddedTitles",
+            "EnableEmbeddedExtrasTitles",
+            "EnableEmbeddedEpisodeInfos",
+            "AutomaticRefreshIntervalDays",
+            "SeasonZeroDisplayName",
+            "DisabledLocalMetadataReaders",
+            "DisabledSubtitleFetchers",
+            "SubtitleFetcherOrder",
+            "DisabledMediaSegmentProviders",
+            "MediaSegmentProviderOrder",
+            "SkipSubtitlesIfEmbeddedSubtitlesPresent",
+            "SkipSubtitlesIfAudioTrackMatches",
+            "RequirePerfectSubtitleMatch",
+            "SaveSubtitlesWithMedia",
+            "DisabledLyricFetchers",
+            "LyricFetcherOrder",
+            "CustomTagDelimiters",
+            "DelimiterWhitelist",
+            "AutomaticallyAddToCollection",
+            "AllowEmbeddedSubtitles",
+            "TypeOptions",
+        ] {
+            assert!(!options[key].is_null(), "LibraryOptions.{key}");
+        }
+        assert_eq!(options["AllowEmbeddedSubtitles"], "AllowAll");
+        assert_eq!(options["TypeOptions"], json!([]));
+    }
 }
 
 async fn canonical_directory(path: &str) -> Result<String, VirtualFolderServiceError> {

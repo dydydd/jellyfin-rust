@@ -647,7 +647,14 @@ impl LibraryControllerService {
             .await?;
         let seed_is_audio = item.item_type == "Audio";
         let genre_ids = if item.item_type == "MusicGenre" {
-            vec![item.id]
+            match item.name.as_deref() {
+                Some(name) => self
+                    .item_values
+                    .get_normalized(item_value::ItemValueType::Genre, name)
+                    .await?
+                    .map_or_else(Vec::new, |genre| vec![genre.item_value_id]),
+                None => Vec::new(),
+            }
         } else if matches!(
             item.item_type.as_str(),
             "Playlist" | "MusicAlbum" | "MusicArtist" | "Audio"
@@ -689,6 +696,16 @@ impl LibraryControllerService {
         genre_id: Uuid,
         limit: Option<i32>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
+        if self
+            .items
+            .get(genre_id)
+            .await?
+            .is_some_and(|item| item.item_type == "MusicGenre")
+        {
+            return self
+                .instant_mix(authenticated_user, target_user_id, genre_id, limit)
+                .await;
+        }
         self.validate_user(authenticated_user, target_user_id)
             .await?;
         self.item_values
