@@ -1685,6 +1685,8 @@ dependencies = [
  "axum",
  "jellyfin-api",
  "sea-orm",
+ "serde",
+ "serde_json",
  "tokio",
  "tower",
 ]

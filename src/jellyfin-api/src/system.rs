@@ -239,7 +239,7 @@ fn path_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-async fn public_system_info(state: &AppState) -> Result<PublicSystemInfo, ApiError> {
+pub(crate) async fn public_system_info(state: &AppState) -> Result<PublicSystemInfo, ApiError> {
     let startup = startup::snapshot(state).await?;
     let mut public_info = state.system_info.clone();
     public_info

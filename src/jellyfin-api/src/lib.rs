@@ -831,6 +831,13 @@ impl AppState {
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
+
+    /// Loads public server state for protocol-specific API projections.
+    pub async fn public_system_info(&self) -> Result<PublicSystemInfo, StatusCode> {
+        system::public_system_info(self)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
 }
 
 #[allow(clippy::too_many_lines)]

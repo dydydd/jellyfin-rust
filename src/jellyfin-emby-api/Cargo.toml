@@ -8,9 +8,11 @@ rust-version.workspace = true
 [dependencies]
 axum.workspace = true
 jellyfin-api = { path = "../jellyfin-api" }
+serde.workspace = true
 
 [dev-dependencies]
 sea-orm.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tower.workspace = true
 
