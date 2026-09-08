@@ -46,6 +46,9 @@ services:
       - jellyfin-cache:/app/cache
       - jellyfin-logs:/app/logs
       - jellyfin-metadata:/app/metadata
+      # Existing library records and STRM targets use these absolute host paths.
+      - /home/lqs/Videos:/home/lqs/视频:ro
+      - /CloudNAS:/CloudNAS:ro
       # Optional local media directory. Create ./media before starting.
       - ./media:/media:ro
 
