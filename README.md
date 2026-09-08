@@ -1,6 +1,8 @@
-# Jellyfin Rust
+# Jellyfin / Emby Rust
 
-Jellyfin 服务端的 Rust 重实现。项目以兼容官方 Jellyfin API 和 Web 客户端为目标，
+Jellyfin 服务端的 Rust 重实现。服务器同时提供 Jellyfin API（根路径及 `/api`）和
+Emby API（`/emby`），分别兼容对应的 Android/iOS 客户端；两套 HTTP contract 共享
+领域服务和 PostgreSQL 数据。项目以兼容官方 Jellyfin API 和 Web 客户端为目标，
 使用 Axum、SeaORM、PostgreSQL 构建，当前处于持续开发阶段，尚未达到生产可用级别。
 
 ## 当前能力
@@ -24,7 +26,8 @@ Jellyfin 服务端的 Rust 重实现。项目以兼容官方 Jellyfin API 和 We
 
 | Crate | 职责 |
 | --- | --- |
-| `jellyfin-api` | Axum 路由、HTTP 接口、OpenAPI 文档 |
+| `jellyfin-api` | Jellyfin Axum 路由、HTTP contract、OpenAPI 文档 |
+| `jellyfin-emby-api` | Emby `/emby` 路由及差异化 HTTP contract |
 | `jellyfin-controller` | 领域服务、元数据刷新、图片、SyncPlay 等 |
 | `jellyfin-data` | PostgreSQL 仓储与实体 |
 | `jellyfin-migration` | SeaORM 数据库迁移 |

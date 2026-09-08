@@ -115,11 +115,18 @@ pub(crate) async fn info(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<SystemInfo>, ApiError> {
-    authorization::require_first_time_setup_or_ignore_parental_control(&state, &headers, &uri)
-        .await?;
-    let public_info = public_system_info(&state).await?;
+    Ok(Json(system_info(&state, &headers, &uri).await?))
+}
 
-    Ok(Json(SystemInfo {
+pub(crate) async fn system_info(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Result<SystemInfo, ApiError> {
+    authorization::require_first_time_setup_or_ignore_parental_control(state, headers, uri).await?;
+    let public_info = public_system_info(state).await?;
+
+    Ok(SystemInfo {
         web_socket_port_number: web_socket_port_number(&public_info),
         supports_library_monitor: true,
         completed_installations: Vec::new(),
@@ -137,7 +144,7 @@ pub(crate) async fn info(
         system_architecture: "X64".to_owned(),
         public_info,
         ..SystemInfo::default()
-    }))
+    })
 }
 
 pub(crate) async fn public_info(

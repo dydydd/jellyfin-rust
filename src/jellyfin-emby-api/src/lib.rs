@@ -5,7 +5,13 @@
 
 use std::sync::Arc;
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{
+    Json, Router,
+    extract::{OriginalUri, State},
+    http::{HeaderMap, StatusCode},
+    response::Response,
+    routing::get,
+};
 use jellyfin_api::AppState;
 use serde::Serialize;
 
@@ -19,6 +25,8 @@ pub fn router(state: AppState) -> Router {
     let routes = Router::new()
         .route("/System/Info/Public", get(public_system_info))
         .route("/system/info/public", get(public_system_info))
+        .route("/System/Info", get(system_info))
+        .route("/system/info", get(system_info))
         .fallback_service(fallback)
         .with_state(state);
 
@@ -42,18 +50,77 @@ struct PublicSystemInfo {
     id: Option<String>,
 }
 
+impl From<jellyfin_model::PublicSystemInfo> for PublicSystemInfo {
+    fn from(info: jellyfin_model::PublicSystemInfo) -> Self {
+        Self {
+            local_addresses: info.local_address.iter().cloned().collect(),
+            local_address: info.local_address,
+            wan_address: None,
+            remote_addresses: Vec::new(),
+            server_name: info.server_name,
+            version: info.version,
+            id: info.id,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct SystemInfo {
+    #[serde(flatten)]
+    public_info: PublicSystemInfo,
+    operating_system_display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_name: Option<String>,
+    has_pending_restart: bool,
+    is_shutting_down: bool,
+    operating_system: String,
+    supports_library_monitor: bool,
+    web_socket_port_number: i32,
+    completed_installations: Vec<()>,
+    can_self_restart: bool,
+    can_launch_web_browser: bool,
+    program_data_path: String,
+    items_by_name_path: String,
+    cache_path: String,
+    log_path: String,
+    internal_metadata_path: String,
+    transcoding_temp_path: String,
+    has_update_available: bool,
+}
+
 async fn public_system_info(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PublicSystemInfo>, StatusCode> {
-    let info = state.public_system_info().await?;
-    Ok(Json(PublicSystemInfo {
-        local_addresses: info.local_address.iter().cloned().collect(),
-        local_address: info.local_address,
-        wan_address: None,
-        remote_addresses: Vec::new(),
-        server_name: info.server_name,
-        version: info.version,
-        id: info.id,
+    Ok(Json(state.public_system_info().await?.into()))
+}
+
+async fn system_info(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<SystemInfo>, Response> {
+    let info = state.system_info(&headers, &uri).await?;
+    let public_info = PublicSystemInfo::from(info.public_info.clone());
+    Ok(Json(SystemInfo {
+        public_info,
+        operating_system_display_name: info.operating_system_display_name,
+        package_name: info.package_name,
+        has_pending_restart: info.has_pending_restart,
+        is_shutting_down: info.is_shutting_down,
+        operating_system: info.public_info.operating_system,
+        supports_library_monitor: info.supports_library_monitor,
+        web_socket_port_number: info.web_socket_port_number,
+        completed_installations: Vec::new(),
+        can_self_restart: info.can_self_restart,
+        can_launch_web_browser: info.can_launch_web_browser,
+        program_data_path: info.program_data_path,
+        items_by_name_path: info.items_by_name_path,
+        cache_path: info.cache_path,
+        log_path: info.log_path,
+        internal_metadata_path: info.internal_metadata_path,
+        transcoding_temp_path: info.transcoding_temp_path,
+        has_update_available: info.has_update_available,
     }))
 }
 
@@ -91,6 +158,13 @@ mod tests {
         assert!(emby_info.get("ProductName").is_none());
         assert_eq!(emby_info["LocalAddresses"][0], "http://127.0.0.1:8096");
         assert!(emby_info["RemoteAddresses"].is_array());
+
+        let jellyfin_info = body(&jellyfin, "/System/Info").await;
+        let emby_info = body(&emby, "/emby/System/Info").await;
+        assert!(jellyfin_info.get("WebPath").is_some());
+        assert!(emby_info.get("WebPath").is_none());
+        assert!(emby_info.get("LocalAddresses").is_some());
+        assert!(emby_info.get("CompletedInstallations").is_some());
     }
 
     async fn status(app: &Router, uri: &str) -> StatusCode {

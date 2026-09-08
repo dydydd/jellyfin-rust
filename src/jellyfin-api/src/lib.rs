@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, Uri},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -42,7 +42,7 @@ use jellyfin_live_tv::{
     tuner_hosts::{TunerHostError, TunerHostManager},
 };
 use jellyfin_media_encoding::encoder::EncoderCapabilities;
-use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
+use jellyfin_model::{PublicSystemInfo, SystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, PersistedDtoImageProjectionService,
@@ -837,6 +837,17 @@ impl AppState {
         system::public_system_info(self)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
+    /// Loads authorized server state for protocol-specific API projections.
+    pub async fn system_info(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+    ) -> Result<SystemInfo, Response> {
+        system::system_info(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)
     }
 }
 
