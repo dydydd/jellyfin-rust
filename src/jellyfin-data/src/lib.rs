@@ -122,6 +122,10 @@ use sea_orm_migration::MigratorTrait;
 
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres:123456@127.0.0.1:5432/postgres";
 const MIGRATION_ADVISORY_LOCK_KEY: i64 = 0x4a45_4c4c_5946_494e;
+const DATABASE_MAX_CONNECTIONS_ENV: &str = "JELLYFIN_DATABASE_MAX_CONNECTIONS";
+const DATABASE_CONNECTIONS_PER_CPU: u32 = 4;
+const DATABASE_MIN_MAX_CONNECTIONS: u32 = 4;
+const DATABASE_MAX_MAX_CONNECTIONS: u32 = 32;
 
 pub type SharedDatabase = Arc<DatabaseConnection>;
 
@@ -136,10 +140,25 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned()),
-            max_connections: 20,
+            max_connections: pool_max_connections(
+                std::thread::available_parallelism().map_or(1, |count| count.get()),
+                std::env::var(DATABASE_MAX_CONNECTIONS_ENV)
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .filter(|&value| value > 0),
+            ),
             min_connections: 1,
         }
     }
+}
+
+fn pool_max_connections(available_cpus: usize, configured_max: Option<u32>) -> u32 {
+    configured_max.unwrap_or_else(|| {
+        u32::try_from(available_cpus)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(DATABASE_CONNECTIONS_PER_CPU)
+            .clamp(DATABASE_MIN_MAX_CONNECTIONS, DATABASE_MAX_MAX_CONNECTIONS)
+    })
 }
 
 /// Creates a `PostgreSQL` connection pool from `config`.
@@ -203,4 +222,18 @@ pub async fn healthcheck(database: &DatabaseConnection) -> Result<(), DbErr> {
         .await?
         .ok_or_else(|| DbErr::Custom("PostgreSQL healthcheck returned no row".to_owned()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pool_max_connections;
+
+    #[test]
+    fn pool_size_scales_with_cpu_and_keeps_an_explicit_override() {
+        assert_eq!(pool_max_connections(0, None), 4);
+        assert_eq!(pool_max_connections(2, None), 8);
+        assert_eq!(pool_max_connections(8, None), 32);
+        assert_eq!(pool_max_connections(128, None), 32);
+        assert_eq!(pool_max_connections(8, Some(48)), 48);
+    }
 }

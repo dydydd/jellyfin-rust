@@ -72,6 +72,7 @@ cargo run -p jellyfin-server
 | 环境变量 | 说明 | 默认值 |
 | --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接串 | `postgres://postgres:123456@127.0.0.1:5432/postgres` |
+| `JELLYFIN_DATABASE_MAX_CONNECTIONS` | PostgreSQL 连接池上限；未设置时按可用 CPU 的 4 倍计算，限制在 4–32 | 自动计算 |
 | `JELLYFIN_BIND_ADDRESS` | HTTP 监听地址 | `127.0.0.1:8096` |
 | `JELLYFIN_WEB_DIR` | Web 前端静态目录 | `jellyfin-web/dist` |
 | `JELLYFIN_INITIAL_USER` | 首次启动创建的管理员用户名 | `jellyfin` |
