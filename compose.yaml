@@ -23,6 +23,10 @@ services:
         BUILDER_IMAGE: docker.m.daocloud.io/library/rust:1.88-bookworm
         WEB_BUILDER_IMAGE: docker.m.daocloud.io/library/node:24-bookworm-slim
         RUNTIME_IMAGE: docker.m.daocloud.io/library/debian:bookworm-slim
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     restart: unless-stopped
     depends_on:
       db:
