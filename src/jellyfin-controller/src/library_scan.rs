@@ -11,14 +11,15 @@ use std::{
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use jellyfin_data::{
     BaseItemError, BaseItemImage, BaseItemImageRepository, BaseItemImageStoreError,
-    BaseItemImageType, BaseItemRepository, ChapterRepository, ChapterStoreError, ItemMetadataPatch,
-    ItemUpdateRepository, ItemUpdateStoreError, ItemValueError, ItemValueRepository,
-    MediaAttachmentRepository, MediaAttachmentStoreError, MediaStreamQuery, MediaStreamRepository,
-    MediaStreamStoreError, NewBaseItem, NewBaseItemImage, NewChapter, NewItemByNameEntity,
-    NewPerson, NewPersonCredit, PersistedMediaAttachment, PersistedMediaStream,
-    PersistedMediaStreamType, PersonError as PersonStoreError, PersonRepository,
-    ServerConfigurationRepository, ServerConfigurationStoreError, TvHierarchyCandidate,
-    USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository, VirtualFolderWithPaths,
+    BaseItemImageType, BaseItemRepository, ChapterRepository, ChapterStoreError,
+    DescendantScanCandidate, ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError,
+    ItemValueError, ItemValueRepository, MediaAttachmentRepository, MediaAttachmentStoreError,
+    MediaStreamQuery, MediaStreamRepository, MediaStreamStoreError, NewBaseItem, NewBaseItemImage,
+    NewChapter, NewItemByNameEntity, NewPerson, NewPersonCredit, PersistedMediaAttachment,
+    PersistedMediaStream, PersistedMediaStreamType, PersonError as PersonStoreError,
+    PersonRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
+    TvHierarchyCandidate, USER_ROOT_FOLDER_ID, VirtualFolderError, VirtualFolderRepository,
+    VirtualFolderWithPaths,
     entities::{base_item, item_value::ItemValueType},
 };
 use jellyfin_extensions::StringExtensions;
@@ -1599,25 +1600,8 @@ impl LibraryScanService {
         }
 
         if kind.is_tv() {
-            let descendants = self.items.descendant_scan_candidates(parent_id).await?;
-            let stale_seasons = descendants
-                .iter()
-                .filter(|item| item.item_type == "Season" && item.path.is_some())
-                .filter(|season| {
-                    !descendants.iter().any(|item| {
-                        (item.item_type == "Episode" && item.season_id == Some(season.id))
-                            || item.parent_id == Some(season.id)
-                    })
-                })
-                .filter(|season| {
-                    season.path.as_deref().is_some_and(|path| {
-                        readable_roots
-                            .iter()
-                            .any(|root| Path::new(path).starts_with(root))
-                    })
-                })
-                .map(|season| season.id)
-                .collect::<Vec<_>>();
+            let stale_ids_set = stale_ids.iter().copied().collect::<HashSet<_>>();
+            let stale_seasons = stale_tv_season_ids(&descendants, &stale_ids_set, readable_roots);
             if !stale_seasons.is_empty() {
                 self.items.delete_many(&stale_seasons).await?;
                 return Ok(stale_ids
@@ -3387,6 +3371,69 @@ impl LibraryScanService {
     }
 }
 
+fn stale_tv_season_ids(
+    descendants: &[DescendantScanCandidate],
+    stale_ids: &HashSet<Uuid>,
+    readable_roots: &[PathBuf],
+) -> Vec<Uuid> {
+    let mut children_by_parent = HashMap::<Uuid, Vec<Uuid>>::new();
+    for item in descendants {
+        if let Some(parent_id) = item.parent_id {
+            children_by_parent
+                .entry(parent_id)
+                .or_default()
+                .push(item.id);
+        }
+    }
+
+    // `delete_many` cascades through a complete subtree, so remove those
+    // descendants before deciding whether a local Season is empty.
+    let mut removed_ids = stale_ids.clone();
+    let mut pending = stale_ids.iter().copied().collect::<Vec<_>>();
+    while let Some(id) = pending.pop() {
+        if let Some(children) = children_by_parent.get(&id) {
+            for &child_id in children {
+                if removed_ids.insert(child_id) {
+                    pending.push(child_id);
+                }
+            }
+        }
+    }
+
+    let mut season_ids_with_children = HashSet::new();
+    let mut episode_season_ids = HashSet::new();
+    for item in descendants {
+        if removed_ids.contains(&item.id) {
+            continue;
+        }
+        if let Some(parent_id) = item.parent_id {
+            season_ids_with_children.insert(parent_id);
+        }
+        if item.item_type == "Episode"
+            && let Some(season_id) = item.season_id
+        {
+            episode_season_ids.insert(season_id);
+        }
+    }
+
+    descendants
+        .iter()
+        .filter(|item| item.item_type == "Season" && item.path.is_some())
+        .filter(|season| {
+            !season_ids_with_children.contains(&season.id)
+                && !episode_season_ids.contains(&season.id)
+        })
+        .filter(|season| {
+            season.path.as_deref().is_some_and(|path| {
+                readable_roots
+                    .iter()
+                    .any(|root| Path::new(path).starts_with(root))
+            })
+        })
+        .map(|season| season.id)
+        .collect()
+}
+
 async fn directory_snapshot_for_path(
     path: &Path,
 ) -> Result<ScanDirectorySnapshot, LibraryScanError> {
@@ -5112,7 +5159,7 @@ mod tests {
         relations_from_movie_nfo, relations_from_nfo_metadata,
         resolve_external_subtitle_streams_from_entries, resolve_scanned_video_groups,
         scan_file_batches, scan_nfo_person, set_additional_parts, stable_item_id,
-        streams_from_media_info, streams_need_probe, track_group_change,
+        stale_tv_season_ids, streams_from_media_info, streams_need_probe, track_group_change,
         write_media_info_probe_marker,
     };
 
@@ -5139,6 +5186,69 @@ mod tests {
         assert!(paths.contains(path));
         assert!(!paths.contains("/media/Library/movie.mkv"));
         assert!(!paths.contains("/media/Library/Movie.mkv.bak"));
+    }
+
+    #[test]
+    fn stale_tv_seasons_use_remaining_children_without_a_second_query() {
+        fn candidate(
+            id: uuid::Uuid,
+            item_type: &str,
+            path: Option<&str>,
+            parent_id: Option<uuid::Uuid>,
+            season_id: Option<uuid::Uuid>,
+        ) -> jellyfin_data::DescendantScanCandidate {
+            jellyfin_data::DescendantScanCandidate {
+                id,
+                item_type: item_type.to_owned(),
+                path: path.map(str::to_owned),
+                parent_id,
+                season_id,
+            }
+        }
+
+        let stale_season = uuid::Uuid::new_v4();
+        let stale_episode = uuid::Uuid::new_v4();
+        let live_season = uuid::Uuid::new_v4();
+        let live_episode = uuid::Uuid::new_v4();
+        let cascaded_season = uuid::Uuid::new_v4();
+        let stale_video = uuid::Uuid::new_v4();
+        let cascaded_child = uuid::Uuid::new_v4();
+        let candidates = vec![
+            candidate(stale_season, "Season", Some("/tv/Stale"), None, None),
+            candidate(
+                stale_episode,
+                "Episode",
+                Some("/tv/Stale/S01E01.mkv"),
+                Some(stale_season),
+                Some(stale_season),
+            ),
+            candidate(live_season, "Season", Some("/tv/Live"), None, None),
+            candidate(
+                live_episode,
+                "Episode",
+                Some("/tv/Live/S01E01.mkv"),
+                Some(live_season),
+                Some(live_season),
+            ),
+            candidate(cascaded_season, "Season", Some("/tv/Cascade"), None, None),
+            candidate(
+                stale_video,
+                "Video",
+                Some("/tv/Cascade/video.mkv"),
+                Some(cascaded_season),
+                None,
+            ),
+            candidate(cascaded_child, "Trailer", None, Some(stale_video), None),
+        ];
+
+        let stale = stale_tv_season_ids(
+            &candidates,
+            &HashSet::from([stale_episode, stale_video]),
+            &[PathBuf::from("/tv")],
+        )
+        .into_iter()
+        .collect::<HashSet<_>>();
+        assert_eq!(stale, HashSet::from([stale_season, cascaded_season]));
     }
 
     #[test]
