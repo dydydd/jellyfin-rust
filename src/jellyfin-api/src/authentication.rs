@@ -624,7 +624,7 @@ fn parse_authorization(value: &str) -> ClientMetadata {
     let Some((scheme, fields)) = value.split_once(' ') else {
         return ClientMetadata::default();
     };
-    if !scheme.eq_ignore_ascii_case("MediaBrowser") && !scheme.eq_ignore_ascii_case("Emby") {
+    if !jellyfin_emby_api::is_authorization_scheme(scheme) {
         return ClientMetadata::default();
     }
     let mut parts = parse_authorization_parts(fields);
@@ -723,6 +723,16 @@ mod tests {
         assert_eq!(metadata.device_id, "69420");
         assert_eq!(metadata.device, "Apple II");
         assert_eq!(metadata.version, "10.8.0");
+        assert_eq!(metadata.token.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn parses_emby_mobile_client_header() {
+        let metadata = parse_authorization(
+            "Emby Client=\"Emby for iOS\", DeviceId=\"ios-device\", Device=\"iPhone\", Version=\"2.1\", Token=\"abc\"",
+        );
+        assert_eq!(metadata.client, "Emby for iOS");
+        assert_eq!(metadata.device_id, "ios-device");
         assert_eq!(metadata.token.as_deref(), Some("abc"));
     }
 

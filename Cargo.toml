@@ -6,6 +6,7 @@ members = [
     "src/jellyfin-controller",
     "src/jellyfin-data",
     "src/jellyfin-drawing",
+    "src/jellyfin-emby-api",
     "src/jellyfin-extensions",
     "src/jellyfin-live-tv",
     "src/jellyfin-media-encoding",

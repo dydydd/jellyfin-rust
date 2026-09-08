@@ -13,7 +13,7 @@ const MAX_BODY_SIZE: usize = 1024 * 1024;
 async fn api_and_emby_prefixes_serve_the_same_root_routes() {
     let app = app();
 
-    for prefix in ["", "/api", "/emby"] {
+    for prefix in jellyfin_emby_api::API_PREFIXES {
         let response = get(&app, &format!("{prefix}/api-docs/openapi.json")).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;

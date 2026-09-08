@@ -839,11 +839,7 @@ pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let base = base_router(Arc::clone(&state));
 
-    Router::new()
-        .nest("/api", base.clone())
-        .nest("/emby", base.clone())
-        .merge(base)
-        .with_state(state)
+    jellyfin_emby_api::mount_routes(base).with_state(state)
 }
 
 #[allow(clippy::too_many_lines)]
