@@ -1448,13 +1448,20 @@ fn localization_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Localization/Cultures", get(localization::cultures))
         .route("/Localization/cultures", get(localization::cultures))
+        .route("/localization/cultures", get(localization::cultures))
         .route("/Localization/Countries", get(localization::countries))
         .route("/Localization/countries", get(localization::countries))
+        .route("/localization/countries", get(localization::countries))
         .route(
             "/Localization/ParentalRatings",
             get(localization::parental_ratings),
         )
+        .route(
+            "/localization/parentalratings",
+            get(localization::parental_ratings),
+        )
         .route("/Localization/Options", get(localization::options))
+        .route("/localization/options", get(localization::options))
 }
 
 fn api_key_routes() -> Router<Arc<AppState>> {

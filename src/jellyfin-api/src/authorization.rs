@@ -302,7 +302,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Startup" | "Environment", ..]
         | ["Library", "VirtualFolders", ..]
         | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
-        ["Localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
+        ["Localization" | "localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
         ["System", "Info"] | ["system", "info"] => {
             RoutePolicy::FirstTimeSetupOrIgnoreParentalControl
         }
@@ -578,6 +578,18 @@ mod tests {
             route_policy(&Method::GET, "/Localization/Cultures"),
             RoutePolicy::FirstTimeSetupOrDefault
         );
+        for route in [
+            "/localization/cultures",
+            "/localization/countries",
+            "/localization/parentalratings",
+            "/localization/options",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::FirstTimeSetupOrDefault,
+                "{route}"
+            );
+        }
         assert_eq!(
             route_policy(&Method::GET, "/Videos/{item_id}/hls/playlist/seg1.ts"),
             RoutePolicy::Public
