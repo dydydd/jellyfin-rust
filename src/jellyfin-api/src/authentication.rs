@@ -471,11 +471,7 @@ pub(crate) async fn authenticated_identity(
         )));
     }
 
-    let Some(mut api_key) = state
-        .api_keys
-        .find_by_token(&access_token)
-        .await?
-    else {
+    let Some(mut api_key) = state.api_keys.find_by_token(&access_token).await? else {
         log_authentication_rejection(headers, "unknown access token");
         return Err(ApiError::Unauthorized);
     };
