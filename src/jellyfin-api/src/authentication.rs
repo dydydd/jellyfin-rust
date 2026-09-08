@@ -446,8 +446,13 @@ pub(crate) async fn authenticated_identity(
     headers: &HeaderMap,
     uri: Option<&Uri>,
 ) -> Result<AuthenticatedIdentity, ApiError> {
-    let access_token =
-        access_token(headers, uri.and_then(Uri::query)).ok_or(ApiError::Unauthorized)?;
+    let access_token = match access_token(headers, uri.and_then(Uri::query)) {
+        Some(access_token) => access_token,
+        None => {
+            log_authentication_rejection(headers, "no recognizable access token");
+            return Err(ApiError::Unauthorized);
+        }
+    };
 
     if let Some(session) = state.devices.find_by_token(&access_token).await? {
         let user_id = session.user_id;
@@ -466,11 +471,14 @@ pub(crate) async fn authenticated_identity(
         )));
     }
 
-    let mut api_key = state
+    let Some(mut api_key) = state
         .api_keys
         .find_by_token(&access_token)
         .await?
-        .ok_or(ApiError::Unauthorized)?;
+    else {
+        log_authentication_rejection(headers, "unknown access token");
+        return Err(ApiError::Unauthorized);
+    };
     let touched_at = Utc::now();
     if state.api_keys.touch(&access_token, touched_at).await? != 1 {
         return Err(ApiError::Unauthorized);
@@ -586,6 +594,22 @@ fn access_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
         }
     }
     None
+}
+
+fn log_authentication_rejection(headers: &HeaderMap, reason: &str) {
+    // Never log token values; the header shape is enough to diagnose client compatibility.
+    let authorization_scheme = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_ascii_whitespace().next())
+        .unwrap_or("none");
+    tracing::info!(
+        authorization_scheme,
+        has_x_emby_token = headers.contains_key("x-emby-token"),
+        has_x_mediabrowser_token = headers.contains_key("x-mediabrowser-token"),
+        %reason,
+        "authentication rejected"
+    );
 }
 
 fn nonempty_header(headers: &HeaderMap, name: &str) -> Option<String> {
