@@ -13,7 +13,7 @@ ENTITIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
                         "jellyfin-sdk-swift", "Sources", "Entities")
 
 DECODE = re.compile(
-    r"self\.\w+\s*=\s*try values\.decodeIfPresent\((.+?)\.self,\s*forKey:\s*\"([^\"]+)\"\)")
+    r"self\.\w+\s*=\s*try values\.(decode(?:IfPresent)?)\((.+?)\.self,\s*forKey:\s*\"([^\"]+)\"\)")
 ENUM = re.compile(r"public enum\s+(\w+)\s*:\s*String\b")
 CASE = re.compile(r"^\s*case\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*=\s*\"([^\"]+)\")?", re.M)
 TYPEALIAS = re.compile(r"public typealias\s+(\w+)\s*=\s*(.+)$", re.M)
@@ -28,7 +28,10 @@ def load():
         path = os.path.join(ENTITIES, name)
         text = Path(path).read_text(encoding="utf-8")
         model = name[:-6]
-        fields = [(key, typ.strip()) for typ, key in DECODE.findall(text)]
+        fields = [
+            (key, typ.strip(), decoder == "decode")
+            for decoder, typ, key in DECODE.findall(text)
+        ]
         if fields:
             structs[model] = fields
         enum_match = ENUM.search(text)

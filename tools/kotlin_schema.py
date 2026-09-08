@@ -10,6 +10,7 @@ The SDK sets coerceInputValues = true, which rescues *nullable* enum properties
 import os
 import re
 import json
+from pathlib import Path
 
 SDK = os.path.join(os.path.dirname(__file__), os.pardir,
                    "jellyfin-sdk-kotlin", "jellyfin-model", "src",
@@ -85,7 +86,7 @@ def load():
             if not fn.endswith('.kt'):
                 continue
             path = os.path.join(root, fn)
-            text = strip_comments(open(path, encoding='utf-8').read())
+            text = strip_comments(Path(path).read_text(encoding='utf-8'))
             mname = fn[:-3]
             if re.search(r'\benum class\b', text):
                 vals = [a for a, _b in enum_entry_re.findall(text)]

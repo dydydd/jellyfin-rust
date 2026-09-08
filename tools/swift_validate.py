@@ -68,7 +68,13 @@ def json_type(value):
 def check_date(value):
     if not isinstance(value, str):
         return False
-    # Jellyfin's DateTime converter accepts RFC 3339/ISO 8601 instants.
+    # The Swift SDK's OpenISO8601DateFormatter requires a time and an offset.
+    # Date-only values happen to parse in Python but fail Swift's Date decoder.
+    if not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})",
+        value,
+    ):
+        return False
     try:
         datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
@@ -134,7 +140,10 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0):
         if not isinstance(value, dict):
             report.add(path, f"expected object for {typ}, got {json_type(value)}")
             return
-        for key, field_type in structs[typ]:
+        for key, field_type, required in structs[typ]:
+            if required and key not in value:
+                report.add(f"{path}.{key}", f"required {field_type} is absent")
+                continue
             if key in value:
                 check(structs, enums, aliases, field_type, value[key], f"{path}.{key}", report, depth + 1)
         return

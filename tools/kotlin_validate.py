@@ -154,6 +154,7 @@ def validate(root_model, doc):
     models, enums, aliases = load()
     if (root_model not in models and root_model not in enums
             and root_model not in aliases
+            and root_model not in PRIMITIVES
             and not re_match(r'^(?:List|Set)<.+>$', root_model)):
         raise SystemExit(f'unknown Kotlin type {root_model}')
     rep = Report()
