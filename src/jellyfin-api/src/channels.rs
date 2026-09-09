@@ -23,6 +23,7 @@ pub(crate) struct ChannelsQuery {
         alias = "startindex"
     )]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
     #[serde(
         rename = "supportsLatestItems",
@@ -53,6 +54,7 @@ pub(crate) struct ChannelItemsQuery {
         alias = "startindex"
     )]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
     #[serde(
         default,
@@ -97,6 +99,7 @@ pub(crate) struct LatestChannelItemsQuery {
         alias = "startindex"
     )]
     start_index: u64,
+    #[serde(rename = "limit", alias = "Limit")]
     limit: Option<u64>,
     #[serde(
         default,

@@ -496,6 +496,7 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["get", "post", "delete"],
     ),
     ("/Playlists/{playlist_id}/Items", &["get", "post", "delete"]),
+    ("/Playlists/{playlist_id}/AddToPlaylistInfo", &["get"]),
     (
         "/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
         &["post"],

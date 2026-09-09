@@ -118,7 +118,7 @@ pub use persons::{
     PersonReconciliationError, PersonReconciliationService, PersonReconciliationSummary,
     PersonService,
 };
-pub use playlists::{PlaylistError, PlaylistService};
+pub use playlists::{AddToPlaylistInfo, PlaylistError, PlaylistService};
 pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,
     PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
