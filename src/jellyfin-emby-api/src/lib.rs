@@ -18,6 +18,7 @@ use serde::Serialize;
 mod auth_user;
 mod library;
 mod system_misc;
+mod users;
 
 /// Emby's Android and iOS API base path.
 pub const EMBY_API_PREFIX: &str = "/emby";
@@ -33,6 +34,7 @@ pub fn router(state: AppState) -> Router {
         .merge(auth_user::routes())
         .merge(library::routes())
         .merge(system_misc::routes())
+        .merge(users::routes())
         .route("/Branding/Configuration", get(branding_configuration))
         .route("/branding/configuration", get(branding_configuration))
         .route("/System/Info/Public", get(public_system_info))

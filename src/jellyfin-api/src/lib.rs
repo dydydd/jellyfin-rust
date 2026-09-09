@@ -925,6 +925,45 @@ impl AppState {
         .await
         .map_err(IntoResponse::into_response)
     }
+
+    /// Returns user DTOs for protocol adapters that expose Emby's paged user
+    /// queries.  Keep the database lookup and image-tag projection batched.
+    pub async fn emby_users(
+        &self,
+        is_hidden: Option<bool>,
+        is_disabled: Option<bool>,
+    ) -> Result<Vec<UserDto>, Response> {
+        let users = self
+            .users
+            .list_filtered(is_hidden, is_disabled)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        for user in &users {
+            authentication::stored_user_policy(user)
+                .map_err(ApiError::from)
+                .map_err(IntoResponse::into_response)?;
+        }
+        users_to_dtos_with_server_id(self, users)
+            .await
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Enforces Emby's administrator-only user query boundary after the
+    /// shared protocol middleware has authenticated the request.
+    pub async fn require_emby_administrator(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+    ) -> Result<(), Response> {
+        authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?
+            .require_administrator()
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
 }
 
 fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, Response> {
@@ -1063,8 +1102,42 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/items/{item_id}/images/{image_type}/{image_index}/{tag}/{format}/{max_width}/{max_height}/{percent_played}/{unplayed_count}",
             get(item_images::get_legacy_path),
         )
+        .route(
+            "/Items/{item_id}/Subtitles/{index}",
+            axum::routing::delete(subtitles::delete_subtitle),
+        )
+        .route(
+            "/items/{item_id}/subtitles/{index}",
+            axum::routing::delete(subtitles::delete_subtitle),
+        )
+        .route(
+            "/Items/{item_id}/Subtitles/{index}/Delete",
+            post(subtitles::delete_subtitle),
+        )
+        .route(
+            "/items/{item_id}/subtitles/{index}/delete",
+            post(subtitles::delete_subtitle),
+        )
+        .route(
+            "/Items/{item_id}/{media_source_id}/Subtitles/{index}/Stream.{format}",
+            get(subtitles::get_subtitle),
+        )
+        .route(
+            "/items/{item_id}/{media_source_id}/subtitles/{index}/stream.{format}",
+            get(subtitles::get_subtitle),
+        )
+        .route(
+            "/Items/{item_id}/{media_source_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}",
+            get(subtitles::get_subtitle_with_ticks),
+        )
+        .route(
+            "/items/{item_id}/{media_source_id}/subtitles/{index}/{start_position_ticks}/stream.{format}",
+            get(subtitles::get_subtitle_with_ticks),
+        )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route("/items/{item_id}/remoteimages", get(remote_images::images))
+        .route("/Images/Remote", get(remote_images::fetch))
+        .route("/images/remote", get(remote_images::fetch))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",
             get(remote_images::providers),
@@ -1646,6 +1719,8 @@ fn device_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Devices", get(devices::list).delete(devices::delete))
         .route("/devices", get(devices::list).delete(devices::delete))
+        .route("/Devices/Delete", post(devices::delete))
+        .route("/devices/delete", post(devices::delete))
         .route("/Devices/Info", get(devices::info))
         .route("/devices/info", get(devices::info))
         .route(
@@ -1770,8 +1845,14 @@ fn session_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Sessions", get(session::list))
         .route("/sessions", get(session::list))
+        .route("/Sessions/PlayQueue", get(session::play_queue))
+        .route("/sessions/playqueue", get(session::play_queue))
         .route(
             "/Sessions/{session_id}/System/{command}",
+            post(session::send_system_command),
+        )
+        .route(
+            "/sessions/{session_id}/system/{command}",
             post(session::send_system_command),
         )
         .route(
@@ -1779,7 +1860,15 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::display_content),
         )
         .route(
+            "/sessions/{session_id}/viewing",
+            post(session::display_content),
+        )
+        .route(
             "/Sessions/{session_id}/Playing",
+            post(session::send_play_command),
+        )
+        .route(
+            "/sessions/{session_id}/playing",
             post(session::send_play_command),
         )
         .route(
@@ -1787,7 +1876,15 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_playstate_command),
         )
         .route(
+            "/sessions/{session_id}/playing/{command}",
+            post(session::send_playstate_command),
+        )
+        .route(
             "/Sessions/{session_id}/Command/{command}",
+            post(session::send_general_command),
+        )
+        .route(
+            "/sessions/{session_id}/command/{command}",
             post(session::send_general_command),
         )
         .route(
@@ -1795,12 +1892,40 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_full_general_command),
         )
         .route(
+            "/sessions/{session_id}/command",
+            post(session::send_full_general_command),
+        )
+        .route(
             "/Sessions/{session_id}/Message",
+            post(session::send_message_command),
+        )
+        .route(
+            "/sessions/{session_id}/message",
             post(session::send_message_command),
         )
         .route(
             "/Sessions/{session_id}/User/{user_id}",
             post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
+        .route(
+            "/Sessions/{session_id}/Users/{user_id}",
+            post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
+        .route(
+            "/sessions/{session_id}/user/{user_id}",
+            post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
+        .route(
+            "/sessions/{session_id}/users/{user_id}",
+            post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
+        .route(
+            "/Sessions/{session_id}/Users/{user_id}/Delete",
+            post(session::remove_user_from_session),
+        )
+        .route(
+            "/sessions/{session_id}/users/{user_id}/delete",
+            post(session::remove_user_from_session),
         )
         .route("/Sessions/Viewing", post(session::report_viewing))
         .route("/Sessions/Capabilities", post(session::post_capabilities))
@@ -2133,7 +2258,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/movie",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/Trailer",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/items/remotesearch/trailer",
             post(item_lookup::remote_search),
         )
         .route(
@@ -2141,7 +2274,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/musicvideo",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/Series",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/items/remotesearch/series",
             post(item_lookup::remote_search),
         )
         .route(
@@ -2149,7 +2290,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/boxset",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/MusicArtist",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/items/remotesearch/musicartist",
             post(item_lookup::remote_search),
         )
         .route(
@@ -2157,12 +2306,27 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/musicalbum",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/Person",
             post(item_lookup::remote_search_elevated),
         )
+        .route(
+            "/items/remotesearch/person",
+            post(item_lookup::remote_search_elevated),
+        )
         .route("/Items/RemoteSearch/Book", post(item_lookup::remote_search))
+        .route("/items/remotesearch/book", post(item_lookup::remote_search))
+        .route("/Items/RemoteSearch/Image", get(remote_images::fetch))
+        .route("/items/remotesearch/image", get(remote_images::fetch))
         .route(
             "/Items/RemoteSearch/Apply/{item_id}",
+            post(item_lookup::apply_remote_search),
+        )
+        .route(
+            "/items/remotesearch/apply/{item_id}",
             post(item_lookup::apply_remote_search),
         )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))

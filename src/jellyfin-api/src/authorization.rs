@@ -278,9 +278,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
 
     match segments.as_slice() {
         ["health" | "GetUtcTime" | "metrics"] | ["api-docs", "openapi.json"] => RoutePolicy::Public,
-        ["System", "Info", "Public"] | ["system", "info", "public"] | ["System", "Ping"] => {
-            RoutePolicy::Public
-        }
+        ["System", "Info", "Public"] | ["system", "info", "public"] => RoutePolicy::Public,
         ["Branding", "Configuration"] | ["branding", "configuration"] => RoutePolicy::Public,
         ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
         ["Branding", "Splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
@@ -518,6 +516,10 @@ mod tests {
         assert_eq!(
             route_policy(&Method::GET, "/System/Info/Public"),
             RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/System/Ping"),
+            RoutePolicy::Default
         );
         assert_eq!(
             route_policy(&Method::GET, "/system/info/public"),

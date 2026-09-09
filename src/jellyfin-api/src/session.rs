@@ -13,13 +13,14 @@ use jellyfin_data::{DeviceQuery, NewActivityLog, NewSessionCommand, entities::de
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     NameIdPair, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    SessionInfoDto, SessionUserInfo,
+    QueryResult, SessionInfoDto, SessionUserInfo,
 };
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, user_library, user_primary_image_tags};
+use user_library::{BaseItemDto, BaseItemDtoFields};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -30,6 +31,17 @@ pub(crate) struct SessionQuery {
     device_id: Option<String>,
     #[serde(alias = "ActiveWithinSeconds", alias = "activewithinseconds")]
     active_within_seconds: Option<i64>,
+    #[serde(alias = "Id", alias = "id")]
+    id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct PlayQueueQuery {
+    #[serde(alias = "Id", alias = "id")]
+    id: Option<String>,
+    #[serde(alias = "DeviceId", alias = "deviceid")]
+    device_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +190,11 @@ pub(crate) async fn list(
     };
     let user_details = session_user_details(&state, &page.items).await?;
     for device in page.items {
+        if let Some(session_id) = query.id.as_deref().filter(|id| !id.is_empty())
+            && jellyfin_session_id(&device.app_name, &device.device_id) != session_id
+        {
+            continue;
+        }
         if let Some(target_user_id) = controllable_user_id {
             let supports_remote =
                 ClientCapabilitiesDto::from_stored_value(device.capabilities.clone())
@@ -217,6 +234,95 @@ pub(crate) async fn list(
         ));
     }
     Ok(Json(sessions))
+}
+
+/// Returns the queue stored on a live device session. Emby's PlayQueue route
+/// is backed by the same session state as Jellyfin; queue entries are only
+/// identifiers, so hydrate them through the normal user-aware DTO projector.
+pub(crate) async fn play_queue(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<PlayQueueQuery>, QueryRejection>,
+) -> Result<Json<QueryResult<BaseItemDto>>, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let device = if let Some(id) = query.id.as_deref().filter(|id| !id.is_empty()) {
+        find_active_session(&state, id).await?
+    } else if let Some(device_id) = query
+        .device_id
+        .as_deref()
+        .filter(|device_id| !device_id.is_empty())
+    {
+        state
+            .devices
+            .query(&DeviceQuery {
+                device_id: Some(device_id.to_owned()),
+                is_active: Some(true),
+                ..DeviceQuery::default()
+            })
+            .await?
+            .items
+            .into_iter()
+            .next()
+            .ok_or(ApiError::SessionNotFound)?
+    } else {
+        match &identity {
+            authentication::AuthenticatedIdentity::Device(session) => session.device.clone(),
+            authentication::AuthenticatedIdentity::ApiKey(_) => {
+                return Err(ApiError::InvalidRequest);
+            }
+        }
+    };
+
+    if let authentication::AuthenticatedIdentity::Device(session) = &identity
+        && !session.user.is_administrator
+        && device.user_id != session.user.id
+        && !serde_json::from_value::<Vec<SessionUserInfo>>(device.additional_users.clone())
+            .unwrap_or_default()
+            .iter()
+            .any(|user| user.user_id == session.user.id)
+    {
+        return Err(ApiError::Forbidden);
+    }
+
+    let queue = queue_item_ids(&device.now_playing_queue);
+    let items = state.base_items.get_many(&queue).await?;
+    let mut by_id = items
+        .into_iter()
+        .map(|item| (item.id, item))
+        .collect::<HashMap<_, _>>();
+    let mut projected = Vec::with_capacity(queue.len());
+    for id in queue {
+        if let Some(item) = by_id.remove(&id) {
+            projected.push(
+                user_library::project_item_to_dto(
+                    &state,
+                    item,
+                    device.user_id,
+                    BaseItemDtoFields::all(),
+                    None,
+                    None,
+                )
+                .await?,
+            );
+        }
+    }
+    Ok(Json(QueryResult::from_items(projected)))
+}
+
+fn queue_item_ids(value: &serde_json::Value) -> Vec<Uuid> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            ["Id", "id", "ItemId", "itemId", "itemid"]
+                .into_iter()
+                .find_map(|key| entry.get(key).and_then(|value| value.as_str()))
+                .and_then(|id| Uuid::parse_str(id).ok())
+        })
+        .collect()
 }
 
 pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInfoDto>, ApiError> {
@@ -809,4 +915,23 @@ pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
         write!(result, "{byte:02x}").expect("writing to a String cannot fail");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_item_ids;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn queue_ids_preserve_order_and_ignore_malformed_entries() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let ids = queue_item_ids(&json!([
+            {"Id": first.to_string()},
+            {"itemId": "not-a-guid"},
+            {"id": second.to_string()}
+        ]));
+        assert_eq!(ids, vec![first, second]);
+    }
 }

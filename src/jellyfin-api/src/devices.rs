@@ -24,6 +24,8 @@ use crate::{ApiError, AppState, authentication};
 pub(crate) struct DevicesQuery {
     #[serde(alias = "UserId", alias = "userid", alias = "user_id")]
     user_id: Option<Uuid>,
+    #[serde(alias = "SortOrder", alias = "sortorder")]
+    sort_order: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -59,11 +61,23 @@ pub(crate) async fn list(
             serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
         devices.retain(|device| can_access_device(&policy, device));
     }
-    devices.sort_by(|a, b| {
-        b.date_last_activity
-            .cmp(&a.date_last_activity)
-            .then_with(|| a.device_id.cmp(&b.device_id))
-    });
+    if query
+        .sort_order
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("Ascending"))
+    {
+        devices.sort_by(|a, b| {
+            a.date_last_activity
+                .cmp(&b.date_last_activity)
+                .then_with(|| a.device_id.cmp(&b.device_id))
+        });
+    } else {
+        devices.sort_by(|a, b| {
+            b.date_last_activity
+                .cmp(&a.date_last_activity)
+                .then_with(|| a.device_id.cmp(&b.device_id))
+        });
+    }
     let options = device_options_by_id(&state, &devices).await?;
 
     let mut items = Vec::with_capacity(devices.len());

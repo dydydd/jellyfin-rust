@@ -3,13 +3,7 @@
 
 use std::sync::Arc;
 
-use axum::{
-    Json, Router,
-    extract::State,
-    http::{StatusCode, header},
-    response::Response,
-    routing::get,
-};
+use axum::{Json, Router, http::StatusCode, routing::get};
 use jellyfin_api::AppState;
 use serde::Serialize;
 
@@ -18,6 +12,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/System/Ping", get(ping).post(ping).head(ping))
         .route("/system/ping", get(ping).post(ping).head(ping))
+        .route("/System/WakeOnLanInfo", get(wake_on_lan_info))
+        .route("/system/wakeonlaninfo", get(wake_on_lan_info))
         .route("/System/ReleaseNotes", get(release_notes))
         .route("/system/releasenotes", get(release_notes))
         .route("/System/ReleaseNotes/Versions", get(release_note_versions))
@@ -38,16 +34,15 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/tags", get(tags))
 }
 
-async fn ping(State(state): State<Arc<AppState>>) -> Result<Response, StatusCode> {
-    let name = state
-        .public_system_info()
-        .await?
-        .server_name
-        .unwrap_or_default();
-    Response::builder()
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(name.into())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+async fn ping() -> StatusCode {
+    // Emby's generated clients model Ping as `void`, with a successful 200.
+    StatusCode::OK
+}
+
+// The server does not expose Wake-on-LAN configuration.  An empty list is the
+// valid Emby response when no Wake-on-LAN devices are configured.
+async fn wake_on_lan_info() -> Json<Vec<()>> {
+    Json(Vec::new())
 }
 
 #[derive(Serialize)]
@@ -128,6 +123,7 @@ mod tests {
         for path in [
             "/System/ReleaseNotes",
             "/System/ReleaseNotes/Versions",
+            "/System/WakeOnLanInfo",
             "/Packages/Updates",
             "/Shows/Missing",
             "/AudioBooks/NextUp",
@@ -144,5 +140,25 @@ mod tests {
             assert!(response.status().is_success(), "{path}");
             let _ = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn ping_is_an_empty_success_response() {
+        let app = routes().with_state(Arc::new(AppState::new(
+            DatabaseConnection::Disconnected,
+            "test".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )));
+        let response = app
+            .oneshot(Request::get("/System/Ping").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
