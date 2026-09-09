@@ -41,9 +41,12 @@ pub struct DeviceInfoDto {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct DeviceOptionsDto {
+    #[serde(alias = "id", alias = "ID")]
     pub id: i64,
+    #[serde(alias = "deviceId", alias = "deviceid")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    #[serde(alias = "customName", alias = "customname")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_name: Option<String>,
 }

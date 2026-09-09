@@ -82,6 +82,20 @@ async fn openapi_document_describes_the_real_public_system_slice() {
         "getItems_item_id_Download",
     );
     assert_operation(&document, "/Sessions", "get", "getSessions");
+    assert_operation(&document, "/Images/Remote", "get", "getImagesRemote");
+    assert_operation(&document, "/Items/Delete", "post", "postItemsDelete");
+    assert_operation(
+        &document,
+        "/Library/VirtualFolders/Query",
+        "get",
+        "getLibraryVirtualFoldersQuery",
+    );
+    assert_operation(
+        &document,
+        "/Library/SelectableMediaFolders",
+        "get",
+        "getLibrarySelectableMediaFolders",
+    );
 
     assert_eq!(
         document["paths"]["/System/Info/Public"]["get"]["responses"]["200"]["content"]["application/json"]

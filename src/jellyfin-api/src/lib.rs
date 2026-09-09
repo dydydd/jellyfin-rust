@@ -1148,9 +1148,13 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/Search/Hints", get(search::hints))
         .route("/search/hints", get(search::hints))
         .route("/Backup", get(backup::list))
+        .route("/backup", get(backup::list))
         .route("/Backup/Create", post(backup::create))
+        .route("/backup/create", post(backup::create))
         .route("/Backup/Manifest", get(backup::manifest))
+        .route("/backup/manifest", get(backup::manifest))
         .route("/Backup/Restore", post(backup::restore))
+        .route("/backup/restore", post(backup::restore))
         .route("/Items/{item_id}/Images", get(item_images::list))
         .route("/items/{item_id}/images", get(item_images::list))
         .route(
@@ -1271,6 +1275,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/system/configuration/partial", post(configuration::partial))
         .route(
             "/System/Configuration/MetadataOptions/Default",
+            get(configuration::default_metadata_options),
+        )
+        .route(
+            "/system/configuration/metadataoptions/default",
             get(configuration::default_metadata_options),
         )
         .route(
@@ -2221,6 +2229,10 @@ fn session_routes() -> Router<Arc<AppState>> {
         .route("/sessions/capabilities", post(session::post_capabilities))
         .route(
             "/Sessions/Capabilities/Full",
+            post(session::post_full_capabilities),
+        )
+        .route(
+            "/sessions/capabilities/full",
             post(session::post_full_capabilities),
         )
         .route("/Sessions/Logout", post(session::logout))

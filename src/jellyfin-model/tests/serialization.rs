@@ -502,6 +502,40 @@ fn device_options_uses_official_wire_names() {
     assert_eq!(decoded.id, 0);
     assert_eq!(decoded.device_id, None);
     assert_eq!(decoded.custom_name.as_deref(), Some("Bedroom"));
+
+    let decoded: DeviceOptionsDto = serde_json::from_value(json!({
+        "id": 7,
+        "deviceid": "phone",
+        "customname": "Pocket"
+    }))
+    .unwrap();
+    assert_eq!(decoded.id, 7);
+    assert_eq!(decoded.device_id.as_deref(), Some("phone"));
+    assert_eq!(decoded.custom_name.as_deref(), Some("Pocket"));
+}
+
+#[test]
+fn backup_requests_accept_case_insensitive_json_properties() {
+    let options: BackupOptionsDto = serde_json::from_value(json!({
+        "metadata": true,
+        "TRICKPLAY": true,
+        "subtitles": true,
+        "database": false
+    }))
+    .unwrap();
+    assert_eq!(
+        options,
+        BackupOptionsDto {
+            metadata: true,
+            trickplay: true,
+            subtitles: true,
+            database: false
+        }
+    );
+
+    let request: BackupRestoreRequestDto =
+        serde_json::from_value(json!({ "archivefilename": "backup.zip" })).unwrap();
+    assert_eq!(request.archive_file_name, "backup.zip");
 }
 
 #[test]

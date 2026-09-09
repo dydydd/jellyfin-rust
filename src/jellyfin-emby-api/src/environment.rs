@@ -17,18 +17,18 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/environment/defaultdirectorybrowser", get(default_browser))
         .route(
             "/Environment/DirectoryContents",
-            get(directory_contents).post(directory_contents),
+            get(directory_contents).post(directory_contents_post),
         )
         .route(
             "/environment/directorycontents",
-            get(directory_contents).post(directory_contents),
+            get(directory_contents).post(directory_contents_post),
         )
         .route("/Environment/Drives", get(drives))
         .route("/environment/drives", get(drives))
         .route("/Environment/NetworkDevices", get(empty_entries))
         .route("/environment/networkdevices", get(empty_entries))
-        .route("/Environment/NetworkShares", get(empty_entries))
-        .route("/environment/networkshares", get(empty_entries))
+        .route("/Environment/NetworkShares", get(network_shares))
+        .route("/environment/networkshares", get(network_shares))
         .route("/Environment/ParentPath", get(parent_path))
         .route("/environment/parentpath", get(parent_path))
         .route("/Environment/ValidatePath", post(validate_path))
@@ -40,10 +40,21 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 struct PathQuery {
     #[serde(alias = "path")]
     path: Option<String>,
-    #[serde(alias = "includeFiles")]
+    #[serde(alias = "includeFiles", alias = "includefiles")]
     include_files: Option<bool>,
-    #[serde(alias = "includeDirectories")]
+    #[serde(alias = "includeDirectories", alias = "includedirectories")]
     include_directories: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DirectoryContentsBody {
+    #[allow(dead_code)]
+    #[serde(alias = "username")]
+    username: Option<String>,
+    #[allow(dead_code)]
+    #[serde(alias = "password")]
+    password: Option<String>,
 }
 
 async fn authorize(
@@ -85,6 +96,22 @@ async fn directory_contents(
     )?))
 }
 
+async fn directory_contents_post(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<PathQuery>,
+    Json(_body): Json<DirectoryContentsBody>,
+) -> Result<Json<Vec<FileSystemEntryInfo>>, Response> {
+    authorize(&state, &headers, &uri).await?;
+    let path = query.path.ok_or(StatusCode::BAD_REQUEST.into_response())?;
+    Ok(Json(state.environment_directory_contents(
+        &path,
+        query.include_files.unwrap_or(false),
+        query.include_directories.unwrap_or(false),
+    )?))
+}
+
 async fn drives(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -100,6 +127,17 @@ async fn empty_entries(
     headers: HeaderMap,
 ) -> Result<Json<Vec<FileSystemEntryInfo>>, Response> {
     authorize(&state, &headers, &uri).await?;
+    Ok(Json(Vec::new()))
+}
+
+async fn network_shares(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<PathQuery>,
+) -> Result<Json<Vec<FileSystemEntryInfo>>, Response> {
+    authorize(&state, &headers, &uri).await?;
+    let _path = query.path.ok_or(StatusCode::BAD_REQUEST.into_response())?;
     Ok(Json(Vec::new()))
 }
 
@@ -120,12 +158,13 @@ async fn parent_path(
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ValidatePath {
-    #[serde(alias = "isFile")]
+    #[serde(alias = "isFile", alias = "isfile")]
     is_file: Option<bool>,
     #[serde(
         alias = "ValidateWriteable",
         alias = "validateWriteable",
-        alias = "validateWritable"
+        alias = "validateWritable",
+        alias = "validatewritable"
     )]
     validate_writable: Option<bool>,
 }

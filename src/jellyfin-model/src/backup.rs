@@ -4,9 +4,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct BackupOptionsDto {
+    #[serde(alias = "metadata", alias = "METADATA")]
     pub metadata: bool,
+    #[serde(alias = "trickplay", alias = "TRICKPLAY")]
     pub trickplay: bool,
+    #[serde(alias = "subtitles", alias = "SUBTITLES")]
     pub subtitles: bool,
+    #[serde(alias = "database", alias = "DATABASE")]
     pub database: bool,
 }
 
@@ -35,6 +39,7 @@ pub struct BackupManifestDto {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BackupRestoreRequestDto {
+    #[serde(alias = "archiveFileName", alias = "archivefilename")]
     pub archive_file_name: String,
 }
 
