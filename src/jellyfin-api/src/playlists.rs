@@ -217,6 +217,40 @@ pub(crate) async fn update(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn make_public(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(playlist_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    set_public(state, uri, headers, playlist_id, true).await
+}
+
+pub(crate) async fn make_private(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(playlist_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    set_public(state, uri, headers, playlist_id, false).await
+}
+
+async fn set_public(
+    state: Arc<AppState>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    playlist_id: Uuid,
+    is_public: bool,
+) -> Result<StatusCode, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(None)?;
+    state
+        .playlists
+        .update(playlist_id, user_id, None, None, None, Some(is_public))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn get_users(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,

@@ -116,6 +116,12 @@ pub(crate) struct UpdateItemImageIndexQuery {
     new_index: Option<i32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageUrlQuery {
+    #[serde(rename = "url", alias = "Url", alias = "URL")]
+    url: String,
+}
+
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -233,6 +239,27 @@ pub(crate) async fn upload_by_index(
     request: Request<Body>,
 ) -> Result<StatusCode, ApiError> {
     upload_internal(state, uri, headers, item_id, image_type, request).await
+}
+
+pub(crate) async fn upload_url(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((item_id, image_type, _image_index)): Path<(Uuid, String, i32)>,
+    Query(query): Query<ImageUrlQuery>,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    let image_type = parse_image_type(&image_type)?;
+    if query.url.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    state
+        .item_images
+        .download_remote_image(item_id, image_type, &query.url)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn update_index(

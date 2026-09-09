@@ -15,6 +15,7 @@ use axum::{
     extract::{Extension, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use indexmap::IndexMap;
 use jellyfin_model::PublicSystemInfo;
@@ -109,6 +110,10 @@ pub(crate) fn documented_routes() -> Router<Arc<AppState>> {
                     })
             }),
         )
+        // Emby clients use these conventional aliases for the same document.
+        .route("/openapi", get(serve_document))
+        .route("/openapi.json", get(serve_document))
+        .route("/swagger.json", get(serve_document))
         .finish_api(&mut document);
 
     add_route_inventory(&mut document);
@@ -177,6 +182,9 @@ fn inventory_operation_id(method: &str, path: &str) -> String {
 }
 
 const ROUTE_METHODS: &[(&str, &[&str])] = &[
+    ("/openapi", &["get"]),
+    ("/openapi.json", &["get"]),
+    ("/swagger.json", &["get"]),
     ("/metrics", &["get"]),
     ("/websocket", &["get"]),
     ("/socket", &["get"]),
@@ -208,6 +216,10 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["get", "post", "delete"],
     ),
     (
+        "/Items/{item_id}/Images/{image_type}/{image_index}/Url",
+        &["post"],
+    ),
+    (
         "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
         &["post"],
     ),
@@ -218,6 +230,9 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/Items/{item_id}/RemoteImages", &["get"]),
     ("/Items/{item_id}/RemoteImages/Providers", &["get"]),
     ("/Items/{item_id}/RemoteImages/Download", &["post"]),
+    ("/Items/{item_id}/DeleteInfo", &["get"]),
+    ("/Items/{item_id}/MakePublic", &["post"]),
+    ("/Items/{item_id}/MakePrivate", &["post"]),
     ("/System/Configuration", &["get", "post"]),
     ("/System/Configuration/MetadataOptions/Default", &["get"]),
     ("/System/Configuration/Branding", &["post"]),

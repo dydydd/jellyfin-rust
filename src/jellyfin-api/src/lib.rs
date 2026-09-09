@@ -1138,6 +1138,14 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(item_images::delete_by_index),
         )
         .route(
+            "/Items/{item_id}/Images/{image_type}/{image_index}/Url",
+            post(item_images::upload_url),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}/{image_index}/url",
+            post(item_images::upload_url),
+        )
+        .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
             post(item_images::update_index),
         )
@@ -1231,6 +1239,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route(
             "/System/Configuration/{key}",
+            get(configuration::get_named).post(configuration::update_named),
+        )
+        .route(
+            "/system/configuration/{key}",
             get(configuration::get_named).post(configuration::update_named),
         )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
@@ -2382,6 +2394,8 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/items/counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
         .route("/items/{item_id}/file", get(library::file))
+        .route("/Items/{item_id}/DeleteInfo", get(library::delete_info))
+        .route("/items/{item_id}/deleteinfo", get(library::delete_info))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
         .route("/items/{item_id}/themesongs", get(library::theme_songs))
         .route("/Items/{item_id}/ThemeVideos", get(library::theme_videos))
@@ -2492,6 +2506,16 @@ fn user_library_routes() -> Router<Arc<AppState>> {
         .route(
             "/items/{item_id}/externalidinfos",
             get(item_lookup::external_id_infos),
+        )
+        .route("/Items/{item_id}/MakePublic", post(playlists::make_public))
+        .route("/items/{item_id}/makepublic", post(playlists::make_public))
+        .route(
+            "/Items/{item_id}/MakePrivate",
+            post(playlists::make_private),
+        )
+        .route(
+            "/items/{item_id}/makeprivate",
+            post(playlists::make_private),
         )
         .route(
             "/Items/RemoteSearch/Movie",

@@ -277,7 +277,9 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     }
 
     match segments.as_slice() {
-        ["health" | "GetUtcTime" | "metrics"] | ["api-docs", "openapi.json"] => RoutePolicy::Public,
+        ["health" | "GetUtcTime" | "metrics"]
+        | ["api-docs", "openapi.json"]
+        | ["openapi" | "openapi.json" | "swagger.json"] => RoutePolicy::Public,
         ["System", "Info", "Public"] | ["system", "info", "public"] => RoutePolicy::Public,
         ["Branding", "Configuration"] | ["branding", "configuration"] => RoutePolicy::Public,
         ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
@@ -472,6 +474,9 @@ fn is_known_api_path(segments: &[&str]) -> bool {
             | "clientlog"
             | "scheduledtasks"
             | "api-docs"
+            | "openapi"
+            | "openapi.json"
+            | "swagger.json"
             | "repositories"
             | "robots.txt"
     )

@@ -834,6 +834,36 @@ pub(crate) async fn delete_item(
     delete_for(state, headers, &uri, vec![item_id]).await
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct LibraryDeleteInfo {
+    paths: Vec<String>,
+}
+
+pub(crate) async fn delete_info(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<Json<LibraryDeleteInfo>, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let path = match identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            state
+                .library_controller
+                .file_path(&session.user, session.user.id, item_id)
+                .await?
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            state
+                .library_controller
+                .file_path_without_user(item_id)
+                .await?
+        }
+    };
+    Ok(Json(LibraryDeleteInfo { paths: vec![path] }))
+}
+
 pub(crate) async fn delete_items(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
