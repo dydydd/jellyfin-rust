@@ -2759,10 +2759,6 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             get(subtitles::search_remote_subtitles).post(subtitles::download_remote_subtitles),
         )
         .route(
-            "/items/{item_id}/remotesearch/subtitles/{id}",
-            get(subtitles::search_remote_subtitles).post(subtitles::download_remote_subtitles),
-        )
-        .route(
             "/Audio/{item_id}/RemoteSearch/Lyrics/{lyric_id}",
             post(user_library::download_remote_lyrics),
         )
