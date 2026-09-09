@@ -11,10 +11,10 @@ chrono.workspace = true
 jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-model = { path = "../jellyfin-model" }
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 sea-orm.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 tower.workspace = true
 

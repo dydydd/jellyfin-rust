@@ -1185,6 +1185,12 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/items/{item_id}/{media_source_id}/subtitles/{index}/{start_position_ticks}/stream.{format}",
             get(subtitles::get_subtitle_with_ticks),
         )
+        .route(
+            "/items/{item_id}/remotesearch/subtitles/{id}",
+            get(subtitles::search_remote_subtitles).post(subtitles::download_remote_subtitles),
+        )
+        .route("/fallbackfont/fonts", get(subtitles::fallback_fonts))
+        .route("/fallbackfont/fonts/{name}", get(subtitles::fallback_font))
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route("/items/{item_id}/remoteimages", get(remote_images::images))
         .route("/Images/Remote", get(remote_images::fetch))
@@ -1345,12 +1351,20 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
+            "/Videos/ActiveEncodings/Delete",
+            post(hls_segment::stop_active_encoding),
+        )
+        .route(
             "/videos/ActiveEncodings",
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
             "/videos/activeencodings",
             axum::routing::delete(hls_segment::stop_active_encoding),
+        )
+        .route(
+            "/videos/activeencodings/delete",
+            post(hls_segment::stop_active_encoding),
         )
         .route(
             "/Videos/{item_id}/stream",
@@ -1583,7 +1597,17 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(virtual_folders::delete),
         )
         .route(
+            "/library/virtualfolders",
+            get(virtual_folders::list)
+                .post(virtual_folders::create)
+                .delete(virtual_folders::delete),
+        )
+        .route(
             "/Library/VirtualFolders/Name",
+            post(virtual_folders::rename),
+        )
+        .route(
+            "/library/virtualfolders/name",
             post(virtual_folders::rename),
         )
         .route(
@@ -1591,7 +1615,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(virtual_folders::add_path).delete(virtual_folders::remove_path),
         )
         .route(
+            "/library/virtualfolders/paths",
+            post(virtual_folders::add_path).delete(virtual_folders::remove_path),
+        )
+        .route(
             "/Library/VirtualFolders/Paths/Update",
+            post(virtual_folders::update_path),
+        )
+        .route(
+            "/library/virtualfolders/paths/update",
             post(virtual_folders::update_path),
         )
         .route(
@@ -1620,6 +1652,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route(
             "/Library/VirtualFolders/LibraryOptions",
+            post(virtual_folders::update_options),
+        )
+        .route(
+            "/library/virtualfolders/libraryoptions",
             post(virtual_folders::update_options),
         )
         .nest_service(
@@ -2364,6 +2400,14 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/library/physicalpaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
         .route("/library/mediafolders", get(library::media_folders))
+        .route(
+            "/Library/SelectableMediaFolders",
+            get(library::media_folders),
+        )
+        .route(
+            "/library/selectablemediafolders",
+            get(library::media_folders),
+        )
         .route("/Library/Series/Added", post(library::updated_series))
         .route("/library/series/added", post(library::updated_series))
         .route("/Library/Series/Updated", post(library::updated_series))

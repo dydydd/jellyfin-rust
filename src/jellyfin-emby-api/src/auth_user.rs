@@ -80,12 +80,12 @@ async fn update_user_settings(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(user_id): Path<String>,
-    request: Result<Json<HashMap<String, Option<String>>>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Result<StatusCode, Response> {
-    let Json(settings) =
-        request.map_err(|_| axum::http::StatusCode::BAD_REQUEST.into_response())?;
+    let settings =
+        parse_settings_body(&body).map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
     let mut preferences = jellyfin_model::DisplayPreferencesDto::default();
-    preferences.custom_prefs = settings.into_iter().collect();
+    preferences.custom_prefs = settings;
     state
         .update_display_preferences_for_request(
             &headers,
@@ -99,15 +99,48 @@ async fn update_user_settings(
         .await
 }
 
+fn parse_user_settings(settings: Vec<String>) -> Result<HashMap<String, Option<String>>, ()> {
+    settings
+        .into_iter()
+        .map(|setting| {
+            let (key, value) = setting.split_once('=').ok_or(())?;
+            (!key.is_empty())
+                .then(|| (key.to_owned(), Some(value.to_owned())))
+                .ok_or(())
+        })
+        .collect()
+}
+
+fn parse_settings_body(body: &[u8]) -> Result<HashMap<String, Option<String>>, ()> {
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| ())?;
+    match value {
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(|value| value.as_str().map(str::to_owned).ok_or(()))
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(parse_user_settings),
+        serde_json::Value::Object(values) => values
+            .into_iter()
+            .map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(|value| (key, Some(value.to_owned())))
+                    .ok_or(())
+            })
+            .collect(),
+        _ => Err(()),
+    }
+}
+
 async fn partial_user_settings(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(user_id): Path<String>,
-    request: Result<Json<HashMap<String, Option<String>>>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Result<StatusCode, Response> {
-    let Json(settings) =
-        request.map_err(|_| axum::http::StatusCode::BAD_REQUEST.into_response())?;
+    let settings =
+        parse_settings_body(&body).map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
     let mut preferences = state
         .display_preferences_for_request(
             &headers,
@@ -276,5 +309,18 @@ mod tests {
         let internal = display_preferences_request(emby.clone());
         assert_eq!(internal.custom_prefs["tvhome"].as_deref(), Some(""));
         assert_eq!(display_preferences_response(internal), emby);
+    }
+
+    #[test]
+    fn user_settings_array_uses_key_value_entries() {
+        let parsed = parse_user_settings(vec!["theme=dark".into(), "empty=".into()]).unwrap();
+        assert_eq!(parsed["theme"].as_deref(), Some("dark"));
+        assert_eq!(parsed["empty"].as_deref(), Some(""));
+        assert!(parse_user_settings(vec!["not-a-setting".into()]).is_err());
+        assert_eq!(
+            parse_settings_body(br#"{"theme":"dark"}"#).unwrap()["theme"].as_deref(),
+            Some("dark")
+        );
+        assert!(parse_settings_body(br#"{"theme":null}"#).is_err());
     }
 }

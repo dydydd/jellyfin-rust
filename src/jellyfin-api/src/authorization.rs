@@ -298,8 +298,15 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Users", _, "Authenticate"] => RoutePolicy::Public,
         ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
         ["Startup" | "Environment", ..]
-        | ["Library", "VirtualFolders", ..]
-        | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
+        | [
+            "Library" | "library",
+            "VirtualFolders" | "virtualfolders",
+            ..,
+        ]
+        | [
+            "Libraries" | "libraries",
+            "AvailableOptions" | "availableoptions",
+        ] => RoutePolicy::FirstTimeSetupOrElevated,
         ["Localization" | "localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
         ["System", "Info"] | ["system", "info"] => {
             RoutePolicy::FirstTimeSetupOrIgnoreParentalControl
@@ -336,10 +343,23 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Users", _] => RoutePolicy::Default,
         ["LiveTv", "TunerHosts"] => RoutePolicy::Elevated,
         ["LiveTv", "ListingProviders", ..] => RoutePolicy::Elevated,
-        ["Library", "MediaFolders" | "PhysicalPaths" | "Refresh"] | ["library", "mediafolders"] => {
-            RoutePolicy::Elevated
-        }
-        ["Items", _, "Refresh" | "MetadataEditor" | "ExternalIdInfos"] => RoutePolicy::Elevated,
+        [
+            "Library" | "library",
+            "MediaFolders"
+            | "PhysicalPaths"
+            | "Refresh"
+            | "SelectableMediaFolders"
+            | "mediafolders"
+            | "physicalpaths"
+            | "refresh"
+            | "selectablemediafolders",
+        ] => RoutePolicy::Elevated,
+        [
+            "Items" | "items",
+            _,
+            "Refresh" | "MetadataEditor" | "ExternalIdInfos" | "refresh" | "metadataeditor"
+            | "externalidinfos",
+        ] => RoutePolicy::Elevated,
         ["Items", "RemoteSearch", "Person"] | ["Items", "RemoteSearch", "Apply", _] => {
             RoutePolicy::Elevated
         }

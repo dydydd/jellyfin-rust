@@ -250,6 +250,7 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["get"],
     ),
     ("/Videos/ActiveEncodings", &["delete"]),
+    ("/Videos/ActiveEncodings/Delete", &["post"]),
     ("/Videos/{item_id}/stream", &["get", "head"]),
     ("/Videos/{item_id}/stream.{container}", &["get", "head"]),
     ("/Plugins", &["get"]),
