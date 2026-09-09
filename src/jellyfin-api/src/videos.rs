@@ -288,6 +288,20 @@ pub(crate) async fn stream_with_container(
     stream_file(state, headers, item_id, Some(&container), query, request).await
 }
 
+/// Compatibility endpoint used by older Emby clients (`/Videos/{id}/{name}`).
+pub(crate) async fn stream_with_file_name(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((item_id, stream_file_name)): Path<(Uuid, String)>,
+    Query(query): Query<StreamQuery>,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    let container = stream_file_name
+        .rsplit_once('.')
+        .map_or(stream_file_name.as_str(), |(_, suffix)| suffix);
+    stream_file(state, headers, item_id, Some(container), query, request).await
+}
+
 async fn stream_file(
     state: Arc<AppState>,
     headers: HeaderMap,

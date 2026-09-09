@@ -6,7 +6,7 @@ use std::{
 use axum::{
     Json,
     body::Body,
-    extract::{ConnectInfo, OriginalUri, Query, Request, State, rejection::QueryRejection},
+    extract::{ConnectInfo, OriginalUri, Path, Query, Request, State, rejection::QueryRejection},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
 };
 use chrono::{DateTime, Utc};
@@ -106,6 +106,25 @@ pub(crate) async fn get_log_file(
         .name
         .filter(|name| !name.trim().is_empty())
         .ok_or(ApiError::InvalidRequest)?;
+    stream_log_file(&state, name).await
+}
+
+/// Emby's generated clients use `/System/Logs/{Name}` for the same stream
+/// exposed by Jellyfin's `/System/Logs/Log?Name=...` endpoint.
+pub(crate) async fn get_log_file_by_name(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Response<Body>, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    stream_log_file(&state, name).await
+}
+
+async fn stream_log_file(state: &AppState, name: String) -> Result<Response<Body>, ApiError> {
+    if name.trim().is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
     let log = state.system_logs.open(&name).await?;
     let stream = ReaderStream::with_capacity(log.into_file(), STREAM_BUFFER_SIZE);
 

@@ -12,11 +12,13 @@ jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-model = { path = "../jellyfin-model" }
 serde.workspace = true
 serde_json.workspace = true
+tower.workspace = true
+tower-http = { version = "0.6", features = ["fs"] }
+uuid.workspace = true
 
 [dev-dependencies]
 sea-orm.workspace = true
 tokio.workspace = true
-tower.workspace = true
 
 [lints]
 workspace = true

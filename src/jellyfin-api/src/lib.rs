@@ -1015,6 +1015,46 @@ impl AppState {
             .map_err(ApiError::from)
             .map_err(IntoResponse::into_response)
     }
+
+    /// Snapshot plugin/package data for the Emby protocol adapter.
+    pub fn emby_plugins(&self) -> Vec<jellyfin_model::PluginInfo> {
+        self.plugins.plugins()
+    }
+
+    pub fn emby_plugin_image(
+        &self,
+        plugin_id: uuid::Uuid,
+    ) -> Option<jellyfin_controller::PluginImage> {
+        self.plugins.image_for_plugin(plugin_id)
+    }
+
+    pub fn emby_plugin_configuration(
+        &self,
+        plugin_id: uuid::Uuid,
+    ) -> Result<Option<serde_json::Value>, jellyfin_controller::PluginRegistryError> {
+        self.plugins.configuration(plugin_id)
+    }
+
+    pub fn emby_packages(&self) -> std::sync::Arc<[std::sync::Arc<jellyfin_model::PackageInfo>]> {
+        self.packages.list()
+    }
+
+    pub fn emby_package(
+        &self,
+        name: &str,
+        assembly_guid: Option<uuid::Uuid>,
+    ) -> Result<std::sync::Arc<jellyfin_model::PackageInfo>, jellyfin_controller::PackageError>
+    {
+        self.packages.get(name, assembly_guid)
+    }
+
+    pub async fn require_emby_user(&self, headers: &HeaderMap, uri: &Uri) -> Result<(), Response> {
+        authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map(|_| ())
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
 }
 
 fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, Response> {
@@ -1304,8 +1344,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
+            "/Audio/{item_id}/{stream_file_name}",
+            get(audio::stream_with_file_name).head(audio::stream_with_file_name),
+        )
+        .route(
             "/Audio/{item_id}/universal",
             get(audio::universal).head(audio::universal),
+        )
+        .route(
+            "/Audio/{item_id}/universal.{container}",
+            get(audio::universal_with_container).head(audio::universal_with_container),
         )
         // ASP.NET routing is case-insensitive and Jellyfin-generated playback
         // URLs use lowercase collection segments. Keep lowercase aliases for
@@ -1335,8 +1383,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
+            "/audio/{item_id}/{stream_file_name}",
+            get(audio::stream_with_file_name).head(audio::stream_with_file_name),
+        )
+        .route(
             "/audio/{item_id}/universal",
             get(audio::universal).head(audio::universal),
+        )
+        .route(
+            "/audio/{item_id}/universal.{container}",
+            get(audio::universal_with_container).head(audio::universal_with_container),
         )
         .route(
             "/Videos/{item_id}/hls/{*legacy_path}",
@@ -1387,6 +1443,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(videos::stream_with_container).head(videos::stream_with_container),
         )
         .route(
+            "/Videos/{item_id}/{stream_file_name}",
+            get(videos::stream_with_file_name).head(videos::stream_with_file_name),
+        )
+        .route(
             "/videos/{item_id}/hls/{*legacy_path}",
             get(hls_segment::video),
         )
@@ -1413,6 +1473,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/videos/{item_id}/stream.{container}",
             get(videos::stream_with_container).head(videos::stream_with_container),
+        )
+        .route(
+            "/videos/{item_id}/{stream_file_name}",
+            get(videos::stream_with_file_name).head(videos::stream_with_file_name),
         )
         .route("/Plugins", get(plugins::list))
         .route("/plugins", get(plugins::list))
@@ -1692,6 +1756,9 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/Logs/Query", get(system::query_logs))
         .route("/system/logs/query", get(system::query_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
+        .route("/system/logs/log", get(system::get_log_file))
+        .route("/System/Logs/{name}", get(system::get_log_file_by_name))
+        .route("/system/logs/{name}", get(system::get_log_file_by_name))
         .route("/System/Info", get(system::info))
         .route("/system/info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))

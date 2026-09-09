@@ -20,6 +20,8 @@ mod backup;
 mod encoding;
 mod environment;
 mod library;
+mod packages;
+mod plugins;
 mod system_misc;
 mod users;
 
@@ -39,6 +41,8 @@ pub fn router(state: AppState) -> Router {
         .merge(encoding::routes())
         .merge(environment::routes())
         .merge(library::routes())
+        .merge(packages::routes())
+        .merge(plugins::routes())
         .merge(system_misc::routes())
         .merge(users::routes())
         .route("/Branding/Configuration", get(branding_configuration))

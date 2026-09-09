@@ -159,6 +159,35 @@ async fn elevated_identities_stream_real_logs_as_utf8_plain_text() {
     assert!(!response.headers().contains_key(header::CONTENT_DISPOSITION));
     assert_eq!(body_bytes(response).await, payload);
 
+    for direct_route in ["/System/Logs/Server.JSON", "/system/logs/server.json"] {
+        assert_eq!(
+            fixture.request(direct_route, None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            fixture
+                .request(direct_route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        let response = fixture
+            .request(direct_route, Some(&fixture.admin_token))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_bytes(response).await, payload);
+    }
+
+    // The static lowercase Log route must not be captured by `{name}`.
+    let response = fixture
+        .request(
+            "/system/logs/log?name=server.json",
+            Some(&fixture.admin_token),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await, payload);
+
     assert_eq!(
         fixture
             .request(

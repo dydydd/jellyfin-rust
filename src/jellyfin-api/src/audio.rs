@@ -206,6 +206,22 @@ pub(crate) async fn stream_with_container(
     stream_file(state, headers, item_id, Some(&container), query, request).await
 }
 
+/// Compatibility endpoint used by older Emby clients (`/Audio/{id}/{name}`).
+/// The filename is only the requested output suffix; authorization and serving
+/// remain in the normal stream path.
+pub(crate) async fn stream_with_file_name(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((item_id, stream_file_name)): Path<(Uuid, String)>,
+    Query(query): Query<StreamQuery>,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    let container = stream_file_name
+        .rsplit_once('.')
+        .map_or(stream_file_name.as_str(), |(_, suffix)| suffix);
+    stream_file(state, headers, item_id, Some(container), query, request).await
+}
+
 pub(crate) async fn universal(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -372,6 +388,19 @@ pub(crate) async fn universal(
         request.method() == axum::http::Method::HEAD,
     )
     .await
+}
+
+pub(crate) async fn universal_with_container(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((item_id, container)): Path<(Uuid, String)>,
+    Query(mut query): Query<UniversalQuery>,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    if query.container.is_empty() {
+        query.container.push(container);
+    }
+    universal(State(state), headers, Path(item_id), Query(query), request).await
 }
 
 fn universal_requires_transcode(query: &UniversalQuery) -> bool {

@@ -316,6 +316,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["System", "Restart"] => RoutePolicy::LocalOrElevated,
         ["System", "ActivityLog", "Entries"]
         | ["System", "Logs", ..]
+        | ["system", "logs", ..]
         | ["System", "Info", "Storage"]
         | ["system", "info", "storage"]
         | ["System", "Shutdown"] => RoutePolicy::Elevated,
