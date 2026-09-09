@@ -2372,6 +2372,10 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
         )
         .route(
+            "/users/{user_id}/favoriteitems/{item_id}",
+            post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
+        )
+        .route(
             "/UserItems/{item_id}/Rating",
             post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
         )
@@ -2381,6 +2385,10 @@ fn user_data_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/Users/{user_id}/Items/{item_id}/Rating",
+            post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/rating",
             post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
         )
 }
@@ -2580,8 +2588,6 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Movies/Recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
         .route("/movies/{item_id}/similar", get(library::similar))
-        .route("/Games/{item_id}/Similar", get(library::similar))
-        .route("/games/{item_id}/similar", get(library::similar))
         .route("/Shows/NextUp", get(tv_shows::next_up))
         .route("/shows/nextup", get(tv_shows::next_up))
         .route("/Shows/Upcoming", get(tv_shows::upcoming))

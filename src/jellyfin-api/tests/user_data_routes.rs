@@ -222,6 +222,20 @@ async fn assert_route_aliases_and_body(fixture: &FavoriteFixture) {
     assert_eq!(body_json(response).await["IsFavorite"], true);
     let response = request(&fixture.app, "DELETE", &legacy, &fixture.user_token).await;
     assert_eq!(body_json(response).await["IsFavorite"], false);
+    let lowercase_legacy = format!(
+        "/users/{}/favoriteitems/{}",
+        fixture.user_id, fixture.allowed_item_id
+    );
+    let response = request(&fixture.app, "POST", &lowercase_legacy, &fixture.user_token).await;
+    assert_eq!(body_json(response).await["IsFavorite"], true);
+    let response = request(
+        &fixture.app,
+        "DELETE",
+        &lowercase_legacy,
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(body_json(response).await["IsFavorite"], false);
 
     let persisted = repository
         .get(
