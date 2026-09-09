@@ -15,14 +15,24 @@ use axum::{
 use jellyfin_api::AppState;
 use serde::Serialize;
 
+mod auth_user;
+mod library;
+mod system_misc;
+
 /// Emby's Android and iOS API base path.
 pub const EMBY_API_PREFIX: &str = "/emby";
+
+/// Version advertised by the checked-in Emby client contract.
+const EMBY_API_VERSION: &str = "4.9.5.0";
 
 /// Builds the independent Emby route tree.
 pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let fallback = jellyfin_api::unprefixed_router(state.as_ref().clone());
     let routes = Router::new()
+        .merge(auth_user::routes())
+        .merge(library::routes())
+        .merge(system_misc::routes())
         .route("/Branding/Configuration", get(branding_configuration))
         .route("/branding/configuration", get(branding_configuration))
         .route("/System/Info/Public", get(public_system_info))
@@ -30,6 +40,10 @@ pub fn router(state: AppState) -> Router {
         .route("/System/Info", get(system_info))
         .route("/system/info", get(system_info))
         .fallback_service(fallback)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            jellyfin_api::protocol_route_auth,
+        ))
         .with_state(state);
 
     Router::new().nest(EMBY_API_PREFIX, routes)
@@ -69,7 +83,7 @@ impl From<jellyfin_model::PublicSystemInfo> for PublicSystemInfo {
             wan_address: None,
             remote_addresses: Vec::new(),
             server_name: info.server_name,
-            version: info.version,
+            version: Some(EMBY_API_VERSION.to_owned()),
             id: info.id,
         }
     }
@@ -177,6 +191,7 @@ mod tests {
         let emby_info = body(&emby, "/emby/System/Info/Public").await;
         assert!(jellyfin_info.get("ProductName").is_some());
         assert!(emby_info.get("ProductName").is_none());
+        assert_eq!(emby_info["Version"], EMBY_API_VERSION);
         assert_eq!(emby_info["LocalAddresses"][0], "http://127.0.0.1:8096");
         assert!(emby_info["RemoteAddresses"].is_array());
 

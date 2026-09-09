@@ -42,7 +42,9 @@ use jellyfin_live_tv::{
     tuner_hosts::{TunerHostError, TunerHostManager},
 };
 use jellyfin_media_encoding::encoder::EncoderCapabilities;
-use jellyfin_model::{PublicSystemInfo, SystemInfo, UserConfiguration, UserDto, UserPolicy};
+use jellyfin_model::{
+    DisplayPreferencesDto, PublicSystemInfo, SystemInfo, UserConfiguration, UserDto, UserPolicy,
+};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, PersistedDtoImageProjectionService,
@@ -132,6 +134,20 @@ pub use branding::BrandingOptions;
 pub enum SystemCommand {
     Restart,
     Shutdown,
+}
+
+/// Applies the shared route authorization policy to another protocol's route
+/// tree. Protocol crates can own their wire contracts without duplicating
+/// token, API-key, and user-policy checks.
+pub async fn protocol_route_auth(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    match authorization::require_route_auth(State(state), request, next).await {
+        Ok(response) => response,
+        Err(error) => error.into_response(),
+    }
 }
 
 #[derive(Clone)]
@@ -856,6 +872,67 @@ impl AppState {
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
     }
+
+    /// Loads display preferences for a protocol-specific wire projection.
+    pub async fn display_preferences_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        display_preferences_id: &str,
+        user_id: Option<&str>,
+        item_id: Option<&str>,
+        client: Option<String>,
+    ) -> Result<DisplayPreferencesDto, Response> {
+        let user_id = parse_optional_uuid(user_id)?;
+        let item_id = parse_optional_uuid(item_id)?;
+        display_preferences::get_for_request(
+            self,
+            headers,
+            uri,
+            display_preferences_id,
+            user_id,
+            item_id,
+            client,
+        )
+        .await
+        .map_err(IntoResponse::into_response)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Saves display preferences submitted through a protocol-specific DTO.
+    pub async fn update_display_preferences_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        display_preferences_id: &str,
+        user_id: Option<&str>,
+        item_id: Option<&str>,
+        client: Option<String>,
+        preferences: DisplayPreferencesDto,
+    ) -> Result<StatusCode, Response> {
+        let user_id = parse_optional_uuid(user_id)?;
+        let item_id = parse_optional_uuid(item_id)?;
+        display_preferences::update_for_request(
+            self,
+            headers,
+            uri,
+            display_preferences_id,
+            user_id,
+            item_id,
+            client,
+            preferences,
+        )
+        .await
+        .map_err(IntoResponse::into_response)
+    }
+}
+
+fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, Response> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| StatusCode::BAD_REQUEST.into_response())
 }
 
 #[allow(clippy::too_many_lines)]
