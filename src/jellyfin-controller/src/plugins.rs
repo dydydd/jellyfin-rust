@@ -120,6 +120,16 @@ impl PluginRegistry {
             .and_then(InstalledPlugin::image)
     }
 
+    /// Reads the image for the installed version identified by plugin id.
+    #[must_use]
+    pub fn image_for_plugin(&self, plugin_id: Uuid) -> Option<PluginImage> {
+        self.lock()
+            .ok()?
+            .iter()
+            .find(|plugin| plugin.info.id == plugin_id)
+            .and_then(InstalledPlugin::image)
+    }
+
     /// Enables an exact plugin version.
     pub fn enable(&self, plugin_id: Uuid, version: &str) -> Result<bool, PluginRegistryError> {
         let mut plugins = self.lock()?;

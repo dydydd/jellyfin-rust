@@ -260,13 +260,17 @@ impl Default for PlaybackOptions {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct OpenLiveStreamQuery {
-    #[serde(rename = "openToken", alias = "OpenToken")]
+    #[serde(rename = "openToken", alias = "OpenToken", alias = "opentoken")]
     open_token: Option<String>,
-    #[serde(rename = "userId", alias = "UserId")]
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid"
+    )]
     play_session_id: Option<String>,
-    #[serde(rename = "itemId", alias = "ItemId")]
+    #[serde(rename = "itemId", alias = "ItemId", alias = "itemid")]
     item_id: Option<Uuid>,
 }
 
@@ -281,7 +285,11 @@ pub(crate) struct OpenLiveStreamDto {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct CloseLiveStreamQuery {
-    #[serde(rename = "liveStreamId", alias = "LiveStreamId")]
+    #[serde(
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid"
+    )]
     live_stream_id: String,
 }
 

@@ -387,7 +387,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["persons", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Plugins", _, _, "Image"] => RoutePolicy::Optional,
         ["plugins", _, _, "image"] => RoutePolicy::Optional,
-        ["Plugins", ..] => RoutePolicy::Elevated,
+        ["Plugins" | "plugins", ..] => RoutePolicy::Elevated,
         _ => RoutePolicy::Default,
     }
 }

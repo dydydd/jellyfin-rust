@@ -2,6 +2,7 @@ use std::{net::IpAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json,
+    body::Bytes,
     body::to_bytes,
     extract::{
         ConnectInfo, OriginalUri, Path, Query, State, rejection::JsonRejection,
@@ -19,6 +20,7 @@ use jellyfin_model::{
 };
 use jellyfin_server_implementations::AuthenticationError;
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::item_images::parse_image_type;
@@ -526,6 +528,42 @@ pub(crate) async fn update_configuration_legacy(
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     update_configuration_with_id(&state, &identity, target_id, request).await
+}
+
+pub(crate) async fn update_configuration_partial(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(target_id): Path<Uuid>,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let target = state.users.get(target_id).await?;
+    assert_identity_can_update_user(&identity, &target)?;
+    let patch: Value = serde_json::from_slice(&body).map_err(|_| ApiError::InvalidRequest)?;
+    let Some(patch) = patch.as_object() else {
+        return Err(ApiError::InvalidRequest);
+    };
+    let mut merged = serde_json::to_value(
+        UserConfiguration::deserialize(&target.preferences).unwrap_or_default(),
+    )
+    .map_err(|_| ApiError::Internal)?;
+    let object = merged.as_object_mut().ok_or(ApiError::Internal)?;
+    for (key, value) in patch {
+        let destination = object
+            .keys()
+            .find(|existing| existing.eq_ignore_ascii_case(key))
+            .cloned()
+            .unwrap_or_else(|| key.clone());
+        object.insert(destination, value.clone());
+    }
+    let configuration: UserConfiguration =
+        serde_json::from_value(merged).map_err(|_| ApiError::InvalidRequest)?;
+    state
+        .users
+        .update_configuration(target_id, &configuration)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn update_configuration_with_id(

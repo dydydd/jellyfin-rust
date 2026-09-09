@@ -1238,6 +1238,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(dashboard::configuration_pages),
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
+        .route("/playback/bitratetest", get(media_info::bitrate_test))
         .route(
             "/Items/{item_id}/PlaybackInfo",
             get(media_info::get_playback_info).post(media_info::post_playback_info),
@@ -1248,6 +1249,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/LiveStreams/Open", post(media_info::open_live_stream))
         .route("/LiveStreams/Close", post(media_info::close_live_stream))
+        .route("/livestreams/open", post(media_info::open_live_stream))
+        .route("/livestreams/close", post(media_info::close_live_stream))
         .route(
             "/MediaSegments/{item_id}",
             get(media_segments::get_item_segments),
@@ -1413,6 +1416,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/Plugins/{plugin_id}", delete(plugins::uninstall))
         .route("/plugins/{plugin_id}", delete(plugins::uninstall))
+        .route("/Plugins/{plugin_id}/Delete", post(plugins::uninstall))
+        .route("/plugins/{plugin_id}/delete", post(plugins::uninstall))
         .route(
             "/Plugins/{plugin_id}/Configuration",
             get(plugins::get_configuration).post(plugins::update_configuration),
@@ -1425,6 +1430,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/plugins/{plugin_id}/manifest", post(plugins::manifest))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .route("/plugins/{plugin_id}/{version}/image", get(plugins::image))
+        .route("/Plugins/{plugin_id}/Thumb", get(plugins::thumb))
+        .route("/plugins/{plugin_id}/thumb", get(plugins::thumb))
         .merge(package_routes())
         .merge(environment_routes())
         .merge(localization_routes())
@@ -1664,6 +1671,14 @@ fn system_routes() -> Router<Arc<AppState>> {
             post(scheduled_tasks::start).delete(scheduled_tasks::stop),
         )
         .route(
+            "/ScheduledTasks/Running/{task_id}/Delete",
+            post(scheduled_tasks::stop),
+        )
+        .route(
+            "/scheduledtasks/running/{task_id}/delete",
+            post(scheduled_tasks::stop),
+        )
+        .route(
             "/ScheduledTasks/{task_id}/Triggers",
             post(scheduled_tasks::update_triggers),
         )
@@ -1788,6 +1803,14 @@ fn package_routes() -> Router<Arc<AppState>> {
         .route(
             "/packages/installing/{package_id}",
             axum::routing::delete(packages::cancel_installation),
+        )
+        .route(
+            "/Packages/Installing/{package_id}/Delete",
+            post(packages::cancel_installation),
+        )
+        .route(
+            "/packages/installing/{package_id}/delete",
+            post(packages::cancel_installation),
         )
         .route("/Packages/{name}", get(packages::get))
         .route("/packages/{name}", get(packages::get))
@@ -1929,6 +1952,14 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route(
             "/users/{id}/configuration",
             post(users::update_configuration_legacy),
+        )
+        .route(
+            "/Users/{id}/Configuration/Partial",
+            post(users::update_configuration_partial),
+        )
+        .route(
+            "/users/{id}/configuration/partial",
+            post(users::update_configuration_partial),
         )
         .route(
             "/Users/{id}/Images/{image_type}",
@@ -2578,7 +2609,15 @@ fn video_routes() -> Router<Arc<AppState>> {
             axum::routing::delete(subtitles::delete_subtitle),
         )
         .route(
+            "/videos/{item_id}/subtitles/{index}",
+            axum::routing::delete(subtitles::delete_subtitle),
+        )
+        .route(
             "/Videos/{item_id}/Subtitles",
+            post(subtitles::upload_subtitle),
+        )
+        .route(
+            "/videos/{item_id}/subtitles",
             post(subtitles::upload_subtitle),
         )
         .route(

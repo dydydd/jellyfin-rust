@@ -5,8 +5,7 @@
 //! Android/iOS clients model `CustomPrefs` as a non-null string map, while
 //! Jellyfin permits null values internally.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -31,6 +30,106 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/displaypreferences/{display_preferences_id}",
             get(get_display_preferences).post(update_display_preferences),
         )
+        .route(
+            "/UserSettings/{user_id}",
+            get(get_user_settings).post(update_user_settings),
+        )
+        .route(
+            "/usersettings/{user_id}",
+            get(get_user_settings).post(update_user_settings),
+        )
+        .route(
+            "/UserSettings/{user_id}/Partial",
+            axum::routing::post(partial_user_settings),
+        )
+        .route(
+            "/usersettings/{user_id}/partial",
+            axum::routing::post(partial_user_settings),
+        )
+}
+
+const USER_SETTINGS_CLIENT: &str = "Emby";
+
+async fn get_user_settings(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+) -> Result<Json<HashMap<String, String>>, Response> {
+    let preferences = state
+        .display_preferences_for_request(
+            &headers,
+            &uri,
+            "usersettings",
+            Some(&user_id),
+            None,
+            Some(USER_SETTINGS_CLIENT.to_owned()),
+        )
+        .await?;
+    Ok(Json(
+        preferences
+            .custom_prefs
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|value| (key, value)))
+            .collect(),
+    ))
+}
+
+async fn update_user_settings(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+    request: Result<Json<HashMap<String, Option<String>>>, JsonRejection>,
+) -> Result<StatusCode, Response> {
+    let Json(settings) =
+        request.map_err(|_| axum::http::StatusCode::BAD_REQUEST.into_response())?;
+    let mut preferences = jellyfin_model::DisplayPreferencesDto::default();
+    preferences.custom_prefs = settings.into_iter().collect();
+    state
+        .update_display_preferences_for_request(
+            &headers,
+            &uri,
+            "usersettings",
+            Some(&user_id),
+            None,
+            Some(USER_SETTINGS_CLIENT.to_owned()),
+            preferences,
+        )
+        .await
+}
+
+async fn partial_user_settings(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+    request: Result<Json<HashMap<String, Option<String>>>, JsonRejection>,
+) -> Result<StatusCode, Response> {
+    let Json(settings) =
+        request.map_err(|_| axum::http::StatusCode::BAD_REQUEST.into_response())?;
+    let mut preferences = state
+        .display_preferences_for_request(
+            &headers,
+            &uri,
+            "usersettings",
+            Some(&user_id),
+            None,
+            Some(USER_SETTINGS_CLIENT.to_owned()),
+        )
+        .await?;
+    preferences.custom_prefs.extend(settings);
+    state
+        .update_display_preferences_for_request(
+            &headers,
+            &uri,
+            "usersettings",
+            Some(&user_id),
+            None,
+            Some(USER_SETTINGS_CLIENT.to_owned()),
+            preferences,
+        )
+        .await
 }
 
 #[derive(Debug, Default, Deserialize)]

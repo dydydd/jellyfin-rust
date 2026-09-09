@@ -64,6 +64,36 @@ pub(crate) async fn image(
     Ok(response)
 }
 
+pub(crate) async fn thumb(
+    State(state): State<Arc<AppState>>,
+    Path(plugin_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let Some(image) = state.plugins.image_for_plugin(plugin_id) else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let request = Request::builder()
+        .method("GET")
+        .body(Body::empty())
+        .map_err(|_| ApiError::Internal)?;
+    let response = match ServeFile::new(image.path).oneshot(request).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    let mut response = response.map(Body::new);
+    response.headers_mut().remove(header::ACCEPT_RANGES);
+    if response.status().is_success() {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(&image.mime_type).map_err(|_| ApiError::Internal)?,
+        );
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment"),
+        );
+    }
+    Ok(response)
+}
+
 pub(crate) async fn enable(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
