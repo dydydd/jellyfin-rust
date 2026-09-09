@@ -90,12 +90,16 @@ async fn assert_viewing_validation(fixture: &Fixture) {
 }
 
 async fn assert_report_viewing_persists_and_projects(fixture: &Fixture) {
-    for item_key in ["itemId", "ItemId", "itemid"] {
+    for (path, item_key) in [
+        ("/Sessions/Viewing", "itemId"),
+        ("/sessions/viewing", "ItemId"),
+        ("/Sessions/Viewing", "itemid"),
+    ] {
         assert_eq!(
             fixture
                 .request(
                     "POST",
-                    &format!("/Sessions/Viewing?{item_key}={}", fixture.item_id.simple()),
+                    &format!("{path}?{item_key}={}", fixture.item_id.simple()),
                     Some(&fixture.user_token),
                 )
                 .await

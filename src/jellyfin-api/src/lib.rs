@@ -1097,6 +1097,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/branding/configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
+        .route("/branding/css", get(branding::get_css))
+        .route("/branding/css.css", get(branding::get_css))
         .route(
             "/Branding/Splashscreen",
             get(branding::get_splashscreen)
@@ -1283,6 +1285,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route(
             "/System/Configuration/Branding",
+            post(branding::update_configuration),
+        )
+        .route(
+            "/system/configuration/branding",
             post(branding::update_configuration),
         )
         .route(
@@ -1759,6 +1765,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 fn system_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
+        .route("/system/activitylog/entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
         .route("/system/logs", get(system::get_logs))
         .route("/System/Logs/Query", get(system::query_logs))
@@ -2225,6 +2232,7 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::remove_user_from_session),
         )
         .route("/Sessions/Viewing", post(session::report_viewing))
+        .route("/sessions/viewing", post(session::report_viewing))
         .route("/Sessions/Capabilities", post(session::post_capabilities))
         .route("/sessions/capabilities", post(session::post_capabilities))
         .route(
@@ -2325,6 +2333,10 @@ fn playstate_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/Users/{user_id}/PlayedItems/{item_id}",
+            post(playstate::mark_played).delete(playstate::mark_unplayed),
+        )
+        .route(
+            "/users/{user_id}/playeditems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
         )
 }

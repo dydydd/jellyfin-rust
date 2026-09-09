@@ -253,6 +253,13 @@ async fn require_elevated_with_remote(
 #[allow(clippy::match_same_arms)]
 #[allow(clippy::too_many_lines)]
 fn route_policy(method: &Method, path: &str) -> RoutePolicy {
+    // Protocol routers (currently `/emby`) run this shared middleware before
+    // Axum's nested service strips their prefix. Apply the same policy to the
+    // protocol path so public/setup routes do not become authenticated-only.
+    let path = path
+        .strip_prefix("/emby/")
+        .or_else(|| (path == "/emby").then_some(""))
+        .unwrap_or(path);
     let segments = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -282,7 +289,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["openapi" | "openapi.json" | "swagger.json"] => RoutePolicy::Public,
         ["System", "Info", "Public"] | ["system", "info", "public"] => RoutePolicy::Public,
         ["Branding", "Configuration"] | ["branding", "configuration"] => RoutePolicy::Public,
-        ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
+        ["Branding", "Css" | "Css.css"] | ["branding", "css" | "css.css"] => RoutePolicy::Public,
         ["Branding", "Splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Branding", "Splashscreen"] if is_write(method) => RoutePolicy::Elevated,
         ["branding", "splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
@@ -313,13 +320,15 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["System", "Info"] | ["system", "info"] => {
             RoutePolicy::FirstTimeSetupOrIgnoreParentalControl
         }
-        ["System", "Restart"] => RoutePolicy::LocalOrElevated,
+        ["System", "Restart"] | ["system", "restart"] => RoutePolicy::LocalOrElevated,
         ["System", "ActivityLog", "Entries"]
+        | ["system", "activitylog", "entries"]
         | ["System", "Logs", ..]
         | ["system", "logs", ..]
         | ["System", "Info", "Storage"]
         | ["system", "info", "storage"]
-        | ["System", "Shutdown"] => RoutePolicy::Elevated,
+        | ["System", "Shutdown"]
+        | ["system", "shutdown"] => RoutePolicy::Elevated,
         ["ScheduledTasks", ..] => RoutePolicy::Elevated,
         ["Auth" | "auth", "Keys" | "keys", ..]
         | [
@@ -334,9 +343,15 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             RoutePolicy::Public
         }
         ["System", "Configuration", "MetadataOptions", "Default"]
-        | ["System", "Configuration", "Branding"] => RoutePolicy::Elevated,
+        | ["system", "configuration", "metadataoptions", "default"]
+        | ["System", "Configuration", "Branding"]
+        | ["system", "configuration", "branding"] => RoutePolicy::Elevated,
         ["System", "Configuration", ..] if is_write(method) => RoutePolicy::Elevated,
-        ["System", "Configuration"] | ["System", "Configuration", _] => RoutePolicy::Default,
+        ["system", "configuration", ..] if is_write(method) => RoutePolicy::Elevated,
+        ["System", "Configuration"]
+        | ["system", "configuration"]
+        | ["System", "Configuration", _]
+        | ["system", "configuration", _] => RoutePolicy::Default,
         ["Users", "New"] | ["users", "new"] => RoutePolicy::Elevated,
         ["Users", _, "Policy"] | ["users", _, "policy"] => RoutePolicy::Elevated,
         ["Users", "Me"] => RoutePolicy::Default,
@@ -539,6 +554,18 @@ mod tests {
             route_policy(&Method::GET, "/System/Logs"),
             RoutePolicy::Elevated
         );
+        assert_eq!(
+            route_policy(&Method::GET, "/system/activitylog/entries"),
+            RoutePolicy::Elevated
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/system/configuration/branding"),
+            RoutePolicy::Elevated
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/system/restart"),
+            RoutePolicy::LocalOrElevated
+        );
     }
 
     #[test]
@@ -566,6 +593,14 @@ mod tests {
         assert_eq!(
             route_policy(&Method::GET, "/api-docs/openapi.json"),
             RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/emby/Branding/Configuration"),
+            RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/emby/Localization/Cultures"),
+            RoutePolicy::FirstTimeSetupOrDefault
         );
         assert_eq!(
             route_policy(&Method::GET, "/api-docs/missing.json"),

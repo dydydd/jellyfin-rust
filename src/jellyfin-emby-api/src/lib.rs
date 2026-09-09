@@ -218,6 +218,14 @@ mod tests {
         let emby_branding = body(&emby, "/emby/Branding/Configuration").await;
         assert!(jellyfin_branding.get("SplashscreenEnabled").is_some());
         assert!(emby_branding.get("SplashscreenEnabled").is_none());
+        assert_eq!(
+            status(&emby, "/emby/branding/css.css").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(&emby, "/emby/localization/cultures").await,
+            StatusCode::OK
+        );
 
         // Axum paths are case-sensitive; Emby clients rely on ASP.NET's
         // case-insensitive routing for these streaming control endpoints.
