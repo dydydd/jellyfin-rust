@@ -22,6 +22,9 @@ async fn official_public_dashboard_configuration_page_contract() {
         "/web/ConfigurationPage?name=ThisPageDoesntExists",
         "/web/ConfigurationPage?name=BrokenPage",
         "/web/ConfigurationPage",
+        "/web/configurationpage?name=ThisPageDoesntExists",
+        "/web/configurationpage?name=BrokenPage",
+        "/web/configurationpage",
     ] {
         assert_eq!(
             fixture.get(uri, None, None).await.status(),
@@ -29,13 +32,13 @@ async fn official_public_dashboard_configuration_page_contract() {
         );
     }
 
-    for query_name in ["name", "Name"] {
+    for (path, query_name) in [
+        ("/web/ConfigurationPage", "name"),
+        ("/web/ConfigurationPage", "Name"),
+        ("/web/configurationpage", "name"),
+    ] {
         let response = fixture
-            .get(
-                &format!("/web/ConfigurationPage?{query_name}=TestPlugin"),
-                None,
-                None,
-            )
+            .get(&format!("{path}?{query_name}=TestPlugin"), None, None)
             .await;
         assert_eq!(response.status(), StatusCode::OK, "{query_name}");
         assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
@@ -54,13 +57,12 @@ async fn official_public_dashboard_configuration_page_contract() {
 #[tokio::test]
 async fn official_configuration_pages_contract_and_elevation() {
     let fixture = Fixture::new().await;
-    assert_eq!(
-        fixture
-            .get("/web/ConfigurationPages", None, None)
-            .await
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
+    for path in ["/web/ConfigurationPages", "/web/configurationpages"] {
+        assert_eq!(
+            fixture.get(path, None, None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
     assert_eq!(
         fixture
             .get("/web/ConfigurationPages", Some(&fixture.user_token), None,)
@@ -70,7 +72,7 @@ async fn official_configuration_pages_contract_and_elevation() {
     );
 
     let pages = fixture
-        .json("/web/ConfigurationPages", &fixture.admin_token)
+        .json("/web/configurationpages", &fixture.admin_token)
         .await;
     let test_plugin = pages
         .as_array()

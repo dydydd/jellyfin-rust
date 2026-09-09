@@ -557,6 +557,39 @@ async fn exercise_configuration_routes(database_name: &str) {
         json!(false)
     );
 
+    assert_eq!(
+        post_json(
+            &app,
+            "/system/configuration/partial",
+            Some(&user_token),
+            &json!({ "servername": "Partial Configuration Server" }),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let response = post_json(
+        &app,
+        "/system/configuration/partial",
+        Some(&admin_token),
+        &json!({
+            "servername": "Partial Configuration Server",
+            "logfileretentiondays": 12,
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let patched = body_json(request(&app, "/system/configuration", Some(&user_token)).await).await;
+    assert_eq!(patched["ServerName"], "Partial Configuration Server");
+    assert_eq!(patched["LogFileRetentionDays"], 12);
+    assert_eq!(patched["UICulture"], "ja-JP");
+
     user::Entity::delete_many()
         .exec(&database)
         .await

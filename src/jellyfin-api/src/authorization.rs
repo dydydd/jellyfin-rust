@@ -319,8 +319,10 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Devices" | "devices" | "Packages" | "Backup", ..] | ["Repositories"] => {
             RoutePolicy::Elevated
         }
-        ["web", "ConfigurationPages"] => RoutePolicy::Elevated,
-        ["web", "ConfigurationPage"] | ["web", ..] => RoutePolicy::Public,
+        ["web", "ConfigurationPages"] | ["web", "configurationpages"] => RoutePolicy::Elevated,
+        ["web", "ConfigurationPage"] | ["web", "configurationpage"] | ["web", ..] => {
+            RoutePolicy::Public
+        }
         ["System", "Configuration", "MetadataOptions", "Default"]
         | ["System", "Configuration", "Branding"] => RoutePolicy::Elevated,
         ["System", "Configuration", ..] if is_write(method) => RoutePolicy::Elevated,

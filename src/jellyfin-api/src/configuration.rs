@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Bytes,
     extract::{OriginalUri, Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
@@ -34,6 +35,45 @@ pub(crate) async fn update(
         .await?
         .require_administrator()?;
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
+    apply_configuration(&state, configuration).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn partial(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
+        .await?
+        .require_administrator()?;
+    let patch: Value = serde_json::from_slice(&body).map_err(|_| ApiError::InvalidRequest)?;
+    let Some(patch) = patch.as_object() else {
+        return Err(ApiError::InvalidRequest);
+    };
+    let current = state.server_configuration.load().await?;
+    let mut merged =
+        serde_json::to_value(server_configuration(current)?).map_err(|_| ApiError::Internal)?;
+    let object = merged.as_object_mut().ok_or(ApiError::Internal)?;
+    for (key, value) in patch {
+        let destination = object
+            .keys()
+            .find(|existing| existing.eq_ignore_ascii_case(key))
+            .cloned()
+            .unwrap_or_else(|| key.clone());
+        object.insert(destination, value.clone());
+    }
+    let configuration: ServerConfiguration =
+        serde_json::from_value(merged).map_err(|_| ApiError::InvalidRequest)?;
+    apply_configuration(&state, configuration).await?;
+    Ok(StatusCode::OK)
+}
+
+async fn apply_configuration(
+    state: &AppState,
+    configuration: ServerConfiguration,
+) -> Result<(), ApiError> {
     let updated = state
         .server_configuration
         .update_server_configuration(server_configuration_update(configuration)?)
@@ -62,7 +102,7 @@ pub(crate) async fn update(
     state
         .library_scan
         .set_fanout_concurrency(updated.library_scan_fanout_concurrency.max(0) as usize);
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 pub(crate) async fn default_metadata_options(

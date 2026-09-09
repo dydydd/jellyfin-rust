@@ -30,6 +30,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/encoding/codecconfiguration/defaults",
             get(codec_configuration_defaults),
         )
+        .route("/Encoding/ToneMapOptions", get(tone_map_options))
+        .route("/encoding/tonemapoptions", get(tone_map_options))
 }
 
 async fn codec_information_video(
@@ -77,6 +79,44 @@ async fn codec_configuration_defaults(
             })
             .collect(),
     ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct ToneMapOptions {
+    show_advanced: bool,
+    is_software_tone_mapping_available: bool,
+    is_any_hardware_tone_mapping_available: bool,
+    show_nvidia_options: bool,
+    show_quick_sync_options: bool,
+    show_vaapi_options: bool,
+    is_open_cl_available: bool,
+    is_open_cl_super_t_available: bool,
+    is_vaapi_native_available: bool,
+    is_quick_sync_native_available: bool,
+    operating_system: &'static str,
+}
+
+async fn tone_map_options(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<ToneMapOptions>, Response> {
+    state.require_emby_administrator(&headers, &uri).await?;
+    let (_, decoders) = state.encoder_codec_names();
+    Ok(Json(ToneMapOptions {
+        show_advanced: false,
+        is_software_tone_mapping_available: !decoders.is_empty(),
+        is_any_hardware_tone_mapping_available: false,
+        show_nvidia_options: false,
+        show_quick_sync_options: false,
+        show_vaapi_options: false,
+        is_open_cl_available: false,
+        is_open_cl_super_t_available: false,
+        is_vaapi_native_available: false,
+        is_quick_sync_native_available: false,
+        operating_system: std::env::consts::OS,
+    }))
 }
 
 #[derive(Serialize)]

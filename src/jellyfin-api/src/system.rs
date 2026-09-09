@@ -37,6 +37,46 @@ pub(crate) struct LogFileDto {
     name: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct LogQuery {
+    #[serde(alias = "StartIndex", alias = "startindex")]
+    start_index: Option<i32>,
+    #[serde(alias = "Limit")]
+    limit: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct LogQueryResult {
+    items: Vec<LogFileDto>,
+    total_record_count: usize,
+}
+
+pub(crate) async fn query_logs(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    query: Result<Query<LogQuery>, QueryRejection>,
+) -> Result<Json<LogQueryResult>, ApiError> {
+    require_elevated(&state, &headers, &uri).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let all = state.system_logs.list().await;
+    let total_record_count = all.len();
+    let start = query.start_index.unwrap_or(0).max(0) as usize;
+    let count = query.limit.map_or(usize::MAX, |n| n.max(0) as usize);
+    let items = all
+        .into_iter()
+        .skip(start)
+        .take(count)
+        .map(LogFileDto::from)
+        .collect();
+    Ok(Json(LogQueryResult {
+        items,
+        total_record_count,
+    }))
+}
+
 pub(crate) async fn get_logs(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,

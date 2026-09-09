@@ -43,7 +43,8 @@ use jellyfin_live_tv::{
 };
 use jellyfin_media_encoding::encoder::EncoderCapabilities;
 use jellyfin_model::{
-    DisplayPreferencesDto, PublicSystemInfo, SystemInfo, UserConfiguration, UserDto, UserPolicy,
+    DisplayPreferencesDto, FileSystemEntryInfo, PublicSystemInfo, SystemInfo, UserConfiguration,
+    UserDto, UserPolicy,
 };
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
@@ -69,7 +70,7 @@ mod artists;
 mod audio;
 mod authentication;
 mod authorization;
-mod backup;
+pub mod backup;
 mod branding;
 mod channels;
 mod client_log;
@@ -244,6 +245,45 @@ impl AppState {
             self.encoder_capabilities.encoders.clone(),
             self.encoder_capabilities.decoders.clone(),
         )
+    }
+
+    /// Executes a protocol adapter's directory request through the shared
+    /// Jellyfin environment service.
+    pub fn environment_directory_contents(
+        &self,
+        path: &str,
+        include_files: bool,
+        include_directories: bool,
+    ) -> Result<Vec<FileSystemEntryInfo>, Response> {
+        self.environment
+            .directory_contents(path, include_files, include_directories)
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Returns the server's current filesystem roots for protocol adapters.
+    #[must_use]
+    pub fn environment_drives(&self) -> Vec<FileSystemEntryInfo> {
+        self.environment.drives()
+    }
+
+    /// Resolves a path through the shared platform-aware parent-path logic.
+    #[must_use]
+    pub fn environment_parent_path(&self, path: &str) -> Option<String> {
+        self.environment.parent_path(path)
+    }
+
+    /// Validates a protocol adapter's filesystem path request.
+    pub fn environment_validate_path(
+        &self,
+        path: Option<&str>,
+        is_file: Option<bool>,
+        validate_writable: bool,
+    ) -> Result<(), Response> {
+        self.environment
+            .validate_path(path, is_file, validate_writable)
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1170,6 +1210,12 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(configuration::get).post(configuration::update),
         )
         .route(
+            "/system/configuration",
+            get(configuration::get).post(configuration::update),
+        )
+        .route("/System/Configuration/Partial", post(configuration::partial))
+        .route("/system/configuration/partial", post(configuration::partial))
+        .route(
             "/System/Configuration/MetadataOptions/Default",
             get(configuration::default_metadata_options),
         )
@@ -1182,8 +1228,13 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(configuration::get_named).post(configuration::update_named),
         )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
+        .route("/web/configurationpage", get(dashboard::configuration_page))
         .route(
             "/web/ConfigurationPages",
+            get(dashboard::configuration_pages),
+        )
+        .route(
+            "/web/configurationpages",
             get(dashboard::configuration_pages),
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
@@ -1582,6 +1633,9 @@ fn system_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
+        .route("/system/logs", get(system::get_logs))
+        .route("/System/Logs/Query", get(system::query_logs))
+        .route("/system/logs/query", get(system::query_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
         .route("/System/Info", get(system::info))
         .route("/system/info", get(system::info))
@@ -2353,7 +2407,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             get(item_update::metadata_editor),
         )
         .route(
+            "/items/{item_id}/metadataeditor",
+            get(item_update::metadata_editor),
+        )
+        .route(
             "/Items/{item_id}/ExternalIdInfos",
+            get(item_lookup::external_id_infos),
+        )
+        .route(
+            "/items/{item_id}/externalidinfos",
             get(item_lookup::external_id_infos),
         )
         .route(

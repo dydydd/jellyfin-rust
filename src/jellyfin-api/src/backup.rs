@@ -86,6 +86,18 @@ pub(crate) async fn list(
     Ok(Json(manifests))
 }
 
+/// Backup manifests for protocol adapters that need the shared authorization
+/// and archive discovery implementation.
+pub async fn emby_list(
+    state: State<Arc<AppState>>,
+    uri: OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<BackupManifestDto>>, Response> {
+    list(state, uri, headers)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
 pub(crate) async fn create(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
