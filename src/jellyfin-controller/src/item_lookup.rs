@@ -297,7 +297,10 @@ impl ItemLookupService {
             "Person" => vec![ImageType::Profile],
             _ => return Ok(Vec::new()),
         };
-        let provider_names = [TMDB_PROVIDER_NAME, "TV Maze", "TheAudioDB"]
+        // Only advertise providers implemented by this service. Listing
+        // metadata providers here would make RemoteImages claim support that
+        // GetAvailableRemoteImages cannot actually fulfill.
+        let provider_names = [TMDB_PROVIDER_NAME]
             .into_iter()
             .filter(|name| {
                 !metadata_options

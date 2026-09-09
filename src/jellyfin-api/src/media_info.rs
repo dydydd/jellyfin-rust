@@ -277,9 +277,13 @@ pub(crate) struct OpenLiveStreamQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct OpenLiveStreamDto {
+    #[serde(alias = "openToken", alias = "opentoken")]
     open_token: Option<String>,
+    #[serde(alias = "userId", alias = "userid")]
     user_id: Option<Uuid>,
+    #[serde(alias = "playSessionId", alias = "playsessionid")]
     play_session_id: Option<String>,
+    #[serde(alias = "itemId", alias = "itemid")]
     item_id: Option<Uuid>,
 }
 
