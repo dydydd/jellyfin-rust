@@ -79,7 +79,43 @@ pub(crate) struct RemovePathQuery {
     refresh_library: bool,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct VirtualFolderQuery {
+    #[serde(rename = "StartIndex", alias = "startIndex", alias = "startindex")]
+    start_index: i32,
+    #[serde(rename = "Limit", alias = "limit")]
+    limit: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct RemoveVirtualFolder {
+    #[serde(alias = "id", alias = "ID")]
+    id: String,
+    #[serde(default, alias = "refreshLibrary", alias = "refreshlibrary")]
+    refresh_library: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct RemoveMediaPath {
+    #[serde(alias = "id", alias = "ID")]
+    id: String,
+    #[serde(alias = "path")]
+    path: String,
+    #[serde(default, alias = "refreshLibrary", alias = "refreshlibrary")]
+    refresh_library: bool,
+}
+
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct VirtualFolderQueryResult {
+    items: Vec<VirtualFolderInfo>,
+    total_record_count: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct VirtualFolderInfo {
     name: String,
@@ -107,6 +143,92 @@ pub(crate) async fn list(
             .map(folder_info)
             .collect(),
     ))
+}
+
+pub(crate) async fn query(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(query): Query<VirtualFolderQuery>,
+) -> Result<Json<VirtualFolderQueryResult>, ApiError> {
+    authorization::require_default(&state, &headers, &uri).await?;
+    let folders = state
+        .virtual_folders
+        .list()
+        .await?
+        .into_iter()
+        .map(folder_info)
+        .collect::<Vec<_>>();
+    Ok(Json(page_folders(folders, query)))
+}
+
+fn page_folders(
+    folders: Vec<VirtualFolderInfo>,
+    query: VirtualFolderQuery,
+) -> VirtualFolderQueryResult {
+    let total_record_count = folders.len().min(i32::MAX as usize) as i32;
+    let start = query.start_index.max(0) as usize;
+    let end = match query.limit {
+        Some(limit) if limit <= 0 => start,
+        Some(limit) => start.saturating_add(limit as usize),
+        None => folders.len(),
+    }
+    .min(folders.len());
+    let items = if start < folders.len() {
+        folders[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+    VirtualFolderQueryResult {
+        items,
+        total_record_count,
+    }
+}
+
+pub(crate) async fn delete_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<RemoveVirtualFolder>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    let body = request.map_err(|_| ApiError::InvalidRequest)?.0;
+    let id = Uuid::parse_str(&body.id).map_err(|_| ApiError::InvalidRequest)?;
+    let folder = state
+        .virtual_folders
+        .list()
+        .await?
+        .into_iter()
+        .find(|folder| folder.id == id)
+        .ok_or(ApiError::NotFound)?;
+    state
+        .virtual_folders
+        .delete(&folder.name, body.refresh_library)
+        .await?;
+    Ok(axum::http::StatusCode::OK.into_response())
+}
+
+pub(crate) async fn remove_path_legacy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<RemoveMediaPath>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
+    let body = request.map_err(|_| ApiError::InvalidRequest)?.0;
+    let id = Uuid::parse_str(&body.id).map_err(|_| ApiError::InvalidRequest)?;
+    let folder = state
+        .virtual_folders
+        .list()
+        .await?
+        .into_iter()
+        .find(|folder| folder.id == id)
+        .ok_or(ApiError::NotFound)?;
+    state
+        .virtual_folders
+        .remove_path(&folder.name, &body.path, body.refresh_library)
+        .await?;
+    Ok(axum::http::StatusCode::OK.into_response())
 }
 
 pub(crate) async fn create(
@@ -305,5 +427,35 @@ fn folder_info(folder: VirtualFolder) -> VirtualFolderInfo {
         refresh_status: folder
             .refresh_requested
             .then(|| "RefreshRequested".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emby_query_paging_preserves_total_and_empty_limit() {
+        let folders = (0..2)
+            .map(|index| VirtualFolderInfo {
+                name: format!("Library {index}"),
+                locations: Vec::new(),
+                collection_type: None,
+                library_options: Value::Null,
+                item_id: index.to_string(),
+                primary_image_item_id: None,
+                refresh_progress: None,
+                refresh_status: None,
+            })
+            .collect();
+        let page = page_folders(
+            folders,
+            VirtualFolderQuery {
+                start_index: -1,
+                limit: Some(0),
+            },
+        );
+        assert_eq!(page.total_record_count, 2);
+        assert!(page.items.is_empty());
     }
 }

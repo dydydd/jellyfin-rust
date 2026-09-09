@@ -235,6 +235,17 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Returns the encoder snapshot captured during server startup.
+    ///
+    /// Protocol adapters use this rather than inventing a static codec list.
+    #[must_use]
+    pub fn encoder_codec_names(&self) -> (Vec<String>, Vec<String>) {
+        (
+            self.encoder_capabilities.encoders.clone(),
+            self.encoder_capabilities.decoders.clone(),
+        )
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn new(
         database: impl Into<jellyfin_data::SharedDatabase>,
@@ -1324,8 +1335,13 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(videos::stream_with_container).head(videos::stream_with_container),
         )
         .route("/Plugins", get(plugins::list))
+        .route("/plugins", get(plugins::list))
         .route(
             "/Plugins/{plugin_id}/{version}/Enable",
+            post(plugins::enable),
+        )
+        .route(
+            "/plugins/{plugin_id}/{version}/enable",
             post(plugins::enable),
         )
         .route(
@@ -1333,15 +1349,29 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(plugins::disable),
         )
         .route(
+            "/plugins/{plugin_id}/{version}/disable",
+            post(plugins::disable),
+        )
+        .route(
             "/Plugins/{plugin_id}/{version}",
             delete(plugins::uninstall_version),
         )
+        .route(
+            "/plugins/{plugin_id}/{version}",
+            delete(plugins::uninstall_version),
+        )
         .route("/Plugins/{plugin_id}", delete(plugins::uninstall))
+        .route("/plugins/{plugin_id}", delete(plugins::uninstall))
         .route(
             "/Plugins/{plugin_id}/Configuration",
             get(plugins::get_configuration).post(plugins::update_configuration),
         )
+        .route(
+            "/plugins/{plugin_id}/configuration",
+            get(plugins::get_configuration).post(plugins::update_configuration),
+        )
         .route("/Plugins/{plugin_id}/Manifest", post(plugins::manifest))
+        .route("/plugins/{plugin_id}/manifest", post(plugins::manifest))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .route("/plugins/{plugin_id}/{version}/image", get(plugins::image))
         .merge(package_routes())
@@ -1507,6 +1537,30 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(virtual_folders::update_path),
         )
         .route(
+            "/Library/VirtualFolders/Query",
+            get(virtual_folders::query),
+        )
+        .route(
+            "/library/virtualfolders/query",
+            get(virtual_folders::query),
+        )
+        .route(
+            "/Library/VirtualFolders/Delete",
+            post(virtual_folders::delete_legacy),
+        )
+        .route(
+            "/library/virtualfolders/delete",
+            post(virtual_folders::delete_legacy),
+        )
+        .route(
+            "/Library/VirtualFolders/Paths/Delete",
+            post(virtual_folders::remove_path_legacy),
+        )
+        .route(
+            "/library/virtualfolders/paths/delete",
+            post(virtual_folders::remove_path_legacy),
+        )
+        .route(
             "/Library/VirtualFolders/LibraryOptions",
             post(virtual_folders::update_options),
         )
@@ -1534,23 +1588,37 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/System/Info/Storage", get(system::storage))
         .route("/system/info/storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
+        .route("/system/endpoint", get(system::endpoint_info))
         .route("/System/Ext/ServerDomains", get(system::server_domains))
+        .route("/system/ext/serverdomains", get(system::server_domains))
         .route("/System/Restart", post(system::restart))
+        .route("/system/restart", post(system::restart))
         .route("/System/Shutdown", post(system::shutdown))
+        .route("/system/shutdown", post(system::shutdown))
         .route("/Document", post(client_log::document))
         .route("/ClientLog/Document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
         .route("/metrics", get(metrics))
         .route("/ScheduledTasks", get(scheduled_tasks::list))
+        .route("/scheduledtasks", get(scheduled_tasks::list))
         .route(
             "/ScheduledTasks/Running/{task_id}",
+            post(scheduled_tasks::start).delete(scheduled_tasks::stop),
+        )
+        .route(
+            "/scheduledtasks/running/{task_id}",
             post(scheduled_tasks::start).delete(scheduled_tasks::stop),
         )
         .route(
             "/ScheduledTasks/{task_id}/Triggers",
             post(scheduled_tasks::update_triggers),
         )
+        .route(
+            "/scheduledtasks/{task_id}/triggers",
+            post(scheduled_tasks::update_triggers),
+        )
         .route("/ScheduledTasks/{task_id}", get(scheduled_tasks::get))
+        .route("/scheduledtasks/{task_id}", get(scheduled_tasks::get))
 }
 
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
@@ -1654,14 +1722,25 @@ fn api_key_routes() -> Router<Arc<AppState>> {
 fn package_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Packages", get(packages::list))
+        .route("/packages", get(packages::list))
         .route("/Packages/Installed/{name}", post(packages::install))
+        .route("/packages/installed/{name}", post(packages::install))
         .route(
             "/Packages/Installing/{package_id}",
             axum::routing::delete(packages::cancel_installation),
         )
+        .route(
+            "/packages/installing/{package_id}",
+            axum::routing::delete(packages::cancel_installation),
+        )
         .route("/Packages/{name}", get(packages::get))
+        .route("/packages/{name}", get(packages::get))
         .route(
             "/Repositories",
+            get(packages::repositories).post(packages::set_repositories),
+        )
+        .route(
+            "/repositories",
             get(packages::repositories).post(packages::set_repositories),
         )
 }
@@ -2070,6 +2149,8 @@ fn item_query_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items", get(items::get).delete(library::delete_items))
         .route("/items", get(items::get).delete(library::delete_items))
+        .route("/Items/Delete", post(library::delete_items))
+        .route("/items/delete", post(library::delete_items))
         .route("/Items/Suggestions", get(items::suggestions))
         .route("/items/suggestions", get(items::suggestions))
         .route("/Items/Latest", get(items::latest))
@@ -2099,8 +2180,13 @@ fn item_query_routes() -> Router<Arc<AppState>> {
 fn collection_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Collections", post(collections::create))
+        .route("/collections", post(collections::create))
         .route(
             "/Collections/{collection_id}/Items",
+            post(collections::add_items).delete(collections::remove_items),
+        )
+        .route(
+            "/collections/{collection_id}/items",
             post(collections::add_items).delete(collections::remove_items),
         )
         .route("/Playlists", post(playlists::create))
@@ -2180,14 +2266,21 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Items/{item_id}/Collections", get(library::collections))
         .route("/items/{item_id}/collections", get(library::collections))
         .route("/Library/Refresh", post(library::refresh))
+        .route("/library/refresh", post(library::refresh))
         .route("/Library/PhysicalPaths", get(library::physical_paths))
+        .route("/library/physicalpaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
         .route("/library/mediafolders", get(library::media_folders))
         .route("/Library/Series/Added", post(library::updated_series))
+        .route("/library/series/added", post(library::updated_series))
         .route("/Library/Series/Updated", post(library::updated_series))
+        .route("/library/series/updated", post(library::updated_series))
         .route("/Library/Movies/Added", post(library::updated_movies))
+        .route("/library/movies/added", post(library::updated_movies))
         .route("/Library/Movies/Updated", post(library::updated_movies))
+        .route("/library/movies/updated", post(library::updated_movies))
         .route("/Library/Media/Updated", post(library::updated_media))
+        .route("/library/media/updated", post(library::updated_media))
         .route(
             "/Libraries/AvailableOptions",
             get(library::available_options),
@@ -2207,6 +2300,8 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Movies/Recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
         .route("/movies/{item_id}/similar", get(library::similar))
+        .route("/Games/{item_id}/Similar", get(library::similar))
+        .route("/games/{item_id}/similar", get(library::similar))
         .route("/Shows/NextUp", get(tv_shows::next_up))
         .route("/shows/nextup", get(tv_shows::next_up))
         .route("/Shows/Upcoming", get(tv_shows::upcoming))

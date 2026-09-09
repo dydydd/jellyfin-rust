@@ -16,6 +16,7 @@ use jellyfin_api::AppState;
 use serde::Serialize;
 
 mod auth_user;
+mod encoding;
 mod library;
 mod system_misc;
 mod users;
@@ -32,6 +33,7 @@ pub fn router(state: AppState) -> Router {
     let fallback = jellyfin_api::unprefixed_router(state.as_ref().clone());
     let routes = Router::new()
         .merge(auth_user::routes())
+        .merge(encoding::routes())
         .merge(library::routes())
         .merge(system_misc::routes())
         .merge(users::routes())
