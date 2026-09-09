@@ -1717,6 +1717,8 @@ fn api_key_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
         .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
+        .route("/auth/keys", get(api_keys::list).post(api_keys::create))
+        .route("/auth/keys/{key}", axum::routing::delete(api_keys::revoke))
 }
 
 fn package_routes() -> Router<Arc<AppState>> {
@@ -2014,9 +2016,15 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::post_full_capabilities),
         )
         .route("/Sessions/Logout", post(session::logout))
+        .route("/sessions/logout", post(session::logout))
         .route("/Auth/Providers", get(session::authentication_providers))
+        .route("/auth/providers", get(session::authentication_providers))
         .route(
             "/Auth/PasswordResetProviders",
+            get(session::password_reset_providers),
+        )
+        .route(
+            "/auth/passwordresetproviders",
             get(session::password_reset_providers),
         )
 }

@@ -311,9 +311,11 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["system", "info", "storage"]
         | ["System", "Shutdown"] => RoutePolicy::Elevated,
         ["ScheduledTasks", ..] => RoutePolicy::Elevated,
-        ["Auth", "Keys", ..] | ["Auth", "Providers" | "PasswordResetProviders"] => {
-            RoutePolicy::Elevated
-        }
+        ["Auth" | "auth", "Keys" | "keys", ..]
+        | [
+            "Auth" | "auth",
+            "Providers" | "providers" | "PasswordResetProviders" | "passwordresetproviders",
+        ] => RoutePolicy::Elevated,
         ["Devices" | "devices" | "Packages" | "Backup", ..] | ["Repositories"] => {
             RoutePolicy::Elevated
         }
@@ -548,6 +550,14 @@ mod tests {
         assert_eq!(
             route_policy(&Method::POST, "/System/Restart"),
             RoutePolicy::LocalOrElevated
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/auth/providers"),
+            RoutePolicy::Elevated
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/auth/keys"),
+            RoutePolicy::Elevated
         );
         assert_eq!(
             route_policy(&Method::GET, "/Items/{item_id}/Images/Primary"),
