@@ -2069,9 +2069,13 @@ fn authentication_routes() -> Router<Arc<AppState>> {
 fn quick_connect_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/QuickConnect/Enabled", get(quick_connect::enabled))
+        .route("/quickconnect/enabled", get(quick_connect::enabled))
         .route("/QuickConnect/Initiate", post(quick_connect::initiate))
+        .route("/quickconnect/initiate", post(quick_connect::initiate))
         .route("/QuickConnect/Connect", get(quick_connect::connect))
+        .route("/quickconnect/connect", get(quick_connect::connect))
         .route("/QuickConnect/Authorize", post(quick_connect::authorize))
+        .route("/quickconnect/authorize", post(quick_connect::authorize))
 }
 
 fn device_routes() -> Router<Arc<AppState>> {
@@ -2223,10 +2227,18 @@ fn user_view_routes() -> Router<Arc<AppState>> {
             "/UserViews/GroupingOptions",
             get(user_views::grouping_options),
         )
+        .route(
+            "/userviews/groupingoptions",
+            get(user_views::grouping_options),
+        )
         .route("/Users/{user_id}/Views", get(user_views::get_legacy))
         .route("/users/{user_id}/views", get(user_views::get_legacy))
         .route(
             "/Users/{user_id}/GroupingOptions",
+            get(user_views::grouping_options_legacy),
+        )
+        .route(
+            "/users/{user_id}/groupingoptions",
             get(user_views::grouping_options_legacy),
         )
 }
