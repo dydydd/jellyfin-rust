@@ -223,8 +223,7 @@ async fn device_info(
 ) -> Result<DeviceInfoDto, ApiError> {
     let user = state.users.get(device.user_id).await?;
     let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities);
-    let mut capabilities = capabilities;
-    let icon_url = capabilities.icon_url.take();
+    let icon_url = capabilities.icon_url.clone();
     Ok(DeviceInfoDto {
         name: Some(device.device_name),
         custom_name,
