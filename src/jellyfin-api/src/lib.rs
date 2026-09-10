@@ -2990,7 +2990,15 @@ fn video_routes() -> Router<Arc<AppState>> {
             get(video_attachments::get),
         )
         .route(
+            "/Videos/{item_id}/{media_source_id}/Attachments/{index}/Stream",
+            get(video_attachments::get),
+        )
+        .route(
             "/videos/{item_id}/{media_source_id}/attachments/{index}",
+            get(video_attachments::get),
+        )
+        .route(
+            "/videos/{item_id}/{media_source_id}/attachments/{index}/stream",
             get(video_attachments::get),
         )
         .route(

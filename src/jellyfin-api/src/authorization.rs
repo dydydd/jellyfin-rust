@@ -403,8 +403,16 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             RoutePolicy::Public
         }
         ["Videos", _, "Subtitles", _] if method == Method::DELETE => RoutePolicy::Default,
-        ["Videos", _, _, "Attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
-        ["videos", _, _, "attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
+        ["Videos", _, _, "Attachments", _] | ["Videos", _, _, "Attachments", _, "Stream"]
+            if is_get_or_head(method) =>
+        {
+            RoutePolicy::Public
+        }
+        ["videos", _, _, "attachments", _] | ["videos", _, _, "attachments", _, "stream"]
+            if is_get_or_head(method) =>
+        {
+            RoutePolicy::Public
+        }
         ["Audio", _, "hls", ..] => RoutePolicy::Public,
         ["Videos", _, "hls", ..] if hls_path_is_playlist(&segments) => RoutePolicy::Default,
         ["Videos", _, "hls", ..] => RoutePolicy::Public,
