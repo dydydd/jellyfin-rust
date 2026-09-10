@@ -47,7 +47,7 @@ pub(crate) struct PlayQueueQuery {
 #[derive(Debug, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct CapabilitiesQuery {
-    #[serde(alias = "Id")]
+    #[serde(alias = "Id", alias = "ID")]
     id: Option<String>,
     #[serde(
         default,
