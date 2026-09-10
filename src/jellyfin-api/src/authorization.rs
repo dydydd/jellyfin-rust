@@ -303,10 +303,17 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             | "ForgotPassword",
         ]
         | ["Users", "ForgotPassword", "Pin"]
-        | ["users", "public" | "authenticatebyname"] => RoutePolicy::Public,
-        ["Users", _, "Authenticate"] => RoutePolicy::Public,
-        ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
-        ["Startup" | "Environment", ..]
+        | [
+            "users",
+            "public" | "authenticatebyname" | "authenticatewithquickconnect" | "forgotpassword",
+        ]
+        | ["users", "forgotpassword", "pin"] => RoutePolicy::Public,
+        ["Users" | "users", _, "Authenticate" | "authenticate"] => RoutePolicy::Public,
+        [
+            "QuickConnect" | "quickconnect",
+            "Enabled" | "enabled" | "Initiate" | "initiate" | "Connect" | "connect",
+        ] => RoutePolicy::Public,
+        ["Startup" | "startup" | "Environment" | "environment", ..]
         | [
             "Library" | "library",
             "VirtualFolders" | "virtualfolders",

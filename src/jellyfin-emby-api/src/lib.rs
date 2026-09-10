@@ -226,6 +226,10 @@ mod tests {
             status(&emby, "/emby/localization/cultures").await,
             StatusCode::OK
         );
+        assert_eq!(
+            status(&emby, "/emby/startup/configuration").await,
+            StatusCode::OK
+        );
 
         // Axum paths are case-sensitive; Emby clients rely on ASP.NET's
         // case-insensitive routing for these streaming control endpoints.
@@ -239,9 +243,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn emby_legacy_delete_aliases_reach_existing_handlers() {
+        let state = AppState::new(
+            DatabaseConnection::Disconnected,
+            "API Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        let emby = router(state);
+        let id = "00000000-0000-0000-0000-000000000000";
+        for uri in [
+            format!("/emby/Items/{id}/Images/Primary/Delete"),
+            format!("/emby/items/{id}/images/primary/delete"),
+            format!("/emby/Items/{id}/Images/Primary/0/Delete"),
+            format!("/emby/items/{id}/images/primary/0/delete"),
+            format!("/emby/Users/{id}/Images/Profile/Delete"),
+            format!("/emby/users/{id}/images/profile/delete"),
+            format!("/emby/Users/{id}/Images/Profile/0/Delete"),
+            format!("/emby/users/{id}/images/profile/0/delete"),
+            format!("/emby/Collections/{id}/Items/Delete"),
+            format!("/emby/collections/{id}/items/delete"),
+            format!("/emby/Playlists/{id}/Items/Delete"),
+            format!("/emby/playlists/{id}/items/delete"),
+        ] {
+            assert_ne!(
+                status_method(&emby, axum::http::Method::POST, &uri).await,
+                StatusCode::NOT_FOUND,
+                "{uri}"
+            );
+        }
+    }
+
     async fn status(app: &Router, uri: &str) -> StatusCode {
+        status_method(app, axum::http::Method::GET, uri).await
+    }
+
+    async fn status_method(app: &Router, method: axum::http::Method, uri: &str) -> StatusCode {
         app.clone()
-            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap()
             .status()

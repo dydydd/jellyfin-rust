@@ -364,6 +364,28 @@ pub(crate) async fn get_image(
     Path((name, image_type, image_index)): Path<(String, String, i32)>,
     Query(query): Query<GetItemImageQuery>,
 ) -> Result<Response, ApiError> {
+    get_image_for(state, uri, headers, name, image_type, image_index, query).await
+}
+
+pub(crate) async fn get_image_default(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path((name, image_type)): Path<(String, String)>,
+    Query(query): Query<GetItemImageQuery>,
+) -> Result<Response, ApiError> {
+    get_image_for(state, uri, headers, name, image_type, 0, query).await
+}
+
+async fn get_image_for(
+    state: Arc<AppState>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    name: String,
+    image_type: String,
+    image_index: i32,
+    query: GetItemImageQuery,
+) -> Result<Response, ApiError> {
     authentication::optional_authenticated_user_id(&state, &headers, &uri).await?;
     let image_type = parse_image_type(&image_type)?;
     let item = state

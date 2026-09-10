@@ -16,7 +16,7 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_model::{DisplayPreferencesDto, SortOrder};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 
 /// Emby display-preference paths share persistence with Jellyfin while
 /// retaining Emby's narrower DTO.
@@ -168,9 +168,9 @@ async fn partial_user_settings(
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct DisplayPreferencesQuery {
-    #[serde(rename = "userId", alias = "UserId")]
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<String>,
-    #[serde(rename = "itemId", alias = "ItemId")]
+    #[serde(rename = "itemId", alias = "ItemId", alias = "itemid")]
     item_id: Option<String>,
     #[serde(rename = "client", alias = "Client")]
     client: Option<String>,
@@ -180,12 +180,40 @@ struct DisplayPreferencesQuery {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct EmbyDisplayPreferences {
-    #[serde(rename = "Id")]
+    #[serde(rename = "Id", alias = "id")]
     pub id: Option<String>,
+    #[serde(alias = "sortBy", alias = "sortby")]
     pub sort_by: Option<String>,
+    #[serde(alias = "customPrefs", alias = "customprefs")]
     pub custom_prefs: HashMap<String, String>,
+    #[serde(
+        deserialize_with = "deserialize_sort_order",
+        alias = "sortOrder",
+        alias = "sortorder"
+    )]
     pub sort_order: SortOrder,
+    #[serde(alias = "client")]
     pub client: Option<String>,
+}
+
+fn deserialize_sort_order<'de, D>(deserializer: D) -> Result<SortOrder, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(value) if value.eq_ignore_ascii_case("ascending") => {
+            Ok(SortOrder::Ascending)
+        }
+        serde_json::Value::String(value) if value.eq_ignore_ascii_case("descending") => {
+            Ok(SortOrder::Descending)
+        }
+        serde_json::Value::Number(value) => match value.as_i64() {
+            Some(0) => Ok(SortOrder::Ascending),
+            Some(1) => Ok(SortOrder::Descending),
+            _ => Err(de::Error::custom("invalid sort order")),
+        },
+        _ => Err(de::Error::custom("invalid sort order")),
+    }
 }
 
 impl From<DisplayPreferencesDto> for EmbyDisplayPreferences {
@@ -309,6 +337,26 @@ mod tests {
         let internal = display_preferences_request(emby.clone());
         assert_eq!(internal.custom_prefs["tvhome"].as_deref(), Some(""));
         assert_eq!(display_preferences_response(internal), emby);
+    }
+
+    #[test]
+    fn emby_display_preferences_accept_case_insensitive_wire_names() {
+        let preferences: EmbyDisplayPreferences = serde_json::from_value(json!({
+            "id": "abc",
+            "sortby": "SortName",
+            "customprefs": {"theme": "dark"},
+            "sortorder": "descending",
+            "client": "Emby"
+        }))
+        .unwrap();
+        assert_eq!(preferences.sort_order, SortOrder::Descending);
+        assert_eq!(preferences.custom_prefs["theme"], "dark");
+
+        let numeric: EmbyDisplayPreferences = serde_json::from_value(json!({
+            "SortOrder": 1
+        }))
+        .unwrap();
+        assert_eq!(numeric.sort_order, SortOrder::Descending);
     }
 
     #[test]

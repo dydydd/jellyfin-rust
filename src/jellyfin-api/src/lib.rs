@@ -1144,8 +1144,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(artists::get_image),
         )
         .route(
+            "/Artists/{name}/Images/{image_type}",
+            get(artists::get_image_default),
+        )
+        .route(
             "/artists/{name}/images/{image_type}/{image_index}",
             get(artists::get_image),
+        )
+        .route(
+            "/artists/{name}/images/{image_type}",
+            get(artists::get_image_default),
         )
         .route("/Search/Hints", get(search::hints))
         .route("/search/hints", get(search::hints))
@@ -1172,6 +1180,14 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(item_images::delete),
         )
         .route(
+            "/Items/{item_id}/Images/{image_type}/Delete",
+            post(item_images::delete),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}/delete",
+            post(item_images::delete),
+        )
+        .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}",
             get(item_images::get_by_index)
                 .post(item_images::upload_by_index)
@@ -1182,6 +1198,14 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(item_images::get_by_index)
                 .post(item_images::upload_by_index)
                 .delete(item_images::delete_by_index),
+        )
+        .route(
+            "/Items/{item_id}/Images/{image_type}/{image_index}/Delete",
+            post(item_images::delete_by_index),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}/{image_index}/delete",
+            post(item_images::delete_by_index),
         )
         .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}/Url",
@@ -1556,6 +1580,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_root_legacy),
         )
         .route(
+            "/users/{user_id}/items/root",
+            get(user_library::get_root_legacy),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}",
             get(user_library::get_item_legacy),
         )
@@ -1568,7 +1596,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_intros_legacy),
         )
         .route(
+            "/users/{user_id}/items/{item_id}/intros",
+            get(user_library::get_intros_legacy),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}/LocalTrailers",
+            get(user_library::get_local_trailers_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/localtrailers",
             get(user_library::get_local_trailers_legacy),
         )
         .route(
@@ -1576,7 +1612,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_special_features_legacy),
         )
         .route(
+            "/users/{user_id}/items/{item_id}/specialfeatures",
+            get(user_library::get_special_features_legacy),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}/Lyrics",
+            get(user_library::get_lyrics_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/lyrics",
             get(user_library::get_lyrics_legacy),
         )
         .merge(item_query_routes())
@@ -1968,13 +2012,24 @@ fn startup_routes() -> Router<Arc<AppState>> {
             "/Startup/Configuration",
             get(startup::get_configuration).post(startup::update_configuration),
         )
+        .route(
+            "/startup/configuration",
+            get(startup::get_configuration).post(startup::update_configuration),
+        )
         .route("/Startup/RemoteAccess", post(startup::update_remote_access))
+        .route("/startup/remoteaccess", post(startup::update_remote_access))
         .route(
             "/Startup/User",
             get(startup::get_user).post(startup::update_user),
         )
+        .route(
+            "/startup/user",
+            get(startup::get_user).post(startup::update_user),
+        )
         .route("/Startup/FirstUser", get(startup::get_user))
+        .route("/startup/firstuser", get(startup::get_user))
         .route("/Startup/Complete", post(startup::complete))
+        .route("/startup/complete", post(startup::complete))
 }
 
 fn authentication_routes() -> Router<Arc<AppState>> {
@@ -1996,7 +2051,15 @@ fn authentication_routes() -> Router<Arc<AppState>> {
             post(authentication::authenticate_with_quick_connect),
         )
         .route(
+            "/users/authenticatewithquickconnect",
+            post(authentication::authenticate_with_quick_connect),
+        )
+        .route(
             "/Users/{user_id}/Authenticate",
+            post(authentication::authenticate),
+        )
+        .route(
+            "/users/{user_id}/authenticate",
             post(authentication::authenticate),
         )
         .route("/Users/Me", get(authentication::current_user))
@@ -2062,8 +2125,13 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/New", post(users::create))
         .route("/users/new", post(users::create))
         .route("/Users/ForgotPassword", post(users::forgot_password))
+        .route("/users/forgotpassword", post(users::forgot_password))
         .route(
             "/Users/ForgotPassword/Pin",
+            post(users::forgot_password_pin),
+        )
+        .route(
+            "/users/forgotpassword/pin",
             post(users::forgot_password_pin),
         )
         .route("/Users/Configuration", post(users::update_configuration))
@@ -2080,6 +2148,8 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .post(users::update_legacy)
                 .delete(users::delete),
         )
+        .route("/Users/{id}/Delete", post(users::delete))
+        .route("/users/{id}/delete", post(users::delete))
         .route("/User/{id}", axum::routing::delete(users::delete))
         .route("/Users/Password", post(users::update_password_query))
         .route("/users/password", post(users::update_password_query))
@@ -2106,10 +2176,18 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .delete(users::delete_user_image_legacy),
         )
         .route(
+            "/Users/{id}/Images/{image_type}/Delete",
+            post(users::delete_user_image_legacy),
+        )
+        .route(
             "/users/{id}/images/{image_type}",
             get(users::get_user_image_legacy)
                 .post(users::post_user_image_legacy)
                 .delete(users::delete_user_image_legacy),
+        )
+        .route(
+            "/users/{id}/images/{image_type}/delete",
+            post(users::delete_user_image_legacy),
         )
         .route(
             "/Users/{id}/Images/{image_type}/{index}",
@@ -2118,10 +2196,18 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .delete(users::delete_user_image_index_legacy),
         )
         .route(
+            "/Users/{id}/Images/{image_type}/{index}/Delete",
+            post(users::delete_user_image_index_legacy),
+        )
+        .route(
             "/users/{id}/images/{image_type}/{index}",
             get(users::get_user_image_index_legacy)
                 .post(users::post_user_image_index_legacy)
                 .delete(users::delete_user_image_index_legacy),
+        )
+        .route(
+            "/users/{id}/images/{image_type}/{index}/delete",
+            post(users::delete_user_image_index_legacy),
         )
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/users/{id}/password", post(users::update_password))
@@ -2336,8 +2422,24 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             post(playstate::mark_played).delete(playstate::mark_unplayed),
         )
         .route(
+            "/Users/{user_id}/PlayedItems/{item_id}/Delete",
+            post(playstate::mark_unplayed),
+        )
+        .route(
             "/users/{user_id}/playeditems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
+        )
+        .route(
+            "/users/{user_id}/playeditems/{item_id}/delete",
+            post(playstate::mark_unplayed),
+        )
+        .route(
+            "/Users/{user_id}/PlayingItems/{item_id}/Delete",
+            post(playstate::report_playback_stopped_legacy_for_user),
+        )
+        .route(
+            "/users/{user_id}/playingitems/{item_id}/delete",
+            post(playstate::report_playback_stopped_legacy_for_user),
         )
 }
 
@@ -2376,6 +2478,14 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
         )
         .route(
+            "/Users/{user_id}/FavoriteItems/{item_id}/Delete",
+            post(user_data::unmark_favorite_legacy),
+        )
+        .route(
+            "/users/{user_id}/favoriteitems/{item_id}/delete",
+            post(user_data::unmark_favorite_legacy),
+        )
+        .route(
             "/UserItems/{item_id}/Rating",
             post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
         )
@@ -2390,6 +2500,14 @@ fn user_data_routes() -> Router<Arc<AppState>> {
         .route(
             "/users/{user_id}/items/{item_id}/rating",
             post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
+        )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/Rating/Delete",
+            post(user_data::delete_rating_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/rating/delete",
+            post(user_data::delete_rating_legacy),
         )
 }
 
@@ -2434,8 +2552,16 @@ fn collection_routes() -> Router<Arc<AppState>> {
             post(collections::add_items).delete(collections::remove_items),
         )
         .route(
+            "/Collections/{collection_id}/Items/Delete",
+            post(collections::remove_items),
+        )
+        .route(
             "/collections/{collection_id}/items",
             post(collections::add_items).delete(collections::remove_items),
+        )
+        .route(
+            "/collections/{collection_id}/items/delete",
+            post(collections::remove_items),
         )
         .route("/Playlists", post(playlists::create))
         .route("/playlists", post(playlists::create))
@@ -2468,10 +2594,18 @@ fn collection_routes() -> Router<Arc<AppState>> {
                 .delete(playlists::remove_items),
         )
         .route(
+            "/Playlists/{playlist_id}/Items/Delete",
+            post(playlists::remove_items),
+        )
+        .route(
             "/playlists/{playlist_id}/items",
             get(playlists::get_items)
                 .post(playlists::add_items)
                 .delete(playlists::remove_items),
+        )
+        .route(
+            "/playlists/{playlist_id}/items/delete",
+            post(playlists::remove_items),
         )
         .route(
             "/Playlists/{playlist_id}/AddToPlaylistInfo",
