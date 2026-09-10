@@ -18,6 +18,14 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/system/releasenotes", get(release_notes))
         .route("/System/ReleaseNotes/Versions", get(release_note_versions))
         .route("/system/releasenotes/versions", get(release_note_versions))
+        .route(
+            "/System/Logs/{name}/Lines",
+            get(jellyfin_api::emby_log_file_lines),
+        )
+        .route(
+            "/system/logs/{name}/lines",
+            get(jellyfin_api::emby_log_file_lines),
+        )
         .route("/Packages/Updates", get(package_updates))
         .route("/packages/updates", get(package_updates))
         .route("/Shows/Missing", get(empty_items))
@@ -160,5 +168,25 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn log_lines_aliases_are_protected() {
+        let app = routes().with_state(Arc::new(AppState::new(
+            DatabaseConnection::Disconnected,
+            "test".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )));
+        for path in [
+            "/System/Logs/server.log/Lines",
+            "/system/logs/server.log/lines",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
     }
 }

@@ -129,6 +129,7 @@ mod websocket;
 mod years;
 
 pub use branding::BrandingOptions;
+pub use system::emby_log_file_lines;
 
 /// Host lifecycle commands exposed by the system API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
