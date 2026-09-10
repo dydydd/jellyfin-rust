@@ -2756,12 +2756,14 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
+        .route("/Items/{item_id}/Delete", post(library::delete_item))
         .route(
             "/items/{item_id}",
             get(user_library::get_item)
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
+        .route("/items/{item_id}/delete", post(library::delete_item))
         .route(
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),

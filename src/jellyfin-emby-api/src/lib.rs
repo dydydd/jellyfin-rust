@@ -257,6 +257,8 @@ mod tests {
             format!("/emby/items/{id}/images/primary/delete"),
             format!("/emby/Items/{id}/Images/Primary/0/Delete"),
             format!("/emby/items/{id}/images/primary/0/delete"),
+            format!("/emby/Items/{id}/Delete"),
+            format!("/emby/items/{id}/delete"),
             format!("/emby/Users/{id}/Images/Profile/Delete"),
             format!("/emby/users/{id}/images/profile/delete"),
             format!("/emby/Users/{id}/Images/Profile/0/Delete"),
