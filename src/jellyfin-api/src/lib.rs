@@ -2757,12 +2757,22 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
+        .route("/Items/{item_id}/Tags/Add", post(item_update::add_tags))
+        .route(
+            "/Items/{item_id}/Tags/Delete",
+            post(item_update::delete_tags),
+        )
         .route("/Items/{item_id}/Delete", post(library::delete_item))
         .route(
             "/items/{item_id}",
             get(user_library::get_item)
                 .post(item_update::update)
                 .delete(library::delete_item),
+        )
+        .route("/items/{item_id}/tags/add", post(item_update::add_tags))
+        .route(
+            "/items/{item_id}/tags/delete",
+            post(item_update::delete_tags),
         )
         .route("/items/{item_id}/delete", post(library::delete_item))
         .route(

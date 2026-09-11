@@ -60,6 +60,79 @@ struct StudioUpdateRequest {
     name: Option<String>,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct TagUpdateRequest {
+    tags: Option<Vec<TagNameIdPair>>,
+}
+
+#[derive(Debug, Default)]
+struct TagNameIdPair {
+    name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for TagUpdateRequest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct RequestVisitor;
+
+        impl<'de> de::Visitor<'de> for RequestVisitor {
+            type Value = TagUpdateRequest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an AddTags or RemoveTags object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut request = TagUpdateRequest::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    if key.eq_ignore_ascii_case("tags") {
+                        request.tags = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(RequestVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for TagNameIdPair {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct PairVisitor;
+
+        impl<'de> de::Visitor<'de> for PairVisitor {
+            type Value = TagNameIdPair;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a NameIdPair object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut pair = TagNameIdPair::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    if key.eq_ignore_ascii_case("name") {
+                        pair.name = match map.next_value::<Value>()? {
+                            Value::Null => None,
+                            Value::String(value) => Some(value),
+                            value @ (Value::Bool(_) | Value::Number(_)) => Some(value.to_string()),
+                            _ => return Err(de::Error::custom("invalid tag name")),
+                        };
+                    } else {
+                        // The endpoint uses only Name; Id is accepted for SDK
+                        // compatibility and intentionally has no persistence meaning.
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(pair)
+            }
+        }
+
+        deserializer.deserialize_map(PairVisitor)
+    }
+}
+
 impl<'de> Deserialize<'de> for StudioUpdateRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct StudioVisitor;
@@ -171,6 +244,73 @@ pub(crate) async fn update_content_type(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn add_tags(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    request: Result<Json<TagUpdateRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    authorize_tag_item(&state, identity, item_id).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let tags = tag_names(request)?;
+    state.item_update.modify_tags(item_id, &tags, &[]).await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[item_id]).await;
+    Ok(StatusCode::OK)
+}
+
+pub(crate) async fn delete_tags(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+    request: Result<Json<TagUpdateRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    authorize_tag_item(&state, identity, item_id).await?;
+    let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let tags = tag_names(request)?;
+    state.item_update.modify_tags(item_id, &[], &tags).await?;
+    crate::websocket::broadcast_library_changed(&state, &[], &[], &[item_id]).await;
+    Ok(StatusCode::OK)
+}
+
+fn tag_names(request: TagUpdateRequest) -> Result<Vec<String>, ApiError> {
+    request
+        .tags
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tag| tag.name.ok_or(ApiError::InvalidRequest))
+        .collect()
+}
+
+async fn authorize_tag_item(
+    state: &AppState,
+    identity: authentication::AuthenticatedIdentity,
+    item_id: Uuid,
+) -> Result<(), ApiError> {
+    match identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            // Emby exposes these as user-authenticated operations, but a user
+            // may only mutate an item visible through their library policy.
+            state
+                .user_library
+                .item(&session.user, session.user.id, item_id)
+                .await?;
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            // API keys are administrator-equivalent in this server.
+            state
+                .base_items
+                .get(item_id)
+                .await?
+                .ok_or(ApiError::NotFound)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn metadata_editor(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -280,6 +420,36 @@ mod tests {
             assert!(
                 serde_json::from_value::<UpdateItemRequest>(json!({"Studios": studios})).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn tag_requests_bind_names_case_insensitively_and_ignore_ids() {
+        let request: TagUpdateRequest = serde_json::from_value(json!({
+            "tAgS": [
+                {"nAmE": " First ", "iD": "not-a-guid"},
+                {"Name": 42},
+                {"NAME": false}
+            ]
+        }))
+        .expect("case-insensitive tag request");
+        assert_eq!(
+            tag_names(request).expect("tag names"),
+            [" First ".to_owned(), "42".to_owned(), "false".to_owned()]
+        );
+    }
+
+    #[test]
+    fn tag_requests_reject_missing_or_invalid_names() {
+        for body in [
+            json!({"Tags": [{"Id": "id-only"}]}),
+            json!({"Tags": [{"Name": {"nested": true}}]}),
+            json!({"Tags": [{"Name": ["array"]}]}),
+        ] {
+            let request = serde_json::from_value::<TagUpdateRequest>(body);
+            assert!(request.map_or(true, |request| {
+                matches!(tag_names(request), Err(ApiError::InvalidRequest))
+            }));
         }
     }
 }

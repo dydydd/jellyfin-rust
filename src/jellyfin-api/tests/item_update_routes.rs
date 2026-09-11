@@ -12,7 +12,10 @@ use jellyfin_data::{
     NewDevice,
     entities::{api_key, base_item, item_value, user},
 };
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
+    QueryFilter,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -52,6 +55,7 @@ async fn exercise_item_update(database: sea_orm::DatabaseConnection) {
     let fixture = Fixture::new(database).await;
     fixture.assert_access_and_errors().await;
     fixture.assert_official_collection_rows().await;
+    fixture.assert_tag_routes().await;
     fixture.assert_three_state_normalization_and_api_key().await;
     fixture.assert_transaction_rollback().await;
     fixture.assert_concurrent_partial_updates().await;
@@ -235,6 +239,86 @@ impl Fixture {
                 .await
                 .is_empty()
         );
+    }
+
+    async fn assert_tag_routes(&self) {
+        self.seed(ItemUpdateInput {
+            tags: Some(vec!["new-tag-1".to_owned(), "new-tag-2".to_owned()]),
+            ..Default::default()
+        })
+        .await;
+        let mut legacy_item = self.persisted_item().await.into_active_model();
+        legacy_item.data = Set(Some(json!({
+            "tags": ["new-tag-1", "new-tag-2"],
+            "Keep": "unrelated"
+        })));
+        legacy_item
+            .update(&self.database)
+            .await
+            .expect("legacy lowercase tags metadata");
+        assert_eq!(
+            self.post_uri(
+                &format!("/Items/{}/Tags/Add", self.item_id),
+                None,
+                json!({"Tags": []}),
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let add = self
+            .post_uri(
+                &format!("/Items/{}/Tags/Add", self.item_id),
+                Some(&self.administrator_token),
+                json!({
+                    "tAgS": [
+                        {"nAmE": "  Added Tag  ", "iD": "ignored"},
+                        {"Name": "NEW-TAG-1"},
+                        {"Name": "!!!"}
+                    ]
+                }),
+            )
+            .await;
+        assert_eq!(add.status(), StatusCode::OK);
+        let updated = self.persisted_item().await;
+        assert_eq!(
+            metadata_strings(&updated, "Tags"),
+            ["new-tag-1", "new-tag-2", "Added Tag", "!!!"]
+        );
+        assert!(metadata_value(&updated, "tags").is_none());
+        assert_eq!(metadata_value(&updated, "Keep"), Some(&json!("unrelated")));
+        assert_eq!(
+            self.value_names(item_value::ItemValueType::Tags).await,
+            ["Added Tag", "new-tag-1", "new-tag-2"]
+        );
+
+        let delete = self
+            .post_uri(
+                &format!("/items/{}/tags/delete", self.item_id),
+                Some(&self.administrator_token),
+                json!({"tags": [{"name": "nEw-TaG-2"}, {"Name": "added tag"}]}),
+            )
+            .await;
+        assert_eq!(delete.status(), StatusCode::OK);
+        let updated = self.persisted_item().await;
+        assert_eq!(metadata_strings(&updated, "Tags"), ["new-tag-1", "!!!"]);
+        assert_eq!(
+            self.value_names(item_value::ItemValueType::Tags).await,
+            ["new-tag-1"]
+        );
+
+        let before = updated;
+        let invalid = self
+            .post_uri(
+                &format!("/Items/{}/Tags/Add", self.item_id),
+                Some(&self.administrator_token),
+                json!({"Tags": [{"Name": "   "}]}),
+            )
+            .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let after = self.persisted_item().await;
+        assert_eq!(after.row_version, before.row_version);
+        assert_eq!(after.data, before.data);
     }
 
     async fn assert_three_state_normalization_and_api_key(&self) {

@@ -83,6 +83,25 @@ impl ItemUpdateService {
         Ok(updated)
     }
 
+    /// Applies an atomic tag delta and updates local movie metadata when enabled.
+    pub async fn modify_tags(
+        &self,
+        item_id: Uuid,
+        additions: &[String],
+        removals: &[String],
+    ) -> Result<base_item::Model, ItemUpdateError> {
+        let updated = self
+            .repository
+            .modify_tags(item_id, additions, removals)
+            .await?;
+        if self.save_local_metadata_enabled(&updated).await?
+            && let Err(error) = Self::write_local_nfo(&updated)
+        {
+            tracing::warn!(%error, "local NFO writeback failed");
+        }
+        Ok(updated)
+    }
+
     async fn save_local_metadata_enabled(
         &self,
         item: &base_item::Model,
