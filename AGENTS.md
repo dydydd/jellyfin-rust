@@ -132,6 +132,10 @@
 - Project intros, local trailers, special features, and video additional parts with the official
   default all-fields DTO options through one batched projector. Apply the target user's policy to
   both the requested owner and every resolved child before returning the original response shape.
+- Project `/Items/{itemId}/Ancestors` nearest-first with the official default all-fields
+  `DtoOptions`, including images, target-user data, media sources and streams, chapters, and
+  trickplay. Reuse the shared bounded page projector for the resolved ancestor set rather than
+  issuing one DTO lookup per parent or returning the minimal item shape.
 - When page DTOs request media sources, batch Audio and AudioBook stream and attachment loading
   alongside expanded video versions. `MediaSources` alone nests the streams, `MediaStreams` alone
   projects them at the top level, and requesting both exposes the item's streams in both locations.
@@ -200,6 +204,13 @@
   options) case-insensitively, matching the official ASP.NET binder and legacy SDK traffic.
   Channel Items and Latest Items must pass SDK `Fields` through the shared batched DTO projector
   rather than accepting them and returning the fixed minimal item shape.
+- Keep the three Channels list APIs on their official signed `Int32` pagination contracts.
+  `/Channels` uses the `ChannelManager` list-range behavior: non-positive limits are unlimited,
+  while negative or past-end start indexes fail with a server error. Channel Items and Latest
+  Items use repository paging: non-positive start indexes skip nothing but retain the signed value
+  in `StartIndex`, `Limit=0` is empty, and a negative limit is unlimited. Normalize only the
+  PostgreSQL offset/limit inputs; values outside `Int32` must fail binding on canonical and fully
+  lowercase routes.
 - Bind image `ImageType` and `ImageFormat` parameters from case-insensitive official names or their
   defined integer values. Reject unknown names and integer values as bad requests before resource
   lookup, including legacy user-image route parameters whose controller action otherwise ignores
@@ -234,7 +245,9 @@
   `/backup/manifest`, and `/backup/restore`, preserving the canonical handlers, query binding,
   and elevated authorization. Lowercase aliases must not turn PostgreSQL backup or restore gaps
   into false success responses; retain explicit failure semantics until the database operation is
-  implemented safely.
+  implemented safely. Treat an omitted or JSON-null Create body as the default backup options,
+  while rejecting malformed JSON and wrong JSON types as bad requests; the default remains
+  `Database=true` and therefore returns the explicit PostgreSQL-not-implemented response.
 - Treat valid API keys as administrators for user creation, deletion, profile/configuration updates,
   and password changes through modern and legacy routes. An omitted or nil target for an API key's
   profile/configuration/password update remains a 404; ordinary user mutations still require self
