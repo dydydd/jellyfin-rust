@@ -177,7 +177,9 @@ async fn user_views_for(
     target_user_id: Uuid,
     query: UserViewsQuery,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    let _ = query.include_external_content;
+    // `UserViewQuery` initializes this to true in the official server, so an
+    // omitted query value includes policy-visible external Channel views.
+    let include_external_content = query.include_external_content.unwrap_or(true);
     let preset_views = query
         .preset_views
         .into_iter()
@@ -185,7 +187,12 @@ async fn user_views_for(
         .collect::<Vec<_>>();
     let views = state
         .user_views
-        .list(target_user_id, &preset_views, query.include_hidden)
+        .list(
+            target_user_id,
+            &preset_views,
+            query.include_hidden,
+            include_external_content,
+        )
         .await?;
     let target_user = state.users.get(target_user_id).await?;
     let mut parent_ids = views
@@ -218,15 +225,19 @@ async fn user_views_for(
         .await
         .map_err(|_| ApiError::Internal)?;
     let mut items = Vec::with_capacity(views.len());
-    for view in views {
+    for mut view in views {
         let view_id = view.id;
         let item_type = view.item_type.clone();
+        let source_item = view.source_item.take();
         let child_count = view
             .content_parent_ids
             .iter()
             .map(|parent_id| child_counts.get(parent_id).copied().unwrap_or_default())
             .sum();
-        let mut dto = user_view_to_dto(view, state.server_id());
+        let mut dto = source_item.map_or_else(
+            || user_view_to_dto(view, state.server_id()),
+            |item| crate::user_library::item_to_dto(item, state.server_id()),
+        );
         dto.child_count = Some(child_count);
         dto.display_preferences_id = Some(if item_type.eq_ignore_ascii_case("UserView") {
             USER_VIEW_DISPLAY_PREFERENCES_ID.to_owned()
@@ -325,6 +336,7 @@ pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemD
         parent_id,
         item_type,
         is_virtual_item,
+        source_item: _,
     } = item;
     let collection_type = base_item_collection_type(collection_type);
     BaseItemDto {

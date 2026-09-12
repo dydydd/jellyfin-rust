@@ -10,6 +10,7 @@ use jellyfin_data::{
     UserDataRepository,
     entities::{user, user::Column as UserColumn, virtual_folder},
 };
+use jellyfin_model::UserPolicy;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr,
 };
@@ -76,6 +77,7 @@ async fn exercise_user_view_routes(database_name: &str) {
     assert_grouped_views(&fixture).await;
     assert_grouping_options(&fixture).await;
     assert_collection_type_wire_shapes(&fixture).await;
+    assert_external_channel_views(&fixture).await;
     database.close().await.expect("database pool cleanup");
 }
 
@@ -849,6 +851,72 @@ async fn assert_grouping_options(fixture: &Fixture) {
     )
     .await;
     assert_eq!(legacy, grouping);
+}
+
+async fn assert_external_channel_views(fixture: &Fixture) {
+    let repository = BaseItemRepository::new(fixture.database.clone());
+    let channel_id = Uuid::new_v4();
+    let mut channel = NewBaseItem::new(channel_id, "Channel");
+    channel.parent_id = Some(USER_ROOT_FOLDER_ID);
+    channel.name = Some("External mobile channel".to_owned());
+    channel.sort_name = channel.name.clone();
+    channel.is_folder = true;
+    repository.create(channel).await.expect("channel seed");
+
+    for uri in [
+        "/UserViews",
+        "/userviews?includeexternalcontent=true",
+        &format!(
+            "/Users/{}/Views?IncludeExternalContent=true",
+            fixture.user_id
+        ),
+    ] {
+        let response = get_json(&fixture.app, uri, &fixture.user_token).await;
+        let channel = response["Items"]
+            .as_array()
+            .expect("user views")
+            .iter()
+            .find(|item| item["Id"] == channel_id.simple().to_string())
+            .unwrap_or_else(|| panic!("{uri} must include the visible external channel"));
+        assert_eq!(channel["Type"], "Channel");
+        assert_eq!(channel["Name"], "External mobile channel");
+    }
+
+    for uri in [
+        "/UserViews?includeExternalContent=false".to_owned(),
+        "/userviews?includeexternalcontent=false".to_owned(),
+        format!(
+            "/users/{}/views?includeexternalcontent=false",
+            fixture.user_id
+        ),
+    ] {
+        let response = get_json(&fixture.app, &uri, &fixture.user_token).await;
+        assert!(
+            response["Items"]
+                .as_array()
+                .expect("user views")
+                .iter()
+                .all(|item| item["Id"] != channel_id.simple().to_string()),
+            "{uri} must suppress external content"
+        );
+    }
+
+    let users = UserService::new(fixture.database.clone());
+    let user = users.get(fixture.user_id).await.expect("user lookup");
+    let mut policy: UserPolicy = serde_json::from_value(user.policy).expect("stored user policy");
+    policy.blocked_channels = Some(vec![channel_id]);
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("block channel");
+    let response = get_json(&fixture.app, "/UserViews", &fixture.user_token).await;
+    assert!(
+        response["Items"]
+            .as_array()
+            .expect("user views")
+            .iter()
+            .all(|item| item["Id"] != channel_id.simple().to_string())
+    );
 }
 
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::response::Response {

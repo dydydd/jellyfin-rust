@@ -1,4 +1,7 @@
-use jellyfin_data::{BaseItemError, BaseItemRepository, NewBaseItem, USER_ROOT_FOLDER_ID};
+use jellyfin_data::{
+    BaseItemError, BaseItemOrder, BaseItemQuery, BaseItemRepository, NewBaseItem,
+    USER_ROOT_FOLDER_ID, entities::base_item,
+};
 use jellyfin_model::{UserConfiguration, UserPolicy};
 use md5::{Digest, Md5};
 use serde_json::Value;
@@ -6,7 +9,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    UserError, UserService, VirtualFolder, VirtualFolderService, VirtualFolderServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, VirtualFolder,
+    VirtualFolderService, VirtualFolderServiceError,
 };
 
 #[derive(Debug, Error)]
@@ -17,6 +21,8 @@ pub enum UserViewManagerError {
     VirtualFolder(#[from] VirtualFolderServiceError),
     #[error(transparent)]
     BaseItem(#[from] BaseItemError),
+    #[error(transparent)]
+    UserLibrary(#[from] UserLibraryError),
     #[error("stored user data is invalid: {0}")]
     InvalidUserData(#[source] serde_json::Error),
 }
@@ -33,6 +39,9 @@ pub struct UserViewItem {
     pub parent_id: Option<Uuid>,
     pub item_type: String,
     pub is_virtual_item: bool,
+    /// Persisted source for external views such as Channels. Generated and
+    /// collection-folder views do not have a directly projectable source row.
+    pub source_item: Option<base_item::Model>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +56,7 @@ pub struct UserViewManagerService {
     users: UserService,
     folders: VirtualFolderService,
     items: BaseItemRepository,
+    user_library: UserLibraryService,
 }
 
 impl UserViewManagerService {
@@ -56,7 +66,8 @@ impl UserViewManagerService {
         Self::with_services(
             UserService::new(std::sync::Arc::clone(&database)),
             VirtualFolderService::new(std::sync::Arc::clone(&database)),
-            BaseItemRepository::new(database),
+            BaseItemRepository::new(std::sync::Arc::clone(&database)),
+            UserLibraryService::new(database),
         )
     }
 
@@ -65,11 +76,13 @@ impl UserViewManagerService {
         users: UserService,
         folders: VirtualFolderService,
         items: BaseItemRepository,
+        user_library: UserLibraryService,
     ) -> Self {
         Self {
             users,
             folders,
             items,
+            user_library,
         }
     }
 
@@ -83,10 +96,11 @@ impl UserViewManagerService {
         user_id: Uuid,
         preset_views: &[String],
         include_hidden: bool,
+        include_external_content: bool,
     ) -> Result<Vec<UserViewItem>, UserViewManagerError> {
         let user = self.users.get(user_id).await?;
-        let config = parse_config(user.preferences)?;
-        let policy = parse_policy(user.policy)?;
+        let config = parse_config(user.preferences.clone())?;
+        let policy = parse_policy(user.policy.clone())?;
         let folders = self.visible_folders(&policy, include_hidden).await?;
         let mut grouped_folders = Vec::new();
         let mut list = Vec::new();
@@ -122,6 +136,30 @@ impl UserViewManagerService {
                 .cloned()
                 .collect();
             add_grouped_view(&mut list, user_id, parents, name, preset_views);
+        }
+
+        if include_external_content {
+            let channels = self
+                .user_library
+                .query_items(
+                    &user,
+                    user_id,
+                    BaseItemQuery {
+                        recursive: true,
+                        include_item_types: vec!["Channel".to_owned()],
+                        order: BaseItemOrder::SortName,
+                        enable_total_record_count: Some(false),
+                        ..BaseItemQuery::default()
+                    },
+                )
+                .await?;
+            list.extend(
+                channels
+                    .items
+                    .into_iter()
+                    .filter(|channel| channel_is_enabled(&policy, channel.id))
+                    .map(channel_view),
+            );
         }
 
         list.retain(|view| {
@@ -347,6 +385,7 @@ fn collection_folder_view_owned(folder: VirtualFolder) -> UserViewItem {
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "CollectionFolder".to_owned(),
         is_virtual_item: false,
+        source_item: None,
     }
 }
 
@@ -368,6 +407,7 @@ fn shadow_user_view(folder: VirtualFolder) -> UserViewItem {
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
+        source_item: None,
     }
 }
 
@@ -389,6 +429,7 @@ fn named_user_view(user_id: Uuid, folder: VirtualFolder) -> UserViewItem {
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
+        source_item: None,
     }
 }
 
@@ -411,7 +452,33 @@ fn grouped_user_view(
         parent_id: Some(USER_ROOT_FOLDER_ID),
         item_type: "UserView".to_owned(),
         is_virtual_item: true,
+        source_item: None,
     }
+}
+
+fn channel_view(channel: base_item::Model) -> UserViewItem {
+    UserViewItem {
+        id: channel.id,
+        name: channel.name.clone().unwrap_or_default(),
+        collection_type: None,
+        display_parent_id: None,
+        content_parent_ids: vec![channel.id],
+        parent_id: channel.parent_id,
+        item_type: channel.item_type.clone(),
+        is_virtual_item: channel.is_virtual_item,
+        source_item: Some(channel),
+    }
+}
+
+fn channel_is_enabled(policy: &UserPolicy, channel_id: Uuid) -> bool {
+    if let Some(blocked) = policy
+        .blocked_channels
+        .as_ref()
+        .filter(|blocked| !blocked.is_empty())
+    {
+        return !blocked.contains(&channel_id);
+    }
+    policy.enable_all_channels || policy.enabled_channels.contains(&channel_id)
 }
 
 fn add_grouped_view(
