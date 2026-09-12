@@ -446,6 +446,7 @@ fn supported_remote_image_types(item_type: &str) -> Option<Vec<ImageType>> {
             ImageType::Primary,
             ImageType::Backdrop,
             ImageType::Logo,
+            ImageType::Thumb,
         ]),
         // Official TmdbPersonImageProvider exposes TMDB profile artwork as
         // the Person item's Primary image, not the user-only Profile type.
@@ -580,5 +581,22 @@ mod tests {
             supported_remote_image_types("Person"),
             Some(vec![ImageType::Primary])
         );
+    }
+
+    #[test]
+    fn tmdb_video_remote_providers_advertise_official_image_types() {
+        let expected = vec![
+            ImageType::Primary,
+            ImageType::Backdrop,
+            ImageType::Logo,
+            ImageType::Thumb,
+        ];
+        for item_type in ["Movie", "Trailer", "Series"] {
+            assert_eq!(
+                supported_remote_image_types(item_type),
+                Some(expected.clone()),
+                "{item_type}"
+            );
+        }
     }
 }
