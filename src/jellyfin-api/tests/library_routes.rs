@@ -536,11 +536,49 @@ async fn assert_audio_stream(fixture: &Fixture) {
         to_bytes(range.into_body(), usize::MAX).await.unwrap(),
         &media_bytes[10..=19]
     );
+    // A non-static container is the requested transcode target, not a claim
+    // about the source file's extension.
     assert_eq!(
         fixture
             .request(
                 "GET",
                 &format!("/Audio/{}/stream.mp3", fixture.stream_audio_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Audio/{}/stream?Container=mp3", fixture.stream_audio_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!("/Audio/{}/stream.mp3?static=true", fixture.stream_audio_id),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    assert_eq!(
+        fixture
+            .request(
+                "GET",
+                &format!(
+                    "/Audio/{}/stream?container=mp3&Static=true",
+                    fixture.stream_audio_id
+                ),
                 Some(&fixture.user_token),
             )
             .await

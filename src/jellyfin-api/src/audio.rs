@@ -22,6 +22,8 @@ use crate::{ApiError, AppState, authentication};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct StreamQuery {
+    #[serde(rename = "container", alias = "Container")]
+    container: Option<String>,
     #[serde(rename = "static", alias = "Static")]
     static_stream: Option<bool>,
     #[serde(
@@ -481,6 +483,39 @@ fn codec_for_container(container: &str) -> &str {
     }
 }
 
+fn requested_stream_container<'a>(
+    route_container: Option<&'a str>,
+    query: &'a StreamQuery,
+) -> Result<Option<&'a str>, ApiError> {
+    let container = route_container.or(query.container.as_deref());
+    if container.is_some_and(|container| {
+        container.len() > 40
+            || !container.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b',' | b'|')
+            })
+    }) {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(container
+        .map(|container| container.trim_start_matches('.'))
+        .filter(|container| !container.is_empty()))
+}
+
+fn progressive_audio_target(
+    route_container: Option<&str>,
+    query: &StreamQuery,
+) -> Result<(String, String), ApiError> {
+    let requested_container = requested_stream_container(route_container, query)?;
+    let codec = query
+        .audio_codec
+        .as_deref()
+        .unwrap_or_else(|| codec_for_container(requested_container.unwrap_or("m4a")));
+    let container = requested_container
+        .map(str::to_owned)
+        .unwrap_or_else(|| audio_container(codec).to_owned());
+    Ok((codec.to_owned(), container))
+}
+
 async fn stream_file(
     state: Arc<AppState>,
     headers: HeaderMap,
@@ -529,7 +564,10 @@ async fn stream_file(
         return Err(ApiError::NotFound);
     }
     let path = jellyfin_controller::media_source_path(&item).ok_or(ApiError::NotFound)?;
-    if let Some(container) = requested_container {
+    let requested_container = requested_stream_container(requested_container, &query)?;
+    if query.static_stream.unwrap_or(false)
+        && let Some(container) = requested_container
+    {
         let actual = std::path::Path::new(&path)
             .extension()
             .and_then(std::ffi::OsStr::to_str)
@@ -552,14 +590,7 @@ async fn stream_file(
         return serve_path(headers, path, request).await;
     }
 
-    let codec = query
-        .audio_codec
-        .as_deref()
-        .unwrap_or_else(|| codec_for_container(requested_container.unwrap_or("m4a")));
-    let container = requested_container
-        .filter(|container| !container.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| audio_container(codec).to_owned());
+    let (codec, container) = progressive_audio_target(requested_container, &query)?;
     let output = state.transcode_directory.join(format!(
         "{item_id}-audio-{}.{}",
         Uuid::new_v4().simple(),
@@ -572,7 +603,7 @@ async fn stream_file(
         &state.ffmpeg_path,
         std::path::Path::new(&path),
         &output,
-        codec,
+        &codec,
         query.audio_bitrate,
         query
             .audio_channels
@@ -602,8 +633,9 @@ mod tests {
     use jellyfin_controller::{FfmpegCommand, TranscodeJobRegistry};
 
     use super::{
-        StreamQuery, UniversalQuery, serve_transcoded_path, should_redirect_remote_media,
-        supports_direct_play, universal_requires_transcode, universal_uses_hls,
+        StreamQuery, UniversalQuery, progressive_audio_target, requested_stream_container,
+        serve_transcoded_path, should_redirect_remote_media, supports_direct_play,
+        universal_requires_transcode, universal_uses_hls,
     };
 
     #[test]
@@ -619,10 +651,11 @@ mod tests {
 
     #[test]
     fn audio_stream_binds_android_transcoding_parameters() {
-        let uri: Uri = "/audio/item/stream?static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000&CopyTimestamps=true&PlaySessionId=play-session&deviceid=device-1"
+        let uri: Uri = "/audio/item/stream?Container=mp3&static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000&CopyTimestamps=true&PlaySessionId=play-session&deviceid=device-1"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(query.container.as_deref(), Some("mp3"));
         assert!(!query.static_stream.unwrap());
         assert_eq!(query.audio_codec.as_deref(), Some("mp3"));
         assert_eq!(query.audio_bitrate, Some(192000));
@@ -732,6 +765,57 @@ mod tests {
         let uri: Uri = "/audio/item/stream?audioBitrate=192000".parse().unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.audio_bitrate, Some(192_000));
+    }
+
+    #[test]
+    fn progressive_audio_binds_query_container_case_insensitively() {
+        for key in ["container", "Container"] {
+            let uri: Uri = format!("/audio/item/stream?{key}=flac").parse().unwrap();
+            let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(query.container.as_deref(), Some("flac"));
+        }
+    }
+
+    #[test]
+    fn progressive_audio_selects_the_requested_container_and_compatible_codec() {
+        let query = StreamQuery {
+            container: Some("flac".to_owned()),
+            ..StreamQuery::default()
+        };
+        assert_eq!(
+            progressive_audio_target(None, &query).unwrap(),
+            ("flac".to_owned(), "flac".to_owned())
+        );
+
+        let explicit_codec = StreamQuery {
+            container: Some("ogg".to_owned()),
+            audio_codec: Some("vorbis".to_owned()),
+            ..StreamQuery::default()
+        };
+        assert_eq!(
+            progressive_audio_target(None, &explicit_codec).unwrap(),
+            ("vorbis".to_owned(), "ogg".to_owned())
+        );
+
+        assert_eq!(
+            progressive_audio_target(Some("mp3"), &query).unwrap(),
+            ("mp3".to_owned(), "mp3".to_owned())
+        );
+    }
+
+    #[test]
+    fn progressive_audio_rejects_invalid_output_containers() {
+        let query = StreamQuery {
+            container: Some("../../outside".to_owned()),
+            ..StreamQuery::default()
+        };
+        assert!(requested_stream_container(None, &query).is_err());
+
+        let query = StreamQuery {
+            container: Some("a".repeat(41)),
+            ..StreamQuery::default()
+        };
+        assert!(requested_stream_container(None, &query).is_err());
     }
 
     #[tokio::test]

@@ -481,6 +481,10 @@
 - Keep the Android audio stream route's progressive contract: omitted or false `static` requests
   must honor `audioCodec`, bitrate, sample-rate, channel-count, and `startTimeTicks` through the
   bounded FFmpeg path, while explicit `static=true` serves the selected source unchanged.
+- Treat the Audio stream route suffix or query `container` as the requested progressive output
+  container, with the route suffix taking precedence and a compatible codec inferred when none is
+  explicit. Do not reject a non-static FLAC-to-MP3 request because the source extension differs;
+  retain source-container validation only for explicit static streaming.
 - Project each media source's persisted total bitrate, and when it is absent infer it from that
   source's non-external media streams as official Jellyfin does. Keep this per-version so item
   details and `PlaybackInfo` never reuse the displayed primary's bitrate for alternate versions.
