@@ -45,6 +45,12 @@ const READS: &[(&str, &str, &str)] = &[
     ("/System/Info/Public", "PublicSystemInfo", "none"),
     ("/System/Configuration", "ServerConfiguration", "admin"),
     ("/System/Info/Storage", "SystemStorageDto", "admin"),
+    (
+        "/System/ActivityLog/Entries",
+        "ActivityLogEntryQueryResult",
+        "admin",
+    ),
+    ("/ScheduledTasks", "List<TaskInfo>", "admin"),
     ("/Users", "List<UserDto>", "admin"),
     ("/Users/Me", "UserDto", "user"),
     ("/Users/{user}", "UserDto", "user"),
@@ -55,11 +61,22 @@ const READS: &[(&str, &str, &str)] = &[
     ("/Items/Filters", "QueryFiltersLegacy", "user"),
     ("/Items/Filters2", "QueryFilters", "user"),
     (
-        "/Items?limit=5&fields=MediaSourceCount,Chapters,Settings,ExternalUrls,RemoteTrailers,Tags",
+        "/Items?limit=5&fields=MediaSourceCount,Chapters,Settings,ExternalUrls,RemoteTrailers,Tags,IsHD",
         "BaseItemDtoQueryResult",
         "user",
     ),
     ("/Items/{movie}", "BaseItemDto", "user"),
+    (
+        "/Items/{movie}/MetadataEditor",
+        "MetadataEditorInfo",
+        "admin",
+    ),
+    ("/Items/{movie}/Images", "List<ImageInfo>", "user"),
+    (
+        "/Items/{movie}/RemoteImages/Providers",
+        "List<ImageProviderInfo>",
+        "user",
+    ),
     (
         "/Items/{movie}?fields=MediaSourceCount,Chapters,Settings,ExternalUrls,RemoteTrailers,Tags,People",
         "BaseItemDto",
@@ -145,6 +162,16 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("/Playlists/{playlist}", "PlaylistDto", "user"),
     (
+        "/Playlists/{playlist}/Users",
+        "List<PlaylistUserPermissions>",
+        "user",
+    ),
+    (
+        "/Playlists/{playlist}/Users/{user}",
+        "PlaylistUserPermissions",
+        "user",
+    ),
+    (
         "/Playlists/{playlist}/Items",
         "BaseItemDtoQueryResult",
         "user",
@@ -163,6 +190,7 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("/Branding/Configuration", "BrandingOptionsDto", "none"),
     ("/Movies/{movie}/Similar", "BaseItemDtoQueryResult", "user"),
+    ("/Movies/Recommendations", "List<RecommendationDto>", "user"),
     (
         "/Albums/{audio}/InstantMix",
         "BaseItemDtoQueryResult",
@@ -397,6 +425,7 @@ impl Fixture {
             "OfficialRating": "PG",
             "CustomRating": "Custom",
             "CommunityRating": 7.5,
+            "Height": 1080,
             "MediaSourceContainer": "mkv",
             "Video3DFormat": "mvc",
             "ExtraType": "behindthescenes",
