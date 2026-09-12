@@ -75,7 +75,7 @@ impl VirtualFolderService {
         &self,
         name: &str,
         collection_type: Option<String>,
-        mut options: Value,
+        options: Value,
         query_paths: Vec<String>,
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
@@ -87,6 +87,9 @@ impl VirtualFolderService {
                     .ok_or(VirtualFolderServiceError::InvalidCollectionType)
             })
             .transpose()?;
+        let mut options = options;
+        object_options(&mut options)?;
+        let mut options = normalize_library_options(options);
         let object = object_options(&mut options)?;
         let path_infos = if query_paths.is_empty() {
             object
@@ -160,8 +163,11 @@ impl VirtualFolderService {
     pub async fn update_options(
         &self,
         id: Uuid,
-        mut options: Value,
+        options: Value,
     ) -> Result<(), VirtualFolderServiceError> {
+        let mut options = options;
+        object_options(&mut options)?;
+        let mut options = normalize_library_options(options);
         let object = object_options(&mut options)?;
         object.remove("PathInfos");
         object.remove("pathInfos");
@@ -250,10 +256,15 @@ fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
         path_infos.push(path.path_info);
         locations.push(path.path);
     }
-    let mut options = model.folder.library_options;
-    if let Some(object) = options.as_object_mut() {
-        object.insert("PathInfos".to_owned(), Value::Array(path_infos));
-    }
+    // Older Rust releases persisted only the options explicitly submitted by
+    // the client. The official server deserializes into `new LibraryOptions()`,
+    // so omitted properties retain constructor defaults and are serialized on
+    // every read. Normalize legacy rows before exposing this strongly typed DTO.
+    let mut options = normalize_library_options(model.folder.library_options);
+    options
+        .as_object_mut()
+        .expect("normalized library options must be an object")
+        .insert("PathInfos".to_owned(), Value::Array(path_infos));
     VirtualFolder {
         id: model.folder.id,
         name: model.folder.name,
@@ -267,6 +278,76 @@ fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
         locations,
         refresh_requested: model.folder.refresh_requested,
     }
+}
+
+/// Applies the defaults from the official `LibraryOptions` constructor while
+/// retaining persisted values and extension properties.
+///
+/// Property matching is case-insensitive because ASP.NET's JSON binding is
+/// case-insensitive. Canonical names are emitted so generated mobile SDKs can
+/// decode the response. A legacy non-object value cannot represent official
+/// `LibraryOptions` and safely falls back to a fresh default instance.
+fn normalize_library_options(options: Value) -> Value {
+    let mut normalized = default_library_options();
+    let Some(submitted) = options.as_object() else {
+        return Value::Object(normalized);
+    };
+
+    for (name, value) in submitted {
+        let canonical_name = normalized
+            .keys()
+            .find(|candidate| candidate.eq_ignore_ascii_case(name))
+            .cloned()
+            .unwrap_or_else(|| name.clone());
+        normalized.insert(canonical_name, value.clone());
+    }
+
+    Value::Object(normalized)
+}
+
+fn default_library_options() -> Map<String, Value> {
+    json!({
+        "Enabled": true,
+        "EnablePhotos": true,
+        "EnableRealtimeMonitor": false,
+        "EnableLUFSScan": false,
+        "EnableChapterImageExtraction": false,
+        "ExtractChapterImagesDuringLibraryScan": false,
+        "EnableTrickplayImageExtraction": false,
+        "ExtractTrickplayImagesDuringLibraryScan": false,
+        "PathInfos": [],
+        "SaveLocalMetadata": false,
+        "EnableInternetProviders": false,
+        "EnableAutomaticSeriesGrouping": true,
+        "EnableEmbeddedTitles": false,
+        "EnableEmbeddedExtrasTitles": false,
+        "EnableEmbeddedEpisodeInfos": false,
+        "AutomaticRefreshIntervalDays": 0,
+        "SeasonZeroDisplayName": "Specials",
+        "DisabledLocalMetadataReaders": [],
+        "DisabledSubtitleFetchers": [],
+        "SubtitleFetcherOrder": [],
+        "DisabledMediaSegmentProviders": [],
+        "MediaSegmentProviderOrder": [],
+        "SkipSubtitlesIfEmbeddedSubtitlesPresent": false,
+        "SkipSubtitlesIfAudioTrackMatches": true,
+        "RequirePerfectSubtitleMatch": true,
+        "SaveSubtitlesWithMedia": true,
+        "SaveLyricsWithMedia": false,
+        "SaveTrickplayWithMedia": false,
+        "DisabledLyricFetchers": [],
+        "LyricFetcherOrder": [],
+        "PreferNonstandardArtistsTag": false,
+        "UseCustomTagDelimiters": false,
+        "CustomTagDelimiters": ["/", "|", ";", "\\"],
+        "DelimiterWhitelist": [],
+        "AutomaticallyAddToCollection": false,
+        "AllowEmbeddedSubtitles": "AllowAll",
+        "TypeOptions": []
+    })
+    .as_object()
+    .expect("library options literal must be an object")
+    .clone()
 }
 
 pub(crate) fn canonical_collection_type_option(value: &str) -> Option<&'static str> {
@@ -355,7 +436,9 @@ async fn canonical_directory(path: &str) -> Result<String, VirtualFolderServiceE
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_collection_type_option;
+    use serde_json::json;
+
+    use super::{canonical_collection_type_option, normalize_library_options};
 
     #[test]
     fn collection_type_options_are_case_insensitive_and_canonical() {
@@ -380,5 +463,36 @@ mod tests {
         );
         assert_eq!(canonical_collection_type_option("livetv"), None);
         assert_eq!(canonical_collection_type_option("not-a-collection"), None);
+    }
+
+    #[test]
+    fn legacy_partial_library_options_receive_official_defaults() {
+        let options = normalize_library_options(json!({
+            "enabled": false,
+            "seasonzerodisplayname": "Bonus",
+            "PathInfos": [{ "Path": "/media" }],
+            "FutureOption": "preserved"
+        }));
+
+        assert_eq!(options["Enabled"], false);
+        assert_eq!(options["SeasonZeroDisplayName"], "Bonus");
+        assert_eq!(options["PathInfos"], json!([{ "Path": "/media" }]));
+        assert_eq!(options["FutureOption"], "preserved");
+        assert!(options.get("enabled").is_none());
+        assert_eq!(options["EnablePhotos"], true);
+        assert_eq!(options["EnableAutomaticSeriesGrouping"], true);
+        assert_eq!(options["AllowEmbeddedSubtitles"], "AllowAll");
+        assert_eq!(options["CustomTagDelimiters"], json!(["/", "|", ";", "\\"]));
+        assert_eq!(options["TypeOptions"], json!([]));
+    }
+
+    #[test]
+    fn invalid_legacy_library_options_fall_back_to_official_defaults() {
+        let options = normalize_library_options(serde_json::Value::Null);
+
+        assert_eq!(options["Enabled"], true);
+        assert_eq!(options["PathInfos"], json!([]));
+        assert_eq!(options["DisabledSubtitleFetchers"], json!([]));
+        assert_eq!(options["SaveSubtitlesWithMedia"], true);
     }
 }

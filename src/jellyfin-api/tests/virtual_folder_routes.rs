@@ -9,7 +9,7 @@ use jellyfin_data::{
     entities::{user, virtual_folder},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -62,6 +62,98 @@ async fn create_virtual_folder_binds_kotlin_sdk_repeated_paths() {
     assert!(locations.iter().any(|path| path == &fixture.stale_path));
 
     fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn virtual_folder_options_match_official_defaults_and_normalize_legacy_rows() {
+    let fixture = Fixture::new().await;
+    fixture.complete_startup().await;
+    let name = format!("Default options {}", fixture.suffix);
+    let uri = format!("/Library/VirtualFolders?name={}", encoded(&name));
+
+    // The generated Kotlin client sends no body when AddVirtualFolderDto is
+    // null. Official Jellyfin constructs a complete `new LibraryOptions()`.
+    let response = fixture
+        .send(Method::POST, &uri, Some(&fixture.admin_token), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let created = folder(&fixture.get_list().await, &name);
+    assert_official_library_option_defaults(&created["LibraryOptions"]);
+
+    // Rust versions predating the complete DTO persisted partial arbitrary
+    // JSON. Reads must fill the official constructor defaults so strict mobile
+    // SDK models remain decodable without rewriting the row.
+    let id = Uuid::parse_str(created["ItemId"].as_str().expect("library item id"))
+        .expect("valid library item id");
+    virtual_folder::Entity::update_many()
+        .col_expr(
+            virtual_folder::Column::LibraryOptions,
+            Expr::value(json!({ "enabled": false })),
+        )
+        .filter(virtual_folder::Column::Id.eq(id))
+        .exec(&fixture.database)
+        .await
+        .expect("seed legacy partial library options");
+
+    let legacy = folder(&fixture.get_list().await, &name);
+    assert_eq!(legacy["LibraryOptions"]["Enabled"], false);
+    assert!(legacy["LibraryOptions"].get("enabled").is_none());
+    assert_official_library_option_defaults_except_enabled(&legacy["LibraryOptions"]);
+
+    fixture.cleanup().await;
+}
+
+fn assert_official_library_option_defaults(options: &Value) {
+    assert_eq!(options["Enabled"], true);
+    assert_official_library_option_defaults_except_enabled(options);
+}
+
+fn assert_official_library_option_defaults_except_enabled(options: &Value) {
+    let expected = json!({
+        "EnablePhotos": true,
+        "EnableRealtimeMonitor": false,
+        "EnableLUFSScan": false,
+        "EnableChapterImageExtraction": false,
+        "ExtractChapterImagesDuringLibraryScan": false,
+        "EnableTrickplayImageExtraction": false,
+        "ExtractTrickplayImagesDuringLibraryScan": false,
+        "PathInfos": [],
+        "SaveLocalMetadata": false,
+        "EnableInternetProviders": false,
+        "EnableAutomaticSeriesGrouping": true,
+        "EnableEmbeddedTitles": false,
+        "EnableEmbeddedExtrasTitles": false,
+        "EnableEmbeddedEpisodeInfos": false,
+        "AutomaticRefreshIntervalDays": 0,
+        "SeasonZeroDisplayName": "Specials",
+        "DisabledLocalMetadataReaders": [],
+        "DisabledSubtitleFetchers": [],
+        "SubtitleFetcherOrder": [],
+        "DisabledMediaSegmentProviders": [],
+        "MediaSegmentProviderOrder": [],
+        "SkipSubtitlesIfEmbeddedSubtitlesPresent": false,
+        "SkipSubtitlesIfAudioTrackMatches": true,
+        "RequirePerfectSubtitleMatch": true,
+        "SaveSubtitlesWithMedia": true,
+        "SaveLyricsWithMedia": false,
+        "SaveTrickplayWithMedia": false,
+        "DisabledLyricFetchers": [],
+        "LyricFetcherOrder": [],
+        "PreferNonstandardArtistsTag": false,
+        "UseCustomTagDelimiters": false,
+        "CustomTagDelimiters": ["/", "|", ";", "\\"],
+        "DelimiterWhitelist": [],
+        "AutomaticallyAddToCollection": false,
+        "AllowEmbeddedSubtitles": "AllowAll",
+        "TypeOptions": []
+    });
+    for (name, expected_value) in expected.as_object().expect("expected options object") {
+        assert_eq!(
+            &options[name], expected_value,
+            "official LibraryOptions default for {name}"
+        );
+    }
 }
 
 #[tokio::test]
