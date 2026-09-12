@@ -853,9 +853,12 @@ tokens, so its nested `UserDto` and `SessionInfoDto` are checked before mobile b
 that same dump with `tools/swift_validate.py` against the generated Swift Codable
 models: Swift rejects a present nested scalar, enum, dictionary, array, or ISO date whose wire
 shape differs, even when the property itself is optional. Run `tools/test_swift_validate.py` when
-changing that static validator, and use real Swift Codable decoding as an additional check whenever
-a Swift toolchain is available. Do not add the checked-out SDK source tree or Python bytecode to
-commits.
+changing that static validator. The validator must traverse root `List<T>` responses, reject
+unknown root model names, and enforce fields decoded with Swift's non-optional `decode` rather than
+silently treating them like `decodeIfPresent`. Include representative response models beyond the
+core item page—such as task, activity, metadata-editor, image-provider, playlist-user, and movie
+recommendation DTOs—and use real Swift Codable decoding as an additional check whenever a Swift
+toolchain is available. Do not add the checked-out SDK source tree or Python bytecode to commits.
 
 Some `jellyfin-data` integration tests require PostgreSQL and create temporary databases whose names begin with `jellyfin_`. Do not point those tests at a database containing user data.
 

@@ -68,7 +68,14 @@ def json_type(value):
 def check_date(value):
     if not isinstance(value, str):
         return False
-    # Jellyfin's DateTime converter accepts RFC 3339/ISO 8601 instants.
+    # JellyfinClient uses OpenISO8601DateFormatter, whose two accepted shapes
+    # both require a full timestamp and an explicit `Z` or numeric offset.
+    # `datetime.fromisoformat` alone is too broad (it accepts date-only and
+    # timezone-less values that the generated client's formatter rejects).
+    if not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
+            value):
+        return False
     try:
         datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
@@ -76,9 +83,12 @@ def check_date(value):
     return True
 
 
-def check(structs, enums, aliases, typ, value, path, report, depth=0):
+def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=False):
+    optional = typ.strip().endswith("?")
     typ = strip_optional(typ)
     if value is None:
+        if not (nullable or optional):
+            report.add(path, f"{typ} does not accept null")
         return
     if depth > 16:
         return
@@ -107,6 +117,16 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0):
             for key, item in value.items():
                 check(structs, enums, aliases, parts[1], item, f"{path}.{key}", report, depth + 1)
             return
+    generic = re.match(r"^(?:List|Array)<(.+)>$", typ)
+    if generic:
+        if not isinstance(value, list):
+            report.add(path, f"expected array for {typ}, got {json_type(value)}")
+            return
+        item_type = generic.group(1).strip()
+        for index, item in enumerate(value):
+            check(structs, enums, aliases, item_type, item,
+                  f"{path}[{index}]", report, depth + 1)
+        return
     if typ in PRIMITIVES:
         expected = PRIMITIVES[typ]
         if expected is None:
@@ -134,9 +154,12 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0):
         if not isinstance(value, dict):
             report.add(path, f"expected object for {typ}, got {json_type(value)}")
             return
-        for key, field_type in structs[typ]:
+        for key, field_type, required in structs[typ]:
             if key in value:
-                check(structs, enums, aliases, field_type, value[key], f"{path}.{key}", report, depth + 1)
+                check(structs, enums, aliases, field_type, value[key],
+                      f"{path}.{key}", report, depth + 1, nullable=not required)
+            elif required:
+                report.add(f"{path}.{key}", f"missing required {field_type}")
         return
     # Hand-written discriminated unions are intentionally not guessed here.
 
@@ -144,6 +167,16 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0):
 def validate(root, document):
     structs, enums, aliases = load()
     report = Report()
+    root_type = strip_optional(root)
+    generic = re.match(r"^(?:List|Array)<(.+)>$", root_type)
+    if generic:
+        root_type = strip_optional(generic.group(1))
+    elif root_type.startswith("[") and root_type.endswith("]"):
+        root_type = strip_optional(root_type[1:-1])
+    if (root_type not in structs and root_type not in enums
+            and root_type not in aliases and root_type not in PRIMITIVES):
+        report.add(root, f"unknown Swift Codable root type {root_type}")
+        return report.errors
     check(structs, enums, aliases, root, document, root, report)
     return report.errors
 
