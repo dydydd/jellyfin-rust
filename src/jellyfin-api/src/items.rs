@@ -434,7 +434,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "genres",
         alias = "Genres",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::pipe::deserialize"
     )]
     genres: Vec<String>,
     #[serde(
@@ -448,7 +448,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "tags",
         alias = "Tags",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::pipe::deserialize"
     )]
     tags: Vec<String>,
     #[serde(default, rename = "person", alias = "Person")]
@@ -2788,6 +2788,22 @@ mod tests {
             .include_item_types,
             ["Video"]
         );
+    }
+
+    #[test]
+    fn item_genres_and_tags_use_the_official_pipe_binder() {
+        let query = items_query("Genres=Action%7CDrama&tags=family%7Cclassic");
+
+        assert_eq!(query.genres, ["Action", "Drama"]);
+        assert_eq!(query.tags, ["family", "classic"]);
+    }
+
+    #[test]
+    fn item_genres_and_tags_accept_repeated_mobile_sdk_values() {
+        let query = items_query("genres=Action&genres=Drama&Tags=family&Tags=classic");
+
+        assert_eq!(query.genres, ["Action", "Drama"]);
+        assert_eq!(query.tags, ["family", "classic"]);
     }
 
     #[test]
