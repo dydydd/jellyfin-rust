@@ -331,6 +331,47 @@ async fn assert_anonymous_and_ordinary_target_rules(fixture: &FavoriteFixture) {
         .status(),
         StatusCode::FORBIDDEN
     );
+
+    for route in [
+        format!(
+            "/UserFavoriteItems/{}?userId={}",
+            fixture.allowed_item_id, fixture.administrator_id
+        ),
+        format!(
+            "/UserFavoriteItems/{}?UserId={}",
+            fixture.allowed_item_id, fixture.administrator_id
+        ),
+        format!(
+            "/userfavoriteitems/{}?userid={}",
+            fixture.allowed_item_id, fixture.administrator_id
+        ),
+    ] {
+        assert_eq!(
+            request(&fixture.app, "POST", &route, &fixture.user_token)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "target UserId must bind case-insensitively for {route}",
+        );
+    }
+    for route in [
+        format!(
+            "/UserFavoriteItems/{}?userId=not-a-guid",
+            fixture.allowed_item_id
+        ),
+        format!(
+            "/userfavoriteitems/{}?userid=not-a-guid",
+            fixture.allowed_item_id
+        ),
+    ] {
+        assert_eq!(
+            request(&fixture.app, "POST", &route, &fixture.user_token)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "malformed UserId must not be ignored for {route}",
+        );
+    }
 }
 
 async fn assert_api_key_and_nil_target_rules(fixture: &FavoriteFixture) {

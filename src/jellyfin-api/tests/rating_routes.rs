@@ -347,6 +347,46 @@ async fn assert_anonymous_and_ordinary_rules(fixture: &RatingFixture) {
             StatusCode::FORBIDDEN
         );
     }
+    for route in [
+        format!(
+            "/UserItems/{}/Rating?userId={}&likes=true",
+            fixture.allowed_item_id, fixture.administrator_id
+        ),
+        format!(
+            "/UserItems/{}/Rating?UserId={}&Likes=true",
+            fixture.allowed_item_id, fixture.administrator_id
+        ),
+        format!(
+            "/useritems/{}/rating?userid={}&likes=true",
+            fixture.allowed_item_id, fixture.administrator_id
+        ),
+    ] {
+        assert_eq!(
+            request(&fixture.app, "POST", &route, &fixture.user_token)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "rating target UserId must bind case-insensitively for {route}",
+        );
+    }
+    for route in [
+        format!(
+            "/UserItems/{}/Rating?userId=not-a-guid&likes=true",
+            fixture.allowed_item_id
+        ),
+        format!(
+            "/useritems/{}/rating?userid=not-a-guid&likes=true",
+            fixture.allowed_item_id
+        ),
+    ] {
+        assert_eq!(
+            request(&fixture.app, "POST", &route, &fixture.user_token)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "malformed rating UserId must not be ignored for {route}",
+        );
+    }
 }
 
 async fn assert_api_key_and_nil_rules(fixture: &RatingFixture) {

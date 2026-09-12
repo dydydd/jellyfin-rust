@@ -18,9 +18,9 @@ use crate::{ApiError, AppState, authentication};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct DisplayPreferencesQuery {
-    #[serde(rename = "userId", alias = "UserId")]
+    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(rename = "itemId", alias = "ItemId")]
+    #[serde(rename = "itemId", alias = "ItemId", alias = "itemid")]
     item_id: Option<Uuid>,
     #[serde(rename = "client", alias = "Client")]
     client: Option<String>,

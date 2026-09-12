@@ -158,6 +158,48 @@ async fn assert_auth_query_and_target_rules(fixture: &Fixture) {
         .status(),
         StatusCode::FORBIDDEN
     );
+    for route in [
+        format!(
+            "/DisplayPreferences/usersettings?UserId={}&Client=web",
+            fixture.other_user_id
+        ),
+        format!(
+            "/displaypreferences/usersettings?userid={}&client=web",
+            fixture.other_user_id
+        ),
+    ] {
+        assert_eq!(
+            request(
+                &fixture.app,
+                "GET",
+                &route,
+                Some(&fixture.user_token),
+                Value::Null,
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN,
+            "display-preferences UserId must bind case-insensitively for {route}",
+        );
+    }
+    for route in [
+        "/DisplayPreferences/usersettings?userId=not-a-guid&client=web",
+        "/displaypreferences/usersettings?userid=not-a-guid&client=web",
+    ] {
+        assert_eq!(
+            request(
+                &fixture.app,
+                "GET",
+                route,
+                Some(&fixture.user_token),
+                Value::Null,
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST,
+            "malformed display-preferences UserId must not be ignored for {route}",
+        );
+    }
     assert_eq!(
         request(
             &fixture.app,
@@ -304,6 +346,15 @@ async fn assert_item_id_query_round_trips(fixture: &Fixture) {
     let preferences = get_json(&fixture.app, &route, &fixture.user_token).await;
     assert_eq!(preferences["Id"], item_id.to_string());
     assert_eq!(preferences["Client"], "web");
+
+    for route in [
+        format!("/DisplayPreferences/usersettings?ItemId={item_id}&Client=web"),
+        format!("/displaypreferences/usersettings?itemid={item_id}&client=web"),
+    ] {
+        let preferences = get_json(&fixture.app, &route, &fixture.user_token).await;
+        assert_eq!(preferences["Id"], item_id.to_string(), "{route}");
+        assert_eq!(preferences["Client"], "web", "{route}");
+    }
 }
 
 async fn assert_admin_can_update_another_user_with_aliases(fixture: &Fixture) {

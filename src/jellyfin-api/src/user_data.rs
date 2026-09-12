@@ -13,13 +13,13 @@ use crate::{ApiError, AppState, authorization};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct UserDataQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     pub user_id: Option<Uuid>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct RatingQuery {
-    #[serde(default, rename = "userId", alias = "UserId")]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     pub user_id: Option<Uuid>,
     #[serde(default, alias = "Likes")]
     pub likes: Option<bool>,
