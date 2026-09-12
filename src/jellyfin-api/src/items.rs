@@ -8,7 +8,7 @@ use axum::{
     extract::{OriginalUri, Path, State},
     http::HeaderMap,
 };
-use axum_extra::extract::Query;
+use axum_extra::extract::{Query, QueryRejection};
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{SearchProviderQuery, UserError};
 use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item};
@@ -18,6 +18,208 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, user_library};
+
+const ITEM_TYPES: &[&str] = &[
+    "AggregateFolder",
+    "Audio",
+    "AudioBook",
+    "BasePluginFolder",
+    "Book",
+    "BoxSet",
+    "Channel",
+    "ChannelFolderItem",
+    "CollectionFolder",
+    "Episode",
+    "Folder",
+    "Genre",
+    "ManualPlaylistsFolder",
+    "Movie",
+    "LiveTvChannel",
+    "LiveTvProgram",
+    "MusicAlbum",
+    "MusicArtist",
+    "MusicGenre",
+    "MusicVideo",
+    "Person",
+    "Photo",
+    "PhotoAlbum",
+    "Playlist",
+    "PlaylistsFolder",
+    "Program",
+    "Recording",
+    "Season",
+    "Series",
+    "Studio",
+    "Trailer",
+    "TvChannel",
+    "TvProgram",
+    "UserRootFolder",
+    "UserView",
+    "Video",
+    "Year",
+];
+const MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];
+const LOCATION_TYPES: &[&str] = &["FileSystem", "Remote", "Virtual", "Offline"];
+const IMAGE_TYPES: &[&str] = &[
+    "Primary",
+    "Art",
+    "Backdrop",
+    "Banner",
+    "Logo",
+    "Thumb",
+    "Disc",
+    "Box",
+    "Screenshot",
+    "Menu",
+    "Chapter",
+    "BoxRear",
+    "Profile",
+];
+const VIDEO_TYPES: &[&str] = &["VideoFile", "Iso", "Dvd", "BluRay"];
+const SERIES_STATUSES: &[&str] = &["Continuing", "Ended", "Unreleased"];
+const SORT_ORDERS: &[&str] = &["Ascending", "Descending"];
+const ITEM_FIELDS: &[&str] = &[
+    "AirTime",
+    "CanDelete",
+    "CanDownload",
+    "ChannelInfo",
+    "Chapters",
+    "Trickplay",
+    "ChildCount",
+    "CumulativeRunTimeTicks",
+    "CustomRating",
+    "DateCreated",
+    "DateLastMediaAdded",
+    "DisplayPreferencesId",
+    "Etag",
+    "ExternalUrls",
+    "Genres",
+    "ItemCounts",
+    "MediaSourceCount",
+    "MediaSources",
+    "OriginalTitle",
+    "Overview",
+    "ParentId",
+    "Path",
+    "People",
+    "PlayAccess",
+    "ProductionLocations",
+    "ProviderIds",
+    "PrimaryImageAspectRatio",
+    "RecursiveItemCount",
+    "Settings",
+    "SeriesStudio",
+    "SortName",
+    "SpecialEpisodeNumbers",
+    "Studios",
+    "Taglines",
+    "Tags",
+    "RemoteTrailers",
+    "MediaStreams",
+    "SeasonUserData",
+    "DateLastRefreshed",
+    "DateLastSaved",
+    "RefreshState",
+    "ChannelImage",
+    "EnableMediaSourceDisplay",
+    "Width",
+    "Height",
+    "ExtraIds",
+    "LocalTrailerCount",
+    "IsHD",
+    "SpecialFeatureCount",
+];
+const ITEM_SORTS: &[&str] = &[
+    "Default",
+    "AiredEpisodeOrder",
+    "Album",
+    "AlbumArtist",
+    "Artist",
+    "DateCreated",
+    "OfficialRating",
+    "DatePlayed",
+    "PremiereDate",
+    "StartDate",
+    "SortName",
+    "Name",
+    "Random",
+    "Runtime",
+    "CommunityRating",
+    "ProductionYear",
+    "PlayCount",
+    "CriticRating",
+    "IsFolder",
+    "IsUnplayed",
+    "IsPlayed",
+    "SeriesSortName",
+    "VideoBitRate",
+    "AirTime",
+    "Studio",
+    "IsFavoriteOrLiked",
+    "DateLastContentAdded",
+    "SeriesDatePlayed",
+    "ParentIndexNumber",
+    "IndexNumber",
+];
+
+fn parse_official_query_enum(
+    value: &str,
+    variants: &'static [&'static str],
+) -> Result<&'static str, ()> {
+    let value = value.trim();
+    if let Ok(index) = value.parse::<i32>() {
+        return usize::try_from(index)
+            .ok()
+            .and_then(|index| variants.get(index).copied())
+            .ok_or(());
+    }
+    variants
+        .iter()
+        .copied()
+        .find(|variant| variant.eq_ignore_ascii_case(value))
+        .ok_or(())
+}
+
+macro_rules! official_query_enum_collection {
+    ($wrapper:ident, $deserializer:ident, $variants:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        struct $wrapper(&'static str);
+
+        impl FromStr for $wrapper {
+            type Err = ();
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                parse_official_query_enum(value, $variants).map(Self)
+            }
+        }
+
+        fn $deserializer<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            crate::query::comma::deserialize_model_binder::<D, $wrapper>(deserializer)
+                .map(|values| values.into_iter().map(|value| value.0.to_owned()).collect())
+        }
+    };
+}
+
+official_query_enum_collection!(ItemTypeQueryValue, deserialize_item_types, ITEM_TYPES);
+official_query_enum_collection!(MediaTypeQueryValue, deserialize_media_types, MEDIA_TYPES);
+official_query_enum_collection!(
+    LocationTypeQueryValue,
+    deserialize_location_types,
+    LOCATION_TYPES
+);
+official_query_enum_collection!(ImageTypeQueryValue, deserialize_image_types, IMAGE_TYPES);
+official_query_enum_collection!(VideoTypeQueryValue, deserialize_video_types, VIDEO_TYPES);
+official_query_enum_collection!(
+    SeriesStatusQueryValue,
+    deserialize_series_statuses,
+    SERIES_STATUSES
+);
+official_query_enum_collection!(ItemFieldQueryValue, deserialize_item_fields, ITEM_FIELDS);
+official_query_enum_collection!(ItemSortQueryValue, deserialize_item_sorts, ITEM_SORTS);
+official_query_enum_collection!(SortOrderQueryValue, deserialize_sort_orders, SORT_ORDERS);
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ItemsQuery {
@@ -133,7 +335,7 @@ pub(crate) struct ItemsQuery {
         rename = "locationTypes",
         alias = "LocationTypes",
         alias = "locationtypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_location_types"
     )]
     location_types: Vec<String>,
     #[serde(
@@ -141,7 +343,7 @@ pub(crate) struct ItemsQuery {
         rename = "excludeLocationTypes",
         alias = "ExcludeLocationTypes",
         alias = "excludelocationtypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_location_types"
     )]
     exclude_location_types: Vec<String>,
     #[serde(
@@ -225,7 +427,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "filters",
         alias = "Filters",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
     filters: Vec<ItemFilter>,
     #[serde(
@@ -364,7 +566,7 @@ pub(crate) struct ItemsQuery {
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
         alias = "includeitemtypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_item_types"
     )]
     include_item_types: Vec<String>,
     #[serde(
@@ -372,7 +574,7 @@ pub(crate) struct ItemsQuery {
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
         alias = "excludeitemtypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_item_types"
     )]
     exclude_item_types: Vec<String>,
     #[serde(
@@ -380,7 +582,7 @@ pub(crate) struct ItemsQuery {
         rename = "mediaTypes",
         alias = "MediaTypes",
         alias = "mediatypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_media_types"
     )]
     media_types: Vec<String>,
     #[serde(
@@ -388,7 +590,7 @@ pub(crate) struct ItemsQuery {
         rename = "imageTypes",
         alias = "ImageTypes",
         alias = "imagetypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_image_types"
     )]
     image_types: Vec<String>,
     #[serde(
@@ -404,7 +606,7 @@ pub(crate) struct ItemsQuery {
         rename = "videoTypes",
         alias = "VideoTypes",
         alias = "videotypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_video_types"
     )]
     video_types: Vec<String>,
     #[serde(default, rename = "isLocked", alias = "IsLocked", alias = "islocked")]
@@ -455,7 +657,7 @@ pub(crate) struct ItemsQuery {
         rename = "seriesStatus",
         alias = "SeriesStatus",
         alias = "seriesstatus",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_series_statuses"
     )]
     series_status: Vec<String>,
     #[serde(
@@ -515,7 +717,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "fields",
         alias = "Fields",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_item_fields"
     )]
     fields: Vec<String>,
     #[serde(
@@ -535,7 +737,7 @@ pub(crate) struct ItemsQuery {
         rename = "enableImageTypes",
         alias = "EnableImageTypes",
         alias = "enableimagetypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_image_types"
     )]
     enable_image_types: Vec<String>,
     #[serde(
@@ -549,7 +751,7 @@ pub(crate) struct ItemsQuery {
         rename = "sortBy",
         alias = "SortBy",
         alias = "sortby",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_item_sorts"
     )]
     sort_by: Vec<String>,
     #[serde(
@@ -557,7 +759,7 @@ pub(crate) struct ItemsQuery {
         rename = "sortOrder",
         alias = "SortOrder",
         alias = "sortorder",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "deserialize_sort_orders"
     )]
     sort_order: Vec<String>,
     #[serde(
@@ -595,15 +797,15 @@ impl FromStr for ItemFilter {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
-            "isfolder" => Ok(Self::IsFolder),
-            "isnotfolder" => Ok(Self::IsNotFolder),
-            "isunplayed" => Ok(Self::IsUnplayed),
-            "isplayed" => Ok(Self::IsPlayed),
-            "isfavorite" => Ok(Self::IsFavorite),
-            "isresumable" => Ok(Self::IsResumable),
-            "likes" => Ok(Self::Likes),
-            "dislikes" => Ok(Self::Dislikes),
-            "isfavoriteorlikes" => Ok(Self::IsFavoriteOrLikes),
+            "isfolder" | "1" => Ok(Self::IsFolder),
+            "isnotfolder" | "2" => Ok(Self::IsNotFolder),
+            "isunplayed" | "3" => Ok(Self::IsUnplayed),
+            "isplayed" | "4" => Ok(Self::IsPlayed),
+            "isfavorite" | "5" => Ok(Self::IsFavorite),
+            "isresumable" | "7" => Ok(Self::IsResumable),
+            "likes" | "8" => Ok(Self::Likes),
+            "dislikes" | "9" => Ok(Self::Dislikes),
+            "isfavoriteorlikes" | "10" => Ok(Self::IsFavoriteOrLikes),
             _ => Err(()),
         }
     }
@@ -669,47 +871,8 @@ pub(crate) struct LatestItemsQuery {
     group_items: bool,
 }
 
-const SUGGESTION_MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];
-
-const SUGGESTION_ITEM_TYPES: &[&str] = &[
-    "AggregateFolder",
-    "Audio",
-    "AudioBook",
-    "BasePluginFolder",
-    "Book",
-    "BoxSet",
-    "Channel",
-    "ChannelFolderItem",
-    "CollectionFolder",
-    "Episode",
-    "Folder",
-    "Genre",
-    "ManualPlaylistsFolder",
-    "Movie",
-    "LiveTvChannel",
-    "LiveTvProgram",
-    "MusicAlbum",
-    "MusicArtist",
-    "MusicGenre",
-    "MusicVideo",
-    "Person",
-    "Photo",
-    "PhotoAlbum",
-    "Playlist",
-    "PlaylistsFolder",
-    "Program",
-    "Recording",
-    "Season",
-    "Series",
-    "Studio",
-    "Trailer",
-    "TvChannel",
-    "TvProgram",
-    "UserRootFolder",
-    "UserView",
-    "Video",
-    "Year",
-];
+const SUGGESTION_MEDIA_TYPES: &[&str] = MEDIA_TYPES;
+const SUGGESTION_ITEM_TYPES: &[&str] = ITEM_TYPES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SuggestionMediaType(&'static str);
@@ -724,7 +887,7 @@ impl FromStr for SuggestionMediaType {
     type Err = ();
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_suggestion_enum(value, SUGGESTION_MEDIA_TYPES).map(Self)
+        parse_official_query_enum(value, SUGGESTION_MEDIA_TYPES).map(Self)
     }
 }
 
@@ -741,26 +904,8 @@ impl FromStr for SuggestionItemType {
     type Err = ();
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_suggestion_enum(value, SUGGESTION_ITEM_TYPES).map(Self)
+        parse_official_query_enum(value, SUGGESTION_ITEM_TYPES).map(Self)
     }
-}
-
-fn parse_suggestion_enum(
-    value: &str,
-    variants: &'static [&'static str],
-) -> Result<&'static str, ()> {
-    let value = value.trim();
-    if let Ok(index) = value.parse::<i32>() {
-        return usize::try_from(index)
-            .ok()
-            .and_then(|index| variants.get(index).copied())
-            .ok_or(());
-    }
-    variants
-        .iter()
-        .copied()
-        .find(|variant| variant.eq_ignore_ascii_case(value))
-        .ok_or(())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -812,9 +957,11 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
-    Query(query): Query<ItemsQuery>,
+    query: Result<Query<ItemsQuery>, QueryRejection>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    get_for(state, headers, Some(&uri), query.user_id, query).await
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    get_for_identity(state, identity, query.user_id, query).await
 }
 
 pub(crate) async fn get_legacy(
@@ -822,9 +969,11 @@ pub(crate) async fn get_legacy(
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
-    Query(query): Query<ItemsQuery>,
+    query: Result<Query<ItemsQuery>, QueryRejection>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    get_for(state, headers, Some(&uri), Some(user_id), query).await
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    get_for_identity(state, identity, Some(user_id), query).await
 }
 
 pub(crate) async fn query_items(
@@ -894,6 +1043,15 @@ async fn get_for(
     query: ItemsQuery,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, uri).await?;
+    get_for_identity(state, identity, requested_user_id, query).await
+}
+
+async fn get_for_identity(
+    state: Arc<AppState>,
+    identity: authentication::AuthenticatedIdentity,
+    requested_user_id: Option<Uuid>,
+    query: ItemsQuery,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authorized_target_user_id = identity.target_user_id(requested_user_id)?;
     let (authenticated_user, target_user_id) = match identity {
         authentication::AuthenticatedIdentity::Device(authenticated) => {
@@ -2584,7 +2742,53 @@ fn image_type_from_name(name: &str) -> Option<ImageType> {
 
 #[cfg(test)]
 mod tests {
+    use axum_extra::extract::Query;
+
     use super::*;
+
+    fn items_query(value: &str) -> ItemsQuery {
+        let uri = format!("http://localhost/Items?{value}").parse().unwrap();
+        Query::<ItemsQuery>::try_from_uri(&uri).unwrap().0
+    }
+
+    #[test]
+    fn item_enum_collections_bind_names_defined_integers_and_drop_invalid_values() {
+        let query = items_query(
+            "locationTypes=1&excludeLocationTypes=offline&filters=4,6,unknown&\
+             includeItemTypes=13&excludeItemTypes=episode&mediaTypes=1&imageTypes=2&\
+             videoTypes=3&seriesStatus=1&fields=13&enableImageTypes=logo&\
+             sortBy=16&sortOrder=1",
+        );
+
+        assert_eq!(query.location_types, ["Remote"]);
+        assert_eq!(query.exclude_location_types, ["Offline"]);
+        assert_eq!(query.filters, [ItemFilter::IsPlayed]);
+        assert_eq!(query.include_item_types, ["Movie"]);
+        assert_eq!(query.exclude_item_types, ["Episode"]);
+        assert_eq!(query.media_types, ["Video"]);
+        assert_eq!(query.image_types, ["Backdrop"]);
+        assert_eq!(query.video_types, ["BluRay"]);
+        assert_eq!(query.series_status, ["Ended"]);
+        assert_eq!(query.fields, ["ExternalUrls"]);
+        assert_eq!(query.enable_image_types, ["Logo"]);
+        assert_eq!(query.sort_by, ["PlayCount"]);
+        assert_eq!(query.sort_order, ["Descending"]);
+    }
+
+    #[test]
+    fn item_enum_collections_split_only_a_single_query_value() {
+        assert_eq!(
+            items_query("includeItemTypes=movie,EPISODE").include_item_types,
+            ["Movie", "Episode"]
+        );
+        assert_eq!(
+            items_query(
+                "includeItemTypes=Movie,Episode&includeItemTypes=Video&includeItemTypes=999"
+            )
+            .include_item_types,
+            ["Video"]
+        );
+    }
 
     #[test]
     fn image_constraints_prune_blur_hashes_to_exposed_tags() {

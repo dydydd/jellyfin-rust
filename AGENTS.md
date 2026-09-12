@@ -372,6 +372,11 @@
 - Keep the modern and legacy `/Items` and Resume pages on their signed `Int32` pagination contract
   used by Android and Swift: negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty,
   negative `Limit` is unlimited, and out-of-range values fail query binding.
+- Bind every typed enum collection on the modern and legacy `/Items` pages with the official model
+  binder: accept case-insensitive names and defined integer values, discard invalid elements, split
+  commas only for a single query value, and do not re-split comma-containing repeated values. This
+  includes item/media/location/image/video types, filters, fields, Series status, sort fields, and
+  sort order. Authenticate before returning query binding errors.
 - Keep modern and legacy `/Items/Latest` limits signed as well. A zero limit returns an empty array;
   a negative limit preserves the official repository/controller quirk and returns at most the first
   latest result rather than failing query binding. Values outside `Int32` must return 400 across

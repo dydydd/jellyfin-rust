@@ -3407,6 +3407,47 @@ async fn delimited_and_repeated_item_filters_reach_postgres_queries() {
 }
 
 #[tokio::test]
+async fn item_enum_collections_match_official_model_binder_on_both_route_casings() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let ids = fixture
+        .item_ids
+        .iter()
+        .map(|id| id.simple())
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    for (route, expected) in [
+        (format!("/Items?Ids={ids}&IncludeItemTypes=13"), 2),
+        (format!("/items?ids={ids}&includeitemtypes=movie"), 2),
+        (
+            format!("/Items?Ids={ids}&IncludeItemTypes=Movie,Episode"),
+            3,
+        ),
+        (
+            format!("/items?ids={ids}&includeitemtypes=Movie&includeitemtypes=Episode"),
+            3,
+        ),
+        (
+            format!("/Items?Ids={ids}&IncludeItemTypes=Movie,Episode&IncludeItemTypes=Video"),
+            1,
+        ),
+        (
+            format!("/items?ids={ids}&includeitemtypes=Undefined&includeitemtypes=999"),
+            4,
+        ),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let body = body_json(response).await;
+        assert_eq!(body["TotalRecordCount"], expected, "{route}: {body}");
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn resume_is_deduplicated_recent_first_paginated_and_user_scoped() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
@@ -3801,6 +3842,25 @@ async fn item_query_authentication_and_target_permissions_are_enforced() {
         fixture.request("/Items", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
+    for route in [
+        "/Items?limit=not-an-int",
+        "/items?recursive=not-a-bool",
+        "/Items?userid=not-a-guid",
+    ] {
+        assert_eq!(
+            fixture.request(route, None).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "authentication must precede malformed query binding for {route}"
+        );
+        assert_eq!(
+            fixture
+                .request(route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "authenticated malformed query must remain a bad request for {route}"
+        );
+    }
     for route in ["/Items", "/Items/Latest", "/Items/Suggestions"] {
         for user_id in ["userId", "UserId", "userid"] {
             let route = format!("{route}?{user_id}={}", fixture.admin_id);
