@@ -7,6 +7,7 @@ use jellyfin_data::{
     BaseItemQuery, ItemValueQuery, PersonQuery, ScoredBaseItemPage, entities::base_item,
 };
 use jellyfin_model::{MediaType, SearchHint, SearchHintResult};
+use jellyfin_server_implementations::DtoImageProjection;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -254,7 +255,17 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        let media = media_search_hint_result(page, search_term);
+        let media_item_ids = page
+            .items
+            .iter()
+            .map(|scored| scored.item.id)
+            .collect::<Vec<_>>();
+        let mut image_projections = state
+            .dto_images
+            .project_search_hint_images_many(&media_item_ids)
+            .await
+            .map_err(|_| ApiError::Internal)?;
+        let media = media_search_hint_result(page, search_term, &mut image_projections);
         result.total_record_count += media.total_record_count;
         result.search_hints.extend(media.search_hints);
     }
@@ -521,14 +532,58 @@ fn excludes_hint_type(exclude_item_types: &[SearchBaseItemKind], hint_types: &[&
     })
 }
 
-fn media_search_hint_result(page: ScoredBaseItemPage, matched_term: &str) -> SearchHintResult {
+fn media_search_hint_result(
+    page: ScoredBaseItemPage,
+    matched_term: &str,
+    image_projections: &mut std::collections::HashMap<Uuid, DtoImageProjection>,
+) -> SearchHintResult {
     SearchHintResult {
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         search_hints: page
             .items
             .into_iter()
-            .map(|scored| search_hint(scored.item, matched_term))
+            .map(|scored| {
+                let item_id = scored.item.id;
+                let mut hint = search_hint(scored.item, matched_term);
+                if let Some(projection) = image_projections.remove(&item_id) {
+                    attach_search_hint_images(&mut hint, item_id, projection);
+                }
+                hint
+            })
             .collect(),
+    }
+}
+
+fn attach_search_hint_images(
+    hint: &mut SearchHint,
+    item_id: Uuid,
+    mut projection: DtoImageProjection,
+) {
+    hint.primary_image_tag = projection.primary_image_tag;
+    if hint.primary_image_tag.is_some() {
+        hint.primary_image_aspect_ratio = projection.primary_image_aspect_ratio;
+    }
+
+    if let Some(tag) = projection.image_tags.remove("Thumb") {
+        hint.thumb_image_tag = Some(tag);
+        hint.thumb_image_item_id = Some(item_id.simple().to_string());
+    } else if let (Some(owner_id), Some(tag)) = (
+        projection.parent_thumb_item_id,
+        projection.parent_thumb_image_tag,
+    ) {
+        hint.thumb_image_tag = Some(tag);
+        hint.thumb_image_item_id = Some(owner_id.simple().to_string());
+    }
+
+    if let Some(tag) = projection.backdrop_image_tags.into_iter().next() {
+        hint.backdrop_image_tag = Some(tag);
+        hint.backdrop_image_item_id = Some(item_id.simple().to_string());
+    } else if let (Some(owner_id), Some(tag)) = (
+        projection.parent_backdrop_image_item_id,
+        projection.parent_backdrop_image_tags.into_iter().next(),
+    ) {
+        hint.backdrop_image_tag = Some(tag);
+        hint.backdrop_image_item_id = Some(owner_id.simple().to_string());
     }
 }
 

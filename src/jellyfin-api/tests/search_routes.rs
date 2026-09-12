@@ -128,6 +128,48 @@ async fn exercise_search_routes(database_name: &str) {
         None,
     )
     .await;
+    let season_id = Uuid::from_u128(0xf22e_d1dd_8038_4e14_895c_3512_350e_0b13);
+    let mut season = NewBaseItem::new(season_id, "Season");
+    season.parent_id = Some(series_id);
+    season.series_id = Some(series_id);
+    season.name = Some("Artwork Season".to_owned());
+    season.sort_name = season.name.clone();
+    season.media_type = Some("Video".to_owned());
+    items.create(season).await.expect("artwork season creation");
+    let episode_id = Uuid::from_u128(0xe216_9cd6_a176_42d9_aa49_721c_0716_0a5e);
+    let mut episode = NewBaseItem::new(episode_id, "Episode");
+    episode.parent_id = Some(season_id);
+    episode.series_id = Some(series_id);
+    episode.season_id = Some(season_id);
+    episode.name = Some("Artwork Episode".to_owned());
+    episode.sort_name = episode.name.clone();
+    episode.media_type = Some("Video".to_owned());
+    items
+        .create(episode)
+        .await
+        .expect("artwork episode creation");
+    let artwork_folder_id = Uuid::from_u128(0xc9bc_3129_0a58_446a_9488_2910_a551_3817);
+    create_item(
+        &items,
+        artwork_folder_id,
+        root.id,
+        "Folder",
+        "Inherited Artwork Parent",
+        "Video",
+        None,
+    )
+    .await;
+    let inherited_movie_id = Uuid::from_u128(0xb55d_97d0_f496_4689_b362_c33f_c584_b6ba);
+    create_item(
+        &items,
+        inherited_movie_id,
+        artwork_folder_id,
+        "Movie",
+        "Inherited Artwork Movie",
+        "Video",
+        None,
+    )
+    .await;
     let program_id = Uuid::from_u128(0xf0ed_99db_3f4d_4631_9a4e_d46a_2286_9b11);
     create_item(
         &items,
@@ -237,7 +279,8 @@ async fn exercise_search_routes(database_name: &str) {
     image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 90, 180, 255]))
         .save(&person_image_path)
         .expect("search Person image");
-    BaseItemImageRepository::new(database.clone())
+    let image_repository = BaseItemImageRepository::new(database.clone());
+    image_repository
         .replace(
             canonical_person.id,
             &[NewBaseItemImage {
@@ -252,6 +295,50 @@ async fn exercise_search_routes(database_name: &str) {
         )
         .await
         .expect("search Person image registration");
+    replace_test_images(
+        &image_repository,
+        matrix_id,
+        &[
+            (BaseItemImageType::Primary, "matrix-primary.jpg", 16, 9),
+            (BaseItemImageType::Thumb, "matrix-thumb.jpg", 4, 3),
+            (BaseItemImageType::Backdrop, "matrix-backdrop.jpg", 16, 9),
+        ],
+    )
+    .await;
+    replace_test_images(
+        &image_repository,
+        series_id,
+        &[
+            (BaseItemImageType::Thumb, "series-thumb.jpg", 16, 9),
+            (BaseItemImageType::Backdrop, "series-backdrop.jpg", 16, 9),
+        ],
+    )
+    .await;
+    replace_test_images(
+        &image_repository,
+        season_id,
+        &[
+            (BaseItemImageType::Thumb, "season-thumb.jpg", 16, 9),
+            (BaseItemImageType::Backdrop, "season-backdrop.jpg", 16, 9),
+        ],
+    )
+    .await;
+    replace_test_images(
+        &image_repository,
+        episode_id,
+        &[(BaseItemImageType::Primary, "episode-primary.jpg", 16, 9)],
+    )
+    .await;
+    replace_test_images(
+        &image_repository,
+        artwork_folder_id,
+        &[
+            (BaseItemImageType::Primary, "folder-primary.jpg", 2, 3),
+            (BaseItemImageType::Thumb, "folder-thumb.jpg", 4, 3),
+            (BaseItemImageType::Backdrop, "folder-backdrop.jpg", 16, 9),
+        ],
+    )
+    .await;
 
     let app = jellyfin_api::router(
         AppState::new(
@@ -328,7 +415,87 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(hint["MediaType"], "Video");
     assert_eq!(hint["Artists"], json!(["Keanu Reeves", "Carrie-Anne Moss"]));
     assert_eq!(hint["Album"], "Matrix Collection");
+    assert!(hint["PrimaryImageTag"].is_string());
+    assert!(hint["ThumbImageTag"].is_string());
+    assert_eq!(hint["ThumbImageItemId"], matrix_id.simple().to_string());
+    assert!(hint["BackdropImageTag"].is_string());
+    assert_eq!(hint["BackdropImageItemId"], matrix_id.simple().to_string());
+    assert!(
+        (hint["PrimaryImageAspectRatio"]
+            .as_f64()
+            .expect("primary image aspect ratio")
+            - 16.0 / 9.0)
+            .abs()
+            < f64::EPSILON
+    );
     assert!(hint.get("id").is_none());
+
+    for route in ["/Search/Hints", "/search/hints"] {
+        let artwork = body_json(
+            request(
+                &app,
+                &format!(
+                    "{route}?searchTerm=Artwork%20Episode&includeItemTypes=Episode&includePeople=false&includeGenres=false&includeStudios=false&includeArtists=false"
+                ),
+                Some(&user_token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(artwork["TotalRecordCount"], 1, "route={route}");
+        let hint = &artwork["SearchHints"][0];
+        assert_eq!(hint["Id"], episode_id.simple().to_string(), "route={route}");
+        assert!(hint["PrimaryImageTag"].is_string(), "route={route}");
+        assert!(hint["ThumbImageTag"].is_string(), "route={route}");
+        assert_eq!(
+            hint["ThumbImageItemId"],
+            series_id.simple().to_string(),
+            "route={route}"
+        );
+        assert!(hint["BackdropImageTag"].is_string(), "route={route}");
+        assert_eq!(
+            hint["BackdropImageItemId"],
+            season_id.simple().to_string(),
+            "route={route}"
+        );
+        assert!(
+            (hint["PrimaryImageAspectRatio"]
+                .as_f64()
+                .expect("primary image aspect ratio")
+                - 16.0 / 9.0)
+                .abs()
+                < f64::EPSILON,
+            "route={route}"
+        );
+    }
+
+    let inherited_artwork = body_json(
+        request(
+            &app,
+            "/search/hints?searchterm=Inherited%20Artwork%20Movie&includeitemtypes=Movie&includepeople=false&includegenres=false&includestudios=false&includeartists=false",
+            Some(&user_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(inherited_artwork["TotalRecordCount"], 1);
+    let inherited_hint = &inherited_artwork["SearchHints"][0];
+    assert_eq!(
+        inherited_hint["Id"],
+        inherited_movie_id.simple().to_string()
+    );
+    assert!(inherited_hint.get("PrimaryImageTag").is_none());
+    assert!(inherited_hint.get("PrimaryImageAspectRatio").is_none());
+    assert!(inherited_hint["ThumbImageTag"].is_string());
+    assert_eq!(
+        inherited_hint["ThumbImageItemId"],
+        artwork_folder_id.simple().to_string()
+    );
+    assert!(inherited_hint["BackdropImageTag"].is_string());
+    assert_eq!(
+        inherited_hint["BackdropImageItemId"],
+        artwork_folder_id.simple().to_string()
+    );
 
     for route in ["/Search/Hints", "/search/hints"] {
         let enum_names = body_json(
@@ -864,6 +1031,30 @@ async fn create_item(
     item.is_folder = item_type == "Folder" || item_type == "CollectionFolder";
     item.data = data;
     repository.create(item).await.expect("item creation");
+}
+
+async fn replace_test_images(
+    repository: &BaseItemImageRepository,
+    item_id: Uuid,
+    images: &[(BaseItemImageType, &str, u32, u32)],
+) {
+    let date_modified = chrono::Utc::now();
+    let images = images
+        .iter()
+        .map(|(image_type, path, width, height)| NewBaseItemImage {
+            image_type: *image_type,
+            image_index: 0,
+            path: (*path).to_owned(),
+            date_modified,
+            width: Some(*width),
+            height: Some(*height),
+            blurhash: None,
+        })
+        .collect::<Vec<_>>();
+    repository
+        .replace(item_id, &images)
+        .await
+        .expect("search artwork registration");
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

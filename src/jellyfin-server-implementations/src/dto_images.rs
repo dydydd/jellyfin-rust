@@ -322,6 +322,94 @@ impl<C: ImageCacheTagProvider> PersistedDtoImageProjectionService<C> {
         Ok(metadata)
     }
 
+    /// Projects the image fields used by search hints for several media items.
+    ///
+    /// Ancestors are loaded once for the whole page. The normal Episode and Season
+    /// image rules are applied first, then other item kinds fall back to their
+    /// nearest ancestor with a Thumb or Backdrop image as the official search
+    /// controller does.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database, corrupt-image-row, or persisted-metadata error.
+    pub async fn project_search_hint_images_many(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, DtoImageProjection>, PersistedDtoImageProjectionError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ancestors_by_item = self.items.ancestor_ids_many(item_ids).await?;
+        let mut projection_ids = item_ids.to_vec();
+        projection_ids.extend(
+            ancestors_by_item
+                .values()
+                .flat_map(|ancestor_ids| ancestor_ids.iter().copied()),
+        );
+        projection_ids.sort_unstable();
+        projection_ids.dedup();
+
+        let projections = self
+            .project_many(
+                &projection_ids,
+                DtoImageOptions {
+                    enable_images: true,
+                    primary_image_limit: usize::MAX,
+                    include_primary_image_aspect_ratio: true,
+                },
+            )
+            .await?;
+        let mut search_projections = HashMap::with_capacity(item_ids.len());
+        for &item_id in item_ids {
+            let Some(mut projection) = projections.get(&item_id).cloned() else {
+                continue;
+            };
+            if projection.primary_image_tag.is_none() {
+                projection.primary_image_aspect_ratio = None;
+            }
+
+            if !projection.image_tags.contains_key("Thumb")
+                && projection.parent_thumb_image_tag.is_none()
+                && let Some((owner_id, tag)) = ancestors_by_item
+                    .get(&item_id)
+                    .into_iter()
+                    .flatten()
+                    .find_map(|ancestor_id| {
+                        projections
+                            .get(ancestor_id)?
+                            .image_tags
+                            .get("Thumb")
+                            .cloned()
+                            .map(|tag| (*ancestor_id, tag))
+                    })
+            {
+                projection.parent_thumb_item_id = Some(owner_id);
+                projection.parent_thumb_image_tag = Some(tag);
+            }
+
+            if projection.backdrop_image_tags.is_empty()
+                && projection.parent_backdrop_image_tags.is_empty()
+                && let Some((owner_id, tag)) = ancestors_by_item
+                    .get(&item_id)
+                    .into_iter()
+                    .flatten()
+                    .find_map(|ancestor_id| {
+                        projections
+                            .get(ancestor_id)?
+                            .backdrop_image_tags
+                            .first()
+                            .cloned()
+                            .map(|tag| (*ancestor_id, tag))
+                    })
+            {
+                projection.parent_backdrop_image_item_id = Some(owner_id);
+                projection.parent_backdrop_image_tags = vec![tag];
+            }
+            search_projections.insert(item_id, projection);
+        }
+        Ok(search_projections)
+    }
+
     /// Loads an item and the parent candidates required by Jellyfin's primary
     /// image inheritance behavior, then projects its DTO image fields.
     ///
@@ -500,7 +588,7 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
         let primary_image_tag = primary_image.as_ref().map(|image| image.tag.clone());
         let primary_image_aspect_ratio = options
             .include_primary_image_aspect_ratio
-            .then_some(item.default_primary_image_aspect_ratio)
+            .then(|| primary_image_aspect_ratio(item))
             .flatten();
         let mut image_tags = HashMap::new();
         let mut backdrop_image_tags = Vec::new();
@@ -778,6 +866,25 @@ impl<L: DtoImageLibrary, C: ImageCacheTagProvider> DtoImageProjectionService<L, 
             .filter_map(|image| self.tagged_image(item, image))
             .collect()
     }
+}
+
+fn primary_image_aspect_ratio(item: &DtoImageItem) -> Option<f64> {
+    let image = item.primary_image()?;
+    let is_remote = image
+        .path
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http"));
+    let local_dimensions = if is_remote {
+        None
+    } else {
+        match (image.width, image.height) {
+            (Some(width), Some(height)) if width > 0 && height > 0 => {
+                Some(f64::from(width) / f64::from(height))
+            }
+            _ => None,
+        }
+    };
+    local_dimensions.or(item.default_primary_image_aspect_ratio)
 }
 
 fn record_blur_hash(

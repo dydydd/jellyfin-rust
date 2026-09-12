@@ -3819,6 +3819,35 @@ impl BaseItemRepository {
         hierarchy_entries(closure, false, self.database.as_ref()).await
     }
 
+    /// Loads ancestor identifiers nearest-first for several items with one query.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the hierarchy lookup fails.
+    pub async fn ancestor_ids_many(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<Uuid>>, BaseItemError> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let closure = ancestor_id::Entity::find()
+            .filter(ancestor_id::Column::ItemId.is_in(item_ids.iter().copied()))
+            .order_by_asc(ancestor_id::Column::ItemId)
+            .order_by_asc(ancestor_id::Column::Depth)
+            .order_by_asc(ancestor_id::Column::ParentItemId)
+            .all(self.database.as_ref())
+            .await?;
+        let mut ancestors = HashMap::<Uuid, Vec<Uuid>>::new();
+        for row in closure {
+            ancestors
+                .entry(row.item_id)
+                .or_default()
+                .push(row.parent_item_id);
+        }
+        Ok(ancestors)
+    }
+
     /// Resolves the nearest ancestor of any requested type for each item in one query.
     ///
     /// The closure-table depth, rather than the direct parent, defines proximity so
