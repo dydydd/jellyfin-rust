@@ -38,6 +38,19 @@ async fn endpoint_info_matches_official_auth_and_network_contract() {
     assert_eq!(body["IsInNetwork"], true);
     assert!(body.get("is_local").is_none());
 
+    assert_eq!(
+        fixture
+            .request(None, None, "/system/endpoint")
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let lowercase = fixture
+        .request(Some(&fixture.user_token), None, "/system/endpoint")
+        .await;
+    assert_eq!(lowercase.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase).await, body);
+
     let response = fixture
         .request(
             Some(&fixture.user_token),
@@ -133,6 +146,50 @@ async fn restart_and_shutdown_match_official_local_and_elevated_policy() {
         .await;
     assert_eq!(api_key_restart.status(), StatusCode::NO_CONTENT);
 
+    assert_eq!(
+        fixture
+            .request_method(Method::POST, None, None, "/system/restart")
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        fixture
+            .request_method(
+                Method::POST,
+                None,
+                Some("203.0.113.8:5000"),
+                "/system/restart",
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request_method(
+                Method::POST,
+                Some(&fixture.user_token),
+                Some("203.0.113.8:5000"),
+                "/system/restart",
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request_method(
+                Method::POST,
+                None,
+                Some("203.0.113.8:5000"),
+                &format!("/system/restart?api_key={}", fixture.api_key_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
     let local_shutdown = fixture
         .request_method(Method::POST, None, None, "/System/Shutdown")
         .await;
@@ -157,6 +214,38 @@ async fn restart_and_shutdown_match_official_local_and_elevated_policy() {
         )
         .await;
     assert_eq!(api_key_shutdown.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        fixture
+            .request_method(Method::POST, None, None, "/system/shutdown")
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .request_method(
+                Method::POST,
+                Some(&fixture.user_token),
+                None,
+                "/system/shutdown",
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .request_method(
+                Method::POST,
+                None,
+                None,
+                &format!("/system/shutdown?api_key={}", fixture.api_key_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
 
     fixture.cleanup().await;
 }

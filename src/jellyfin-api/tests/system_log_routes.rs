@@ -90,6 +90,14 @@ async fn elevated_log_listing_filters_metadata_and_applies_official_stable_order
     assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
     let logs: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
     let logs = logs.as_array().unwrap();
+    let lowercase = fixture
+        .request("/system/logs", Some(&fixture.admin_token))
+        .await;
+    assert_eq!(lowercase.status(), StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body_bytes(lowercase).await).unwrap(),
+        serde_json::Value::Array(logs.clone())
+    );
     assert_eq!(
         logs.iter()
             .map(|log| log["Name"].as_str().unwrap())
@@ -157,6 +165,13 @@ async fn elevated_identities_stream_real_logs_as_utf8_plain_text() {
         "text/plain; charset=utf-8"
     );
     assert!(!response.headers().contains_key(header::CONTENT_DISPOSITION));
+    assert_eq!(body_bytes(response).await, payload);
+
+    let lowercase_route = log_route_with_base("/system/logs/log", "server.json");
+    let response = fixture
+        .request(&lowercase_route, Some(&fixture.admin_token))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_bytes(response).await, payload);
 
     assert_eq!(
@@ -289,8 +304,12 @@ fn add_unix_unsafe_entries(
 }
 
 fn log_route(name: &str) -> String {
+    log_route_with_base("/System/Logs/Log", name)
+}
+
+fn log_route_with_base(base: &str, name: &str) -> String {
     format!(
-        "/System/Logs/Log?name={}",
+        "{base}?name={}",
         utf8_percent_encode(name, NON_ALPHANUMERIC)
     )
 }

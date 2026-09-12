@@ -173,6 +173,18 @@ async fn exercise_configuration_routes(database_name: &str) {
             "ImageFetcherOrder": []
         })
     );
+    assert_eq!(
+        body_json(
+            request(
+                &app,
+                "/system/configuration/metadataoptions/default",
+                Some(&admin_token),
+            )
+            .await,
+        )
+        .await,
+        metadata_options
+    );
 
     let mut configuration =
         body_json(request(&app, "/System/Configuration", Some(&user_token)).await).await;
@@ -203,6 +215,10 @@ async fn exercise_configuration_routes(database_name: &str) {
     );
     assert!(configuration.get("server_name").is_none());
     assert!(configuration.get("UiCulture").is_none());
+    assert_eq!(
+        body_json(request(&app, "/system/configuration", Some(&user_token)).await).await,
+        configuration
+    );
 
     let branding = body_json(request(&app, "/Branding/Configuration", None).await).await;
     assert_eq!(branding["LoginDisclaimer"], "旧免责声明");
@@ -225,6 +241,10 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(
         named_branding["SplashscreenLocation"],
         "/srv/jellyfin/private/splash.png"
+    );
+    assert_eq!(
+        body_json(request(&app, "/system/configuration/branding", Some(&user_token),).await,).await,
+        named_branding
     );
     assert_eq!(
         request(
@@ -287,6 +307,17 @@ async fn exercise_configuration_routes(database_name: &str) {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
+        post_json(
+            &app,
+            "/system/configuration/encoding",
+            Some(&admin_token),
+            &named_configuration,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
         body_json(request(&app, "/System/Configuration/encoding", Some(&user_token)).await).await,
         named_configuration
     );
@@ -338,6 +369,17 @@ async fn exercise_configuration_routes(database_name: &str) {
         post_json(
             &app,
             "/System/Configuration/Branding",
+            Some(&admin_token),
+            &branding_update,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/system/configuration/branding",
             Some(&admin_token),
             &branding_update,
         )
@@ -481,6 +523,17 @@ async fn exercise_configuration_routes(database_name: &str) {
             .await
             .unwrap()
             .is_empty()
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            "/system/configuration",
+            Some(&admin_token),
+            &configuration,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
     );
 
     let saved = body_json(request(&app, "/System/Configuration", Some(&user_token)).await).await;

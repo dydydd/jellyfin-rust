@@ -66,6 +66,18 @@ async fn scheduled_tasks_routes_match_official_elevated_contract() {
     )
     .await;
     let tasks = tasks.as_array().expect("tasks");
+    let lowercase_tasks = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/scheduledtasks",
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(lowercase_tasks, Value::Array(tasks.clone()));
     assert!(tasks.len() >= 4);
     let names = tasks
         .iter()
@@ -247,6 +259,30 @@ async fn scheduled_tasks_routes_match_official_elevated_contract() {
             .status(),
         StatusCode::BAD_REQUEST
     );
+
+    for (method, route, body) in [
+        (Method::GET, "/scheduledtasks/does-not-exist", None),
+        (Method::POST, "/scheduledtasks/running/does-not-exist", None),
+        (
+            Method::DELETE,
+            "/scheduledtasks/running/does-not-exist",
+            None,
+        ),
+        (
+            Method::POST,
+            "/scheduledtasks/does-not-exist/triggers",
+            Some(json!([])),
+        ),
+    ] {
+        assert_eq!(
+            fixture
+                .request(method, route, Some(&fixture.admin_token), body)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "lowercase route {route}",
+        );
+    }
 
     fixture.cleanup().await;
 }

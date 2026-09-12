@@ -82,12 +82,29 @@ pub(crate) async fn get_named(
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    get_named_by_key(&state, &uri, &headers, &key).await
+}
+
+pub(crate) async fn get_branding_named(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    get_named_by_key(&state, &uri, &headers, "branding").await
+}
+
+async fn get_named_by_key(
+    state: &AppState,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    key: &str,
+) -> Result<Json<Value>, ApiError> {
     authorization::require_default(&state, &headers, &uri).await?;
     let repository = state
         .named_configurations
         .as_ref()
         .ok_or(ApiError::Internal)?;
-    let configuration = repository.load(&key).await?;
+    let configuration = repository.load(key).await?;
     Ok(Json(configuration.configuration))
 }
 

@@ -277,10 +277,13 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     }
 
     match segments.as_slice() {
-        ["health" | "GetUtcTime" | "metrics"] | ["api-docs", "openapi.json"] => RoutePolicy::Public,
-        ["System", "Info", "Public"] | ["system", "info", "public"] | ["System", "Ping"] => {
+        ["health" | "GetUtcTime" | "getutctime" | "metrics"] | ["api-docs", "openapi.json"] => {
             RoutePolicy::Public
         }
+        ["System", "Info", "Public"]
+        | ["system", "info", "public"]
+        | ["System", "Ping"]
+        | ["system", "ping"] => RoutePolicy::Public,
         ["Branding", "Configuration"] | ["branding", "configuration"] => RoutePolicy::Public,
         ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
         ["Branding", "Splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
@@ -307,13 +310,16 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["System", "Info"] | ["system", "info"] => {
             RoutePolicy::FirstTimeSetupOrIgnoreParentalControl
         }
-        ["System", "Restart"] => RoutePolicy::LocalOrElevated,
+        ["System", "Restart"] | ["system", "restart"] => RoutePolicy::LocalOrElevated,
         ["System", "ActivityLog", "Entries"]
+        | ["system", "activitylog", "entries"]
         | ["System", "Logs", ..]
+        | ["system", "logs", ..]
         | ["System", "Info", "Storage"]
         | ["system", "info", "storage"]
-        | ["System", "Shutdown"] => RoutePolicy::Elevated,
-        ["ScheduledTasks", ..] => RoutePolicy::Elevated,
+        | ["System", "Shutdown"]
+        | ["system", "shutdown"] => RoutePolicy::Elevated,
+        ["ScheduledTasks", ..] | ["scheduledtasks", ..] => RoutePolicy::Elevated,
         ["Auth", "Keys", ..] | ["Auth", "Providers" | "PasswordResetProviders"] => {
             RoutePolicy::Elevated
         }
@@ -326,9 +332,14 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["web", "ConfigurationPages"] => RoutePolicy::Elevated,
         ["web", "ConfigurationPage"] | ["web", ..] => RoutePolicy::Public,
         ["System", "Configuration", "MetadataOptions", "Default"]
-        | ["System", "Configuration", "Branding"] => RoutePolicy::Elevated,
-        ["System", "Configuration", ..] if is_write(method) => RoutePolicy::Elevated,
-        ["System", "Configuration"] | ["System", "Configuration", _] => RoutePolicy::Default,
+        | ["system", "configuration", "metadataoptions", "default"] => RoutePolicy::Elevated,
+        ["System", "Configuration", ..] | ["system", "configuration", ..] if is_write(method) => {
+            RoutePolicy::Elevated
+        }
+        ["System", "Configuration"]
+        | ["System", "Configuration", _]
+        | ["system", "configuration"]
+        | ["system", "configuration", _] => RoutePolicy::Default,
         ["Users", "New"] | ["users", "new"] => RoutePolicy::Elevated,
         ["Users", _, "Policy"] | ["users", _, "policy"] => RoutePolicy::Elevated,
         ["Users", "Me"] => RoutePolicy::Default,
@@ -641,5 +652,86 @@ mod tests {
             ),
             RoutePolicy::Public
         );
+    }
+
+    #[test]
+    fn lowercase_system_routes_preserve_canonical_authorization() {
+        for (method, canonical, lowercase) in [
+            (Method::GET, "/GetUtcTime", "/getutctime"),
+            (Method::GET, "/System/Ping", "/system/ping"),
+            (
+                Method::GET,
+                "/System/ActivityLog/Entries",
+                "/system/activitylog/entries",
+            ),
+            (Method::GET, "/System/Logs", "/system/logs"),
+            (Method::GET, "/System/Logs/Log", "/system/logs/log"),
+            (Method::GET, "/System/Endpoint", "/system/endpoint"),
+            (Method::POST, "/System/Restart", "/system/restart"),
+            (Method::POST, "/System/Shutdown", "/system/shutdown"),
+            (Method::GET, "/ScheduledTasks", "/scheduledtasks"),
+            (
+                Method::GET,
+                "/ScheduledTasks/task-id",
+                "/scheduledtasks/task-id",
+            ),
+            (
+                Method::POST,
+                "/ScheduledTasks/Running/task-id",
+                "/scheduledtasks/running/task-id",
+            ),
+            (
+                Method::DELETE,
+                "/ScheduledTasks/Running/task-id",
+                "/scheduledtasks/running/task-id",
+            ),
+            (
+                Method::POST,
+                "/ScheduledTasks/task-id/Triggers",
+                "/scheduledtasks/task-id/triggers",
+            ),
+            (
+                Method::GET,
+                "/System/Configuration",
+                "/system/configuration",
+            ),
+            (
+                Method::POST,
+                "/System/Configuration",
+                "/system/configuration",
+            ),
+            (
+                Method::GET,
+                "/System/Configuration/MetadataOptions/Default",
+                "/system/configuration/metadataoptions/default",
+            ),
+            (
+                Method::POST,
+                "/System/Configuration/Branding",
+                "/system/configuration/branding",
+            ),
+            (
+                Method::GET,
+                "/System/Configuration/Branding",
+                "/system/configuration/branding",
+            ),
+            (
+                Method::GET,
+                "/System/Configuration/encoding",
+                "/system/configuration/encoding",
+            ),
+            (
+                Method::POST,
+                "/System/Configuration/encoding",
+                "/system/configuration/encoding",
+            ),
+            (Method::POST, "/ClientLog/Document", "/clientlog/document"),
+        ] {
+            assert_eq!(
+                route_policy(&method, canonical),
+                route_policy(&method, lowercase),
+                "lowercase route {lowercase} must preserve {canonical} authorization",
+            );
+        }
     }
 }

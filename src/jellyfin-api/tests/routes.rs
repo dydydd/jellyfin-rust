@@ -61,44 +61,49 @@ async fn system_routes_follow_the_public_contract() {
     assert_eq!(body["Id"].as_str().unwrap().len(), 32);
     assert!(body.get("server_name").is_none());
 
-    for method in ["GET", "POST"] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(method)
-                    .uri("/System/Ping")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_text(response).await, "Test Server");
+    for route in ["/System/Ping", "/system/ping"] {
+        for method in ["GET", "POST"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(route)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "route {route}");
+            assert_eq!(body_text(response).await, "Test Server");
+        }
     }
 
-    let before_time_sync = Utc::now();
-    let response = app
-        .clone()
-        .oneshot(Request::get("/GetUtcTime").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    let after_time_sync = Utc::now();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-    let body = body_json(response).await;
-    assert!(body.get("request_reception_time").is_none());
-    let request_reception_time =
-        chrono::DateTime::parse_from_rfc3339(body["RequestReceptionTime"].as_str().unwrap())
-            .unwrap()
-            .with_timezone(&Utc);
-    let response_transmission_time =
-        chrono::DateTime::parse_from_rfc3339(body["ResponseTransmissionTime"].as_str().unwrap())
-            .unwrap()
-            .with_timezone(&Utc);
-    assert!(request_reception_time >= before_time_sync);
-    assert!(response_transmission_time >= request_reception_time);
-    assert!(response_transmission_time <= after_time_sync);
+    for route in ["/GetUtcTime", "/getutctime"] {
+        let before_time_sync = Utc::now();
+        let response = app
+            .clone()
+            .oneshot(Request::get(route).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let after_time_sync = Utc::now();
+        assert_eq!(response.status(), StatusCode::OK, "route {route}");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        let body = body_json(response).await;
+        assert!(body.get("request_reception_time").is_none());
+        let request_reception_time =
+            chrono::DateTime::parse_from_rfc3339(body["RequestReceptionTime"].as_str().unwrap())
+                .unwrap()
+                .with_timezone(&Utc);
+        let response_transmission_time = chrono::DateTime::parse_from_rfc3339(
+            body["ResponseTransmissionTime"].as_str().unwrap(),
+        )
+        .unwrap()
+        .with_timezone(&Utc);
+        assert!(request_reception_time >= before_time_sync);
+        assert!(response_transmission_time >= request_reception_time);
+        assert!(response_transmission_time <= after_time_sync);
+    }
 }
 
 #[tokio::test]
@@ -212,6 +217,19 @@ async fn activity_log_routes_match_the_official_controller_contract() {
     assert_eq!(all_entries["StartIndex"], 0);
     assert!(all_entries["TotalRecordCount"].as_u64().unwrap() >= 3);
     assert!(all_entries.get("items").is_none());
+
+    let lowercase_response = app
+        .clone()
+        .oneshot(authenticated_request(
+            "GET",
+            "/system/activitylog/entries",
+            &administrator_session.access_token,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(lowercase_response.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase_response).await, all_entries);
 
     let filtered_queries = [
         format!(
