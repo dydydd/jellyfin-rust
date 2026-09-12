@@ -23,9 +23,9 @@ pub(crate) struct CreateQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<Uuid>,
-    #[serde(alias = "UserId")]
+    #[serde(alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
-    #[serde(alias = "MediaType")]
+    #[serde(alias = "MediaType", alias = "mediatype")]
     media_type: Option<String>,
 }
 
@@ -50,10 +50,17 @@ pub(crate) struct ItemsQuery {
         alias = "IDs",
         alias = "entryIds",
         alias = "EntryIds",
+        alias = "entryids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<Uuid>,
-    #[serde(default, rename = "userId", alias = "UserId", alias = "user_id")]
+    #[serde(
+        default,
+        rename = "userId",
+        alias = "UserId",
+        alias = "userid",
+        alias = "user_id"
+    )]
     user_id: Option<Uuid>,
     #[serde(default, alias = "Position")]
     position: Option<i32>,

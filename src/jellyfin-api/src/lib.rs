@@ -1923,13 +1923,25 @@ fn collection_routes() -> Router<Arc<AppState>> {
             post(collections::add_items).delete(collections::remove_items),
         )
         .route("/Playlists", post(playlists::create))
+        .route("/playlists", post(playlists::create))
         .route(
             "/Playlists/{playlist_id}",
             get(playlists::get).post(playlists::update),
         )
+        .route(
+            "/playlists/{playlist_id}",
+            get(playlists::get).post(playlists::update),
+        )
         .route("/Playlists/{playlist_id}/Users", get(playlists::get_users))
+        .route("/playlists/{playlist_id}/users", get(playlists::get_users))
         .route(
             "/Playlists/{playlist_id}/Users/{user_id}",
+            get(playlists::get_user)
+                .post(playlists::set_user)
+                .delete(playlists::remove_user),
+        )
+        .route(
+            "/playlists/{playlist_id}/users/{user_id}",
             get(playlists::get_user)
                 .post(playlists::set_user)
                 .delete(playlists::remove_user),
@@ -1941,7 +1953,17 @@ fn collection_routes() -> Router<Arc<AppState>> {
                 .delete(playlists::remove_items),
         )
         .route(
+            "/playlists/{playlist_id}/items",
+            get(playlists::get_items)
+                .post(playlists::add_items)
+                .delete(playlists::remove_items),
+        )
+        .route(
             "/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
+            post(playlists::move_item),
+        )
+        .route(
+            "/playlists/{playlist_id}/items/{item_id}/move/{new_index}",
             post(playlists::move_item),
         )
 }

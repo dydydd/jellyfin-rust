@@ -54,6 +54,184 @@ async fn playlist_item_user_id_casings_select_the_requested_user() {
     .await;
 }
 
+#[tokio::test]
+async fn lowercase_playlist_sdk_routes_reuse_canonical_handlers_and_binding() {
+    with_temporary_database(|database_name| async move {
+        let fixture = Fixture::new(&database_name).await;
+        assert_eq!(
+            fixture
+                .request(Method::POST, "/playlists?name=Denied", None, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let response = fixture
+            .request(
+                Method::POST,
+                &format!(
+                    "/playlists?name=Lowercase%20SDK&ids={}&userid={}&mediatype=Video",
+                    fixture.first_id, fixture.owner_id
+                ),
+                Some(&fixture.owner_token),
+                None,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let playlist_id = Uuid::parse_str(
+            body_json(response).await["Id"]
+                .as_str()
+                .expect("playlist id"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/playlists/{playlist_id}"),
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            fixture
+                .request(
+                    Method::POST,
+                    &format!("/playlists/{playlist_id}"),
+                    Some(&fixture.owner_token),
+                    Some(json!({ "Name": "Lowercase Updated" })),
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+
+        let users_route = format!("/playlists/{playlist_id}/users");
+        assert_eq!(
+            fixture
+                .request(Method::GET, &users_route, Some(&fixture.owner_token), None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let user_route = format!("{users_route}/{}", fixture.outsider_id);
+        assert_eq!(
+            fixture
+                .request(
+                    Method::POST,
+                    &user_route,
+                    Some(&fixture.owner_token),
+                    Some(json!({ "CanEdit": true })),
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            fixture
+                .request(Method::GET, &user_route, Some(&fixture.owner_token), None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        let items_route = format!("/playlists/{playlist_id}/items");
+        assert_eq!(
+            fixture
+                .request(
+                    Method::POST,
+                    &format!(
+                        "{items_route}?ids={}&userid={}",
+                        fixture.second_id, fixture.owner_id
+                    ),
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!(
+                        "{items_route}?startindex=0&enableuserdata=false&imagetypelimit=0&enableimagetypes=Primary&enableimages=false"
+                    ),
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(page["TotalRecordCount"], 2);
+        assert!(
+            page["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item.get("UserData").is_none())
+        );
+        assert_eq!(
+            fixture
+                .request(
+                    Method::POST,
+                    &format!(
+                        "{items_route}/{}/move/0",
+                        fixture.second_id
+                    ),
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            fixture
+                .request(
+                    Method::DELETE,
+                    &format!("{items_route}?entryids={}", fixture.first_id),
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+
+        assert_eq!(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!(
+                        "/playlists/{playlist_id}/instantmix?userid={}&limit=1&fields=Overview&enableimages=false&enableuserdata=false&imagetypelimit=0&enableimagetypes=Primary",
+                        fixture.owner_id
+                    ),
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            fixture
+                .request(Method::DELETE, &user_route, Some(&fixture.owner_token), None)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+
+        fixture.database.close().await.unwrap();
+    })
+    .await;
+}
+
 async fn with_temporary_database<F, Fut>(test: F)
 where
     F: FnOnce(String) -> Fut + Send + 'static,
