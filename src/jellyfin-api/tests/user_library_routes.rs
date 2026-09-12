@@ -172,6 +172,43 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
     assert_eq!(lyrics["Metadata"]["Artist"], "Test Artist");
     assert_eq!(lyrics["Lyrics"][0]["Text"], "First line");
 
+    let lowercase_root = get_json(
+        &fixture.app,
+        &format!("/users/{}/items/root", fixture.user_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_base_item(&lowercase_root, fixture.root_id, "UserRootFolder", "Root");
+    let lowercase_item = format!("/users/{}/items/{}", fixture.user_id, fixture.item_id);
+    let lowercase_intros = get_json(
+        &fixture.app,
+        &format!("{lowercase_item}/intros"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(lowercase_intros, intros);
+    let lowercase_trailers = get_json(
+        &fixture.app,
+        &format!("{lowercase_item}/localtrailers"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(lowercase_trailers, trailers);
+    let lowercase_features = get_json(
+        &fixture.app,
+        &format!("{lowercase_item}/specialfeatures"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(lowercase_features, features);
+    let lowercase_lyrics = get_json(
+        &fixture.app,
+        &format!("{lowercase_item}/lyrics"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(lowercase_lyrics, lyrics);
+
     fixture.cleanup().await;
 }
 

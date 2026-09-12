@@ -978,7 +978,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(configuration::get).post(configuration::update),
         )
         .route(
+            "/system/configuration",
+            get(configuration::get).post(configuration::update),
+        )
+        .route(
             "/System/Configuration/MetadataOptions/Default",
+            get(configuration::default_metadata_options),
+        )
+        .route(
+            "/system/configuration/metadataoptions/default",
             get(configuration::default_metadata_options),
         )
         .route(
@@ -986,7 +994,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(branding::update_configuration),
         )
         .route(
+            "/system/configuration/branding",
+            post(branding::update_configuration),
+        )
+        .route(
             "/System/Configuration/{key}",
+            get(configuration::get_named).post(configuration::update_named),
+        )
+        .route(
+            "/system/configuration/{key}",
             get(configuration::get_named).post(configuration::update_named),
         )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
@@ -1188,6 +1204,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_root_legacy),
         )
         .route(
+            "/users/{user_id}/items/root",
+            get(user_library::get_root_legacy),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}",
             get(user_library::get_item_legacy),
         )
@@ -1200,7 +1220,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_intros_legacy),
         )
         .route(
+            "/users/{user_id}/items/{item_id}/intros",
+            get(user_library::get_intros_legacy),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}/LocalTrailers",
+            get(user_library::get_local_trailers_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/localtrailers",
             get(user_library::get_local_trailers_legacy),
         )
         .route(
@@ -1208,7 +1236,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_special_features_legacy),
         )
         .route(
+            "/users/{user_id}/items/{item_id}/specialfeatures",
+            get(user_library::get_special_features_legacy),
+        )
+        .route(
             "/Users/{user_id}/Items/{item_id}/Lyrics",
+            get(user_library::get_lyrics_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/lyrics",
             get(user_library::get_lyrics_legacy),
         )
         .merge(item_query_routes())
@@ -1350,31 +1386,51 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
 fn system_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/system/ping", get(ping).post(ping))
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
+        .route("/system/activitylog/entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
+        .route("/system/logs", get(system::get_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
+        .route("/system/logs/log", get(system::get_log_file))
         .route("/System/Info", get(system::info))
         .route("/system/info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))
         .route("/system/info/storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
+        .route("/system/endpoint", get(system::endpoint_info))
         .route("/System/Ext/ServerDomains", get(system::server_domains))
+        .route("/system/ext/serverdomains", get(system::server_domains))
         .route("/System/Restart", post(system::restart))
+        .route("/system/restart", post(system::restart))
         .route("/System/Shutdown", post(system::shutdown))
+        .route("/system/shutdown", post(system::shutdown))
         .route("/Document", post(client_log::document))
         .route("/ClientLog/Document", post(client_log::document))
+        .route("/clientlog/document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
+        .route("/getutctime", get(time_sync::get_utc_time))
         .route("/metrics", get(metrics))
         .route("/ScheduledTasks", get(scheduled_tasks::list))
+        .route("/scheduledtasks", get(scheduled_tasks::list))
         .route(
             "/ScheduledTasks/Running/{task_id}",
+            post(scheduled_tasks::start).delete(scheduled_tasks::stop),
+        )
+        .route(
+            "/scheduledtasks/running/{task_id}",
             post(scheduled_tasks::start).delete(scheduled_tasks::stop),
         )
         .route(
             "/ScheduledTasks/{task_id}/Triggers",
             post(scheduled_tasks::update_triggers),
         )
+        .route(
+            "/scheduledtasks/{task_id}/triggers",
+            post(scheduled_tasks::update_triggers),
+        )
         .route("/ScheduledTasks/{task_id}", get(scheduled_tasks::get))
+        .route("/scheduledtasks/{task_id}", get(scheduled_tasks::get))
 }
 
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
@@ -1860,6 +1916,10 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             "/Users/{user_id}/PlayedItems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
         )
+        .route(
+            "/users/{user_id}/playeditems/{item_id}",
+            post(playstate::mark_played).delete(playstate::mark_unplayed),
+        )
 }
 
 fn user_data_routes() -> Router<Arc<AppState>> {
@@ -1893,6 +1953,10 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
         )
         .route(
+            "/users/{user_id}/favoriteitems/{item_id}",
+            post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
+        )
+        .route(
             "/UserItems/{item_id}/Rating",
             post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
         )
@@ -1902,6 +1966,10 @@ fn user_data_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/Users/{user_id}/Items/{item_id}/Rating",
+            post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/rating",
             post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
         )
 }

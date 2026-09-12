@@ -219,6 +219,32 @@ async fn assert_rating_values_aliases_and_keys(fixture: &RatingFixture) {
     let deleted =
         body_json(request(&fixture.app, "DELETE", &legacy, &fixture.user_token).await).await;
     assert_rating_body(&deleted, fixture.allowed_item_id, None, None);
+    let lowercase_legacy = format!(
+        "/users/{}/items/{}/rating",
+        fixture.user_id, fixture.allowed_item_id
+    );
+    let liked = body_json(
+        request(
+            &fixture.app,
+            "POST",
+            &format!("{lowercase_legacy}?likes=true"),
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    assert_rating_body(&liked, fixture.allowed_item_id, Some(10.0), Some(true));
+    let deleted = body_json(
+        request(
+            &fixture.app,
+            "DELETE",
+            &lowercase_legacy,
+            &fixture.user_token,
+        )
+        .await,
+    )
+    .await;
+    assert_rating_body(&deleted, fixture.allowed_item_id, None, None);
 
     let current = repository
         .get(

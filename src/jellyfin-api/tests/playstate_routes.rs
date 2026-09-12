@@ -1863,6 +1863,24 @@ async fn assert_authentication_and_permissions(fixture: &PlaystateFixture) {
     assert_eq!(response.status(), StatusCode::OK);
     let response = request(&fixture.app, "DELETE", &route, &fixture.administrator_token).await;
     assert_eq!(response.status(), StatusCode::OK);
+
+    let lowercase_route = format!("/users/{}/playeditems/{}", fixture.user_id, fixture.item_id);
+    let response = request(
+        &fixture.app,
+        "POST",
+        &lowercase_route,
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = request(
+        &fixture.app,
+        "DELETE",
+        &lowercase_route,
+        &fixture.administrator_token,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 async fn assert_modern_target_user_semantics(fixture: &PlaystateFixture) {
