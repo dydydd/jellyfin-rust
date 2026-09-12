@@ -76,6 +76,53 @@ async fn lowercase_filter_routes_match_canonical_routes() {
 }
 
 #[tokio::test]
+async fn filter_routes_bind_sdk_repeated_collections_like_the_official_model_binder() {
+    let fixture = Fixture::new().await;
+
+    let repeated_filters2 = body_json(
+        fixture
+            .request(
+                "/Items/Filters2?includeItemTypes=Movie&includeItemTypes=Audio",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let delimited_filters2 = body_json(
+        fixture
+            .request(
+                "/Items/Filters2?includeItemTypes=Movie%2CAudio",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(repeated_filters2, delimited_filters2);
+
+    let repeated_legacy = body_json(
+        fixture
+            .request(
+                "/items/filters?includeitemtypes=Movie&includeitemtypes=Audio&mediatypes=Video&mediatypes=Audio",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let delimited_legacy = body_json(
+        fixture
+            .request(
+                "/Items/Filters?includeItemTypes=Movie%2CAudio&mediaTypes=Video%2CAudio",
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(repeated_legacy, delimited_legacy);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn filters2_returns_official_query_filter_shape() {
     let fixture = Fixture::new().await;
     fixture.apply_restricted_library_policy().await;

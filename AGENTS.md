@@ -286,6 +286,9 @@
 - Keep both the modern `/Items/Suggestions` route and legacy `/Users/{userId}/Suggestions`
   route reachable through fully lowercase aliases, with equivalent authorization and filtered
   results.
+- Bind `/Items/Filters` and `/Items/Filters2` collection queries with the official comma-delimited
+  collection model binder. A single value may contain commas, while repeated keys emitted by the
+  Kotlin SDK must preserve every value; accept fully lowercase compound query names as well.
 - Keep both Suggestions routes on the official signed `Int32` pagination contract: a negative
   `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative `Limit` follows the
   official SQLite unlimited-limit behavior, and out-of-range values fail binding. Preserve the
