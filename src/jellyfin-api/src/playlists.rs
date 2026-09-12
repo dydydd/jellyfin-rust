@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use axum::{
     Json,
@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_data::{BaseItemPage, PlaylistUserPermission};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use uuid::Uuid;
 
 use crate::user_library::BaseItemQueryResult;
@@ -129,10 +129,39 @@ pub(crate) struct UpdateBody {
     is_public: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
+#[derive(Debug, Default)]
 pub(crate) struct UpdateUserBody {
     can_edit: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for UpdateUserBody {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct UpdateUserVisitor;
+
+        impl<'de> de::Visitor<'de> for UpdateUserVisitor {
+            type Value = UpdateUserBody;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a playlist user update object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut request = UpdateUserBody::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    if key.eq_ignore_ascii_case("CanEdit") {
+                        // ASP.NET binds JSON property names without regard to
+                        // case, and the last duplicate property wins.
+                        request.can_edit = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(UpdateUserVisitor)
+    }
 }
 
 pub(crate) async fn create(

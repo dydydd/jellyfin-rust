@@ -445,7 +445,7 @@ async fn assert_update_and_share_routes(fixture: &Fixture, playlist_id: Uuid) {
                 Method::POST,
                 &outsider_route,
                 Some(&fixture.owner_token),
-                Some(json!({ "CanEdit": true })),
+                Some(json!({ "cAnEdIt": true })),
             )
             .await
             .status(),
