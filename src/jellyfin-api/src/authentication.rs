@@ -279,6 +279,10 @@ pub(crate) enum AuthenticatedIdentity {
 }
 
 impl AuthenticatedSession {
+    pub(crate) fn can_download_content(&self) -> bool {
+        self.user.is_administrator || self.policy.enable_content_downloading
+    }
+
     pub(crate) fn can_manage_collections(&self) -> bool {
         self.user.is_administrator || self.policy.enable_collection_management
     }

@@ -20,6 +20,9 @@ enum RoutePolicy {
     Public,
     Optional,
     Default,
+    Download,
+    SubtitleManagement,
+    LyricManagement,
     IgnoreParentalControl,
     FirstTimeSetupOrDefault,
     FirstTimeSetupOrIgnoreParentalControl,
@@ -152,7 +155,8 @@ pub(crate) async fn require_route_auth(
     next: Next,
 ) -> Result<Response, ApiError> {
     let remote_ip = remote_ip(request.extensions().get::<ConnectInfo<SocketAddr>>());
-    match route_policy(request.method(), request.uri().path()) {
+    let policy = route_policy(request.method(), request.uri().path());
+    match policy {
         RoutePolicy::Public => Ok(next.run(request).await),
         RoutePolicy::Optional => {
             authentication::optional_authenticated_identity(
@@ -166,6 +170,28 @@ pub(crate) async fn require_route_auth(
         RoutePolicy::Default => {
             require_default_with_remote(&state, request.headers(), request.uri(), remote_ip)
                 .await?;
+            Ok(next.run(request).await)
+        }
+        RoutePolicy::Download | RoutePolicy::SubtitleManagement | RoutePolicy::LyricManagement => {
+            let identity =
+                require_default_with_remote(&state, request.headers(), request.uri(), remote_ip)
+                    .await?;
+            let allowed = match (&identity, policy) {
+                (AuthenticatedIdentity::ApiKey(_), _) => true,
+                (AuthenticatedIdentity::Device(session), RoutePolicy::Download) => {
+                    session.can_download_content()
+                }
+                (AuthenticatedIdentity::Device(session), RoutePolicy::SubtitleManagement) => {
+                    session.can_manage_subtitles()
+                }
+                (AuthenticatedIdentity::Device(session), RoutePolicy::LyricManagement) => {
+                    session.can_manage_lyrics()
+                }
+                (AuthenticatedIdentity::Device(_), _) => false,
+            };
+            if !allowed {
+                return Err(ApiError::Forbidden);
+            }
             Ok(next.run(request).await)
         }
         RoutePolicy::IgnoreParentalControl => {
@@ -364,6 +390,41 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             RoutePolicy::Elevated
         }
         ["items", _, "remoteimages", "download"] => RoutePolicy::Elevated,
+        ["Items", _, "Download"] | ["items", _, "download"] if is_get_or_head(method) => {
+            RoutePolicy::Download
+        }
+        ["Items", _, "RemoteSearch", "Subtitles", _]
+        | ["items", _, "remotesearch", "subtitles", _]
+            if is_get_or_head(method) || method == Method::POST =>
+        {
+            RoutePolicy::SubtitleManagement
+        }
+        ["Providers", "Subtitles", "Subtitles", _] | ["providers", "subtitles", "subtitles", _]
+            if is_get_or_head(method) =>
+        {
+            RoutePolicy::SubtitleManagement
+        }
+        ["Videos", _, "Subtitles"] | ["videos", _, "subtitles"] if method == Method::POST => {
+            RoutePolicy::SubtitleManagement
+        }
+        ["Audio", _, "Lyrics"] | ["audio", _, "lyrics"]
+            if matches!(*method, Method::POST | Method::DELETE) =>
+        {
+            RoutePolicy::LyricManagement
+        }
+        ["Audio", _, "RemoteSearch", "Lyrics"] | ["audio", _, "remotesearch", "lyrics"]
+            if is_get_or_head(method) =>
+        {
+            RoutePolicy::LyricManagement
+        }
+        ["Audio", _, "RemoteSearch", "Lyrics", _] | ["audio", _, "remotesearch", "lyrics", _]
+            if method == Method::POST =>
+        {
+            RoutePolicy::LyricManagement
+        }
+        ["Providers", "Lyrics", _] | ["providers", "lyrics", _] if is_get_or_head(method) => {
+            RoutePolicy::LyricManagement
+        }
         ["Videos", "MergeVersions"] | ["videos", "mergeversions"] if method == Method::POST => {
             RoutePolicy::Elevated
         }
@@ -444,6 +505,7 @@ fn is_known_api_path(segments: &[&str]) -> bool {
             | "audio"
             | "videos"
             | "plugins"
+            | "providers"
             | "packages"
             | "environment"
             | "localization"
@@ -705,6 +767,84 @@ mod tests {
                 "/Videos/{item_id}/{media_source_id}/Attachments/0"
             ),
             RoutePolicy::Public
+        );
+    }
+
+    #[test]
+    fn named_user_permission_routes_match_official_controller_policies() {
+        for (method, canonical, lowercase, expected) in [
+            (
+                Method::GET,
+                "/Items/item-id/Download",
+                "/items/item-id/download",
+                RoutePolicy::Download,
+            ),
+            (
+                Method::GET,
+                "/Items/item-id/RemoteSearch/Subtitles/eng",
+                "/items/item-id/remotesearch/subtitles/eng",
+                RoutePolicy::SubtitleManagement,
+            ),
+            (
+                Method::POST,
+                "/Items/item-id/RemoteSearch/Subtitles/provider-id",
+                "/items/item-id/remotesearch/subtitles/provider-id",
+                RoutePolicy::SubtitleManagement,
+            ),
+            (
+                Method::GET,
+                "/Providers/Subtitles/Subtitles/provider-id",
+                "/providers/subtitles/subtitles/provider-id",
+                RoutePolicy::SubtitleManagement,
+            ),
+            (
+                Method::POST,
+                "/Videos/item-id/Subtitles",
+                "/videos/item-id/subtitles",
+                RoutePolicy::SubtitleManagement,
+            ),
+            (
+                Method::POST,
+                "/Audio/item-id/Lyrics",
+                "/audio/item-id/lyrics",
+                RoutePolicy::LyricManagement,
+            ),
+            (
+                Method::DELETE,
+                "/Audio/item-id/Lyrics",
+                "/audio/item-id/lyrics",
+                RoutePolicy::LyricManagement,
+            ),
+            (
+                Method::GET,
+                "/Audio/item-id/RemoteSearch/Lyrics",
+                "/audio/item-id/remotesearch/lyrics",
+                RoutePolicy::LyricManagement,
+            ),
+            (
+                Method::POST,
+                "/Audio/item-id/RemoteSearch/Lyrics/provider-id",
+                "/audio/item-id/remotesearch/lyrics/provider-id",
+                RoutePolicy::LyricManagement,
+            ),
+            (
+                Method::GET,
+                "/Providers/Lyrics/provider-id",
+                "/providers/lyrics/provider-id",
+                RoutePolicy::LyricManagement,
+            ),
+        ] {
+            assert_eq!(route_policy(&method, canonical), expected, "{canonical}");
+            assert_eq!(route_policy(&method, lowercase), expected, "{lowercase}");
+        }
+
+        assert_eq!(
+            route_policy(&Method::GET, "/Audio/item-id/Lyrics"),
+            RoutePolicy::Default,
+        );
+        assert_eq!(
+            route_policy(&Method::DELETE, "/Videos/item-id/Subtitles/0"),
+            RoutePolicy::Elevated,
         );
     }
 
