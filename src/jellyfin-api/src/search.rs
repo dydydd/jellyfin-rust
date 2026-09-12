@@ -1,7 +1,7 @@
 use std::{str::FromStr, sync::Arc};
 
 use axum::{Json, extract::State, http::HeaderMap};
-use axum_extra::extract::Query;
+use axum_extra::extract::{Query, QueryRejection};
 use jellyfin_controller::{Artist, ArtistValueKind, Genre, MusicGenre, Person, Studio};
 use jellyfin_data::{
     BaseItemQuery, ItemValueQuery, PersonQuery, ScoredBaseItemPage, entities::base_item,
@@ -13,6 +13,82 @@ use uuid::Uuid;
 use crate::{ApiError, AppState, authentication};
 
 const DEFAULT_EXCLUDE_ITEM_TYPES: [&str; 3] = ["Year", "Folder", "CollectionFolder"];
+
+const BASE_ITEM_KIND_NAMES: [&str; 37] = [
+    "AggregateFolder",
+    "Audio",
+    "AudioBook",
+    "BasePluginFolder",
+    "Book",
+    "BoxSet",
+    "Channel",
+    "ChannelFolderItem",
+    "CollectionFolder",
+    "Episode",
+    "Folder",
+    "Genre",
+    "ManualPlaylistsFolder",
+    "Movie",
+    "LiveTvChannel",
+    "LiveTvProgram",
+    "MusicAlbum",
+    "MusicArtist",
+    "MusicGenre",
+    "MusicVideo",
+    "Person",
+    "Photo",
+    "PhotoAlbum",
+    "Playlist",
+    "PlaylistsFolder",
+    "Program",
+    "Recording",
+    "Season",
+    "Series",
+    "Studio",
+    "Trailer",
+    "TvChannel",
+    "TvProgram",
+    "UserRootFolder",
+    "UserView",
+    "Video",
+    "Year",
+];
+const MEDIA_TYPE_NAMES: [&str; 5] = ["Unknown", "Video", "Audio", "Photo", "Book"];
+
+#[derive(Clone, Copy, Debug)]
+struct SearchBaseItemKind(&'static str);
+
+impl FromStr for SearchBaseItemKind {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_search_enum(value, &BASE_ITEM_KIND_NAMES).map(Self)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SearchMediaType(&'static str);
+
+impl FromStr for SearchMediaType {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_search_enum(value, &MEDIA_TYPE_NAMES).map(Self)
+    }
+}
+
+fn parse_search_enum(value: &str, names: &'static [&'static str]) -> Result<&'static str, ()> {
+    let value = value.trim();
+    if let Ok(index) = value.parse::<usize>() {
+        return names.get(index).copied().ok_or(());
+    }
+
+    names
+        .iter()
+        .copied()
+        .find(|name| name.eq_ignore_ascii_case(value))
+        .ok_or(())
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -29,23 +105,23 @@ pub(crate) struct SearchHintsQuery {
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
         alias = "includeitemtypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
-    include_item_types: Vec<String>,
+    include_item_types: Vec<SearchBaseItemKind>,
     #[serde(
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
         alias = "excludeitemtypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
-    exclude_item_types: Vec<String>,
+    exclude_item_types: Vec<SearchBaseItemKind>,
     #[serde(
         rename = "mediaTypes",
         alias = "MediaTypes",
         alias = "mediatypes",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
-    media_types: Vec<String>,
+    media_types: Vec<SearchMediaType>,
     #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
     #[serde(rename = "isMovie", alias = "IsMovie", alias = "ismovie")]
@@ -94,10 +170,10 @@ pub(crate) struct SearchHintsQuery {
 pub(crate) async fn hints(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<SearchHintsQuery>,
+    query: Result<Query<SearchHintsQuery>, QueryRejection>,
 ) -> Result<Json<SearchHintResult>, ApiError> {
-    let mut query = query;
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let search_term = query
         .search_term
         .as_deref()
@@ -157,7 +233,10 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    include_item_types: std::mem::take(&mut query.include_item_types),
+                    include_item_types: std::mem::take(&mut query.include_item_types)
+                        .into_iter()
+                        .map(|item_type| item_type.0.to_owned())
+                        .collect(),
                     exclude_item_types,
                     media_types: media_types_for_query(
                         &mut query.media_types,
@@ -394,18 +473,26 @@ fn paginate_search_hints(result: &mut SearchHintResult, start_index: i32, limit:
 }
 
 fn media_types_for_query(
-    media_types: &mut Vec<String>,
+    media_types: &mut Vec<SearchMediaType>,
     remaining_consumers: &mut usize,
 ) -> Vec<String> {
     *remaining_consumers -= 1;
-    if *remaining_consumers == 0 {
+    let media_types = if *remaining_consumers == 0 {
         std::mem::take(media_types)
     } else {
         media_types.clone()
-    }
+    };
+    media_types
+        .into_iter()
+        .map(|media_type| media_type.0.to_owned())
+        .collect()
 }
 
-fn search_exclude_item_types(mut exclude_item_types: Vec<String>) -> Vec<String> {
+fn search_exclude_item_types(exclude_item_types: Vec<SearchBaseItemKind>) -> Vec<String> {
+    let mut exclude_item_types = exclude_item_types
+        .into_iter()
+        .map(|item_type| item_type.0.to_owned())
+        .collect::<Vec<_>>();
     for item_type in DEFAULT_EXCLUDE_ITEM_TYPES {
         if !exclude_item_types
             .iter()
@@ -417,20 +504,20 @@ fn search_exclude_item_types(mut exclude_item_types: Vec<String>) -> Vec<String>
     exclude_item_types
 }
 
-fn includes_hint_type(include_item_types: &[String], hint_types: &[&str]) -> bool {
+fn includes_hint_type(include_item_types: &[SearchBaseItemKind], hint_types: &[&str]) -> bool {
     include_item_types.is_empty()
         || hint_types.iter().any(|hint_type| {
             include_item_types
                 .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(hint_type))
+                .any(|candidate| candidate.0.eq_ignore_ascii_case(hint_type))
         })
 }
 
-fn excludes_hint_type(exclude_item_types: &[String], hint_types: &[&str]) -> bool {
+fn excludes_hint_type(exclude_item_types: &[SearchBaseItemKind], hint_types: &[&str]) -> bool {
     hint_types.iter().any(|hint_type| {
         exclude_item_types
             .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(hint_type))
+            .any(|candidate| candidate.0.eq_ignore_ascii_case(hint_type))
     })
 }
 

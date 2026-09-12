@@ -460,6 +460,10 @@
   negative `StartIndex` skips nothing, non-positive `Limit` returns the default empty result with a
   zero total, and values outside `Int32` fail binding. Apply the limit before candidate counting,
   rather than returning an empty page with an unbounded total.
+- Bind Search Hints `IncludeItemTypes`, `ExcludeItemTypes`, and `MediaTypes` with the official
+  collection model binder: accept case-insensitive enum names and defined integers, discard invalid
+  elements, split commas only for a single query value, and do not re-split comma-containing values
+  when the SDK sends repeated keys. Authenticate before surfacing malformed query errors.
 - Hydrate every persisted base item through the shared item-type registry before DTO projection,
   including playlist entries, so legacy CLR names never escape through `BaseItemDto.Type` and an
   unknown plugin row cannot make a client reject the enclosing page.

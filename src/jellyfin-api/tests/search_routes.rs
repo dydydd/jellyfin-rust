@@ -330,6 +330,93 @@ async fn exercise_search_routes(database_name: &str) {
     assert_eq!(hint["Album"], "Matrix Collection");
     assert!(hint.get("id").is_none());
 
+    for route in ["/Search/Hints", "/search/hints"] {
+        let enum_names = body_json(
+            request(
+                &app,
+                &format!(
+                    "{route}?searchTerm=Matrix&includeItemTypes=movie,invalid,audio&mediaTypes=video,invalid"
+                ),
+                Some(&user_token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(enum_names["TotalRecordCount"], 2, "route={route}");
+        assert_eq!(
+            enum_names["SearchHints"]
+                .as_array()
+                .expect("search hints")
+                .iter()
+                .map(|hint| hint["Name"].as_str().expect("hint name"))
+                .collect::<Vec<_>>(),
+            ["Matrix Reloaded", "The Matrix"],
+            "route={route}"
+        );
+
+        let enum_numbers = body_json(
+            request(
+                &app,
+                &format!("{route}?searchTerm=Matrix&includeItemTypes=13&mediaTypes=1"),
+                Some(&user_token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(enum_numbers, enum_names, "route={route}");
+
+        let repeated = body_json(
+            request(
+                &app,
+                &format!(
+                    "{route}?searchTerm=Matrix&includeItemTypes=Movie,Series&includeItemTypes=Audio&mediaTypes=Video,Photo&mediaTypes=Audio"
+                ),
+                Some(&user_token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(repeated["TotalRecordCount"], 1, "route={route}");
+        assert_eq!(repeated["SearchHints"][0]["Name"], "Matrix Theme");
+        assert_eq!(repeated["SearchHints"][0]["Type"], "Audio");
+        assert_eq!(repeated["SearchHints"][0]["MediaType"], "Audio");
+
+        let excluded_by_number = body_json(
+            request(
+                &app,
+                &format!(
+                    "{route}?searchTerm=Matrix&includeItemTypes=Movie,Audio&excludeItemTypes=13,invalid"
+                ),
+                Some(&user_token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(excluded_by_number["TotalRecordCount"], 1, "route={route}");
+        assert_eq!(excluded_by_number["SearchHints"][0]["Type"], "Audio");
+    }
+
+    assert_eq!(
+        request(
+            &app,
+            "/search/hints?startIndex=malformed&searchTerm=Matrix",
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(
+            &app,
+            "/Search/Hints?startIndex=malformed&searchTerm=Matrix",
+            Some(&user_token),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
     let limited = body_json(
         request(
             &app,
