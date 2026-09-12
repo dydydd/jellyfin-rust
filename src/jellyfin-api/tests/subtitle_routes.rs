@@ -8,8 +8,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamFilter, MediaStreamService, UserService};
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice,
+    ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository,
+    NewBaseItem, NewDevice,
     entities::{item_value, user},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
@@ -22,7 +22,7 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Subtitle Tests\", Device=\"Te
 const DATABASE_PREFIX: &str = "jellyfin_subtitle_routes_";
 
 #[tokio::test]
-async fn delete_subtitle_route_uses_subtitle_management_and_deletes_only_target_stream() {
+async fn delete_subtitle_route_requires_elevation_and_deletes_only_target_stream() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -78,13 +78,19 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
             .status(),
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        fixture
-            .send(Method::DELETE, &route, Some(&fixture.manager_token))
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
+    for route in [
+        route.clone(),
+        Fixture::lowercase_subtitle_route(fixture.item_id, 2),
+    ] {
+        assert_eq!(
+            fixture
+                .send(Method::DELETE, &route, Some(&fixture.manager_token))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "subtitle-management permission must not satisfy RequiresElevation for {route}",
+        );
+    }
     assert_eq!(
         fixture
             .send(Method::DELETE, &route, Some(&fixture.admin_token))
@@ -94,7 +100,11 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
     );
     assert_eq!(
         fixture
-            .send(Method::DELETE, &route, Some(&fixture.manager_token))
+            .send(
+                Method::DELETE,
+                &Fixture::lowercase_subtitle_route(fixture.item_id, 3),
+                Some(&fixture.api_key_token),
+            )
             .await
             .status(),
         StatusCode::NO_CONTENT
@@ -110,11 +120,7 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
         .collect::<Vec<_>>();
     assert_eq!(
         remaining,
-        vec![
-            (0, MediaStreamType::Video),
-            (1, MediaStreamType::Audio),
-            (3, MediaStreamType::Subtitle),
-        ]
+        vec![(0, MediaStreamType::Video), (1, MediaStreamType::Audio),]
     );
 
     fixture.cleanup().await;
@@ -347,7 +353,12 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
     );
     assert_eq!(
         fixture
-            .send_json(Method::POST, &route, Some(&fixture.manager_token), &body)
+            .send_json(
+                Method::POST,
+                &Fixture::lowercase_upload_route(fixture.item_id),
+                Some(&fixture.manager_token),
+                &body,
+            )
             .await
             .status(),
         StatusCode::NO_CONTENT
@@ -710,6 +721,7 @@ struct Fixture {
     user_token: String,
     manager_id: Uuid,
     manager_token: String,
+    api_key_token: String,
     item_id: Uuid,
     alternate_id: Uuid,
     outsider_id: Uuid,
@@ -782,6 +794,11 @@ impl Fixture {
             ))
             .await
             .expect("manager session")
+            .access_token;
+        let api_key_token = ApiKeyRepository::new(database.clone())
+            .create(&format!("subtitle-key-{suffix}"))
+            .await
+            .expect("subtitle API key creation")
             .access_token;
 
         let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
@@ -923,6 +940,7 @@ impl Fixture {
             user_token,
             manager_id: manager.id,
             manager_token,
+            api_key_token,
             item_id: item.id,
             alternate_id: alternate.id,
             outsider_id: outsider.id,
@@ -935,6 +953,10 @@ impl Fixture {
         format!("/Videos/{item_id}/Subtitles/{index}")
     }
 
+    fn lowercase_subtitle_route(item_id: Uuid, index: i32) -> String {
+        format!("/videos/{item_id}/subtitles/{index}")
+    }
+
     fn search_route(item_id: Uuid, language: &str) -> String {
         format!("/Items/{item_id}/RemoteSearch/Subtitles/{language}?isPerfectMatch=true")
     }
@@ -945,6 +967,10 @@ impl Fixture {
 
     fn upload_route(item_id: Uuid) -> String {
         format!("/Videos/{item_id}/Subtitles")
+    }
+
+    fn lowercase_upload_route(item_id: Uuid) -> String {
+        format!("/videos/{item_id}/subtitles")
     }
 
     fn stream_route(item_id: Uuid, index: i32, format: &str) -> String {
@@ -1042,6 +1068,10 @@ impl Fixture {
     }
 
     async fn cleanup(self) {
+        ApiKeyRepository::new(self.database.clone())
+            .revoke(&self.api_key_token)
+            .await
+            .expect("API key cleanup");
         BaseItemRepository::new(self.database.clone())
             .delete_many(&[
                 self.item_id,

@@ -370,7 +370,11 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         {
             RoutePolicy::Public
         }
-        ["Videos", _, "Subtitles", _] if method == Method::DELETE => RoutePolicy::Default,
+        ["Videos", _, "Subtitles", _] | ["videos", _, "subtitles", _]
+            if method == Method::DELETE =>
+        {
+            RoutePolicy::Elevated
+        }
         ["Videos", _, _, "Attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
         ["videos", _, _, "attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
         ["Audio", _, "hls", ..] => RoutePolicy::Public,
@@ -604,6 +608,16 @@ mod tests {
             route_policy(&Method::POST, "/items/{item_id}/remoteimages/download"),
             RoutePolicy::Elevated
         );
+        for route in [
+            "/Videos/{item_id}/Subtitles/0",
+            "/videos/{item_id}/subtitles/0",
+        ] {
+            assert_eq!(
+                route_policy(&Method::DELETE, route),
+                RoutePolicy::Elevated,
+                "route {route}",
+            );
+        }
         assert_eq!(
             route_policy(&Method::GET, "/Localization/Options"),
             RoutePolicy::FirstTimeSetupOrDefault

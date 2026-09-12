@@ -2322,7 +2322,15 @@ fn video_routes() -> Router<Arc<AppState>> {
             axum::routing::delete(subtitles::delete_subtitle),
         )
         .route(
+            "/videos/{item_id}/subtitles/{index}",
+            axum::routing::delete(subtitles::delete_subtitle),
+        )
+        .route(
             "/Videos/{item_id}/Subtitles",
+            post(subtitles::upload_subtitle),
+        )
+        .route(
+            "/videos/{item_id}/subtitles",
             post(subtitles::upload_subtitle),
         )
         .route(

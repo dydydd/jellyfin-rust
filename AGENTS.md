@@ -129,6 +129,9 @@
   official 204 response does. Keep search, download, and preview routes reachable through fully
   lowercase static aliases, and populate Episode subtitle searches with the persisted or
   relational Series name without a per-item query.
+- Keep external-subtitle deletion administrator-only like the official `RequiresElevation` action;
+  `EnableSubtitleManagement` is sufficient for search, download, and upload but not deletion.
+  Preserve elevated API-key access and the fully lowercase delete/upload route aliases.
 - Project intros, local trailers, special features, and video additional parts with the official
   default all-fields DTO options through one batched projector. Apply the target user's policy to
   both the requested owner and every resolved child before returning the original response shape.

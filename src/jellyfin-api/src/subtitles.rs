@@ -81,13 +81,12 @@ pub(crate) struct SubtitlePlaylistQuery {
 
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     AxumPath((item_id, index)): AxumPath<(Uuid, i32)>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_subtitles() {
-        return Err(ApiError::Forbidden);
-    }
+    // `SubtitleController.DeleteSubtitle` is `RequiresElevation`, unlike the
+    // other subtitle mutations which use `SubtitleManagement`. Authorization
+    // is enforced by the route middleware so elevated API keys work as well as
+    // administrator sessions.
     state
         .media_streams
         .delete_media_stream(item_id, index, MediaStreamType::Subtitle)
