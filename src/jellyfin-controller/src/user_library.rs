@@ -838,7 +838,7 @@ impl UserLibraryService {
         authenticated_user: &user::Model,
         target_user_id: Uuid,
         item_id: Uuid,
-        file_name: &str,
+        file_name: Option<&str>,
         content: &[u8],
     ) -> Result<Value, UserLibraryError> {
         let item = self
@@ -847,6 +847,7 @@ impl UserLibraryService {
         if content.is_empty() {
             return Err(UserLibraryError::InvalidLyricFile);
         }
+        let file_name = file_name.ok_or(UserLibraryError::InvalidLyricFile)?;
         let format = uploaded_lyric_format(file_name).ok_or(UserLibraryError::InvalidLyricFile)?;
         let decoded = decode_lyric_bytes(content);
         let lyrics = LyricManager::parse_lyrics(format, &decoded)

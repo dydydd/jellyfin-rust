@@ -890,14 +890,13 @@ pub(crate) async fn upload_lyrics(
     if !authenticated.can_manage_lyrics() {
         return Err(ApiError::Forbidden);
     }
-    let file_name = query.file_name.as_deref().ok_or(ApiError::InvalidRequest)?;
     let lyrics = state
         .user_library
         .save_lyrics(
             &authenticated.user,
             authenticated.user.id,
             item_id,
-            file_name,
+            query.file_name.as_deref(),
             body.as_ref(),
         )
         .await?;

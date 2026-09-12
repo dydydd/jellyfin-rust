@@ -1203,6 +1203,18 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
         (Uuid::new_v4(), "missing item"),
         (fixture.root_id, "non-audio item"),
     ] {
+        let missing_filename = request_post_body(
+            &fixture.app,
+            &format!("/Audio/{target}/Lyrics"),
+            &fixture.administrator_token,
+            "Uploaded line",
+        )
+        .await;
+        assert_eq!(
+            missing_filename.status(),
+            StatusCode::NOT_FOUND,
+            "{label} must be resolved before validating the filename"
+        );
         let empty_invalid = request_post_body(
             &fixture.app,
             &format!("/Audio/{target}/Lyrics?fileName=uploaded.srt"),
