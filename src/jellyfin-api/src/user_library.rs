@@ -21,10 +21,11 @@ use jellyfin_data::{
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
-    ChapterInfo, ExternalUrl, ImageType, IsoType, LocationType, MediaAttachment, MediaProtocol,
-    MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType, MediaUrl, MetadataField,
-    NameIdPair, PersonKind, PlayAccess, SubtitlePlaybackMode, TransportStreamTimestamp,
-    UserConfiguration, UserItemDataDto, UserPolicy, Video3DFormat, VideoType,
+    ChapterInfo, ExternalUrl, ImageOrientation, ImageType, IsoType, LocationType, MediaAttachment,
+    MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType, MediaUrl,
+    MetadataField, NameIdPair, PersonKind, PlayAccess, SubtitlePlaybackMode,
+    TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy, Video3DFormat,
+    VideoType,
 };
 use jellyfin_providers::external_url::{
     ExternalUrlItem, ExternalUrlItemKind, ExternalUrlProviderRegistry,
@@ -513,6 +514,30 @@ pub struct BaseItemDto {
     pub width: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_make: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub software: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure_time: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focal_length: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_orientation: Option<ImageOrientation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aperture: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shutter_speed: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub altitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iso_speed_rating: Option<i32>,
     #[serde(rename = "IsHD", skip_serializing_if = "Option::is_none")]
     pub is_hd: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1138,6 +1163,7 @@ async fn get_lyrics_for(
 #[allow(clippy::too_many_lines)]
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
     let is_user_view = item.item_type == "UserView";
+    let is_photo = is_item_type(&item.item_type, "Photo");
     let has_artists = has_artist_fields(&item.item_type);
     let has_album_artists = has_album_artist_fields(&item.item_type);
     let has_album =
@@ -1352,6 +1378,72 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         end_date: metadata_api_datetime(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
+        camera_make: is_photo
+            .then(|| {
+                metadata_string(
+                    item.data.as_ref(),
+                    &["CameraMake", "cameraMake", "camera_make"],
+                )
+            })
+            .flatten(),
+        camera_model: is_photo
+            .then(|| {
+                metadata_string(
+                    item.data.as_ref(),
+                    &["CameraModel", "cameraModel", "camera_model"],
+                )
+            })
+            .flatten(),
+        software: is_photo
+            .then(|| metadata_string(item.data.as_ref(), &["Software", "software"]))
+            .flatten(),
+        exposure_time: is_photo
+            .then(|| {
+                metadata_f64(
+                    item.data.as_ref(),
+                    &["ExposureTime", "exposureTime", "exposure_time"],
+                )
+            })
+            .flatten(),
+        focal_length: is_photo
+            .then(|| {
+                metadata_f64(
+                    item.data.as_ref(),
+                    &["FocalLength", "focalLength", "focal_length"],
+                )
+            })
+            .flatten(),
+        image_orientation: is_photo
+            .then(|| metadata_image_orientation(item.data.as_ref()))
+            .flatten(),
+        aperture: is_photo
+            .then(|| metadata_f64(item.data.as_ref(), &["Aperture", "aperture"]))
+            .flatten(),
+        shutter_speed: is_photo
+            .then(|| {
+                metadata_f64(
+                    item.data.as_ref(),
+                    &["ShutterSpeed", "shutterSpeed", "shutter_speed"],
+                )
+            })
+            .flatten(),
+        latitude: is_photo
+            .then(|| metadata_f64(item.data.as_ref(), &["Latitude", "latitude"]))
+            .flatten(),
+        longitude: is_photo
+            .then(|| metadata_f64(item.data.as_ref(), &["Longitude", "longitude"]))
+            .flatten(),
+        altitude: is_photo
+            .then(|| metadata_f64(item.data.as_ref(), &["Altitude", "altitude"]))
+            .flatten(),
+        iso_speed_rating: is_photo
+            .then(|| {
+                metadata_i32(
+                    item.data.as_ref(),
+                    &["IsoSpeedRating", "isoSpeedRating", "iso_speed_rating"],
+                )
+            })
+            .flatten(),
         is_hd: None,
         has_subtitles: None,
         normalization_gain: metadata_normalization_gain(item.data.as_ref()),
@@ -3553,6 +3645,34 @@ fn metadata_f64(data: Option<&Value>, keys: &[&str]) -> Option<f64> {
     metadata_value(data, keys).and_then(|value| value.as_f64())
 }
 
+fn metadata_image_orientation(data: Option<&Value>) -> Option<ImageOrientation> {
+    let value = metadata_value(
+        data,
+        &["ImageOrientation", "imageOrientation", "image_orientation"],
+    )?;
+    match value.as_str().map(str::to_ascii_lowercase).as_deref() {
+        Some("topleft") => Some(ImageOrientation::TopLeft),
+        Some("topright") => Some(ImageOrientation::TopRight),
+        Some("bottomright") => Some(ImageOrientation::BottomRight),
+        Some("bottomleft") => Some(ImageOrientation::BottomLeft),
+        Some("lefttop") => Some(ImageOrientation::LeftTop),
+        Some("righttop") => Some(ImageOrientation::RightTop),
+        Some("rightbottom") => Some(ImageOrientation::RightBottom),
+        Some("leftbottom") => Some(ImageOrientation::LeftBottom),
+        _ => match value.as_i64() {
+            Some(1) => Some(ImageOrientation::TopLeft),
+            Some(2) => Some(ImageOrientation::TopRight),
+            Some(3) => Some(ImageOrientation::BottomRight),
+            Some(4) => Some(ImageOrientation::BottomLeft),
+            Some(5) => Some(ImageOrientation::LeftTop),
+            Some(6) => Some(ImageOrientation::RightTop),
+            Some(7) => Some(ImageOrientation::RightBottom),
+            Some(8) => Some(ImageOrientation::LeftBottom),
+            _ => None,
+        },
+    }
+}
+
 fn metadata_normalization_gain(data: Option<&Value>) -> Option<f32> {
     let lufs = metadata_f64(data, &["LUFS", "Lufs", "lufs"])
         .map(|value| value as f32)
@@ -4161,6 +4281,68 @@ mod tests {
         dto.can_delete = Some(false);
         attach_item_access_fields(&mut dto, fields, Some(&access), false, None);
         assert_eq!(dto.can_delete, Some(false));
+    }
+
+    #[test]
+    fn item_to_dto_projects_photo_metadata_with_sdk_wire_names() {
+        let item = base_item::Model {
+            id: Uuid::new_v4(),
+            item_type: "Photo".to_owned(),
+            data: Some(json!({
+                "CameraMake": "Canon",
+                "cameraModel": "EOS R5",
+                "software": "Camera",
+                "ExposureTime": 0.008,
+                "focal_length": 50.0,
+                "ImageOrientation": 6,
+                "Aperture": 2.8,
+                "shutterSpeed": -7.0,
+                "Latitude": -37.8,
+                "longitude": 122.4,
+                "Altitude": -12.5,
+                "iso_speed_rating": 640
+            })),
+            path: Some("/photos/example.jpg".to_owned()),
+            parent_id: None,
+            top_parent_id: None,
+            name: Some("example".to_owned()),
+            clean_name: None,
+            sort_name: Some("example".to_owned()),
+            media_type: Some("Photo".to_owned()),
+            overview: None,
+            official_rating: None,
+            index_number: None,
+            parent_index_number: None,
+            production_year: None,
+            premiere_date: None,
+            runtime_ticks: None,
+            is_folder: false,
+            is_virtual_item: false,
+            presentation_unique_key: None,
+            primary_version_id: None,
+            series_id: None,
+            season_id: None,
+            series_presentation_unique_key: None,
+            date_created: chrono::DateTime::UNIX_EPOCH,
+            date_modified: chrono::DateTime::UNIX_EPOCH,
+            row_version: 1,
+        };
+
+        let value = serde_json::to_value(item_to_dto(item, "server")).unwrap();
+        assert_eq!(value["CameraMake"], "Canon");
+        assert_eq!(value["CameraModel"], "EOS R5");
+        assert_eq!(value["Software"], "Camera");
+        assert_eq!(value["ExposureTime"], 0.008);
+        assert_eq!(value["FocalLength"], 50.0);
+        assert_eq!(value["ImageOrientation"], "RightTop");
+        assert_eq!(value["Aperture"], 2.8);
+        assert_eq!(value["ShutterSpeed"], -7.0);
+        assert_eq!(value["Latitude"], -37.8);
+        assert_eq!(value["Longitude"], 122.4);
+        assert_eq!(value["Altitude"], -12.5);
+        assert_eq!(value["IsoSpeedRating"], 640);
+        assert!(value.get("cameraMake").is_none());
+        assert!(value.get("imageOrientation").is_none());
     }
 
     #[test]

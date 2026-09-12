@@ -40,6 +40,7 @@ mod music_genre;
 mod omdb;
 mod packages;
 mod persons;
+mod photo_metadata;
 mod playlists;
 mod playstate;
 mod plugins;

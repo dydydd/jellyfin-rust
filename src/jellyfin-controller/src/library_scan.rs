@@ -61,6 +61,7 @@ use crate::{
     episode_parser::parse_season_directory,
     item_by_name::{item_by_name_folder_name, official_item_by_name_id},
     media_streams::MediaStreamMapper,
+    photo_metadata::PhotoMetadata,
 };
 
 const SCAN_PATH_QUERY_BATCH_SIZE: usize = 256;
@@ -2589,6 +2590,11 @@ impl LibraryScanService {
                         .then(|| directory_snapshot.file_size(path_str))
                         .flatten(),
                 );
+                if media_kind == MediaKind::Photo
+                    && let Some(metadata) = self.photo_metadata(existing.id, path).await?
+                {
+                    changed |= apply_photo_metadata(&mut existing.data, &metadata);
+                }
                 if media_kind.needs_probe()
                     && let Some(mut media_info) = self
                         .ensure_media_streams(
@@ -2681,6 +2687,11 @@ impl LibraryScanService {
                 .then(|| directory_snapshot.file_size(path_str))
                 .flatten(),
         );
+        if media_kind == MediaKind::Photo
+            && let Some(metadata) = self.photo_metadata(item.id, path).await?
+        {
+            apply_photo_metadata(&mut item.data, &metadata);
+        }
         let mut item = self.items.create(item).await?;
         if media_kind.needs_probe()
             && let Some(mut media_info) = self
@@ -3334,6 +3345,30 @@ impl LibraryScanService {
     ) -> Option<MediaInfo> {
         self.probe_media_info_with_timeout(item_id, path, media_kind, None)
             .await
+    }
+
+    async fn photo_metadata(
+        &self,
+        item_id: Uuid,
+        path: &Path,
+    ) -> Result<Option<PhotoMetadata>, LibraryScanError> {
+        let path = path.to_owned();
+        match tokio::task::spawn_blocking(move || crate::photo_metadata::read(&path)).await {
+            Ok(Ok(metadata)) => Ok(metadata),
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::debug!(
+                    %item_id,
+                    error_kind = ?error.kind(),
+                    "embedded photo metadata read failed during library scan"
+                );
+                Ok(None)
+            }
+            Ok(Err(error)) => Err(error.into()),
+            Err(error) => Err(std::io::Error::other(format!(
+                "embedded photo metadata task failed: {error}"
+            ))
+            .into()),
+        }
     }
 
     async fn probe_media_info_with_timeout(
@@ -4554,6 +4589,88 @@ fn apply_scanned_file_size(data: &mut Option<Value>, size: Option<u64>) -> bool 
     true
 }
 
+fn apply_photo_metadata(data: &mut Option<Value>, metadata: &PhotoMetadata) -> bool {
+    let object = data
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("media item data is always an object");
+    let mut changed = false;
+    changed |= replace_photo_value(
+        object,
+        "CameraMake",
+        metadata.camera_make.clone().map(Value::String),
+    );
+    changed |= replace_photo_value(
+        object,
+        "CameraModel",
+        metadata.camera_model.clone().map(Value::String),
+    );
+    changed |= replace_photo_value(
+        object,
+        "Software",
+        metadata.software.clone().map(Value::String),
+    );
+    changed |= replace_photo_value(
+        object,
+        "ExposureTime",
+        metadata.exposure_time.map(|value| json!(value)),
+    );
+    changed |= replace_photo_value(
+        object,
+        "FocalLength",
+        metadata.focal_length.map(|value| json!(value)),
+    );
+    changed |= replace_photo_value(
+        object,
+        "ImageOrientation",
+        metadata.image_orientation.map(|value| json!(value)),
+    );
+    // The official provider only assigns these two fields when their explicit
+    // EXIF entries exist, unlike the ImageTag-backed properties below.
+    if let Some(value) = metadata.aperture {
+        changed |= replace_photo_value(object, "Aperture", Some(json!(value)));
+    }
+    if let Some(value) = metadata.shutter_speed {
+        changed |= replace_photo_value(object, "ShutterSpeed", Some(json!(value)));
+    }
+    changed |= replace_photo_value(
+        object,
+        "Latitude",
+        metadata.latitude.map(|value| json!(value)),
+    );
+    changed |= replace_photo_value(
+        object,
+        "Longitude",
+        metadata.longitude.map(|value| json!(value)),
+    );
+    changed |= replace_photo_value(
+        object,
+        "Altitude",
+        metadata.altitude.map(|value| json!(value)),
+    );
+    changed |= replace_photo_value(
+        object,
+        "IsoSpeedRating",
+        metadata.iso_speed_rating.map(|value| json!(value)),
+    );
+    changed
+}
+
+fn replace_photo_value(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<Value>,
+) -> bool {
+    match value {
+        Some(value) if object.get(key) != Some(&value) => {
+            object.insert(key.to_owned(), value);
+            true
+        }
+        Some(_) => false,
+        None => object.remove(key).is_some(),
+    }
+}
+
 fn apply_strm_metadata(
     item: &mut base_item::Model,
     media_source_path: &str,
@@ -5114,7 +5231,7 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 const PHOTO_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "svg", "ico",
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "cr2", "avif", "svg", "ico",
 ];
 
 const BOOK_EXTENSIONS: &[&str] = &["pdf", "epub", "mobi", "cbr", "cbz", "cb7", "cbt", "djvu"];
@@ -5126,7 +5243,7 @@ mod tests {
         LibraryScanSummary, MAX_EPISODE_HIERARCHY_CACHE_ENTRIES,
         MAX_REPORTED_MEDIA_ITEM_SCAN_FAILURES, MediaInfoProbeFingerprint, MediaItemScanOutcome,
         MediaKind, ScanLibraryKind, ScannedPathFingerprint, SeenPaths, StrmProbeCoordinator,
-        StrmProbeKey, StrmProbeLease, apply_episode_nfo, apply_non_movie_nfo,
+        StrmProbeKey, StrmProbeLease, apply_episode_nfo, apply_non_movie_nfo, apply_photo_metadata,
         apply_probed_item_metadata, apply_scanned_file_size, apply_scanned_group_name,
         apply_strm_metadata, attachment_image_type, attachments_from_media_info,
         codec_from_extension, default_fanout_concurrency, default_stream, display_name,
@@ -5141,6 +5258,63 @@ mod tests {
         streams_from_media_info, streams_need_probe, track_group_change,
         write_media_info_probe_marker,
     };
+    use crate::photo_metadata::PhotoMetadata;
+
+    #[test]
+    fn photo_scan_metadata_replaces_all_official_exif_fields_and_clears_missing_values() {
+        let mut data = Some(serde_json::json!({
+            "CameraMake": "stale",
+            "Altitude": 999.0,
+            "Unrelated": "preserved"
+        }));
+        let metadata = PhotoMetadata {
+            camera_make: Some("Canon".to_owned()),
+            camera_model: Some("EOS R5".to_owned()),
+            software: Some("Camera".to_owned()),
+            exposure_time: Some(0.008),
+            focal_length: Some(50.0),
+            image_orientation: Some("RightTop"),
+            aperture: Some(2.8),
+            shutter_speed: Some(-7.0),
+            latitude: Some(-37.8),
+            longitude: Some(122.4),
+            altitude: None,
+            iso_speed_rating: Some(640),
+        };
+
+        assert!(apply_photo_metadata(&mut data, &metadata));
+        assert_eq!(
+            data,
+            Some(serde_json::json!({
+                "CameraMake": "Canon",
+                "CameraModel": "EOS R5",
+                "Software": "Camera",
+                "ExposureTime": 0.008,
+                "FocalLength": 50.0,
+                "ImageOrientation": "RightTop",
+                "Aperture": 2.8,
+                "ShutterSpeed": -7.0,
+                "Latitude": -37.8,
+                "Longitude": 122.4,
+                "IsoSpeedRating": 640,
+                "Unrelated": "preserved"
+            }))
+        );
+        assert!(!apply_photo_metadata(&mut data, &metadata));
+
+        let mut legacy_apex_values = Some(serde_json::json!({
+            "Aperture": 4.0,
+            "ShutterSpeed": -8.0
+        }));
+        assert!(!apply_photo_metadata(
+            &mut legacy_apex_values,
+            &PhotoMetadata::default()
+        ));
+        assert_eq!(
+            legacy_apex_values,
+            Some(serde_json::json!({"Aperture": 4.0, "ShutterSpeed": -8.0}))
+        );
+    }
 
     #[test]
     fn seen_paths_use_stable_exact_fingerprints() {
@@ -5796,6 +5970,8 @@ mod tests {
         assert_eq!(media_kind(Path::new("movie.StRm")), Some(MediaKind::Video));
         assert_eq!(media_kind(Path::new("song.FlAc")), Some(MediaKind::Audio));
         assert_eq!(media_kind(Path::new("photo.jpg")), Some(MediaKind::Photo));
+        assert_eq!(media_kind(Path::new("raw.cr2")), Some(MediaKind::Photo));
+        assert_eq!(media_kind(Path::new("photo.avif")), Some(MediaKind::Photo));
         assert_eq!(media_kind(Path::new("book.pdf")), Some(MediaKind::Book));
         assert_eq!(media_kind(Path::new("data.nfo")), None);
     }
