@@ -3,11 +3,12 @@ use jellyfin_data::{
     ItemValueQuery, ItemValueRepository,
     entities::{base_item, item_value, user},
 };
+use jellyfin_extensions::StringExtensions;
 use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{ItemByNameError, ItemByNameService, UserError, UserService};
+use crate::{ItemByNameError, ItemByNameKind, ItemByNameService, UserError, UserService};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtistValueKind {
@@ -164,8 +165,35 @@ impl ArtistService {
             .item_values
             .query_values(kind.value_type(), &query)
             .await?;
+        let mut artists = page
+            .values
+            .into_iter()
+            .map(Artist::from)
+            .collect::<Vec<_>>();
+        let names = artists
+            .iter()
+            .map(|artist| artist.name.clone())
+            .collect::<Vec<_>>();
+        let persisted = self
+            .item_by_name
+            .existing_many(ItemByNameKind::MusicArtist, &names)
+            .await?;
+        let persisted_by_clean_name = persisted
+            .into_values()
+            .filter_map(|item| {
+                item.name
+                    .as_deref()
+                    .map(StringExtensions::clean_value)
+                    .map(|name| (name, item))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        for artist in &mut artists {
+            if let Some(item) = persisted_by_clean_name.get(&artist.name.clean_value()) {
+                artist.id = item.id;
+            }
+        }
         Ok(ArtistPage {
-            artists: page.values.into_iter().map(Artist::from).collect(),
+            artists,
             total_record_count: page.total_record_count,
             start_index: page.start_index,
         })

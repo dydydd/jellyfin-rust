@@ -896,6 +896,101 @@ async fn artist_image_route_resolves_public_base_item_owner() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn artist_lists_honor_official_dto_options_and_query_casing() {
+    let fixture = Fixture::new().await;
+    let images = BaseItemImageRepository::new(fixture.database.clone());
+    for item_id in [fixture.alpha_artist_id, fixture.album_artist_id] {
+        images
+            .replace(
+                item_id,
+                &[NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: format!("/metadata/Artist/{item_id}/primary.jpg"),
+                    date_modified: Utc::now(),
+                    width: Some(400),
+                    height: Some(600),
+                    blurhash: None,
+                }],
+            )
+            .await
+            .expect("artist image");
+    }
+
+    for (route, name, overview) in [
+        (
+            "/Artists",
+            fixture.alpha_artist.as_str(),
+            "Persisted Artist overview",
+        ),
+        (
+            "/Artists/AlbumArtists",
+            fixture.album_artist.as_str(),
+            "Persisted Album Artist overview",
+        ),
+    ] {
+        let search = encoded(name);
+        for query in [
+            "fields=Overview&enableUserData=false&imageTypeLimit=1&enableImageTypes=Primary&enableImages=true",
+            "Fields=Overview&EnableUserData=false&ImageTypeLimit=1&EnableImageTypes=Primary&EnableImages=true",
+            "fields=Overview&enableuserdata=false&imagetypelimit=1&enableimagetypes=Primary&enableimages=true",
+        ] {
+            let page = body_json(
+                fixture
+                    .request(
+                        Method::GET,
+                        &format!("{route}?searchTerm={search}&{query}"),
+                        Credential::Device(&fixture.user_token),
+                    )
+                    .await,
+            )
+            .await;
+            let artist = &page["Items"][0];
+            assert_eq!(artist["Overview"], overview, "{route}: {query}");
+            assert!(
+                artist["ImageTags"]["Primary"].is_string(),
+                "{route}: {query}"
+            );
+            assert!(artist.get("UserData").is_none(), "{route}: {query}");
+        }
+    }
+
+    let album_default = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Artists/AlbumArtists?searchTerm={}",
+                    encoded(&fixture.album_artist)
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(album_default["Items"][0]["UserData"]["IsFavorite"], true);
+
+    for enable_images in ["enableImages", "EnableImages", "enableimages"] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!(
+                        "/Artists?searchTerm={}&{enable_images}=false",
+                        encoded(&fixture.alpha_artist)
+                    ),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert!(page["Items"][0].get("ImageTags").is_none());
+    }
+
+    fixture.cleanup().await;
+}
+
 fn assert_artists(
     body: &Value,
     expected_names: &[&str],
@@ -944,6 +1039,7 @@ struct Fixture {
     admin_token: String,
     storage_root: PathBuf,
     alpha_artist_id: Uuid,
+    album_artist_id: Uuid,
     alpha_artist_etag: String,
     alpha_artist: String,
     beta_artist: String,
@@ -1070,6 +1166,7 @@ impl Fixture {
         let mut alpha_artist_item =
             create_item(&items, "MusicArtist", &alpha_artist, None, true, "").await;
         alpha_artist_item.production_year = Some(1999);
+        alpha_artist_item.overview = Some("Persisted Artist overview".to_owned());
         alpha_artist_item.official_rating = Some("PG".to_owned());
         alpha_artist_item.presentation_unique_key = Some(format!("Artist-{alpha_artist}"));
         alpha_artist_item.data = Some(json!({
@@ -1084,6 +1181,7 @@ impl Fixture {
         let mut album_artist_item =
             create_item(&items, "MusicArtist", &album_artist, None, true, "").await;
         album_artist_item.production_year = Some(1984);
+        album_artist_item.overview = Some("Persisted Album Artist overview".to_owned());
         let album_artist_item = items
             .update(album_artist_item)
             .await
@@ -1223,6 +1321,7 @@ impl Fixture {
             admin_token,
             storage_root,
             alpha_artist_id: alpha_artist_item.id,
+            album_artist_id: album_artist_item.id,
             alpha_artist_etag: alpha_artist_item.row_version.to_string(),
             alpha_artist,
             beta_artist,

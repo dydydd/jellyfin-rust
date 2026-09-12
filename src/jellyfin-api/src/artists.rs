@@ -8,7 +8,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use jellyfin_controller::{ArtistValueKind, UserError};
-use jellyfin_data::ItemValueQuery;
+use jellyfin_data::{BaseItemPage, ItemValueQuery};
 use serde::Deserialize;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -47,6 +47,32 @@ pub(crate) struct ArtistsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
     #[serde(
         default,
         rename = "includeItemTypes",
@@ -278,11 +304,75 @@ async fn list_kind(
         .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
         .await?;
     let page = state.artists.list_authorized(kind, item_query).await?;
-    let items = page
+    let artist_ids = page
         .artists
-        .into_iter()
-        .map(|artist| user_library::artist_to_dto(artist, state.server_id(), include_item_counts))
+        .iter()
+        .map(|artist| artist.id)
         .collect::<Vec<_>>();
+    let mut persisted_by_id = state
+        .base_items
+        .get_many(&artist_ids)
+        .await?
+        .into_iter()
+        .map(|item| (item.id, item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let persisted_artists = page
+        .artists
+        .iter()
+        .filter_map(|artist| persisted_by_id.remove(&artist.id))
+        .collect::<Vec<_>>();
+    let persisted_artist_ids = persisted_artists
+        .iter()
+        .map(|artist| artist.id)
+        .collect::<Vec<_>>();
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
+    let projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        BaseItemPage {
+            items: persisted_artists,
+            total_record_count: page.total_record_count,
+            start_index: page.start_index,
+        },
+        query.fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
+    let mut projected_by_id = persisted_artist_ids
+        .into_iter()
+        .zip(projected.items)
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut items = Vec::with_capacity(page.artists.len());
+    for artist in page.artists {
+        let mut dto = projected_by_id.remove(&artist.id).unwrap_or_else(|| {
+            let mut dto =
+                user_library::artist_to_dto(artist.clone(), state.server_id(), include_item_counts);
+            if !dto_options.enable_images {
+                dto.image_tags = None;
+                dto.backdrop_image_tags = None;
+            } else if dto_options.image_type_limit == 0
+                || (!dto_options.enable_image_types.is_empty()
+                    && !dto_options.enable_image_types.contains(&2))
+            {
+                dto.backdrop_image_tags = None;
+            }
+            dto
+        });
+        // Item-by-name artist list entries retain their historical folder
+        // shape even when the accessed-by-name backing row is non-folder.
+        dto.is_folder = true;
+        if include_item_counts {
+            apply_artist_counts(&mut dto, artist.item_count, artist.counts);
+        }
+        items.push(dto);
+    }
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
