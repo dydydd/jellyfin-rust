@@ -290,12 +290,8 @@ impl ItemLookupService {
             .get(item_id)
             .await?
             .ok_or(ItemLookupError::NotFound)?;
-        let supported_images = match item.item_type.as_str() {
-            "Movie" | "MusicVideo" | "Trailer" | "Series" => {
-                vec![ImageType::Primary, ImageType::Backdrop, ImageType::Logo]
-            }
-            "Person" => vec![ImageType::Profile],
-            _ => return Ok(Vec::new()),
+        let Some(supported_images) = supported_remote_image_types(&item.item_type) else {
+            return Ok(Vec::new());
         };
         let provider_names = [TMDB_PROVIDER_NAME, "TV Maze", "TheAudioDB"]
             .into_iter()
@@ -443,6 +439,20 @@ fn configured_provider_order(order: &[String], provider_name: Option<&str>) -> u
         .unwrap_or(usize::MAX)
 }
 
+fn supported_remote_image_types(item_type: &str) -> Option<Vec<ImageType>> {
+    match item_type {
+        "Movie" | "MusicVideo" | "Trailer" | "Series" => Some(vec![
+            ImageType::Primary,
+            ImageType::Backdrop,
+            ImageType::Logo,
+        ]),
+        // Official TmdbPersonImageProvider exposes TMDB profile artwork as
+        // the Person item's Primary image, not the user-only Profile type.
+        "Person" => Some(vec![ImageType::Primary]),
+        _ => None,
+    }
+}
+
 fn identified_item_type<'a>(current: &str, identified: Option<&'a str>) -> Option<&'a str> {
     match identified {
         Some(identified @ ("Movie" | "Series")) if current != identified => {
@@ -561,5 +571,13 @@ mod tests {
         assert_eq!(identified_item_type("Audio", Some("Movie")), None);
         assert_eq!(identified_item_type("Video", None), None);
         assert_eq!(identified_item_type("Video", Some("BoxSet")), None);
+    }
+
+    #[test]
+    fn person_remote_provider_advertises_primary_images() {
+        assert_eq!(
+            supported_remote_image_types("Person"),
+            Some(vec![ImageType::Primary])
+        );
     }
 }

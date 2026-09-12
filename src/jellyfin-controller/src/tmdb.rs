@@ -2169,7 +2169,11 @@ pub(crate) fn images_to_remote_images(
     append_images(&mut result, images.posters, ImageType::Primary, "w342");
     append_images(&mut result, images.backdrops, ImageType::Backdrop, "w780");
     append_images(&mut result, images.logos, ImageType::Logo, "w500");
-    append_images(&mut result, images.profiles, ImageType::Profile, "w185");
+    // TMDB calls these "profiles", but Jellyfin exposes person artwork as
+    // Primary images. `TmdbPersonImageProvider.GetSupportedImages` likewise
+    // advertises Primary, so returning Profile here would make a
+    // `type=Primary` remote-image query silently discard every portrait.
+    append_images(&mut result, images.profiles, ImageType::Primary, "w185");
     if !include_all_languages {
         result.retain(|image| {
             image
@@ -3528,17 +3532,26 @@ mod tests {
                 vote_count: 4,
             }],
             logos: Vec::new(),
-            profiles: Vec::new(),
+            profiles: vec![TmdbImage {
+                file_path: Some("/profile.jpg".to_owned()),
+                width: Some(400),
+                height: Some(600),
+                iso_639_1: None,
+                vote_average: 8.0,
+                vote_count: 2,
+            }],
         };
 
         let all = images_to_remote_images(images.clone(), true);
-        assert_eq!(all.len(), 2);
+        assert_eq!(all.len(), 3);
         assert_eq!(all[0].image_type, ImageType::Primary);
         assert_eq!(all[1].image_type, ImageType::Backdrop);
+        assert_eq!(all[2].image_type, ImageType::Primary);
 
         let english_only = images_to_remote_images(images, false);
-        assert_eq!(english_only.len(), 1);
+        assert_eq!(english_only.len(), 2);
         assert_eq!(english_only[0].image_type, ImageType::Primary);
+        assert_eq!(english_only[1].image_type, ImageType::Primary);
     }
 
     #[test]
