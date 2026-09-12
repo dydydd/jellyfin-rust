@@ -92,8 +92,88 @@ async fn session_capabilities_are_persisted_and_projected_from_postgres_jsonb() 
                 Body::empty(),
             )
             .await;
-        assert_eq!(invalid_id_response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(invalid_id_response.status(), StatusCode::NOT_FOUND);
     }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn directed_capabilities_require_control_and_update_the_target_session() {
+    let fixture = Fixture::new().await;
+    let original = fixture.target_capabilities().await;
+
+    let forbidden = fixture
+        .request(
+            "POST",
+            &format!(
+                "/Sessions/Capabilities?id={}&supportsMediaControl=true",
+                fixture.target_session_id
+            ),
+            Some(&fixture.token),
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+    assert_eq!(fixture.target_capabilities().await, original);
+
+    let devices = DeviceRepository::new(fixture.database.clone());
+    devices
+        .add_additional_user(fixture.target_row_id, fixture.user_id, "controller")
+        .await
+        .expect("target additional user update");
+    let associated = fixture
+        .request(
+            "POST",
+            &format!(
+                "/Sessions/Capabilities/Full?id={}",
+                fixture.target_session_id
+            ),
+            Some(&fixture.token),
+            Body::from(
+                json!({
+                    "PlayableMediaTypes": ["Video"],
+                    "SupportsMediaControl": true
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(associated.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        fixture.target_capabilities().await["PlayableMediaTypes"],
+        json!(["Video"])
+    );
+
+    devices
+        .remove_additional_user(fixture.target_row_id, fixture.user_id)
+        .await
+        .expect("target additional user removal");
+    let users = UserService::new(fixture.database.clone());
+    let stored = users.get(fixture.user_id).await.expect("controller user");
+    let mut policy: jellyfin_model::UserPolicy =
+        serde_json::from_value(stored.policy).expect("controller policy");
+    policy.enable_remote_control_of_other_users = true;
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("remote-control policy update");
+    let permitted = fixture
+        .request(
+            "POST",
+            &format!(
+                "/Sessions/Capabilities?id={}&playableMediaTypes=Audio",
+                fixture.target_session_id
+            ),
+            Some(&fixture.token),
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(permitted.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        fixture.target_capabilities().await["PlayableMediaTypes"],
+        json!(["Audio"])
+    );
 
     fixture.cleanup().await;
 }
@@ -102,8 +182,11 @@ struct Fixture {
     database: sea_orm::DatabaseConnection,
     app: Router,
     user_id: Uuid,
+    target_user_id: Uuid,
     token: String,
     session_id: String,
+    target_session_id: String,
+    target_row_id: i64,
 }
 
 impl Fixture {
@@ -120,6 +203,10 @@ impl Fixture {
             .create(&format!("capabilities-user-{suffix}"))
             .await
             .expect("user creation");
+        let target_user = users
+            .create(&format!("capabilities-target-{suffix}"))
+            .await
+            .expect("target user creation");
         let device_id = format!("capabilities-device-{suffix}");
         let devices = DeviceRepository::new(database.clone());
         let session = devices
@@ -132,6 +219,17 @@ impl Fixture {
             ))
             .await
             .expect("session creation");
+        let target_device_id = format!("capabilities-target-device-{suffix}");
+        let target = devices
+            .create_session(NewDevice::new(
+                target_user.id,
+                "Target Client",
+                "1.0",
+                "Target Device",
+                &target_device_id,
+            ))
+            .await
+            .expect("target session creation");
         Self {
             database: database.clone(),
             app: jellyfin_api::router(AppState::new(
@@ -140,8 +238,11 @@ impl Fixture {
                 "http://127.0.0.1:8096".to_owned(),
             )),
             user_id: user.id,
+            target_user_id: target_user.id,
             token: session.access_token,
             session_id: jellyfin_session_id("Jellyfin Web", &device_id),
+            target_session_id: jellyfin_session_id("Target Client", &target_device_id),
+            target_row_id: target.id,
         }
     }
 
@@ -177,16 +278,21 @@ impl Fixture {
         body_json(response).await
     }
 
+    async fn target_capabilities(&self) -> Value {
+        device::Entity::find_by_id(self.target_row_id)
+            .one(&self.database)
+            .await
+            .expect("target session query")
+            .expect("target session")
+            .capabilities
+    }
+
     async fn cleanup(self) {
-        device::Entity::delete_many()
-            .filter(device::Column::AccessToken.eq(self.token))
+        user::Entity::delete_many()
+            .filter(user::Column::Id.is_in([self.user_id, self.target_user_id]))
             .exec(&self.database)
             .await
-            .expect("test device cleanup");
-        user::Entity::delete_by_id(self.user_id)
-            .exec(&self.database)
-            .await
-            .expect("test user cleanup");
+            .expect("test users cleanup");
     }
 }
 

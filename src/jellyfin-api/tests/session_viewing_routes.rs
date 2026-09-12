@@ -12,7 +12,7 @@ use jellyfin_data::{
     entities::{base_item, device, user},
 };
 use md5::{Digest, Md5};
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -26,6 +26,38 @@ async fn session_viewing_reports_now_viewing_item_into_postgres_session() {
 
     assert_viewing_validation(&fixture).await;
     assert_report_viewing_persists_and_projects(&fixture).await;
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn directed_viewing_requires_control_and_does_not_mutate_foreign_session() {
+    let fixture = Fixture::new().await;
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &format!(
+                    "/Sessions/Viewing?sessionId={}&itemId={}",
+                    fixture.target_session_id,
+                    fixture.item_id.simple()
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        device::Entity::find_by_id(fixture.target_device_row_id)
+            .one(&fixture.database)
+            .await
+            .expect("target device query")
+            .expect("target device")
+            .now_viewing_item
+            .is_none(),
+        "an unauthorized report must leave the target session unchanged"
+    );
 
     fixture.cleanup().await;
 }
@@ -138,11 +170,14 @@ struct Fixture {
     database: sea_orm::DatabaseConnection,
     app: Router,
     user_id: Uuid,
+    target_user_id: Uuid,
     item_id: Uuid,
     user_token: String,
     device_id: String,
     device_row_id: i64,
     session_id: String,
+    target_session_id: String,
+    target_device_row_id: i64,
 }
 
 impl Fixture {
@@ -154,12 +189,18 @@ impl Fixture {
             .await
             .expect("PostgreSQL migrations must succeed");
         let suffix = Uuid::new_v4().simple().to_string();
-        let user = UserService::new(database.clone())
+        let users = UserService::new(database.clone());
+        let user = users
             .create(&format!("session-viewing-user-{suffix}"))
             .await
             .expect("user creation");
+        let target_user = users
+            .create(&format!("session-viewing-target-{suffix}"))
+            .await
+            .expect("target user creation");
         let device_id = format!("session-viewing-device-{suffix}");
-        let device = DeviceRepository::new(database.clone())
+        let devices = DeviceRepository::new(database.clone());
+        let device = devices
             .create_session(NewDevice::new(
                 user.id,
                 "Jellyfin Web",
@@ -169,6 +210,17 @@ impl Fixture {
             ))
             .await
             .expect("session creation");
+        let target_device_id = format!("session-viewing-target-device-{suffix}");
+        let target_device = devices
+            .create_session(NewDevice::new(
+                target_user.id,
+                "Target Client",
+                "1.0",
+                "Target Device",
+                &target_device_id,
+            ))
+            .await
+            .expect("target session creation");
         let item_id = Uuid::new_v4();
         let mut item = NewBaseItem::new(item_id, "Movie");
         item.name = Some("The Matrix".to_owned());
@@ -187,11 +239,14 @@ impl Fixture {
             )),
             database,
             user_id: user.id,
+            target_user_id: target_user.id,
             item_id,
             user_token: device.access_token,
             device_id: device.device_id.clone(),
             device_row_id: device.id,
             session_id: jellyfin_session_id(&device.app_name, &device.device_id),
+            target_session_id: jellyfin_session_id("Target Client", &target_device_id),
+            target_device_row_id: target_device.id,
         }
     }
 
@@ -223,10 +278,11 @@ impl Fixture {
             .exec(&self.database)
             .await
             .expect("base item cleanup");
-        user::Entity::delete_by_id(self.user_id)
+        user::Entity::delete_many()
+            .filter(user::Column::Id.is_in([self.user_id, self.target_user_id]))
             .exec(&self.database)
             .await
-            .expect("user cleanup");
+            .expect("users cleanup");
     }
 }
 

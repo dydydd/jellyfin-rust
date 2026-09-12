@@ -323,7 +323,7 @@ pub(crate) async fn report_viewing(
     let session_id = if let Some(session_id) = query.session_id.filter(|value| !value.is_empty()) {
         session_id
     } else {
-        let authentication::AuthenticatedIdentity::Device(session) = identity else {
+        let authentication::AuthenticatedIdentity::Device(session) = &identity else {
             return Err(ApiError::Unauthorized);
         };
         jellyfin_session_id(&session.device.app_name, &session.device.device_id)
@@ -338,6 +338,7 @@ pub(crate) async fn report_viewing(
     let item = user_library::item_to_dto(item, state.server_id());
     let payload = serde_json::to_value(item).map_err(|_| ApiError::Internal)?;
     let device = find_active_session(&state, &session_id).await?;
+    assert_identity_can_control_session(&device, &identity)?;
     if state
         .devices
         .update_now_viewing_item(device.id, Some(payload))
@@ -463,8 +464,8 @@ pub(crate) async fn send_playstate_command(
         PlaystateRequest {
             command,
             seek_position_ticks: query.seek_position_ticks,
-            // Unlike PlayRequest and GeneralCommand, the official endpoint
-            // exposes this as an optional query value and forwards it verbatim.
+            // The official endpoint binds this as a nullable string; keep
+            // caller-supplied values, including omission, unchanged on wire.
             controlling_user_id: query.controlling_user_id,
         },
     )
@@ -478,13 +479,21 @@ pub(crate) async fn add_user_to_session(
     headers: HeaderMap,
     path: Result<Path<(String, Uuid)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
-    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Path((session_id, user_id)) = path.map_err(|_| ApiError::InvalidRequest)?;
     let session = find_active_session(&state, &session_id).await?;
+    assert_identity_can_control_session(&session, &identity)?;
+    assert_can_attach_user(&identity, user_id)?;
     if session.user_id == user_id {
         return Err(ApiError::InvalidRequest);
     }
-    let user = state.users.get(user_id).await?;
+    let user = match state.users.get(user_id).await {
+        Ok(user) => user,
+        // SessionManager exposes an unknown additional user as an argument
+        // error after its control and attach assertions.
+        Err(jellyfin_controller::UserError::NotFound) => return Err(ApiError::InvalidRequest),
+        Err(error) => return Err(error.into()),
+    };
     if state
         .devices
         .add_additional_user(session.id, user.id, &user.username)
@@ -507,9 +516,10 @@ pub(crate) async fn remove_user_from_session(
     headers: HeaderMap,
     path: Result<Path<(String, Uuid)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
-    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Path((session_id, user_id)) = path.map_err(|_| ApiError::InvalidRequest)?;
     let session = find_active_session(&state, &session_id).await?;
+    assert_identity_can_control_session(&session, &identity)?;
     if session.user_id == user_id {
         return Err(ApiError::InvalidRequest);
     }
@@ -537,7 +547,8 @@ pub(crate) async fn post_capabilities(
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let access_token = current_session_access_token(&identity, query.id.as_deref())?;
+    let access_token =
+        authorized_capabilities_access_token(&state, &identity, query.id.as_deref()).await?;
     let capabilities = ClientCapabilitiesDto {
         playable_media_types: query.playable_media_types,
         supported_commands: query.supported_commands,
@@ -545,7 +556,7 @@ pub(crate) async fn post_capabilities(
         supports_persistent_identifier: query.supports_persistent_identifier,
         ..ClientCapabilitiesDto::default()
     };
-    persist_capabilities(&state, access_token, capabilities).await?;
+    persist_capabilities(&state, &access_token, capabilities).await?;
     crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -560,8 +571,9 @@ pub(crate) async fn post_full_capabilities(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let Json(capabilities) = request.map_err(|_| ApiError::InvalidRequest)?;
-    let access_token = current_session_access_token(&identity, query.id.as_deref())?;
-    persist_capabilities(&state, access_token, capabilities).await?;
+    let access_token =
+        authorized_capabilities_access_token(&state, &identity, query.id.as_deref()).await?;
+    persist_capabilities(&state, &access_token, capabilities).await?;
     crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -654,7 +666,8 @@ async fn enqueue_session_command<T>(
 where
     T: Serialize,
 {
-    find_active_session(state, target_session_id).await?;
+    let target = find_active_session(state, target_session_id).await?;
+    assert_can_control_session(&target, controller)?;
     let queued = state
         .session_commands
         .enqueue(NewSessionCommand {
@@ -780,21 +793,87 @@ async fn persist_capabilities(
     Ok(())
 }
 
-fn current_session_access_token<'a>(
-    identity: &'a authentication::AuthenticatedIdentity,
+fn assert_can_control_session(
+    target: &device::Model,
+    controller: &authentication::AuthenticatedSession,
+) -> Result<(), ApiError> {
+    let controller_user_id = controller.user.id;
+    if can_control_session(
+        target.user_id,
+        &target.additional_users,
+        controller_user_id,
+        authentication::stored_user_policy(&controller.user)?.enable_remote_control_of_other_users,
+    ) {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden)
+}
+
+fn can_control_session(
+    target_user_id: Uuid,
+    target_additional_users: &serde_json::Value,
+    controller_user_id: Uuid,
+    can_control_other_users: bool,
+) -> bool {
+    let additional_users: Vec<SessionUserInfo> =
+        serde_json::from_value(target_additional_users.clone()).unwrap_or_default();
+    target_user_id.is_nil()
+        || target_user_id == controller_user_id
+        || additional_users
+            .iter()
+            .any(|additional| additional.user_id == controller_user_id)
+        || can_control_other_users
+}
+
+fn assert_identity_can_control_session(
+    target: &device::Model,
+    identity: &authentication::AuthenticatedIdentity,
+) -> Result<(), ApiError> {
+    match identity {
+        // The official session manager treats a caller without an associated
+        // user as a privileged context.
+        authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
+        authentication::AuthenticatedIdentity::Device(controller) => {
+            assert_can_control_session(target, controller)
+        }
+    }
+}
+
+fn assert_can_attach_user(
+    identity: &authentication::AuthenticatedIdentity,
+    user_id: Uuid,
+) -> Result<(), ApiError> {
+    match identity {
+        authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
+        authentication::AuthenticatedIdentity::Device(controller)
+            if controller.user.id == user_id || controller.user.is_administrator =>
+        {
+            Ok(())
+        }
+        authentication::AuthenticatedIdentity::Device(_) => Err(ApiError::Forbidden),
+    }
+}
+
+async fn authorized_capabilities_access_token(
+    state: &AppState,
+    identity: &authentication::AuthenticatedIdentity,
     requested_id: Option<&str>,
-) -> Result<&'a str, ApiError> {
+) -> Result<String, ApiError> {
     let authentication::AuthenticatedIdentity::Device(session) = identity else {
         return Err(ApiError::Unauthorized);
     };
     let requested_id = requested_id.filter(|value| !value.trim().is_empty());
-    if requested_id.is_some_and(|id| {
-        id != session.device.id.to_string()
-            && id != jellyfin_session_id(&session.device.app_name, &session.device.device_id)
-    }) {
-        return Err(ApiError::InvalidRequest);
+    if requested_id.is_none()
+        || requested_id.is_some_and(|id| {
+            id == session.device.id.to_string()
+                || id == jellyfin_session_id(&session.device.app_name, &session.device.device_id)
+        })
+    {
+        return Ok(session.access_token.clone());
     }
-    Ok(&session.access_token)
+    let target = find_active_session(state, requested_id.expect("checked above")).await?;
+    assert_can_control_session(&target, session)?;
+    Ok(target.access_token)
 }
 
 pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
@@ -813,4 +892,41 @@ pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
         write!(result, "{byte:02x}").expect("writing to a String cannot fail");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_control_session;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn public_and_associated_sessions_follow_official_control_rules() {
+        let controller = Uuid::new_v4();
+        let foreign_owner = Uuid::new_v4();
+        assert!(can_control_session(
+            Uuid::nil(),
+            &json!([]),
+            controller,
+            false
+        ));
+        assert!(can_control_session(
+            foreign_owner,
+            &json!([{ "UserId": controller.simple().to_string(), "UserName": "Controller" }]),
+            controller,
+            false
+        ));
+        assert!(!can_control_session(
+            foreign_owner,
+            &json!([]),
+            controller,
+            false
+        ));
+        assert!(can_control_session(
+            foreign_owner,
+            &json!([]),
+            controller,
+            true
+        ));
+    }
 }

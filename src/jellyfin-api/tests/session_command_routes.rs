@@ -180,6 +180,87 @@ async fn session_command_query_names_accept_official_casing() {
 }
 
 #[tokio::test]
+async fn session_commands_require_official_remote_control_authorization() {
+    let _guard = TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let devices = DeviceRepository::new(fixture.database.clone());
+    let target_row_id = devices
+        .find_by_token(&fixture.target_token)
+        .await
+        .expect("target session query")
+        .expect("target session")
+        .id;
+
+    devices
+        .remove_additional_user(target_row_id, fixture.user_id)
+        .await
+        .expect("additional controller removal");
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &fixture.command_uri("GoHome"),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_queued_command_count(&fixture, 0).await;
+
+    devices
+        .add_additional_user(target_row_id, fixture.user_id, "additional-controller")
+        .await
+        .expect("additional controller restoration");
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &fixture.command_uri("GoHome"),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    session_command::Entity::delete_many()
+        .filter(session_command::Column::TargetSessionId.eq(&fixture.target_session_id))
+        .exec(&fixture.database)
+        .await
+        .expect("queued command cleanup");
+    devices
+        .remove_additional_user(target_row_id, fixture.user_id)
+        .await
+        .expect("additional controller removal");
+    let users = UserService::new(fixture.database.clone());
+    let stored = users.get(fixture.user_id).await.expect("controller user");
+    let mut policy: jellyfin_model::UserPolicy =
+        serde_json::from_value(stored.policy).expect("controller policy");
+    policy.enable_remote_control_of_other_users = true;
+    users
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("remote-control policy update");
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &fixture.command_uri("GoHome"),
+                Some(&fixture.user_token),
+                Body::empty(),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn session_command_outbox_is_consumed_over_websocket() {
     let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
