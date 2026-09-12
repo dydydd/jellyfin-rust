@@ -161,6 +161,36 @@ async fn assert_anonymous_file_system_contract(fixture: &Fixture) {
 
     assert_validate_path_contract(fixture).await;
     assert_parent_default_and_drives(fixture).await;
+
+    let lowercase = format!(
+        "/environment/directorycontents?path={path}&includefiles=true&includedirectories=true"
+    );
+    let entries = body_json(
+        send(
+            &fixture.app,
+            Method::GET,
+            &lowercase,
+            Credential::None,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(entries.as_array().unwrap().len(), 5);
+
+    let response = send(
+        &fixture.app,
+        Method::POST,
+        "/environment/validatepath",
+        Credential::None,
+        Some(json!({
+            "path": fixture.directory.path_string(),
+            "isfile": false,
+            "validatewritable": true
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
 async fn assert_validate_path_contract(fixture: &Fixture) {
@@ -264,6 +294,21 @@ async fn assert_parent_default_and_drives(fixture: &Fixture) {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await, fixture.directory.path_string());
 
+    let lowercase_uri = format!(
+        "/environment/parentpath?path={}",
+        encoded(&child.to_string_lossy())
+    );
+    let response = send(
+        &fixture.app,
+        Method::GET,
+        &lowercase_uri,
+        Credential::None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await, fixture.directory.path_string());
+
     let root = if cfg!(windows) { r"C:\" } else { "/" };
     let root_uri = format!("/Environment/ParentPath?path={}", encoded(root));
     let response = send(&fixture.app, Method::GET, &root_uri, Credential::None, None).await;
@@ -274,6 +319,16 @@ async fn assert_parent_default_and_drives(fixture: &Fixture) {
         &fixture.app,
         Method::GET,
         "/Environment/DefaultDirectoryBrowser",
+        Credential::None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await, json!({}));
+    let response = send(
+        &fixture.app,
+        Method::GET,
+        "/environment/defaultdirectorybrowser",
         Credential::None,
         None,
     )
@@ -295,6 +350,15 @@ async fn assert_parent_default_and_drives(fixture: &Fixture) {
     assert!(drives.as_array().unwrap().iter().all(|drive| {
         drive["Type"] == "Directory" && PathBuf::from(drive["Path"].as_str().unwrap()).is_dir()
     }));
+    let response = send(
+        &fixture.app,
+        Method::GET,
+        "/environment/drives",
+        Credential::None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 async fn assert_completed_setup_authorization(fixture: &Fixture) {

@@ -15,20 +15,34 @@ use crate::{ApiError, AppState, authorization};
 struct DirectoryContentsQuery {
     #[serde(rename = "path", alias = "Path")]
     path: Option<String>,
-    #[serde(default, rename = "includeFiles", alias = "IncludeFiles")]
+    #[serde(
+        default,
+        rename = "includeFiles",
+        alias = "IncludeFiles",
+        alias = "includefiles"
+    )]
     include_files: bool,
-    #[serde(default, rename = "includeDirectories", alias = "IncludeDirectories")]
+    #[serde(
+        default,
+        rename = "includeDirectories",
+        alias = "IncludeDirectories",
+        alias = "includedirectories"
+    )]
     include_directories: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct ValidatePathDto {
-    #[serde(rename = "ValidateWritable", alias = "validateWritable")]
+    #[serde(
+        rename = "ValidateWritable",
+        alias = "validateWritable",
+        alias = "validatewritable"
+    )]
     validate_writable: bool,
     #[serde(rename = "Path", alias = "path")]
     path: Option<String>,
-    #[serde(rename = "IsFile", alias = "isFile")]
+    #[serde(rename = "IsFile", alias = "isFile", alias = "isfile")]
     is_file: Option<bool>,
 }
 

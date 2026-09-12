@@ -300,7 +300,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["users", "forgotpassword", "pin"] => RoutePolicy::Public,
         ["Users", _, "Authenticate"] => RoutePolicy::Public,
         ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
-        ["Startup" | "Environment", ..]
+        ["Startup" | "startup" | "Environment" | "environment", ..]
         | ["Library", "VirtualFolders", ..]
         | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
         ["Localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,

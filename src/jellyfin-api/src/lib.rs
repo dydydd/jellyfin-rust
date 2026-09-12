@@ -1442,6 +1442,20 @@ fn environment_routes() -> Router<Arc<AppState>> {
             "/Environment/DefaultDirectoryBrowser",
             get(environment::default_directory_browser),
         )
+        .route(
+            "/environment/directorycontents",
+            get(environment::directory_contents),
+        )
+        .route(
+            "/environment/validatepath",
+            post(environment::validate_path),
+        )
+        .route("/environment/drives", get(environment::drives))
+        .route("/environment/parentpath", get(environment::parent_path))
+        .route(
+            "/environment/defaultdirectorybrowser",
+            get(environment::default_directory_browser),
+        )
 }
 
 fn localization_routes() -> Router<Arc<AppState>> {
