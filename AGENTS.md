@@ -17,6 +17,10 @@
 - Preserve unrelated user changes and existing commits. Never rewrite history or use destructive Git commands.
 - Prefer bounded concurrency, streaming or pagination, batched PostgreSQL operations, and short-lived buffers for library scans. Do not collect an entire library into memory when work can be processed incrementally.
 - Keep filesystem watcher queues bounded and deduplicated. Coalesce changed paths by virtual library before scanning, reuse one short-lived directory snapshot for sibling media discovery, and batch PostgreSQL reads and writes instead of issuing per-item queries.
+- Apply the official nearest-ancestor `.ignore` rules to files and directories before adding them to
+  a scan snapshot, recursing, or resolving media/extras. Clear only the directory-to-rule lookup at
+  the start of each full or single-library scan so newly created `.ignore` files take effect without
+  discarding the bounded parsed-rule cache; propagate rule-file I/O failures as scan failures.
 - Keep serial and concurrent media scans failure-equivalent: database writes, hierarchy creation, and filesystem/persistence errors must fail the scan with a bounded per-file failure report and accurate total, while FFprobe failures retain the item with fallback streams and are treated as partial success.
 - Keep deterministic scan hierarchy creation idempotent under sibling-file concurrency. Series and
   season nodes must be checked and created while holding the PostgreSQL hierarchy lock so a
@@ -90,6 +94,10 @@
   id, default to `SortName` ascending, and keep `SoundtrackSongsResult` as a distinct empty result.
   Batch candidate loading across the owner chain and apply the target user's normal library policy.
 - Coordinate remote-image downloads by URL so concurrent items share one bounded download, and cap leader downloads across distinct URLs at four so a media wall cannot multiply the per-image buffer without bound. Acquire the global permit inside the single-flight initializer so same-URL followers consume no additional permits and cancellation promptly releases capacity. Validate that upstream content is an image, and remove or otherwise suppress permanently invalid remote references according to official behavior.
+- Expose TMDb Person profile artwork as the item's `Primary` remote-image type, matching the
+  official Person image provider; never advertise or map it as the user-only `Profile` type. When
+  `IncludeAllLanguages` is false and a preferred metadata language is nonblank, retain that language,
+  English, and language-neutral images before sorting; a blank preference must not filter languages.
 - Persist uploaded and remotely downloaded lyrics under the item's internal metadata directory with a same-directory temporary file and atomic rename, then register the file as a Lyric media stream. Keep the parsed JSON only as a compatibility cache; reads prefer the registered stream, and deletion must never remove unregistered files, symlinks, or files outside the internal metadata root.
 - Decode uploaded and local lyrics with the official BOM-aware UTF-8, UTF-16LE, UTF-16BE, UTF-32LE,
   and UTF-32BE behavior. Without a BOM, use UTF-8 replacement fallback; malformed or incomplete
@@ -199,6 +207,9 @@
   access and `EnableUserPreferenceAccess`. Keep target lookup before those preference checks,
   preserve password-change token revocation and
   reset-without-revocation behavior, and retain equivalent lowercase route authorization.
+- Bind every top-level `UserPolicy` update property case-insensitively like ASP.NET JSON input,
+  preserving the official last-duplicate-wins behavior and ignoring unknown properties. Do not let
+  camelCase, lowercase, or mixed-case SDK payloads silently reset submitted policy values to defaults.
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.
@@ -268,6 +279,9 @@
 - Honor `/Playlists/{playlistId}/Items` DTO options exactly like the official controller: bind
   case-insensitive `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes`, then
   pass them through the shared batched projector instead of silently ignoring SDK query values.
+- Bind `UpdatePlaylistUserDto.CanEdit` case-insensitively, ignore unknown JSON properties, and let
+  the last case-insensitive duplicate win. A casing mismatch must not silently turn an editable
+  playlist share into a read-only one.
 - Keep `/Items/{itemId}/RemoteImages` on the official signed `Int32` paging contract used by Android
   and Swift: negative `StartIndex` skips nothing, non-positive `Limit` returns an empty image page,
   and values outside `Int32` fail binding before lookup work starts.
@@ -650,6 +664,10 @@
 
 ## Android playback compatibility
 
+- For `Sessions/{sessionId}/Playing/{command}`, bind `ControllingUserId` case-insensitively as the
+  official nullable string and forward it verbatim in `PlaystateRequest`. Keep the authenticated
+  controller session id for authorization and command routing; do not synthesize the controlling
+  user from the authenticated user's UUID when the query value was omitted.
 - Persist playback progress against the authorized selected `MediaSourceId`, but when projecting a
   displayed primary item's `UserData`, fall back to the latest visible alternate-version row when
   the primary has no row. This keeps ISO and alternate playback resume positions visible on item
