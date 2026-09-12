@@ -110,13 +110,7 @@ async fn update_item_data(
         )
         .await?;
     let dto: UserItemDataDto = update.into();
-    crate::websocket::broadcast_user_data_changed(
-        &state,
-        target_user_id,
-        item_id,
-        &serde_json::to_value(&dto).unwrap_or_default(),
-    )
-    .await;
+    crate::websocket::broadcast_user_data_changed(&state, target_user_id, &dto).await;
     Ok(Json(dto))
 }
 
@@ -173,13 +167,7 @@ async fn set_favorite(
         .set_favorite_for_authorized_user(target_user_id, item_id, is_favorite)
         .await?;
     let dto: UserItemDataDto = update.into();
-    crate::websocket::broadcast_user_data_changed(
-        &state,
-        target_user_id,
-        item_id,
-        &serde_json::to_value(&dto).unwrap_or_default(),
-    )
-    .await;
+    crate::websocket::broadcast_user_data_changed(&state, target_user_id, &dto).await;
     Ok(Json(dto))
 }
 
@@ -237,12 +225,6 @@ async fn set_rating(
         .set_rating_for_authorized_user(target_user_id, item_id, likes)
         .await?;
     let dto: UserItemDataDto = update.into();
-    crate::websocket::broadcast_user_data_changed(
-        &state,
-        target_user_id,
-        item_id,
-        &serde_json::to_value(&dto).unwrap_or_default(),
-    )
-    .await;
+    crate::websocket::broadcast_user_data_changed(&state, target_user_id, &dto).await;
     Ok(Json(dto))
 }

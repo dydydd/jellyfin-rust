@@ -8,6 +8,7 @@ use axum::{
     http::HeaderMap,
     response::Response,
 };
+use jellyfin_model::UserItemDataDto;
 use jellyfin_server_implementations::{
     SyncPlayDeparture, WebSocketMessageType, deserialize_websocket_message,
 };
@@ -573,21 +574,23 @@ fn guid_strings(ids: &[Uuid]) -> Vec<String> {
 pub(crate) async fn broadcast_user_data_changed(
     state: &AppState,
     user_id: Uuid,
-    item_id: Uuid,
-    user_data: &serde_json::Value,
+    user_data: &UserItemDataDto,
 ) {
     state
         .web_sockets
         .send_to_users(
             &[user_id],
             "UserDataChanged",
-            &json!({
-                "UserId": user_id.simple().to_string(),
-                "ItemId": item_id.simple().to_string(),
-                "UserData": user_data,
-            }),
+            &user_data_changed_data(user_id, user_data),
         )
         .await;
+}
+
+fn user_data_changed_data(user_id: Uuid, user_data: &UserItemDataDto) -> serde_json::Value {
+    json!({
+        "UserId": user_id.simple().to_string(),
+        "UserDataList": [user_data],
+    })
 }
 
 pub(crate) async fn broadcast_user_updated(state: &AppState, user: &serde_json::Value) {
@@ -631,14 +634,17 @@ fn user_deleted_data(user_id: Uuid) -> String {
 pub(crate) async fn broadcast_refresh_progress(state: &AppState, item_id: Uuid, progress: f64) {
     state
         .web_sockets
-        .send_to_administrators(
-            "RefreshProgress",
-            &json!({
-                "ItemId": item_id.simple().to_string(),
-                "Progress": progress,
-            }),
-        )
+        .send_to_administrators("RefreshProgress", &refresh_progress_data(item_id, progress))
         .await;
+}
+
+fn refresh_progress_data(item_id: Uuid, progress: f64) -> serde_json::Value {
+    json!({
+        "ItemId": item_id.simple().to_string(),
+        // Rust's float display is locale-independent, matching the official
+        // invariant-culture string contract without losing precision.
+        "Progress": progress.to_string(),
+    })
 }
 
 async fn send_force_keep_alive(
@@ -706,11 +712,14 @@ async fn handle_inbound(payload: &[u8], subscriptions: &mut HashSet<String>, sta
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionRecipient, WebSocketHub, is_keep_alive, session_visible_to, user_deleted_data,
+        SessionRecipient, WebSocketHub, is_keep_alive, refresh_progress_data, session_visible_to,
+        user_data_changed_data, user_deleted_data, websocket_message,
     };
     use crate::SystemCommand;
     use chrono::Utc;
-    use jellyfin_model::{ClientCapabilitiesDto, PlayerStateInfo, SessionInfoDto, SessionUserInfo};
+    use jellyfin_model::{
+        ClientCapabilitiesDto, PlayerStateInfo, SessionInfoDto, SessionUserInfo, UserItemDataDto,
+    };
     use std::collections::HashSet;
     use tokio::time::{Duration, timeout};
     use uuid::Uuid;
@@ -743,6 +752,59 @@ mod tests {
         assert_eq!(
             serde_json::to_value(user_deleted_data(user_id)).unwrap(),
             serde_json::json!("0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn user_data_changed_uses_the_official_mobile_sdk_shape() {
+        let user_id = Uuid::parse_str("01234567-89ab-cdef-0123-456789abcdef").unwrap();
+        let user_data = UserItemDataDto {
+            rating: Some(8.5),
+            played_percentage: Some(50.0),
+            unplayed_item_count: None,
+            playback_position_ticks: 123,
+            play_count: 2,
+            is_favorite: true,
+            likes: Some(true),
+            last_played_date: Some("2026-09-13T01:02:03.0000000Z".to_owned()),
+            played: false,
+            key: "item-key".to_owned(),
+            item_id: "fedcba9876543210fedcba9876543210".to_owned(),
+        };
+
+        let message = serde_json::from_str::<serde_json::Value>(&websocket_message(
+            "UserDataChanged",
+            &user_data_changed_data(user_id, &user_data),
+        ))
+        .unwrap();
+
+        assert_eq!(message["MessageType"], "UserDataChanged");
+        assert_eq!(message["Data"]["UserId"], user_id.simple().to_string());
+        assert_eq!(
+            message["Data"]["UserDataList"],
+            serde_json::json!([user_data])
+        );
+        assert!(message["Data"].get("ItemId").is_none());
+        assert!(message["Data"].get("UserData").is_none());
+    }
+
+    #[test]
+    fn refresh_progress_data_is_a_string_map() {
+        let item_id = Uuid::parse_str("fedcba98-7654-3210-fedc-ba9876543210").unwrap();
+        let data = refresh_progress_data(item_id, 12.5);
+
+        assert_eq!(
+            data,
+            serde_json::json!({
+                "ItemId": "fedcba9876543210fedcba9876543210",
+                "Progress": "12.5",
+            })
+        );
+        assert!(
+            data.as_object()
+                .unwrap()
+                .values()
+                .all(serde_json::Value::is_string)
         );
     }
 
