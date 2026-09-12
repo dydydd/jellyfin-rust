@@ -8,7 +8,9 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::Query;
-use jellyfin_controller::{embedded_subtitle_filter_index, video_command, video_remux_command};
+use jellyfin_controller::{
+    FfmpegCommand, embedded_subtitle_filter_index, video_command, video_remux_command,
+};
 use jellyfin_data::BaseItemPage;
 use jellyfin_model::{MediaStream, MediaStreamType};
 use serde::Deserialize;
@@ -224,7 +226,7 @@ pub(crate) struct StreamQuery {
         alias = "CpuCoreLimit",
         alias = "cpucorelimit"
     )]
-    _cpu_core_limit: Option<i32>,
+    cpu_core_limit: Option<i32>,
     #[serde(
         rename = "liveStreamId",
         alias = "LiveStreamId",
@@ -449,7 +451,7 @@ async fn stream_file(
             return Err(ApiError::Forbidden);
         }
     }
-    let command = if is_local_copy_remux {
+    let mut command = if is_local_copy_remux {
         video_remux_command(
             &state.ffmpeg_path,
             std::path::Path::new(&path),
@@ -487,12 +489,32 @@ async fn stream_file(
             copy_timestamps,
         )
     };
+    apply_cpu_core_limit(&mut command, query.cpu_core_limit);
     crate::audio::serve_transcoded_path(
         command,
         &output.to_string_lossy(),
         request.method() == axum::http::Method::HEAD,
     )
     .await
+}
+
+fn apply_cpu_core_limit(command: &mut FfmpegCommand, requested: Option<i32>) {
+    let Some(requested) = requested else {
+        return;
+    };
+    let available = std::thread::available_parallelism()
+        .map(|count| i32::try_from(count.get()).unwrap_or(i32::MAX))
+        .unwrap_or(1);
+    let threads = if requested <= 0 {
+        0
+    } else {
+        requested.min(available)
+    };
+    let output_index = command.arguments.len().saturating_sub(1);
+    command.arguments.splice(
+        output_index..output_index,
+        ["-threads".to_owned(), threads.to_string()],
+    );
 }
 
 fn is_local_path(path: &str) -> bool {
@@ -1038,7 +1060,7 @@ mod tests {
         assert_eq!(query.require_non_anamorphic, Some(true));
         assert_eq!(query.start_time_ticks, Some(10_000));
         assert_eq!(query.copy_timestamps, Some(true));
-        assert_eq!(query._cpu_core_limit, Some(2));
+        assert_eq!(query.cpu_core_limit, Some(2));
         assert_eq!(query._live_stream_id.as_deref(), Some("live"));
         assert_eq!(query._enable_mpegts_m2_ts_mode, Some(true));
         assert_eq!(query._subtitle_codec.as_deref(), Some("srt"));
@@ -1054,6 +1076,48 @@ mod tests {
         assert!(should_burn_subtitles(Some("Encode")));
         assert!(should_burn_subtitles(Some("0")));
         assert!(!should_burn_subtitles(Some("External")));
+    }
+
+    #[test]
+    fn progressive_video_applies_the_official_cpu_core_limit() {
+        let mut command = FfmpegCommand {
+            program: "/usr/bin/ffmpeg".into(),
+            arguments: vec![
+                "-i".to_owned(),
+                "input.mkv".to_owned(),
+                "output.mp4".to_owned(),
+            ],
+        };
+        apply_cpu_core_limit(&mut command, Some(1));
+        assert_eq!(
+            command.arguments,
+            ["-i", "input.mkv", "-threads", "1", "output.mp4"]
+        );
+
+        let mut automatic = FfmpegCommand {
+            program: "/usr/bin/ffmpeg".into(),
+            arguments: vec!["output.ts".to_owned()],
+        };
+        apply_cpu_core_limit(&mut automatic, Some(-1));
+        assert_eq!(automatic.arguments, ["-threads", "0", "output.ts"]);
+
+        let mut clamped = FfmpegCommand {
+            program: "/usr/bin/ffmpeg".into(),
+            arguments: vec!["output.mkv".to_owned()],
+        };
+        apply_cpu_core_limit(&mut clamped, Some(i32::MAX));
+        let expected = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .to_string();
+        assert_eq!(clamped.arguments, ["-threads", &expected, "output.mkv"]);
+
+        let mut omitted = FfmpegCommand {
+            program: "/usr/bin/ffmpeg".into(),
+            arguments: vec!["output.webm".to_owned()],
+        };
+        apply_cpu_core_limit(&mut omitted, None);
+        assert_eq!(omitted.arguments, ["output.webm"]);
     }
 
     #[test]
