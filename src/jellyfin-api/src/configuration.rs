@@ -80,13 +80,17 @@ pub(crate) fn metadata_options_for_item_type(
     configuration: &server_configuration::Model,
     item_type: &str,
 ) -> Result<MetadataOptions, ApiError> {
-    let options =
-        serde_json::from_value::<Vec<MetadataOptions>>(configuration.metadata_options.clone())
-            .map_err(|_| ApiError::Internal)?;
+    let options = metadata_options(configuration)?;
     Ok(options
         .into_iter()
         .find(|options| options.item_type.eq_ignore_ascii_case(item_type))
         .unwrap_or_default())
+}
+
+pub(crate) fn metadata_options(
+    configuration: &server_configuration::Model,
+) -> Result<Vec<MetadataOptions>, ApiError> {
+    serde_json::from_value(configuration.metadata_options.clone()).map_err(|_| ApiError::Internal)
 }
 
 pub(crate) async fn get_named(

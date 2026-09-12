@@ -36,8 +36,7 @@ pub(crate) async fn remote_search(
     apply_configured_locale(&configuration, &mut request);
     let kind = remote_search_kind(&uri);
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
-    let metadata_options =
-        crate::configuration::metadata_options_for_item_type(&configuration, kind)?;
+    let metadata_options = crate::configuration::metadata_options(&configuration)?;
     Ok(Json(
         state
             .item_lookup
@@ -60,8 +59,7 @@ pub(crate) async fn remote_search_elevated(
     apply_configured_locale(&configuration, &mut request);
     let kind = remote_search_kind(&uri);
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
-    let metadata_options =
-        crate::configuration::metadata_options_for_item_type(&configuration, kind)?;
+    let metadata_options = crate::configuration::metadata_options(&configuration)?;
     Ok(Json(
         state
             .item_lookup

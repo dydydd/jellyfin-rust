@@ -108,8 +108,8 @@ pub use user_profile_image_repository::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
 };
 pub use virtual_folder_repository::{
-    NewMediaPath, NewVirtualFolder, VirtualFolderError, VirtualFolderRepository,
-    VirtualFolderWithPaths,
+    ItemLibraryOptions, NewMediaPath, NewVirtualFolder, VirtualFolderError,
+    VirtualFolderRepository, VirtualFolderWithPaths,
 };
 
 use std::{sync::Arc, time::Duration};

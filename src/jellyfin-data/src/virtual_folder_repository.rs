@@ -1,8 +1,8 @@
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseTransaction,
-    DbBackend, DbErr, EntityTrait, LoaderTrait, QueryFilter, QueryOrder, SqlErr, Statement,
-    TransactionTrait,
+    DbBackend, DbErr, EntityTrait, FromQueryResult, LoaderTrait, QueryFilter, QueryOrder, SqlErr,
+    Statement, TransactionTrait,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -32,6 +32,13 @@ pub struct NewMediaPath {
 pub struct VirtualFolderWithPaths {
     pub folder: virtual_folder::Model,
     pub paths: Vec<media_path::Model>,
+}
+
+/// The persisted item type and options of its nearest containing virtual library.
+#[derive(Debug, Clone, PartialEq, FromQueryResult)]
+pub struct ItemLibraryOptions {
+    pub item_type: String,
+    pub library_options: Option<Value>,
 }
 
 #[derive(Debug, Error)]
@@ -142,6 +149,68 @@ impl VirtualFolderRepository {
             .all(self.database.as_ref())
             .await?;
         Ok(Some(VirtualFolderWithPaths { folder, paths }))
+    }
+
+    /// Resolves an item and its nearest containing collection folder in one bounded query.
+    ///
+    /// A collection-folder item owns its virtual-folder options directly. Other items use the
+    /// nearest collection-folder ancestor from the hierarchy closure table. An existing item that
+    /// is outside every virtual library is returned with no options, while a missing item returns
+    /// `None`; callers can therefore preserve the official dummy-item fallback independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the item or hierarchy lookup fails.
+    pub async fn library_options_for_item(
+        &self,
+        item_id: Uuid,
+    ) -> Result<Option<ItemLibraryOptions>, VirtualFolderError> {
+        Ok(
+            ItemLibraryOptions::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r#"
+                SELECT item.item_type,
+                       containing.library_options
+                FROM jellyfin.base_items AS item
+                LEFT JOIN LATERAL (
+                    SELECT candidate.library_options
+                    FROM (
+                        SELECT own_options.library_options,
+                               0 AS depth,
+                               item.id AS folder_id
+                        FROM jellyfin.virtual_folders AS own_options
+                        WHERE own_options.id = item.id
+                          AND item.item_type IN (
+                              'CollectionFolder',
+                              'MediaBrowser.Controller.Entities.CollectionFolder'
+                          )
+
+                        UNION ALL
+
+                        SELECT ancestor_options.library_options,
+                               closure.depth,
+                               closure.parent_item_id AS folder_id
+                        FROM jellyfin.ancestor_ids AS closure
+                        JOIN jellyfin.base_items AS ancestor
+                          ON ancestor.id = closure.parent_item_id
+                        JOIN jellyfin.virtual_folders AS ancestor_options
+                          ON ancestor_options.id = closure.parent_item_id
+                        WHERE closure.item_id = item.id
+                          AND ancestor.item_type IN (
+                              'CollectionFolder',
+                              'MediaBrowser.Controller.Entities.CollectionFolder'
+                          )
+                    ) AS candidate
+                    ORDER BY candidate.depth ASC, candidate.folder_id ASC
+                    LIMIT 1
+                ) AS containing ON true
+                WHERE item.id = $1::uuid
+            "#,
+                [item_id.into()],
+            ))
+            .one(self.database.as_ref())
+            .await?,
+        )
     }
 
     /// Renames a folder while preserving its stable item identifier.

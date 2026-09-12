@@ -8,7 +8,7 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
-    entities::base_item,
+    NewVirtualFolder, VirtualFolderRepository, entities::base_item,
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
 use serde_json::{Value, json};
@@ -87,6 +87,58 @@ async fn exercise_route(database_name: &str) {
         .create(NewBaseItem::new(Uuid::new_v4(), "Video"))
         .await
         .expect("scanned video creation");
+    let virtual_folders = VirtualFolderRepository::new(database.clone());
+    let library = virtual_folders
+        .create(
+            NewVirtualFolder {
+                name: format!("Remote search library {suffix}"),
+                collection_type: Some("music".to_owned()),
+                library_options: json!({
+                    "typeoptions": [{
+                        "type": "musicartist",
+                        "metadatafetchers": [],
+                        "metadatafetcherorder": []
+                    }]
+                }),
+                refresh_requested: false,
+            },
+            Vec::new(),
+        )
+        .await
+        .expect("remote search virtual library creation");
+    let items = BaseItemRepository::new(database.clone());
+    let mut collection = NewBaseItem::new(library.folder.id, "CollectionFolder");
+    collection.is_folder = true;
+    items
+        .create(collection)
+        .await
+        .expect("remote search collection folder creation");
+    let own_options = virtual_folders
+        .library_options_for_item(library.folder.id)
+        .await
+        .expect("collection-folder library options lookup")
+        .expect("collection folder exists");
+    assert_eq!(own_options.item_type, "CollectionFolder");
+    assert_eq!(
+        own_options.library_options.as_ref(),
+        Some(&library.folder.library_options)
+    );
+    let mut artist = NewBaseItem::new(Uuid::new_v4(), "MusicArtist");
+    artist.parent_id = Some(library.folder.id);
+    let artist = items
+        .create(artist)
+        .await
+        .expect("remote search reference artist creation");
+    let resolved = virtual_folders
+        .library_options_for_item(artist.id)
+        .await
+        .expect("containing virtual library lookup")
+        .expect("reference artist exists");
+    assert_eq!(resolved.item_type, "MusicArtist");
+    assert_eq!(
+        resolved.library_options.as_ref(),
+        Some(&library.folder.library_options)
+    );
     let route_app = app(database.clone());
 
     assert_eq!(
@@ -128,6 +180,7 @@ async fn exercise_route(database_name: &str) {
         &database,
         movie.id,
         scanned_video.id,
+        artist.id,
         &ordinary_token,
         &administrator_token,
         &api_key_token,
@@ -150,10 +203,53 @@ async fn assert_remote_search_contract(
     database: &sea_orm::DatabaseConnection,
     item_id: Uuid,
     scanned_video_id: Uuid,
+    library_artist_id: Uuid,
     ordinary_token: &str,
     administrator_token: &str,
     api_key_token: &str,
 ) {
+    for (route, body) in [
+        (
+            "/Items/RemoteSearch/MusicArtist",
+            json!({
+                "SearchInfo": { "Name": "Provider must remain disabled" },
+                "ItemId": library_artist_id,
+                "SearchProviderName": "MusicBrainz"
+            }),
+        ),
+        (
+            "/items/remotesearch/musicartist",
+            json!({
+                "searchinfo": { "name": "Provider must remain disabled" },
+                "itemid": library_artist_id,
+                "searchprovidername": "MusicBrainz"
+            }),
+        ),
+    ] {
+        let response = post_json(app, route, Some(ordinary_token), &body).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(body_json(response).await, json!([]), "{route}");
+    }
+
+    for route in [
+        "/Items/RemoteSearch/MusicArtist",
+        "/items/remotesearch/musicartist",
+    ] {
+        let response = post_json(
+            app,
+            route,
+            Some(ordinary_token),
+            &json!({
+                "SearchInfo": { "Name": "Missing reference item" },
+                "ItemId": Uuid::new_v4(),
+                "SearchProviderName": "Unregistered Provider"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(body_json(response).await, json!([]), "{route}");
+    }
+
     let body = json!({
         "SearchInfo": {
             "Name": "Remote Candidate",
