@@ -885,6 +885,7 @@ impl Fixture {
                 day_of_week: DynamicDayOfWeek::Everyday,
                 start_hour: 18.0,
                 end_hour: 6.0,
+                ..AccessSchedule::default()
             }],
             authentication_provider_id: Some(
                 UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),

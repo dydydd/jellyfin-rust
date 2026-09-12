@@ -2688,6 +2688,7 @@ fn user_profile_image_tag(image: &user_profile_image::Model) -> String {
 }
 
 pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
+    let user_id = user.id;
     let mut policy: UserPolicy = serde_json::from_value(user.policy).unwrap_or_default();
     policy.is_administrator = user.is_administrator;
     policy.is_hidden = user.is_hidden;
@@ -2696,12 +2697,21 @@ pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
     policy.password_reset_provider_id = Some(user.password_reset_provider_id);
     policy.invalid_login_attempt_count = user.invalid_login_attempt_count;
     policy.login_attempts_before_lockout = user.login_attempts_before_lockout;
+    for schedule in &mut policy.access_schedules {
+        // The Rust persistence layer currently embeds schedules in the policy
+        // JSON rather than in a separate entity table. Preserve a submitted
+        // identity, but populate legacy rows with their owning user so the
+        // official required mobile DTO remains decodable.
+        if schedule.user_id.is_nil() {
+            schedule.user_id = user_id;
+        }
+    }
     let mut configuration: UserConfiguration =
         serde_json::from_value(user.preferences).unwrap_or_default();
     configuration.enable_local_password = user.enable_local_password;
 
     UserDto {
-        id: user.id,
+        id: user_id,
         name: Some(user.username),
         // Jellyfin retains these deprecated fields for wire compatibility and
         // always reports true. Password state is no longer exposed here.

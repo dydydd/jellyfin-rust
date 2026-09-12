@@ -27,7 +27,7 @@ use jellyfin_data::{
     DatabaseConfig, DeviceRepository, NewBaseItem, NewBaseItemImage, NewChapter, NewDevice,
     NewPerson, NewPersonCredit, NewTrickplayInfo, PersonRepository, TrickplayInfoRepository,
 };
-use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
+use jellyfin_model::{AccessSchedule, DynamicDayOfWeek, MediaStream, MediaStreamType, UserPolicy};
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use percent_encoding::utf8_percent_encode;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
@@ -639,6 +639,12 @@ impl Fixture {
             .unwrap();
 
         let policy = UserPolicy {
+            access_schedules: vec![AccessSchedule {
+                day_of_week: DynamicDayOfWeek::Everyday,
+                start_hour: 0.0,
+                end_hour: 24.0,
+                ..AccessSchedule::default()
+            }],
             authentication_provider_id: Some(
                 UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
             ),

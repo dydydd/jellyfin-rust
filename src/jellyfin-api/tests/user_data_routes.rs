@@ -631,6 +631,7 @@ fn blocked_schedule_policy(is_administrator: bool) -> UserPolicy {
             day_of_week: DynamicDayOfWeek::Everyday,
             start_hour: 18.0,
             end_hour: 6.0,
+            ..AccessSchedule::default()
         }],
         ..policy()
     }

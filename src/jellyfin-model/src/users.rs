@@ -1,19 +1,70 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
+use std::fmt;
 use uuid::Uuid;
 
 use crate::enums::{DynamicDayOfWeek, SyncPlayUserAccessType, UnratedItem};
 
 /// API representation of an access schedule.
-///
-/// Database-only `Id` and `UserId` properties are intentionally absent, as in
-/// the official XML/API contract.
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct AccessSchedule {
+    pub id: i32,
+    #[serde(with = "crate::serde_guid::single")]
+    pub user_id: Uuid,
     pub day_of_week: DynamicDayOfWeek,
     pub start_hour: f64,
     pub end_hour: f64,
+}
+
+impl<'de> Deserialize<'de> for AccessSchedule {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default, rename_all = "PascalCase")]
+        struct WireSchedule {
+            id: i32,
+            #[serde(with = "crate::serde_guid::single")]
+            user_id: Uuid,
+            day_of_week: DynamicDayOfWeek,
+            start_hour: f64,
+            end_hour: f64,
+        }
+
+        struct ScheduleVisitor;
+
+        impl<'de> de::Visitor<'de> for ScheduleVisitor {
+            type Value = AccessSchedule;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an access schedule object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut normalized = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let value = map.next_value::<serde_json::Value>()?;
+                    let canonical = ["Id", "UserId", "DayOfWeek", "StartHour", "EndHour"]
+                        .into_iter()
+                        .find(|field| field.eq_ignore_ascii_case(&key));
+                    if let Some(canonical) = canonical {
+                        normalized.insert(canonical.to_owned(), value);
+                    }
+                }
+                let schedule: WireSchedule =
+                    serde_json::from_value(serde_json::Value::Object(normalized))
+                        .map_err(de::Error::custom)?;
+                Ok(AccessSchedule {
+                    id: schedule.id,
+                    user_id: schedule.user_id,
+                    day_of_week: schedule.day_of_week,
+                    start_hour: schedule.start_hour,
+                    end_hour: schedule.end_hour,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(ScheduleVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

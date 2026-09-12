@@ -899,6 +899,7 @@ mod tests {
             day_of_week,
             start_hour,
             end_hour,
+            ..AccessSchedule::default()
         }
     }
 

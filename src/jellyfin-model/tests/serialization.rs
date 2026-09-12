@@ -1,17 +1,18 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BackupRestoreRequestDto,
-    BufferRequestDto, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, DeviceProfile,
-    EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult, GeneralCommand,
-    GeneralCommandType, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
-    GroupStateType, GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, ImageInfo,
-    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
-    MessageCommand, MetadataOptions, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand,
-    PlayQueueUpdateDto, PlayQueueUpdateReason, PlayRequest, PlaybackRequestType, PlayerStateInfo,
-    PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult,
-    RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult,
-    SendCommandDto, SendCommandType, ServerConfiguration, SessionInfoDto, SessionUserInfo,
-    SyncPlayQueueItemDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    AccessSchedule, AuthenticationInfo, BackupManifestDto, BackupOptionsDto,
+    BackupRestoreRequestDto, BufferRequestDto, ClientCapabilitiesDto, DeviceInfoDto,
+    DeviceOptionsDto, DeviceProfile, DynamicDayOfWeek, EndPointInfo, FontFile,
+    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, GroupInfoDto,
+    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, GroupStateUpdateDto,
+    GroupUpdateDto, GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
+    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, MetadataOptions, NameIdPair,
+    PackageInfo, PinRedeemResult, PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason,
+    PlayRequest, PlaybackRequestType, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
+    PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
+    RepositoryInfo, SearchHint, SearchHintResult, SendCommandDto, SendCommandType,
+    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayQueueItemDto,
+    SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -1124,7 +1125,18 @@ fn endpoint_info_matches_official_wire_contract() {
 
 #[test]
 fn user_policy_preserves_official_defaults_and_pascal_case() {
-    let value = serde_json::to_value(UserPolicy::default()).unwrap();
+    let schedule_user_id = Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap();
+    let policy = UserPolicy {
+        access_schedules: vec![AccessSchedule {
+            id: 7,
+            user_id: schedule_user_id,
+            day_of_week: DynamicDayOfWeek::Everyday,
+            start_hour: 8.5,
+            end_hour: 17.0,
+        }],
+        ..UserPolicy::default()
+    };
+    let value = serde_json::to_value(policy).unwrap();
 
     assert_eq!(value["IsHidden"], true);
     assert_eq!(value["EnableMediaPlayback"], true);
@@ -1133,6 +1145,11 @@ fn user_policy_preserves_official_defaults_and_pascal_case() {
     assert_eq!(value["LoginAttemptsBeforeLockout"], -1);
     assert_eq!(value["EnabledFolders"], json!([]));
     assert_eq!(value["SyncPlayAccess"], "CreateAndJoinGroups");
+    assert_eq!(value["AccessSchedules"][0]["Id"], 7);
+    assert_eq!(
+        value["AccessSchedules"][0]["UserId"],
+        "f9c1ad0c820f44df8db852fbfc0d3d93"
+    );
     assert!(value.get("MaxParentalRating").is_none());
     assert!(value.get("BlockedMediaFolders").is_none());
     assert!(value.get("AuthenticationProviderId").is_none());
