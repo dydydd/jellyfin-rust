@@ -272,7 +272,7 @@ impl ItemLookupService {
         })
     }
 
-    /// Returns image providers available for the item when a TMDB key exists.
+    /// Returns image providers that can actually search for the item.
     ///
     /// # Errors
     ///
@@ -294,7 +294,7 @@ impl ItemLookupService {
         let Some(supported_images) = supported_remote_image_types(&item.item_type) else {
             return Ok(Vec::new());
         };
-        let provider_names = [TMDB_PROVIDER_NAME, "TV Maze", "TheAudioDB"]
+        let provider_names = [TMDB_PROVIDER_NAME]
             .into_iter()
             .filter(|name| {
                 !metadata_options

@@ -150,6 +150,18 @@ async fn exercise_remote_image_routes(database_name: &str) {
     assert_eq!(providers.status(), StatusCode::OK);
     assert_eq!(body_json(providers).await, Value::Array(Vec::new()));
 
+    let configured_providers = fixture
+        .get_configured(&providers_route, &fixture.user_token)
+        .await;
+    assert_eq!(configured_providers.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(configured_providers).await,
+        json!([{
+            "Name": "TheMovieDb",
+            "SupportedImages": ["Primary", "Backdrop", "Logo", "Thumb"]
+        }])
+    );
+
     let missing_download_type = fixture
         .post(
             &format!("/Items/{}/RemoteImages/Download", fixture.item_id),
@@ -224,6 +236,7 @@ async fn exercise_remote_image_routes(database_name: &str) {
 struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
+    configured_app: axum::Router,
     admin_id: Uuid,
     admin_token: String,
     user_id: Uuid,
@@ -304,10 +317,19 @@ impl Fixture {
                 program_data.join("metadata"),
             ),
         );
+        let configured_app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Remote Image Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_tmdb_api_key("test-key"),
+        );
 
         Self {
             database,
             app,
+            configured_app,
             admin_id: admin.id,
             admin_token,
             user_id: user.id,
@@ -337,6 +359,22 @@ impl Fixture {
         self.app
             .clone()
             .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn get_configured(&self, uri: &str, token: &str) -> axum::response::Response {
+        self.configured_app
+            .clone()
+            .oneshot(
+                Request::get(uri)
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("{AUTHORIZATION}, Token=\"{token}\""),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap()
     }
