@@ -202,6 +202,9 @@
   user, branding, by-name, and plugin image responses must not advertise byte ranges unless the
   handler actually implements Range semantics; trickplay tile routes remain the range-aware
   exception.
+- Keep both public branding CSS routes reachable through fully lowercase static-path aliases;
+  `/branding/css` and `/branding/css.css` must preserve the canonical content type and empty-body
+  behavior used by mobile and web clients.
 - Keep non-Live-TV Channels routes reachable through fully lowercase static-path aliases and
   bind their compound query names (`StartIndex`, `FolderId`, `ChannelIds`, sort and capability
   options) case-insensitively, matching the official ASP.NET binder and legacy SDK traffic.
@@ -223,6 +226,14 @@
 - Keep playback-info route static segments compatible with ASP.NET's case-insensitive routing:
   register both `/Items/{itemId}/PlaybackInfo` and `/items/{itemId}/playbackinfo` (including GET
   and POST) so generated Android and Swift SDK requests never depend on URL casing.
+- Keep the authenticated bitrate-test route available as `/playback/bitratetest`, with the same
+  bounded payload, query binding, and error semantics as `/Playback/BitrateTest`.
+- Keep Open/Close LiveStreams available through fully lowercase static-path aliases; these are
+  ordinary playback routes, not Live TV. Bind the complete Open query/body surface in
+  PascalCase, camelCase, and representative lowercase form, with query values taking precedence,
+  and pass device profile, bitrate, stream-selection, channel, seek, and direct-play options into
+  the existing playback stream builder rather than silently ignoring them. API keys may Open only
+  with an explicit valid target user and may Close without a device session.
 - Keep video version merging and alternate-source deletion on the official `RequiresElevation`
   policy through canonical and fully lowercase routes. Elevated API keys are administrator
   equivalents for both mutations and must not be rejected by a device-session-only handler. For
@@ -245,6 +256,14 @@
   treats the SDK's lowercase public-user request as a UUID binding failure.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
   the canonical route's public authorization policy as well as its handler.
+- Keep Startup, external library-update reports, elevated Person remote search, and elevated remote
+  search Apply reachable through fully lowercase static aliases. Bind their JSON properties and
+  compound query names in PascalCase, camelCase, and representative lowercase form; lowercase
+  Person/Apply aliases must retain `RequiresElevation`, and authorization must precede malformed
+  body or missing-item validation.
+- Keep the complete ItemLookup SDK surface reachable through fully lowercase aliases: all typed
+  RemoteSearch routes plus per-item MetadataEditor and ExternalIdInfos. The per-item routes remain
+  elevated, while non-Person searches retain their ordinary authenticated policy.
 - Keep the mobile authentication helpers fully lowercase too: auth providers, password-reset
   providers, API-key CRUD, forgot-password/PIN, and user-view grouping options must reuse the
   canonical Public, Elevated, or default authorization policy rather than falling through to a
@@ -268,6 +287,9 @@
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.
+- Keep every SyncPlay route reachable through a fully lowercase static-path alias, including
+  queue, playback-state, membership, ping, and dynamic group-detail routes; aliases must reuse the
+  canonical handlers and authenticated policy.
 - Keep collection creation and membership mutation reachable as `/collections` and
   `/collections/{collectionId}/items`; bind compound query names such as `ParentId` and `IsLocked`
   case-insensitively and retain the canonical collection-management authorization.
@@ -283,6 +305,10 @@
   hierarchy lookup. Preserve the official single-item Playlist owner/administrator override and
   the BoxSet collection-management authorization, while keeping batched Playlist DTOs on the normal
   intrinsic-plus-policy wrapper.
+- Project Series `AirTime` and Series/BoxSet `DisplayOrder` directly from persisted metadata without
+  an `ItemFields` gate. Project `CumulativeRunTimeTicks` only for folders when the field is requested
+  by case-insensitive name, integer value `7`, or the default all-fields detail contract; never expose
+  it for non-folder media even when `RunTimeTicks` is present.
 - Project `IsHD` only when `ItemFields.IsHD` is requested (including default all-fields item
   details), and only emit it when the persisted item height is at least 720, matching the official
   legacy compatibility behavior. Preserve the uppercase acronym in the wire key, accept the field
@@ -389,6 +415,9 @@
   lowercase aliases with the same first-time-setup-or-elevated and elevated policies. Bind virtual
   folder/media-path query names and top-level JSON DTO properties in PascalCase, camelCase, and
   representative lowercase forms while preserving the canonical handlers and methods.
+- Keep the administrator-only `/Library/PhysicalPaths` SDK bootstrap request reachable as
+  `/library/physicalpaths`, returning the identical string array for administrator sessions and API
+  keys while retaining 401/403 behavior for anonymous and ordinary-user requests.
 - Resolve direct Genre and MusicGenre detail names through their official deterministic item-by-name
   path and UTF-16LE identifier, creating the persisted entity idempotently. Hyphenated slug names
   only search persisted entities in `&`, `/`, then `?` substitution order; a miss returns an empty
@@ -457,6 +486,11 @@
 - Project music `Album`, `AlbumId`, `Artists`, `ArtistItems`, `AlbumArtist`, and `AlbumArtists`
   unconditionally on item details and lists. Resolve audio albums through one batched nearest-
   ancestor lookup and preserve metadata artist order while attaching normalized relation ids.
+- Project Audio `AlbumPrimaryImageTag`, `NormalizationGain`, and `AlbumNormalizationGain`
+  unconditionally like the official DTO service. Prefer `LUFS` with the ReplayGain 2.0
+  `-18 - LUFS` calculation over a persisted normalization gain, resolve every page's album rows and
+  Primary image metadata in bounded batches, and merge an album image's persisted BlurHash into
+  `ImageBlurHashes.Primary` without replacing hashes for the audio item's own or inherited images.
 - Bind legacy Artists `Filters` by case-insensitive name or integer and reject the three official
   conflicting pairs. Apply favorite, liked, and played state to the target user's matching
   item-by-name `MusicArtist` rows; preserve the official no-op behavior for folder and resumable
