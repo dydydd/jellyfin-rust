@@ -612,6 +612,9 @@
 - Explicit metadata refresh must repair missing or placeholder stream rows for the selected local
   file through the bounded media-probe pool, including alternate versions. Keep remote and `.strm`
   sources on the lazy playback probe path instead of opening upstream media during library browsing.
+- Bind item-refresh query names case-insensitively and accept `MetadataRefreshMode` names without
+  regard to case plus the defined integer values 0 through 3. Keep invalid or undefined modes as
+  bad requests for authenticated callers, while authentication must precede query-binding errors.
 - Project each source's persisted, probed container before considering its path extension. When a
   persisted container lists alternatives, select the path-matching value or the first value, and
   strip URL query/fragment components before any extension fallback.

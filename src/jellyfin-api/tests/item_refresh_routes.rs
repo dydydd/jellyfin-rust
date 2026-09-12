@@ -102,6 +102,20 @@ async fn exercise_item_refresh_route(database_name: &str) {
     );
     assert_eq!(
         fixture
+            .post(
+                &format!(
+                    "/Items/{}/Refresh?metadatarefreshmode=definitely-invalid",
+                    fixture.item_id
+                ),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED,
+        "authorization must precede invalid query binding"
+    );
+    assert_eq!(
+        fixture
             .post(&route, Some(&fixture.user_token))
             .await
             .status(),
@@ -133,6 +147,16 @@ async fn exercise_item_refresh_route(database_name: &str) {
     assert_eq!(
         fixture
             .post(
+                &format!("/Items/{}/Refresh?metadataRefreshMode=4", fixture.item_id),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .post(
                 &format!(
                     "/Items/{}/Refresh?replaceAllImages=definitely",
                     fixture.item_id
@@ -142,6 +166,19 @@ async fn exercise_item_refresh_route(database_name: &str) {
             .await
             .status(),
         StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .post(
+                &format!(
+                    "/items/{}/refresh?metadatarefreshmode=0&imagerefreshmode=NONE&replaceallmetadata=FALSE&replaceallimages=false&regeneratetrickplay=False",
+                    fixture.item_id
+                ),
+                Some(&fixture.admin_token),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
     );
     assert_eq!(
         fixture
@@ -208,7 +245,7 @@ async fn exercise_item_refresh_route(database_name: &str) {
         fixture
             .post(
                 &format!(
-                    "/Items/{}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=ValidationOnly&replaceAllMetadata=true&replaceAllImages=true&regenerateTrickplay=true",
+                    "/items/{}/refresh?metadatarefreshmode=fullrefresh&imagerefreshmode=1&replaceallmetadata=true&replaceallimages=TRUE&regeneratetrickplay=True",
                     fixture.item_id
                 ),
                 Some(&fixture.admin_token),

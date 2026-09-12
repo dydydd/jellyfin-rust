@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use axum::{
     extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
@@ -6,24 +6,101 @@ use axum::{
 };
 use jellyfin_controller::{MetadataRefreshMode, MetadataRefreshOptions};
 use jellyfin_data::BaseItemError;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authorization};
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Default)]
 pub(crate) struct RefreshItemQuery {
-    #[serde(rename = "metadataRefreshMode", alias = "MetadataRefreshMode")]
     metadata_refresh_mode: MetadataRefreshMode,
-    #[serde(rename = "imageRefreshMode", alias = "ImageRefreshMode")]
     image_refresh_mode: MetadataRefreshMode,
-    #[serde(rename = "replaceAllMetadata", alias = "ReplaceAllMetadata")]
     replace_all_metadata: bool,
-    #[serde(rename = "replaceAllImages", alias = "ReplaceAllImages")]
     replace_all_images: bool,
-    #[serde(rename = "regenerateTrickplay", alias = "RegenerateTrickplay")]
     regenerate_trickplay: bool,
+}
+
+impl<'de> Deserialize<'de> for RefreshItemQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RefreshItemQueryVisitor;
+
+        impl<'de> de::Visitor<'de> for RefreshItemQueryVisitor {
+            type Value = RefreshItemQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("item refresh query parameters")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut query = RefreshItemQuery::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    if key.eq_ignore_ascii_case("metadataRefreshMode") {
+                        query.metadata_refresh_mode =
+                            parse_refresh_mode(&map.next_value::<String>()?).ok_or_else(|| {
+                                de::Error::custom("invalid metadata refresh mode")
+                            })?;
+                    } else if key.eq_ignore_ascii_case("imageRefreshMode") {
+                        query.image_refresh_mode = parse_refresh_mode(&map.next_value::<String>()?)
+                            .ok_or_else(|| de::Error::custom("invalid image refresh mode"))?;
+                    } else if key.eq_ignore_ascii_case("replaceAllMetadata") {
+                        query.replace_all_metadata = parse_query_bool(&map.next_value::<String>()?)
+                            .ok_or_else(|| {
+                                de::Error::custom("invalid replace-all-metadata value")
+                            })?;
+                    } else if key.eq_ignore_ascii_case("replaceAllImages") {
+                        query.replace_all_images = parse_query_bool(&map.next_value::<String>()?)
+                            .ok_or_else(|| {
+                            de::Error::custom("invalid replace-all-images value")
+                        })?;
+                    } else if key.eq_ignore_ascii_case("regenerateTrickplay") {
+                        query.regenerate_trickplay = parse_query_bool(&map.next_value::<String>()?)
+                            .ok_or_else(|| {
+                                de::Error::custom("invalid regenerate-trickplay value")
+                            })?;
+                    } else {
+                        let _: de::IgnoredAny = map.next_value()?;
+                    }
+                }
+                Ok(query)
+            }
+        }
+
+        deserializer.deserialize_map(RefreshItemQueryVisitor)
+    }
+}
+
+fn parse_refresh_mode(value: &str) -> Option<MetadataRefreshMode> {
+    match value.trim() {
+        value if value.eq_ignore_ascii_case("None") || value == "0" => {
+            Some(MetadataRefreshMode::None)
+        }
+        value if value.eq_ignore_ascii_case("ValidationOnly") || value == "1" => {
+            Some(MetadataRefreshMode::ValidationOnly)
+        }
+        value if value.eq_ignore_ascii_case("Default") || value == "2" => {
+            Some(MetadataRefreshMode::Default)
+        }
+        value if value.eq_ignore_ascii_case("FullRefresh") || value == "3" => {
+            Some(MetadataRefreshMode::FullRefresh)
+        }
+        _ => None,
+    }
+}
+
+fn parse_query_bool(value: &str) -> Option<bool> {
+    if value.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 pub(crate) async fn refresh(
@@ -198,11 +275,12 @@ mod tests {
     #[test]
     fn refresh_query_accepts_official_deprecated_and_ignored_parameters() {
         let query: RefreshItemQuery = serde_json::from_value(json!({
-            "MetadataRefreshMode": "Default",
-            "ImageRefreshMode": "FullRefresh",
-            "ReplaceAllMetadata": true,
-            "ReplaceAllImages": true,
-            "RegenerateTrickplay": false
+            "metadatarefreshmode": "2",
+            "IMAGEREFRESHMODE": "fullrefresh",
+            "replaceallmetadata": "TRUE",
+            "REPLACEALLIMAGES": "true",
+            "regeneratetrickplay": "False",
+            "ignoredSdkParameter": "ignored"
         }))
         .expect("official refresh query parameters must parse");
 
