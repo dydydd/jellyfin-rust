@@ -1,8 +1,8 @@
 use std::{fmt, marker::PhantomData, str::FromStr};
 
 use jellyfin_data::ItemValueOrder;
-use jellyfin_model::SortOrder;
-use serde::{Deserializer, de::SeqAccess};
+use jellyfin_model::{EncodingContext, SortOrder, SubtitleDeliveryMethod};
+use serde::{Deserialize, Deserializer, de::SeqAccess};
 
 use crate::ApiError;
 
@@ -115,6 +115,69 @@ pub(crate) fn parse_sort_order(order: &str) -> Result<SortOrder, ApiError> {
         Ok(SortOrder::Descending)
     } else {
         Err(ApiError::InvalidRequest)
+    }
+}
+
+/// Deserialize ASP.NET-compatible nullable `SubtitleDeliveryMethod` query values.
+///
+/// ASP.NET accepts enum names case-insensitively and their defined integer
+/// values, while rejecting unknown names and integers during model binding.
+pub(crate) fn optional_subtitle_delivery_method<'de, D>(
+    deserializer: D,
+) -> Result<Option<SubtitleDeliveryMethod>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    let Some(value) = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let numeric = value.parse::<i32>().ok();
+    if value.eq_ignore_ascii_case("Encode") || numeric == Some(0) {
+        Ok(Some(SubtitleDeliveryMethod::Encode))
+    } else if value.eq_ignore_ascii_case("Embed") || numeric == Some(1) {
+        Ok(Some(SubtitleDeliveryMethod::Embed))
+    } else if value.eq_ignore_ascii_case("External") || numeric == Some(2) {
+        Ok(Some(SubtitleDeliveryMethod::External))
+    } else if value.eq_ignore_ascii_case("Hls") || numeric == Some(3) {
+        Ok(Some(SubtitleDeliveryMethod::Hls))
+    } else if value.eq_ignore_ascii_case("Drop") || numeric == Some(4) {
+        Ok(Some(SubtitleDeliveryMethod::Drop))
+    } else {
+        Err(serde::de::Error::custom(
+            "unknown SubtitleDeliveryMethod name or integer",
+        ))
+    }
+}
+
+/// Deserialize ASP.NET-compatible nullable `EncodingContext` query values.
+pub(crate) fn optional_encoding_context<'de, D>(
+    deserializer: D,
+) -> Result<Option<EncodingContext>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    let Some(value) = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let numeric = value.parse::<i32>().ok();
+    if value.eq_ignore_ascii_case("Streaming") || numeric == Some(0) {
+        Ok(Some(EncodingContext::Streaming))
+    } else if value.eq_ignore_ascii_case("Static") || numeric == Some(1) {
+        Ok(Some(EncodingContext::Static))
+    } else {
+        Err(serde::de::Error::custom(
+            "unknown EncodingContext name or integer",
+        ))
     }
 }
 

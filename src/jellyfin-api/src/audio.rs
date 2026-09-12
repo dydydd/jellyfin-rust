@@ -2,7 +2,7 @@ use std::{io, path::PathBuf, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, Request},
     response::{IntoResponse, Redirect, Response},
 };
@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use jellyfin_controller::transcode::TranscodeJobHandle;
 use jellyfin_controller::{FfmpegCommand, TranscodeJobRegistry, audio_command};
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{EncodingContext, MediaStream, MediaStreamType, SubtitleDeliveryMethod};
 
 use crate::{ApiError, AppState, authentication};
 
@@ -26,6 +26,16 @@ pub(crate) struct StreamQuery {
     container: Option<String>,
     #[serde(rename = "static", alias = "Static")]
     static_stream: Option<bool>,
+    #[serde(rename = "params", alias = "Params")]
+    params: Option<String>,
+    #[serde(rename = "tag", alias = "Tag")]
+    tag: Option<String>,
+    #[serde(
+        rename = "deviceProfileId",
+        alias = "DeviceProfileId",
+        alias = "deviceprofileid"
+    )]
+    _device_profile_id: Option<String>,
     #[serde(
         rename = "mediaSourceId",
         alias = "MediaSourceId",
@@ -40,8 +50,40 @@ pub(crate) struct StreamQuery {
     play_session_id: Option<String>,
     #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
     device_id: Option<String>,
+    #[serde(
+        rename = "segmentContainer",
+        alias = "SegmentContainer",
+        alias = "segmentcontainer"
+    )]
+    segment_container: Option<String>,
+    #[serde(
+        rename = "segmentLength",
+        alias = "SegmentLength",
+        alias = "segmentlength"
+    )]
+    _segment_length: Option<i32>,
+    #[serde(rename = "minSegments", alias = "MinSegments", alias = "minsegments")]
+    _min_segments: Option<i32>,
     #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
     audio_codec: Option<String>,
+    #[serde(
+        rename = "enableAutoStreamCopy",
+        alias = "EnableAutoStreamCopy",
+        alias = "enableautostreamcopy"
+    )]
+    _enable_auto_stream_copy: Option<bool>,
+    #[serde(
+        rename = "allowVideoStreamCopy",
+        alias = "AllowVideoStreamCopy",
+        alias = "allowvideostreamcopy"
+    )]
+    _allow_video_stream_copy: Option<bool>,
+    #[serde(
+        rename = "allowAudioStreamCopy",
+        alias = "AllowAudioStreamCopy",
+        alias = "allowaudiostreamcopy"
+    )]
+    _allow_audio_stream_copy: Option<bool>,
     #[serde(
         rename = "audioBitRate",
         alias = "AudioBitRate",
@@ -49,13 +91,19 @@ pub(crate) struct StreamQuery {
         alias = "audioBitrate",
         alias = "audiobitrate"
     )]
-    audio_bitrate: Option<i64>,
+    audio_bitrate: Option<i32>,
     #[serde(
         rename = "audioSampleRate",
         alias = "AudioSampleRate",
         alias = "audiosamplerate"
     )]
     audio_sample_rate: Option<i32>,
+    #[serde(
+        rename = "maxAudioBitDepth",
+        alias = "MaxAudioBitDepth",
+        alias = "maxaudiobitdepth"
+    )]
+    _max_audio_bit_depth: Option<i32>,
     #[serde(
         rename = "audioChannels",
         alias = "AudioChannels",
@@ -68,6 +116,18 @@ pub(crate) struct StreamQuery {
         alias = "maxaudiochannels"
     )]
     max_audio_channels: Option<i32>,
+    #[serde(rename = "profile", alias = "Profile")]
+    _profile: Option<String>,
+    #[serde(rename = "level", alias = "Level")]
+    level: Option<String>,
+    #[serde(rename = "framerate", alias = "Framerate")]
+    _framerate: Option<f32>,
+    #[serde(
+        rename = "maxFramerate",
+        alias = "MaxFramerate",
+        alias = "maxframerate"
+    )]
+    _max_framerate: Option<f32>,
     #[serde(
         rename = "audioStreamIndex",
         alias = "AudioStreamIndex",
@@ -75,11 +135,65 @@ pub(crate) struct StreamQuery {
     )]
     audio_stream_index: Option<i32>,
     #[serde(
+        rename = "videoStreamIndex",
+        alias = "VideoStreamIndex",
+        alias = "videostreamindex"
+    )]
+    _video_stream_index: Option<i32>,
+    #[serde(
         rename = "transcodingMaxAudioChannels",
         alias = "TranscodingMaxAudioChannels",
         alias = "transcodingmaxaudiochannels"
     )]
     transcoding_max_audio_channels: Option<i32>,
+    #[serde(rename = "width", alias = "Width")]
+    _width: Option<i32>,
+    #[serde(rename = "height", alias = "Height")]
+    _height: Option<i32>,
+    #[serde(
+        rename = "videoBitRate",
+        alias = "VideoBitRate",
+        alias = "VideoBitrate",
+        alias = "videoBitrate",
+        alias = "videobitrate"
+    )]
+    _video_bitrate: Option<i32>,
+    #[serde(
+        rename = "subtitleStreamIndex",
+        alias = "SubtitleStreamIndex",
+        alias = "subtitlestreamindex"
+    )]
+    _subtitle_stream_index: Option<i32>,
+    #[serde(
+        default,
+        rename = "subtitleMethod",
+        alias = "SubtitleMethod",
+        alias = "subtitlemethod",
+        deserialize_with = "crate::query::optional_subtitle_delivery_method"
+    )]
+    _subtitle_method: Option<SubtitleDeliveryMethod>,
+    #[serde(
+        rename = "maxRefFrames",
+        alias = "MaxRefFrames",
+        alias = "maxrefframes"
+    )]
+    _max_ref_frames: Option<i32>,
+    #[serde(
+        rename = "maxVideoBitDepth",
+        alias = "MaxVideoBitDepth",
+        alias = "maxvideobitdepth"
+    )]
+    _max_video_bit_depth: Option<i32>,
+    #[serde(rename = "requireAvc", alias = "RequireAvc", alias = "requireavc")]
+    _require_avc: Option<bool>,
+    #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
+    _de_interlace: Option<bool>,
+    #[serde(
+        rename = "requireNonAnamorphic",
+        alias = "RequireNonAnamorphic",
+        alias = "requirenonanamorphic"
+    )]
+    _require_non_anamorphic: Option<bool>,
     #[serde(
         rename = "startTimeTicks",
         alias = "StartTimeTicks",
@@ -92,6 +206,57 @@ pub(crate) struct StreamQuery {
         alias = "copytimestamps"
     )]
     copy_timestamps: Option<bool>,
+    #[serde(
+        rename = "cpuCoreLimit",
+        alias = "CpuCoreLimit",
+        alias = "cpucorelimit"
+    )]
+    cpu_core_limit: Option<i32>,
+    #[serde(
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid"
+    )]
+    live_stream_id: Option<String>,
+    #[serde(
+        rename = "enableMpegtsM2TsMode",
+        alias = "EnableMpegtsM2TsMode",
+        alias = "enablempegtsm2tsmode"
+    )]
+    _enable_mpegts_m2_ts_mode: Option<bool>,
+    #[serde(rename = "videoCodec", alias = "VideoCodec", alias = "videocodec")]
+    video_codec: Option<String>,
+    #[serde(
+        rename = "subtitleCodec",
+        alias = "SubtitleCodec",
+        alias = "subtitlecodec"
+    )]
+    subtitle_codec: Option<String>,
+    #[serde(
+        rename = "transcodeReasons",
+        alias = "TranscodeReasons",
+        alias = "transcodereasons"
+    )]
+    transcode_reasons: Option<String>,
+    #[serde(
+        default,
+        rename = "context",
+        alias = "Context",
+        deserialize_with = "crate::query::optional_encoding_context"
+    )]
+    _context: Option<EncodingContext>,
+    #[serde(
+        rename = "streamOptions",
+        alias = "StreamOptions",
+        alias = "streamoptions"
+    )]
+    _stream_options: Option<String>,
+    #[serde(
+        rename = "enableAudioVbrEncoding",
+        alias = "EnableAudioVbrEncoding",
+        alias = "enableaudiovbrencoding"
+    )]
+    _enable_audio_vbr_encoding: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -176,7 +341,7 @@ pub(crate) struct UniversalQuery {
         alias = "MaxAudioBitDepth",
         alias = "maxaudiobitdepth"
     )]
-    _max_audio_bit_depth: Option<i32>,
+    max_audio_bit_depth: Option<i32>,
     #[serde(
         rename = "enableRemoteMedia",
         alias = "EnableRemoteMedia",
@@ -201,7 +366,7 @@ pub(crate) async fn stream(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<StreamQuery>,
+    query: Result<Query<StreamQuery>, QueryRejection>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     stream_file(state, headers, item_id, None, query, request).await
@@ -211,7 +376,7 @@ pub(crate) async fn stream_with_container(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((item_id, container)): Path<(Uuid, String)>,
-    Query(query): Query<StreamQuery>,
+    query: Result<Query<StreamQuery>, QueryRejection>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     stream_file(state, headers, item_id, Some(&container), query, request).await
@@ -427,7 +592,7 @@ fn supports_direct_play(
     });
     if selected_stream.is_some_and(|stream| {
         query
-            ._max_audio_bit_depth
+            .max_audio_bit_depth
             .is_some_and(|maximum| stream.bit_depth.is_some_and(|depth| depth > maximum))
     }) {
         return false;
@@ -501,6 +666,94 @@ fn requested_stream_container<'a>(
         .filter(|container| !container.is_empty()))
 }
 
+pub(crate) fn valid_encoding_name(value: &str) -> bool {
+    value.len() <= 40
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b',' | b'|')
+        })
+}
+
+pub(crate) fn valid_encoding_level(value: &str) -> bool {
+    let value = value.strip_prefix('-').unwrap_or(value);
+    let mut parts = value.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    !major.is_empty()
+        && major.bytes().all(|byte| byte.is_ascii_digit())
+        && parts.next().is_none_or(|minor| {
+            !minor.is_empty() && minor.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        && parts.next().is_none()
+}
+
+fn validate_progressive_query(
+    route_container: Option<&str>,
+    query: &StreamQuery,
+) -> Result<(), ApiError> {
+    requested_stream_container(route_container, query)?;
+    for value in [
+        query.segment_container.as_deref(),
+        query.audio_codec.as_deref(),
+        query.video_codec.as_deref(),
+        query.subtitle_codec.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !valid_encoding_name(value) {
+            return Err(ApiError::InvalidRequest);
+        }
+    }
+    if query
+        .level
+        .as_deref()
+        .is_some_and(|value| !valid_encoding_level(value))
+    {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn apply_legacy_params(query: &mut StreamQuery) -> Result<(), ApiError> {
+    let Some(params) = query.params.clone().filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    for (index, value) in params.split(';').enumerate() {
+        if value.trim().is_empty() {
+            continue;
+        }
+        match index {
+            1 => query.device_id = Some(value.to_owned()),
+            2 => query.media_source_id = Some(value.to_owned()),
+            3 => query.static_stream = Some(value.eq_ignore_ascii_case("true")),
+            5 if valid_encoding_name(value) => query.audio_codec = Some(value.to_owned()),
+            9 => {
+                query.audio_bitrate = Some(value.trim().parse().map_err(|_| ApiError::Internal)?);
+            }
+            10 => {
+                query.max_audio_channels =
+                    Some(value.trim().parse().map_err(|_| ApiError::Internal)?);
+            }
+            14 => {
+                query.start_time_ticks =
+                    Some(value.trim().parse().map_err(|_| ApiError::Internal)?);
+            }
+            20 => query.play_session_id = Some(value.to_owned()),
+            22 => query.live_stream_id = Some(value.to_owned()),
+            26 => {
+                query.transcoding_max_audio_channels =
+                    Some(value.trim().parse().map_err(|_| ApiError::Internal)?);
+            }
+            28 => query.tag = Some(value.to_owned()),
+            30 if valid_encoding_name(value) => query.subtitle_codec = Some(value.to_owned()),
+            33 => query.transcode_reasons = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn progressive_audio_target(
     route_container: Option<&str>,
     query: &StreamQuery,
@@ -521,11 +774,14 @@ async fn stream_file(
     headers: HeaderMap,
     item_id: Uuid,
     requested_container: Option<&str>,
-    query: StreamQuery,
+    query: Result<Query<StreamQuery>, QueryRejection>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     let identity =
         authentication::authenticated_identity(&state, &headers, Some(request.uri())).await?;
+    let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    validate_progressive_query(requested_container, &query)?;
+    apply_legacy_params(&mut query)?;
     let mut requested_item = match identity {
         authentication::AuthenticatedIdentity::Device(authenticated) => {
             state
@@ -599,12 +855,12 @@ async fn stream_file(
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let command = audio_command(
+    let mut command = audio_command(
         &state.ffmpeg_path,
         std::path::Path::new(&path),
         &output,
         &codec,
-        query.audio_bitrate,
+        query.audio_bitrate.map(i64::from),
         query
             .audio_channels
             .or(query.max_audio_channels)
@@ -614,6 +870,7 @@ async fn stream_file(
         query.start_time_ticks,
         query.copy_timestamps.unwrap_or(false),
     );
+    crate::videos::apply_cpu_core_limit(&mut command, query.cpu_core_limit);
     serve_transcoded_path(
         command,
         &output.to_string_lossy(),
@@ -631,11 +888,13 @@ mod tests {
     use axum::{body::to_bytes, http::Uri};
     use axum_extra::extract::Query;
     use jellyfin_controller::{FfmpegCommand, TranscodeJobRegistry};
+    use jellyfin_model::{EncodingContext, SubtitleDeliveryMethod};
 
     use super::{
-        StreamQuery, UniversalQuery, progressive_audio_target, requested_stream_container,
-        serve_transcoded_path, should_redirect_remote_media, supports_direct_play,
-        universal_requires_transcode, universal_uses_hls,
+        StreamQuery, UniversalQuery, apply_legacy_params, progressive_audio_target,
+        requested_stream_container, serve_transcoded_path, should_redirect_remote_media,
+        supports_direct_play, universal_requires_transcode, universal_uses_hls,
+        validate_progressive_query,
     };
 
     #[test]
@@ -651,21 +910,144 @@ mod tests {
 
     #[test]
     fn audio_stream_binds_android_transcoding_parameters() {
-        let uri: Uri = "/audio/item/stream?Container=mp3&static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000&CopyTimestamps=true&PlaySessionId=play-session&deviceid=device-1"
+        let uri: Uri = "/audio/item/stream?Container=mp3&static=false&params=legacy&Tag=etag&deviceprofileid=profile&segmentContainer=ts&SegmentLength=6&minsegments=2&audioCodec=mp3&enableAutoStreamCopy=true&AllowVideoStreamCopy=false&allowaudiostreamcopy=true&AudioBitrate=192000&audioSampleRate=44100&MaxAudioBitDepth=24&audioChannels=2&maxAudioChannels=2&Profile=main&Level=4.1&framerate=24&MaxFramerate=30&width=1280&Height=720&videoBitrate=2000000&subtitleStreamIndex=3&subtitleMethod=1&MaxRefFrames=4&maxvideobitdepth=10&RequireAvc=true&deinterlace=true&requireNonAnamorphic=true&audioStreamIndex=1&videoStreamIndex=0&startTimeTicks=10000&CopyTimestamps=true&PlaySessionId=play-session&deviceid=device-1&transcodingMaxAudioChannels=6&cpuCoreLimit=2&liveStreamId=live&enableMpegtsM2TsMode=true&videoCodec=h264&subtitleCodec=srt&transcodeReasons=ContainerNotSupported&context=static&streamOptions=quality%3Dhigh&enableAudioVbrEncoding=false"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.container.as_deref(), Some("mp3"));
         assert!(!query.static_stream.unwrap());
+        assert_eq!(query.params.as_deref(), Some("legacy"));
+        assert_eq!(query.tag.as_deref(), Some("etag"));
+        assert_eq!(query._device_profile_id.as_deref(), Some("profile"));
+        assert_eq!(query.segment_container.as_deref(), Some("ts"));
+        assert_eq!(query._segment_length, Some(6));
+        assert_eq!(query._min_segments, Some(2));
         assert_eq!(query.audio_codec.as_deref(), Some("mp3"));
+        assert_eq!(query._enable_auto_stream_copy, Some(true));
+        assert_eq!(query._allow_video_stream_copy, Some(false));
+        assert_eq!(query._allow_audio_stream_copy, Some(true));
         assert_eq!(query.audio_bitrate, Some(192000));
         assert_eq!(query.audio_sample_rate, Some(44100));
+        assert_eq!(query._max_audio_bit_depth, Some(24));
+        assert_eq!(query.audio_channels, Some(2));
         assert_eq!(query.max_audio_channels, Some(2));
+        assert_eq!(query._profile.as_deref(), Some("main"));
+        assert_eq!(query.level.as_deref(), Some("4.1"));
+        assert_eq!(query._framerate, Some(24.0));
+        assert_eq!(query._max_framerate, Some(30.0));
+        assert_eq!(query._width, Some(1280));
+        assert_eq!(query._height, Some(720));
+        assert_eq!(query._video_bitrate, Some(2_000_000));
+        assert_eq!(query._subtitle_stream_index, Some(3));
+        assert_eq!(query._subtitle_method, Some(SubtitleDeliveryMethod::Embed));
+        assert_eq!(query._max_ref_frames, Some(4));
+        assert_eq!(query._max_video_bit_depth, Some(10));
+        assert_eq!(query._require_avc, Some(true));
+        assert_eq!(query._de_interlace, Some(true));
+        assert_eq!(query._require_non_anamorphic, Some(true));
         assert_eq!(query.audio_stream_index, Some(1));
+        assert_eq!(query._video_stream_index, Some(0));
         assert_eq!(query.start_time_ticks, Some(10000));
         assert_eq!(query.copy_timestamps, Some(true));
         assert_eq!(query.play_session_id.as_deref(), Some("play-session"));
         assert_eq!(query.device_id.as_deref(), Some("device-1"));
+        assert_eq!(query.transcoding_max_audio_channels, Some(6));
+        assert_eq!(query.cpu_core_limit, Some(2));
+        assert_eq!(query.live_stream_id.as_deref(), Some("live"));
+        assert_eq!(query._enable_mpegts_m2_ts_mode, Some(true));
+        assert_eq!(query.video_codec.as_deref(), Some("h264"));
+        assert_eq!(query.subtitle_codec.as_deref(), Some("srt"));
+        assert_eq!(
+            query.transcode_reasons.as_deref(),
+            Some("ContainerNotSupported")
+        );
+        assert_eq!(query._context, Some(EncodingContext::Static));
+        assert_eq!(query._stream_options.as_deref(), Some("quality=high"));
+        assert_eq!(query._enable_audio_vbr_encoding, Some(false));
+    }
+
+    #[test]
+    fn progressive_audio_rejects_unknown_enums_and_out_of_range_int32() {
+        for query_string in [
+            "subtitleMethod=Unknown",
+            "subtitleMethod=5",
+            "context=Download",
+            "context=2",
+            "maxAudioBitDepth=2147483648",
+            "audioBitRate=2147483648",
+            "videoBitRate=2147483648",
+        ] {
+            let uri: Uri = format!("/audio/item/stream?{query_string}")
+                .parse()
+                .unwrap();
+            assert!(
+                Query::<StreamQuery>::try_from_uri(&uri).is_err(),
+                "{query_string}"
+            );
+        }
+    }
+
+    #[test]
+    fn progressive_audio_applies_the_official_cpu_core_limit() {
+        let mut command = jellyfin_controller::audio_command(
+            std::path::Path::new("/usr/bin/ffmpeg"),
+            std::path::Path::new("/media/song.flac"),
+            std::path::Path::new("/tmp/out.mp3"),
+            "mp3",
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        crate::videos::apply_cpu_core_limit(&mut command, Some(1));
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-threads", "1"])
+        );
+    }
+
+    #[test]
+    fn progressive_audio_applies_supported_legacy_params_over_query_values() {
+        let mut values = vec![""; 34];
+        values[1] = "legacy-device";
+        values[2] = "legacy-source";
+        values[3] = "true";
+        values[5] = "mp3";
+        values[9] = " 192000 ";
+        values[10] = " 2 ";
+        values[14] = " 10000 ";
+        values[20] = "legacy-session";
+        values[22] = "legacy-live";
+        values[26] = " 6 ";
+        values[28] = "legacy-tag";
+        values[30] = "srt";
+        values[33] = "ContainerNotSupported";
+        let mut query = StreamQuery {
+            device_id: Some("query-device".to_owned()),
+            params: Some(values.join(";")),
+            ..StreamQuery::default()
+        };
+        apply_legacy_params(&mut query).unwrap();
+        assert_eq!(query.device_id.as_deref(), Some("legacy-device"));
+        assert_eq!(query.media_source_id.as_deref(), Some("legacy-source"));
+        assert_eq!(query.static_stream, Some(true));
+        assert_eq!(query.audio_codec.as_deref(), Some("mp3"));
+        assert_eq!(query.audio_bitrate, Some(192_000));
+        assert_eq!(query.max_audio_channels, Some(2));
+        assert_eq!(query.start_time_ticks, Some(10_000));
+        assert_eq!(query.play_session_id.as_deref(), Some("legacy-session"));
+        assert_eq!(query.live_stream_id.as_deref(), Some("legacy-live"));
+        assert_eq!(query.transcoding_max_audio_channels, Some(6));
+        assert_eq!(query.tag.as_deref(), Some("legacy-tag"));
+        assert_eq!(query.subtitle_codec.as_deref(), Some("srt"));
+        assert_eq!(
+            query.transcode_reasons.as_deref(),
+            Some("ContainerNotSupported")
+        );
     }
 
     #[test]
@@ -680,7 +1062,7 @@ mod tests {
         assert_eq!(query.transcoding_audio_channels, Some(2));
         assert_eq!(query.audio_bitrate, Some(128000));
         assert_eq!(query.max_audio_sample_rate, Some(48000));
-        assert_eq!(query._max_audio_bit_depth, Some(24));
+        assert_eq!(query.max_audio_bit_depth, Some(24));
         assert_eq!(
             query.transcoding_protocol,
             Some(jellyfin_model::MediaStreamProtocol::Hls)
@@ -816,6 +1198,27 @@ mod tests {
             ..StreamQuery::default()
         };
         assert!(requested_stream_container(None, &query).is_err());
+    }
+
+    #[test]
+    fn progressive_audio_validates_sdk_codec_and_level_parameters() {
+        for query in [
+            StreamQuery {
+                audio_codec: Some("aac;touch".to_owned()),
+                ..StreamQuery::default()
+            },
+            StreamQuery {
+                subtitle_codec: Some("srt/ass".to_owned()),
+                ..StreamQuery::default()
+            },
+            StreamQuery {
+                level: Some("4.1.2".to_owned()),
+                ..StreamQuery::default()
+            },
+        ] {
+            assert!(validate_progressive_query(None, &query).is_err());
+        }
+        assert!(validate_progressive_query(None, &StreamQuery::default()).is_ok());
     }
 
     #[tokio::test]
