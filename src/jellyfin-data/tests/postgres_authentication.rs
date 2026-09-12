@@ -494,6 +494,24 @@ async fn assert_device_query_filters(
 }
 
 async fn test_device_options(database: &DatabaseConnection) {
+    let id_column = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'device_options' \
+               AND column_name = 'id'"
+                .to_owned(),
+        ))
+        .await
+        .expect("device options id catalog lookup must succeed")
+        .expect("device options id column must exist");
+    assert_eq!(
+        String::try_get(&id_column, "", "data_type").unwrap(),
+        "integer",
+        "the public Kotlin DeviceOptionsDto.Id is a signed 32-bit Int"
+    );
+
     let repository = DeviceOptionsRepository::new(database.clone());
     let suffix = Uuid::new_v4().simple().to_string();
     let device_id = format!("option-device-{suffix}");

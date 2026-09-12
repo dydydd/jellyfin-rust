@@ -55,6 +55,11 @@ class SwiftValidatorTests(unittest.TestCase):
         errors = validate("BaseItemDto", {"DateCreated": "2026-09-12"})
         self.assertTrue(any("DateCreated" in error for error in errors), errors)
 
+    def test_rejects_integer_values_outside_the_swift_wire_type(self):
+        self.assertEqual(validate("DeviceOptionsDto", {"Id": 2 ** 63 - 1}), [])
+        errors = validate("DeviceOptionsDto", {"Id": 2 ** 63})
+        self.assertTrue(any("Int value is outside" in error for error in errors), errors)
+
 
 if __name__ == "__main__":
     unittest.main()

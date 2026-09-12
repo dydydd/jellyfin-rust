@@ -59,6 +59,7 @@ mod m20260906_000056_add_case_sensitive_item_ids;
 mod m20260906_000057_optimize_chapter_queries;
 mod m20260906_000058_repair_alternate_relationship_order;
 mod m20260913_000059_add_metadata_options_configuration;
+mod m20260913_000060_bound_device_option_ids;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -165,6 +166,7 @@ pub use m20260906_000056_add_case_sensitive_item_ids::Migration as AddCaseSensit
 pub use m20260906_000057_optimize_chapter_queries::Migration as OptimizeChapterQueriesMigration;
 pub use m20260906_000058_repair_alternate_relationship_order::Migration as RepairAlternateRelationshipOrderMigration;
 pub use m20260913_000059_add_metadata_options_configuration::Migration as AddMetadataOptionsConfigurationMigration;
+pub use m20260913_000060_bound_device_option_ids::Migration as BoundDeviceOptionIdsMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -235,6 +237,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260906_000057_optimize_chapter_queries::Migration),
             Box::new(m20260906_000058_repair_alternate_relationship_order::Migration),
             Box::new(m20260913_000059_add_metadata_options_configuration::Migration),
+            Box::new(m20260913_000060_bound_device_option_ids::Migration),
         ]
     }
 }

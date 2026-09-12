@@ -24,6 +24,19 @@ PRIMITIVES = {
     "Data": "str", "URL": "str", "Any": None, "JSONValue": None,
 }
 
+INTEGER_BOUNDS = {
+    "Int": (-(2 ** 63), 2 ** 63 - 1),
+    "Int8": (-(2 ** 7), 2 ** 7 - 1),
+    "Int16": (-(2 ** 15), 2 ** 15 - 1),
+    "Int32": (-(2 ** 31), 2 ** 31 - 1),
+    "Int64": (-(2 ** 63), 2 ** 63 - 1),
+    "UInt": (0, 2 ** 64 - 1),
+    "UInt8": (0, 2 ** 8 - 1),
+    "UInt16": (0, 2 ** 16 - 1),
+    "UInt32": (0, 2 ** 32 - 1),
+    "UInt64": (0, 2 ** 64 - 1),
+}
+
 
 class Report:
     def __init__(self):
@@ -140,6 +153,10 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=F
         }[expected]
         if not valid:
             report.add(path, f"{typ} expects {expected}, got {json_type(value)}")
+        elif typ in INTEGER_BOUNDS:
+            minimum, maximum = INTEGER_BOUNDS[typ]
+            if not minimum <= value <= maximum:
+                report.add(path, f"{typ} value is outside [{minimum}, {maximum}]: {value}")
         return
     if typ in enums:
         if not isinstance(value, str):

@@ -124,6 +124,10 @@ def check(models, enums, aliases, typ, value, path, rep, depth=0):
               'str': lambda v: isinstance(v, str)}[want[0]]
         if not ok(value):
             rep.add(path, f'{typ} expects {want[0]}, got {json_type(value)} ({short(value)})')
+        elif typ == 'Int' and not -(2 ** 31) <= value < 2 ** 31:
+            rep.add(path, f'Int value is outside the signed 32-bit range: {value}')
+        elif typ == 'Long' and not -(2 ** 63) <= value < 2 ** 63:
+            rep.add(path, f'Long value is outside the signed 64-bit range: {value}')
         return
 
     if typ in models:

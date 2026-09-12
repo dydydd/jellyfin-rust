@@ -66,6 +66,21 @@ class KotlinValidatorTests(unittest.TestCase):
             [],
         )
 
+    def test_integer_width_is_enforced(self):
+        self.assertEqual(validate("DeviceOptionsDto", {"Id": 2 ** 31 - 1}), [])
+        int_errors = validate("DeviceOptionsDto", {"Id": 2 ** 31})
+        self.assertTrue(any("signed 32-bit range" in error for error in int_errors))
+
+        playback_stop = {
+            "ItemId": "00000000-0000-0000-0000-000000000001",
+            "Failed": False,
+            "PositionTicks": 2 ** 63 - 1,
+        }
+        self.assertEqual(validate("PlaybackStopInfo", playback_stop), [])
+        playback_stop["PositionTicks"] = 2 ** 63
+        long_errors = validate("PlaybackStopInfo", playback_stop)
+        self.assertTrue(any("signed 64-bit range" in error for error in long_errors))
+
 
 if __name__ == "__main__":
     unittest.main()
