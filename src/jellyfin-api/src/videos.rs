@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     body::Body,
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::{HeaderMap, Request, StatusCode, header},
     response::Response,
 };
@@ -947,26 +947,28 @@ pub(crate) async fn proxy_remote_stream(
 
 pub(crate) async fn delete_alternate_sources(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     state
         .videos
-        .clear_alternate_sources(&authenticated.user, item_id)
+        .clear_alternate_sources(identity.is_administrator_equivalent(), item_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn merge_versions(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Query(query): Query<MergeVersionsQuery>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     state
         .videos
-        .merge_versions(&authenticated.user, &query.ids)
+        .merge_versions(identity.is_administrator_equivalent(), &query.ids)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

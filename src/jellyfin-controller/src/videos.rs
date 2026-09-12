@@ -1,4 +1,4 @@
-use jellyfin_data::{BaseItemError, BaseItemRepository, entities::user};
+use jellyfin_data::{BaseItemError, BaseItemRepository};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -12,8 +12,6 @@ pub enum VideoError {
     Forbidden,
     #[error("at least two videos are required")]
     NotEnoughVideos,
-    #[error("item is not a video")]
-    InvalidItemType,
     #[error(transparent)]
     BaseItem(#[from] BaseItemError),
 }
@@ -46,25 +44,25 @@ impl VideoService {
     ///
     /// # Errors
     ///
-    /// Returns forbidden, not-found, invalid-item-type, or persistence errors.
+    /// Returns forbidden, not-found, or persistence errors.
     pub async fn clear_alternate_sources(
         &self,
-        authenticated_user: &user::Model,
+        is_administrator: bool,
         item_id: Uuid,
     ) -> Result<(), VideoError> {
-        if !authenticated_user.is_administrator {
+        if !is_administrator {
             return Err(VideoError::Forbidden);
         }
         let item = self.items.get(item_id).await?.ok_or(VideoError::NotFound)?;
         let item_type = self
             .item_types
             .resolve(&item.item_type)
-            .ok_or(VideoError::InvalidItemType)?;
+            .ok_or(VideoError::NotFound)?;
         if !matches!(
             item_type.name(),
             "Video" | "Movie" | "Episode" | "MusicVideo" | "Trailer"
         ) {
-            return Err(VideoError::InvalidItemType);
+            return Err(VideoError::NotFound);
         }
         self.items.clear_alternate_sources(item_id).await?;
         Ok(())
@@ -80,10 +78,10 @@ impl VideoService {
     /// Returns forbidden, not-enough-videos, or persistence errors.
     pub async fn merge_versions(
         &self,
-        authenticated_user: &user::Model,
+        is_administrator: bool,
         item_ids: &[Uuid],
     ) -> Result<Uuid, VideoError> {
-        if !authenticated_user.is_administrator {
+        if !is_administrator {
             return Err(VideoError::Forbidden);
         }
 

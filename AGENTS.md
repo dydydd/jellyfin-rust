@@ -223,6 +223,11 @@
 - Keep playback-info route static segments compatible with ASP.NET's case-insensitive routing:
   register both `/Items/{itemId}/PlaybackInfo` and `/items/{itemId}/playbackinfo` (including GET
   and POST) so generated Android and Swift SDK requests never depend on URL casing.
+- Keep video version merging and alternate-source deletion on the official `RequiresElevation`
+  policy through canonical and fully lowercase routes. Elevated API keys are administrator
+  equivalents for both mutations and must not be rejected by a device-session-only handler. For
+  alternate-source deletion, return 404 for both missing and non-Video targets like the official
+  typed item lookup.
 - Cover the mobile browse bootstrap routes with fully lowercase aliases as well: public/system
   info, branding configuration, users and user views, devices, display preferences, sessions,
   modern and legacy item latest/counts/resume routes, and library available-options routes must

@@ -360,6 +360,14 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             RoutePolicy::Elevated
         }
         ["items", _, "remoteimages", "download"] => RoutePolicy::Elevated,
+        ["Videos", "MergeVersions"] | ["videos", "mergeversions"] if method == Method::POST => {
+            RoutePolicy::Elevated
+        }
+        ["Videos", _, "AlternateSources"] | ["videos", _, "alternatesources"]
+            if method == Method::DELETE =>
+        {
+            RoutePolicy::Elevated
+        }
         ["Videos", _, _, "Subtitles", _, ..]
             if is_get_or_head(method) && subtitle_stream_segment(&segments) =>
         {
@@ -614,6 +622,18 @@ mod tests {
         ] {
             assert_eq!(
                 route_policy(&Method::DELETE, route),
+                RoutePolicy::Elevated,
+                "route {route}",
+            );
+        }
+        for (method, route) in [
+            (Method::POST, "/Videos/MergeVersions"),
+            (Method::POST, "/videos/mergeversions"),
+            (Method::DELETE, "/Videos/{item_id}/AlternateSources"),
+            (Method::DELETE, "/videos/{item_id}/alternatesources"),
+        ] {
+            assert_eq!(
+                route_policy(&method, route),
                 RoutePolicy::Elevated,
                 "route {route}",
             );
