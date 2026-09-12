@@ -347,6 +347,9 @@
 - Keep `/Items/{itemId}/Collections` on its official signed `Int32` collection-list contract:
   negative `StartIndex` skips nothing but is echoed, every non-positive `Limit` produces an empty
   page through `Enumerable.Take`, and out-of-range values fail binding across supported casing.
+- Bind collection create/add/remove `Ids` with the official comma-delimited collection model
+  binder. Preserve every repeated query key emitted by Android and Swift while still accepting a
+  single comma-delimited value; keep canonical and lowercase routes equivalent.
 - Honor `/Playlists/{playlistId}/Items` DTO options exactly like the official controller: bind
   case-insensitive `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes`, then
   pass them through the shared batched projector instead of silently ignoring SDK query values.

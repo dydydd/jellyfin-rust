@@ -85,7 +85,7 @@ async fn assert_authentication_and_policy(fixture: &Fixture) {
 
 async fn assert_create_and_initial_order(fixture: &Fixture) -> Uuid {
     let route = format!(
-        "/collections?Name=My%20Collection&Ids={},{},{}&parentid={}&islocked=true",
+        "/collections?Name=My%20Collection&Ids={}&Ids={}&Ids={}&parentid={}&islocked=true",
         fixture.second_id, fixture.first_id, fixture.second_id, fixture.root_id
     );
     let response = fixture
@@ -129,7 +129,7 @@ async fn assert_create_and_initial_order(fixture: &Fixture) -> Uuid {
 
 async fn assert_add_remove_contract(fixture: &Fixture, collection_id: Uuid) {
     let route = format!(
-        "/collections/{collection_id}/items?ids={},{},{}",
+        "/collections/{collection_id}/items?ids={}&ids={}&ids={}",
         fixture.first_id, fixture.third_id, fixture.third_id
     );
     assert_eq!(
