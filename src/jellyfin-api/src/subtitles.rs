@@ -15,7 +15,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
-use jellyfin_controller::SubtitleSearchRequest;
+use jellyfin_controller::{SubtitleResponse, SubtitleSearchRequest};
 use jellyfin_data::{BaseItemError, NamedConfigurationStoreError};
 use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
@@ -207,6 +207,29 @@ pub(crate) async fn upload_subtitle(
         return Err(ApiError::InvalidRequest);
     }
 
+    persist_external_subtitle(
+        &state,
+        item_id,
+        SubtitleResponse {
+            format,
+            language,
+            content: subtitle,
+            is_forced,
+            is_hearing_impaired,
+        },
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn persist_external_subtitle(
+    state: &AppState,
+    item_id: Uuid,
+    subtitle: SubtitleResponse,
+) -> Result<(), ApiError> {
+    let language = subtitle_token(Some(&subtitle.language)).ok_or(ApiError::InvalidRequest)?;
+    let format = subtitle_token(Some(&subtitle.format)).ok_or(ApiError::InvalidRequest)?;
     let mut streams = state
         .media_streams
         .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item_id))
@@ -224,7 +247,7 @@ pub(crate) async fn upload_subtitle(
             .map_err(|_| ApiError::Internal)?;
     }
     let temporary_path = path.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
-    tokio::fs::write(&temporary_path, subtitle)
+    tokio::fs::write(&temporary_path, subtitle.content)
         .await
         .map_err(|_| ApiError::Internal)?;
     tokio::fs::rename(&temporary_path, &path)
@@ -237,8 +260,8 @@ pub(crate) async fn upload_subtitle(
         codec: Some(format),
         language: Some(language),
         is_external: true,
-        is_forced,
-        is_hearing_impaired,
+        is_forced: subtitle.is_forced,
+        is_hearing_impaired: subtitle.is_hearing_impaired,
         path: Some(path.to_string_lossy().into_owned()),
         ..MediaStream::default()
     });
@@ -251,7 +274,7 @@ pub(crate) async fn upload_subtitle(
         return Err(error.into());
     }
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 pub(crate) async fn search_remote_subtitles(
@@ -290,7 +313,13 @@ pub(crate) async fn download_remote_subtitles(
     }
     ensure_video_item(&state, &authenticated.user, item_id).await?;
 
-    let _response = state.subtitles.get_subtitles(&subtitle_id);
+    if let Some(subtitle) = state.subtitles.get_subtitles(&subtitle_id)
+        && let Err(error) = persist_external_subtitle(&state, item_id, subtitle).await
+    {
+        // The official controller isolates provider/download failures and
+        // still returns 204 after logging them.
+        tracing::error!(?error, %item_id, %subtitle_id, "error downloading subtitles");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -304,11 +333,17 @@ pub(crate) async fn get_remote_subtitles(
         return Err(ApiError::Forbidden);
     }
 
-    if state.subtitles.get_subtitles(&subtitle_id).is_some() {
-        Ok(StatusCode::OK.into_response())
-    } else {
-        Ok(StatusCode::NOT_FOUND.into_response())
-    }
+    let Some(subtitle) = state.subtitles.get_subtitles(&subtitle_id) else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let content_type = MimeTypes::get_mime_type(&format!("file.{}", subtitle.format))
+        .map_err(|_| ApiError::Internal)?;
+    let content_type = HeaderValue::from_str(&content_type).map_err(|_| ApiError::Internal)?;
+    let mut response = Response::new(Body::from(subtitle.content));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, content_type);
+    Ok(response)
 }
 
 pub(crate) async fn fallback_fonts(
