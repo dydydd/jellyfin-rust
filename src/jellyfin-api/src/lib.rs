@@ -910,9 +910,13 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/Search/Hints", get(search::hints))
         .route("/search/hints", get(search::hints))
         .route("/Backup", get(backup::list))
+        .route("/backup", get(backup::list))
         .route("/Backup/Create", post(backup::create))
+        .route("/backup/create", post(backup::create))
         .route("/Backup/Manifest", get(backup::manifest))
+        .route("/backup/manifest", get(backup::manifest))
         .route("/Backup/Restore", post(backup::restore))
+        .route("/backup/restore", post(backup::restore))
         .route("/Items/{item_id}/Images", get(item_images::list))
         .route("/items/{item_id}/images", get(item_images::list))
         .route(

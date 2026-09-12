@@ -66,10 +66,25 @@ async fn exercise_backup_routes(database_name: &str) {
             .status(),
         StatusCode::FORBIDDEN
     );
+    assert_eq!(
+        fixture.get("/backup", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get("/backup", Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
 
     let empty = fixture.get("/Backup", Some(&fixture.admin_token)).await;
     assert_eq!(empty.status(), StatusCode::OK);
-    assert_eq!(body_json(empty).await, Value::Array(Vec::new()));
+    let empty = body_json(empty).await;
+    assert_eq!(empty, Value::Array(Vec::new()));
+    let lowercase_empty = fixture.get("/backup", Some(&fixture.admin_token)).await;
+    assert_eq!(lowercase_empty.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase_empty).await, empty);
 
     let backup_directory = fixture.program_data.join("backups");
     tokio::fs::create_dir_all(&backup_directory)
@@ -116,6 +131,26 @@ async fn exercise_backup_routes(database_name: &str) {
     assert_eq!(
         fixture
             .get(
+                "/backup/manifest?path=jellyfin-backup-20260724090000.zip",
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(
+                "/backup/manifest?path=jellyfin-backup-20260724090000.zip",
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
+            .get(
                 "/Backup/Manifest?path=missing-backup.zip",
                 Some(&fixture.admin_token),
             )
@@ -145,23 +180,25 @@ async fn exercise_backup_routes(database_name: &str) {
         StatusCode::NOT_FOUND
     );
 
-    for query_name in ["path", "Path"] {
-        let manifest = fixture
-            .get(
-                &format!("/Backup/Manifest?{query_name}=jellyfin-backup-20260724090000.zip"),
-                Some(&fixture.admin_token),
-            )
-            .await;
-        assert_eq!(manifest.status(), StatusCode::OK, "{query_name}");
-        let manifest = body_json(manifest).await;
-        assert_eq!(manifest["ServerVersion"], "10.11.0");
-        assert_eq!(manifest["BackupEngineVersion"], "1.0");
-        assert_eq!(manifest["DateCreated"], "2026-07-24T09:00:00.0000000Z");
-        assert_eq!(manifest["Path"], archive_path.to_string_lossy().as_ref());
-        assert_eq!(manifest["Options"]["Metadata"], true);
-        assert_eq!(manifest["Options"]["Trickplay"], false);
-        assert_eq!(manifest["Options"]["Subtitles"], true);
-        assert_eq!(manifest["Options"]["Database"], true);
+    for route in ["/Backup/Manifest", "/backup/manifest"] {
+        for query_name in ["path", "Path"] {
+            let manifest = fixture
+                .get(
+                    &format!("{route}?{query_name}=jellyfin-backup-20260724090000.zip"),
+                    Some(&fixture.admin_token),
+                )
+                .await;
+            assert_eq!(manifest.status(), StatusCode::OK, "{route} {query_name}");
+            let manifest = body_json(manifest).await;
+            assert_eq!(manifest["ServerVersion"], "10.11.0");
+            assert_eq!(manifest["BackupEngineVersion"], "1.0");
+            assert_eq!(manifest["DateCreated"], "2026-07-24T09:00:00.0000000Z");
+            assert_eq!(manifest["Path"], archive_path.to_string_lossy().as_ref());
+            assert_eq!(manifest["Options"]["Metadata"], true);
+            assert_eq!(manifest["Options"]["Trickplay"], false);
+            assert_eq!(manifest["Options"]["Subtitles"], true);
+            assert_eq!(manifest["Options"]["Database"], true);
+        }
     }
 
     let listed = fixture.get("/Backup", Some(&fixture.admin_token)).await;
@@ -362,6 +399,20 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             .status(),
         StatusCode::FORBIDDEN
     );
+    assert_eq!(
+        fixture
+            .post_json("/backup/create", None, &create_body)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .post_json("/backup/create", Some(&fixture.user_token), &create_body)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
 
     let created = fixture
         .post_json("/Backup/Create", Some(&fixture.admin_token), &create_body)
@@ -395,10 +446,31 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
         )
         .await;
     assert_eq!(database_backup.status(), StatusCode::NOT_IMPLEMENTED);
+    let database_backup_body = body_bytes(database_backup).await;
     assert!(
-        String::from_utf8(body_bytes(database_backup).await.to_vec())
+        String::from_utf8(database_backup_body.to_vec())
             .unwrap()
             .contains("PostgreSQL backup")
+    );
+    let lowercase_database_backup = fixture
+        .post_json(
+            "/backup/create",
+            Some(&fixture.admin_token),
+            &json!({
+                "Metadata": false,
+                "Trickplay": false,
+                "Subtitles": false,
+                "Database": true
+            }),
+        )
+        .await;
+    assert_eq!(
+        lowercase_database_backup.status(),
+        StatusCode::NOT_IMPLEMENTED
+    );
+    assert_eq!(
+        body_bytes(lowercase_database_backup).await,
+        database_backup_body
     );
 
     let created_manifest = fixture
@@ -445,6 +517,20 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
     );
     assert_eq!(
         fixture
+            .post_json("/backup/restore", None, &restore_body)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .post_json("/backup/restore", Some(&fixture.user_token), &restore_body,)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        fixture
             .post_json(
                 "/Backup/Restore",
                 Some(&fixture.admin_token),
@@ -454,13 +540,16 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             .status(),
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        fixture
-            .post_json("/Backup/Restore", Some(&fixture.admin_token), &restore_body)
-            .await
-            .status(),
-        StatusCode::NOT_IMPLEMENTED
-    );
+    let canonical_restore = fixture
+        .post_json("/Backup/Restore", Some(&fixture.admin_token), &restore_body)
+        .await;
+    assert_eq!(canonical_restore.status(), StatusCode::NOT_IMPLEMENTED);
+    let canonical_restore_body = body_bytes(canonical_restore).await;
+    let lowercase_restore = fixture
+        .post_json("/backup/restore", Some(&fixture.admin_token), &restore_body)
+        .await;
+    assert_eq!(lowercase_restore.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(body_bytes(lowercase_restore).await, canonical_restore_body);
 
     let created_restore = fixture
         .post_json(

@@ -226,6 +226,11 @@
   providers, API-key CRUD, forgot-password/PIN, and user-view grouping options must reuse the
   canonical Public, Elevated, or default authorization policy rather than falling through to a
   different middleware default.
+- Keep the administrator-only Backup surface reachable through `/backup`, `/backup/create`,
+  `/backup/manifest`, and `/backup/restore`, preserving the canonical handlers, query binding,
+  and elevated authorization. Lowercase aliases must not turn PostgreSQL backup or restore gaps
+  into false success responses; retain explicit failure semantics until the database operation is
+  implemented safely.
 - Treat valid API keys as administrators for user creation, deletion, profile/configuration updates,
   and password changes through modern and legacy routes. An omitted or nil target for an API key's
   profile/configuration/password update remains a 404; ordinary user mutations still require self

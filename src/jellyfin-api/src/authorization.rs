@@ -326,7 +326,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["auth", "keys", ..] | ["auth", "providers" | "passwordresetproviders"] => {
             RoutePolicy::Elevated
         }
-        ["Devices" | "devices" | "Packages" | "Backup", ..] | ["Repositories"] => {
+        ["Devices" | "devices" | "Packages" | "Backup" | "backup", ..] | ["Repositories"] => {
             RoutePolicy::Elevated
         }
         ["web", "ConfigurationPages"] => RoutePolicy::Elevated,
@@ -732,6 +732,19 @@ mod tests {
                 route_policy(&method, lowercase),
                 "lowercase route {lowercase} must preserve {canonical} authorization",
             );
+        }
+    }
+
+    #[test]
+    fn lowercase_backup_routes_remain_elevated() {
+        for (method, canonical, lowercase) in [
+            (Method::GET, "/Backup", "/backup"),
+            (Method::POST, "/Backup/Create", "/backup/create"),
+            (Method::GET, "/Backup/Manifest", "/backup/manifest"),
+            (Method::POST, "/Backup/Restore", "/backup/restore"),
+        ] {
+            assert_eq!(route_policy(&method, canonical), RoutePolicy::Elevated);
+            assert_eq!(route_policy(&method, lowercase), RoutePolicy::Elevated);
         }
     }
 }
