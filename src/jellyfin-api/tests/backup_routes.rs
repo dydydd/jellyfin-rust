@@ -324,6 +324,30 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn post_raw(
+        &self,
+        uri: &str,
+        token: Option<&str>,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> axum::response::Response {
+        let mut request = Request::post(uri);
+        if let Some(content_type) = content_type {
+            request = request.header(header::CONTENT_TYPE, content_type);
+        }
+        if let Some(token) = token {
+            request = request.header(
+                header::AUTHORIZATION,
+                format!("{AUTHORIZATION}, Token=\"{token}\""),
+            );
+        }
+        self.app
+            .clone()
+            .oneshot(request.body(Body::from(body.to_vec())).unwrap())
+            .await
+            .unwrap()
+    }
+
     async fn cleanup(self) {
         user::Entity::delete_many()
             .filter(user::Column::Id.is_in([self.admin_id, self.user_id]))
@@ -472,6 +496,42 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
         body_bytes(lowercase_database_backup).await,
         database_backup_body
     );
+
+    for route in ["/Backup/Create", "/backup/create"] {
+        let omitted = fixture
+            .post_raw(route, Some(&fixture.admin_token), None, &[])
+            .await;
+        assert_eq!(omitted.status(), StatusCode::NOT_IMPLEMENTED, "{route}");
+        assert_eq!(body_bytes(omitted).await, database_backup_body, "{route}");
+
+        let null = fixture
+            .post_json(route, Some(&fixture.admin_token), &Value::Null)
+            .await;
+        assert_eq!(null.status(), StatusCode::NOT_IMPLEMENTED, "{route}");
+        assert_eq!(body_bytes(null).await, database_backup_body, "{route}");
+
+        for invalid_body in [
+            b"{".as_slice(),
+            br#""backup""#.as_slice(),
+            b"[]".as_slice(),
+            br#"{"Database":"false"}"#.as_slice(),
+        ] {
+            assert_eq!(
+                fixture
+                    .post_raw(
+                        route,
+                        Some(&fixture.admin_token),
+                        Some("application/json"),
+                        invalid_body,
+                    )
+                    .await
+                    .status(),
+                StatusCode::BAD_REQUEST,
+                "{route}: {}",
+                String::from_utf8_lossy(invalid_body)
+            );
+        }
+    }
 
     let created_manifest = fixture
         .get(

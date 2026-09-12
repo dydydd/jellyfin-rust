@@ -8,6 +8,7 @@ use std::{
 
 use axum::{
     Json,
+    body::Bytes,
     extract::rejection::JsonRejection,
     extract::{OriginalUri, Query, State},
     http::{HeaderMap, StatusCode},
@@ -90,13 +91,13 @@ pub(crate) async fn create(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    request: Result<Json<BackupOptionsDto>, JsonRejection>,
+    body: Bytes,
 ) -> Result<Response, ApiError> {
     authorization::require_default(&state, &headers, &uri)
         .await?
         .require_administrator()?;
 
-    let options = request.map_or_else(|_| BackupOptionsDto::default(), |Json(options)| options);
+    let options = parse_create_options(&body)?;
     if options.database {
         return Ok(status_message(
             StatusCode::NOT_IMPLEMENTED,
@@ -146,6 +147,19 @@ pub(crate) async fn create(
     .map_err(|_| ApiError::Internal)?
     .map_err(|_| ApiError::Internal)?;
     Ok(Json(result).into_response())
+}
+
+fn parse_create_options(body: &[u8]) -> Result<BackupOptionsDto, ApiError> {
+    if body.is_empty() {
+        return Ok(BackupOptionsDto::default());
+    }
+    match serde_json::from_slice::<serde_json::Value>(body).map_err(|_| ApiError::InvalidRequest)? {
+        serde_json::Value::Null => Ok(BackupOptionsDto::default()),
+        value @ serde_json::Value::Object(_) => {
+            serde_json::from_value(value).map_err(|_| ApiError::InvalidRequest)
+        }
+        _ => Err(ApiError::InvalidRequest),
+    }
 }
 
 pub(crate) async fn manifest(
@@ -546,4 +560,45 @@ fn sanitized_backup_path(state: &AppState, path: &str) -> Option<PathBuf> {
 
 fn status_message(status: StatusCode, message: impl Into<String>) -> Response {
     (status, message.into()).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_create_options;
+
+    #[test]
+    fn create_options_default_only_for_omitted_or_null_bodies() {
+        for body in [
+            b"".as_slice(),
+            b"null".as_slice(),
+            b" \n null \t".as_slice(),
+        ] {
+            let options = parse_create_options(body).unwrap();
+            assert!(options.database);
+            assert!(!options.metadata);
+            assert!(!options.trickplay);
+            assert!(!options.subtitles);
+        }
+
+        let options = parse_create_options(
+            br#"{"Metadata":true,"Trickplay":true,"Subtitles":true,"Database":false}"#,
+        )
+        .unwrap();
+        assert!(!options.database);
+        assert!(options.metadata);
+        assert!(options.trickplay);
+        assert!(options.subtitles);
+    }
+
+    #[test]
+    fn create_options_reject_malformed_json_and_wrong_types() {
+        for body in [
+            b"{".as_slice(),
+            br#""backup""#.as_slice(),
+            b"[]".as_slice(),
+            br#"{"Database":"false"}"#.as_slice(),
+        ] {
+            assert!(parse_create_options(body).is_err());
+        }
+    }
 }
