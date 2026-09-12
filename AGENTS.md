@@ -81,6 +81,12 @@
 - Resolve Similar and InstantMix seeds through the target user's normal library policy, and apply the
   same folder, tag, rating, and parental filters to every candidate query. Similar defaults to 50
   returned items and reports the post-limit result count; legacy CLR item types must not bypass policy.
+- Build `/Movies/Recommendations` from the official four category families: weighted similarities
+  to recently played and liked movies, plus director and actor names from recent movies. Score
+  Genre/Tag/Studio/Director/Actor matches in bounded PostgreSQL batches, filter all candidates once
+  through unplayed, version-grouping, and target-user policy rules, and project the merged candidate
+  set once. Preserve the official double-weighted round robin, category ordering, signed Int32
+  limits, UTF-16LE MD5 person category ids, and fully lowercase route/query compatibility.
 - Keep every InstantMix route on the official DTO-options contract. Accept signed limits and
   case-insensitive repeated fields/image options, report the pre-limit total, validate the Playlist
   route's seed type, collect Folder descendant-audio genres in one policy-aware query, and treat an
@@ -94,6 +100,10 @@
   id, default to `SortName` ascending, and keep `SoundtrackSongsResult` as a distinct empty result.
   Batch candidate loading across the owner chain and apply the target user's normal library policy.
 - Coordinate remote-image downloads by URL so concurrent items share one bounded download, and cap leader downloads across distinct URLs at four so a media wall cannot multiply the per-image buffer without bound. Acquire the global permit inside the single-flight initializer so same-URL followers consume no additional permits and cancellation promptly releases capacity. Validate that upstream content is an image, and remove or otherwise suppress permanently invalid remote references according to official behavior.
+- Allow administrator RemoteImages downloads from an explicit `imageUrl` without requiring the
+  corresponding search provider or a TMDb API key. Advertise only remote-image providers whose
+  search implementation can actually return images for that item; provider selection must never
+  lead an SDK into a permanently empty provider that the server only implements for metadata.
 - Expose TMDb Person profile artwork as the item's `Primary` remote-image type, matching the
   official Person image provider; never advertise or map it as the user-only `Profile` type. When
   `IncludeAllLanguages` is false and a preferred metadata language is nonblank, retain that language,
@@ -203,6 +213,11 @@
   info, branding configuration, users and user views, devices, display preferences, sessions,
   modern and legacy item latest/counts/resume routes, and library available-options routes must
   preserve the official handler and authorization policy under lowercase static segments.
+- Keep Environment, Localization, FallbackFont, UTC/Ping, ActivityLog, Logs, Endpoint, Restart,
+  Shutdown, ClientLog, System Configuration, and ScheduledTasks reachable through fully lowercase
+  aliases. Preserve first-time setup access for Environment and Localization, public UTC/Ping,
+  LocalOrElevated restart, and Elevated log/shutdown/task/configuration mutations; adding an Axum
+  alias without its canonical authorization policy is a security regression.
 - Keep `/Users/Public` available as `/users/public`; otherwise Axum's dynamic `/users/{id}` route
   treats the SDK's lowercase public-user request as a UUID binding failure.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
@@ -229,6 +244,9 @@
 - Keep Android and Swift user-data routes case-insensitive too: `UserItems` user-data and rating,
   resume, `UserFavoriteItems`, `UserPlayedItems`, and legacy user item-data routes need fully
   lowercase aliases with the same authorization and mutation semantics.
+- Keep legacy `/Users/{userId}/Items/Root`, Intros, LocalTrailers, SpecialFeatures, and Lyrics,
+  plus legacy FavoriteItems, PlayedItems, and Rating mutations, reachable through fully lowercase
+  paths with the same target-user checks and response shapes.
 - Project `CanDelete` only when requested, except on official default all-fields item and root
   details. For user-less pages expose only the item's intrinsic capability; for user pages combine
   it with the target user's global or CollectionFolder-scoped deletion policy in one batched
@@ -412,6 +430,13 @@
 - Keep progressive Video stream query binding aligned with `VideosController`: accept the full
   case-insensitive request surface, including the query-only `container` fallback on extensionless
   stream URLs, and cover PascalCase, camelCase, and lowercase SDK requests in focused tests.
+- Apply progressive Video `CpuCoreLimit` to FFmpeg `-threads`: omit the option when absent, map a
+  non-positive value to automatic thread selection, and clamp a positive value to the server's
+  available processor count like the official encoding helper.
+- Do not treat accepted progressive `PlaySessionId` and `DeviceId` parameters as inert. Register
+  audio and video progressive transcodes in the shared job registry with cancellation-safe process
+  cleanup so playstate ping/stop and play-method normalization can identify them; remove the job on
+  every completion, failure, and client-disconnect path.
 - Keep Video stream authorization aligned with the official default policy: device sessions resolve
   media through their user's library policy, while a valid API key is unrestricted but still must
   resolve an existing supported video item before either static local serving or remote proxying.
