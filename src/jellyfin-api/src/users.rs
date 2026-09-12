@@ -1,4 +1,4 @@
-use std::{net::IpAddr, path::PathBuf, sync::Arc};
+use std::{fmt, net::IpAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json,
@@ -18,7 +18,8 @@ use jellyfin_model::{
     UserConfiguration, UserDto, UserPolicy,
 };
 use jellyfin_server_implementations::AuthenticationError;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::item_images::parse_image_type;
@@ -632,12 +633,12 @@ pub(crate) async fn update_policy(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(target_id): Path<Uuid>,
-    request: Result<Json<UserPolicy>, JsonRejection>,
+    request: Result<Json<CaseInsensitiveUserPolicy>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     identity.require_administrator()?;
     let current_token = identity.access_token().to_owned();
-    let Json(policy) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let Json(CaseInsensitiveUserPolicy(policy)) = request.map_err(|_| ApiError::InvalidRequest)?;
     let (_, became_disabled) = state.users.update_policy(target_id, &policy).await?;
     if became_disabled {
         state
@@ -652,6 +653,92 @@ pub(crate) async fn update_policy(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) struct CaseInsensitiveUserPolicy(UserPolicy);
+
+impl<'de> Deserialize<'de> for CaseInsensitiveUserPolicy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct PolicyVisitor;
+
+        impl<'de> de::Visitor<'de> for PolicyVisitor {
+            type Value = CaseInsensitiveUserPolicy;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a user policy object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut normalized = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let value = map.next_value::<Value>()?;
+                    if let Some(field) = canonical_user_policy_field(&key) {
+                        // ASP.NET's JSON binder matches property names without
+                        // regard to case and the last duplicate value wins.
+                        normalized.insert(field.to_owned(), value);
+                    }
+                }
+                serde_json::from_value(Value::Object(normalized))
+                    .map(CaseInsensitiveUserPolicy)
+                    .map_err(de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_map(PolicyVisitor)
+    }
+}
+
+fn canonical_user_policy_field(name: &str) -> Option<&'static str> {
+    const FIELDS: &[&str] = &[
+        "IsAdministrator",
+        "IsHidden",
+        "EnableCollectionManagement",
+        "EnableSubtitleManagement",
+        "EnableLyricManagement",
+        "IsDisabled",
+        "MaxParentalRating",
+        "MaxParentalSubRating",
+        "BlockedTags",
+        "AllowedTags",
+        "EnableUserPreferenceAccess",
+        "AccessSchedules",
+        "BlockUnratedItems",
+        "EnableRemoteControlOfOtherUsers",
+        "EnableSharedDeviceControl",
+        "EnableRemoteAccess",
+        "EnableLiveTvManagement",
+        "EnableLiveTvAccess",
+        "EnableMediaPlayback",
+        "EnableAudioPlaybackTranscoding",
+        "EnableVideoPlaybackTranscoding",
+        "EnablePlaybackRemuxing",
+        "ForceRemoteSourceTranscoding",
+        "EnableContentDeletion",
+        "EnableContentDeletionFromFolders",
+        "EnableContentDownloading",
+        "EnableSyncTranscoding",
+        "EnableMediaConversion",
+        "EnabledDevices",
+        "EnableAllDevices",
+        "EnabledChannels",
+        "EnableAllChannels",
+        "EnabledFolders",
+        "EnableAllFolders",
+        "InvalidLoginAttemptCount",
+        "LoginAttemptsBeforeLockout",
+        "MaxActiveSessions",
+        "EnablePublicSharing",
+        "BlockedMediaFolders",
+        "BlockedChannels",
+        "RemoteClientBitrateLimit",
+        "AuthenticationProviderId",
+        "PasswordResetProviderId",
+        "SyncPlayAccess",
+    ];
+    FIELDS
+        .iter()
+        .find(|field| field.eq_ignore_ascii_case(name))
+        .copied()
 }
 
 fn management_target_id(
@@ -764,5 +851,35 @@ mod user_image_query_tests {
             .unwrap();
         let query = Query::<GetUserImageQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.user_id, Some(user_id));
+    }
+}
+
+#[cfg(test)]
+mod user_policy_request_tests {
+    use super::CaseInsensitiveUserPolicy;
+
+    #[test]
+    fn user_policy_properties_bind_case_insensitively_and_last_value_wins() {
+        let CaseInsensitiveUserPolicy(policy) = serde_json::from_str(
+            r#"{
+                "isadministrator": false,
+                "ENABLECONTENTDOWNLOADING": false,
+                "enableContentDownloading": true,
+                "aUtHeNtIcAtIoNpRoViDeRiD": "auth-provider",
+                "PASSWORDRESETPROVIDERID": "reset-provider"
+            }"#,
+        )
+        .expect("case-insensitive user policy");
+
+        assert!(!policy.is_administrator);
+        assert!(policy.enable_content_downloading);
+        assert_eq!(
+            policy.authentication_provider_id.as_deref(),
+            Some("auth-provider")
+        );
+        assert_eq!(
+            policy.password_reset_provider_id.as_deref(),
+            Some("reset-provider")
+        );
     }
 }

@@ -193,6 +193,25 @@ impl Fixture {
             dto["Policy"]["PasswordResetProviderId"],
             "Example.PasswordReset, Assembly"
         );
+
+        let mixed_case_policy = json!({
+            "iShIdDeN": true,
+            "eNaBlEcOnTeNtDoWnLoAdInG": false,
+            "aUtHeNtIcAtIoNpRoViDeRiD": "Example.Authentication, Assembly",
+            "pAsSwOrDrEsEtPrOvIdErId": "Example.PasswordReset, Assembly"
+        });
+        let response = post_policy(
+            &self.app,
+            &self.route,
+            Some(&self.admin_token),
+            mixed_case_policy,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let stored = self.users.get(self.target_id).await.unwrap();
+        assert!(stored.is_hidden);
+        assert_eq!(stored.policy["IsHidden"], true);
+        assert_eq!(stored.policy["EnableContentDownloading"], false);
     }
 
     async fn assert_provider_authentication(&self) {
