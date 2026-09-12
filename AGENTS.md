@@ -132,6 +132,12 @@
 - Keep external-subtitle deletion administrator-only like the official `RequiresElevation` action;
   `EnableSubtitleManagement` is sufficient for search, download, and upload but not deletion.
   Preserve elevated API-key access and the fully lowercase delete/upload route aliases.
+- Enforce the official named `Download`, `SubtitleManagement`, and `LyricManagement` policies in
+  route middleware before Axum extracts path, query, or body values. API keys have global
+  permission; device sessions must first pass the normal remote-access and parental-schedule checks,
+  then the corresponding user-policy flag. Keep canonical and fully lowercase routes equivalent,
+  including provider preview routes; malformed inputs from a disallowed user remain 403 rather
+  than leaking binding precedence as 400.
 - Project intros, local trailers, special features, and video additional parts with the official
   default all-fields DTO options through one batched projector. Apply the target user's policy to
   both the requested owner and every resolved child before returning the original response shape.
@@ -139,6 +145,10 @@
   `DtoOptions`, including images, target-user data, media sources and streams, chapters, and
   trickplay. Reuse the shared bounded page projector for the resolved ancestor set rather than
   issuing one DTO lookup per parent or returning the minimal item shape.
+- Resolve both `/Items/{itemId}/Ancestors` and `/Items/{itemId}/Collections` through the target
+  user's normal library policy, then filter related rows in a set-based lookup. Collections must
+  calculate its total after policy filtering and before signed pagination, bind repeated/case-
+  insensitive `Fields`, and project the bounded page with the shared batched DTO projector.
 - When page DTOs request media sources, batch Audio and AudioBook stream and attachment loading
   alongside expanded video versions. `MediaSources` alone nests the streams, `MediaStreams` alone
   projects them at the top level, and requesting both exposes the item's streams in both locations.
@@ -170,6 +180,11 @@
   available options, case-insensitively deduplicate provider names, and mark every returned option
   enabled by default. Do not expose lyric fetchers for representative types that omit Audio.
 - Check whether provider artwork exists with a PostgreSQL image-type query. Do not route existence checks through DTO image projection, local dimension inspection, or BlurHash generation.
+- Build RemoteImages search and provider lists from the authorized item's persisted item-type
+  `MetadataOptions`. Match the official `IncludeDisabledProviders=true` behavior: disabled image
+  fetchers remain visible/searchable, `ImageFetcherOrder` changes ordering only, and configured
+  order must not become an allow-list that drops unlisted providers. Reuse the already resolved item
+  and keep canonical/lowercase routes and item-not-found precedence equivalent.
 - Keep the external-URL provider registry limited to the providers present in the checked-out
   official server and preserve its provider-name ordering. Interpolate persisted provider ids
   verbatim, ignore only empty values, and do not substitute collection or legacy TV provider ids
@@ -197,6 +212,12 @@
   accepted image extension, including APNG, AVIF, ICO (`image/x-icon`), TIFF, and Jellyfin TBN
   JPEG files, without inspecting or decoding their contents. Image-info endpoints must return
   persisted dimensions and BlurHash values without lazily decoding the source or writing metadata.
+- During Photo scans, read embedded metadata without decoding pixels and keep EXIF/TIFF buffering
+  bounded to 1 MiB. Support JPEG, TIFF/CR2, PNG `eXIf`, and WebP `EXIF`; malformed metadata must not
+  drop an otherwise valid Photo, while filesystem read failures retain normal scan-failure
+  semantics. Persist and project official Photo camera, exposure, location, orientation, and date
+  fields only on Photo DTOs, accepting historical PascalCase, camelCase, and snake_case JSON keys.
+  Recognize CR2 and AVIF as Photo extensions even when a format's EXIF container is not parsed.
 - Keep image-route static segments and compound query names compatible with ASP.NET's
   case-insensitive binding, including representative all-lowercase legacy requests. Ordinary item,
   user, branding, by-name, and plugin image responses must not advertise byte ranges unless the
@@ -248,10 +269,28 @@
   aliases. Preserve first-time setup access for Environment and Localization, public UTC/Ping,
   LocalOrElevated restart, and Elevated log/shutdown/task/configuration mutations; adding an Axum
   alias without its canonical authorization policy is a security regression.
+- Persist `ServerConfiguration.MetadataOptions` as a constrained PostgreSQL JSON array seeded with
+  the official nine item-type defaults. Configuration GET/POST must round-trip the typed options,
+  accept PascalCase, camelCase, and fully lowercase top-level and nested properties, omit a null or
+  empty `ItemType` on output, and replace the array atomically. Typed remote search must read locale
+  and the matching item-type provider disable/order rules from the same configuration snapshot.
+- When typed remote search supplies `ItemId`, resolve the item and its own or nearest containing
+  virtual library in one bounded PostgreSQL lookup. A matching `TypeOptions.MetadataFetchers` is an
+  allow-list even when empty, and its `MetadataFetcherOrder` overrides the global order even when
+  empty. `IncludeDisabledProviders` bypasses enablement filtering, while `SearchProviderName` only
+  narrows the already enabled set; a missing reference item uses the official dummy/default options
+  rather than turning the search into a 404.
+- Bind Users `IsHidden`/`IsDisabled`, ScheduledTasks `IsHidden`/`IsEnabled`, and item ContentType
+  `ContentType` with PascalCase, SDK camelCase, and fully lowercase query names. Fully lowercase
+  values must retain the canonical filtering, mutation, and malformed-value semantics.
 - Keep ActivityLog pagination on the official signed `Int32` contract: a negative `StartIndex`
   skips nothing but is echoed in `StartIndex`, a negative `Limit` follows the official SQLite
   unlimited-limit behavior, zero returns an empty page, and out-of-range values fail binding for
   canonical and fully lowercase routes.
+- Bind ActivityLog `SortBy` and `SortOrder` as the official enum arrays. Accept comma-delimited and
+  repeated query keys from Android and Swift, case-insensitive names, and defined integers while
+  preserving field/direction order; invalid elements fail binding instead of silently selecting a
+  different default.
 - Keep `/Users/Public` available as `/users/public`; otherwise Axum's dynamic `/users/{id}` route
   treats the SDK's lowercase public-user request as a UUID binding failure.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
@@ -270,11 +309,15 @@
   different middleware default.
 - Keep the administrator-only Backup surface reachable through `/backup`, `/backup/create`,
   `/backup/manifest`, and `/backup/restore`, preserving the canonical handlers, query binding,
-  and elevated authorization. Lowercase aliases must not turn PostgreSQL backup or restore gaps
-  into false success responses; retain explicit failure semantics until the database operation is
-  implemented safely. Treat an omitted or JSON-null Create body as the default backup options,
-  while rejecting malformed JSON and wrong JSON types as bad requests; the default remains
-  `Database=true` and therefore returns the explicit PostgreSQL-not-implemented response.
+  and elevated authorization. Treat an omitted or JSON-null Create body as the default backup
+  options, while rejecting malformed JSON and wrong JSON types as bad requests. Bind backup JSON
+  properties and manifest query names case-insensitively, with last duplicate properties winning.
+- Create PostgreSQL backups from one read-only repeatable-read snapshot and stream table rows into
+  the archive rather than collecting the database in memory. Restore before migrations and HTTP
+  startup in one serializable database transaction, validate the complete table/constraint shape,
+  reset sequences, and reject traversal, duplicate, or symbolic-link ZIP entries. Stage files and
+  replace them with same-directory atomic renames; never expose absolute server paths in the public
+  manifest or accept a restore archive outside the configured backup directory.
 - Treat valid API keys as administrators for user creation, deletion, profile/configuration updates,
   and password changes through modern and legacy routes. An omitted or nil target for an API key's
   profile/configuration/password update remains a 404; ordinary user mutations still require self
@@ -296,6 +339,10 @@
 - Keep Android and Swift user-data routes case-insensitive too: `UserItems` user-data and rating,
   resume, `UserFavoriteItems`, `UserPlayedItems`, and legacy user item-data routes need fully
   lowercase aliases with the same authorization and mutation semantics.
+- Bind target `UserId` as `userId`, `UserId`, and fully lowercase `userid` on UserData, Rating, and
+  DisplayPreferences operations; bind DisplayPreferences `ItemId` equivalently. A lowercase target
+  id must never be ignored and silently redirected to the authenticated user: foreign targets keep
+  their 403 authorization result and malformed UUIDs keep their 400 binding result.
 - Keep legacy `/Users/{userId}/Items/Root`, Intros, LocalTrailers, SpecialFeatures, and Lyrics,
   plus legacy FavoriteItems, PlayedItems, and Rating mutations, reachable through fully lowercase
   paths with the same target-user checks and response shapes.
@@ -465,6 +512,11 @@
   negative `StartIndex` skips nothing, non-positive `Limit` returns the default empty result with a
   zero total, and values outside `Int32` fail binding. Apply the limit before candidate counting,
   rather than returning an empty page with an unbounded total.
+- Project media SearchHint artwork for the bounded page with one ancestor-closure lookup and one
+  batched DTO-image load. Primary never inherits and its aspect ratio exists only with the item's
+  own Primary image; Thumb and Backdrop prefer the item's own image and expose the actual owner id.
+  Episode Thumb prefers Series even when Season also has one, while Backdrop and ordinary-item
+  inheritance use the nearest ancestor. Use persisted image dimensions without decoding files.
 - Bind Search Hints `IncludeItemTypes`, `ExcludeItemTypes`, and `MediaTypes` with the official
   collection model binder: accept case-insensitive enum names and defined integers, discard invalid
   elements, split commas only for a single query value, and do not re-split comma-containing values
@@ -529,9 +581,18 @@
 - Keep progressive Video stream query binding aligned with `VideosController`: accept the full
   case-insensitive request surface, including the query-only `container` fallback on extensionless
   stream URLs, and cover PascalCase, camelCase, and lowercase SDK requests in focused tests.
+- Keep progressive Audio and Video numeric query fields on the official signed `Int32` contract,
+  except `StartTimeTicks`, which is signed `Int64`. Validate container, codec, and level inputs with
+  the official patterns; bind nullable `SubtitleDeliveryMethod` and `EncodingContext` from
+  case-insensitive names or defined integers. Parse the legacy semicolon-delimited `params` after
+  explicit query values so supported slots override them, including shared Device/MediaSource,
+  bitrate, seek, session, live-stream, tag, subtitle-codec, and transcode-reason slots.
 - Apply progressive Video `CpuCoreLimit` to FFmpeg `-threads`: omit the option when absent, map a
   non-positive value to automatic thread selection, and clamp a positive value to the server's
   available processor count like the official encoding helper.
+- Apply progressive Audio `CpuCoreLimit` with that same rule. Honor Video
+  `EnableMpegtsM2TsMode`, and emit fragmented MP4 options only for the default Streaming context;
+  an explicit Static Video context must produce a normal non-fragmented MP4 output.
 - Do not treat accepted progressive `PlaySessionId` and `DeviceId` parameters as inert. Register
   audio and video progressive transcodes in the shared job registry with cancellation-safe process
   cleanup so playstate ping/stop and play-method normalization can identify them; remove the job on
@@ -594,7 +655,15 @@
   internal capitalisation. Apply the same spellings to dynamic HLS bitrate parameters.
 - Bind video `SubtitleStreamIndex` and `SubtitleMethod` on progressive stream routes. Match the
   official default `Encode` behavior by burning the selected local subtitle stream into video;
-  `External` and `Drop` must not silently burn it into the video.
+  external text subtitle files must be filtered by their own officially escaped path rather than an
+  embedded subtitle ordinal, and seeked text burns must apply the official PTS correction. External
+  graphical subtitles require a separate FFmpeg input (preferring a sibling `.idx` for VobSub),
+  while DVB subtitles requested as `Embed` normalize to `Encode`. `Embed` must map the selected
+  embedded or external input and apply the first requested subtitle codec (or copy an already
+  matching codec); `External`, `Hls`, and `Drop` must not silently burn or mux it into the video.
+- Enforce Audio and Video transcoding policies independently on progressive Video requests. Audio
+  permission must never authorize video encoding, and video permission must never authorize audio
+  encoding; stream copy remains allowed without the corresponding encoding permission.
 - Bind the official video `MaxFramerate` query on progressive stream routes and apply it after
   any requested scaling, accepting PascalCase, camelCase, and lowercase spellings like the
   Android SDK and ASP.NET query binder.
@@ -706,7 +775,9 @@
   a final value equal to `ItemSortBy.Random` randomizes; malformed input behaves as unset.
 - Keep `Shows/NextUp` pagination on its distinct signed 32-bit contract. Preserve a negative
   `StartIndex` in the response while treating it as no skip, treat every non-positive `Limit` as
-  unlimited, and reject values outside the official `Int32` range. Honor the official
+  unlimited, and reject values outside the official `Int32` range. Preserve the filtered,
+  pre-pagination `TotalRecordCount` even when `StartIndex` moves the returned page past its end.
+  Honor the official
   `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes` DTO options through
   the shared batched projector rather than accepting and discarding SDK request parameters. Apply
   that same projector contract to the Episodes and Seasons TV routes, including lowercase SDK
@@ -915,6 +986,33 @@
   library policy. Resolve Audio alternate `MediaSourceId` values within the audio/video version
   group (not the video-only group), and use a `.strm` item's resolved source rather than serving
   its sidecar bytes.
+- Treat an explicit nil `UserId` like an omitted value on authenticated endpoints that use the
+  official `RequestHelpers.GetUserId` helper. Resolve the current device user before authorization
+  and policy lookup across root, related-item, theme, show, Resume/Latest, HLS, user-image, Channel,
+  and equivalent lowercase routes; never try to load the all-zero UUID as a persisted user.
+- Keep `/users/me` on the same ordinary default authorization policy as `/Users/Me`; lowercase
+  compatibility must not bypass parental-control checks. Bind `/Items` `Genres` and `Tags` with the
+  official pipe-delimited binder, while preserving repeated-query-value behavior.
+- Serialize every virtual folder's `LibraryOptions` as the complete official constructor-default
+  object, including when Kotlin sends a null AddVirtualFolder body. Normalize historical partial or
+  mixed-case JSON on reads, preserve unknown extension properties, and replace relational
+  `PathInfos` from the authoritative path rows.
+- `UserViews.IncludeExternalContent` defaults to true. Append policy-visible non-Live-TV Channel
+  views to both modern and legacy home views, honor Enabled/Blocked Channels and ordinary metadata
+  policy, suppress them only when explicitly false, and keep official ordered-view/sort-name order.
+- Apply non-Live-TV Channel capability, favorite, and `ItemFilter` queries before count and paging.
+  Persisted channels without a provider capability match explicit false but not true. Accept enum
+  names and defined integers case-insensitively, reject conflicting filters, batch requested Channel
+  validation and descendant lookup, and pass requested DTO fields through the batched projector.
+- For subtitle stream routes, apply `StartPositionTicks`, `EndPositionTicks`, and `CopyTimestamps`
+  only when converting formats, matching `SubtitleEncoder.FilterEvents`. Equal formats and SSA to
+  ASS return the original stream bytes even with a time window; VTT timestamp-map decoration remains
+  a post-processing step and must not cause otherwise equivalent subtitles to be parsed or rewritten.
+- Emit `UserDataChanged` WebSocket data as the official `UserDataChangeInfo` object: include the
+  compact `UserId` and a required `UserDataList` array, even when broadcasting one item. Do not
+  substitute the historical singular `ItemId`/`UserData` fields, which mobile SDKs cannot decode.
+- Emit `RefreshProgress` WebSocket data as a string-valued map. Both `ItemId` and invariant-culture
+  `Progress` must be JSON strings, matching the official generated Kotlin and Swift contracts.
 
 ## Validation
 
@@ -936,6 +1034,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 For Android wire compatibility, run `android_sdk_compat` with a temporary PostgreSQL database and
 `JELLYFIN_ANDROID_DUMP` set, then validate every dumped response with `tools/kotlin_validate.py`.
+The Kotlin schema extractor must anchor primary-constructor parsing at the generated `data class`
+declaration rather than a preceding file-level serializer annotation, include `override val`
+constructor fields, and never silently accept a selected model with zero parsed fields. Validate
+enum-keyed maps, their nested values, UUID syntax, and non-null collection elements as strictly as
+the SDK serializers do.
 Keep the fixture's canonical Person reconciliation and storage paths aligned with `AppState`, and
 use current generated Kotlin response types (including root arrays) rather than obsolete wrapper
 names. Include an actual `/Users/AuthenticateByName` response in that dump rather than only seeded
