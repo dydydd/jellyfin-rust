@@ -168,7 +168,7 @@ impl VirtualFolderRepository {
         Ok(
             ItemLibraryOptions::find_by_statement(Statement::from_sql_and_values(
                 DbBackend::Postgres,
-                r#"
+                r"
                 SELECT item.item_type,
                        containing.library_options
                 FROM jellyfin.base_items AS item
@@ -205,7 +205,7 @@ impl VirtualFolderRepository {
                     LIMIT 1
                 ) AS containing ON true
                 WHERE item.id = $1::uuid
-            "#,
+            ",
                 [item_id.into()],
             ))
             .one(self.database.as_ref())
