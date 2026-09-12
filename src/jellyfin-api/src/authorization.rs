@@ -296,7 +296,8 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             | "ForgotPassword",
         ]
         | ["Users", "ForgotPassword", "Pin"]
-        | ["users", "public" | "authenticatebyname"] => RoutePolicy::Public,
+        | ["users", "public" | "authenticatebyname" | "forgotpassword"]
+        | ["users", "forgotpassword", "pin"] => RoutePolicy::Public,
         ["Users", _, "Authenticate"] => RoutePolicy::Public,
         ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
         ["Startup" | "Environment", ..]
@@ -314,6 +315,9 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["System", "Shutdown"] => RoutePolicy::Elevated,
         ["ScheduledTasks", ..] => RoutePolicy::Elevated,
         ["Auth", "Keys", ..] | ["Auth", "Providers" | "PasswordResetProviders"] => {
+            RoutePolicy::Elevated
+        }
+        ["auth", "keys", ..] | ["auth", "providers" | "passwordresetproviders"] => {
             RoutePolicy::Elevated
         }
         ["Devices" | "devices" | "Packages" | "Backup", ..] | ["Repositories"] => {
@@ -543,6 +547,25 @@ mod tests {
             route_policy(&Method::POST, "/Users/AuthenticateByName"),
             RoutePolicy::Public
         );
+        for route in ["/users/forgotpassword", "/users/forgotpassword/pin"] {
+            assert_eq!(
+                route_policy(&Method::POST, route),
+                RoutePolicy::Public,
+                "route {route}"
+            );
+        }
+        for route in [
+            "/auth/keys",
+            "/auth/keys/token",
+            "/auth/providers",
+            "/auth/passwordresetproviders",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Elevated,
+                "route {route}"
+            );
+        }
         assert_eq!(
             route_policy(&Method::POST, "/System/Restart"),
             RoutePolicy::LocalOrElevated

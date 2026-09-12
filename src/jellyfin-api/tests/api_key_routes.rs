@@ -21,30 +21,35 @@ const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 async fn api_key_routes_match_official_elevated_persisted_contract() {
     let fixture = Fixture::new().await;
 
-    assert_eq!(
-        fixture.request("GET", "/Auth/Keys", None).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
+    for route in ["/Auth/Keys", "/auth/keys"] {
+        assert_eq!(
+            fixture.request("GET", route, None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            fixture
+                .request("GET", route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
     assert_eq!(
         fixture
-            .request("GET", "/Auth/Keys", Some(&fixture.user_token))
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        fixture
-            .request("POST", "/Auth/Keys", Some(&fixture.admin_token))
+            .request("POST", "/auth/keys", Some(&fixture.admin_token))
             .await
             .status(),
         StatusCode::BAD_REQUEST
     );
 
-    for (parameter, app_name) in ["app", "App"].into_iter().zip(&fixture.created_key_names) {
+    for ((route, parameter), app_name) in [("/Auth/Keys", "app"), ("/auth/keys", "App")]
+        .into_iter()
+        .zip(&fixture.created_key_names)
+    {
         let create_response = fixture
             .request(
                 "POST",
-                &format!("/Auth/Keys?{parameter}={app_name}"),
+                &format!("{route}?{parameter}={app_name}"),
                 Some(&fixture.admin_token),
             )
             .await;
@@ -57,7 +62,7 @@ async fn api_key_routes_match_official_elevated_persisted_contract() {
 
     let keys = body_json(
         fixture
-            .request("GET", "/Auth/Keys", Some(&fixture.admin_token))
+            .request("GET", "/auth/keys", Some(&fixture.admin_token))
             .await,
     )
     .await;
@@ -94,12 +99,17 @@ async fn api_key_routes_match_official_elevated_persisted_contract() {
         assert!(find_key_optional(&api_key_list, app_name).is_some());
     }
 
-    for created_token in created_tokens {
+    for (index, created_token) in created_tokens.into_iter().enumerate() {
+        let route = if index == 0 {
+            "/Auth/Keys"
+        } else {
+            "/auth/keys"
+        };
         assert_eq!(
             fixture
                 .request(
                     "DELETE",
-                    &format!("/Auth/Keys/{created_token}"),
+                    &format!("{route}/{created_token}"),
                     Some(&fixture.admin_token),
                 )
                 .await
@@ -109,7 +119,7 @@ async fn api_key_routes_match_official_elevated_persisted_contract() {
     }
     let after_delete = body_json(
         fixture
-            .request("GET", "/Auth/Keys", Some(&fixture.admin_token))
+            .request("GET", "/auth/keys", Some(&fixture.admin_token))
             .await,
     )
     .await;

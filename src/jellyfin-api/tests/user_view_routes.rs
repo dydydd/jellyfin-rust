@@ -741,7 +741,7 @@ async fn assert_grouped_views(fixture: &Fixture) {
 async fn assert_grouping_options(fixture: &Fixture) {
     let grouping = get_json(
         &fixture.app,
-        &format!("/UserViews/GroupingOptions?userId={}", fixture.user_id),
+        &format!("/userviews/groupingoptions?userId={}", fixture.user_id),
         &fixture.admin_token,
     )
     .await;

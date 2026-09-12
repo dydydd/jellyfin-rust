@@ -1460,7 +1460,9 @@ fn localization_routes() -> Router<Arc<AppState>> {
 fn api_key_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
+        .route("/auth/keys", get(api_keys::list).post(api_keys::create))
         .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
+        .route("/auth/keys/{key}", axum::routing::delete(api_keys::revoke))
 }
 
 fn package_routes() -> Router<Arc<AppState>> {
@@ -1576,8 +1578,13 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/New", post(users::create))
         .route("/users/new", post(users::create))
         .route("/Users/ForgotPassword", post(users::forgot_password))
+        .route("/users/forgotpassword", post(users::forgot_password))
         .route(
             "/Users/ForgotPassword/Pin",
+            post(users::forgot_password_pin),
+        )
+        .route(
+            "/users/forgotpassword/pin",
             post(users::forgot_password_pin),
         )
         .route("/Users/Configuration", post(users::update_configuration))
@@ -1641,6 +1648,10 @@ fn user_view_routes() -> Router<Arc<AppState>> {
         .route("/userviews", get(user_views::get))
         .route(
             "/UserViews/GroupingOptions",
+            get(user_views::grouping_options),
+        )
+        .route(
+            "/userviews/groupingoptions",
             get(user_views::grouping_options),
         )
         .route("/Users/{user_id}/Views", get(user_views::get_legacy))
@@ -1734,8 +1745,13 @@ fn session_routes() -> Router<Arc<AppState>> {
         .route("/Sessions/Logout", post(session::logout))
         .route("/sessions/logout", post(session::logout))
         .route("/Auth/Providers", get(session::authentication_providers))
+        .route("/auth/providers", get(session::authentication_providers))
         .route(
             "/Auth/PasswordResetProviders",
+            get(session::password_reset_providers),
+        )
+        .route(
+            "/auth/passwordresetproviders",
             get(session::password_reset_providers),
         )
 }
