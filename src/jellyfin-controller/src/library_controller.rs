@@ -410,16 +410,27 @@ impl LibraryControllerService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<Vec<base_item::Model>, LibraryControllerError> {
-        self.item(authenticated_user, target_user_id, item_id)
+        self.user_library
+            .item(authenticated_user, target_user_id, item_id)
             .await?;
-        Ok(self
+        let mut ancestors = self
             .items
             .ancestors(item_id)
             .await?
             .into_iter()
             .filter_map(|entry| self.item_types.hydrate(entry.item))
             .map(HydratedBaseItem::into_model)
-            .collect())
+            .collect::<Vec<_>>();
+        let ancestor_ids = ancestors
+            .iter()
+            .map(|ancestor| ancestor.id)
+            .collect::<Vec<_>>();
+        let visible_ids = self
+            .user_library
+            .visible_item_ids(target_user_id, &ancestor_ids)
+            .await?;
+        ancestors.retain(|ancestor| visible_ids.contains(&ancestor.id));
+        Ok(ancestors)
     }
 
     /// Returns visible collections containing one item, ordered like Jellyfin.
@@ -435,12 +446,36 @@ impl LibraryControllerService {
         start_index: u64,
         limit: Option<u64>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
-        self.item(authenticated_user, target_user_id, item_id)
+        self.user_library
+            .item(authenticated_user, target_user_id, item_id)
             .await?;
-        let page = self
+        let mut page = self
             .items
-            .collections_containing_item(item_id, start_index, limit)
+            .collections_containing_item(item_id, 0, None)
             .await?;
+        let collection_ids = page
+            .items
+            .iter()
+            .map(|collection| collection.id)
+            .collect::<Vec<_>>();
+        let visible_ids = self
+            .user_library
+            .visible_item_ids(target_user_id, &collection_ids)
+            .await?;
+        page.items
+            .retain(|collection| visible_ids.contains(&collection.id));
+        page.total_record_count = u64::try_from(page.items.len()).unwrap_or(u64::MAX);
+        page.start_index = start_index;
+        page.items = page
+            .items
+            .into_iter()
+            .skip(usize::try_from(start_index).unwrap_or(usize::MAX))
+            .take(
+                limit
+                    .and_then(|limit| usize::try_from(limit).ok())
+                    .unwrap_or(usize::MAX),
+            )
+            .collect();
         Ok(self.hydrate_page(page))
     }
 

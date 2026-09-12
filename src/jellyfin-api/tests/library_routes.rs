@@ -105,6 +105,207 @@ async fn item_collections_match_signed_pagination_contract() {
 }
 
 #[tokio::test]
+async fn ancestors_and_collections_apply_target_user_policy_and_project_requested_fields() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = fixture.items();
+    let root = items.ensure_user_root().await.expect("user root");
+    let hidden_outer = create_item(
+        &items,
+        "CollectionFolder",
+        "Hidden outer library",
+        root.id,
+        None,
+    )
+    .await;
+    let visible_folder = create_item(
+        &items,
+        "CollectionFolder",
+        "Visible nested library",
+        hidden_outer.id,
+        None,
+    )
+    .await;
+    let hidden_folder = create_item(
+        &items,
+        "CollectionFolder",
+        "Hidden sibling library",
+        root.id,
+        None,
+    )
+    .await;
+    let visible_source = create_item(
+        &items,
+        "Movie",
+        "Visible collection source",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    let hidden_source = create_item(
+        &items,
+        "Movie",
+        "Hidden collection source",
+        hidden_folder.id,
+        None,
+    )
+    .await;
+    let visible_collection = create_item(
+        &items,
+        "BoxSet",
+        "Visible containing collection",
+        visible_folder.id,
+        None,
+    )
+    .await;
+    let hidden_collection = create_item(
+        &items,
+        "BoxSet",
+        "Hidden containing collection",
+        hidden_folder.id,
+        None,
+    )
+    .await;
+    let linked_children = LinkedChildRepository::new(fixture.database.clone());
+    linked_children
+        .add_manual(visible_collection.id, &[visible_source.id])
+        .await
+        .expect("visible collection link");
+    linked_children
+        .add_manual(hidden_collection.id, &[visible_source.id])
+        .await
+        .expect("hidden collection link");
+
+    favorite(
+        &UserDataRepository::new(fixture.database.clone()),
+        fixture.user_id,
+        visible_collection.id,
+    )
+    .await;
+
+    let mut policy = UserPolicy {
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    policy.enable_all_folders = false;
+    policy.enabled_folders = vec![visible_folder.id];
+    UserService::new(fixture.database.clone())
+        .update_policy(fixture.user_id, &policy)
+        .await
+        .expect("restricted relationship-route policy");
+
+    for route in [
+        format!(
+            "/Items/{}/Ancestors?UserId={}",
+            hidden_source.id, fixture.user_id
+        ),
+        format!(
+            "/items/{}/ancestors?userid={}",
+            hidden_source.id, fixture.user_id
+        ),
+        format!(
+            "/Items/{}/Collections?userId={}",
+            hidden_source.id, fixture.user_id
+        ),
+        format!(
+            "/items/{}/collections?userid={}",
+            hidden_source.id, fixture.user_id
+        ),
+    ] {
+        assert_eq!(
+            fixture
+                .request("GET", &route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{route}"
+        );
+    }
+
+    for route in [
+        format!(
+            "/Items/{}/Ancestors?userId={}",
+            visible_source.id, fixture.user_id
+        ),
+        format!(
+            "/items/{}/ancestors?UserId={}",
+            visible_source.id, fixture.user_id
+        ),
+    ] {
+        let ancestors = fixture.json("GET", &route, &fixture.user_token).await;
+        assert_eq!(
+            ancestors
+                .as_array()
+                .expect("ancestor array")
+                .iter()
+                .map(|item| item["Id"].as_str().expect("ancestor id"))
+                .collect::<Vec<_>>(),
+            [
+                visible_folder.id.simple().to_string(),
+                root.id.simple().to_string(),
+            ],
+            "{route}"
+        );
+    }
+
+    for route in [
+        format!(
+            "/Items/{}/Collections?UserId={}&Fields=CanDelete",
+            visible_source.id, fixture.user_id
+        ),
+        format!(
+            "/items/{}/collections?userid={}&fields=candelete",
+            visible_source.id, fixture.user_id
+        ),
+        format!(
+            "/Items/{}/Collections?userId={}&fields=1",
+            visible_source.id, fixture.user_id
+        ),
+        format!(
+            "/items/{}/collections?userid={}&fields=CanDelete&fields=ProviderIds",
+            visible_source.id, fixture.user_id
+        ),
+    ] {
+        let collections = fixture.json("GET", &route, &fixture.user_token).await;
+        assert_eq!(collections["TotalRecordCount"], 1, "{route}");
+        assert_eq!(collections["StartIndex"], 0, "{route}");
+        let collection_items = collections["Items"].as_array().expect("collection items");
+        assert_eq!(collection_items.len(), 1, "{route}");
+        assert_eq!(
+            collection_items[0]["Id"],
+            visible_collection.id.simple().to_string(),
+            "{route}"
+        );
+        assert!(collection_items[0]["CanDelete"].is_boolean(), "{route}");
+        assert_eq!(
+            collection_items[0]["UserData"]["IsFavorite"], true,
+            "{route}"
+        );
+    }
+
+    let paged = fixture
+        .json(
+            "GET",
+            &format!(
+                "/items/{}/collections?userid={}&startindex=0&limit=0&fields=CanDelete",
+                visible_source.id, fixture.user_id
+            ),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(paged["TotalRecordCount"], 1);
+    assert!(
+        paged["Items"]
+            .as_array()
+            .expect("paged collections")
+            .is_empty()
+    );
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn library_relationship_routes_treat_empty_user_id_as_current_user() {
     let _guard = LIBRARY_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

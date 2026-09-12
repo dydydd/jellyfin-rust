@@ -221,6 +221,15 @@ official_query_enum_collection!(ItemFieldQueryValue, deserialize_item_fields, IT
 official_query_enum_collection!(ItemSortQueryValue, deserialize_item_sorts, ITEM_SORTS);
 official_query_enum_collection!(SortOrderQueryValue, deserialize_sort_orders, SORT_ORDERS);
 
+pub(crate) fn deserialize_library_item_fields<'de, D>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_item_fields(deserializer)
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ItemsQuery {
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]

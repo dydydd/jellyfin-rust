@@ -31,6 +31,12 @@ use crate::{
 pub(crate) struct LibraryQuery {
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub(crate) struct CollectionsQuery {
+    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    user_id: Option<Uuid>,
     #[serde(
         default,
         rename = "startIndex",
@@ -40,6 +46,13 @@ pub(crate) struct LibraryQuery {
     start_index: i32,
     #[serde(alias = "Limit")]
     limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::items::deserialize_library_item_fields"
+    )]
+    fields: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -347,7 +360,7 @@ pub(crate) async fn collections(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    Query(query): Query<LibraryQuery>,
+    RepeatedQuery(query): RepeatedQuery<CollectionsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     // The official controller applies Enumerable.Skip/Take: negative starts
@@ -371,7 +384,8 @@ pub(crate) async fn collections(
             limit,
         )
         .await?;
-    let mut result = page_to_dto(page, state.server_id());
+    let mut result =
+        crate::items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?;
     result.start_index = requested_start_index;
     Ok(Json(result))
 }
@@ -1086,18 +1100,6 @@ fn delete_item_ids(uri: &axum::http::Uri) -> Vec<Uuid> {
             .iter()
             .filter_map(|value| Uuid::parse_str(value.trim()).ok())
             .collect()
-    }
-}
-
-fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQueryResult {
-    user_library::BaseItemQueryResult {
-        items: page
-            .items
-            .into_iter()
-            .map(|item| user_library::item_to_dto(item, server_id))
-            .collect(),
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
     }
 }
 
