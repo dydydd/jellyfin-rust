@@ -396,6 +396,28 @@ pub struct ScoredBaseItemPage {
     pub start_index: u64,
 }
 
+/// One weighted local-similarity match for a movie recommendation baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MovieSimilarityScore {
+    pub source_id: Uuid,
+    pub candidate_id: Uuid,
+    pub score: i64,
+}
+
+/// One person name used to form a movie recommendation category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonMovieRecommendationRequest {
+    pub name: String,
+    pub director_only: bool,
+}
+
+/// One policy-filtered movie candidate for a requested person name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonMovieRecommendationCandidate {
+    pub request_index: usize,
+    pub item_id: Uuid,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, FromQueryResult)]
 pub struct BaseItemCounts {
     pub movie_count: i64,
@@ -1757,6 +1779,213 @@ impl BaseItemRepository {
             }
         }
         Ok(languages)
+    }
+
+    /// Scores local movie-similarity candidates for several baselines in one
+    /// bounded PostgreSQL query.
+    ///
+    /// The weights mirror Jellyfin's movie provider: director 50, actor and
+    /// guest star 15, genre 10, and tag/studio 5. Only the top `limit` raw
+    /// candidates per source are returned; callers still apply item type,
+    /// playback, version grouping, and user policy filters in one shared item
+    /// query before choosing the final page.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the scoring query fails.
+    pub async fn movie_similarity_scores(
+        &self,
+        source_ids: &[Uuid],
+        limit: u64,
+    ) -> Result<Vec<MovieSimilarityScore>, BaseItemError> {
+        if source_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut source_ids = source_ids.to_vec();
+        source_ids.sort_unstable();
+        source_ids.dedup();
+        source_ids.truncate(64);
+
+        let mut values = Vec::with_capacity(source_ids.len().saturating_add(1));
+        let mut sql = String::from("WITH sources(source_id) AS (VALUES ");
+        for (index, source_id) in source_ids.into_iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push(source_id.into());
+            let _ = write!(sql, "(${}::uuid)", values.len());
+        }
+        sql.push_str(
+            r#"), dimension_matches AS (
+                 SELECT DISTINCT source_map.item_id AS source_id,
+                        candidate_map.item_id AS candidate_id,
+                        concat('value:', source_value.type, ':', source_value.clean_value)
+                            AS dimension_key,
+                        CASE source_value.type
+                            WHEN 2 THEN 10::bigint
+                            WHEN 3 THEN 5::bigint
+                            WHEN 4 THEN 5::bigint
+                        END AS weight
+                 FROM sources
+                 JOIN jellyfin.item_value_map AS source_map
+                   ON source_map.item_id = sources.source_id
+                 JOIN jellyfin.item_values AS source_value
+                   ON source_value.item_value_id = source_map.item_value_id
+                  AND source_value.type IN (2, 3, 4)
+                 JOIN jellyfin.item_values AS candidate_value
+                   ON candidate_value.type = source_value.type
+                  AND candidate_value.clean_value = source_value.clean_value
+                 JOIN jellyfin.item_value_map AS candidate_map
+                   ON candidate_map.item_value_id = candidate_value.item_value_id
+                 UNION ALL
+                 SELECT DISTINCT source_person.item_id AS source_id,
+                        candidate_person.item_id AS candidate_id,
+                        concat(
+                            'person:', source_person.person_id, ':',
+                            CASE source_person.person_type
+                                WHEN 'Director' THEN 50
+                                WHEN 'Actor' THEN 15
+                                WHEN 'GuestStar' THEN 15
+                            END
+                        ) AS dimension_key,
+                        CASE source_person.person_type
+                            WHEN 'Director' THEN 50::bigint
+                            WHEN 'Actor' THEN 15::bigint
+                            WHEN 'GuestStar' THEN 15::bigint
+                        END AS weight
+                 FROM sources
+                 JOIN jellyfin.people_base_item_map AS source_person
+                   ON source_person.item_id = sources.source_id
+                  AND source_person.person_type IN ('Director', 'Actor', 'GuestStar')
+                 JOIN jellyfin.people_base_item_map AS candidate_person
+                   ON candidate_person.person_id = source_person.person_id
+             ), scores AS (
+                 SELECT source_id, candidate_id, SUM(weight)::bigint AS score
+                 FROM dimension_matches
+                 WHERE candidate_id <> source_id
+                 GROUP BY source_id, candidate_id
+             ), ranked AS (
+                 SELECT source_id, candidate_id, score,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY source_id
+                            ORDER BY score DESC, candidate_id ASC
+                        ) AS rank
+                 FROM scores
+             )
+             SELECT source_id, candidate_id, score FROM ranked WHERE rank <= "#,
+        );
+        values.push(i64::try_from(limit).unwrap_or(i64::MAX).into());
+        let _ = write!(sql, "${} ORDER BY source_id, rank", values.len());
+
+        self.database
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok(MovieSimilarityScore {
+                    source_id: row.try_get("", "source_id")?,
+                    candidate_id: row.try_get("", "candidate_id")?,
+                    score: row.try_get("", "score")?,
+                })
+            })
+            .collect::<Result<Vec<_>, DbErr>>()
+            .map_err(BaseItemError::from)
+    }
+
+    /// Selects a bounded candidate window for several person-based movie
+    /// recommendation categories in one policy-aware PostgreSQL query.
+    ///
+    /// Requests marked `director_only` require a Director credit. Other
+    /// requests intentionally match any credit type, matching Jellyfin's
+    /// actor-category query after its baseline names have been selected from
+    /// Actor and GuestStar credits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the filtered query fails.
+    pub async fn person_movie_recommendation_candidates(
+        &self,
+        query: &BaseItemQuery,
+        requests: &[PersonMovieRecommendationRequest],
+        per_request_limit: u64,
+    ) -> Result<Vec<PersonMovieRecommendationCandidate>, BaseItemError> {
+        if requests.is_empty() || per_request_limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let (mut sql, mut values) = if query.group_versions_by_presentation_key {
+            grouped_versions_cte(query)
+        } else {
+            filtered_query_cte(query)
+        };
+        sql.push_str(", requested_people(request_index, name, director_only) AS (VALUES ");
+        for (index, request) in requests.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            values.push(i64::try_from(index).unwrap_or(i64::MAX).into());
+            let index_bind = values.len();
+            values.push(request.name.clone().into());
+            let name_bind = values.len();
+            values.push(request.director_only.into());
+            let director_bind = values.len();
+            let _ = write!(
+                sql,
+                "(${index_bind}::bigint, ${name_bind}::text, ${director_bind}::boolean)"
+            );
+        }
+        sql.push_str(
+            r#"), matched AS (
+                 SELECT DISTINCT requested.request_index, item.id, item.sort_name
+                 FROM requested_people AS requested
+                 JOIN jellyfin.people AS person ON person.name = requested.name
+                 JOIN jellyfin.people_base_item_map AS person_map
+                   ON person_map.person_id = person.id
+                  AND (NOT requested.director_only OR person_map.person_type = 'Director')
+                 JOIN "#,
+        );
+        sql.push_str(if query.group_versions_by_presentation_key {
+            "version_groups"
+        } else {
+            "filtered"
+        });
+        sql.push_str(
+            r#" AS item ON item.id = person_map.item_id
+             ), ranked AS (
+                 SELECT request_index, id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY request_index
+                            ORDER BY sort_name ASC NULLS LAST, id ASC
+                        ) AS rank
+                 FROM matched
+             )
+             SELECT request_index, id FROM ranked WHERE rank <= "#,
+        );
+        values.push(i64::try_from(per_request_limit).unwrap_or(i64::MAX).into());
+        let _ = write!(sql, "${} ORDER BY request_index, rank", values.len());
+
+        self.database
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .await?
+            .into_iter()
+            .map(|row| {
+                let request_index = row.try_get::<i64>("", "request_index")?;
+                Ok(PersonMovieRecommendationCandidate {
+                    request_index: usize::try_from(request_index).unwrap_or(usize::MAX),
+                    item_id: row.try_get("", "id")?,
+                })
+            })
+            .collect::<Result<Vec<_>, DbErr>>()
+            .map_err(BaseItemError::from)
     }
 
     /// Queries persisted library items with stable sorting and database-side

@@ -6,7 +6,8 @@ use std::{
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
     BaseItemCounts, BaseItemError, BaseItemOrder, BaseItemPage, BaseItemQuery, BaseItemRepository,
-    ItemValueQuery, LatestTvGroup, ScoredBaseItem, ScoredBaseItemPage,
+    ItemValueQuery, LatestTvGroup, PersonMovieRecommendationCandidate,
+    PersonMovieRecommendationRequest, ScoredBaseItem, ScoredBaseItemPage,
     ServerConfigurationRepository,
     entities::{base_item, user},
 };
@@ -261,6 +262,39 @@ impl UserLibraryService {
             .await?;
         query.user_id = Some(target_user_id);
         Ok(())
+    }
+
+    /// Finds bounded, policy-visible movie candidates for several person
+    /// recommendation categories without issuing one item query per person.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, forbidden, invalid-policy, or persistence errors.
+    pub async fn movie_recommendation_candidates_by_people(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        requests: &[PersonMovieRecommendationRequest],
+        per_request_limit: u64,
+    ) -> Result<Vec<PersonMovieRecommendationCandidate>, UserLibraryError> {
+        let mut query = BaseItemQuery {
+            include_item_types: vec!["Movie".to_owned()],
+            is_movie: Some(true),
+            is_virtual_item: Some(false),
+            is_played: Some(false),
+            group_versions_by_presentation_key: true,
+            recursive: true,
+            enable_total_record_count: Some(false),
+            ..BaseItemQuery::default()
+        };
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
+            .await?;
+        query.user_id = Some(target_user_id);
+        query.parent_id = Some(self.ensure_user_root().await?.id);
+        Ok(self
+            .items
+            .person_movie_recommendation_candidates(&query, requests, per_request_limit)
+            .await?)
     }
 
     /// Counts visible direct children for several library parents in one

@@ -991,11 +991,11 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route(
             "/System/Configuration/Branding",
-            post(branding::update_configuration),
+            get(configuration::get_branding_named).post(branding::update_configuration),
         )
         .route(
             "/system/configuration/branding",
-            post(branding::update_configuration),
+            get(configuration::get_branding_named).post(branding::update_configuration),
         )
         .route(
             "/System/Configuration/{key}",
@@ -2140,6 +2140,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Shows/{item_id}/Similar", get(library::similar))
         .route("/shows/{item_id}/similar", get(library::similar))
         .route("/Movies/Recommendations", get(movies::recommendations))
+        .route("/movies/recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
         .route("/movies/{item_id}/similar", get(library::similar))
         .route("/Shows/NextUp", get(tv_shows::next_up))

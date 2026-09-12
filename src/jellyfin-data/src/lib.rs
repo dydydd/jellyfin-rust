@@ -42,7 +42,8 @@ pub use base_item_image_repository::{
 pub use base_item_repository::{
     BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
     BaseItemQuery, BaseItemRepository, DescendantScanCandidate, LatestTvGroup,
-    MediaStreamLanguageLists, MetadataRefreshCandidate, NewBaseItem, NewItemByNameEntity,
+    MediaStreamLanguageLists, MetadataRefreshCandidate, MovieSimilarityScore, NewBaseItem,
+    NewItemByNameEntity, PersonMovieRecommendationCandidate, PersonMovieRecommendationRequest,
     ProductionYearOrder, ProductionYearPage, ScoredBaseItem, ScoredBaseItemPage,
     TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
 };

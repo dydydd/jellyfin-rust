@@ -7,7 +7,7 @@ use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
     BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, NewUserData, UserDataRepository, entities::item_value,
+    NewDevice, NewPerson, NewUserData, PersonRepository, UserDataRepository, entities::item_value,
 };
 use jellyfin_model::UserPolicy;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
@@ -19,7 +19,7 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Movie Recommendation Tests\",
 const DATABASE_PREFIX: &str = "jellyfin_movie_recommendation_routes_";
 
 #[tokio::test]
-async fn movie_recommendations_route_returns_recent_movie_category_from_postgres() {
+async fn movie_recommendations_route_matches_weighted_official_categories() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -91,31 +91,78 @@ async fn exercise_movie_recommendations_route(database_name: &str) {
     let body = body_json(
         fixture
             .get(
-                "/Movies/Recommendations?itemLimit=2&fields=MediaSources",
+                "/Movies/Recommendations?itemLimit=1&categoryLimit=6&fields=MediaSources",
                 Some(&fixture.user_token),
             )
             .await,
     )
     .await;
     let recommendations = body.as_array().expect("recommendations");
-    assert_eq!(recommendations.len(), 1);
-    let category = &recommendations[0];
-    assert_eq!(category["RecommendationType"], "SimilarToRecentlyPlayed");
-    assert_eq!(category["BaselineItemName"], "B Recent Movie");
+    assert_eq!(recommendations.len(), 5);
+    let recent_category = category(recommendations, "SimilarToRecentlyPlayed", "B Recent Movie");
     assert_eq!(
-        category["CategoryId"],
+        recent_category["CategoryId"],
         fixture.recent_movie_id.simple().to_string()
     );
-    let items = category["Items"].as_array().expect("items");
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0]["Id"], fixture.recent_movie_id.simple().to_string());
-    assert_eq!(items[0]["Name"], "B Recent Movie");
-    assert_eq!(items[0]["Type"], "Movie");
-    assert!(items[0]["MediaSources"].is_array());
-    assert_eq!(items[0]["MediaSources"].as_array().unwrap().len(), 1);
-    assert_eq!(items[1]["Id"], fixture.older_movie_id.simple().to_string());
-    assert_eq!(items[1]["Name"], "A Older Movie");
-    assert_eq!(items[1]["Type"], "Movie");
+    let recent_item = &recent_category["Items"][0];
+    assert_eq!(
+        recent_item["Id"],
+        fixture.director_movie_id.simple().to_string()
+    );
+    assert_ne!(
+        recent_item["Id"],
+        fixture.recent_movie_id.simple().to_string()
+    );
+    assert_eq!(recent_item["Type"], "Movie");
+    assert!(recent_item["MediaSources"].is_array());
+
+    assert_eq!(
+        category(recommendations, "SimilarToRecentlyPlayed", "A Older Movie")["Items"][0]["Id"],
+        fixture.older_similar_id.simple().to_string()
+    );
+    assert_eq!(
+        category(recommendations, "SimilarToLikedItem", "D Liked Movie")["Items"][0]["Id"],
+        fixture.liked_similar_id.simple().to_string()
+    );
+    let director_category = category(
+        recommendations,
+        "HasDirectorFromRecentlyPlayed",
+        "Alice Director",
+    );
+    assert_eq!(
+        director_category["CategoryId"],
+        "b9d62d2a18a3ec626f00cdd59e3aa313"
+    );
+    assert_eq!(
+        director_category["Items"][0]["Id"],
+        fixture.director_movie_id.simple().to_string()
+    );
+    assert_eq!(
+        category(recommendations, "HasActorFromRecentlyPlayed", "Bob Actor")["Items"][0]["Id"],
+        fixture.actor_movie_id.simple().to_string()
+    );
+
+    let limited = body_json(
+        fixture
+            .get(
+                "/movies/recommendations?itemlimit=1&categorylimit=1",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(limited.as_array().expect("recommendations").len(), 1);
+    assert_eq!(limited[0]["BaselineItemName"], "B Recent Movie");
+    assert_eq!(
+        fixture
+            .get(
+                "/Movies/Recommendations?categoryLimit=2147483648",
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
 
     let count_only = body_json(
         fixture
@@ -129,7 +176,7 @@ async fn exercise_movie_recommendations_route(database_name: &str) {
     let count_only_item = &count_only[0]["Items"][0];
     assert_eq!(
         count_only_item["Id"],
-        fixture.recent_movie_id.simple().to_string()
+        fixture.director_movie_id.simple().to_string()
     );
     assert!(count_only_item.get("MediaSources").is_none());
     assert!(count_only_item.get("MediaSourceCount").is_none());
@@ -144,7 +191,10 @@ struct Fixture {
     admin_token: String,
     user_token: String,
     recent_movie_id: Uuid,
-    older_movie_id: Uuid,
+    older_similar_id: Uuid,
+    liked_similar_id: Uuid,
+    director_movie_id: Uuid,
+    actor_movie_id: Uuid,
 }
 
 impl Fixture {
@@ -178,6 +228,12 @@ impl Fixture {
         let root = items.ensure_user_root().await.expect("user root");
         let older_movie = create_item(&items, "Movie", "A Older Movie", root.id).await;
         let recent_movie = create_item(&items, "Movie", "B Recent Movie", root.id).await;
+        let older_similar = create_item(&items, "Movie", "A Similar Movie", root.id).await;
+        let recent_similar = create_item(&items, "Movie", "B Similar Movie", root.id).await;
+        let liked_movie = create_item(&items, "Movie", "D Liked Movie", root.id).await;
+        let liked_similar = create_item(&items, "Movie", "D Similar Movie", root.id).await;
+        let director_movie = create_item(&items, "Movie", "E Director Movie", root.id).await;
+        let actor_movie = create_item(&items, "Movie", "F Actor Movie", root.id).await;
         let mut hidden_alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
         hidden_alternate.name = recent_movie.name.clone();
         hidden_alternate.sort_name = recent_movie.sort_name.clone();
@@ -190,7 +246,8 @@ impl Fixture {
             .create(hidden_alternate)
             .await
             .expect("hidden alternate movie");
-        ItemValueRepository::new(database.clone())
+        let item_values = ItemValueRepository::new(database.clone());
+        item_values
             .link(
                 hidden_alternate.id,
                 item_value::ItemValueType::Tags,
@@ -198,6 +255,78 @@ impl Fixture {
             )
             .await
             .expect("hidden alternate tag");
+        for (item_id, genre) in [
+            (older_movie.id, "OlderGenre"),
+            (older_similar.id, "OlderGenre"),
+            (recent_movie.id, "RecentGenre"),
+            (recent_similar.id, "RecentGenre"),
+            (hidden_alternate.id, "RecentGenre"),
+            (liked_movie.id, "LikedGenre"),
+            (liked_similar.id, "LikedGenre"),
+        ] {
+            item_values
+                .link(item_id, item_value::ItemValueType::Genre, genre)
+                .await
+                .expect("recommendation genre");
+        }
+        let people = PersonRepository::new(database.clone());
+        people
+            .link(
+                recent_movie.id,
+                NewPerson::new("Alice Director"),
+                "Director",
+                None,
+                Some(0),
+                0,
+            )
+            .await
+            .expect("recent director");
+        people
+            .link(
+                director_movie.id,
+                NewPerson::new("Alice Director"),
+                "Director",
+                None,
+                Some(0),
+                0,
+            )
+            .await
+            .expect("matching director");
+        people
+            .link(
+                hidden_alternate.id,
+                NewPerson::new("Alice Director"),
+                "Director",
+                None,
+                Some(0),
+                0,
+            )
+            .await
+            .expect("blocked matching director");
+        people
+            .link(
+                recent_movie.id,
+                NewPerson::new("Bob Actor"),
+                "Actor",
+                None,
+                Some(1),
+                1,
+            )
+            .await
+            .expect("recent actor");
+        // Official actor recommendations intentionally do not constrain the
+        // candidate credit type after selecting Actor/GuestStar seed names.
+        people
+            .link(
+                actor_movie.id,
+                NewPerson::new("Bob Actor"),
+                "Writer",
+                None,
+                Some(0),
+                0,
+            )
+            .await
+            .expect("matching actor name through another credit type");
         let mut policy = UserPolicy {
             authentication_provider_id: Some(
                 UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
@@ -223,6 +352,12 @@ impl Fixture {
         )
         .await;
         upsert_played(&user_data, user.id, recent_movie.id, Utc::now()).await;
+        let mut liked_data = NewUserData::new(liked_movie.id, user.id, liked_movie.id.to_string());
+        liked_data.is_favorite = true;
+        user_data
+            .upsert(liked_data)
+            .await
+            .expect("favorite user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -236,7 +371,10 @@ impl Fixture {
             admin_token,
             user_token,
             recent_movie_id: recent_movie.id,
-            older_movie_id: older_movie.id,
+            older_similar_id: older_similar.id,
+            liked_similar_id: liked_similar.id,
+            director_movie_id: director_movie.id,
+            actor_movie_id: actor_movie.id,
         }
     }
 
@@ -302,13 +440,25 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(&body_bytes(response).await).expect("JSON response")
+    let status = response.status();
+    let body = body_bytes(response).await;
+    assert_eq!(status, StatusCode::OK, "response body: {body:?}");
+    serde_json::from_slice(&body).expect("JSON response")
 }
 
 async fn body_bytes(response: axum::response::Response) -> Bytes {
     axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("response body")
+}
+
+fn category<'a>(recommendations: &'a [Value], kind: &str, baseline: &str) -> &'a Value {
+    recommendations
+        .iter()
+        .find(|category| {
+            category["RecommendationType"] == kind && category["BaselineItemName"] == baseline
+        })
+        .unwrap_or_else(|| panic!("missing {kind} category for {baseline}"))
 }
 
 fn assert_temporary_database_name(database_name: &str) {
