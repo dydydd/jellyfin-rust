@@ -82,6 +82,26 @@ async fn openapi_document_describes_the_real_public_system_slice() {
         "getItems_item_id_Download",
     );
     assert_operation(&document, "/Sessions", "get", "getSessions");
+    // jellyfin-sdk-swift exposes explicit HEAD image operations, and both
+    // generated mobile SDKs use the concrete trickplay tile template.
+    assert_operation(
+        &document,
+        "/Items/{item_id}/Images/{image_type}/{image_index}",
+        "head",
+        "headItems_item_id_Images_image_type__image_index_",
+    );
+    assert_operation(
+        &document,
+        "/UserImage",
+        "head",
+        "headUserImage",
+    );
+    assert_operation(
+        &document,
+        "/Videos/{item_id}/Trickplay/{width}/{index}.jpg",
+        "get",
+        "getVideos_item_id_Trickplay_width__index__jpg",
+    );
 
     assert_eq!(
         document["paths"]["/System/Info/Public"]["get"]["responses"]["200"]["content"]["application/json"]
