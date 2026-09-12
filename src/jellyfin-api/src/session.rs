@@ -136,20 +136,32 @@ pub(crate) async fn list(
 ) -> Result<Json<Vec<SessionInfoDto>>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let controllable_user_id = query.controllable_by_user_id;
+    let (requester_id, requester_policy, is_admin, is_api_key) = match &identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            let policy = authentication::stored_user_policy(&session.user)?;
+            (
+                session.user.id,
+                Some(policy),
+                session.user.is_administrator,
+                false,
+            )
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => (Uuid::nil(), None, true, true),
+    };
+    // RequestHelpers treats an explicitly supplied empty Guid as an omitted
+    // target and substitutes the authenticated user when one exists.
+    let controllable_user_id = match query.controllable_by_user_id {
+        Some(id) if id.is_nil() && !requester_id.is_nil() => Some(requester_id),
+        Some(id) if id.is_nil() => None,
+        value => value,
+    };
     if let Some(target_user_id) = controllable_user_id {
-        let (requester_id, is_admin) = match &identity {
-            authentication::AuthenticatedIdentity::Device(session) => {
-                (session.user.id, session.user.is_administrator)
-            }
-            authentication::AuthenticatedIdentity::ApiKey(_) => (Uuid::nil(), true),
-        };
         if !is_admin && requester_id != target_user_id {
             return Err(ApiError::Forbidden);
         }
     }
 
-    let mut device_query = DeviceQuery {
+    let device_query = DeviceQuery {
         device_id: query.device_id.filter(|device_id| !device_id.is_empty()),
         is_active: Some(true),
         active_since: query
@@ -158,12 +170,6 @@ pub(crate) async fn list(
             .map(|seconds| Utc::now() - Duration::seconds(i64::from(seconds))),
         ..DeviceQuery::default()
     };
-    if let authentication::AuthenticatedIdentity::Device(session) = &identity
-        && !session.user.is_administrator
-    {
-        device_query.user_id = Some(session.user.id);
-    }
-
     let page = state.devices.query(&device_query).await?;
     let mut sessions = Vec::with_capacity(page.items.len());
     let controllable_policy = if let Some(target_user_id) = controllable_user_id {
@@ -178,47 +184,90 @@ pub(crate) async fn list(
     } else {
         None
     };
+    let requester_can_control_others = requester_policy
+        .as_ref()
+        .is_some_and(|policy| policy.enable_remote_control_of_other_users)
+        || is_api_key;
     let user_details = session_user_details(&state, &page.items).await?;
     for device in page.items {
-        if let Some(target_user_id) = controllable_user_id {
-            let supports_remote =
-                ClientCapabilitiesDto::from_stored_value(device.capabilities.clone())
-                    .supports_media_control
-                    && device.is_active;
-            if !supports_remote {
-                continue;
-            }
-            let additional: Vec<SessionUserInfo> =
-                serde_json::from_value(device.additional_users.clone()).unwrap_or_default();
-            let contains_target = device.user_id == target_user_id
-                || additional.iter().any(|u| u.user_id == target_user_id);
-            if !contains_target {
-                continue;
-            }
-            if controllable_policy
-                .as_ref()
-                .is_some_and(|p| !p.enable_shared_device_control)
-                && device.user_id != target_user_id
-            {
-                continue;
-            }
-        }
-        let (user_name, primary_image_tag) = user_details
-            .get(&device.user_id)
-            .ok_or(jellyfin_controller::UserError::NotFound)?;
         let connected = state
             .web_sockets
             .is_connected(&jellyfin_session_id(&device.app_name, &device.device_id))
             .await;
+        if controllable_user_id.is_some() {
+            let capabilities =
+                ClientCapabilitiesDto::from_stored_value(device.capabilities.clone());
+            if !capabilities.supports_media_control || !connected {
+                continue;
+            }
+            if controllable_policy.as_ref().is_some_and(|p| {
+                !controlled_user_allows_session(p.enable_shared_device_control, device.user_id)
+            }) {
+                continue;
+            }
+            if !requester_can_control_others
+                && !can_control_session(
+                    device.user_id,
+                    &device.additional_users,
+                    requester_id,
+                    false,
+                )
+            {
+                continue;
+            }
+            if !is_api_key
+                && requester_policy.as_ref().is_some_and(|policy| {
+                    !can_access_session_device(
+                        policy,
+                        &device.device_id,
+                        capabilities.supports_persistent_identifier,
+                    )
+                })
+            {
+                continue;
+            }
+        } else if !is_admin
+            && !can_control_session(
+                device.user_id,
+                &device.additional_users,
+                requester_id,
+                false,
+            )
+        {
+            continue;
+        }
+        let (user_name, primary_image_tag) = user_details
+            .get(&device.user_id)
+            .map(|(name, tag)| (Some(name.clone()), tag.clone()))
+            .unwrap_or((None, None));
         sessions.push(session_info(
             device,
-            user_name.clone(),
-            primary_image_tag.clone(),
+            user_name,
+            primary_image_tag,
             state.server_id(),
             connected,
         ));
     }
     Ok(Json(sessions))
+}
+
+fn can_access_session_device(
+    policy: &jellyfin_model::UserPolicy,
+    device_id: &str,
+    supports_persistent_identifier: bool,
+) -> bool {
+    device_id.trim().is_empty()
+        || policy.is_administrator
+        || policy.enable_all_devices
+        || policy
+            .enabled_devices
+            .iter()
+            .any(|enabled| enabled.eq_ignore_ascii_case(device_id))
+        || !supports_persistent_identifier
+}
+
+fn controlled_user_allows_session(enable_shared_device_control: bool, owner_id: Uuid) -> bool {
+    enable_shared_device_control || !owner_id.is_nil()
 }
 
 pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInfoDto>, ApiError> {
@@ -234,15 +283,16 @@ pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInf
     for device in page.items {
         let (user_name, primary_image_tag) = user_details
             .get(&device.user_id)
-            .ok_or(jellyfin_controller::UserError::NotFound)?;
+            .map(|(name, tag)| (Some(name.clone()), tag.clone()))
+            .unwrap_or((None, None));
         let connected = state
             .web_sockets
             .is_connected(&jellyfin_session_id(&device.app_name, &device.device_id))
             .await;
         sessions.push(session_info(
             device,
-            user_name.clone(),
-            primary_image_tag.clone(),
+            user_name,
+            primary_image_tag,
             state.server_id(),
             connected,
         ));
@@ -714,7 +764,7 @@ async fn find_active_session(
 
 fn session_info(
     device: device::Model,
-    user_name: String,
+    user_name: Option<String>,
     user_primary_image_tag: Option<String>,
     server_id: &str,
     has_open_websocket: bool,
@@ -730,7 +780,7 @@ fn session_info(
         additional_users,
         id: Some(jellyfin_session_id(&device.app_name, &device.device_id)),
         user_id: device.user_id,
-        user_name: Some(user_name),
+        user_name,
         client: Some(device.app_name),
         last_activity_date: device.date_last_activity,
         last_playback_check_in: device.date_last_activity,
@@ -896,7 +946,8 @@ pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::can_control_session;
+    use super::{can_access_session_device, can_control_session, controlled_user_allows_session};
+    use jellyfin_model::UserPolicy;
     use serde_json::json;
     use uuid::Uuid;
 
@@ -928,5 +979,27 @@ mod tests {
             controller,
             true
         ));
+    }
+
+    #[test]
+    fn disabling_shared_device_control_only_excludes_public_sessions() {
+        assert!(!controlled_user_allows_session(false, Uuid::nil()));
+        assert!(controlled_user_allows_session(false, Uuid::new_v4()));
+        assert!(controlled_user_allows_session(true, Uuid::nil()));
+    }
+
+    #[test]
+    fn session_device_access_matches_persistent_identifier_rules() {
+        let mut policy = UserPolicy {
+            enable_all_devices: false,
+            ..UserPolicy::default()
+        };
+        assert!(can_access_session_device(&policy, "", true));
+        assert!(!can_access_session_device(&policy, "restricted", true));
+        assert!(can_access_session_device(&policy, "restricted", false));
+        policy.enabled_devices = vec!["MiXeD".to_owned()];
+        assert!(can_access_session_device(&policy, "mixed", true));
+        policy.is_administrator = true;
+        assert!(can_access_session_device(&policy, "other", true));
     }
 }
