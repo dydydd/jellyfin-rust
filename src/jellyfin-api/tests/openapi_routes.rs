@@ -90,12 +90,7 @@ async fn openapi_document_describes_the_real_public_system_slice() {
         "head",
         "headItems_item_id_Images_image_type__image_index_",
     );
-    assert_operation(
-        &document,
-        "/UserImage",
-        "head",
-        "headUserImage",
-    );
+    assert_operation(&document, "/UserImage", "head", "headUserImage");
     assert_operation(
         &document,
         "/Videos/{item_id}/Trickplay/{width}/{index}.jpg",

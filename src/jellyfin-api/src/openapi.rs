@@ -290,10 +290,7 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/Trailers", &["get"]),
     ("/MusicGenres", &["get"]),
     ("/MusicGenres/{genre_name}", &["get"]),
-    (
-        "/MusicGenres/{name}/Images/{image_type}",
-        &["get", "head"],
-    ),
+    ("/MusicGenres/{name}/Images/{image_type}", &["get", "head"]),
     (
         "/MusicGenres/{name}/Images/{image_type}/{image_index}",
         &["get", "head"],
@@ -568,10 +565,7 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["get"],
     ),
     ("/Videos/{item_id}/Trickplay/{width}/tiles.m3u8", &["get"]),
-    (
-        "/Videos/{item_id}/Trickplay/{width}/{index}.jpg",
-        &["get"],
-    ),
+    ("/Videos/{item_id}/Trickplay/{width}/{index}.jpg", &["get"]),
     ("/Videos/{item_id}/Trickplay/{width}/{*tile}", &["get"]),
     ("/LiveTv/Info", &["get"]),
     ("/LiveTv/Channels", &["get"]),
